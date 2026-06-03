@@ -1,45 +1,22 @@
-import { THREAD_EVENT_SCHEMA_VERSION } from "../schema.js";
 import type { NormalizedThreadEventAppendInput } from "../schema.js";
-import type { AppendThreadEventsResult, StoreRuntime, PersistedThreadEvent, ProjectedThread } from "../types.js";
+import type { EventRow } from "../sqlite/rows.js";
+import { ThreadEventStoreError } from "../errors.js";
+import { rowToPersistedEvent } from "./threads.js";
+import type { AppendThreadEventsResult, StoreRuntime, PersistedThreadEvent } from "../types.js";
 
 export async function appendEventRecords(
-  runtime: StoreRuntime,
-  clientThreadId: string,
-  events: readonly NormalizedThreadEventAppendInput[],
+  _runtime: StoreRuntime,
+  _clientThreadId: string,
+  _events: readonly NormalizedThreadEventAppendInput[],
 ): Promise<AppendThreadEventsResult> {
-  const nowIso = runtime.now().toISOString();
-  const thread: ProjectedThread = {
-    threadId: runtime.idGenerator(),
-    clientThreadId,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  };
-
-  const persisted: PersistedThreadEvent[] = events.map((event, index) => ({
-    threadEventId: runtime.idGenerator(),
-    threadId: thread.threadId,
-    eventOrder: index,
-    schemaVersion: THREAD_EVENT_SCHEMA_VERSION,
-    eventKind: event.eventKind,
-    idempotencyKey: event.idempotencyKey,
-    actor: event.actor,
-    harness: event.harness,
-    ...(event.origin === undefined ? {} : { origin: event.origin }),
-    recordedAt: nowIso,
-    ...(event.occurredAt === undefined ? {} : { occurredAt: event.occurredAt }),
-    payload: event.payload as PersistedThreadEvent["payload"],
-  }));
-
-  return {
-    thread,
-    events: persisted,
-    messages: [],
-    blocks: [],
-    triggered: false,
-    reason: "stub_not_implemented",
-  };
+  throw new ThreadEventStoreError("appendEventRecords is not implemented yet.");
 }
 
-export async function listEventRecords(_runtime: StoreRuntime): Promise<PersistedThreadEvent[]> {
-  return [];
+export async function listEventRecords(runtime: StoreRuntime): Promise<PersistedThreadEvent[]> {
+  const rows = runtime.db.db.prepare(`
+    SELECT *
+    FROM event
+    ORDER BY thread_id ASC, event_order ASC
+  `).all() as unknown as EventRow[];
+  return rows.map(rowToPersistedEvent);
 }
