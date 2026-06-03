@@ -1,0 +1,41 @@
+{
+  "name": "lhc",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Long Horizon Context SDK and CLI core.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "lhc": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev:cli": "tsx src/cli.ts",
+    "test": "vitest run --passWithNoTests"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "effect": "^3.21.2",
+    "js-tiktoken": "^1.0.21"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}
