@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
-import { decodeAppendThreadEventsInput, decodeThreadCreateInput, decodeThreadEventAppendInput } from "./schema.js";
+import { ThreadEventValidationError, decodeThreadCreateInput, decodeThreadEventAppendInput } from "./schema.js";
 import { ThreadEventStoreError } from "./errors.js";
 import { openLhcSqlite, type LhcSqliteHandle } from "./sqlite/open.js";
 import { ensureLhcThreadEventsSchema } from "./sqlite/schema.js";
@@ -72,12 +72,41 @@ export class ThreadEventStore {
   async appendMany(input: AppendThreadEventsInput): Promise<AppendThreadEventsResult>;
   async appendMany(clientThreadId: string, events: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult>;
   async appendMany(inputOrClientThreadId: AppendThreadEventsInput | string, maybeEvents?: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult> {
-    const input = typeof inputOrClientThreadId === "string"
-      ? decodeAppendThreadEventsInput({ clientThreadId: inputOrClientThreadId, events: maybeEvents ?? [] })
-      : decodeAppendThreadEventsInput(inputOrClientThreadId);
+    const clientThreadId = typeof inputOrClientThreadId === "string" ? inputOrClientThreadId : inputOrClientThreadId.clientThreadId;
+    const events = typeof inputOrClientThreadId === "string" ? maybeEvents ?? [] : inputOrClientThreadId.events;
+    if (typeof clientThreadId !== "string" || clientThreadId.length === 0) {
+      throw new ThreadEventValidationError("appendMany requires a non-empty clientThreadId.");
+    }
+    if (!Array.isArray(events)) {
+      throw new ThreadEventValidationError("appendMany requires an events array.");
+    }
 
-    const normalizedEvents = input.events.map((event) => decodeThreadEventAppendInput(event));
-    return await appendEventRecords(this.runtime(), input.clientThreadId, normalizedEvents);
+    let aggregate: AppendThreadEventsResult | undefined;
+    for (const event of events) {
+      const normalizedEvent = decodeThreadEventAppendInput(event);
+      const result = await appendEventRecords(this.runtime(), clientThreadId, [normalizedEvent]);
+      if (aggregate === undefined) {
+        aggregate = result;
+      } else {
+        const trigger = result.trigger ?? aggregate.trigger;
+        const reason = result.reason ?? aggregate.reason;
+        aggregate = {
+          thread: result.thread,
+          events: [...aggregate.events, ...result.events],
+          messages: [...aggregate.messages, ...result.messages],
+          blocks: [...aggregate.blocks, ...result.blocks],
+          ...(trigger === undefined ? {} : { trigger }),
+          triggered: Boolean(aggregate.triggered || result.triggered),
+          ...(reason === undefined ? {} : { reason }),
+        };
+      }
+    }
+
+    if (aggregate) {
+      return aggregate;
+    }
+
+    return await appendEventRecords(this.runtime(), clientThreadId, []);
   }
 
   async list(): Promise<PersistedThreadEvent[]> {

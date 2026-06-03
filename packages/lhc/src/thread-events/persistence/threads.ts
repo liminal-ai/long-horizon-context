@@ -1,14 +1,12 @@
 import { THREAD_EVENT_SCHEMA_VERSION, decodePersistedThreadEvent } from "../schema.js";
 import type { CreateThreadResult, PersistedThreadEvent, ProjectedThread, StoreRuntime } from "../types.js";
 import type { EventRow, ThreadRow } from "../sqlite/rows.js";
+import { withImmediateTransaction } from "../sqlite/transaction.js";
 
 export async function createThreadRecord(runtime: StoreRuntime, input: { clientThreadId: string; title?: string | undefined }): Promise<CreateThreadResult> {
-  const { db } = runtime.db;
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return withImmediateTransaction(runtime.db, () => {
     const existing = findThreadByClientThreadId(runtime, input.clientThreadId);
     if (existing) {
-      db.exec("COMMIT");
       return { thread: existing, created: false };
     }
 
@@ -35,12 +33,12 @@ export async function createThreadRecord(runtime: StoreRuntime, input: { clientT
       payload: { _tag: "thread_created", clientThreadId: input.clientThreadId, ...(input.title === undefined ? {} : { title: input.title }) },
     });
 
-    db.prepare(`
+    runtime.db.db.prepare(`
       INSERT INTO thread (thread_id, client_thread_id, title, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(thread.threadId, thread.clientThreadId, thread.title ?? null, thread.createdAt, thread.updatedAt);
 
-    db.prepare(`
+    runtime.db.db.prepare(`
       INSERT INTO event (
         thread_event_id,
         thread_id,
@@ -70,12 +68,8 @@ export async function createThreadRecord(runtime: StoreRuntime, input: { clientT
       JSON.stringify(event.payload),
     );
 
-    db.exec("COMMIT");
     return { thread, created: true, event };
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  });
 }
 
 export async function listThreadRecords(runtime: StoreRuntime): Promise<ProjectedThread[]> {
