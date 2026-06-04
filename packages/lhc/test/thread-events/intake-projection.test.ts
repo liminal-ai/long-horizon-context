@@ -279,6 +279,38 @@ describe("lhc thread-event store skeleton contracts", () => {
     }
   });
 
+  it("accepts single-event object append with clientThreadId separated from event validation", async () => {
+    const store = await seededStore();
+    try {
+      const result = await store.append({
+        clientThreadId: "client-alpha",
+        ...appendInput({ idempotencyKey: "object-append-1", payload: { text: "Object append" } }),
+      });
+      expect(result.events).toEqual([expect.objectContaining({ idempotencyKey: "object-append-1", eventOrder: 2 })]);
+      expect((await store.list()).map((event) => event.idempotencyKey)).toEqual(["thread_created:client-alpha", "object-append-1"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects single-event object append when event fields look service-generated", async () => {
+    const store = await seededStore();
+    try {
+      await expect(store.append({
+        clientThreadId: "client-alpha",
+        ...appendInput({ idempotencyKey: "object-reject-1", payload: { text: "Should not persist" } }),
+        threadId: "caller-must-not-set-this",
+        threadEventId: "caller-must-not-set-this",
+        eventOrder: 999,
+        schemaVersion: "evil",
+        recordedAt: "2026-05-30T12:00:00.000Z",
+      } as unknown as Parameters<typeof store.append>[0])).rejects.toThrow(/generated|threadId|threadEventId|eventOrder|schemaVersion|recordedAt/i);
+      expect((await store.list()).map((event) => event.idempotencyKey)).toEqual(["thread_created:client-alpha"]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("persists turn_end without message projection and atomically writes a deterministic trigger", async () => {
     const store = await seededStore();
     try {

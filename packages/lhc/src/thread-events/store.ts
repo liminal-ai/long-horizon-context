@@ -65,9 +65,12 @@ export class ThreadEventStore {
   async append(clientThreadId: string, event: ThreadEventAppendInput): Promise<AppendThreadEventsResult>;
   async append(input: ThreadEventAppendInput & { clientThreadId: string }): Promise<AppendThreadEventsResult>;
   async append(inputOrClientThreadId: string | (ThreadEventAppendInput & { clientThreadId: string }), maybeEvent?: ThreadEventAppendInput): Promise<AppendThreadEventsResult> {
-    const clientThreadId = typeof inputOrClientThreadId === "string" ? inputOrClientThreadId : inputOrClientThreadId.clientThreadId;
-    const event = typeof inputOrClientThreadId === "string" ? maybeEvent : inputOrClientThreadId;
-    return await this.appendMany(clientThreadId, event === undefined ? [] : [event]);
+    if (typeof inputOrClientThreadId !== "string") {
+      const { clientThreadId, ...event } = inputOrClientThreadId;
+      return await this.appendMany(clientThreadId, [event as ThreadEventAppendInput]);
+    }
+
+    return await this.appendMany(inputOrClientThreadId, maybeEvent === undefined ? [] : [maybeEvent]);
   }
 
   async appendMany(input: AppendThreadEventsInput): Promise<AppendThreadEventsResult>;
