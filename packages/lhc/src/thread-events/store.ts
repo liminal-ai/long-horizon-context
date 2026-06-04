@@ -5,8 +5,9 @@ import { ThreadEventValidationError, decodeAppendThreadEventsEnvelopeInput, deco
 import { ThreadEventStoreError } from "./errors.js";
 import { openLhcSqlite, type LhcSqliteHandle } from "./sqlite/open.js";
 import { ensureLhcThreadEventsSchema } from "./sqlite/schema.js";
-import { appendEventRecords, listEventRecords } from "./persistence/events.js";
-import { listThreadRecords, createThreadRecord } from "./persistence/threads.js";
+import { appendEventRecords, listEventRecords, listEventRecordsForThread } from "./persistence/events.js";
+import { readProjectedMessagesForThread } from "./persistence/messages.js";
+import { findThreadByClientThreadId, listThreadRecords, createThreadRecord } from "./persistence/threads.js";
 import { readTurnRecords } from "./persistence/turns.js";
 import { readChunkRecords } from "./persistence/chunks.js";
 import { listTriggerRecords } from "./persistence/triggers.js";
@@ -120,8 +121,19 @@ export class ThreadEventStore {
     return await listThreadRecords(this.runtime());
   }
 
-  async readThread(_clientThreadId: string): Promise<ProjectedThreadRead | undefined> {
-    return undefined;
+  async readThread(clientThreadId: string): Promise<ProjectedThreadRead | undefined> {
+    const runtime = this.runtime();
+    const thread = findThreadByClientThreadId(runtime, clientThreadId);
+    if (!thread) {
+      return undefined;
+    }
+    return {
+      thread,
+      events: await listEventRecordsForThread(runtime, thread.threadId),
+      messages: readProjectedMessagesForThread(runtime, thread.threadId),
+      turns: await readTurnRecords(runtime, clientThreadId),
+      chunks: await readChunkRecords(runtime, clientThreadId),
+    };
   }
 
   async readTurns(clientThreadId?: string): Promise<CanonicalTurn[]> {

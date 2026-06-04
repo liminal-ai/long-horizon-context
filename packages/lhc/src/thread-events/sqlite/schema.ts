@@ -31,6 +31,32 @@ export function ensureLhcThreadEventsSchema(handle: LhcSqliteHandle): void {
       UNIQUE(thread_id, idempotency_key)
     );
 
+    CREATE TABLE IF NOT EXISTS message (
+      message_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      message_order INTEGER NOT NULL,
+      message_kind TEXT NOT NULL,
+      actor_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      source_event_id TEXT NOT NULL REFERENCES event(thread_event_id) ON DELETE CASCADE,
+      source_event_order INTEGER NOT NULL,
+      UNIQUE(thread_id, message_order),
+      UNIQUE(source_event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS message_block (
+      block_id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL REFERENCES message(message_id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      block_order INTEGER NOT NULL,
+      block_kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      source_event_id TEXT NOT NULL REFERENCES event(thread_event_id) ON DELETE CASCADE,
+      source_event_order INTEGER NOT NULL,
+      UNIQUE(message_id, block_order)
+    );
+
     PRAGMA user_version = ${LHC_THREAD_EVENTS_SCHEMA_VERSION};
   `);
 }

@@ -2,6 +2,7 @@ import { THREAD_EVENT_SCHEMA_VERSION, decodePersistedThreadEvent, type Normalize
 import type { EventRow } from "../sqlite/rows.js";
 import { withImmediateTransaction } from "../sqlite/transaction.js";
 import { ThreadEventStoreError } from "../errors.js";
+import { materializeMessageRecords } from "./messages.js";
 import { findThreadByClientThreadId, rowToPersistedEvent } from "./threads.js";
 import type { AppendThreadEventsResult, PersistedThreadEvent, StoreRuntime } from "../types.js";
 
@@ -45,13 +46,14 @@ export async function appendEventRecords(
       persisted.push(persistedEvent);
     }
 
+    const materialized = materializeMessageRecords(runtime, persisted);
     return {
       thread,
       events: persisted,
-      messages: [],
-      blocks: [],
+      messages: materialized.messages,
+      blocks: materialized.blocks,
       triggered: false,
-      reason: "projection_not_implemented",
+      reason: "triggers_not_implemented",
     };
   });
 }
@@ -62,6 +64,16 @@ export async function listEventRecords(runtime: StoreRuntime): Promise<Persisted
     FROM event
     ORDER BY thread_id ASC, event_order ASC
   `).all() as unknown as EventRow[];
+  return rows.map(rowToPersistedEvent);
+}
+
+export async function listEventRecordsForThread(runtime: StoreRuntime, threadId: string): Promise<PersistedThreadEvent[]> {
+  const rows = runtime.db.db.prepare(`
+    SELECT *
+    FROM event
+    WHERE thread_id = ?
+    ORDER BY event_order ASC
+  `).all(threadId) as unknown as EventRow[];
   return rows.map(rowToPersistedEvent);
 }
 
