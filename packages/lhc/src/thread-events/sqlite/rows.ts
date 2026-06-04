@@ -55,3 +55,29 @@ export interface TriggerRow {
   completed_at: string | null;
   last_error: string | null;
 }
+
+export interface TurnRow {
+  turn_id: string;
+  thread_id: string;
+  trigger_id: string;
+  turn_order: number;
+  lifecycle_status: string;
+  processing_status: string;
+  start_event_id: string;
+  end_event_id: string;
+  start_event_order: number;
+  end_event_order: number;
+  source_message_ids_json: string;
+  smooth_json: string;
+  lower_band_projection_json: string;
+}
+
+export interface ChunkRow {
+  chunk_id: string;
+  thread_id: string;
+  chunk_order: number;
+  lifecycle_status: string;
+  source_turn_ids_json: string;
+  smooth_text: string;
+  lower_band_json: string | null;
+}

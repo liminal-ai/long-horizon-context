@@ -70,6 +70,35 @@ export function ensureLhcThreadEventsSchema(handle: LhcSqliteHandle): void {
       UNIQUE(thread_id, turn_end_event_order)
     );
 
+    CREATE TABLE IF NOT EXISTS turn (
+      turn_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      trigger_id TEXT NOT NULL UNIQUE REFERENCES turn_trigger(trigger_id) ON DELETE CASCADE,
+      turn_order INTEGER NOT NULL,
+      lifecycle_status TEXT NOT NULL,
+      processing_status TEXT NOT NULL,
+      start_event_id TEXT NOT NULL REFERENCES event(thread_event_id) ON DELETE CASCADE,
+      end_event_id TEXT NOT NULL REFERENCES event(thread_event_id) ON DELETE CASCADE,
+      start_event_order INTEGER NOT NULL,
+      end_event_order INTEGER NOT NULL,
+      source_message_ids_json TEXT NOT NULL,
+      smooth_json TEXT NOT NULL,
+      lower_band_projection_json TEXT NOT NULL,
+      UNIQUE(thread_id, turn_order),
+      UNIQUE(thread_id, end_event_order)
+    );
+
+    CREATE TABLE IF NOT EXISTS chunk (
+      chunk_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      chunk_order INTEGER NOT NULL,
+      lifecycle_status TEXT NOT NULL,
+      source_turn_ids_json TEXT NOT NULL,
+      smooth_text TEXT NOT NULL,
+      lower_band_json TEXT,
+      UNIQUE(thread_id, chunk_order)
+    );
+
     PRAGMA user_version = ${LHC_THREAD_EVENTS_SCHEMA_VERSION};
   `);
 }
