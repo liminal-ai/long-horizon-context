@@ -235,6 +235,12 @@ export const AppendThreadEventsInputSchema = Schema.Struct({
 });
 export type AppendThreadEventsInput = Schema.Schema.Type<typeof AppendThreadEventsInputSchema>;
 
+export const AppendThreadEventsEnvelopeInputSchema = Schema.Struct({
+  clientThreadId: NonEmptyStringSchema,
+  events: Schema.Array(Schema.Unknown),
+});
+export type AppendThreadEventsEnvelopeInput = Schema.Schema.Type<typeof AppendThreadEventsEnvelopeInputSchema>;
+
 export const PersistedThreadEventSchema = Schema.Struct({
   threadEventId: NonEmptyStringSchema,
   threadId: NonEmptyStringSchema,
@@ -278,6 +284,11 @@ export function decodeAppendThreadEventsInput(value: unknown): AppendThreadEvent
     rejectLegacyThinkingRuntimeNote(event);
   }
   return input;
+}
+
+export function decodeAppendThreadEventsEnvelopeInput(value: unknown): AppendThreadEventsEnvelopeInput {
+  assertInputDoesNotProvideGeneratedFields(value);
+  return decodeOrThrow(AppendThreadEventsEnvelopeInputSchema, value, "Invalid thread events append envelope input");
 }
 
 export function decodeThreadEventAppendInput(value: unknown): NormalizedThreadEventAppendInput {

@@ -101,7 +101,7 @@ async function appendFromCliInput(
   clientThreadIdOption: string | undefined,
 ): Promise<unknown> {
   if (isObject(input) && typeof input.clientThreadId === "string" && Array.isArray(input.events)) {
-    return await store.appendMany({ clientThreadId: input.clientThreadId, events: input.events as never[] });
+    return await store.appendMany(input as never);
   }
 
   if (Array.isArray(input)) {

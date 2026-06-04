@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
-import { ThreadEventValidationError, decodeThreadCreateInput, decodeThreadEventAppendInput } from "./schema.js";
+import { ThreadEventValidationError, decodeAppendThreadEventsEnvelopeInput, decodeThreadCreateInput, decodeThreadEventAppendInput } from "./schema.js";
 import { ThreadEventStoreError } from "./errors.js";
 import { openLhcSqlite, type LhcSqliteHandle } from "./sqlite/open.js";
 import { ensureLhcThreadEventsSchema } from "./sqlite/schema.js";
@@ -72,8 +72,11 @@ export class ThreadEventStore {
   async appendMany(input: AppendThreadEventsInput): Promise<AppendThreadEventsResult>;
   async appendMany(clientThreadId: string, events: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult>;
   async appendMany(inputOrClientThreadId: AppendThreadEventsInput | string, maybeEvents?: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult> {
-    const clientThreadId = typeof inputOrClientThreadId === "string" ? inputOrClientThreadId : inputOrClientThreadId.clientThreadId;
-    const events = typeof inputOrClientThreadId === "string" ? maybeEvents ?? [] : inputOrClientThreadId.events;
+    const envelope = typeof inputOrClientThreadId === "string"
+      ? decodeAppendThreadEventsEnvelopeInput({ clientThreadId: inputOrClientThreadId, events: maybeEvents ?? [] })
+      : decodeAppendThreadEventsEnvelopeInput(inputOrClientThreadId);
+    const clientThreadId = envelope.clientThreadId;
+    const events = envelope.events;
     if (typeof clientThreadId !== "string" || clientThreadId.length === 0) {
       throw new ThreadEventValidationError("appendMany requires a non-empty clientThreadId.");
     }

@@ -263,6 +263,22 @@ describe("lhc thread-event store skeleton contracts", () => {
     }
   });
 
+  it("rejects append envelope root fields that look service-generated", async () => {
+    const store = await seededStore();
+    try {
+      await expect(store.appendMany({
+        clientThreadId: "client-alpha",
+        events: [appendInput({ idempotencyKey: "root-reject-1", payload: { text: "Should not persist" } })],
+        threadId: "caller-must-not-set-this",
+        eventOrder: 999,
+        schemaVersion: "evil",
+      } as unknown as Parameters<typeof store.appendMany>[0])).rejects.toThrow(/generated|threadId|eventOrder|schemaVersion/i);
+      expect((await store.list()).map((event) => event.idempotencyKey)).toEqual(["thread_created:client-alpha"]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("persists turn_end without message projection and atomically writes a deterministic trigger", async () => {
     const store = await seededStore();
     try {
@@ -640,5 +656,25 @@ describe("lhc read/replay and CLI skeleton contracts", () => {
     const result = await runCli(["thread-events", "append", "--event-db", dbPath, "--client-thread-id", "missing", "--file", eventFile]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(/missing|not found/i);
+  });
+
+  it("rejects CLI append envelopes with service-generated root fields", async () => {
+    const dbPath = tempThreadDbPath();
+    const eventFile = path.join(path.dirname(dbPath), "bad-envelope.json");
+    writeFileSync(eventFile, JSON.stringify({
+      clientThreadId: "client-alpha",
+      events: [appendInput({ idempotencyKey: "cli-root-reject-1", payload: { text: "Should not persist" } })],
+      threadId: "caller-must-not-set-this",
+      eventOrder: 999,
+      schemaVersion: "evil",
+    }, null, 2));
+
+    await runCli(["thread-events", "create", "--event-db", dbPath, "--client-thread-id", "client-alpha", "--title", "Alpha"]);
+    const result = await runCli(["thread-events", "append", "--event-db", dbPath, "--file", eventFile]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/generated|threadId|eventOrder|schemaVersion/i);
+
+    const listed = await runCli(["thread-events", "list", "--event-db", dbPath, "--json"]);
+    expect(JSON.parse(listed.stdout).map((event: { idempotencyKey: string }) => event.idempotencyKey)).toEqual(["thread_created:client-alpha"]);
   });
 });
