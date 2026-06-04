@@ -89,23 +89,21 @@ export class ThreadEventStore {
     }
 
     let aggregate: AppendThreadEventsResult | undefined;
+    let skipUntilUserPrompt = false;
     for (const event of events) {
+      const eventKind = rawEventKind(event);
+      if (skipUntilUserPrompt && eventKind !== "user_prompt") {
+        continue;
+      }
+      if (eventKind === "user_prompt") {
+        skipUntilUserPrompt = false;
+      }
+
       const normalizedEvent = decodeThreadEventAppendInput(event);
       const result = await appendEventRecords(this.runtime(), clientThreadId, [normalizedEvent]);
-      if (aggregate === undefined) {
-        aggregate = result;
-      } else {
-        const trigger = result.trigger ?? aggregate.trigger;
-        const reason = result.reason ?? aggregate.reason;
-        aggregate = {
-          thread: result.thread,
-          events: [...aggregate.events, ...result.events],
-          messages: [...aggregate.messages, ...result.messages],
-          blocks: [...aggregate.blocks, ...result.blocks],
-          ...(trigger === undefined ? {} : { trigger }),
-          triggered: Boolean(aggregate.triggered || result.triggered),
-          ...(reason === undefined ? {} : { reason }),
-        };
+      aggregate = mergeAppendResults(aggregate, result);
+      if (result.triggered) {
+        skipUntilUserPrompt = true;
       }
     }
 
@@ -168,6 +166,31 @@ export class ThreadEventStore {
       options: this.options,
     };
   }
+}
+
+function mergeAppendResults(aggregate: AppendThreadEventsResult | undefined, result: AppendThreadEventsResult): AppendThreadEventsResult {
+  if (aggregate === undefined) {
+    return result;
+  }
+  const trigger = result.trigger ?? aggregate.trigger;
+  const reason = result.reason ?? aggregate.reason;
+  return {
+    thread: result.thread,
+    events: [...aggregate.events, ...result.events],
+    messages: [...aggregate.messages, ...result.messages],
+    blocks: [...aggregate.blocks, ...result.blocks],
+    ...(trigger === undefined ? {} : { trigger }),
+    triggered: Boolean(aggregate.triggered || result.triggered),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+function rawEventKind(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null || Array.isArray(event)) {
+    return undefined;
+  }
+  const value = (event as { eventKind?: unknown }).eventKind;
+  return typeof value === "string" ? value : undefined;
 }
 
 export async function createThread(options: ThreadEventStoreOptions, input: ThreadCreateInput): Promise<CreateThreadResult> {

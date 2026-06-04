@@ -3,6 +3,7 @@ import type { EventRow } from "../sqlite/rows.js";
 import { withImmediateTransaction } from "../sqlite/transaction.js";
 import { ThreadEventStoreError } from "../errors.js";
 import { materializeMessageRecords } from "./messages.js";
+import { ensureTurnEndTriggerForEvent } from "./triggers.js";
 import { findThreadByClientThreadId, rowToPersistedEvent } from "./threads.js";
 import type { AppendThreadEventsResult, PersistedThreadEvent, StoreRuntime } from "../types.js";
 
@@ -47,15 +48,37 @@ export async function appendEventRecords(
     }
 
     const materialized = materializeMessageRecords(runtime, persisted);
+    const turnEnd = persisted.find((event) => event.eventKind === "turn_end");
+    const trigger = turnEnd && turnEndClosesOpenSpan(runtime, turnEnd)
+      ? ensureTurnEndTriggerForEvent(runtime, turnEnd)
+      : undefined;
+    const reason = turnEnd && trigger === undefined ? "no_open_turn_span" : undefined;
     return {
       thread,
       events: persisted,
       messages: materialized.messages,
       blocks: materialized.blocks,
-      triggered: false,
-      reason: "triggers_not_implemented",
+      ...(trigger === undefined ? {} : { trigger }),
+      triggered: trigger !== undefined,
+      ...(reason === undefined ? {} : { reason }),
     };
   });
+}
+
+export function turnEndClosesOpenSpan(runtime: StoreRuntime, event: PersistedThreadEvent): boolean {
+  if (event.eventKind !== "turn_end") {
+    return false;
+  }
+  const row = runtime.db.db.prepare(`
+    SELECT event_kind
+    FROM event
+    WHERE thread_id = ?
+      AND event_order < ?
+      AND event_kind IN ('user_prompt', 'turn_end')
+    ORDER BY event_order DESC
+    LIMIT 1
+  `).get(event.threadId, event.eventOrder) as { event_kind: string } | undefined;
+  return row?.event_kind === "user_prompt";
 }
 
 export async function listEventRecords(runtime: StoreRuntime): Promise<PersistedThreadEvent[]> {

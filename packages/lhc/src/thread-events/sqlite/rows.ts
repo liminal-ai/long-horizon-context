@@ -43,3 +43,14 @@ export interface MessageBlockRow {
   source_event_id: string;
   source_event_order: number;
 }
+
+export interface TriggerRow {
+  trigger_id: string;
+  thread_id: string;
+  turn_end_event_order: number;
+  status: string;
+  created_at: string;
+  claimed_at: string | null;
+  completed_at: string | null;
+  last_error: string | null;
+}

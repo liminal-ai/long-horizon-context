@@ -57,6 +57,18 @@ export function ensureLhcThreadEventsSchema(handle: LhcSqliteHandle): void {
       UNIQUE(message_id, block_order)
     );
 
+    CREATE TABLE IF NOT EXISTS turn_trigger (
+      trigger_id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      turn_end_event_order INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      claimed_at TEXT,
+      completed_at TEXT,
+      last_error TEXT,
+      UNIQUE(thread_id, turn_end_event_order)
+    );
+
     PRAGMA user_version = ${LHC_THREAD_EVENTS_SCHEMA_VERSION};
   `);
 }
