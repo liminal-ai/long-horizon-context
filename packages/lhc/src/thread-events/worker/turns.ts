@@ -1,4 +1,4 @@
-import { placeTurnInOpenChunk } from "../persistence/chunks.js";
+import { applyChunkPlacement, planTurnOpenChunkPlacement } from "../persistence/chunks.js";
 import { claimNextTrigger, claimTriggerById, markTriggerFailed, readTriggerById } from "../persistence/triggers.js";
 import { readTurnByTriggerId, upsertTurnRecord } from "../persistence/turns.js";
 import { withImmediateTransaction } from "../sqlite/transaction.js";
@@ -35,6 +35,7 @@ async function processClaimedTrigger(runtime: StoreRuntime, trigger: TurnProcess
       return { trigger: failed, updatedChunkIds: [], completed: false, retryable: true, reason: "turn_not_ready" };
     }
 
+    const chunkPlan = await planTurnOpenChunkPlacement(runtime, draft.turn);
     const persisted = withImmediateTransaction(runtime.db, () => {
       const turn = upsertTurnRecord(runtime, {
         trigger,
@@ -42,7 +43,7 @@ async function processClaimedTrigger(runtime: StoreRuntime, trigger: TurnProcess
         startEventId: draft.startEvent.threadEventId,
         endEventId: draft.endEvent.threadEventId,
       });
-      const chunk = placeTurnInOpenChunk(runtime, turn);
+      const chunk = applyChunkPlacement(runtime, chunkPlan);
       runtime.db.db.prepare(`
         UPDATE turn_trigger
         SET status = 'completed', completed_at = ?, last_error = NULL
