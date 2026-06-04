@@ -47,6 +47,7 @@ export interface MessageBlockRow {
 export interface TriggerRow {
   trigger_id: string;
   thread_id: string;
+  turn_end_event_id: string;
   turn_end_event_order: number;
   status: string;
   created_at: string;

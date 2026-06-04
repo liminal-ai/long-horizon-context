@@ -13,6 +13,7 @@ export function ensureTurnEndTriggerForEvent(runtime: StoreRuntime, event: Persi
   const trigger: TurnProcessingTrigger = {
     triggerId: deterministicTriggerId(event.threadId, event.eventOrder),
     threadId: event.threadId,
+    turnEndEventId: event.threadEventId,
     turnEndEventOrder: event.eventOrder,
     status: "pending",
     createdAt: event.recordedAt,
@@ -22,16 +23,18 @@ export function ensureTurnEndTriggerForEvent(runtime: StoreRuntime, event: Persi
     INSERT INTO turn_trigger (
       trigger_id,
       thread_id,
+      turn_end_event_id,
       turn_end_event_order,
       status,
       created_at,
       claimed_at,
       completed_at,
       last_error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     trigger.triggerId,
     trigger.threadId,
+    trigger.turnEndEventId,
     trigger.turnEndEventOrder,
     trigger.status,
     trigger.createdAt,
@@ -65,6 +68,7 @@ function rowToTrigger(row: TriggerRow): TurnProcessingTrigger {
   return {
     triggerId: row.trigger_id,
     threadId: row.thread_id,
+    turnEndEventId: row.turn_end_event_id,
     turnEndEventOrder: row.turn_end_event_order,
     status: row.status as TurnProcessingTrigger["status"],
     createdAt: row.created_at,

@@ -71,12 +71,20 @@ export type TurnProcessingTriggerStatus = "pending" | "claimed" | "completed" | 
 export interface TurnProcessingTrigger {
   triggerId: string;
   threadId: string;
+  turnEndEventId: string;
   turnEndEventOrder: number;
   status: TurnProcessingTriggerStatus;
   createdAt: string;
   claimedAt?: string;
   completedAt?: string;
   lastError?: string;
+}
+
+export interface SkippedThreadEvent {
+  index: number;
+  idempotencyKey?: string;
+  eventKind?: string;
+  reason: "after_turn_end_until_user_prompt";
 }
 
 export interface CanonicalTurn {
@@ -115,6 +123,7 @@ export interface AppendThreadEventsResult {
   trigger?: TurnProcessingTrigger;
   triggered?: boolean;
   reason?: string;
+  skippedEvents?: SkippedThreadEvent[];
 }
 
 export interface TurnSmoothingProvider {

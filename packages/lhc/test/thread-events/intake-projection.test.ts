@@ -335,13 +335,21 @@ describe("lhc thread-event store skeleton contracts", () => {
   it("skips events after first turn_end until the next user_prompt", async () => {
     const store = await seededStore();
     try {
-      await store.appendMany("client-alpha", [
+      const result = await store.appendMany("client-alpha", [
         appendInput({ idempotencyKey: "prompt-1", payload: { text: "First prompt" } }),
         turnEndInput({ idempotencyKey: "turn-end-1" }),
         appendInput({ idempotencyKey: "late-assistant", eventKind: "assistant_text", payload: { text: "Should be ignored" } }),
         appendInput({ idempotencyKey: "prompt-2", payload: { text: "Second prompt" } }),
       ]);
 
+      expect(result.skippedEvents).toEqual([
+        {
+          index: 2,
+          idempotencyKey: "late-assistant",
+          eventKind: "assistant_text",
+          reason: "after_turn_end_until_user_prompt",
+        },
+      ]);
       expect((await store.list()).map((event) => event.idempotencyKey)).toEqual([
         "thread_created:client-alpha",
         "prompt-1",
@@ -362,7 +370,15 @@ describe("lhc thread-event store skeleton contracts", () => {
         appendInput({ idempotencyKey: "late-assistant", eventKind: "assistant_text", payload: { text: "Should be ignored" } }),
       ];
       await store.appendMany("client-alpha", batch);
-      await store.appendMany("client-alpha", batch);
+      const replay = await store.appendMany("client-alpha", batch);
+      expect(replay.skippedEvents).toEqual([
+        {
+          index: 2,
+          idempotencyKey: "late-assistant",
+          eventKind: "assistant_text",
+          reason: "after_turn_end_until_user_prompt",
+        },
+      ]);
       expect((await store.list()).map((event) => event.idempotencyKey)).toEqual([
         "thread_created:client-alpha",
         "prompt-1",

@@ -22,6 +22,7 @@ import type {
   ProcessTurnEndTriggerResult,
   ProjectedThread,
   ProjectedThreadRead,
+  SkippedThreadEvent,
   StoreRuntime,
   ThreadCreateInput,
   ThreadEventAppendInput,
@@ -90,9 +91,11 @@ export class ThreadEventStore {
 
     let aggregate: AppendThreadEventsResult | undefined;
     let skipUntilUserPrompt = false;
-    for (const event of events) {
+    for (const [index, event] of events.entries()) {
       const eventKind = rawEventKind(event);
       if (skipUntilUserPrompt && eventKind !== "user_prompt") {
+        aggregate ??= await appendEventRecords(this.runtime(), clientThreadId, []);
+        aggregate = appendSkippedEvent(aggregate, skippedEventMetadata(index, event, "after_turn_end_until_user_prompt"));
         continue;
       }
       if (eventKind === "user_prompt") {
@@ -174,6 +177,7 @@ function mergeAppendResults(aggregate: AppendThreadEventsResult | undefined, res
   }
   const trigger = result.trigger ?? aggregate.trigger;
   const reason = result.reason ?? aggregate.reason;
+  const skippedEvents = [...(aggregate.skippedEvents ?? []), ...(result.skippedEvents ?? [])];
   return {
     thread: result.thread,
     events: [...aggregate.events, ...result.events],
@@ -182,7 +186,34 @@ function mergeAppendResults(aggregate: AppendThreadEventsResult | undefined, res
     ...(trigger === undefined ? {} : { trigger }),
     triggered: Boolean(aggregate.triggered || result.triggered),
     ...(reason === undefined ? {} : { reason }),
+    ...(skippedEvents.length === 0 ? {} : { skippedEvents }),
   };
+}
+
+function appendSkippedEvent(result: AppendThreadEventsResult, skippedEvent: SkippedThreadEvent): AppendThreadEventsResult {
+  return {
+    ...result,
+    skippedEvents: [...(result.skippedEvents ?? []), skippedEvent],
+  };
+}
+
+function skippedEventMetadata(index: number, event: unknown, reason: SkippedThreadEvent["reason"]): SkippedThreadEvent {
+  const idempotencyKey = rawStringField(event, "idempotencyKey");
+  const eventKind = rawStringField(event, "eventKind");
+  return {
+    index,
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+    ...(eventKind === undefined ? {} : { eventKind }),
+    reason,
+  };
+}
+
+function rawStringField(value: unknown, field: string): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const fieldValue = (value as Record<string, unknown>)[field];
+  return typeof fieldValue === "string" ? fieldValue : undefined;
 }
 
 function rawEventKind(event: unknown): string | undefined {

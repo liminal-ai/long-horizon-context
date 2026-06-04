@@ -60,6 +60,7 @@ export function ensureLhcThreadEventsSchema(handle: LhcSqliteHandle): void {
     CREATE TABLE IF NOT EXISTS turn_trigger (
       trigger_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES thread(thread_id) ON DELETE CASCADE,
+      turn_end_event_id TEXT NOT NULL REFERENCES event(thread_event_id) ON DELETE CASCADE,
       turn_end_event_order INTEGER NOT NULL,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
