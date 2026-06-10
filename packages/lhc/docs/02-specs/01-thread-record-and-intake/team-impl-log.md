@@ -1,11 +1,11 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: EPIC_VERIFY_ACTIVE
+- State: COMPLETE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: none (all 6 stories accepted; Story 5 commit 3287893)
-- Current Phase: epic-fix
-- Epic review returned block (F-EPIC-001); fix batch 1 dispatched (task brhid0fvc, monitor bc74kb5yh)
+- Current Story: none
+- Current Phase: none
+- Epic 01 complete 2026-06-10T15:54Z. Commits: f89f794 (S0), b6042c2 (S1), 7c8623d (S2), 3c2862f (S3), 2097fa3 (S4), 3287893 (S5), 18bfc8c (epic fix batch 1). Final gate verify-all: 132 tests green on committed tree.
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -142,7 +142,7 @@
 - Epic Review Status: block (1 blocking: F-EPIC-001 empty-path thread creation; 5 non-blocking: NB-1 empty payload text [human ruling pending], NB-2 strict:false flags, F-EPIC-002 read-back ref validation, NB-4 sanctioned seams [no action], NB-5 dead code/stale dist; 2 unresolved: NB-1 ruling, Epic-02 work_item constraint ownership)
 - Epic Fix Status: cleaned (worktree-verified by impl-lead: all 4 batch items landed, verify-all 132 tests pass). NOTE two runtime papercuts: attempt 1 PROVIDER_STALLED (no changes), attempt 2 completed all work but envelope rejected PROVIDER_OUTPUT_INVALID ("stdout was not exact JSON") — fix evidence is the worktree diff + impl-lead gate run, not a CLI envelope.
 - Epic Reverify Status: ready-for-closeout (artifacts/epic/002-epic-reverify.json; F-EPIC-001 disproven and re-verified live on built CLI; zero disputed items)
-- Final Gate Status: pending (run from committed tree next)
+- Final Gate Status: pass (impl-lead 2026-06-10T15:54Z; verify-all 132 tests on committed tree 18bfc8c)
 - Carry-forward backlog (from reverify): NB-1 human ruling on empty payload text (epic prose vs tech design; erratum on losing doc), F-EPIC-002 residual (extend closed ThreadRef schema with unknown-field rejection to the four read surfaces), Epic 02 owns work_item status-constraint vocabulary.
 
 ## Open Risks / Accepted Risks
