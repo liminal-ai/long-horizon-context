@@ -18,6 +18,7 @@ export default defineConfig({
             "test/cli-process-projection.test.ts",
             "test/cli-process-turns.test.ts",
             "test/cli-process-work-queue.test.ts",
+            "test/cli-process-fix.test.ts",
           ]),
     ],
     passWithNoTests: true,

@@ -50,24 +50,54 @@ interface ParsedFlags {
   registryPath?: string;
 }
 
-function parseFlags(args: readonly string[]): ParsedFlags {
-  const { values } = parseArgs({
-    args: [...args],
-    options: {
-      "thread-id": { type: "string" },
-      "file-path": { type: "string" },
-      title: { type: "string" },
-      registry: { type: "string" },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+// strict parse rejects unknown/misspelled flags so they are named back to the
+// caller, never silently dropped — the CLI boundary matching the SDK's
+// closed-contract strictness. The failure is returned as data (not thrown) so
+// runCli can render it as the structured usage error.
+type ParseFlagsResult =
+  | { ok: true; flags: ParsedFlags }
+  | { ok: false; unknownFlag: string };
+
+function parseFlags(args: readonly string[]): ParseFlagsResult {
+  let values;
+  try {
+    ({ values } = parseArgs({
+      args: [...args],
+      options: {
+        "thread-id": { type: "string" },
+        "file-path": { type: "string" },
+        title: { type: "string" },
+        registry: { type: "string" },
+      },
+      strict: true,
+      allowPositionals: true,
+    }));
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    // parseArgs names the offending option in single quotes (e.g. Unknown
+    // option '--file-pth'); surface that token, falling back to the message.
+    const named = /'([^']+)'/.exec(message);
+    return { ok: false, unknownFlag: named?.[1] ?? message };
+  }
   const flags: ParsedFlags = {};
   if (typeof values["thread-id"] === "string") flags.threadId = values["thread-id"];
   if (typeof values["file-path"] === "string") flags.filePath = values["file-path"];
   if (typeof values.title === "string") flags.title = values.title;
   if (typeof values.registry === "string") flags.registryPath = values.registry;
-  return flags;
+  return { ok: true, flags };
+}
+
+// The read commands take a thread reference but no stdin; a missing reference
+// is a usage error named before any SDK call, matching the intake commands.
+function requireThreadRef(flags: ParsedFlags, command: string): CliResult | undefined {
+  if (flags.threadId === undefined && flags.filePath === undefined) {
+    return renderCliError(
+      "caller_error",
+      "missing_flag",
+      `${command} requires --thread-id or --file-path`,
+    );
+  }
+  return undefined;
 }
 
 function threadRefFrom(flags: ParsedFlags): ThreadRef {
@@ -92,7 +122,15 @@ export async function runCli(
 
   const [group, command, ...rest] = argv;
   const key = command === undefined ? group : `${group} ${command}`;
-  const flags = parseFlags(command === undefined ? [] : rest);
+  const parsed = parseFlags(command === undefined ? [] : rest);
+  if (!parsed.ok) {
+    return renderCliError(
+      "caller_error",
+      "unknown_flag",
+      `unknown flag: ${parsed.unknownFlag}; run lhc --help`,
+    );
+  }
+  const flags = parsed.flags;
 
   switch (key) {
     case "threads new-thread": {
@@ -174,13 +212,25 @@ export async function runCli(
       return renderResult(await intakeStream.listEvents(threadRefFrom(flags)));
     }
     case "messages list":
-      return renderResult(await messages.listMessages(threadRefFrom(flags)));
+      return (
+        requireThreadRef(flags, "messages list") ??
+        renderResult(await messages.listMessages(threadRefFrom(flags)))
+      );
     case "messages list-queued-work":
-      return renderResult(await messages.listQueuedWork(threadRefFrom(flags)));
+      return (
+        requireThreadRef(flags, "messages list-queued-work") ??
+        renderResult(await messages.listQueuedWork(threadRefFrom(flags)))
+      );
     case "turns list":
-      return renderResult(await turns.listTurns(threadRefFrom(flags)));
+      return (
+        requireThreadRef(flags, "turns list") ??
+        renderResult(await turns.listTurns(threadRefFrom(flags)))
+      );
     case "turns list-queued-work":
-      return renderResult(await turns.listQueuedWork(threadRefFrom(flags)));
+      return (
+        requireThreadRef(flags, "turns list-queued-work") ??
+        renderResult(await turns.listQueuedWork(threadRefFrom(flags)))
+      );
     default:
       return renderCliError(
         "caller_error",

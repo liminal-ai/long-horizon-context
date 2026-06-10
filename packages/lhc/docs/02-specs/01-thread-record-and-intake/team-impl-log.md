@@ -1,11 +1,11 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: PRE_EPIC_VERIFY
+- State: EPIC_VERIFY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: none (all 6 stories accepted)
-- Current Phase: none
-- Story 5 accepted; commit landing now. Entering epic closeout.
+- Current Story: none (all 6 stories accepted; Story 5 commit 3287893)
+- Current Phase: epic-fix
+- Epic review returned block (F-EPIC-001); fix batch 1 dispatched (task brhid0fvc, monitor bc74kb5yh)
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -138,11 +138,12 @@
 - Latest Actual Total: 111 (verify-all 2026-06-10T15:11Z) — epic final story baseline
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifact: artifacts/epic/001-epic-review.json
+- Epic Review Status: block (1 blocking: F-EPIC-001 empty-path thread creation; 5 non-blocking: NB-1 empty payload text [human ruling pending], NB-2 strict:false flags, F-EPIC-002 read-back ref validation, NB-4 sanctioned seams [no action], NB-5 dead code/stale dist; 2 unresolved: NB-1 ruling, Epic-02 work_item constraint ownership)
+- Epic Fix Status: cleaned (worktree-verified by impl-lead: all 4 batch items landed, verify-all 132 tests pass). NOTE two runtime papercuts: attempt 1 PROVIDER_STALLED (no changes), attempt 2 completed all work but envelope rejected PROVIDER_OUTPUT_INVALID ("stdout was not exact JSON") — fix evidence is the worktree diff + impl-lead gate run, not a CLI envelope.
+- Epic Reverify Status: ready-for-closeout (artifacts/epic/002-epic-reverify.json; F-EPIC-001 disproven and re-verified live on built CLI; zero disputed items)
+- Final Gate Status: pending (run from committed tree next)
+- Carry-forward backlog (from reverify): NB-1 human ruling on empty payload text (epic prose vs tech design; erratum on losing doc), F-EPIC-002 residual (extend closed ThreadRef schema with unknown-field rejection to the four read surfaces), Epic 02 owns work_item status-constraint vocabulary.
 
 ## Open Risks / Accepted Risks
 - lbuild-impl BUG (reported to user 2026-06-10): caller ruling responses are recorded (callerInputHistory + ruling-response artifact) but never applied to riskAndDeviationReview.specDeviations[].approvalStatus, so finalization re-emits needs-ruling even after the story-lead planner selects accept-story (terminalDecision "accept"). Story 0's run record is terminally needs-ruling despite full acceptance evidence; impl-lead performed manual acceptance. Every future story with declared spec deviations will hit this until fixed.

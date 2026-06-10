@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "epic-fix",
+  "status": "failed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-10T15:37:57.776Z",
+  "updatedAt": "2026-06-10T15:48:11.391Z",
+  "lastOutputAt": "2026-06-10T15:48:11.218Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 77475,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 480000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/fix/003-fix-result.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/fix/streams/003-fix-result.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/fix/streams/003-fix-result.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/fix/progress/003-fix-result.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/fix/progress/003-fix-result.progress.jsonl"
+  },
+  "lastEvent": "failed",
+  "lastEventSummary": "epic-fix produced invalid provider output."
+}

@@ -59,6 +59,21 @@ function threadNotFound(threadId: string): { ok: false; error: ErrorResult } {
   };
 }
 
+function invalidThreadRef(reason: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: { errorClass: "caller_error", code: "invalid_thread_ref", reason },
+  };
+}
+
+// A file path that is empty or whitespace-only cannot name a durable file:
+// node:sqlite's DatabaseSync("") opens a temporary database that vanishes on
+// close, so such a path must be refused as a caller error before any storage
+// is touched rather than silently producing a thread with no durable file.
+function isBlankPath(filePath: string): boolean {
+  return filePath.trim() === "";
+}
+
 function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -70,6 +85,12 @@ function detail(cause: unknown): string {
 export async function newThread(
   input: NewThreadInput,
 ): Promise<OpResult<{ threadId: string; filePath: string }>> {
+  // Guard before any storage touch: an empty/blank path would otherwise open
+  // a temp database and register a thread with no durable file (the no-row-
+  // without-file invariant below depends on the path naming a real file).
+  if (isBlankPath(input.filePath)) {
+    return invalidThreadRef("filePath must be a non-empty path; received a blank string");
+  }
   if (existsSync(input.filePath)) {
     return {
       ok: false,
@@ -150,6 +171,11 @@ export async function resolveThreadRef(
     const resolved = await resolve(ref);
     if (!resolved.ok) return resolved;
     return { ok: true, value: { filePath: resolved.value.filePath } };
+  }
+  // Mirror newThread's guard so every read surface that routes through here
+  // fails closed on a blank path instead of opening a temp database.
+  if (isBlankPath(ref.filePath)) {
+    return invalidThreadRef("filePath must be a non-empty path; received a blank string");
   }
   return { ok: true, value: { filePath: ref.filePath } };
 }

@@ -200,6 +200,8 @@ Some derived forms belong to a single message and need nothing beyond it, so `me
 
 A tool result's full output is stored when its message is created. The full form is the record and is never discarded. A tool result also gets an abbreviated form: a summary produced by inference, which makes it a derivation like any other, carrying derivation state and able to fail. When a consumer needs the abbreviated form and the summary is not ready, the fallback is a deterministic truncation of the full output. Which form a given view shows, and when a result switches from one to the other, is thread-view's policy, not messages' concern; messages owns the forms themselves.
 
+A tool call gets a summarized form for the same reason: call arguments can be bulky — an edit carries everything it changed — while the useful residue is which tool ran, on what target, and what it did. The summary draws on the call and its paired result, found by the call id, so it can say how the call ended; it is message-level work like the other forms, needing no turn context. Every summarized form of tool activity states its outcome: succeeded, failed, or unknown — unknown covering a call whose result never arrived. A summary that describes what was attempted without saying how it ended invites a later reader to fill the gap with the most plausible ending, which is exactly the failure these forms exist to prevent.
+
 A user prompt gets a smoothed form the same way: cleaned and attenuated with its content preserved, derived from the message alone and queued when the prompt lands. Turn-level renderings later compose these message-level forms rather than re-deriving them.
 
 ### Token estimates
@@ -262,6 +264,8 @@ sequenceDiagram
 
 Closing a turn makes its membership stable. The slow work that follows can run after the close: building the full turn record, composing the turn's smoothed rendering, creating lower-band projection text, and preparing the turn for chunking. This work belongs to `turns`, even when it runs asynchronously. The smoothed rendering composes from message-level forms that `messages` already derived, such as smoothed prompts; what `turns` derives is the turn-shaped result, not the message-content forms inside it.
 
+Part of the turn-shaped result is the turn's tool activity: a run of calls and results that carried out one task is composed into a short account of what the run did and how it ended, not left as a list of separate calls. Runs that changed state keep their outcome explicit; a rendering may compress what a sequence of edits did, but never whether it landed.
+
 `turns` queues this work for itself when the close happens. Each derived artifact carries its own state, so a missing smoothing or a failed projection is visible as exactly that, and the `turns` surface exposes operations to check derivation state and re-queue what is missing or failed. A derivation that has not landed is a gap, not a blocker; consumers degrade and continue until repair fills it.
 
 A closed turn keeps enough source information to trace back to the messages and events it came from. That lets a later edit, repair, or inspection report explain which source messages contributed to a turn and whether derived state is current.
@@ -270,7 +274,7 @@ A closed turn keeps enough source information to trace back to the messages and 
 
 A chunk is a container of turns. Chunks let the system group multiple closed turns into larger units that can be summarized or placed into lower-fidelity bands. Turns are the base unit; chunks are the next container above them.
 
-The `turns` domain owns chunk formation because chunking depends on turn order, turn size, and lower-band projection state. Closed turns accumulate into the current open chunk until a size policy closes it. A closed chunk then gets its own derivations, queued by `turns` the same way a closed turn's are: the detailed and brief summaries that a thread view's lower bands show. Both carry derivation state and can be checked and re-queued through the `turns` surface. Thread-view later uses those chunks and summaries when it assembles a harness-ready context view.
+The `turns` domain owns chunk formation because chunking depends on turn order, turn size, and lower-band projection state. Closed turns accumulate into the current open chunk until a size policy closes it. A closed chunk then gets its own derivations, queued by `turns` the same way a closed turn's are: the detailed and brief summaries that a thread view's lower bands show. The two shed tool activity at different rates: a detailed summary keeps the receipts — what was changed and whether it succeeded — while a brief summary keeps outcomes only. What ages out first is the activity's texture, never its result. Both carry derivation state and can be checked and re-queued through the `turns` surface. Thread-view later uses those chunks and summaries when it assembles a harness-ready context view.
 
 ### Reading turns and chunks
 

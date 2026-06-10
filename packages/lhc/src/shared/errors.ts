@@ -3,6 +3,7 @@ export type ErrorClass = "caller_error" | "state_corruption" | "system_error";
 export type ErrorCode =
   | "path_exists"
   | "thread_not_found"
+  | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
   | "invalid_event"
   | "empty_batch"
   | "empty_stdin" // CLI adapter only, emitted before any SDK call
@@ -30,16 +31,5 @@ export function storageFailure(reason: string): { ok: false; error: ErrorResult 
   return {
     ok: false,
     error: { errorClass: "system_error", code: "storage_failure", reason },
-  };
-}
-
-export function notImplemented(op: string): { ok: false; error: ErrorResult } {
-  return {
-    ok: false,
-    error: {
-      errorClass: "system_error",
-      code: "storage_failure",
-      reason: `not implemented: ${op}`,
-    },
   };
 }

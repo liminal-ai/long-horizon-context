@@ -20,7 +20,7 @@ LHC separates the record from the working view. The full history of a thread is 
 
 LHC is a TypeScript SDK with a thin CLI over it. Every operation is stateless: each call takes a thread id or file path, operates on durable storage, and returns. Six domains organize the operations — `threads`, `intake-stream`, `messages`, `turns`, `thread-view`, and `inspect` — with shared tech utils (a durable work queue, token counting) beneath them. The domain model and its vocabulary are defined in `../01-onboard/01-core-concepts.md` and `../01-onboard/02-domain-design.md`; this PRD scopes that model into buildable features.
 
-Each thread lives in its own SQLite file. A harness streams events in; synchronous intake records them, projects messages, and settles turn membership on the spot. Slow derivation runs through a durable work queue along three ownership paths: message-level forms (prompt smoothing, tool-result summaries) queue when the message lands and belong to `messages`; turn and chunk derivations queue at close and belong to `turns`; view assembly consumes both and belongs to `thread-view`, which derives nothing itself. Thread views assemble locked summary bands plus a live full-fidelity tail, and render as an in-memory message array or a provider-format file. Missing derivations degrade a view, marked and reported; only damage to the source record blocks.
+Each thread lives in its own SQLite file. A harness streams events in; synchronous intake records them, projects messages, and settles turn membership on the spot. Slow derivation runs through a durable work queue along three ownership paths: message-level forms (prompt smoothing, tool-call and tool-result summaries) queue when the message lands and belong to `messages`; turn and chunk derivations queue at close and belong to `turns`; view assembly consumes both and belongs to `thread-view`, which derives nothing itself. Thread views assemble locked summary bands plus a live full-fidelity tail, and render as an in-memory message array or a provider-format file. Missing derivations degrade a view, marked and reported; only damage to the source record blocks.
 
 ## Feature 1: Thread Record and Intake
 
@@ -60,28 +60,29 @@ The asynchronous half: queued work runs, derived artifacts land with explicit st
 
 ### Scope
 
-In: a worker that drains each thread's work queue in order; message-level derivations owned by `messages` (prompt smoothing, tool-result summaries), queued when the message lands; turn-level derivations owned by `turns` (smoothed turn composition from message-level forms, lower-band projection), queued at turn close; chunk formation and close with detailed and brief chunk summaries; derivation state tracking; repair operations on each owning domain's surface; edit-driven clear-and-regenerate (the derivation side of message edits).
+In: a worker that drains each thread's work queue in order; message-level derivations owned by `messages` (prompt smoothing, tool-result summaries, tool-call summaries), queued when the message lands; turn-level derivations owned by `turns` (smoothed turn composition from message-level forms, lower-band projection), queued at turn close; chunk formation and close with detailed and brief chunk summaries; derivation state tracking; repair operations on each owning domain's surface; edit-driven clear-and-regenerate (the derivation side of message edits).
 
 Out: the edit operation's user-facing surface (Feature 4), view assembly that consumes these artifacts (Feature 3).
 
 ### Scenarios
 
-**Scenario 1: A conversation's derivations land behind it.** Message-level work queued as messages land runs first: prompts get smoothed forms, tool results get summarized abbreviations. When a turn closes, its work runs: the turn's smoothed rendering is composed from those message-level forms, its lower-band projection is built, it joins the open chunk. When a chunk closes, its detailed and brief summaries are generated.
+**Scenario 1: A conversation's derivations land behind it.** Message-level work queued as messages land runs first: prompts get smoothed forms, tool calls and results get summarized abbreviations. When a turn closes, its work runs: the turn's smoothed rendering is composed from those message-level forms, its lower-band projection is built, it joins the open chunk. When a chunk closes, its detailed and brief summaries are generated.
 
 - AC-2.1: A thread's queued work runs one item at a time, in queue order, and survives process restart without loss
 - AC-2.2: Each derived artifact carries a state that distinguishes not-yet-derived, usable, retryable failure, terminal failure, and blocked on damaged source
-- AC-2.3: Messages with derivable forms have them: smoothed prompts and summarized tool-result abbreviations, derived from the message alone
+- AC-2.3: Messages with derivable forms have them: smoothed prompts and summarized tool-call and tool-result abbreviations, derived without turn-level context; a tool-call summary's outcome joins the paired result by call id
 - AC-2.4: Closed turns have smoothed renderings composed from message-level forms, and lower-band projections; closed chunks have detailed and brief summaries
+- AC-2.5: Every summarized form of tool activity — message-level or composed — carries an explicit outcome (succeeded, failed, or unknown); state-changing activity never loses its outcome as it moves to lower-fidelity forms
 
 **Scenario 2: Inference fails mid-derivation.** The summarization provider errors or is unavailable. The artifact records a retryable failure; nothing downstream blocks on it. Retry succeeds later, or exhausts into a terminal failure that repair can re-queue.
 
-- AC-2.5: A failed derivation is visible as failed with a reason, and a consumer needing it gets a usable degraded answer rather than an error
-- AC-2.6: Each domain's surface exposes operations to report its derivation states and re-queue missing or failed work
+- AC-2.6: A failed derivation is visible as failed with a reason, and a consumer needing it gets a usable degraded answer rather than an error
+- AC-2.7: Each domain's surface exposes operations to report its derivation states and re-queue missing or failed work
 
 **Scenario 3: A message is edited.** The edit clears every derivation built from the old content, regenerates the deterministic parts synchronously, and re-queues the inference parts. Ordering guarantees that re-queued work lands after any in-flight work on the old content.
 
-- AC-2.7: After an edit, derived state is either current or absent-and-queued; no derivation built from pre-edit content remains marked usable
-- AC-2.8: An in-flight derivation against pre-edit content cannot overwrite a rebuilt post-edit artifact
+- AC-2.8: After an edit, derived state is either current or absent-and-queued; no derivation built from pre-edit content remains marked usable
+- AC-2.9: An in-flight derivation against pre-edit content cannot overwrite a rebuilt post-edit artifact
 
 ## Feature 3: Thread Views and Smart Compact
 

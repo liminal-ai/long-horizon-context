@@ -69,7 +69,7 @@ flowchart TD
 |--------|----------------|------|------------|---------------------|
 | `threads` | SDK + CLI | Thread creation, registry, id→file resolution, thread metadata | SQLite storage | Thread file is authoritative for identity; registry is a refreshable convenience index; id stored once in file metadata |
 | `intake-stream` | SDK + CLI | Ordered event intake, stream contract, synchronous turn-boundary coordination | `threads`, `messages`, `turns` | All-or-nothing batches; idempotency keys; hot path is deterministic-only; intake coordinates but does not own message/turn mechanics |
-| `messages` | SDK + CLI | Message/block records, token stamping, read/search, edits, message-level derivations (tool-result summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; edits clear-and-regenerate; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
+| `messages` | SDK + CLI | Message/block records, token stamping, read/search, edits, message-level derivations (tool-result summaries, tool-call summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; edits clear-and-regenerate; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
 | `turns` | SDK + CLI | Turn lifecycle and state machine, turn-level derivations (smoothed turn composition, lower-band projection), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
 | `thread-view` | SDK + CLI | View assembly, smart compact, band locking, tool-result visibility policy (eligible/activate), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; thread-view drives repair through owning domains' surfaces and derives nothing itself |
 | `inspect` | SDK + CLI | Read-only reports: composition, sizes, derivation health, view contents and cost | all domain surfaces | Never writes, repairs, or derives; reads only through domain surfaces |
@@ -120,7 +120,7 @@ New functionality lands inside an owning domain or as a new adapter over the SDK
 
 ### Validation and Errors
 
-**Choice:** Effect Schema decodes every external input at the SDK boundary — strict shapes, per-kind payloads, rejection of caller-supplied server-generated fields. Errors are typed, structured results distinguishing caller error, state corruption, and derivation failure. Corruption (for example, two open turns) fails loudly and stops the operation; derivation gaps report and degrade.
+**Choice:** Effect Schema decodes every external input at the SDK boundary — strict shapes, per-kind payloads, rejection of caller-supplied server-generated fields. Errors are typed, structured results in three classes: caller error, state corruption, and system error (storage and environment failures, with stable codes). Corruption (for example, two open turns) fails loudly and stops the operation. Derivation gaps are artifact state, not operation errors; they report and degrade.
 **Rationale:** The CLI and future server inherit validation for free because it lives in the SDK. The corruption/gap split is the load-bearing lesson from the POC.
 **Consequence:** No silent field-dropping, no permissive fallbacks on the record. Stubs fail closed with a typed error rather than returning fake success.
 
@@ -155,7 +155,7 @@ sequenceDiagram
 
   H->>IS: message-events(thread, batch)
   IS->>MS: create messages + blocks (ctx)
-  MS->>DW: queue message derivations (prompt smoothing, tool-result summaries)
+  MS->>DW: queue message derivations (prompt smoothing, tool-call/result summaries)
   IS->>TU: apply turn boundaries (ctx)
   TU->>DW: queue turn derivations (on close)
   IS-->>H: batch result
