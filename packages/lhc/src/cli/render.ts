@@ -9,7 +9,7 @@ export interface CliResult {
 // Adapter-level failures (unknown command, missing command) happen before any
 // SDK call, so they carry adapter codes outside the SDK's ErrorCode set while
 // keeping the same structural shape.
-export type CliErrorCode = "unknown_command";
+export type CliErrorCode = "unknown_command" | "missing_flag";
 
 export function renderResult(result: OpResult<unknown>): CliResult {
   return {

@@ -24,6 +24,15 @@ export type OpResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: ErrorResult };
 
+// Infrastructure failures (SQLite, fs) are expected operational outcomes,
+// caught at the operation boundary and wrapped with the underlying detail.
+export function storageFailure(reason: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: { errorClass: "system_error", code: "storage_failure", reason },
+  };
+}
+
 export function notImplemented(op: string): { ok: false; error: ErrorResult } {
   return {
     ok: false,

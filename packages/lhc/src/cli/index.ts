@@ -73,16 +73,24 @@ export async function runCli(argv: readonly string[]): Promise<CliResult> {
 
   switch (key) {
     case "threads new-thread": {
+      // Guard here: an empty path reaching node:sqlite opens a temp database
+      // instead of failing, so the adapter refuses before any SDK call.
+      if (flags.filePath === undefined) {
+        return renderCliError("caller_error", "missing_flag", "threads new-thread requires --file-path");
+      }
       const input: Parameters<typeof threads.newThread>[0] = {
-        filePath: flags.filePath ?? "",
+        filePath: flags.filePath,
       };
       if (flags.title !== undefined) input.title = flags.title;
       if (flags.registryPath !== undefined) input.registryPath = flags.registryPath;
       return renderResult(await threads.newThread(input));
     }
     case "threads resolve": {
+      if (flags.threadId === undefined) {
+        return renderCliError("caller_error", "missing_flag", "threads resolve requires --thread-id");
+      }
       const input: Parameters<typeof threads.resolve>[0] = {
-        threadId: flags.threadId ?? "",
+        threadId: flags.threadId,
       };
       if (flags.registryPath !== undefined) input.registryPath = flags.registryPath;
       return renderResult(await threads.resolve(input));

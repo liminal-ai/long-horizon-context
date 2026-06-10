@@ -1,0 +1,7 @@
+{
+  "files": {
+    "test/threads.test.ts": "6bca62c319b00a4ee21bfaa373f94f90b574fa4b950c2ebae07373876536ad10",
+    "test/smoke.test.ts": "c085b36ab63be955efe8f7ba93366e6963991f86750dad4ce7e130640ecf88e9",
+    "test/cli-process.test.ts": "506d10ceb25e536418b69345312d15d36f38d47b981c813264a471d295228c7c"
+  }
+}

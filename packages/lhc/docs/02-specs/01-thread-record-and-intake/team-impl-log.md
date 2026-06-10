@@ -1,11 +1,12 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: STORY_ACTIVE
+- State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: 00-foundation
-- Current Phase: implement
-- Story Run: 00-foundation-story-run-001 (story-orchestrate, launched 2026-06-10T12:13Z, background task baugrbyqc, monitor be4xqpxce)
+- Current Story: 02-event-recording-validation-idempotency
+- Current Phase: none
+- Story 1 accepted via story-orchestrate (terminal accepted, zero findings); commit pending below
+- Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
 - Primary Harness: claude-code
@@ -59,10 +60,24 @@
 - Baseline Before: 0 (lhc package)
 - Baseline After: 18 (lhc package; 3 test files)
 
+### 01-thread-creation-registry-resolution
+- Story Title: Story 1: Thread Creation, Registry, Resolution
+- Implementor Evidence: artifacts/01-thread-creation-registry-resolution/002-implementor.json (ready-for-verification; ran own Red/Green gates under fixed bypassPermissions harness)
+- Verifier Evidence:
+  - artifacts/01-thread-creation-registry-resolution/004-verify.json (pass, zero findings, first pass)
+- Story Gate: pnpm --dir .../packages/lhc run green-verify — pass (impl-lead 2026-06-10T13:11Z; 26 tests + 1 todo; Red-manifest immutability OK)
+- Completion Gate: pnpm --dir .../packages/lhc run verify-all — pass (impl-lead 2026-06-10T13:11Z; 31 tests + 1 todo incl. process suite)
+- Dispositions: none (no findings)
+- Open Risks:
+  - TC-1.4 deferral to Story 2 recorded as named todo in test file (per spec)
+  - Post-cycle queue addition: missing_flag CLI-adapter error code (same pattern as unknown_command/empty_stdin)
+- Baseline Before: 18
+- Baseline After: 31 (+1 todo)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 335 (workspace-wide test-file count seeded by story-orchestrate validate; lhc package itself starts at 0 tests)
-- Expected After Current Story: ~+5 test files (Story 0 smoke + fixtures suites)
-- Latest Actual Total: 335
+- Baseline Before Current Story: 31 tests + 1 todo / 4 test files (lhc package, after Story 1)
+- Expected After Current Story: +~12 tests (validation/idempotency/intake suites per test plan Flow 2/4/5)
+- Latest Actual Total: 31 + 1 todo (verify-all 2026-06-10T13:11Z)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
@@ -72,6 +87,10 @@
 - Final Gate Status: not-run
 
 ## Open Risks / Accepted Risks
+- lbuild-impl BUG (reported to user 2026-06-10): caller ruling responses are recorded (callerInputHistory + ruling-response artifact) but never applied to riskAndDeviationReview.specDeviations[].approvalStatus, so finalization re-emits needs-ruling even after the story-lead planner selects accept-story (terminalDecision "accept"). Story 0's run record is terminally needs-ruling despite full acceptance evidence; impl-lead performed manual acceptance. Every future story with declared spec deviations will hit this until fixed.
+- Story-lead routed fix work to quick-fix (Opus) despite verifier recommendedFixScope same-session-implementor — worked here, flagged for lspec-core review.
+- quick-fix result envelope carried only rawProviderOutputPreview (no structured taskSummary/changedFiles/gatesRun) under old-harness claude-code child (acceptEdits permission mode).
+- Post-cycle review queue: consider ESLint upgrade for lint gate; unknown_command CLI-adapter code; stub op-name spelling; hash-manifest immutability mechanism.
 - Spec-pack files were named 01-epic.md/02-tech-design.md/03-test-plan.md; renamed to contract names (epic.md/tech-design.md/test-plan.md) with compatibility symlinks at the old names so in-story design-reference paths still resolve. Inspect was blocked before the rename, ready after.
 - Codex auth status reported "unknown" by preflight (binary present, v0.139.0); proceeding per preflight note.
 - Target repo worktree was already dirty before this run: old MVP sources deleted/moved to packages/lhc/reference/ (src-green-thread-events-v1, test-green-thread-events-v1), src/ reduced to cli.ts + index.ts shells. This is the intended pre-epic state, not run damage.
