@@ -7,7 +7,8 @@ import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { OperationContext } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
-import { createFromEvent } from "../../messages/index.js";
+import type { WorkItemRecord } from "../../../tech-utils/work-queue/index.js";
+import { createFromEvent, queueMessageWork } from "../../messages/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../../threads/index.js";
 import { applyEvent as applyTurnEvent, listOpenTurnIds } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
@@ -153,6 +154,11 @@ export async function runMessageEvents(
 
     const eventResults: BatchResult["events"] = [];
     const turnTransitions: BatchResult["turnTransitions"] = [];
+    // Work items append as they queue, in walk order — the result is a
+    // faithful log of what the transaction did (AC-2.7). The full records
+    // (status, queuedAt) stay in the thread file; the result carries item
+    // identity only.
+    const queuedItems: WorkItemRecord[] = [];
     for (const [index, event] of events.entries()) {
       if (skipSet.has(event.idempotencyKey)) {
         eventResults.push({
@@ -180,6 +186,7 @@ export async function runMessageEvents(
         // call, so a resend causes no transition (TC-5.4).
         const turnOutcome = applyTurnEvent(ctx, event.eventKind, lastOrder);
         turnTransitions.push(...turnOutcome.transitions);
+        queuedItems.push(...turnOutcome.queuedWork);
         // Projection runs in the same iteration that recorded the event, so
         // it can never drift from its source; a projection failure throws
         // and rejects the whole batch. Skipped events never reach this call
@@ -193,6 +200,11 @@ export async function runMessageEvents(
           },
           turnOutcome.openTurnId,
         );
+        // Message-owned work queues in the same iteration, gated on
+        // recorded: a skipped event never reaches this call, so it queues
+        // nothing (AC-5.4), and the kind gate inside queueMessageWork
+        // decides which messages are derivation sources (AC-2.8).
+        queuedItems.push(...queueMessageWork(ctx, created));
         const entry: BatchResult["events"][number] = {
           idempotencyKey: event.idempotencyKey,
           outcome: "recorded",
@@ -211,7 +223,12 @@ export async function runMessageEvents(
       value: {
         events: eventResults,
         turnTransitions,
-        queuedWork: [], // populated by Story 5
+        queuedWork: queuedItems.map((item) => ({
+          workItemId: item.workItemId,
+          owner: item.owner,
+          kind: item.kind,
+          sourceRef: item.sourceRef,
+        })),
         threadPosition: { lastEventOrder: lastOrder },
       },
     };

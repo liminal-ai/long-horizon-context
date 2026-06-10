@@ -3,12 +3,10 @@ import { estimateTokens, runCli, TOKEN_ESTIMATOR_ID } from "../src/index.js";
 
 // Story 1 made the threads commands real (test/threads.test.ts), Story 2 the
 // intake-stream commands (test/intake.test.ts), Story 3 messages list
-// (test/projection.test.ts), and Story 4 turns list (test/turns.test.ts);
-// only the still-stubbed commands remain on this list.
-const PLANNED_COMMANDS: ReadonlyArray<{ argv: string[]; op: string }> = [
-  { argv: ["messages", "list-queued-work", "--thread-id", "th_x"], op: "messages.list-queued-work" },
-  { argv: ["turns", "list-queued-work", "--thread-id", "th_x"], op: "turns.list-queued-work" },
-];
+// (test/projection.test.ts), Story 4 turns list (test/turns.test.ts), and
+// Story 5 both list-queued-work commands (test/work-queue.test.ts); no
+// stubbed commands remain, so the Story 0 fail-closed-stub rail test retired
+// with its last entry.
 
 describe("FC-0.3: CLI rail", () => {
   it("responds to --help with usage for every planned command", async () => {
@@ -48,22 +46,6 @@ describe("FC-0.3: CLI rail", () => {
     expect(result.exitCode).toBe(1);
     const parsed = JSON.parse(result.stdout) as { ok: boolean };
     expect(parsed.ok).toBe(false);
-  });
-
-  it("every planned command routes to a fail-closed stub with the exact stub error shape", async () => {
-    for (const { argv, op } of PLANNED_COMMANDS) {
-      const result = await runCli(argv);
-      expect(result.exitCode, `exit code for: ${argv.join(" ")}`).toBe(1);
-      const parsed = JSON.parse(result.stdout) as unknown;
-      expect(parsed, `stub shape for: ${argv.join(" ")}`).toEqual({
-        ok: false,
-        error: {
-          errorClass: "system_error",
-          code: "storage_failure",
-          reason: `not implemented: ${op}`,
-        },
-      });
-    }
   });
 });
 

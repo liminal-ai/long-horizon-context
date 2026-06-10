@@ -1,11 +1,11 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: BETWEEN_STORIES
+- State: PRE_EPIC_VERIFY
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: 05-derivation-work-queueing
+- Current Story: none (all 6 stories accepted)
 - Current Phase: none
-- Story 4 accepted; commit landing now
+- Story 5 accepted; commit landing now. Entering epic closeout.
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -119,10 +119,23 @@
 - Baseline Before: 72
 - Baseline After: 100
 
+### 05-derivation-work-queueing
+- Story Title: Story 5: Derivation Work Queueing
+- Implementor Evidence: artifacts/05-derivation-work-queueing/003-implementor.json
+- Verifier Evidence:
+  - artifacts/05-derivation-work-queueing/004-verify.json (pass, zero findings, first pass; production-path audit clean)
+- Story Gate: green-verify — pass (impl-lead 2026-06-10T15:11Z; 15 Red-phase files unchanged)
+- Completion Gate: verify-all — pass (impl-lead 2026-06-10T15:11Z; 111 tests)
+- Dispositions: none (no findings)
+- Named Exit Step: WorkItemRecord shape reviewed field-by-field against epic contract table (epic.md §Work Item) by impl-lead — workItemId/owner/kind/sourceRef/status("queued" literal)/queuedAt all match; ids deterministic w-<sourceId>-<kind>.
+- Open Risks: none. Story 4's debts paid (TC-3.3/TC-3.6 work halves, TC-3.8 count); TC-5.4 ladder and AC-4.6 rollback ladder closed.
+- Baseline Before: 100
+- Baseline After: 111
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 100 tests / 13 test files (lhc package, after Story 4)
-- Expected After Current Story: +~8 tests (work-queue suite per test plan)
-- Latest Actual Total: 100 (verify-all 2026-06-10T14:48Z)
+- Baseline Before Current Story: n/a (story cycle complete)
+- Expected After Current Story: n/a
+- Latest Actual Total: 111 (verify-all 2026-06-10T15:11Z) — epic final story baseline
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

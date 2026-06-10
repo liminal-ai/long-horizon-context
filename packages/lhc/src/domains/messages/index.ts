@@ -1,13 +1,12 @@
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import type { OperationContext } from "../../shared/context.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
-  notImplemented,
-  storageFailure,
-  type ErrorResult,
-  type OpResult,
-} from "../../shared/errors.js";
-import type { WorkItemRecord } from "../../tech-utils/work-queue/index.js";
+  listItems,
+  recordItem,
+  type WorkItemRecord,
+  type WorkKind,
+} from "../../tech-utils/work-queue/index.js";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
 import {
   openThreadDatabase,
@@ -75,6 +74,32 @@ export function createFromEvent(
   return { messageId, kind };
 }
 
+// The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
+// result queues tool_result_summary, nothing else queues anything — text,
+// thinking, and note messages are not derivation sources (AC-2.8, AC-2.7's
+// TC-2.9 half). Cross-domain surface, called by intake-stream inside the
+// batch transaction for every recorded message, so the item commits (or
+// rolls back) with the batch.
+const MESSAGE_WORK_KINDS: Partial<Record<EventKind, WorkKind>> = {
+  user_prompt: "prompt_smoothing",
+  tool_result: "tool_result_summary",
+};
+
+export function queueMessageWork(
+  ctx: OperationContext,
+  message: MessageCreated,
+): WorkItemRecord[] {
+  if (message === null) return [];
+  const kind = MESSAGE_WORK_KINDS[message.kind];
+  if (kind === undefined) return [];
+  const item = recordItem(
+    ctx.db,
+    { owner: "messages", kind, sourceRef: { messageId: message.messageId } },
+    ctx.clock().toISOString(),
+  );
+  return [item];
+}
+
 function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
   return {
     ok: false,
@@ -112,7 +137,22 @@ export async function listMessages(
 }
 
 export async function listQueuedWork(
-  _thread: ThreadRef,
+  thread: ThreadRef,
 ): Promise<OpResult<WorkItemRecord[]>> {
-  return notImplemented("messages.list-queued-work");
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    return { ok: true, value: listItems(db, "messages") };
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`queued-work read-back failed: ${reason}`);
+  } finally {
+    db.close();
+  }
 }

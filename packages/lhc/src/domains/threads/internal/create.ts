@@ -92,6 +92,23 @@ function buildThreadMigrations(
         );`,
       ],
     },
+    {
+      version: 4, // Story 5: derivation work queueing
+      statements: [
+        // Work items live in the thread file and commit with the batch —
+        // not a separate database, not a separate transaction. status is
+        // unconstrained TEXT: this epic only ever writes 'queued'; the
+        // claim/lease statuses are Epic 02's to add.
+        `CREATE TABLE work_item (
+          work_item_id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source_ref TEXT NOT NULL,
+          status TEXT NOT NULL,
+          queued_at TEXT NOT NULL
+        );`,
+      ],
+    },
   ];
 }
 

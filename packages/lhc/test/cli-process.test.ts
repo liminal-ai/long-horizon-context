@@ -41,16 +41,18 @@ describe("FC-0.3 (process boundary): built binary", () => {
     expect(parsed.ok).toBe(false);
   });
 
-  it("a planned command reaches its fail-closed stub through the real binary", () => {
-    // messages list went live in Story 3; list-queued-work is still stubbed.
+  it("a structured SDK error reaches the caller through the real binary", () => {
+    // Every command went live by Story 5 (list-queued-work was the last
+    // stub), so the rail proof is now the real error path: an unknown thread
+    // id renders the SDK's error result as JSON with exit 1.
     const result = runBinary(["messages", "list-queued-work", "--thread-id", "th_x"]);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual({
       ok: false,
       error: {
-        errorClass: "system_error",
-        code: "storage_failure",
-        reason: "not implemented: messages.list-queued-work",
+        errorClass: "caller_error",
+        code: "thread_not_found",
+        reason: "no thread registered with id th_x",
       },
     });
   });

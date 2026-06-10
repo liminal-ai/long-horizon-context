@@ -57,7 +57,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
     expect(result.value.events[0]!.messageId).toBe("m2");
 
-    expect(schemaVersionOf(filePath)).toBe(3);
+    expect(schemaVersionOf(filePath)).toBe(4);
 
     // The legacy event survives the upgrade byte-for-byte at the SDK level.
     const events = await intakeStream.listEvents({ filePath });
@@ -98,7 +98,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     if (!projected.ok) return;
     expect(projected.value).toEqual([]);
 
-    expect(schemaVersionOf(filePath)).toBe(3);
+    expect(schemaVersionOf(filePath)).toBe(4);
 
     // The read-path upgrade changed no record content.
     const events = await intakeStream.listEvents({ filePath });

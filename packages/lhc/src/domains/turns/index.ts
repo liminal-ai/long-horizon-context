@@ -1,12 +1,11 @@
 import { existsSync } from "node:fs";
 import type { OperationContext } from "../../shared/context.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
-  notImplemented,
-  storageFailure,
-  type ErrorResult,
-  type OpResult,
-} from "../../shared/errors.js";
-import type { WorkItemRecord } from "../../tech-utils/work-queue/index.js";
+  listItems,
+  recordItem,
+  type WorkItemRecord,
+} from "../../tech-utils/work-queue/index.js";
 import type { EventKind } from "../intake-stream/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { transition } from "./internal/state-machine.js";
@@ -39,6 +38,9 @@ export interface TurnTransitionOutcome {
   // Prompts see the turn they just opened (transition first, then stamp);
   // non-transition kinds see whatever is open, or null in a gap (AC-3.8).
   openTurnId: string | null;
+  // Work queued by this transition: one turn_derivation item per closed
+  // turn, by either close path (AC-3.6). Empty when nothing closed.
+  queuedWork: WorkItemRecord[];
 }
 
 // Pipeline corruption check (AC-3.9): read at state load, after BEGIN
@@ -48,11 +50,25 @@ export function listOpenTurnIds(ctx: OperationContext): string[] {
   return selectOpenTurnIds(ctx.db);
 }
 
+// Closing a turn — by either close path — durably queues that turn's
+// derivation work in the same transaction (AC-3.6): the close update and the
+// work item commit or roll back together.
+function closeTurnAndQueueWork(
+  ctx: OperationContext,
+  turnId: string,
+  eventOrder: number,
+): WorkItemRecord {
+  closeTurn(ctx.db, turnId, eventOrder);
+  return recordItem(
+    ctx.db,
+    { owner: "turns", kind: "turn_derivation", sourceRef: { turnId } },
+    ctx.clock().toISOString(),
+  );
+}
+
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like
 // messages.createFromEvent: a turn-storage failure rejects the whole batch.
-// Closing a turn queues nothing here — Story 5 adds the turn_derivation work
-// item to this already-working close path inside the same transaction.
 export function applyEvent(
   ctx: OperationContext,
   eventKind: EventKind,
@@ -62,20 +78,25 @@ export function applyEvent(
   const effect = transition({ openTurnId }, eventKind);
   switch (effect.kind) {
     case "none":
-      return { transitions: [], openTurnId };
+      return { transitions: [], openTurnId, queuedWork: [] };
     case "open": {
       const turnId = insertOpenTurn(ctx.db, nextTurnOrder(ctx.db), eventOrder);
-      return { transitions: [{ action: "opened", turnId }], openTurnId: turnId };
+      return {
+        transitions: [{ action: "opened", turnId }],
+        openTurnId: turnId,
+        queuedWork: [],
+      };
     }
     case "close": {
-      closeTurn(ctx.db, openTurnId as string, eventOrder);
+      const item = closeTurnAndQueueWork(ctx, openTurnId as string, eventOrder);
       return {
         transitions: [{ action: "closed", turnId: openTurnId as string }],
         openTurnId: null,
+        queuedWork: [item],
       };
     }
     case "close_then_open": {
-      closeTurn(ctx.db, openTurnId as string, eventOrder);
+      const item = closeTurnAndQueueWork(ctx, openTurnId as string, eventOrder);
       const turnId = insertOpenTurn(ctx.db, nextTurnOrder(ctx.db), eventOrder);
       return {
         transitions: [
@@ -83,6 +104,7 @@ export function applyEvent(
           { action: "opened", turnId },
         ],
         openTurnId: turnId,
+        queuedWork: [item],
       };
     }
   }
@@ -119,7 +141,22 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
 }
 
 export async function listQueuedWork(
-  _thread: ThreadRef,
+  thread: ThreadRef,
 ): Promise<OpResult<WorkItemRecord[]>> {
-  return notImplemented("turns.list-queued-work");
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    return { ok: true, value: listItems(db, "turns") };
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`queued-work read-back failed: ${reason}`);
+  } finally {
+    db.close();
+  }
 }
