@@ -1,0 +1,279 @@
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+
+import { ThreadEventValidationError, decodeAppendThreadEventsEnvelopeInput, decodeThreadCreateInput, decodeThreadEventAppendInput } from "./schema.js";
+import { ThreadEventStoreError } from "./errors.js";
+import { openLhcSqlite, type LhcSqliteHandle } from "./sqlite/open.js";
+import { ensureLhcThreadEventsSchema } from "./sqlite/schema.js";
+import { appendEventRecords, listEventRecords, listEventRecordsForThread } from "./persistence/events.js";
+import { readProjectedMessagesForThread } from "./persistence/messages.js";
+import { findThreadByClientThreadId, listThreadRecords, createThreadRecord } from "./persistence/threads.js";
+import { readTurnRecords } from "./persistence/turns.js";
+import { readChunkRecords } from "./persistence/chunks.js";
+import { listTriggerRecords } from "./persistence/triggers.js";
+import { processNextTurnTrigger, processTurnTrigger } from "./worker/turns.js";
+import type {
+  AppendThreadEventsInput,
+  AppendThreadEventsResult,
+  CanonicalChunk,
+  CanonicalTurn,
+  CreateThreadResult,
+  PersistedThreadEvent,
+  ProcessTurnEndTriggerResult,
+  ProjectedThread,
+  ProjectedThreadRead,
+  SkippedThreadEvent,
+  StoreRuntime,
+  ThreadCreateInput,
+  ThreadEventAppendInput,
+  ThreadEventStoreOptions,
+  TurnProcessingTrigger,
+} from "./types.js";
+
+export class ThreadEventStore {
+  readonly dbPath: string;
+  /** @deprecated Use dbPath. Kept as a compatibility alias while CLI/options settle. */
+  readonly eventDbPath: string;
+  private readonly now: () => Date;
+  private readonly idGenerator: () => string;
+  private readonly options: ThreadEventStoreOptions;
+  private readonly db: LhcSqliteHandle;
+
+  constructor(options: ThreadEventStoreOptions) {
+    const dbPath = options.dbPath ?? options.threadDbPath ?? options.eventDbPath;
+    if (!dbPath) {
+      throw new ThreadEventStoreError("ThreadEventStore requires dbPath.");
+    }
+
+    this.dbPath = resolve(dbPath);
+    this.eventDbPath = this.dbPath;
+    this.now = options.now ?? (() => new Date());
+    this.idGenerator = options.idGenerator ?? (() => randomUUID());
+    this.options = options;
+    this.db = openLhcSqlite(this.dbPath);
+    ensureLhcThreadEventsSchema(this.db);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  async createThread(input: ThreadCreateInput): Promise<CreateThreadResult> {
+    const decoded = decodeThreadCreateInput(input);
+    return await createThreadRecord(this.runtime(), decoded);
+  }
+
+  async append(input: AppendThreadEventsInput): Promise<AppendThreadEventsResult>;
+  async append(clientThreadId: string, events: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult>;
+  async append(inputOrClientThreadId: AppendThreadEventsInput | string, maybeEvents?: readonly ThreadEventAppendInput[]): Promise<AppendThreadEventsResult> {
+    const envelope = typeof inputOrClientThreadId === "string"
+      ? decodeAppendThreadEventsEnvelopeInput({ clientThreadId: inputOrClientThreadId, events: maybeEvents ?? [] })
+      : decodeAppendThreadEventsEnvelopeInput(inputOrClientThreadId);
+    const clientThreadId = envelope.clientThreadId;
+    const events = envelope.events;
+    if (typeof clientThreadId !== "string" || clientThreadId.length === 0) {
+      throw new ThreadEventValidationError("append requires a non-empty clientThreadId.");
+    }
+    if (!Array.isArray(events)) {
+      throw new ThreadEventValidationError("append requires an events array.");
+    }
+
+    let aggregate: AppendThreadEventsResult | undefined;
+    let skipUntilUserPrompt = false;
+    for (const [index, event] of events.entries()) {
+      const eventKind = rawEventKind(event);
+      if (skipUntilUserPrompt && eventKind !== "user_prompt") {
+        aggregate ??= await appendEventRecords(this.runtime(), clientThreadId, []);
+        aggregate = appendSkippedEvent(aggregate, skippedEventMetadata(index, event, "after_turn_end_until_user_prompt"));
+        continue;
+      }
+      if (eventKind === "user_prompt") {
+        skipUntilUserPrompt = false;
+      }
+
+      const normalizedEvent = decodeThreadEventAppendInput(event);
+      const result = await appendEventRecords(this.runtime(), clientThreadId, [normalizedEvent]);
+      aggregate = mergeAppendResults(aggregate, result);
+      if (result.triggered) {
+        skipUntilUserPrompt = true;
+      }
+    }
+
+    if (aggregate) {
+      return aggregate;
+    }
+
+    return await appendEventRecords(this.runtime(), clientThreadId, []);
+  }
+
+  async list(): Promise<PersistedThreadEvent[]> {
+    return await listEventRecords(this.runtime());
+  }
+
+  async listThreads(): Promise<ProjectedThread[]> {
+    return await listThreadRecords(this.runtime());
+  }
+
+  async readThread(clientThreadId: string): Promise<ProjectedThreadRead | undefined> {
+    const runtime = this.runtime();
+    const thread = findThreadByClientThreadId(runtime, clientThreadId);
+    if (!thread) {
+      return undefined;
+    }
+    return {
+      thread,
+      events: await listEventRecordsForThread(runtime, thread.threadId),
+      messages: readProjectedMessagesForThread(runtime, thread.threadId),
+      turns: await readTurnRecords(runtime, clientThreadId),
+      chunks: await readChunkRecords(runtime, clientThreadId),
+    };
+  }
+
+  async readTurns(clientThreadId?: string): Promise<CanonicalTurn[]> {
+    return await readTurnRecords(this.runtime(), clientThreadId);
+  }
+
+  async readChunks(clientThreadId?: string): Promise<CanonicalChunk[]> {
+    return await readChunkRecords(this.runtime(), clientThreadId);
+  }
+
+  async listTurnProcessingTriggers(): Promise<TurnProcessingTrigger[]> {
+    return await listTriggerRecords(this.runtime());
+  }
+
+  async processNextTurnEndTrigger(): Promise<ProcessTurnEndTriggerResult> {
+    return await processNextTurnTrigger(this.runtime());
+  }
+
+  async processTurnEndTrigger(triggerId: string): Promise<ProcessTurnEndTriggerResult> {
+    return await processTurnTrigger(this.runtime(), triggerId);
+  }
+
+  private runtime(): StoreRuntime {
+    return {
+      db: this.db,
+      dbPath: this.dbPath,
+      now: this.now,
+      idGenerator: this.idGenerator,
+      options: this.options,
+    };
+  }
+}
+
+function mergeAppendResults(aggregate: AppendThreadEventsResult | undefined, result: AppendThreadEventsResult): AppendThreadEventsResult {
+  if (aggregate === undefined) {
+    return result;
+  }
+  const trigger = result.trigger ?? aggregate.trigger;
+  const reason = result.reason ?? aggregate.reason;
+  const skippedEvents = [...(aggregate.skippedEvents ?? []), ...(result.skippedEvents ?? [])];
+  return {
+    thread: result.thread,
+    events: [...aggregate.events, ...result.events],
+    messages: [...aggregate.messages, ...result.messages],
+    blocks: [...aggregate.blocks, ...result.blocks],
+    ...(trigger === undefined ? {} : { trigger }),
+    triggered: Boolean(aggregate.triggered || result.triggered),
+    ...(reason === undefined ? {} : { reason }),
+    ...(skippedEvents.length === 0 ? {} : { skippedEvents }),
+  };
+}
+
+function appendSkippedEvent(result: AppendThreadEventsResult, skippedEvent: SkippedThreadEvent): AppendThreadEventsResult {
+  return {
+    ...result,
+    skippedEvents: [...(result.skippedEvents ?? []), skippedEvent],
+  };
+}
+
+function skippedEventMetadata(index: number, event: unknown, reason: SkippedThreadEvent["reason"]): SkippedThreadEvent {
+  const idempotencyKey = rawStringField(event, "idempotencyKey");
+  const eventKind = rawStringField(event, "eventKind");
+  return {
+    index,
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+    ...(eventKind === undefined ? {} : { eventKind }),
+    reason,
+  };
+}
+
+function rawStringField(value: unknown, field: string): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const fieldValue = (value as Record<string, unknown>)[field];
+  return typeof fieldValue === "string" ? fieldValue : undefined;
+}
+
+function rawEventKind(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null || Array.isArray(event)) {
+    return undefined;
+  }
+  const value = (event as { eventKind?: unknown }).eventKind;
+  return typeof value === "string" ? value : undefined;
+}
+
+export async function createThread(options: ThreadEventStoreOptions, input: ThreadCreateInput): Promise<CreateThreadResult> {
+  const store = new ThreadEventStore(options);
+  try {
+    return await store.createThread(input);
+  } finally {
+    store.close();
+  }
+}
+
+export async function appendThreadEvents(options: ThreadEventStoreOptions, input: AppendThreadEventsInput): Promise<AppendThreadEventsResult> {
+  const store = new ThreadEventStore(options);
+  try {
+    return await store.append(input);
+  } finally {
+    store.close();
+  }
+}
+
+export async function listThreadEvents(options: ThreadEventStoreOptions): Promise<PersistedThreadEvent[]> {
+  const store = new ThreadEventStore(options);
+  try {
+    return await store.list();
+  } finally {
+    store.close();
+  }
+}
+
+export async function listThreads(options: ThreadEventStoreOptions): Promise<ProjectedThread[]> {
+  const store = new ThreadEventStore(options);
+  try {
+    return await store.listThreads();
+  } finally {
+    store.close();
+  }
+}
+
+export async function readThread(options: ThreadEventStoreOptions, clientThreadId: string): Promise<ProjectedThreadRead | undefined> {
+  const store = new ThreadEventStore(options);
+  try {
+    return await store.readThread(clientThreadId);
+  } finally {
+    store.close();
+  }
+}
+
+export { ThreadEventStoreError } from "./errors.js";
+export type {
+  AppendThreadEventsResult,
+  CanonicalChunk,
+  CanonicalTurn,
+  ChunkLowerBandCompressionProvider,
+  ChunkPolicy,
+  CreateThreadResult,
+  ProcessTurnEndTriggerResult,
+  ProjectedMessage,
+  ProjectedMessageBlock,
+  ProjectedMessageWithBlocks,
+  ProjectedThread,
+  ProjectedThreadRead,
+  ThreadEventStoreOptions,
+  TurnLowerBandProjectionTokenCounter,
+  TurnProcessingTrigger,
+  TurnSmoothingProvider,
+} from "./types.js";

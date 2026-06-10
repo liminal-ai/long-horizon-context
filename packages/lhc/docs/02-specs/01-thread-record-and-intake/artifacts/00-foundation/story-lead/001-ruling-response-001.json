@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "00-foundation-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "rationale": "Impl-lead ruling: the tech design pins the lint gate tier (build + typecheck + lint + boundaries) but does not mandate ESLint as the tool, so the zero-dependency scripts/lint.mjs satisfies the contract; the .gitkeep placeholders in domain internal/ directories are consistent with Story 0's no-behavior scope. Approved with a post-cycle review note: consider upgrading to ESLint in a later cleanup now that provider permissions allow dependency installation.",
+  "source": "impl-lead"
+}
