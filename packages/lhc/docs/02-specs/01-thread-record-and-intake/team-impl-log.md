@@ -3,9 +3,9 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: 03-message-projection-tokens
+- Current Story: 04-turn-state-machine
 - Current Phase: none
-- Story 2 accepted (resume after planner-output interruption); commit landing now
+- Story 3 accepted; commit landing now
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -90,10 +90,26 @@
 - Baseline Before: 31 (+1 todo)
 - Baseline After: 58 (todo closed by TC-1.4 completion)
 
+### 03-message-projection-tokens
+- Story Title: Story 3: Message Projection and Token Estimates
+- Implementor Evidence: artifacts/03-message-projection-tokens/003-implementor.json + two story-continue rounds
+- Verifier Evidence:
+  - artifacts/03-message-projection-tokens/004-verify.json (revise: F-03-001 schema migration gap)
+  - artifacts/03-message-projection-tokens/006-verify.json (revise: F-03-001 resolved, F-03-002 lazy-migrate on arbitrary files)
+  - artifacts/03-message-projection-tokens/008-verify.json (pass: both resolved)
+- Story Gate: green-verify — pass (impl-lead 2026-06-10T14:18Z; 10 Red-phase files unchanged)
+- Completion Gate: verify-all — pass (impl-lead 2026-06-10T14:18Z; 72 tests)
+- Dispositions:
+  - F-03-001: fixed — Story 2 thread files migrate to v2 before Story 3 write/read paths
+  - F-03-002: fixed — non-thread files rejected caller_error/thread_not_found without mutation
+- Open Risks: none
+- Baseline Before: 58
+- Baseline After: 72
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 58 tests / 8 test files (lhc package, after Story 2)
-- Expected After Current Story: +~5 tests (projection suite per test plan Flow 2)
-- Latest Actual Total: 58 (verify-all 2026-06-10T13:43Z)
+- Baseline Before Current Story: 72 tests / 10 test files (lhc package, after Story 3)
+- Expected After Current Story: +~14 tests (state-machine golden + turns suites per test plan Flow 3)
+- Latest Actual Total: 72 (verify-all 2026-06-10T14:18Z)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

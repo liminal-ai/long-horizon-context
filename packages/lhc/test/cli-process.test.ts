@@ -42,14 +42,15 @@ describe("FC-0.3 (process boundary): built binary", () => {
   });
 
   it("a planned command reaches its fail-closed stub through the real binary", () => {
-    const result = runBinary(["messages", "list", "--thread-id", "th_x"]);
+    // messages list went live in Story 3; list-queued-work is still stubbed.
+    const result = runBinary(["messages", "list-queued-work", "--thread-id", "th_x"]);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual({
       ok: false,
       error: {
         errorClass: "system_error",
         code: "storage_failure",
-        reason: "not implemented: messages.list",
+        reason: "not implemented: messages.list-queued-work",
       },
     });
   });

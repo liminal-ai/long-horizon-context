@@ -93,4 +93,9 @@ export function openRaw(path: string): DatabaseSync {
 }
 
 export { corruptTwoOpenTurns } from "./corrupt.js";
+export {
+  legacyStory2ThreadFile,
+  schemaVersionOf,
+  type LegacyRecordedEvent,
+} from "./legacy.js";
 export { setIntakeClock, setIntakeWalkHook, type IntakeWalkHook } from "./intake-seam.js";

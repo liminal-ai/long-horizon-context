@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-10T14:03:23.746Z",
+  "updatedAt": "2026-06-10T14:08:47.974Z",
+  "lastOutputAt": "2026-06-10T14:08:47.585Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 36549,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/03-message-projection-tokens/005-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/03-message-projection-tokens/streams/005-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/03-message-projection-tokens/streams/005-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/03-message-projection-tokens/progress/005-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake/artifacts/03-message-projection-tokens/progress/005-continue.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-continue completed for 03-message-projection-tokens with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

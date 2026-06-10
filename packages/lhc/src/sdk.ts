@@ -25,6 +25,11 @@ export type { OperationContext } from "./shared/context.js";
 
 export type { ThreadRef } from "./domains/threads/index.js";
 export type {
+  Block,
+  BlockType,
+  MessageRecord,
+} from "./domains/messages/index.js";
+export type {
   BatchResult,
   EventKind,
   EventRecord,

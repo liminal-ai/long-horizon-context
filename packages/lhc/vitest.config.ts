@@ -12,7 +12,11 @@ export default defineConfig({
       ...configDefaults.exclude,
       ...(includeProcessSuite
         ? []
-        : ["test/cli-process.test.ts", "test/cli-process-intake.test.ts"]),
+        : [
+            "test/cli-process.test.ts",
+            "test/cli-process-intake.test.ts",
+            "test/cli-process-projection.test.ts",
+          ]),
     ],
     passWithNoTests: true,
   },

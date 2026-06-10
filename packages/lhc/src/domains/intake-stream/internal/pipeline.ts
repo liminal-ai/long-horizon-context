@@ -5,9 +5,10 @@
 // transitions, and work queueing.
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import type { OperationContext } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
-import { openDatabase } from "../../../shared/storage.js";
-import { resolveThreadRef, type ThreadRef } from "../../threads/index.js";
+import { createFromEvent } from "../../messages/index.js";
+import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../../threads/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
 import { validateEvents, validateThreadRef } from "./validate.js";
 
@@ -63,6 +64,14 @@ function recordedKeys(db: DatabaseSync, keys: readonly string[]): Set<string> {
   return found;
 }
 
+function threadIdOf(db: DatabaseSync): string {
+  const row = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get() as
+    | { thread_id: string }
+    | undefined;
+  if (row === undefined) throw new Error("thread file has no metadata row");
+  return row.thread_id;
+}
+
 function maxEventOrder(db: DatabaseSync): number {
   const row = db.prepare("SELECT MAX(event_order) AS max_order FROM event").get() as
     | { max_order: number | bigint | null }
@@ -88,12 +97,13 @@ export async function runMessageEvents(
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return threadNotFound(filePath);
 
-  let db: DatabaseSync;
-  try {
-    db = openDatabase(filePath);
-  } catch (cause) {
-    return storageFailure(`could not open thread file: ${detail(cause)}`);
-  }
+  // openThreadDatabase verifies the file is a real thread file, then brings
+  // its schema to the current version before the batch transaction begins,
+  // so a thread recorded under an earlier story is writable here (F-03-001)
+  // and a non-thread file is rejected unmutated (F-03-002).
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
 
   // BEGIN IMMEDIATE (not deferred): the write lock is taken up front so
   // single-writer violations fail loudly at a defined point.
@@ -115,6 +125,11 @@ export async function runMessageEvents(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
 
+    // Cross-domain calls inside the transaction share the open handle through
+    // the operation context (design decision 8); built once per batch, never
+    // stored.
+    const ctx: OperationContext = { db, clock, threadId: threadIdOf(db) };
+
     const eventResults: BatchResult["events"] = [];
     for (const [index, event] of events.entries()) {
       if (skipSet.has(event.idempotencyKey)) {
@@ -125,6 +140,7 @@ export async function runMessageEvents(
         });
       } else {
         lastOrder += 1;
+        const recordedAt = clock().toISOString();
         insert.run(
           lastOrder,
           event.eventKind,
@@ -132,10 +148,24 @@ export async function runMessageEvents(
           event.actor,
           event.harness,
           JSON.stringify(event.payload),
-          clock().toISOString(),
+          recordedAt,
         );
         skipSet.add(event.idempotencyKey);
-        eventResults.push({ idempotencyKey: event.idempotencyKey, outcome: "recorded" });
+        // Projection runs in the same iteration that recorded the event, so
+        // it can never drift from its source; a projection failure throws
+        // and rejects the whole batch. Skipped events never reach this call
+        // (no duplicate message, AC-5.4).
+        const created = createFromEvent(ctx, {
+          ...event,
+          eventOrder: lastOrder,
+          recordedAt,
+        });
+        const entry: BatchResult["events"][number] = {
+          idempotencyKey: event.idempotencyKey,
+          outcome: "recorded",
+        };
+        if (created !== null) entry.messageId = created.messageId;
+        eventResults.push(entry);
       }
       walkHook?.(db, index);
     }
@@ -192,9 +222,10 @@ export async function runListEvents(thread: ThreadRef): Promise<OpResult<EventRe
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return threadNotFound(filePath);
 
-  let db: DatabaseSync | undefined;
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
   try {
-    db = openDatabase(filePath);
     const rows = db
       .prepare(
         `SELECT event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at
@@ -217,6 +248,6 @@ export async function runListEvents(thread: ThreadRef): Promise<OpResult<EventRe
   } catch (cause) {
     return storageFailure(`event read-back failed: ${detail(cause)}`);
   } finally {
-    db?.close();
+    db.close();
   }
 }

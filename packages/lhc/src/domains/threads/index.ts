@@ -4,7 +4,13 @@ import {
   createThreadFile,
   deleteThreadFile,
   generateThreadId,
+  openThreadDatabase,
 } from "./internal/create.js";
+
+// Re-exported for the other domain surfaces: opening a thread file through
+// the threads domain is what guarantees its schema is current (a pre-Story-3
+// file gains the message tables here before any write or read touches them).
+export { openThreadDatabase };
 import {
   insertThreadRow,
   openRegistryForRead,
