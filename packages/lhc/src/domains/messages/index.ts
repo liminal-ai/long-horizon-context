@@ -50,9 +50,13 @@ export type MessageCreated = {
 // projection failure propagates to the pipeline's catch and rejects the
 // whole batch — recorded events without messages is the stranded state the
 // transaction exists to prevent. Returns null for turn_end (no message).
+// turnId is the membership stamp, settled by the pipeline before this call:
+// the turn open *after* this event's transition (so a prompt belongs to the
+// turn it just opened), or null in a gap — written once, never updated.
 export function createFromEvent(
   ctx: OperationContext,
   event: RecordedEvent,
+  turnId: string | null,
 ): MessageCreated {
   const projected = projectEvent(event);
   if (projected === null) return null;
@@ -65,6 +69,7 @@ export function createFromEvent(
     tokenEstimate: projected.tokenEstimate,
     actor: event.actor,
     harness: event.harness,
+    turnId,
     blocks: projected.blocks,
   });
   return { messageId, kind };

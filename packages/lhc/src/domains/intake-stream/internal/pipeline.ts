@@ -9,6 +9,7 @@ import type { OperationContext } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import { createFromEvent } from "../../messages/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../../threads/index.js";
+import { applyEvent as applyTurnEvent, listOpenTurnIds } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
 import { validateEvents, validateThreadRef } from "./validate.js";
 
@@ -112,6 +113,31 @@ export async function runMessageEvents(
     db.exec("BEGIN IMMEDIATE;");
     inTransaction = true;
 
+    // Cross-domain calls inside the transaction share the open handle through
+    // the operation context (design decision 8); built once per batch, never
+    // stored.
+    const ctx: OperationContext = { db, clock, threadId: threadIdOf(db) };
+
+    // Corruption check at state load (AC-3.9): after BEGIN IMMEDIATE, before
+    // any event is processed — once is sufficient because only this pipeline
+    // writes turn state and the write lock is already held, so more than one
+    // open turn can only mean external interference. The batch records
+    // nothing: nothing has been written yet, and the rollback closes the
+    // never-used transaction.
+    const openTurnIds = listOpenTurnIds(ctx);
+    if (openTurnIds.length > 1) {
+      db.exec("ROLLBACK;");
+      inTransaction = false;
+      return {
+        ok: false,
+        error: {
+          errorClass: "state_corruption",
+          code: "turn_state_corrupt",
+          reason: `thread has ${openTurnIds.length} open turns (${openTurnIds.join(", ")}); the invariant is at most one`,
+        },
+      };
+    }
+
     const skipSet = recordedKeys(
       db,
       events.map((event) => event.idempotencyKey),
@@ -125,12 +151,8 @@ export async function runMessageEvents(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    // Cross-domain calls inside the transaction share the open handle through
-    // the operation context (design decision 8); built once per batch, never
-    // stored.
-    const ctx: OperationContext = { db, clock, threadId: threadIdOf(db) };
-
     const eventResults: BatchResult["events"] = [];
+    const turnTransitions: BatchResult["turnTransitions"] = [];
     for (const [index, event] of events.entries()) {
       if (skipSet.has(event.idempotencyKey)) {
         eventResults.push({
@@ -151,15 +173,26 @@ export async function runMessageEvents(
           recordedAt,
         );
         skipSet.add(event.idempotencyKey);
+        // Turn transition before projection — the order is load-bearing: a
+        // prompt transitions first and stamps to the turn it just opened
+        // (AC-3.1, AC-3.3); non-transition kinds stamp to whatever is open,
+        // or null in a gap (AC-3.2, AC-3.8). Skipped events never reach this
+        // call, so a resend causes no transition (TC-5.4).
+        const turnOutcome = applyTurnEvent(ctx, event.eventKind, lastOrder);
+        turnTransitions.push(...turnOutcome.transitions);
         // Projection runs in the same iteration that recorded the event, so
         // it can never drift from its source; a projection failure throws
         // and rejects the whole batch. Skipped events never reach this call
         // (no duplicate message, AC-5.4).
-        const created = createFromEvent(ctx, {
-          ...event,
-          eventOrder: lastOrder,
-          recordedAt,
-        });
+        const created = createFromEvent(
+          ctx,
+          {
+            ...event,
+            eventOrder: lastOrder,
+            recordedAt,
+          },
+          turnOutcome.openTurnId,
+        );
         const entry: BatchResult["events"][number] = {
           idempotencyKey: event.idempotencyKey,
           outcome: "recorded",
@@ -177,7 +210,7 @@ export async function runMessageEvents(
       ok: true,
       value: {
         events: eventResults,
-        turnTransitions: [], // populated by Story 4
+        turnTransitions,
         queuedWork: [], // populated by Story 5
         threadPosition: { lastEventOrder: lastOrder },
       },

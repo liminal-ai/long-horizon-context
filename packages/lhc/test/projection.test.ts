@@ -149,9 +149,10 @@ describe("Flow 2 (SDK): message projection", () => {
       },
     ]);
 
-    // turnId stays unset until Story 4 stamps membership.
+    // Story 4 stamps membership at intake: the prompt opened t1 and every
+    // message in the batch belongs to it (turn_end closed it, no message).
     for (const message of projected) {
-      expect(message.turnId).toBeUndefined();
+      expect(message.turnId).toBe("t1");
     }
   });
 

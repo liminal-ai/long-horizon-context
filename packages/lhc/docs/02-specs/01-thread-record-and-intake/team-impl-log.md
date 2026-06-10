@@ -3,9 +3,9 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: 04-turn-state-machine
+- Current Story: 05-derivation-work-queueing
 - Current Phase: none
-- Story 3 accepted; commit landing now
+- Story 4 accepted; commit landing now
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -106,10 +106,23 @@
 - Baseline Before: 58
 - Baseline After: 72
 
+### 04-turn-state-machine
+- Story Title: Story 4: Turn State Machine
+- Implementor Evidence: artifacts/04-turn-state-machine/005-implementor.json (resumed attempt; first attempt 003 was interrupted by runtime despite completed provider work — see Open Risks)
+- Verifier Evidence:
+  - artifacts/04-turn-state-machine/006-verify.json (pass, zero findings, first pass)
+- Story Gate: green-verify — pass (impl-lead 2026-06-10T14:48Z; 13 Red-phase files unchanged)
+- Completion Gate: verify-all — pass (impl-lead 2026-06-10T14:48Z; 100 tests)
+- Dispositions: none (no findings)
+- Open Risks:
+  - First run attempt finalized interrupted: runtime stopped a completed claude-code implementor child as "stale" and recorded PROVIDER_UNAVAILABLE while provider stdout showed terminal_reason=completed (~$3.40 spent). Resume re-dispatched cleanly. For the lspec-core review list: child-completion detection race in interruption handling.
+- Baseline Before: 72
+- Baseline After: 100
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 72 tests / 10 test files (lhc package, after Story 3)
-- Expected After Current Story: +~14 tests (state-machine golden + turns suites per test plan Flow 3)
-- Latest Actual Total: 72 (verify-all 2026-06-10T14:18Z)
+- Baseline Before Current Story: 100 tests / 13 test files (lhc package, after Story 4)
+- Expected After Current Story: +~8 tests (work-queue suite per test plan)
+- Latest Actual Total: 100 (verify-all 2026-06-10T14:48Z)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

@@ -80,6 +80,18 @@ function buildThreadMigrations(
         );`,
       ],
     },
+    {
+      version: 3, // Story 4: turn state machine
+      statements: [
+        `CREATE TABLE turns (
+          turn_id TEXT PRIMARY KEY,
+          turn_order INTEGER NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+          opened_at_event_order INTEGER NOT NULL,
+          closed_at_event_order INTEGER
+        );`,
+      ],
+    },
   ];
 }
 

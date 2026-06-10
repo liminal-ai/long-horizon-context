@@ -11,14 +11,27 @@ export interface MessageRow {
   tokenEstimate: number;
   actor: string;
   harness: string;
+  // Membership stamp, settled at intake: the turn open after this event's
+  // transition, or null in a gap. Written once here, never updated — a null
+  // gap stamp stays null forever (AC-3.8), a closed turn's members never
+  // change (AC-3.7).
+  turnId: string | null;
   blocks: Block[];
 }
 
 export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   db.prepare(
     `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
-     VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-  ).run(row.messageId, row.sourceEventOrder, row.kind, row.tokenEstimate, row.actor, row.harness);
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.messageId,
+    row.sourceEventOrder,
+    row.kind,
+    row.tokenEstimate,
+    row.actor,
+    row.harness,
+    row.turnId,
+  );
 
   const insertBlock = db.prepare(
     `INSERT INTO message_block (message_id, block_index, block_type, content)

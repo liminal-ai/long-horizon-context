@@ -1,8 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 
 // The one sanctioned below-SDK write in the test suite: inserts a second
-// status='open' turn row, a state no public operation can produce.
-// Shape only until Story 4 lands the turn schema; column names firm up there.
+// status='open' turn row, a state no public operation can produce (the state
+// machine always closes before opening). Columns match the Story 4 turn
+// schema in threads/internal/create.ts.
 export function corruptTwoOpenTurns(path: string): void {
   const db = new DatabaseSync(path);
   try {

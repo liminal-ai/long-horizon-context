@@ -29,6 +29,7 @@ export type {
   BlockType,
   MessageRecord,
 } from "./domains/messages/index.js";
+export type { TurnRecord } from "./domains/turns/index.js";
 export type {
   BatchResult,
   EventKind,
