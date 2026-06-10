@@ -1,10 +1,11 @@
-import { notImplemented, type OpResult } from "../../shared/errors.js";
+import type { OpResult } from "../../shared/errors.js";
 import type {
   WorkKind,
   WorkOwner,
   WorkSourceRef,
 } from "../../tech-utils/work-queue/index.js";
 import type { ThreadRef } from "../threads/index.js";
+import { runListEvents, runMessageEvents } from "./internal/pipeline.js";
 
 interface BaseEvent<K extends string, P> {
   eventKind: K;
@@ -55,14 +56,14 @@ export type EventRecord = MessageEventInput & {
 };
 
 export async function messageEvents(
-  _thread: ThreadRef,
-  _events: readonly MessageEventInput[],
+  thread: ThreadRef,
+  events: readonly MessageEventInput[],
 ): Promise<OpResult<BatchResult>> {
-  return notImplemented("intake-stream.message-events");
+  return runMessageEvents(thread, events);
 }
 
 export async function listEvents(
-  _thread: ThreadRef,
+  thread: ThreadRef,
 ): Promise<OpResult<EventRecord[]>> {
-  return notImplemented("intake-stream.list-events");
+  return runListEvents(thread);
 }

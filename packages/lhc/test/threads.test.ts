@@ -1,6 +1,6 @@
 // Flow 1: thread creation, registry, resolution (TC-1.1, 1.2, 1.3, 1.5, 1.6
 // plus lazy-init and read-path-equivalence supplementals). TC-1.4 is owned by
-// Story 2 — see the named todo at the bottom of the SDK suite.
+// Story 2 and lives in test/intake.test.ts.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -238,10 +238,8 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
     expect(unknown.error.code).toBe("thread_not_found");
   });
 
-  // TC-1.4 (full id/path equivalence under message-events) is owned by
-  // Story 2: it sends batches through intake, which does not exist yet.
-  // This story proves read-path equivalence only (test above).
-  it.todo("TC-1.4: id/path equivalence under message-events — deferred to Story 2 (intake.test.ts)");
+  // TC-1.4 (full id/path equivalence under message-events): Story 1's named
+  // deferral, closed by Story 2 — the test lives in test/intake.test.ts.
 });
 
 describe("Flow 1 (CLI in-process): threads commands", () => {

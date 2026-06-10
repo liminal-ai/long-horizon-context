@@ -3,8 +3,28 @@ import * as intakeStream from "../domains/intake-stream/index.js";
 import * as messages from "../domains/messages/index.js";
 import * as threads from "../domains/threads/index.js";
 import * as turns from "../domains/turns/index.js";
+import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
+import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
+
+// Stdin seam: in-process tests inject a reader; the binary reads the real
+// process stdin. null means interactive (TTY) — distinct from empty input
+// only in how it arises; both are refused with empty_stdin before any SDK
+// call (the SDK itself can never return that code).
+export type StdinReader = () => Promise<string | null>;
+
+async function readProcessStdin(): Promise<string | null> {
+  if (process.stdin.isTTY) return null;
+  process.stdin.setEncoding("utf8");
+  let data = "";
+  for await (const chunk of process.stdin) data += String(chunk);
+  return data;
+}
+
+function stdinCallerError(code: "empty_stdin" | "invalid_event", reason: string): OpResult<never> {
+  return { ok: false, error: { errorClass: "caller_error", code, reason } };
+}
 
 const HELP = `lhc — Long Horizon Context CLI
 
@@ -59,7 +79,10 @@ function threadRefFrom(flags: ParsedFlags): ThreadRef {
   return { filePath: flags.filePath ?? "" };
 }
 
-export async function runCli(argv: readonly string[]): Promise<CliResult> {
+export async function runCli(
+  argv: readonly string[],
+  readStdin: StdinReader = readProcessStdin,
+): Promise<CliResult> {
   if (argv.length === 0) {
     return renderCliError("caller_error", "unknown_command", "no command given; run lhc --help");
   }
@@ -102,10 +125,54 @@ export async function runCli(argv: readonly string[]): Promise<CliResult> {
         ),
       );
     }
-    case "intake-stream message-events":
-      return renderResult(await intakeStream.messageEvents(threadRefFrom(flags), []));
-    case "intake-stream list-events":
+    case "intake-stream message-events": {
+      if (flags.threadId === undefined && flags.filePath === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "intake-stream message-events requires --thread-id or --file-path",
+        );
+      }
+      const text = await readStdin();
+      if (text === null || text.trim() === "") {
+        return renderResult(
+          stdinCallerError(
+            "empty_stdin",
+            "message-events expects an events JSON array on stdin; stdin was a TTY or empty",
+          ),
+        );
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        return renderResult(
+          stdinCallerError("invalid_event", `stdin is not valid JSON: ${detail}`),
+        );
+      }
+      if (!Array.isArray(parsed)) {
+        return renderResult(
+          stdinCallerError("invalid_event", "stdin must be a JSON array of events"),
+        );
+      }
+      return renderResult(
+        await intakeStream.messageEvents(
+          threadRefFrom(flags),
+          parsed as readonly MessageEventInput[],
+        ),
+      );
+    }
+    case "intake-stream list-events": {
+      if (flags.threadId === undefined && flags.filePath === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "intake-stream list-events requires --thread-id or --file-path",
+        );
+      }
       return renderResult(await intakeStream.listEvents(threadRefFrom(flags)));
+    }
     case "messages list":
       return renderResult(await messages.listMessages(threadRefFrom(flags)));
     case "messages list-queued-work":

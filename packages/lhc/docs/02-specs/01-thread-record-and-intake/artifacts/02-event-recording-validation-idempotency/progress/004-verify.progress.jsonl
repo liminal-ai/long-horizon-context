@@ -1,0 +1,14 @@
+{"timestamp":"2026-06-10T13:28:00.114Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-10T13:28:00.123Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 02-event-recording-validation-idempotency."}
+{"timestamp":"2026-06-10T13:28:00.134Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 22526.","metadata":{"pid":22526}}
+{"timestamp":"2026-06-10T13:28:00.280Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-10T13:28:35.992Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:29:10.389Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:29:44.347Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:30:17.798Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:31:31.063Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:32:14.463Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:34:22.881Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-10T13:34:23.010Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":382877,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-10T13:34:23.013Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 02-event-recording-validation-idempotency.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-06-10T13:34:23.028Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 02-event-recording-validation-idempotency with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

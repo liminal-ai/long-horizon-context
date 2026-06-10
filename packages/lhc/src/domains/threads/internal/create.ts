@@ -32,6 +32,15 @@ export function createThreadFile(
           );`,
           `INSERT INTO thread_metadata (id, thread_id, created_at, token_estimator)
            VALUES (1, '${threadId}', '${createdAt}', '${TOKEN_ESTIMATOR_ID}');`,
+          `CREATE TABLE event (
+            event_order INTEGER PRIMARY KEY,
+            event_kind TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            actor TEXT NOT NULL,
+            harness TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+          );`,
         ],
       },
     ]);

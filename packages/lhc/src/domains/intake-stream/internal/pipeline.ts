@@ -1,0 +1,222 @@
+// Flow 2 (recording half) + Flow 5: the batch transaction. The pipeline order
+// is load-bearing: validate (pure, no lock) → BEGIN IMMEDIATE → per event in
+// array order [dedup-check → record] → walk-time result assembly → COMMIT.
+// Stories 3–5 extend the same per-event walk with projection, turn
+// transitions, and work queueing.
+import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
+import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
+import { openDatabase } from "../../../shared/storage.js";
+import { resolveThreadRef, type ThreadRef } from "../../threads/index.js";
+import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
+import { validateEvents, validateThreadRef } from "./validate.js";
+
+// Test seam (set only through test/fixtures): called after each event is
+// processed inside the walk, so atomicity under mid-walk failure can be
+// induced through a real mechanism — closing the handle — rather than a
+// mocked transaction object.
+export type IntakeWalkHook = (db: DatabaseSync, eventIndex: number) => void;
+let walkHook: IntakeWalkHook | null = null;
+export function setIntakeWalkHook(hook: IntakeWalkHook | null): void {
+  walkHook = hook;
+}
+
+// Test seam (set only through test/fixtures): replaces the wall clock so
+// recordedAt is sourced deterministically for the public SDK contract proof —
+// TC-1.4 records the same batch through both reference forms and reads it back
+// field-for-field, recordedAt included, with nothing stripped. Unset in
+// production: recording stamps real wall time. An explicit clock argument to
+// runMessageEvents still wins over the seam.
+let injectedClock: (() => Date) | null = null;
+export function setIntakeClock(clock: (() => Date) | null): void {
+  injectedClock = clock;
+}
+
+function detail(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: {
+      errorClass: "caller_error",
+      code: "thread_not_found",
+      reason: `no thread file exists at ${filePath}`,
+    },
+  };
+}
+
+// The skip set is read at transaction start and reads only the key column:
+// key-wins-over-content is the absence of a content comparison (AC-5.5).
+// Chunked to stay under SQLite's bound-parameter limit.
+function recordedKeys(db: DatabaseSync, keys: readonly string[]): Set<string> {
+  const found = new Set<string>();
+  for (let offset = 0; offset < keys.length; offset += 400) {
+    const chunk = keys.slice(offset, offset + 400);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = db
+      .prepare(`SELECT idempotency_key FROM event WHERE idempotency_key IN (${placeholders})`)
+      .all(...chunk) as unknown as Array<{ idempotency_key: string }>;
+    for (const row of rows) found.add(row.idempotency_key);
+  }
+  return found;
+}
+
+function maxEventOrder(db: DatabaseSync): number {
+  const row = db.prepare("SELECT MAX(event_order) AS max_order FROM event").get() as
+    | { max_order: number | bigint | null }
+    | undefined;
+  return Number(row?.max_order ?? 0);
+}
+
+export async function runMessageEvents(
+  thread: ThreadRef,
+  events: readonly MessageEventInput[],
+  clock: () => Date = injectedClock ?? (() => new Date()),
+): Promise<OpResult<BatchResult>> {
+  // Pure validation first: a rejected batch never opens the file, never takes
+  // the write lock, and a duplicate key on a malformed event is a rejection,
+  // not a skip (validation-before-idempotency precedence).
+  const refFailure = validateThreadRef(thread);
+  if (refFailure !== undefined) return { ok: false, error: refFailure };
+  const batchFailure = validateEvents(events);
+  if (batchFailure !== undefined) return { ok: false, error: batchFailure };
+
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  let db: DatabaseSync;
+  try {
+    db = openDatabase(filePath);
+  } catch (cause) {
+    return storageFailure(`could not open thread file: ${detail(cause)}`);
+  }
+
+  // BEGIN IMMEDIATE (not deferred): the write lock is taken up front so
+  // single-writer violations fail loudly at a defined point.
+  let inTransaction = false;
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    inTransaction = true;
+
+    const skipSet = recordedKeys(
+      db,
+      events.map((event) => event.idempotencyKey),
+    );
+    // Order counter from MAX(event_order): only recorded events increment it,
+    // so skips consume no order numbers and the sequence stays dense.
+    let lastOrder = maxEventOrder(db);
+
+    const insert = db.prepare(
+      `INSERT INTO event (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const eventResults: BatchResult["events"] = [];
+    for (const [index, event] of events.entries()) {
+      if (skipSet.has(event.idempotencyKey)) {
+        eventResults.push({
+          idempotencyKey: event.idempotencyKey,
+          outcome: "skipped",
+          skipReason: "duplicate_idempotency_key",
+        });
+      } else {
+        lastOrder += 1;
+        insert.run(
+          lastOrder,
+          event.eventKind,
+          event.idempotencyKey,
+          event.actor,
+          event.harness,
+          JSON.stringify(event.payload),
+          clock().toISOString(),
+        );
+        skipSet.add(event.idempotencyKey);
+        eventResults.push({ idempotencyKey: event.idempotencyKey, outcome: "recorded" });
+      }
+      walkHook?.(db, index);
+    }
+
+    db.exec("COMMIT;");
+    inTransaction = false;
+
+    return {
+      ok: true,
+      value: {
+        events: eventResults,
+        turnTransitions: [], // populated by Story 4
+        queuedWork: [], // populated by Story 5
+        threadPosition: { lastEventOrder: lastOrder },
+      },
+    };
+  } catch (cause) {
+    // Any in-transaction failure rolls back whole: AC-4.6's guarantee is
+    // class-independent. The handle may already be gone (induced failure),
+    // in which case SQLite has already discarded the uncommitted transaction.
+    if (inTransaction) {
+      try {
+        db.exec("ROLLBACK;");
+      } catch {
+        // handle closed mid-walk; the open transaction died with it
+      }
+    }
+    return storageFailure(`event batch failed and rolled back whole: ${detail(cause)}`);
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // already closed by the induced-failure seam
+    }
+  }
+}
+
+interface RawEventRow {
+  event_order: number | bigint;
+  event_kind: string;
+  idempotency_key: string;
+  actor: string;
+  harness: string;
+  payload: string;
+  recorded_at: string;
+}
+
+export async function runListEvents(thread: ThreadRef): Promise<OpResult<EventRecord[]>> {
+  const refFailure = validateThreadRef(thread);
+  if (refFailure !== undefined) return { ok: false, error: refFailure };
+
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  let db: DatabaseSync | undefined;
+  try {
+    db = openDatabase(filePath);
+    const rows = db
+      .prepare(
+        `SELECT event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at
+         FROM event ORDER BY event_order`,
+      )
+      .all() as unknown as RawEventRow[];
+    const records = rows.map(
+      (row) =>
+        ({
+          eventKind: row.event_kind,
+          idempotencyKey: row.idempotency_key,
+          actor: row.actor,
+          harness: row.harness,
+          payload: JSON.parse(row.payload) as Record<string, unknown>,
+          eventOrder: Number(row.event_order),
+          recordedAt: row.recorded_at,
+        }) as unknown as EventRecord,
+    );
+    return { ok: true, value: records };
+  } catch (cause) {
+    return storageFailure(`event read-back failed: ${detail(cause)}`);
+  } finally {
+    db?.close();
+  }
+}

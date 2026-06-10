@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { estimateTokens, runCli, TOKEN_ESTIMATOR_ID } from "../src/index.js";
 
-// Story 1 made the threads commands real; only the still-stubbed commands
-// remain on this list. Their coverage lives in test/threads.test.ts.
+// Story 1 made the threads commands real (test/threads.test.ts) and Story 2
+// made the intake-stream commands real (test/intake.test.ts); only the
+// still-stubbed commands remain on this list.
 const PLANNED_COMMANDS: ReadonlyArray<{ argv: string[]; op: string }> = [
-  { argv: ["intake-stream", "message-events", "--thread-id", "th_x"], op: "intake-stream.message-events" },
-  { argv: ["intake-stream", "list-events", "--file-path", "/tmp/x.sqlite"], op: "intake-stream.list-events" },
   { argv: ["messages", "list", "--thread-id", "th_x"], op: "messages.list" },
   { argv: ["messages", "list-queued-work", "--thread-id", "th_x"], op: "messages.list-queued-work" },
   { argv: ["turns", "list", "--thread-id", "th_x"], op: "turns.list" },

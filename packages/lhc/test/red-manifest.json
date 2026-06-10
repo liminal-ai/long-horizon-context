@@ -1,7 +1,11 @@
 {
   "files": {
-    "test/threads.test.ts": "6bca62c319b00a4ee21bfaa373f94f90b574fa4b950c2ebae07373876536ad10",
-    "test/smoke.test.ts": "c085b36ab63be955efe8f7ba93366e6963991f86750dad4ce7e130640ecf88e9",
-    "test/cli-process.test.ts": "506d10ceb25e536418b69345312d15d36f38d47b981c813264a471d295228c7c"
+    "test/threads.test.ts": "f728caa272e0cb5bc22b98c785dd4718710d4dbfe4e124d8c055dd8a1967041a",
+    "test/smoke.test.ts": "26ac03d01cbc90a524cac03048b9fd29ad0724df35610e80ab09b264e0a3f2f6",
+    "test/cli-process.test.ts": "506d10ceb25e536418b69345312d15d36f38d47b981c813264a471d295228c7c",
+    "test/validation.test.ts": "4d1021c6c3a677002f1fac9209673912369a7a71c058487be06b9ae036c00045",
+    "test/idempotency.test.ts": "715b2a8cbfa9eac1029ec431745ec898e493ba6be849e86676475ff4611b3079",
+    "test/intake.test.ts": "0e256695a85351b6895b7881c8a64cf9fd921b5fd552d5221569695c2aa1f6d6",
+    "test/cli-process-intake.test.ts": "fb684b10aeb3b328e27811b5036467e0d1866d7b5accfc78eb0dee96d512872f"
   }
 }

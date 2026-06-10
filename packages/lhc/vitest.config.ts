@@ -10,7 +10,9 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     exclude: [
       ...configDefaults.exclude,
-      ...(includeProcessSuite ? [] : ["test/cli-process.test.ts"]),
+      ...(includeProcessSuite
+        ? []
+        : ["test/cli-process.test.ts", "test/cli-process-intake.test.ts"]),
     ],
     passWithNoTests: true,
   },

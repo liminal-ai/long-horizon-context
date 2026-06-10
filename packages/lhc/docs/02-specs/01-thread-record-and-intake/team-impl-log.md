@@ -3,9 +3,9 @@
 ## Run Overview
 - State: BETWEEN_STORIES
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/01-thread-record-and-intake
-- Current Story: 02-event-recording-validation-idempotency
+- Current Story: 03-message-projection-tokens
 - Current Phase: none
-- Story 1 accepted via story-orchestrate (terminal accepted, zero findings); commit pending below
+- Story 2 accepted (resume after planner-output interruption); commit landing now
 - Story 0 accepted and committed: f89f794 (manual impl-lead acceptance; story-run record stuck needs-ruling due to CLI ruling-application bug — see Open Risks)
 
 ## Run Configuration
@@ -74,10 +74,26 @@
 - Baseline Before: 18
 - Baseline After: 31 (+1 todo)
 
+### 02-event-recording-validation-idempotency
+- Story Title: Story 2: Event Recording, Validation, Idempotency
+- Implementor Evidence: artifacts/02-event-recording-validation-idempotency/003-implementor.json (ready-for-verification, own gates run)
+- Verifier Evidence:
+  - artifacts/02-event-recording-validation-idempotency/004-verify.json (revise: F-02-001, TC-1.4 stripped recordedAt)
+  - artifacts/02-event-recording-validation-idempotency/006-verify.json (pass: F-02-001 resolved)
+- Story Gate: green-verify — pass (impl-lead 2026-06-10T13:43Z; 49 tests; 7 Red-phase files unchanged)
+- Completion Gate: verify-all — pass (impl-lead 2026-06-10T13:43Z; 58 tests)
+- Dispositions:
+  - F-02-001: fixed — TC-1.4 compares exact read-back incl. recordedAt via injected fixed clock
+- Open Risks:
+  - Mid-run interruption: story-lead planner turn after quick-fix #2 emitted invalid JSON (inputs.artifactRefs missing) → run finalized interrupted; resumed cleanly from durable checkpoint and accepted. Codex planner output-contract drift — for the lspec-core review list.
+  - Story-lead again routed verifier findings to quick-fix despite recommendedFixScope same-session-implementor (2nd occurrence).
+- Baseline Before: 31 (+1 todo)
+- Baseline After: 58 (todo closed by TC-1.4 completion)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 31 tests + 1 todo / 4 test files (lhc package, after Story 1)
-- Expected After Current Story: +~12 tests (validation/idempotency/intake suites per test plan Flow 2/4/5)
-- Latest Actual Total: 31 + 1 todo (verify-all 2026-06-10T13:11Z)
+- Baseline Before Current Story: 58 tests / 8 test files (lhc package, after Story 2)
+- Expected After Current Story: +~5 tests (projection suite per test plan Flow 2)
+- Latest Actual Total: 58 (verify-all 2026-06-10T13:43Z)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
