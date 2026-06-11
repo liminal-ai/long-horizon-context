@@ -1,0 +1,166 @@
+// Profile config resolution and validation (Story 0, FC-0.2): built-in
+// profiles, user profiles merged over them by name, and the budget rules —
+// band shares sum to 100, lower bound positive, visibility max > target ≥
+// floor. Pure functions, no IO. Config mistakes are programmer errors at SDK
+// construction and throw naming the violation (Epic 02 rule); nothing here
+// returns OpResults.
+import type {
+  ResolvedViewConfig,
+  SdkViewConfig,
+  ViewProfile,
+  ViewProfileOverride,
+  VisibilityBudgets,
+} from "../../../shared/view.js";
+
+// Built-in profiles (tech design §Interface Definitions): defaults, knobs
+// not architecture.
+export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
+  {
+    name: "continuation",
+    lowerBound: 120000,
+    percentages: { full: 30, smooth: 30, detailed: 20, brief: 20 },
+  },
+  {
+    name: "conversation",
+    lowerBound: 120000,
+    percentages: { full: 12, smooth: 48, detailed: 20, brief: 20 },
+  },
+  {
+    name: "coding",
+    lowerBound: 120000,
+    percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+  },
+];
+
+export const DEFAULT_VISIBILITY: VisibilityBudgets = {
+  maxTokens: 32000,
+  targetTokens: 24000,
+  floorTokens: 8000,
+};
+
+export const DEFAULT_COMPACT_THRESHOLD = 160000;
+
+function fail(detail: string): never {
+  throw new TypeError(`createSdk config: view: ${detail}`);
+}
+
+const BAND_KEYS = ["full", "smooth", "detailed", "brief"] as const;
+
+// A complete, merged profile validates whole: positive lower bound, finite
+// non-negative shares, shares summing to exactly 100. Errors name the
+// violated constraint and the profile (AC-2.3's vocabulary, applied at
+// construction).
+export function validateProfile(profile: ViewProfile): void {
+  if (!Number.isFinite(profile.lowerBound) || profile.lowerBound <= 0) {
+    fail(
+      `profile "${profile.name}": lowerBound must be a positive number, got ${profile.lowerBound}`,
+    );
+  }
+  for (const key of BAND_KEYS) {
+    const share = profile.percentages[key];
+    if (!Number.isFinite(share) || share < 0) {
+      fail(`profile "${profile.name}": percentage ${key} must be a non-negative number, got ${share}`);
+    }
+  }
+  const sum = BAND_KEYS.reduce((total, key) => total + profile.percentages[key], 0);
+  if (sum !== 100) {
+    fail(`profile "${profile.name}": percentages must sum to 100, got ${sum}`);
+  }
+}
+
+function isCompleteOverride(entry: ViewProfileOverride): boolean {
+  return (
+    entry.lowerBound !== undefined &&
+    entry.percentages !== undefined &&
+    BAND_KEYS.every((key) => entry.percentages?.[key] !== undefined)
+  );
+}
+
+// Merge one configured entry: field-wise over the built-in it names, or — for
+// a name no built-in carries — the entry must be complete, since there is
+// nothing to merge over (FC-0.2's unknown-built-in-override-target violation).
+function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined): ViewProfile {
+  if (base === undefined) {
+    if (!isCompleteOverride(entry)) {
+      fail(
+        `profile "${entry.name}" is partial but overrides no built-in (unknown built-in override target); built-ins are ${BUILT_IN_PROFILES.map((p) => `"${p.name}"`).join(", ")} — a new profile must carry lowerBound and all four percentages`,
+      );
+    }
+    return {
+      name: entry.name,
+      lowerBound: entry.lowerBound as number,
+      percentages: {
+        full: entry.percentages?.full as number,
+        smooth: entry.percentages?.smooth as number,
+        detailed: entry.percentages?.detailed as number,
+        brief: entry.percentages?.brief as number,
+      },
+    };
+  }
+  return {
+    name: entry.name,
+    lowerBound: entry.lowerBound ?? base.lowerBound,
+    percentages: {
+      full: entry.percentages?.full ?? base.percentages.full,
+      smooth: entry.percentages?.smooth ?? base.percentages.smooth,
+      detailed: entry.percentages?.detailed ?? base.percentages.detailed,
+      brief: entry.percentages?.brief ?? base.percentages.brief,
+    },
+  };
+}
+
+function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): VisibilityBudgets {
+  const visibility: VisibilityBudgets = {
+    maxTokens: partial?.maxTokens ?? DEFAULT_VISIBILITY.maxTokens,
+    targetTokens: partial?.targetTokens ?? DEFAULT_VISIBILITY.targetTokens,
+    floorTokens: partial?.floorTokens ?? DEFAULT_VISIBILITY.floorTokens,
+  };
+  for (const key of ["maxTokens", "targetTokens", "floorTokens"] as const) {
+    if (!Number.isFinite(visibility[key]) || visibility[key] <= 0) {
+      fail(`visibility.${key} must be a positive number, got ${visibility[key]}`);
+    }
+  }
+  // The budget ordering rule (AC-4.8): max > target ≥ floor.
+  if (visibility.maxTokens <= visibility.targetTokens) {
+    fail(
+      `visibility.maxTokens (${visibility.maxTokens}) must be greater than targetTokens (${visibility.targetTokens})`,
+    );
+  }
+  if (visibility.targetTokens < visibility.floorTokens) {
+    fail(
+      `visibility.targetTokens (${visibility.targetTokens}) must be at least floorTokens (${visibility.floorTokens})`,
+    );
+  }
+  return visibility;
+}
+
+// The one resolution path: built-ins, user profiles merged by name, every
+// resolved profile validated, visibility and threshold defaulted and checked.
+// Called from createSdk so validation runs through real construction, never a
+// standalone validator (Story 0 production-path proof).
+export function resolveViewConfig(config?: SdkViewConfig): ResolvedViewConfig {
+  const profiles: Record<string, ViewProfile> = {};
+  for (const builtIn of BUILT_IN_PROFILES) {
+    profiles[builtIn.name] = builtIn;
+  }
+  for (const entry of config?.profiles ?? []) {
+    if (typeof entry.name !== "string" || entry.name.length === 0) {
+      fail(`profile entries must carry a non-empty name`);
+    }
+    profiles[entry.name] = mergeProfile(entry, profiles[entry.name]);
+  }
+  for (const profile of Object.values(profiles)) {
+    validateProfile(profile);
+  }
+
+  const compactThreshold = config?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
+  if (!Number.isFinite(compactThreshold) || compactThreshold <= 0) {
+    fail(`compactThreshold must be a positive number, got ${compactThreshold}`);
+  }
+
+  return {
+    profiles,
+    visibility: resolveVisibility(config?.visibility),
+    compactThreshold,
+  };
+}

@@ -95,6 +95,7 @@ export function openRaw(path: string): DatabaseSync {
 export { corruptTwoOpenTurns } from "./corrupt.js";
 export {
   legacyEpic01ThreadFile,
+  legacyEpic02ThreadFile,
   legacyStory2ThreadFile,
   schemaVersionOf,
   type LegacyRecordedEvent,
@@ -111,6 +112,23 @@ export {
   testWorkHandlers,
   type TestHandlerHooks,
 } from "./work-handlers.js";
+export {
+  fireViewInjection,
+  seedViewBoundary,
+  setViewInjectionHook,
+  type ViewInjectionHook,
+  type ViewInjectionPoint,
+} from "./view-seam.js";
+export {
+  blockedSiblingThread,
+  corruptedVariantThread,
+  derivedThreadFixture,
+  PERMANENT_FAILURE_REASON,
+  stragglerVariantThread,
+  TRANSIENT_EXHAUST_REASON,
+  type DerivedThreadFixture,
+  type DerivedThreadOptions,
+} from "./view-thread.js";
 export {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,

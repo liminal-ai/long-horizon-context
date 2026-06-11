@@ -6,6 +6,7 @@ import { storageFailure, type ErrorResult, type OpResult } from "../../../shared
 import {
   getSchemaVersion,
   MIGRATION_V5_STATEMENTS,
+  MIGRATION_V6_STATEMENTS,
   openDatabase,
   runMigrations,
   type Migration,
@@ -117,6 +118,13 @@ function buildThreadMigrations(
       // epic's single migration (tech design §Storage), statements owned by
       // shared/storage.ts.
       statements: MIGRATION_V5_STATEMENTS,
+    },
+    {
+      version: 6, // Epic 03 Story 0: thread-view snapshot tables and the
+      // visibility boundary (seeded at position 0) — the epic's single
+      // migration (tech design §Storage), statements owned by
+      // shared/storage.ts.
+      statements: MIGRATION_V6_STATEMENTS,
     },
   ];
 }

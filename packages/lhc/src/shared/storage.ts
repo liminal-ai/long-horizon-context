@@ -82,6 +82,43 @@ export const MIGRATION_V5_STATEMENTS: readonly string[] = [
     FROM work_item WHERE status = 'queued' AND kind = 'turn_derivation';`,
 ];
 
+// Epic 03's single migration (tech design §Storage): the thread-view
+// snapshot tables and the visibility boundary, living beside the record they
+// render so a thread file stays self-contained and snapshot-portable.
+// Singletons are CHECK-enforced structurally: one active view, one boundary
+// row per thread. Assembled into the thread-file migration history by
+// threads/internal/create.ts, like v5.
+export const MIGRATION_V6_STATEMENTS: readonly string[] = [
+  `CREATE TABLE thread_view (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),  -- one active view, enforced structurally
+    view_id TEXT NOT NULL UNIQUE,        -- v<compact event order>, deterministic; receipts/materialize metadata
+    created_at TEXT NOT NULL,            -- clock at compact; metadata source for materialize
+    compact_point INTEGER NOT NULL,      -- event_order where the tail begins
+    covered_from INTEGER NOT NULL,       -- oldest event_order represented in any band
+    profile_name TEXT,                   -- null when explicit params
+    config_json TEXT NOT NULL,           -- resolved bound + percentages
+    arrangement_json TEXT NOT NULL,      -- ordered entries: {band, subjectKind, subjectId, formUsed, degraded}
+    gaps_json TEXT NOT NULL,             -- [{band, subjectId, reason}]
+    source_state_json TEXT NOT NULL      -- {maxEventOrder, formCounts} the compact saw — receipt/debug
+  );`,
+  `CREATE TABLE thread_view_band (
+    view_id TEXT NOT NULL REFERENCES thread_view(view_id) ON DELETE CASCADE,
+    band TEXT NOT NULL CHECK (band IN ('brief','detailed','smooth')),
+    rendered_text TEXT NOT NULL,         -- the snapshot bytes served verbatim
+    token_count INTEGER NOT NULL,
+    PRIMARY KEY (view_id, band)
+  );`,
+  `CREATE TABLE view_boundary (
+    thread_singleton INTEGER PRIMARY KEY CHECK (thread_singleton = 1),
+    position INTEGER NOT NULL,           -- source event order; tool results at-or-behind render short
+    updated_at TEXT NOT NULL
+  );`,
+  // Seed at position 0 (everything full) — the boundary row exists from
+  // migration on, so the advance and the compact reset are UPDATE-only.
+  `INSERT INTO view_boundary (thread_singleton, position, updated_at)
+    VALUES (1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`,
+];
+
 export function getSchemaVersion(db: DatabaseSync): number {
   const row = db.prepare("PRAGMA user_version").get() as
     | { user_version: number | bigint }

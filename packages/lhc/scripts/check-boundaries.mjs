@@ -3,6 +3,9 @@
 // Rules:
 //   1. No file may import another domain's internal/ modules.
 //   2. tech-utils/ and shared/ may not import from domains/.
+//   3. A domain may import another domain's surface (index.ts) only along an
+//      edge pinned in ALLOWED_SURFACE_IMPORTS below — a new cross-domain
+//      edge is a conscious decision, never a silent pass.
 // The test fixtures directory (test/fixtures/) is exempt by design — it is
 // the one sanctioned below-SDK writer.
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -55,6 +58,24 @@ function domainOf(filePath) {
   return null;
 }
 
+// The pinned domain-surface dependency edges (rule 3). Epic 03 adds two:
+// thread-view consumes the messages/turns report surfaces and the threads
+// resolver; intake-stream gains the thread-view surface for the boundary
+// advance registration (Flow 4).
+// SANCTIONED CYCLE (Epic 03 tech design §Module Boundaries): intake-stream →
+// thread-view → messages/turns → intake-stream (the last edges are type-only
+// event vocabulary). The domain graph is therefore deliberately not a DAG —
+// runtime-safe because the advance is registration-then-flush with no
+// import-time execution — so this check pins the allowed edge set instead of
+// asserting acyclicity.
+const ALLOWED_SURFACE_IMPORTS = {
+  "intake-stream": new Set(["threads", "messages", "turns", "thread-view"]),
+  messages: new Set(["threads", "intake-stream"]),
+  turns: new Set(["threads", "intake-stream", "messages"]),
+  "thread-view": new Set(["threads", "messages", "turns"]),
+  threads: new Set(),
+};
+
 const files = [...collectTsFiles(srcRoot), ...collectTsFiles(testRoot)];
 const violations = [];
 
@@ -77,6 +98,20 @@ for (const file of files) {
       if (fileDomain !== targetDomain) {
         violations.push(
           `${path.relative(pkgRoot, file)} imports ${spec} — reaches into domain "${targetDomain}" internal/`,
+        );
+      }
+    }
+    if (
+      parts[0] === "domains" &&
+      !parts.includes("internal") &&
+      fileDomain !== null &&
+      parts[1] !== fileDomain
+    ) {
+      const targetDomain = parts[1];
+      const allowed = ALLOWED_SURFACE_IMPORTS[fileDomain];
+      if (allowed === undefined || !allowed.has(targetDomain)) {
+        violations.push(
+          `${path.relative(pkgRoot, file)} imports ${spec} — domain "${fileDomain}" has no pinned surface edge to "${targetDomain}" (rule 3)`,
         );
       }
     }

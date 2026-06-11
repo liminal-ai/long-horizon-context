@@ -4,6 +4,7 @@
 // cascade, and the drain all speak this vocabulary across domain lines, so it
 // lives in shared/ (tech design §Interfaces, DD-2/DD-7).
 import type { DatabaseSync } from "node:sqlite";
+import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
 
 export type SubjectKind = "message" | "turn" | "chunk";
 
@@ -155,6 +156,7 @@ export interface SdkConfig {
   retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number }; // 3 / 5000 / 60000
   lease?: { durationMs: number }; // 120000
   chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
+  view?: SdkViewConfig; // Epic 03: profiles, visibility budgets, compact threshold
 }
 
 // Every optional filled by createSdk's central defaults.
@@ -165,6 +167,7 @@ export interface ResolvedSdkConfig {
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
   lease: { durationMs: number };
   chunkPolicy: { targetProjectedTokens: number; maxProjectedTokens: number };
+  view: ResolvedViewConfig;
 }
 
 // ── handler contract (DD-6; the map's value type) ────────────────

@@ -4,6 +4,7 @@ export * as messages from "./domains/messages/index.js";
 export * as turns from "./domains/turns/index.js";
 
 import * as intakeStreamDomain from "./domains/intake-stream/index.js";
+import { resolveViewConfig } from "./domains/thread-view/index.js";
 import * as messagesDomain from "./domains/messages/index.js";
 import * as threadsDomain from "./domains/threads/index.js";
 import * as turnsDomain from "./domains/turns/index.js";
@@ -87,6 +88,28 @@ export type {
   WorkHandler,
 } from "./shared/derivation.js";
 export type { DrainReport, Scheduler, SchedulerMode } from "./scheduler.js";
+
+// Epic 03 view vocabulary (shared/view.ts): config shapes live on SdkConfig
+// from Story 0; the operation shapes land with Stories 1–5.
+export {
+  BUILT_IN_PROFILES,
+  DEFAULT_COMPACT_THRESHOLD,
+  DEFAULT_VISIBILITY,
+} from "./domains/thread-view/index.js";
+export type {
+  Band,
+  CompactReceipt,
+  PullResult,
+  ResolvedViewConfig,
+  SdkViewConfig,
+  SweepReceipt,
+  ViewMessage,
+  ViewMeta,
+  ViewProfile,
+  ViewProfileOverride,
+  ViewStatus,
+  VisibilityBudgets,
+} from "./shared/view.js";
 export {
   countLiveItems,
   enqueue,
@@ -239,6 +262,9 @@ export function createSdk(config: SdkConfig): Lhc {
     lease: config.lease ?? { durationMs: 120000 },
     chunkPolicy:
       config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
+    // Epic 03 (FC-0.2): built-ins merged with user profiles by name, band
+    // sums and visibility budgets validated — throws naming the violation.
+    view: resolveViewConfig(config.view),
   };
   requirePositive(resolved.retry.budget, "retry.budget");
   requireNonNegative(resolved.retry.backoffBaseMs, "retry.backoffBaseMs");

@@ -1,0 +1,359 @@
+// Epic 03 Story 0 foundation checks (FC-0.1–FC-0.6): migration v6 storage,
+// profile config validation through real createSdk construction, the
+// derived-thread fixture's state fidelity proven by read-back through the
+// owning report surfaces (states reached through production drains, never
+// hand-written rows), the corruption and turnless-straggler variants, and
+// the two-point test injection facility.
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createSdk, messages, turns, type Lhc } from "../src/index.js";
+import {
+  blockedSiblingThread,
+  corruptedVariantThread,
+  createProviderDouble,
+  derivedThreadFixture,
+  fireViewInjection,
+  openRaw,
+  PERMANENT_FAILURE_REASON,
+  schemaVersionOf,
+  setViewInjectionHook,
+  stragglerVariantThread,
+  tempStore,
+  TRANSIENT_EXHAUST_REASON,
+  validEvent,
+  type DerivedThreadFixture,
+  type TempStore,
+} from "./fixtures/index.js";
+
+// The main fixture is the suite's load-bearing asset and is expensive to
+// drain; it is built once and read (never mutated) by every check below.
+let store: TempStore;
+let fixture: DerivedThreadFixture;
+
+beforeAll(async () => {
+  store = tempStore();
+  fixture = await derivedThreadFixture(store);
+});
+afterAll(() => {
+  store.cleanup();
+});
+
+function manualSdk(view?: Parameters<typeof createSdk>[0]["view"]): Lhc {
+  return createSdk({
+    provider: createProviderDouble(),
+    mode: "manual",
+    ...(view === undefined ? {} : { view }),
+  });
+}
+
+describe("FC-0.1: migration v6 storage on a current thread file", () => {
+  it("creates the three view tables with their CHECK constraints and seeds the boundary at 0", () => {
+    expect(schemaVersionOf(fixture.filePath)).toBe(6);
+    const db = openRaw(fixture.filePath);
+    try {
+      const tables = (
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type = 'table'
+             AND name IN ('thread_view', 'thread_view_band', 'view_boundary') ORDER BY name`,
+          )
+          .all() as unknown as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(tables).toEqual(["thread_view", "thread_view_band", "view_boundary"]);
+
+      // The boundary singleton is seeded at position 0 (everything full).
+      const boundary = db
+        .prepare(`SELECT thread_singleton, position, updated_at FROM view_boundary`)
+        .all() as unknown as Array<{
+        thread_singleton: number | bigint;
+        position: number | bigint;
+        updated_at: string;
+      }>;
+      expect(boundary).toHaveLength(1);
+      expect(Number(boundary[0]!.thread_singleton)).toBe(1);
+      expect(Number(boundary[0]!.position)).toBe(0);
+      expect(boundary[0]!.updated_at.length).toBeGreaterThan(0);
+
+      // Singleton CHECKs enforce structurally: a second view row or a second
+      // boundary row cannot exist (failed inserts, nothing mutated).
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO thread_view (singleton, view_id, created_at, compact_point,
+               covered_from, config_json, arrangement_json, gaps_json, source_state_json)
+             VALUES (2, 'v1', 'now', 0, 0, '{}', '[]', '[]', '{}')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/);
+      expect(() =>
+        db
+          .prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`)
+          .run(),
+      ).toThrow(/CHECK/);
+
+      // The band table pins its band vocabulary and cascade in the DDL.
+      const bandDdl = (
+        db
+          .prepare(`SELECT sql FROM sqlite_master WHERE name = 'thread_view_band'`)
+          .get() as { sql: string }
+      ).sql;
+      expect(bandDdl).toContain("CHECK (band IN ('brief','detailed','smooth'))");
+      expect(bandDdl).toContain("ON DELETE CASCADE");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("FC-0.2: view config validated at SDK construction, errors naming the violation", () => {
+  it("rejects a profile whose band percentages do not sum to 100", () => {
+    expect(() =>
+      manualSdk({
+        profiles: [
+          {
+            name: "skewed",
+            lowerBound: 50000,
+            percentages: { full: 30, smooth: 35, detailed: 20, brief: 20 },
+          },
+        ],
+      }),
+    ).toThrow(/profile "skewed": percentages must sum to 100, got 105/);
+  });
+
+  it("rejects visibility budgets violating max > target >= floor, naming the constraint", () => {
+    expect(() => manualSdk({ visibility: { maxTokens: 24000, targetTokens: 24000 } })).toThrow(
+      /visibility\.maxTokens \(24000\) must be greater than targetTokens \(24000\)/,
+    );
+    expect(() =>
+      manualSdk({ visibility: { targetTokens: 7000, floorTokens: 8000, maxTokens: 32000 } }),
+    ).toThrow(/visibility\.targetTokens \(7000\) must be at least floorTokens \(8000\)/);
+  });
+
+  it("rejects a non-positive lower bound", () => {
+    expect(() =>
+      manualSdk({
+        profiles: [
+          {
+            name: "hollow",
+            lowerBound: 0,
+            percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+          },
+        ],
+      }),
+    ).toThrow(/profile "hollow": lowerBound must be a positive number, got 0/);
+  });
+
+  it("rejects a partial profile that overrides no built-in (unknown override target)", () => {
+    expect(() => manualSdk({ profiles: [{ name: "mystery", lowerBound: 64000 }] })).toThrow(
+      /profile "mystery" is partial but overrides no built-in \(unknown built-in override target\)/,
+    );
+  });
+
+  it("resolves defaults and merges a built-in override field-wise", () => {
+    const sdk = manualSdk({ profiles: [{ name: "coding", lowerBound: 64000 }] });
+    expect(sdk.config.view.visibility).toEqual({
+      maxTokens: 32000,
+      targetTokens: 24000,
+      floorTokens: 8000,
+    });
+    expect(sdk.config.view.compactThreshold).toBe(160000);
+    // The override replaced only the named field; the built-in's percentages
+    // survive, and the other built-ins are untouched.
+    expect(sdk.config.view.profiles["coding"]).toEqual({
+      name: "coding",
+      lowerBound: 64000,
+      percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+    });
+    expect(sdk.config.view.profiles["continuation"]).toEqual({
+      name: "continuation",
+      lowerBound: 120000,
+      percentages: { full: 30, smooth: 30, detailed: 20, brief: 20 },
+    });
+    expect(sdk.config.view.profiles["conversation"]?.percentages).toEqual({
+      full: 12,
+      smooth: 48,
+      detailed: 20,
+      brief: 20,
+    });
+  });
+});
+
+describe("FC-0.3: fixture states proven by read-back through the owning report surfaces", () => {
+  it("ready: every turn rendering and the closed chunks' summaries read back ready through turns.report", async () => {
+    const report = await turns.report({ filePath: fixture.filePath });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const renderings = report.value.filter((entry) => entry.form === "turn_rendering");
+    expect(renderings.map((entry) => entry.subjectId).sort()).toEqual(
+      [...fixture.turnIds].sort(),
+    );
+    for (const rendering of renderings) {
+      expect(rendering.state).toBe("ready");
+      expect(rendering.content).toBeDefined();
+    }
+    // The fixture's pinned shape: 4 chunks, c1–c3 closed with both summary
+    // forms ready (the drain ran their close→summary enqueues to completion).
+    expect(fixture.chunks.chunks.map((chunk) => `${chunk.chunkId}:${chunk.status}`)).toEqual([
+      "c1:closed",
+      "c2:closed",
+      "c3:closed",
+      "c4:open",
+    ]);
+    for (const chunkId of ["c1", "c2", "c3"]) {
+      for (const form of ["chunk_summary_detailed", "chunk_summary_brief"]) {
+        const summary = report.value.find(
+          (entry) => entry.subjectId === chunkId && entry.form === form,
+        );
+        expect(summary?.state).toBe("ready");
+      }
+    }
+  });
+
+  it("failed-transient and failed-permanent: the scripted subjects read back failed through messages.report", async () => {
+    const report = await messages.report({ filePath: fixture.filePath }, { notReady: true });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const transient = report.value.find(
+      (entry) => entry.subjectId === fixture.failedTransientMessageId,
+    );
+    expect(transient?.form).toBe("tool_result_summary");
+    expect(transient?.state).toBe("failed");
+    const permanent = report.value.find(
+      (entry) => entry.subjectId === fixture.failedPermanentMessageId,
+    );
+    expect(permanent?.form).toBe("tool_result_summary");
+    expect(permanent?.state).toBe("failed");
+    // Terminal failures left no live queue rows behind (DD-1): neither entry
+    // carries queue detail.
+    expect(transient?.queue).toBeUndefined();
+    expect(permanent?.queue).toBeUndefined();
+  });
+
+  it("blocked: real source damage on the sacrificial sibling lands the turn forms blocked", async () => {
+    const sibling = await blockedSiblingThread(store);
+    const report = await turns.report({ filePath: sibling.filePath });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const blocked = report.value.filter(
+      (entry) => entry.subjectId === sibling.blockedTurnId && entry.state === "blocked",
+    );
+    expect(blocked.map((entry) => entry.form).sort()).toEqual([
+      "lower_band_projection",
+      "turn_rendering",
+    ]);
+    for (const entry of blocked) {
+      expect(entry.reason).toMatch(/^source_damaged: turn state corrupt/);
+    }
+  });
+});
+
+describe("FC-0.4: the two failed forms carry distinguishable reason classes (Story 3 dependency)", () => {
+  it("transient exhaustion persists the final failure's reason class and its attempt count", async () => {
+    const report = await messages.report({ filePath: fixture.filePath }, { notReady: true });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    const transient = report.value.find(
+      (entry) => entry.subjectId === fixture.failedTransientMessageId,
+    );
+    const permanent = report.value.find(
+      (entry) => entry.subjectId === fixture.failedPermanentMessageId,
+    );
+
+    // Not a bare retry-exhausted marker: the persisted reason is the final
+    // provider failure's, classifiable by the sweep's reason-code table.
+    expect(transient?.reason).toBe(TRANSIENT_EXHAUST_REASON);
+    expect(transient?.reason).toMatch(/^rate_limit:/);
+    expect(transient?.metadata?.attempts).toBe(3);
+    expect(transient?.metadata?.lastError).toBe(TRANSIENT_EXHAUST_REASON);
+
+    expect(permanent?.reason).toBe(PERMANENT_FAILURE_REASON);
+    expect(permanent?.reason).toMatch(/^content_refusal:/);
+    expect(permanent?.metadata?.attempts).toBe(1);
+
+    // The classes are distinguishable on read-back — attempt count is NOT
+    // the discriminator (it distinguishes retrying-vs-exhausted only).
+    expect(transient?.reason).not.toBe(permanent?.reason);
+  });
+});
+
+describe("FC-0.5: corruption and turnless-straggler variants", () => {
+  it("the corruption variant refuses canonical consumption with state_corruption naming the damage", async () => {
+    const corrupted = await corruptedVariantThread(store);
+    const refused = await corrupted.sdk.intakeStream.messageEvents({ filePath: corrupted.filePath }, [
+      validEvent("user_prompt", { payload: { text: "after the damage" } }),
+    ]);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.error.errorClass).toBe("state_corruption");
+    expect(refused.error.code).toBe("turn_state_corrupt");
+    expect(refused.error.reason).toMatch(/open turns/);
+  });
+
+  it("the straggler variant carries turnId-null notes between two turns and after the last turn", async () => {
+    const variant = await stragglerVariantThread(store);
+    const listed = await messages.listMessages({ filePath: variant.filePath });
+    const turnList = await turns.listTurns({ filePath: variant.filePath });
+    expect(listed.ok && turnList.ok).toBe(true);
+    if (!listed.ok || !turnList.ok) return;
+
+    const between = listed.value.find(
+      (message) => message.messageId === variant.stragglerBetweenMessageId,
+    );
+    const trailing = listed.value.find(
+      (message) => message.messageId === variant.stragglerTrailingMessageId,
+    );
+    expect(between?.kind).toBe("runtime_note");
+    expect(between?.turnId).toBeUndefined();
+    expect(trailing?.kind).toBe("runtime_note");
+    expect(trailing?.turnId).toBeUndefined();
+
+    // Between two turns: after t3 closed, before t4 opened — the selection
+    // rule 6 / G4 position.
+    const t3 = turnList.value.find((turn) => turn.turnId === "t3");
+    const t4 = turnList.value.find((turn) => turn.turnId === "t4");
+    expect(between!.sourceEventOrder).toBeGreaterThan(t3!.closedAtEventOrder!);
+    expect(between!.sourceEventOrder).toBeLessThan(t4!.openedAtEventOrder);
+
+    // After the last turn: beyond t12's close, with no turn following.
+    const t12 = turnList.value.find((turn) => turn.turnId === "t12");
+    expect(trailing!.sourceEventOrder).toBeGreaterThan(t12!.closedAtEventOrder!);
+    expect(Math.max(...listed.value.map((message) => message.sourceEventOrder))).toBe(
+      trailing!.sourceEventOrder,
+    );
+  });
+});
+
+describe("FC-0.6: the injection facility's two named points", () => {
+  afterEach(() => {
+    setViewInjectionHook("post-commit-advance", null);
+    setViewInjectionHook("compact-write", null);
+  });
+
+  it("uninstalled, both points are no-ops", () => {
+    expect(() => fireViewInjection("post-commit-advance")).not.toThrow();
+    expect(() => fireViewInjection("compact-write")).not.toThrow();
+  });
+
+  it("an installed hook fires at its point only, its throw propagates, and uninstalling restores the no-op", () => {
+    const fired: string[] = [];
+    setViewInjectionHook("post-commit-advance", () => {
+      fired.push("advance");
+    });
+    fireViewInjection("post-commit-advance");
+    fireViewInjection("compact-write"); // other point stays a no-op
+    expect(fired).toEqual(["advance"]);
+
+    // Crash injection (TC-2.4 / TC-4.6's mechanism): a throwing hook's
+    // failure reaches the production call site.
+    setViewInjectionHook("compact-write", () => {
+      throw new Error("injected crash between sweep and view write");
+    });
+    expect(() => fireViewInjection("compact-write")).toThrow(/injected crash/);
+
+    setViewInjectionHook("post-commit-advance", null);
+    setViewInjectionHook("compact-write", null);
+    fired.length = 0;
+    fireViewInjection("post-commit-advance");
+    fireViewInjection("compact-write");
+    expect(fired).toEqual([]);
+  });
+});

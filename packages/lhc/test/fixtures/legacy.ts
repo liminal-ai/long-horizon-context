@@ -6,6 +6,7 @@
 // Below-SDK writer, sanctioned for the same reason corrupt.ts is: the state
 // is unreachable through the current SDK.
 import { DatabaseSync } from "node:sqlite";
+import { MIGRATION_V5_STATEMENTS } from "../../src/shared/storage.js";
 
 export interface LegacyRecordedEvent {
   eventOrder: number;
@@ -209,6 +210,28 @@ export function legacyEpic01ThreadFile(filePath: string, threadId: string): void
     );
 
     db.exec("PRAGMA user_version = 4;");
+    db.exec("COMMIT;");
+  } finally {
+    db.close();
+  }
+}
+
+// Builds a thread file with the accepted Epic 02 on-disk schema (v5):
+// the Epic 01 layout plus the production v5 statements — the queue's
+// mechanical columns, derived_form, the chunk tables, the deleted_at stamps,
+// and the F-02 backfill — applied exactly as the v5 migration applies them,
+// stopping before v6. Current code can no longer create this shape
+// (migration v6 runs at every open), so the fixture stands in for a real
+// Epic 02 file at upgrade time (Epic 03 FC-0.1). Below-SDK writer,
+// sanctioned like the other legacy builders; the v5 statements are imported
+// from their production home so the layout cannot drift.
+export function legacyEpic02ThreadFile(filePath: string, threadId: string): void {
+  legacyEpic01ThreadFile(filePath, threadId);
+  const db = new DatabaseSync(filePath);
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    for (const statement of MIGRATION_V5_STATEMENTS) db.exec(statement);
+    db.exec("PRAGMA user_version = 5;");
     db.exec("COMMIT;");
   } finally {
     db.close();

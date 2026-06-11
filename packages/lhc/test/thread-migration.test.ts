@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, messages, turns } from "../src/index.js";
 import {
   legacyEpic01ThreadFile,
+  legacyEpic02ThreadFile,
   legacyStory2ThreadFile,
   openRaw,
   readDerivedForms,
@@ -59,7 +60,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
     expect(result.value.events[0]!.messageId).toBe("m2");
 
-    expect(schemaVersionOf(filePath)).toBe(5);
+    expect(schemaVersionOf(filePath)).toBe(6);
 
     // The legacy event survives the upgrade byte-for-byte at the SDK level.
     const events = await intakeStream.listEvents({ filePath });
@@ -100,7 +101,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     if (!projected.ok) return;
     expect(projected.value).toEqual([]);
 
-    expect(schemaVersionOf(filePath)).toBe(5);
+    expect(schemaVersionOf(filePath)).toBe(6);
 
     // The read-path upgrade changed no record content.
     const events = await intakeStream.listEvents({ filePath });
@@ -234,7 +235,7 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     const projected = await messages.listMessages({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    expect(schemaVersionOf(filePath)).toBe(5);
+    expect(schemaVersionOf(filePath)).toBe(6);
 
     // Existing records intact through the production read surfaces.
     expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
@@ -338,5 +339,99 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
       "w-m5-prompt_smoothing-v1",
       "w-t2-turn_derivation-v1",
     ]);
+  });
+});
+
+// Epic 03 Story 0, FC-0.1: migration v6 applies cleanly to an Epic-02 thread
+// file through the real chain (the same lazy open every SDK operation uses).
+// All three view tables exist with their CHECK constraints, the boundary is
+// seeded at position 0, and re-applying is a no-op.
+describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", () => {
+  it("upgrades in place, seeds the boundary singleton at 0, and re-applies as a no-op", async () => {
+    const filePath = store.threadPath();
+    legacyEpic02ThreadFile(filePath, "th_epic02");
+    expect(schemaVersionOf(filePath)).toBe(5);
+
+    // Any SDK read migrates lazily; the read itself must succeed post-v6.
+    const projected = await messages.listMessages({ filePath });
+    expect(projected.ok).toBe(true);
+    if (!projected.ok) return;
+    expect(schemaVersionOf(filePath)).toBe(6);
+
+    // The Epic 02 record is intact through the production read surface.
+    expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
+
+    const db = openRaw(filePath);
+    let boundaryBefore: { position: number; updatedAt: string };
+    try {
+      const names = (
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type = 'table'
+             AND name IN ('thread_view', 'thread_view_band', 'view_boundary') ORDER BY name`,
+          )
+          .all() as unknown as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(names).toEqual(["thread_view", "thread_view_band", "view_boundary"]);
+
+      // CHECK constraints are present and enforced: the view and boundary
+      // singletons refuse any row outside their pinned key, and the band
+      // table pins its band vocabulary (failed inserts mutate nothing).
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO thread_view (singleton, view_id, created_at, compact_point,
+               covered_from, config_json, arrangement_json, gaps_json, source_state_json)
+             VALUES (2, 'v9', 'now', 0, 0, '{}', '[]', '[]', '{}')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/);
+      const viewDdl = (
+        db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'thread_view_band'`).get() as {
+          sql: string;
+        }
+      ).sql;
+      expect(viewDdl).toContain("CHECK (band IN ('brief','detailed','smooth'))");
+
+      const rows = db
+        .prepare(`SELECT thread_singleton, position, updated_at FROM view_boundary`)
+        .all() as unknown as Array<{
+        thread_singleton: number | bigint;
+        position: number | bigint;
+        updated_at: string;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.thread_singleton)).toBe(1);
+      expect(Number(rows[0]!.position)).toBe(0);
+      boundaryBefore = { position: Number(rows[0]!.position), updatedAt: rows[0]!.updated_at };
+      expect(() =>
+        db
+          .prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`)
+          .run(),
+      ).toThrow(/CHECK/);
+    } finally {
+      db.close();
+    }
+
+    // Re-applying is a no-op: another open neither bumps the version nor
+    // re-runs the seed (the boundary row is byte-identical, still singular).
+    const reread = await messages.listMessages({ filePath });
+    expect(reread.ok).toBe(true);
+    expect(schemaVersionOf(filePath)).toBe(6);
+    const again = openRaw(filePath);
+    try {
+      const rows = again
+        .prepare(`SELECT thread_singleton, position, updated_at FROM view_boundary`)
+        .all() as unknown as Array<{
+        thread_singleton: number | bigint;
+        position: number | bigint;
+        updated_at: string;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.position)).toBe(boundaryBefore.position);
+      expect(rows[0]!.updated_at).toBe(boundaryBefore.updatedAt);
+    } finally {
+      again.close();
+    }
   });
 });
