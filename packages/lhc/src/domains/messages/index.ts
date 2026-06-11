@@ -24,10 +24,18 @@ import {
 } from "./internal/forms.js";
 import { messageWorkHandlers } from "./internal/handlers.js";
 import { projectEvent } from "./internal/project.js";
-import { cascadeFromMessage, type CascadeClear } from "./internal/cascade.js";
+import {
+  cascadeFromMessage,
+  cascadeMessageDelete,
+  cascadeTurnDelete,
+  type CascadeClear,
+  type CascadeOutcome,
+} from "./internal/cascade.js";
 import {
   applyMessageEdit,
   insertMessage,
+  markMessageDeleted,
+  markTurnMessagesDeleted,
   readMessages,
   readMutableMessage,
 } from "./internal/store.js";
@@ -448,7 +456,7 @@ export async function edit(
         value: {
           changed: { messageIds: [input.messageId], turnIds: [] },
           cleared: cascade.cleared,
-          dropped: [],
+          dropped: cascade.dropped,
           queued: cascade.queued,
           superseded: cascade.superseded,
         },
@@ -460,4 +468,109 @@ export async function edit(
   } finally {
     db.close();
   }
+}
+
+// ── delete (Epic 02 Story 6, Flow 6) ─────────────────────────────
+
+// The record's removal mutation for one message (AC-6.1–6.3, 6.7):
+// projection-level delete — the deleted_at stamp plus the delete cascade
+// (own forms dropped, turn and chunk cleared and re-queued for minus-one
+// composition) in one transaction. The source events are never touched;
+// event read-back keeps returning them (the audit surface). Validation
+// reads the same filtered view as edit, so a missing, deleted, or
+// double-deleted target is message_not_found and an open-turn or turnless
+// gap target is turn_open. The one delete-specific refusal is prompt
+// protection: a turn is a prompt and what came back for it, so deleting the
+// turn's initiating prompt is refused toward turns.deleteTurn — the error
+// names the turn and that path (AC-6.3).
+export async function deleteMessage(
+  thread: ThreadRef,
+  input: { messageId: string },
+): Promise<OpResult<MutationResult>> {
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const meta = db
+      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
+      .get() as { thread_id: string } | undefined;
+    const threadId = meta?.thread_id ?? "";
+    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
+      const target = readMutableMessage(ctx.db, input.messageId);
+      if (target === undefined) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no message ${input.messageId} exists in this thread`,
+          },
+        };
+      }
+      if (target.turnStatus !== "closed") {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_open",
+            reason:
+              target.turnStatus === "open"
+                ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
+                : `message ${input.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
+          },
+        };
+      }
+      if (target.initiatesTurn) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_initiates_turn",
+            reason: `message ${input.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; a turn is a prompt and what came back for it — delete the whole exchange with turns.deleteTurn (lhc turns delete --turn-id ${target.turnId ?? ""})`,
+          },
+        };
+      }
+      markMessageDeleted(ctx.db, input.messageId, ctx.clock().toISOString());
+      const cascade = cascadeMessageDelete(ctx, input.messageId);
+      return {
+        ok: true,
+        value: {
+          changed: { messageIds: [input.messageId], turnIds: [] },
+          cleared: cascade.cleared,
+          dropped: cascade.dropped,
+          queued: cascade.queued,
+          superseded: cascade.superseded,
+        },
+      };
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`delete failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+// Cross-domain surface for turns.deleteTurn (DD-8: one cascade module, two
+// callers), called inside the turn delete's transaction after the turn row
+// is stamped. The messages domain owns the message-table write — the member
+// stamp, scoped to live rows — and the shared cascade entry; the turns
+// operation owns its own validation and turn-row stamp. Returns the cascade
+// outcome plus the member ids stamped now (record order), which the turn
+// delete reports as its changed messages.
+export function applyTurnDeleteCascade(
+  ctx: OperationContext,
+  turnId: string,
+): CascadeOutcome & { memberMessageIds: string[] } {
+  const memberMessageIds = markTurnMessagesDeleted(
+    ctx.db,
+    turnId,
+    ctx.clock().toISOString(),
+  );
+  return { ...cascadeTurnDelete(ctx, turnId, memberMessageIds), memberMessageIds };
 }

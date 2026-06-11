@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "06-message-turn-delete-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "source": "impl-lead",
+  "rationale": "Both deviations approved: (1) TC-6.x tests in new files (mutations-delete.test.ts, cli-process-mutations-delete.test.ts) because the test plan's named files are hash-locked in the red manifest by earlier stories — the established Story 4/5 new-file-per-story precedent; (2) --message/--turn flags with -id aliases extend Story 5's approved alias deviation to the delete commands. No contract drift."
+}

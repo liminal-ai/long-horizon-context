@@ -7,7 +7,8 @@ import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
 import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
-import { runMessagesEdit } from "./messages-mutate.js";
+import { runMessagesDelete, runMessagesEdit } from "./messages-mutate.js";
+import { runTurnsDelete } from "./turns-mutate.js";
 import {
   runMessagesReport,
   runMessagesRequeue,
@@ -47,11 +48,13 @@ Usage:
   lhc messages report (--thread-id <id> | --file-path <p>) [--not-ready] [--message-id <id>] [--registry <r>]
   lhc messages requeue (--thread-id <id> | --file-path <p>) --message-id <id> --form <form> [--registry <r>]
   lhc messages edit (--thread-id <id> | --file-path <p>) --message <id> --content <text> [--registry <r>]
+  lhc messages delete (--thread-id <id> | --file-path <p>) --message <id> [--registry <r>]
   lhc turns list (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-chunks (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns report (--thread-id <id> | --file-path <p>) [--not-ready] [--turn-id <id>] [--chunk-id <id>] [--registry <r>]
   lhc turns requeue (--thread-id <id> | --file-path <p>) --subject-kind (turn|chunk) --subject-id <id> --form <form> [--registry <r>]
+  lhc turns delete (--thread-id <id> | --file-path <p>) --turn <id> [--registry <r>]
   lhc work drain (--thread-id <id> | --file-path <p>) [--max-items <n>] [--provider <name>] [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on
@@ -102,9 +105,11 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
         form: { type: "string" },
         "subject-kind": { type: "string" },
         "subject-id": { type: "string" },
-        // `--message` is the edit command's spelling (story/tech design);
-        // it parses into the same messageId slot as `--message-id`.
+        // `--message` / `--turn` are the mutation commands' spellings
+        // (story/tech design); they parse into the same slots as
+        // `--message-id` / `--turn-id`.
         message: { type: "string" },
+        turn: { type: "string" },
         content: { type: "string" },
       },
       strict: true,
@@ -129,6 +134,7 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
   if (typeof values.message === "string") flags.messageId = values.message;
   if (typeof values.content === "string") flags.content = values.content;
   if (typeof values["turn-id"] === "string") flags.turnId = values["turn-id"];
+  if (typeof values.turn === "string") flags.turnId = values.turn;
   if (typeof values["chunk-id"] === "string") flags.chunkId = values["chunk-id"];
   if (typeof values.form === "string") flags.form = values.form;
   if (typeof values["subject-kind"] === "string") flags.subjectKind = values["subject-kind"];
@@ -308,6 +314,18 @@ export async function runCli(
         content: flags.content,
       });
     }
+    case "messages delete": {
+      const missingRef = requireThreadRef(flags, "messages delete");
+      if (missingRef !== undefined) return missingRef;
+      if (flags.messageId === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "messages delete requires --message (or --message-id)",
+        );
+      }
+      return runMessagesDelete(threadRefFrom(flags), { messageId: flags.messageId });
+    }
     case "turns list":
       return (
         requireThreadRef(flags, "turns list") ??
@@ -358,6 +376,18 @@ export async function runCli(
         subjectId: flags.subjectId,
         form: flags.form,
       });
+    }
+    case "turns delete": {
+      const missingRef = requireThreadRef(flags, "turns delete");
+      if (missingRef !== undefined) return missingRef;
+      if (flags.turnId === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "turns delete requires --turn (or --turn-id)",
+        );
+      }
+      return runTurnsDelete(threadRefFrom(flags), { turnId: flags.turnId });
     }
     case "work drain": {
       const missingRef = requireThreadRef(flags, "work drain");

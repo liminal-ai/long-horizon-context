@@ -8,9 +8,14 @@
 // subject in the chain cascades without this module changing. Still-queued
 // old-version items are supersede-deleted (tech design issue 1) and reported
 // on the MutationResult; claimed items are deliberately left to the
-// source-version check (DD-3) — their stale completions discard. Two close
-// paths share this walk by design: edit re-queues the subject's own forms,
-// delete (Story 6) drops them and starts the clear at the turn level.
+// source-version check (DD-3) — their stale completions discard. The two
+// close paths share one core walk parameterized drop-vs-clear: edit clears
+// the whole chain, delete *drops* the deleted subject's own forms (state
+// rows removed — a deleted source has nothing to rebuild) and clears
+// everything upward for minus-one composition. Turn delete enters at the
+// turn level, dropping the turn's and all live members' forms; a chunk left
+// with no live members drops its summary forms too — dropped, never failed,
+// and no rebuild queued (AC-6.6).
 import type { DatabaseSync } from "node:sqlite";
 import type { OperationContext } from "../../../shared/context.js";
 import type { FormKind, SubjectKind } from "../../../shared/derivation.js";
@@ -46,6 +51,7 @@ export interface CascadeClear {
 
 export interface CascadeOutcome {
   cleared: CascadeClear[];
+  dropped: CascadeClear[];
   queued: Array<{ workItemId: string; kind: WorkKind }>;
   superseded: string[];
 }
@@ -66,10 +72,12 @@ function sourceRefFor(subject: ChainSubject): WorkSourceRef {
   }
 }
 
-// The structural walk: the edited message's turn from its membership stamp,
+// The structural walk: the mutated message's turn from its membership stamp,
 // the turn's chunk from its placement row. Either link may be absent — a gap
 // message has no turn, an unplaced turn no chunk — and the chain simply
-// stops there; reach is structural, not configured.
+// stops there; reach is structural, not configured. Deliberately unfiltered:
+// the walk runs after a delete stamps its subject, and the chain above a
+// just-deleted record is exactly what must still cascade.
 function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
   const subjects: ChainSubject[] = [{ subjectKind: "message", subjectId: messageId }];
   const turnRow = db
@@ -94,24 +102,54 @@ interface RebuildGroup {
   maxSourceVersion: number;
 }
 
-// Clear-and-requeue for the full chain above (and including) the edited
-// message. Runs inside the mutation's ambient transaction: the enqueue's
-// pending upsert is the clear (state pending, content/reason/gaps/metadata
-// reset, source version bumped past every version seen in the group), the
-// work row and the commit poke ride the same transaction, and the supersede
-// delete lands before the replacements so a tidied id can never collide.
-export function cascadeFromMessage(
+function rebuildKindFor(form: string): WorkKind {
+  const kind = FORM_REBUILD_KINDS[form as FormKind];
+  if (kind === undefined) {
+    // Every form names its queue site above; a miss is a wiring bug.
+    throw new Error(`no rebuild work kind mapped for derived form ${form}`);
+  }
+  return kind;
+}
+
+// The shared core (DD-8's one cascade, parameterized): drop subjects lose
+// their form rows outright; clear subjects go pending at the next source
+// version with replacement work enqueued. Supersede-deletes land before the
+// replacement enqueues so a tidied id can never collide, and queued items
+// against dropped subjects are tidied with no replacement — dead work for a
+// source that no longer reads.
+function runCascade(
   ctx: OperationContext,
-  messageId: string,
+  dropSubjects: readonly ChainSubject[],
+  clearSubjects: readonly ChainSubject[],
 ): CascadeOutcome {
-  const subjects = chainSubjects(ctx.db, messageId);
-  const cleared: CascadeClear[] = [];
-  const groups = new Map<string, RebuildGroup>();
   const readForms = ctx.db.prepare(
     `SELECT form, source_version FROM derived_form
      WHERE subject_kind = ? AND subject_id = ? ORDER BY form`,
   );
-  for (const subject of subjects) {
+
+  const dropped: CascadeClear[] = [];
+  const supersedeTargets: Array<{ kind: WorkKind; sourceRef: WorkSourceRef }> = [];
+  const dropRows = ctx.db.prepare(
+    `DELETE FROM derived_form WHERE subject_kind = ? AND subject_id = ?`,
+  );
+  for (const subject of dropSubjects) {
+    const rows = readForms.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
+      form: string;
+    }>;
+    const kinds = new Set<WorkKind>();
+    for (const row of rows) {
+      dropped.push({ ...subject, form: row.form as FormKind });
+      kinds.add(rebuildKindFor(row.form));
+    }
+    for (const kind of kinds) {
+      supersedeTargets.push({ kind, sourceRef: sourceRefFor(subject) });
+    }
+    dropRows.run(subject.subjectKind, subject.subjectId);
+  }
+
+  const cleared: CascadeClear[] = [];
+  const groups = new Map<string, RebuildGroup>();
+  for (const subject of clearSubjects) {
     const rows = readForms.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
       form: string;
       source_version: number | bigint;
@@ -119,11 +157,7 @@ export function cascadeFromMessage(
     for (const row of rows) {
       const form = row.form as FormKind;
       cleared.push({ ...subject, form });
-      const kind = FORM_REBUILD_KINDS[form];
-      if (kind === undefined) {
-        // Every form names its queue site above; a miss is a wiring bug.
-        throw new Error(`no rebuild work kind mapped for derived form ${row.form}`);
-      }
+      const kind = rebuildKindFor(row.form);
       const key = `${subject.subjectKind}:${subject.subjectId}:${kind}`;
       const group = groups.get(key) ?? {
         subject,
@@ -137,13 +171,13 @@ export function cascadeFromMessage(
     }
   }
 
-  const superseded = supersedeQueued(
-    ctx.db,
-    [...groups.values()].map((group) => ({
+  const superseded = supersedeQueued(ctx.db, [
+    ...supersedeTargets,
+    ...[...groups.values()].map((group) => ({
       kind: group.kind,
       sourceRef: sourceRefFor(group.subject),
     })),
-  );
+  ]);
 
   const queued = [...groups.values()].map((group) => {
     const item = enqueue(ctx, {
@@ -156,5 +190,63 @@ export function cascadeFromMessage(
     return { workItemId: item.workItemId, kind: group.kind };
   });
 
-  return { cleared, queued, superseded };
+  return { cleared, dropped, queued, superseded };
+}
+
+// Edit's close path: clear-and-requeue for the full chain above (and
+// including) the edited message, inside the mutation's ambient transaction.
+export function cascadeFromMessage(
+  ctx: OperationContext,
+  messageId: string,
+): CascadeOutcome {
+  return runCascade(ctx, [], chainSubjects(ctx.db, messageId));
+}
+
+// Message delete's close path (Flow 6): the deleted message's own forms
+// drop; its turn and chunk clear and re-queue for minus-one composition.
+// The message-delete validation refuses turn-initiating prompts, so the turn
+// always keeps members and never empties through this path.
+export function cascadeMessageDelete(
+  ctx: OperationContext,
+  messageId: string,
+): CascadeOutcome {
+  const [own, ...upward] = chainSubjects(ctx.db, messageId);
+  return runCascade(ctx, own === undefined ? [] : [own], upward);
+}
+
+// Turn delete's close path (Flow 6): the turn's forms and every live
+// member's forms drop — the drop-set walk goes down as well as up — and the
+// containing chunk clears and re-queues from its remaining live members.
+// A chunk left empty drops its summary forms instead: nothing remains to
+// summarize, so the forms are removed, never failed, and no rebuild queues
+// (AC-6.6). Runs after the delete stamps land, so the live-member count
+// already excludes the deleted turn. Membership rows are untouched —
+// shrink-only: reads filter deleted turns; boundaries never re-cut.
+export function cascadeTurnDelete(
+  ctx: OperationContext,
+  turnId: string,
+  memberMessageIds: readonly string[],
+): CascadeOutcome {
+  const drop: ChainSubject[] = [
+    ...memberMessageIds.map((messageId): ChainSubject => ({
+      subjectKind: "message",
+      subjectId: messageId,
+    })),
+    { subjectKind: "turn", subjectId: turnId },
+  ];
+  const chunkRow = ctx.db
+    .prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`)
+    .get(turnId) as unknown as { chunk_id: string } | undefined;
+  if (chunkRow === undefined) return runCascade(ctx, drop, []);
+  const chunk: ChainSubject = { subjectKind: "chunk", subjectId: chunkRow.chunk_id };
+  const remaining = ctx.db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM chunk_member cm
+       JOIN turns t ON t.turn_id = cm.turn_id AND t.deleted_at IS NULL
+       WHERE cm.chunk_id = ?`,
+    )
+    .get(chunkRow.chunk_id) as unknown as { n: number | bigint };
+  return Number(remaining.n) > 0
+    ? runCascade(ctx, drop, [chunk])
+    : runCascade(ctx, [...drop, chunk], []);
 }

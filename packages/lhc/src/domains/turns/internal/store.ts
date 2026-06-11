@@ -39,6 +39,28 @@ export function closeTurn(db: DatabaseSync, turnId: string, closedAtEventOrder: 
   ).run(closedAtEventOrder, turnId);
 }
 
+// The turn delete's validation read (Flow 6): the live (deleted-filtered)
+// turn row. A deleted or missing target misses here and refuses as
+// turn_not_found — the filtered view is the refusal's read, so a double
+// delete is a refusal, never a silent success (AC-6.7).
+export function readMutableTurn(
+  db: DatabaseSync,
+  turnId: string,
+): { turnId: string; status: "open" | "closed" } | undefined {
+  const row = db
+    .prepare(`SELECT status FROM turns WHERE turn_id = ? AND deleted_at IS NULL`)
+    .get(turnId) as unknown as { status: string } | undefined;
+  if (row === undefined) return undefined;
+  return { turnId, status: row.status as "open" | "closed" };
+}
+
+// The turn delete's record apply: a projection-level tombstone on the turn
+// row, mirroring the message stamp. Events and membership rows are never
+// touched — reads filter; boundaries never re-cut (shrink-only membership).
+export function markTurnDeleted(db: DatabaseSync, turnId: string, deletedAt: string): void {
+  db.prepare(`UPDATE turns SET deleted_at = ? WHERE turn_id = ?`).run(deletedAt, turnId);
+}
+
 interface RawTurnRow {
   turn_id: string;
   status: string;
@@ -48,12 +70,15 @@ interface RawTurnRow {
 
 // Membership is stored on the member (message.turn_id), never as a list on
 // the turn: memberMessageIds is a query, ordered by event order, so there is
-// exactly one source of truth.
+// exactly one source of truth. Both halves read deleted-filtered (tech
+// design §Mechanics): a deleted turn leaves the listing entirely, and a
+// deleted message leaves its turn's membership — the membership shrinks in
+// place, the turn row and its boundaries untouched.
 export function readTurns(db: DatabaseSync): TurnRecord[] {
   const memberRows = db
     .prepare(
       `SELECT message_id, turn_id FROM message
-       WHERE turn_id IS NOT NULL ORDER BY source_event_order`,
+       WHERE turn_id IS NOT NULL AND deleted_at IS NULL ORDER BY source_event_order`,
     )
     .all() as unknown as Array<{ message_id: string; turn_id: string }>;
   const membersByTurn = new Map<string, string[]>();
@@ -66,7 +91,7 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
   const turnRows = db
     .prepare(
       `SELECT turn_id, status, opened_at_event_order, closed_at_event_order
-       FROM turns ORDER BY turn_order`,
+       FROM turns WHERE deleted_at IS NULL ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
   // Chunk placement rides the turn read-back (Epic 02 AC-3.5): stored

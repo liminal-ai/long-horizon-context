@@ -45,17 +45,21 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   }
 }
 
-// The edit operation's validation read (Flow 5): the live (deleted-filtered)
-// message joined to its turn's status. A deleted target misses here and
-// refuses as message_not_found — the filtered view is the refusal's read by
-// design (never a distinct error for deleted). turnStatus is null for a gap
-// message (no membership); the edit's closed-turn target boundary refuses it
-// the same as an open turn — only a closed turn is an editable target.
+// The mutation operations' validation read (Flows 5/6): the live
+// (deleted-filtered) message joined to its turn's status. A deleted target
+// misses here and refuses as message_not_found — the filtered view is the
+// refusal's read by design (never a distinct error for deleted; double
+// delete reads the same way, AC-6.7). turnStatus is null for a gap message
+// (no membership); the closed-turn target boundary refuses it the same as
+// an open turn. initiatesTurn carries the prompt-protection fact (AC-6.3):
+// a turn opens on its prompt's event, so the member whose source event
+// order equals the turn's opened-at order is the turn's initiating prompt.
 export interface MutableMessageView {
   messageId: string;
   kind: string;
   turnId: string | null;
   turnStatus: "open" | "closed" | null;
+  initiatesTurn: boolean;
 }
 
 export function readMutableMessage(
@@ -64,12 +68,20 @@ export function readMutableMessage(
 ): MutableMessageView | undefined {
   const row = db
     .prepare(
-      `SELECT m.message_id, m.kind, m.turn_id, t.status AS turn_status
+      `SELECT m.message_id, m.kind, m.turn_id, m.source_event_order,
+              t.status AS turn_status, t.opened_at_event_order
        FROM message m LEFT JOIN turns t ON t.turn_id = m.turn_id
        WHERE m.message_id = ? AND m.deleted_at IS NULL`,
     )
     .get(messageId) as unknown as
-    | { message_id: string; kind: string; turn_id: string | null; turn_status: string | null }
+    | {
+        message_id: string;
+        kind: string;
+        turn_id: string | null;
+        source_event_order: number | bigint;
+        turn_status: string | null;
+        opened_at_event_order: number | bigint | null;
+      }
     | undefined;
   if (row === undefined) return undefined;
   return {
@@ -77,7 +89,48 @@ export function readMutableMessage(
     kind: row.kind,
     turnId: row.turn_id,
     turnStatus: row.turn_status as MutableMessageView["turnStatus"],
+    initiatesTurn:
+      row.opened_at_event_order !== null &&
+      Number(row.source_event_order) === Number(row.opened_at_event_order),
   };
+}
+
+// The delete's record apply (Flow 6): a projection-level tombstone — the
+// deleted_at stamp every read filters on. The source events are never
+// touched (record-never-destroyed, DD-12); event read-back keeps showing
+// them. The bulk variant is turns.deleteTurn's member stamp, scoped to live
+// rows so a turn whose messages were individually deleted first still
+// deletes cleanly (membership walk on live rows); it returns the stamped
+// ids in record order for the mutation result and the cascade's drop set.
+export function markMessageDeleted(
+  db: DatabaseSync,
+  messageId: string,
+  deletedAt: string,
+): void {
+  db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(
+    deletedAt,
+    messageId,
+  );
+}
+
+export function markTurnMessagesDeleted(
+  db: DatabaseSync,
+  turnId: string,
+  deletedAt: string,
+): string[] {
+  const rows = db
+    .prepare(
+      `UPDATE message SET deleted_at = ?
+       WHERE turn_id = ? AND deleted_at IS NULL
+       RETURNING message_id, source_event_order`,
+    )
+    .all(deletedAt, turnId) as unknown as Array<{
+    message_id: string;
+    source_event_order: number | bigint;
+  }>;
+  return rows
+    .sort((a, b) => Number(a.source_event_order) - Number(b.source_event_order))
+    .map((row) => row.message_id);
 }
 
 // The edit's record apply (AC-5.1): the new content lands in each block's
@@ -161,10 +214,13 @@ export function readMessages(db: DatabaseSync): MessageRecord[] {
     blocksByMessage.set(row.message_id, blocks);
   }
 
+  // The deleted-read filter (tech design §Mechanics): message reads surface
+  // live projection rows only; a deleted message's source events stay
+  // readable through the Epic 01 event read-back, the one unfiltered surface.
   const messageRows = db
     .prepare(
       `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id
-       FROM message ORDER BY source_event_order`,
+       FROM message WHERE deleted_at IS NULL ORDER BY source_event_order`,
     )
     .all() as unknown as RawMessageRow[];
   return messageRows.map((row) => {

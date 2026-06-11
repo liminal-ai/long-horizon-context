@@ -119,6 +119,16 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Baseline: 208 → 218 (no regression). TC-5.4 (epic's named architecture-risk race) green in suite.
 - Dispositions: F-05-001 fixed. Deviations: 4 approved. Accepted-risk/defer: none. Open risks: none.
 
+### 06-message-turn-delete
+- run 06:40Z; first implementor attempt lost to runtime silence-timeout interruption (child internally completed but envelope failed; PROVIDER_UNAVAILABLE recorded) → resumed 06:56Z; re-implement ~55min; verifier initial PASS, zero findings.
+- 07:58Z spec-deviation ruling: impl-lead APPROVED 2 deviations (new test files — target files hash-locked, Story 4/5 precedent; --message/--turn -id aliases). → accept-story, all acceptance checks pass.
+
+#### RECEIPT — 06-message-turn-delete (ACCEPTED 2026-06-11T08:00Z)
+- Implementor: re-run after interrupt. Verifier: pass, zero findings.
+- Gates by impl-lead: green-verify PASS (204 tests, immutability OK 27 red files); verify-all PASS (231 tests — full-suite regression with deleted-read filter live, per story DoD).
+- Baseline: 218 → 231 (no regression).
+- Dispositions: none raised. Deviations: 2 approved. Accepted-risk/defer: none. Open risks: none.
+
 ## Epic Closeout
 
 (pending)

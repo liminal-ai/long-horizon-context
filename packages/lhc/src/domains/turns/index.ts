@@ -32,9 +32,15 @@ import {
   reportTurnForms,
 } from "./internal/forms.js";
 import {
+  applyTurnDeleteCascade,
+  type MutationResult,
+} from "../messages/index.js";
+import {
   closeTurn,
   insertOpenTurn,
+  markTurnDeleted,
   nextTurnOrder,
+  readMutableTurn,
   readTurns,
   selectOpenTurnIds,
 } from "./internal/store.js";
@@ -388,6 +394,80 @@ export async function requeue(
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`requeue failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+// ── delete (Epic 02 Story 6, Flow 6) ─────────────────────────────
+
+// The whole-exchange removal (AC-6.4–6.7): "that exchange was a dead end —
+// kill it." One transaction stamps the turn and all its live member
+// messages deleted, drops the turn's and members' derived forms, and
+// re-queues the containing chunk's summaries from the remaining live
+// members — or drops them when the chunk empties out (AC-6.6). The shared
+// machinery is the messages domain's cascade module (DD-8, one cascade,
+// two callers), reached through its public surface; this operation owns
+// the turn-side validation and the turn-row stamp. Source events are never
+// touched; chunk membership rows are never moved or re-cut — reads filter
+// the deleted turn out, shrinking the chunk in place. Refusals read the
+// filtered view: a missing, deleted, or double-deleted turn is
+// turn_not_found; an open turn is turn_open; a refusal changes nothing.
+export async function deleteTurn(
+  thread: ThreadRef,
+  input: { turnId: string },
+): Promise<OpResult<MutationResult>> {
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const meta = db
+      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
+      .get() as { thread_id: string } | undefined;
+    const threadId = meta?.thread_id ?? "";
+    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
+      const target = readMutableTurn(ctx.db, input.turnId);
+      if (target === undefined) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_not_found",
+            reason: `no turn ${input.turnId} exists in this thread`,
+          },
+        };
+      }
+      if (target.status !== "closed") {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_open",
+            reason: `turn ${input.turnId} is open; open turns cannot be deleted (v1 boundary)`,
+          },
+        };
+      }
+      markTurnDeleted(ctx.db, input.turnId, ctx.clock().toISOString());
+      const cascade = applyTurnDeleteCascade(ctx, input.turnId);
+      return {
+        ok: true,
+        value: {
+          changed: { messageIds: cascade.memberMessageIds, turnIds: [input.turnId] },
+          cleared: cascade.cleared,
+          dropped: cascade.dropped,
+          queued: cascade.queued,
+          superseded: cascade.superseded,
+        },
+      };
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`delete failed: ${reason}`);
   } finally {
     db.close();
   }
