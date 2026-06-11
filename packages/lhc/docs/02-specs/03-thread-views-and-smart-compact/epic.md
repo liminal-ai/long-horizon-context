@@ -1,6 +1,6 @@
 # Epic 03: Thread Views and Smart Compact
 
-**Status:** Draft — pending review
+**Status:** Validated — two review rounds complete; ready for tech design
 
 This epic defines the complete requirements for thread views: the assembled working context a harness actually loads. It covers pulling the active view, smart compact, the readiness sweep, tool-result visibility in the live tail, and the two render targets. It serves as the source of truth for the Tech Lead's design work.
 
@@ -55,7 +55,7 @@ Five flows, one surface (`thread-view`):
 - Smart compact with named profiles and explicit-parameter override; band-sum validation with a clear error
 - Band rendering from stored Epic 02 artifacts, with per-band degrade ladders and visible gap entries
 - The readiness sweep: report-driven, transient-only requeue, receipt; embedded in compact (skippable) and standalone
-- The tool-result visibility boundary: position marker, max/target budgets, protected floor, compact reset
+- The tool-result visibility boundary: position marker, max/target budgets, protected floor, compact reset, post-commit advance step with non-blocking failure semantics
 - Status read: tail size against threshold, compact recommendation, pending/failed derivation counts
 - Message-array render and PI session-file materialization with content parity
 - Pull on never-compacted threads (tail-only view from thread start)
@@ -118,22 +118,23 @@ Compact never calls a model. The artifacts either exist (Epic 02 derived them) o
 - **AC-2.1**: Compact runs only when invoked through the surface (SDK or CLI). No code path in core invokes it internally.
 - **AC-2.2**: The operation accepts a named profile or explicit parameters; explicit parameters override profile values; built-in profiles exist and user-defined profiles are configurable.
 - **AC-2.3**: Invalid configuration (band percentages not summing to 100, unknown profile, non-positive bound) is rejected with a caller error naming the violation; thread state is unchanged.
-- **AC-2.4**: A compacted view lands within the configured size bound with bands proportioned per the configuration, assembled entirely from stored artifacts — no provider calls during compact (sweep requeues background work; the compact itself never waits on or invokes inference).
-- **AC-2.5**: Missing or unusable band material degrades: the entry renders the best available stored form for its subject and is marked degraded, or renders as an explicit gap entry when nothing usable exists. The compact records every degraded entry and gap on the view and reports them in the receipt. A compact never fails because material is missing.
+- **AC-2.4**: A compacted view targets the configured lower bound: band shares are computed from its percentages, each band fills by whole entries against its share, and the receipt reports actual per-band and total token counts. The total may land below the bound (insufficient stored material, or the next whole entry would exceed a band's share) or above it (an indivisible turn/chunk/message included by the selection rules). Assembly is entirely from stored artifacts — no provider calls during compact (sweep requeues background work; the compact itself never waits on or invokes inference).
+- **AC-2.5**: Missing or unusable band material degrades: the entry renders the best available stored form for its subject and is marked degraded, or renders as an explicit gap entry when nothing usable exists. The compact records every degraded entry and gap on the view and reports them in the receipt. A compact never fails because derived material is missing or failed; it refuses only when canonical source state needed to identify or read the compacted span is corrupt or unreadable, with a structured `state_corruption` error naming the damage, leaving the prior view and the record unchanged.
 - **AC-2.6**: The compact replaces the active view atomically: band arrangement, rendered snapshot, compact point, config used, and gaps land in one transaction; the visibility boundary resets to the compact point in the same transaction. A crash mid-compact leaves the previous view intact and serving.
 - **AC-2.7**: The receipt reports what was built: per-band entry counts and rendered sizes, degraded entries and gaps with reasons, sweep results (or that the sweep was skipped), and the config used.
-- **AC-2.8**: The status read returns tail size against the configured threshold, a compact recommendation, and pending/failed derivation counts — reads only, callable any time, no side effects.
+- **AC-2.8**: The status read returns: tail size against the configured trigger threshold and a compact recommendation; derivation counts by state (pending, retrying, failed, blocked); the active view's degraded-entry and gap counts; and the visibility zone's token sum against its max — reads only, callable any time, no side effects.
 - **AC-2.9**: Compacting destroys nothing canonical: every prior view's content remains derivable from the record, and the record is untouched by compaction.
 - **AC-2.10**: Band entries carry their subject keys visibly in rendered text (chunk ids for chunk bands, turn ids for the smoothed band).
 
 #### Test Conditions
 
 - **TC-2.1** (AC-2.2, AC-2.3, AC-2.7): Compact with a built-in profile → succeeds with that profile's bound and mix recorded in the receipt; compact with percentages summing to 105 → caller error naming the sum; unknown profile → caller error naming it; thread unchanged after both rejections.
-- **TC-2.2** (AC-2.4, AC-2.9): On a thread with full derivation coverage, compact → view within bound, band proportions per config, provider fake observes zero calls during the compact; read the record after → identical to before.
+- **TC-2.2** (AC-2.4, AC-2.9): On a thread with full derivation coverage, compact → view targets the bound (receipt's actual counts within whole-entry tolerance of band shares, deviations attributable to whole-entry inclusion rules), provider fake observes zero calls during the compact; read the record after → identical to before.
 - **TC-2.3** (AC-2.5, AC-2.7): On a thread with one failed chunk summary and one pending turn rendering, compact → completes; degraded entries render fallbacks and are marked; receipt lists both with reasons and reports per-band counts; no span silently absent (every turn/chunk in the compacted range accounted for in some form).
 - **TC-2.4** (AC-2.6): Crash injection between sweep and view write (test seam) → previous view still serves; rerun compact → new view lands; no partial state.
-- **TC-2.5** (AC-2.1, AC-2.8): Status read on a heavy thread → tail tokens, threshold, `compactRecommended: true`, pending/failed counts; assert reads only (no work rows, no state change); intake more, status again → tail grew; no compact occurred without invocation.
+- **TC-2.5** (AC-2.1, AC-2.8): Status read on a heavy thread with a degraded active view and a blocked form → tail tokens, threshold, `compactRecommended: true`, derivation counts by state including blocked, view degraded/gap counts, zone sum against max; assert reads only (no work rows, no state change); intake more, status again → tail grew; no compact occurred without invocation.
 - **TC-2.6** (AC-2.10): Compact, pull, inspect band text → chunk keys present for brief/detailed entries, turn keys for smoothed entries.
+- **TC-2.7** (AC-2.5): On a fixture thread with manufactured canonical corruption (damaged below the SDK, per the Epic 01 corruption-fixture pattern), compact → refuses with `state_corruption` naming the damage; the prior active view still serves; record unchanged. Control: the same thread with only derived-material damage (failed summaries) compacts successfully with gaps.
 
 ## Flow 3: Readiness Sweep
 
@@ -164,7 +165,7 @@ The compact runs the sweep first by default so every compact leaves the thread h
 
 Old tool results are the tail's bloat: one agentic turn can dump a hundred thousand tokens of file reads and build output. The MVP re-decided every result's visibility on every message, churning the prompt cache every turn. This design replaces that with one marker per thread and a log-rotation policy: nothing happens until the full-visibility zone outgrows its budget, then one batched advance, then quiet again.
 
-The rule set, complete: tool results at-or-behind the boundary render short (Epic 02's summary when usable, deterministic truncation otherwise); tool results ahead of it render full; nothing else is ever affected — prompts, assistant text, and thinking always render full. After an intake batch commits, one indexed sum measures the full-zone tool tokens; if it exceeds the max budget, the boundary advances oldest-first until the zone is at-or-under the target budget; otherwise nothing happens. The boundary never advances into the protected floor — the most recent stretch of tool output stays full even mid-monster-turn — and never moves backward: a flipped result stays flipped. A compact resets the boundary to the compact point, because the old tail just became bands.
+The rule set, complete: tool results at-or-behind the boundary render short (Epic 02's summary when usable, deterministic truncation otherwise); tool results ahead of it render full; nothing else is ever affected — prompts, assistant text, and thinking always render full. After an intake batch commits, the advance check runs as a thread-view maintenance step, triggered through the SDK's post-commit seam (Epic 02's onCommit pattern) — automatic, never a host-remembered call, and outside the intake transaction, so intake's outcome never depends on it. One indexed sum measures the full-zone tool tokens; if it exceeds the max budget, the boundary advances oldest-first until the zone is at-or-under the target budget; otherwise nothing happens. A failed advance leaves the boundary unchanged and the over-budget condition visible in the status read; the next batch's check re-evaluates the same condition, so the debt is bounded by one batch. The boundary never advances into the protected floor — the most recent stretch of tool output stays full even mid-monster-turn — and never moves backward: a flipped result stays flipped. A compact resets the boundary to the compact point, because the old tail just became bands.
 
 Because the advance is oldest-first, closed turns age out before the open turn's work; the boundary only eats into the open turn when that turn alone exceeds the budget, and even then the floor protects its most recent reads. Budgets — max, target, floor — are configuration with defaults, not architecture.
 
@@ -174,18 +175,20 @@ Because the advance is oldest-first, closed turns age out before the open turn's
 - **AC-4.2**: The short form is the result's summarized abbreviation when that form is usable, else deterministic truncation. Short-form rendering marks that fuller content exists in the record.
 - **AC-4.3**: The boundary advances only when, after an intake batch commits, the full-zone tool-result token sum exceeds the max budget; the advance moves oldest-first until the sum is at-or-under the target. Below max, the boundary does not move and rendered bytes do not change.
 - **AC-4.4**: The advance is deterministic and mechanical: token sums from stored per-message estimates, no inference, no provider calls.
-- **AC-4.5**: The boundary never advances past the protected floor: the most recent floor's-worth of tool output renders full even when the open turn alone exceeds the max.
+- **AC-4.5**: The boundary never advances into the protected set: the newest whole tool-result messages, joined newest-backward until their combined tokens first reach or exceed the floor, render full — even when the open turn alone exceeds the max, and even when the newest single result exceeds the floor by itself (it is protected alone; the zone may legally sit above target until later batches or a compact create room).
 - **AC-4.6**: The boundary never moves backward. A result that has rendered short never renders full in a later pull (within the same compact window, and its banded representation thereafter).
 - **AC-4.7**: Compact resets the boundary to the compact point.
 - **AC-4.8**: Max, target, and floor are configuration with defaults; max > target ≥ floor is validated with a caller error.
+- **AC-4.9**: The advance check runs after intake commit, outside the intake transaction, triggered through the SDK's post-commit seam — never by a separate host call. Intake's outcome never depends on it. A failed advance leaves the boundary unchanged with the over-budget condition visible in the status read; the next successful check re-evaluates and advances.
 
 #### Test Conditions
 
 - **TC-4.1** (AC-4.3): Intake tool results totaling under max → boundary unmoved; pulls byte-identical across batches. Cross max with one more batch → boundary advances once to target; exactly one batch of results flipped, oldest-first; next under-max batch → no movement.
 - **TC-4.2** (AC-4.1, AC-4.2): With flipped results: one with a usable summary renders the summary; one with a failed summary renders deterministic truncation with the marker; an interleaved assistant message renders full.
-- **TC-4.3** (AC-4.5): Single monster turn: tool results exceeding max within one open turn → boundary advances into the turn but stops at the floor; newest floor-tokens of tool output render full; the turn's own text messages all render full.
+- **TC-4.3** (AC-4.5): Single monster turn: tool results exceeding max within one open turn → boundary advances into the turn but stops at the protected set; the newest whole results (combined tokens ≥ floor) render full; oversized-newest leg: a single result larger than the floor is protected alone; the turn's own text messages all render full.
 - **TC-4.4** (AC-4.6, AC-4.7): After an advance, intake small batches → flipped results stay flipped (no backward motion); compact → boundary equals compact point; fresh tail renders full.
 - **TC-4.5** (AC-4.4, AC-4.8): Advance on a seeded thread is reproducible: same record, same budgets → same boundary trajectory (replay equality); configure max < target → caller error naming the constraint.
+- **TC-4.6** (AC-4.9): Inject a failure at the advance seam (test seam from Story 0); intake a batch that crosses max → intake reports success and all messages committed; boundary unchanged; status read shows the zone sum over max. Clear the injection; intake another batch → the advance lands at target.
 
 ## Flow 5: Render Targets
 
@@ -194,7 +197,7 @@ One view, two shapes. The message array is the primary render: ordered role-and-
 #### Acceptance Criteria
 
 - **AC-5.1**: The pull returns the view as an ordered message array: band content as labeled context messages in band order (brief → detailed → smoothed), then tail messages in record order, each with role and content. The mapping is deterministic.
-- **AC-5.2**: Materialize writes the active view as a PI-format session file at a caller-supplied path; the write changes no thread state, and repeating it after no thread changes produces an identical file.
+- **AC-5.2**: Materialize writes the active view as a PI-format session file at a caller-supplied path; the write changes no thread state; any generated fields in the file derive from active-view metadata, never from write-time clocks, so repeating it after no thread changes produces a byte-identical file.
 - **AC-5.3**: The materialized file and the message-array pull of the same view carry the same content: every band entry and tail message in the array appears in the file, same order, same rendered text, in the target format's encoding.
 - **AC-5.4**: Materializing a never-compacted thread works: the file carries the tail-only view.
 - **AC-5.5**: Pull and materialize are exposed through SDK and CLI; the CLI materialize prints the written path and the CLI pull emits the message array as JSON.
@@ -219,15 +222,17 @@ Shapes the flows above commit to. Field-level detail beyond this is tech design.
 - gaps: every degraded entry and missing-material gap, with reason codes
 - created-at and the record state it was built from
 
-**Visibility boundary** (one per thread): position in the message sequence; budgets (max, target, floor) resolved from config.
+**Visibility boundary** (one per thread): a source event order position (the compact point's coordinate system); budgets (max, target, floor) resolved from config; written only by the post-commit advance step and the compact reset.
 
 **Compact profile**: name, lower bound, band percentages (full/smooth/detailed/brief summing to 100). Built-ins ship; user profiles configurable; explicit params override.
+
+**Lower bound**: the target assembled size for a compact — a sizing input, not a strict cap. Band shares are computed from its percentages; bands fill by whole entries, so the final view may land below the bound (insufficient stored material, or the next whole entry would exceed a band's share) or above it (an indivisible entry included by the selection rules). Higher lower bound means more context retained. The receipt reports actual counts. Distinct from the trigger threshold the status read reports, which is when a compact becomes *recommended*.
 
 **Compact receipt**: per-band entry counts and token sizes; degraded entries and gaps with reasons; sweep section (receipt or skipped); config used.
 
 **Sweep receipt**: per owner and kind — ready, in-flight, requeued, blocked, non-transient-failed; reasons attached to failures; counts and ids.
 
-**Status read**: tail tokens, configured threshold, compact recommendation, pending and failed derivation counts.
+**Status read**: tail tokens, configured trigger threshold, compact recommendation; derivation counts by state (pending, retrying, failed, blocked); active-view health (degraded-entry count, gap count, built-at); visibility-zone token sum against its max.
 
 **Pull result**: ordered messages (role, content) plus view metadata (compact point, gaps present, boundary position).
 
@@ -237,14 +242,14 @@ Shapes the flows above commit to. Field-level detail beyond this is tech design.
 
 - **Hot path:** pull and status are local reads with deterministic assembly — no inference, no network, no queue writes. The boundary check after intake is one indexed sum and at most one update.
 - **Cache stability:** band snapshot bytes are stable between compacts, unconditionally. Tail changes are append-only except boundary advances, which are batched and budget-triggered. No per-turn churn path exists.
-- **No inference in this epic:** compact, sweep, pull, materialize — none invoke a provider. The provider seam appears in tests only to observe that zero calls happen.
+- **No inference in this epic:** pull, compact, sweep, materialize, boundary advance — no Epic 03 operation invokes a provider. Tests observe zero provider calls from these operations; test setups may drain Epic 02 work (which exercises the provider fake) to reach the states under test.
 - **Durability:** view replacement is atomic; a crash mid-compact serves the previous view. The boundary is durable; restart preserves it.
 - **Determinism:** same record, same config → same view, same boundary trajectory, same rendered bytes.
 - **Concurrency:** one writing process per thread file (inherited); compact and boundary advance both write under that regime; pulls are read-only and safe alongside.
 
 ## Tech Design Questions
 
-1. Boundary advance seam: inside the intake transaction or a post-commit hook (Epic 02's onCommit pattern)? Either preserves the contract; pick for locality.
+1. Post-commit seam wiring: the boundary advance and Epic 02's queue poke share the onCommit seam — pin their ordering and isolation (a failed advance must not eat the poke, and vice versa).
 2. Per-band degrade ladders: exact fallback order per band kind (e.g. brief entry falls back to detailed summary? smoothed turn falls back to raw-composed rendering?). The epic pins degrade-visibly-never-omit; the ladder is design.
 3. Profile storage and resolution: SDK config object, config file, or both; precedence rules.
 4. PI session file format: pin from PI source; define the fixture for TC-5.5.
@@ -258,17 +263,79 @@ Shapes the flows above commit to. Field-level detail beyond this is tech design.
 
 Six stories cut on the flow seams. Foundation first; read path before the operations that feed it; the boundary and renders last because both refine what pull serves.
 
-**Story 0 — Foundation.** Migration for view and boundary tables; profile config parsing and validation; the derived-thread fixture (a recorded thread with Epic 02 artifacts in known states — ready, failed-transient, failed-permanent, blocked — to compact against). Foundation criteria FC-0.x; owns no epic ACs.
+---
 
-**Story 1 — Pull and Status on the Record.** The pull path for never-compacted threads: tail assembly, message-array shape, delete filtering, determinism; the status read. Proves the hot path before any view exists. Flow 1 (AC-1.1–1.3, 1.5 partial — boundary at default, 1.7) and AC-2.8.
+**Story 0 — Foundation**
 
-**Story 2 — Smart Compact.** Profiles and validation, band arrangement from stored artifacts, snapshot render, gaps and degrade ladder, atomic replace, receipt; pull serves snapshot + tail. Flow 2 (less AC-2.8) and AC-1.4, AC-1.6.
+**Scope in:** migration for the view and boundary tables; profile config parsing and band-sum/budget validation; the advance-seam test injection point; the derived-thread fixture — a recorded thread with Epic 02 artifacts in known states (ready, failed-transient, failed-permanent, blocked) plus a canonical-corruption variant (Epic 01 fixture pattern), for every later story to compact against.
+**Scope out:** any thread-view operation; any rendering.
+**Dependencies:** Epic 02 schema (v5) as the migration baseline.
+**ACs covered:** none (foundation criteria FC-0.x: migration applies cleanly to an Epic-02 thread file; invalid profile configs rejected with named violations; fixture states verifiable by read-back).
+**TCs covered:** none directly; every later TC consumes the fixture.
+**Boundary / risk notes:** fixture fidelity is the epic's main test risk — states must be reached through real Epic 02 operations (drain against the deterministic provider), not hand-written rows, or every downstream test proves fiction.
+**Estimated test count:** ~6 foundation checks.
 
-**Story 3 — Readiness Sweep.** Standalone and embedded; transient classification; requeue through domain surfaces; receipts. Flow 3. Depends on Epic 02's requeue patch having landed.
+---
 
-**Story 4 — Tool-Result Visibility.** Boundary marker, budget check at intake commit, advance mechanics, floor, reset at compact, short-form rendering in pulls. Flow 4 and the rest of AC-1.5.
+**Story 1 — Pull and Status on the Record**
 
-**Story 5 — Render Targets.** PI session-file materialization, format fixture, array/file parity, CLI surfaces. Flow 5.
+**Scope in:** pull for never-compacted threads — tail assembly from the record, message-array shape, deleted-read filtering, determinism; the status read (full shape: derivation counts by state, view health fields null/absent pre-compact, zone sum).
+**Scope out:** band content (no compact exists yet); boundary movement (renders at default position); materialization.
+**Dependencies:** Story 0.
+**ACs covered:** AC-1.1, AC-1.2, AC-1.3, AC-1.5 (default-boundary leg), AC-1.7; AC-2.8.
+**TCs covered:** TC-1.1, TC-1.2 (and TC-2.5's status legs land here against pre-compact threads, completed in Story 2).
+**Boundary / risk notes:** proves the hot path before any view machinery exists; the array shape pinned here is the contract Stories 2–5 render into.
+**Estimated test count:** ~8.
+
+---
+
+**Story 2 — Smart Compact**
+
+**Scope in:** profiles and explicit-param override; band arrangement selection from stored artifacts; degrade ladder and gap recording; snapshot render with subject keys; atomic view replace with boundary reset; receipt; corruption refusal; pull serving snapshot + tail; status read's view-health fields go live.
+**Scope out:** the sweep (compact ships with the sweep step absent — Story 3 adds it; same pattern as Epic 01's Story 4→5 queue seam, stated so nobody reads the gap as a shim).
+**Dependencies:** Stories 0–1.
+**ACs covered:** AC-2.1–AC-2.7, AC-2.9, AC-2.10; AC-1.4, AC-1.6.
+**TCs covered:** TC-2.1–TC-2.4, TC-2.6, TC-2.7; TC-1.3, TC-1.5; completes TC-2.5.
+**Boundary / risk notes:** AC-2.6 atomicity (crash mid-compact serves the prior view) is this story's architecture-risk test; receipt's sweep section reports "absent" until Story 3.
+**Estimated test count:** ~14.
+
+---
+
+**Story 3 — Readiness Sweep**
+
+**Scope in:** the sweep walk through owning-domain reports; transient/non-transient classification; requeue through owning-domain surfaces; once-per-invocation dedupe; receipts; standalone SDK + CLI surface; embedding in compact default-on with skip option.
+**Scope out:** any direct derivation or queue writes outside domain requeue surfaces.
+**Dependencies:** Stories 0–2; Epic 02's requeue patch (live-work-only queue rows) landed — hard gate, verify before story start.
+**ACs covered:** AC-3.1–AC-3.7.
+**TCs covered:** TC-3.1–TC-3.4.
+**Boundary / risk notes:** the classification table (which Epic 02 reason codes count as transient) is tech-design output consumed here; TC-3.4's heal leg drains Epic 02 work via the provider fake — the one place a test setup exercises inference machinery.
+**Estimated test count:** ~10.
+
+---
+
+**Story 4 — Tool-Result Visibility**
+
+**Scope in:** boundary marker storage; post-commit advance step through the SDK seam; budget sum + oldest-first advance to target; protected floor; never-backward; compact reset wiring (the reset transaction landed in Story 2; this story proves it end-to-end); short-form rendering in pulls; advance-failure semantics and status visibility.
+**Scope out:** any change to band rendering; any host-called advance surface.
+**Dependencies:** Stories 0–2 (compact reset interaction); Story 1's pull.
+**ACs covered:** AC-4.1–AC-4.9; AC-1.5 (boundary-active leg).
+**TCs covered:** TC-4.1–TC-4.6; TC-1.4.
+**Boundary / risk notes:** shares the post-commit seam with Epic 02's queue poke — ordering/isolation per tech design question 1; replay-equality (TC-4.5) is the determinism proof; monster-turn floor behavior (TC-4.3) is the architecture-risk test.
+**Estimated test count:** ~12.
+
+---
+
+**Story 5 — Render Targets**
+
+**Scope in:** PI session-file materialization at a caller path; metadata-derived generated fields (byte-identical repeats); format fixture from a real PI session; array/file content parity; never-compacted materialization; CLI pull (JSON) and materialize surfaces.
+**Scope out:** non-PI formats; any view or state mutation.
+**Dependencies:** Stories 0–2 (a compacted view to render); Story 4 (boundary-affected tail renders identically in both targets).
+**ACs covered:** AC-5.1–AC-5.5.
+**TCs covered:** TC-5.1–TC-5.5.
+**Boundary / risk notes:** format fidelity is the risk — the fixture must derive from a real PI session file, pinned at tech design from PI source, not from memory of the format.
+**Estimated test count:** ~10.
+
+---
 
 Integration path: Story 1 proves pull on raw threads → Story 2 makes pull serve compacted views → Story 3 makes compacts self-healing → Story 4 makes the tail self-regulating → Story 5 ships the second render. Each story's output is consumed by the next; the fixture from Story 0 carries all of them.
 
@@ -276,14 +343,40 @@ Integration path: Story 1 proves pull on raw threads → Story 2 makes pull serv
 
 PRD Feature 3 ACs map: AC-3.1 → Flow 1 (AC-1.1, 1.2); AC-3.2 → AC-1.4, AC-1.7 plus the cache NFR; AC-3.3 → AC-2.4; AC-3.4 → AC-2.5; AC-3.5 → AC-4.3 (eligibility is positional — older than where the boundary will land; activation is the batched advance); AC-3.6 → AC-4.2; AC-3.7 → AC-5.3; AC-3.8 → Flow 3 (AC-3.1, 3.3, 3.5).
 
-Epic totals: 37 ACs (7 + 10 + 7 + 8 + 5), 25 TCs (5 + 6 + 4 + 5 + 5). Every AC is covered by at least one TC; every TC names its ACs inline.
+Epic totals: 38 ACs (7 + 10 + 7 + 9 + 5), 27 TCs (5 + 7 + 4 + 6 + 5). Every AC is covered by at least one TC; every TC names its ACs inline.
+
+### AC → TC Table
+
+| AC | TCs | | AC | TCs |
+|----|-----|-|----|-----|
+| AC-1.1 | TC-1.2 | | AC-3.1 | TC-3.1 |
+| AC-1.2 | TC-1.1 | | AC-3.2 | TC-3.1 |
+| AC-1.3 | TC-1.1 | | AC-3.3 | TC-3.1 |
+| AC-1.4 | TC-1.3 | | AC-3.4 | TC-3.2 |
+| AC-1.5 | TC-1.4 | | AC-3.5 | TC-3.3 |
+| AC-1.6 | TC-1.5 | | AC-3.6 | TC-3.4 |
+| AC-1.7 | TC-1.2 | | AC-3.7 | TC-3.3 |
+| AC-2.1 | TC-2.5 | | AC-4.1 | TC-4.2 |
+| AC-2.2 | TC-2.1 | | AC-4.2 | TC-4.2 |
+| AC-2.3 | TC-2.1 | | AC-4.3 | TC-4.1 |
+| AC-2.4 | TC-2.2 | | AC-4.4 | TC-4.5 |
+| AC-2.5 | TC-2.3, TC-2.7 | | AC-4.5 | TC-4.3 |
+| AC-2.6 | TC-2.4 | | AC-4.6 | TC-4.4 |
+| AC-2.7 | TC-2.1, TC-2.3, TC-3.4 | | AC-4.7 | TC-4.4 |
+| AC-2.8 | TC-2.5 | | AC-4.8 | TC-4.5 |
+| AC-2.9 | TC-2.2 | | AC-4.9 | TC-4.6 |
+| AC-2.10 | TC-2.6 | | AC-5.1 | TC-5.1 |
+| | | | AC-5.2 | TC-5.2 |
+| | | | AC-5.3 | TC-5.2, TC-5.5 |
+| | | | AC-5.4 | TC-5.3 |
+| | | | AC-5.5 | TC-5.4 |
 
 ## Completeness Self-Check
 
 - [x] Every PRD Feature 3 AC decomposes into epic ACs (mapping above)
 - [x] Every flow has ACs and TCs; every AC binary-testable; every TC names its ACs
 - [x] Data contracts cover every shape the flows commit to
-- [x] Story breakdown covers all ACs (AC-1.1–1.7, 2.1–2.10, 3.1–3.7, 4.1–4.8, 5.1–5.5) with Story 0 owning foundation criteria only
+- [x] Story breakdown covers all ACs (AC-1.1–1.7, 2.1–2.10, 3.1–3.7, 4.1–4.9, 5.1–5.5) with Story 0 owning foundation criteria only
 - [x] Out-of-scope names the adjacent features this epic does not build
 - [x] Settled design decisions from the planning conversation are encoded: snapshot views (no live mutation visibility), no force-refresh, explicit-call compact with profiles, sweep-never-waits with transient-only requeue, log-rotation boundary, two render targets
-- [x] No inference anywhere; provider appears in tests only as an observer
+- [x] No Epic 03 operation invokes inference; provider use appears only in Epic 02 test setup needed to prepare derived state
