@@ -44,12 +44,26 @@ export interface DerivedForm {
   derivedAt?: string;
 }
 
-// Mechanically stamped form metadata: tool outcomes (AC-2.4) plus — at retry
-// exhaustion — the final attempts/last-error copied from the work item before
-// its row is deleted (DD-1: the queue is not an audit table; durable outcome
-// detail lives here).
+// One tool call's or result's receipt within a turn's composed account
+// (AC-3.8): the account text — what changed, as composed — plus the
+// mechanically derived outcome. Derived from the composition input, never
+// from provider prose; stamped on the turn_rendering form so the chunk
+// summaries can read receipts machine-readably in turn order.
+export interface ToolRunReceipt {
+  messageId: string;
+  activity: "tool_call" | "tool_result";
+  account: string;
+  outcome: ToolOutcome;
+}
+
+// Mechanically stamped form metadata: tool outcomes (AC-2.4), the turn
+// rendering's tool-run receipts (AC-3.8), plus — at retry exhaustion — the
+// final attempts/last-error copied from the work item before its row is
+// deleted (DD-1: the queue is not an audit table; durable outcome detail
+// lives here).
 export interface DerivedFormMetadata {
   outcome?: ToolOutcome;
+  receipts?: ToolRunReceipt[];
   attempts?: number;
   lastError?: string;
 }
@@ -90,8 +104,20 @@ export interface DerivationProvider {
   summarizeToolResult(i: { toolName: string; content: string }): Promise<ProviderResult>;
   composeTurnRendering(i: { parts: RenderingPart[] }): Promise<ProviderResult>;
   projectLowerBand(i: { rendering: string }): Promise<ProviderResult>;
-  summarizeChunkDetailed(i: { memberProjections: string[] }): Promise<ProviderResult>;
-  summarizeChunkBrief(i: { memberProjections: string[] }): Promise<ProviderResult>;
+  // The two summary inputs differ by contract (AC-3.8): detailed receives
+  // the members' tool-run receipts (what changed, outcome) alongside the
+  // projections; brief receives outcomes only — receipt text is stripped
+  // before the provider is called, so brief structurally cannot leak it.
+  // The receipt fields are optional in the type for callers without member
+  // context (the production chunk handlers always pass them).
+  summarizeChunkDetailed(i: {
+    memberProjections: string[];
+    memberReceipts?: ToolRunReceipt[][];
+  }): Promise<ProviderResult>;
+  summarizeChunkBrief(i: {
+    memberProjections: string[];
+    memberOutcomes?: ToolOutcome[][];
+  }): Promise<ProviderResult>;
 }
 
 export const PROVIDER_OPERATIONS = [
@@ -149,8 +175,21 @@ export interface HandlerFormWrite {
   gaps?: DependencyGap[];
 }
 
+// The completion-transaction hook (Story 3): work that must land atomically
+// with the version-checked form writes — chunk placement and the
+// close→summary enqueues above all. The queue util invokes it inside the
+// completion's BEGIN IMMEDIATE, after the form writes and only when they hit
+// (a stale completion must not place a turn or enqueue summaries); onCommit
+// registrations flush after that COMMIT succeeds and drop on rollback, so a
+// crash leaves either a placed turn with its enqueues or nothing — never a
+// derived-but-unplaced turn.
+export interface CompletionTx {
+  db: DatabaseSync;
+  onCommit: (fn: () => void) => void;
+}
+
 export type HandlerOutcome =
-  | { ok: true; forms?: HandlerFormWrite[] } // written version-checked in the completion txn
+  | { ok: true; forms?: HandlerFormWrite[]; onApplied?: (tx: CompletionTx) => void }
   | { ok: false; retryable: boolean; reason: string }
   | { ok: false; blocked: true; reason: string }; // source damage → form blocked, item terminal
 

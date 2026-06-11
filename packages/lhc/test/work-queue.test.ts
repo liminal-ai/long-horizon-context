@@ -445,21 +445,25 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
 
   it("createSdk assembles the handler map from domain tables; an unregistered kind reports the miss explicitly", () => {
     const sdk = createSdk({ provider: createProviderDouble(), mode: "manual" });
-    // Story 2 registered the three message-owned handlers; the turn-owned
-    // kinds arrive in Story 3 (amended from the empty-map assertion when the
-    // messages table was populated).
+    // All six kinds registered: Story 2's message-owned handlers plus
+    // Story 3's turn-owned ones (amended each story as the domain tables
+    // populated — Story 0 asserted an empty map, Story 2 the three message
+    // kinds).
     expect(Object.keys(sdk.workHandlers).sort()).toEqual([
+      "chunk_summary_brief",
+      "chunk_summary_detailed",
       "prompt_smoothing",
       "tool_call_summary",
       "tool_result_summary",
+      "turn_derivation",
     ]);
     // The miss is reported as a structured result — not a throw, not silence.
-    const missed = sdk.lookupWorkHandler("turn_derivation");
+    const missed = sdk.lookupWorkHandler("bogus_kind");
     expect(missed.ok).toBe(false);
     if (missed.ok) return;
     expect(missed.error.errorClass).toBe("state_corruption");
     expect(missed.error.code).toBe("unknown_work_kind");
-    expect(missed.error.reason).toContain("turn_derivation");
+    expect(missed.error.reason).toContain("bogus_kind");
   });
 
   it("assembly merges per-domain tables, dispatch finds a registered handler, and a doubly-claimed kind is refused", () => {

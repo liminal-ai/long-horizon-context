@@ -145,7 +145,13 @@ export async function drainOpenDb(
     }
 
     if (outcome.ok) {
-      const disposition = complete(db, item, outcome.forms ?? [], clock().toISOString());
+      const disposition = complete(
+        db,
+        item,
+        outcome.forms ?? [],
+        clock().toISOString(),
+        outcome.onApplied,
+      );
       ran.push(ranEntry(item, disposition, item.attempts));
       continue;
     }

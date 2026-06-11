@@ -86,6 +86,16 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Baseline: 173 → 182 (no regression).
 - Dispositions: 02F-001 fixed. Deviations: 5 approved. Accepted-risk/defer: none. Open risks: none.
 
+### 03-turn-composition-chunk-formation
+- validate ready; run 04:44Z; implementor ~20min; verifier initial SV-3.8-001 → fixed; verifier follow-up pass (openFindings []).
+- 05:14Z needs-ruling (spec-deviation). 05:15Z impl-lead APPROVED 3 deviations: truncateForFallback implemented in compose.ts (referenced Epic 01 util doesn't exist); handler-map test per-story amendment + red-manifest regen (F-03 procedure, scheduled by the test's own comment); handlers in derive.ts per story table over design sketch. Resumed → accept-story.
+
+#### RECEIPT — 03-turn-composition-chunk-formation (ACCEPTED 2026-06-11T05:16Z)
+- Implementor: 003-implementor.json. Verifier: pass after one fixed finding.
+- Gates by impl-lead: green-verify PASS (176 tests, immutability OK 21 red files); verify-all PASS (195 tests).
+- Baseline: 182 → 195 (no regression). TC-3.9 determinism + chunk golden cases in suite.
+- Dispositions: SV-3.8-001 fixed. Deviations: 3 approved. Accepted-risk/defer: none. Open risks: none.
+
 ## Epic Closeout
 
 (pending)

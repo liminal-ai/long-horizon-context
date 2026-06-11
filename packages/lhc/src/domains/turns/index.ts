@@ -16,6 +16,7 @@ import { transition } from "./internal/state-machine.js";
 // test plan's one sanctioned direct entry besides the tokenizer); production
 // callers go through applyEvent.
 export { transition, type TurnEffect, type TurnState } from "./internal/state-machine.js";
+import { turnWorkHandlers } from "./internal/derive.js";
 import {
   closeTurn,
   insertOpenTurn,
@@ -30,6 +31,10 @@ export interface TurnRecord {
   memberMessageIds: string[];
   openedAtEventOrder: number;
   closedAtEventOrder?: number;
+  // Chunk placement (Epic 02 Story 3, AC-3.5): present once the turn's
+  // derivation placed it — stored values read back, never recomputed.
+  chunkId?: string;
+  memberIdx?: number;
 }
 
 export interface TurnTransitionOutcome {
@@ -76,9 +81,9 @@ function closeTurnAndQueueWork(
 }
 
 // Turn-owned work handlers, merged into the SDK's dispatch map at
-// construction (DD-6). Empty until Story 3 lands turn derivation and the
-// chunk summaries.
-export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {};
+// construction (DD-6): turn derivation and the two chunk summaries.
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> =
+  turnWorkHandlers;
 
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like

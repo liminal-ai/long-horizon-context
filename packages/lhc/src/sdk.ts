@@ -53,12 +53,15 @@ export {
 
 export {
   createDeterministicProvider,
+  deterministicOutcomesSuffix,
+  deterministicReceiptsSuffix,
   deterministicText,
   type DeterministicOpName,
 } from "./providers/deterministic.js";
 export { registeredProviderNames, resolveNamedProvider } from "./providers/registry.js";
 
 export type {
+  CompletionTx,
   DependencyGap,
   DerivationProvider,
   DerivedForm,
@@ -74,14 +77,18 @@ export type {
   SdkConfig,
   SubjectKind,
   ToolOutcome,
+  ToolRunReceipt,
   WorkHandler,
 } from "./shared/derivation.js";
 export type { DrainReport, Scheduler, SchedulerMode } from "./scheduler.js";
 export {
   countLiveItems,
+  enqueue,
   queueDetail,
   supersedeQueued,
   type ClaimedWorkItem,
+  type EnqueueFormTarget,
+  type EnqueueInput,
   type QueueDetailRow,
 } from "./tech-utils/work-queue/index.js";
 

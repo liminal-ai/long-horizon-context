@@ -9,6 +9,8 @@ import type {
   DerivationProvider,
   ProviderResult,
   RenderingPart,
+  ToolOutcome,
+  ToolRunReceipt,
 } from "../shared/derivation.js";
 
 export type DeterministicOpName =
@@ -54,6 +56,24 @@ function ok(op: DeterministicOpName, input: unknown, text: string): Promise<Prov
   return Promise.resolve({ ok: true, text: deterministicText(op, input, text) });
 }
 
+// The chunk-summary contract made visible in deterministic output (AC-3.8):
+// the detailed summary's artifact carries the members' tool-run receipts —
+// account and outcome — verbatim; the brief summary's carries outcomes
+// only. Pure suffixes over the input fields, shared with the test double so
+// in-process and spawned artifacts stay byte-identical; empty receipt sets
+// add nothing, keeping receipt-less output unchanged.
+export function deterministicReceiptsSuffix(memberReceipts?: ToolRunReceipt[][]): string {
+  const receipts = (memberReceipts ?? []).flat();
+  if (receipts.length === 0) return "";
+  return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
+}
+
+export function deterministicOutcomesSuffix(memberOutcomes?: ToolOutcome[][]): string {
+  const outcomes = (memberOutcomes ?? []).flat();
+  if (outcomes.length === 0) return "";
+  return `[outcomes ${outcomes.join(",")}]`;
+}
+
 export function createDeterministicProvider(): DerivationProvider {
   return {
     smoothPrompt: (i: { text: string }) => ok("smoothPrompt", i, i.text),
@@ -67,9 +87,21 @@ export function createDeterministicProvider(): DerivationProvider {
     composeTurnRendering: (i: { parts: RenderingPart[] }) =>
       ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),
     projectLowerBand: (i: { rendering: string }) => ok("projectLowerBand", i, i.rendering),
-    summarizeChunkDetailed: (i: { memberProjections: string[] }) =>
-      ok("summarizeChunkDetailed", i, i.memberProjections.join(" | ")),
-    summarizeChunkBrief: (i: { memberProjections: string[] }) =>
-      ok("summarizeChunkBrief", i, i.memberProjections.join(" | ")),
+    summarizeChunkDetailed: async (i: {
+      memberProjections: string[];
+      memberReceipts?: ToolRunReceipt[][];
+    }) => {
+      const base = await ok("summarizeChunkDetailed", i, i.memberProjections.join(" | "));
+      if (!base.ok) return base;
+      return { ok: true, text: base.text + deterministicReceiptsSuffix(i.memberReceipts) };
+    },
+    summarizeChunkBrief: async (i: {
+      memberProjections: string[];
+      memberOutcomes?: ToolOutcome[][];
+    }) => {
+      const base = await ok("summarizeChunkBrief", i, i.memberProjections.join(" | "));
+      if (!base.ok) return base;
+      return { ok: true, text: base.text + deterministicOutcomesSuffix(i.memberOutcomes) };
+    },
   };
 }

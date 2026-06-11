@@ -4,6 +4,7 @@
 // any UPDATE that touches a closed row.
 import type { DatabaseSync } from "node:sqlite";
 import type { TurnRecord } from "../index.js";
+import { readPlacements } from "./chunks.js";
 
 export function selectOpenTurnIds(db: DatabaseSync): string[] {
   const rows = db
@@ -68,6 +69,9 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
        FROM turns ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
+  // Chunk placement rides the turn read-back (Epic 02 AC-3.5): stored
+  // chunk_member values, absent until the turn's derivation placed it.
+  const placements = readPlacements(db);
   return turnRows.map((row) => {
     const record: TurnRecord = {
       turnId: row.turn_id,
@@ -77,6 +81,11 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
     };
     if (row.closed_at_event_order !== null) {
       record.closedAtEventOrder = Number(row.closed_at_event_order);
+    }
+    const placement = placements.get(row.turn_id);
+    if (placement !== undefined) {
+      record.chunkId = placement.chunkId;
+      record.memberIdx = placement.memberIdx;
     }
     return record;
   });

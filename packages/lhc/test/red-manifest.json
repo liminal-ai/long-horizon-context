@@ -13,12 +13,13 @@
     "test/turns.test.ts": "e97608cae9dfbab3f71ad3643bd8e509d8a696e0b07028ee94b8c4abae3a3e4f",
     "test/state-machine.test.ts": "c056bb4d49194d6157c8dcf98301a8a9fd028ef0a7aea74ddf136ff5945f84d9",
     "test/cli-process-turns.test.ts": "baecaf4e8939e949e38cc21f2e78c342a21065aef55971412cc2f5d326e14ba2",
-    "test/work-queue.test.ts": "719d60fa726836726b3c3a9f9251a94ad7e69ecd6b6b4d22f27fa2d688f5fe1c",
+    "test/work-queue.test.ts": "b383468eb0d5e37f6a31f5b9912ab71f2f782e2b4febc46067ebc96bfe659ea0",
     "test/cli-process-work-queue.test.ts": "13bf1226de9cd52d7f10306c87dafea2930c10e43d5628080e3891b6a55f6686",
     "test/fixtures.test.ts": "d2f20683050ac412612b2fef1be5633ddfded6279182ac8ae3fe772907f7a4c3",
     "test/work-execution.test.ts": "697e1e42352fbaf9220bd478a507fd6075fb65cab7f5dfc3752a2d841fbf7b2d",
     "test/cli-process-work.test.ts": "35c0426345a6eba19240872128dc93d139e7c11c563f17746afa041064daae9f",
     "test/work-execution-legacy.test.ts": "cfe9779ecc130f19be97b859ba441abbb8e95711b55dec64a28a6569e42af69b",
-    "test/derivation-messages.test.ts": "eacdfc02460eb4f76440d4d7cbe0f84aefb22c322c130163e350f67a2d4f440b"
+    "test/derivation-messages.test.ts": "eacdfc02460eb4f76440d4d7cbe0f84aefb22c322c130163e350f67a2d4f440b",
+    "test/derivation-turns.test.ts": "0e0fda1f761b4baa5b4d0d93ffd91f2a893bdb68fa7010d020c375de096bb4c8"
   }
 }

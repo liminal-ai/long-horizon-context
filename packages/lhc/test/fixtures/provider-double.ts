@@ -8,10 +8,14 @@
 // captureInputs) is per-instance state and never leaks across tests that
 // construct their own double.
 import {
+  deterministicOutcomesSuffix,
+  deterministicReceiptsSuffix,
   deterministicText,
   type DerivationProvider,
   type ProviderResult,
   type RenderingPart,
+  type ToolOutcome,
+  type ToolRunReceipt,
 } from "../../src/index.js";
 
 export type ProviderOpName =
@@ -102,6 +106,7 @@ export class ProviderDouble implements DerivationProvider {
     op: ProviderOpName,
     input: unknown,
     text: string,
+    suffix = "",
   ): Promise<ProviderResult> {
     if (this.capturing) this.captured.push({ op, input: structuredClone(input) });
     const delay = this.delayByOp.get(op);
@@ -117,8 +122,9 @@ export class ProviderDouble implements DerivationProvider {
     }
     // Output format shared with src/providers/deterministic.ts so the double
     // and the registry's "deterministic" provider produce byte-identical
-    // artifacts across in-process and spawned runs.
-    return { ok: true, text: deterministicText(op, input, text) };
+    // artifacts across in-process and spawned runs; the chunk-summary
+    // receipt/outcome suffixes (AC-3.8) come from the same shared helpers.
+    return { ok: true, text: deterministicText(op, input, text) + suffix };
   }
 
   smoothPrompt(i: { text: string }): Promise<ProviderResult> {
@@ -145,12 +151,28 @@ export class ProviderDouble implements DerivationProvider {
     return this.run("projectLowerBand", i, i.rendering);
   }
 
-  summarizeChunkDetailed(i: { memberProjections: string[] }): Promise<ProviderResult> {
-    return this.run("summarizeChunkDetailed", i, i.memberProjections.join(" | "));
+  summarizeChunkDetailed(i: {
+    memberProjections: string[];
+    memberReceipts?: ToolRunReceipt[][];
+  }): Promise<ProviderResult> {
+    return this.run(
+      "summarizeChunkDetailed",
+      i,
+      i.memberProjections.join(" | "),
+      deterministicReceiptsSuffix(i.memberReceipts),
+    );
   }
 
-  summarizeChunkBrief(i: { memberProjections: string[] }): Promise<ProviderResult> {
-    return this.run("summarizeChunkBrief", i, i.memberProjections.join(" | "));
+  summarizeChunkBrief(i: {
+    memberProjections: string[];
+    memberOutcomes?: ToolOutcome[][];
+  }): Promise<ProviderResult> {
+    return this.run(
+      "summarizeChunkBrief",
+      i,
+      i.memberProjections.join(" | "),
+      deterministicOutcomesSuffix(i.memberOutcomes),
+    );
   }
 }
 

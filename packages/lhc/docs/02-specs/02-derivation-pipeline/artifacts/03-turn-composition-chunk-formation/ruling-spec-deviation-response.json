@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "03-turn-composition-chunk-formation-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "source": "impl-lead",
+  "rationale": "All three deviations approved: (1) the referenced 'Epic 01 truncation util' does not exist in src — implementing truncateForFallback as a pure deterministic helper in compose.ts satisfies the fallback contract without inventing retroactive Epic 01 surface; (2) the handler-map test amendment is the per-story amendment its own comment schedules (Story 2 did the same), unknown-kind probe moved to a genuinely unregistered kind, red manifest regenerated per F-03 procedure; (3) story Implementation Targets table (derive.ts) wins over the tech design's earlier placement sketch — the story is the later, more specific authority. No contract changes."
+}

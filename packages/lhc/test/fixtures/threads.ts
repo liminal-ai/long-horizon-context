@@ -81,6 +81,62 @@ export async function threadWithToolRun(
   return { filePath, turnId: "t1" };
 }
 
+// ── chunk read-back (Story 3): raw rows for boundary assertions ──
+
+export interface ChunkSnapshot {
+  chunks: Array<{
+    chunkId: string;
+    chunkOrder: number;
+    status: "open" | "closed";
+    accumulatedProjectedTokens: number;
+  }>;
+  members: Array<{ chunkId: string; turnId: string; memberIdx: number }>;
+}
+
+export function readChunks(filePath: string): ChunkSnapshot {
+  const db = new DatabaseSync(filePath);
+  try {
+    const chunks = (
+      db
+        .prepare(
+          `SELECT chunk_id, chunk_order, status, accumulated_projected_tokens
+           FROM chunk ORDER BY chunk_order`,
+        )
+        .all() as unknown as Array<{
+        chunk_id: string;
+        chunk_order: number | bigint;
+        status: string;
+        accumulated_projected_tokens: number | bigint;
+      }>
+    ).map((row) => ({
+      chunkId: row.chunk_id,
+      chunkOrder: Number(row.chunk_order),
+      status: row.status as "open" | "closed",
+      accumulatedProjectedTokens: Number(row.accumulated_projected_tokens),
+    }));
+    const members = (
+      db
+        .prepare(
+          `SELECT cm.chunk_id, cm.turn_id, cm.member_idx FROM chunk_member cm
+           JOIN chunk c ON c.chunk_id = cm.chunk_id
+           ORDER BY c.chunk_order, cm.member_idx`,
+        )
+        .all() as unknown as Array<{
+        chunk_id: string;
+        turn_id: string;
+        member_idx: number | bigint;
+      }>
+    ).map((row) => ({
+      chunkId: row.chunk_id,
+      turnId: row.turn_id,
+      memberIdx: Number(row.member_idx),
+    }));
+    return { chunks, members };
+  } finally {
+    db.close();
+  }
+}
+
 // ── derived_form read-back and the sanctioned state writer ───────
 
 interface RawFormRow {

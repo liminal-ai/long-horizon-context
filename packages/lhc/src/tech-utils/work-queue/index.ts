@@ -9,8 +9,17 @@
 // public SDK surface: read-back reaches here only through the owning
 // domains' listQueuedWork.
 import type { DatabaseSync } from "node:sqlite";
-import { fireSchedulerPoke, type OperationContext } from "../../shared/context.js";
-import type { FormKind, HandlerFormWrite, SubjectKind } from "../../shared/derivation.js";
+import {
+  createCommitHooks,
+  fireSchedulerPoke,
+  type OperationContext,
+} from "../../shared/context.js";
+import type {
+  CompletionTx,
+  FormKind,
+  HandlerFormWrite,
+  SubjectKind,
+} from "../../shared/derivation.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
@@ -276,13 +285,19 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
 // one short transaction (DD-1: terminal transition deletes the row; the
 // disposition is reported in-memory, never stored). UPDATE-only, never
 // upsert — the pending row exists from enqueue; a write that finds no row at
-// the item's source version is discarded as stale (DD-3 truth table).
+// the item's source version is discarded as stale (DD-3 truth table). The
+// optional onApplied hook (Story 3) runs inside this same transaction, after
+// the form writes and only when they landed — chunk placement and the
+// close→summary enqueues ride the completion commit; its onCommit
+// registrations (the enqueue pokes) flush after COMMIT and drop on rollback.
 export function complete(
   db: DatabaseSync,
   item: ClaimedWorkItem,
   writes: readonly HandlerFormWrite[],
   derivedAt: string,
+  onApplied?: (tx: CompletionTx) => void,
 ): "done" | "stale_discarded" {
+  const hooks = createCommitHooks();
   db.exec("BEGIN IMMEDIATE;");
   try {
     let hits = 0;
@@ -304,9 +319,14 @@ export function complete(
       );
       hits += Number(changed.changes);
     }
+    const stale = writes.length > 0 && hits === 0;
+    if (!stale && onApplied !== undefined) {
+      onApplied({ db, onCommit: hooks.register });
+    }
     db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(item.workItemId);
     db.exec("COMMIT;");
-    return writes.length > 0 && hits === 0 ? "stale_discarded" : "done";
+    hooks.flush();
+    return stale ? "stale_discarded" : "done";
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
