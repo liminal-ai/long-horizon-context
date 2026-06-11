@@ -314,23 +314,34 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
     const composed = captured.filter((entry) => entry.op === "composeTurnRendering");
     expect(composed).toHaveLength(1);
     const parts = (composed[0]?.input as { parts: RenderingPart[] }).parts;
-    expect(parts.map((part) => part.messageId)).toEqual([
-      "m1", "m2", "m3", "m4", "m5", "m6", "m7",
-    ]);
-    // The run's account is the consecutive tool parts in message order, each
-    // stating its outcome — the failed edit's outcome is present on both
-    // halves of its pair and cannot be lost in composition.
-    expect(parts.map((part) => part.outcome ?? null)).toEqual([
-      null,
-      "succeeded", "succeeded",
-      "failed", "failed",
-      "succeeded", "succeeded",
-    ]);
+    // Fix 2 grouping (AC-3.4): the three-call edit run folds into ONE run part
+    // after the prompt — outcome-explicit, not one part per tool message.
+    expect(parts.map((part) => part.messageId)).toEqual(["m1", "m2"]);
+    expect(parts[0]?.outcome).toBeUndefined();
+    const run = parts[1];
+    // A run with any failed call reads failed at run level — the state-changing
+    // failure cannot be lost — and the mixed tally stays explicit, never a
+    // vague success.
+    expect(run?.outcome).toBe("failed");
+    const account = run?.text ?? "";
+    expect(account).toContain("2 succeeded, 1 failed");
+    expect(account).not.toMatch(/\b3 succeeded\b/);
     // Composition consumed the ready forms, not the raw record: every tool
-    // part's text is its summary form's stored content, verbatim.
-    for (const part of parts.slice(1)) {
-      expect(part.fallback).toBe(false);
-      expect(part.text).toBe(formOf(filePath, part.messageId, `${part.kind}_summary`)?.content);
+    // message's summary form content rides the run account verbatim, each
+    // stamped with its record outcome — the failed pair (m4/m5) included.
+    const toolMessages = [
+      { id: "m2", kind: "tool_call", outcome: "succeeded" },
+      { id: "m3", kind: "tool_result", outcome: "succeeded" },
+      { id: "m4", kind: "tool_call", outcome: "failed" },
+      { id: "m5", kind: "tool_result", outcome: "failed" },
+      { id: "m6", kind: "tool_call", outcome: "succeeded" },
+      { id: "m7", kind: "tool_result", outcome: "succeeded" },
+    ] as const;
+    expect(run?.fallback).toBe(false);
+    for (const m of toolMessages) {
+      const summary = formOf(filePath, m.id, `${m.kind}_summary`)?.content;
+      expect(summary).toBeDefined();
+      expect(account).toContain(`${summary} ⇒ ${m.outcome}`);
     }
   });
 });
@@ -541,45 +552,50 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     ]);
     await drain(sdk, filePath);
 
-    // The receipts are mechanically stamped on the rendering: account text
-    // = each tool message's ready summary form content, outcome from the
-    // record — the material the detailed summary must preserve.
-    const expectedReceipts = (["m2", "m3", "m4", "m5"] as const).map((messageId, index) => ({
-      messageId,
-      activity: index % 2 === 0 ? "tool_call" : "tool_result",
-      account: formOf(filePath, messageId, index % 2 === 0 ? "tool_call_summary" : "tool_result_summary")?.content,
-      outcome: index < 2 ? "succeeded" : "failed",
-    }));
-    expect(formOf(filePath, "t1", "turn_rendering")?.metadata?.receipts).toEqual(expectedReceipts);
+    // Fix 2 grouping (AC-3.4/3.8): the two-call run folds into ONE receipt —
+    // its account names each call's summary content with its record outcome,
+    // and the run-level outcome is failed because one half failed. The summary
+    // contents are what the detailed summary must preserve.
+    const callA = formOf(filePath, "m2", "tool_call_summary")?.content;
+    const resultA = formOf(filePath, "m3", "tool_result_summary")?.content;
+    const callB = formOf(filePath, "m4", "tool_call_summary")?.content;
+    const resultB = formOf(filePath, "m5", "tool_result_summary")?.content;
+    const receipts = formOf(filePath, "t1", "turn_rendering")?.metadata?.receipts;
+    expect(receipts).toHaveLength(1);
+    const receipt = receipts?.[0];
+    expect(receipt?.messageId).toBe("m2");
+    expect(receipt?.activity).toBe("tool_call");
+    expect(receipt?.outcome).toBe("failed");
+    const account = receipt?.account ?? "";
+    expect(account).toContain("1 succeeded, 1 failed");
+    expect(account).toContain(`${callA} ⇒ succeeded`);
+    expect(account).toContain(`${resultA} ⇒ succeeded`);
+    expect(account).toContain(`${callB} ⇒ failed`);
+    expect(account).toContain(`${resultB} ⇒ failed`);
 
-    // Seam evidence: the detailed call received the full receipts; the
-    // brief call received outcomes only — no receipt account text anywhere
-    // in its input, so brief structurally cannot preserve more than
-    // outcomes.
+    // Seam evidence: the detailed call received the full run receipt; the
+    // brief call received the run outcome only — no receipt account text
+    // anywhere in its input, so brief structurally cannot preserve more.
     const detailedInput = captured.find((entry) => entry.op === "summarizeChunkDetailed")?.input;
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
-    expect((detailedInput as { memberReceipts: unknown }).memberReceipts).toEqual([
-      expectedReceipts,
-    ]);
+    expect((detailedInput as { memberReceipts: unknown }).memberReceipts).toEqual([receipts]);
     expect(briefInput).toEqual({
       memberProjections: [formOf(filePath, "t1", "lower_band_projection")?.content],
-      memberOutcomes: [["succeeded", "succeeded", "failed", "failed"]],
+      memberOutcomes: [["failed"]],
     });
-    for (const receipt of expectedReceipts) {
-      expect(JSON.stringify(briefInput)).not.toContain(receipt.account as string);
+    for (const summary of [callA, resultA, callB, resultB]) {
+      expect(JSON.stringify(briefInput)).not.toContain(summary as string);
     }
 
-    // Artifact evidence: the detailed summary carries every receipt's
-    // account and outcome; the brief summary carries the outcomes and none
+    // Artifact evidence: the detailed summary carries the run receipt's
+    // account and outcome; the brief summary carries the run outcome and none
     // of the receipt content.
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
-    for (const receipt of expectedReceipts) {
-      expect(detailed?.content).toContain(`${receipt.account as string}=>${receipt.outcome}`);
-    }
-    expect(brief?.content).toContain("[outcomes succeeded,succeeded,failed,failed]");
+    expect(detailed?.content).toContain(`${account}=>failed`);
+    expect(brief?.content).toContain("[outcomes failed]");
     expect(brief?.content).not.toContain("toolcall(");
     expect(brief?.content).not.toContain("toolresult(");
   });

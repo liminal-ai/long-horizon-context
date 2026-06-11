@@ -486,4 +486,5 @@ Verification gates: unchanged scripts. New tests slot into the existing suites: 
 
 | # | Deviates from | What | Why | Status |
 |---|---|---|---|---|
-| — | (none at design time; implementation-time deviations land here) | | | |
+| E02-FIX1 | DD-4 completion (not a deviation) | Background mode arms one `unref()`'d wake at the head's `eligible_at` when a drain pass stops on `waiting`, re-entering the existing single-flight/coalesce poke path; at most one pending wake per thread (a poke or newer wake clears it), and `drainSettled` spans the wake. Manual mode unchanged. | DD-4 background scheduling did not honor the backoff eligibility gate — a backed-off head could stall until an unrelated poke arrived. This completes DD-4's design intent; the durable `claimNext` gate stays the correctness guard, the timer only a nudge. | Done (fix-batch-002) |
+| E02-FIX2 | AC-3.4 spec-compliance restoration (not a deviation) | `composeRenderingInput` groups maximal runs of consecutive tool activity into one `RenderingPart` + one tool-run receipt with an outcome-explicit run account (tools, call count, per-call outcomes; mixed outcomes stay explicit). Per-message mechanical stamping is untouched. | The initial build shimmed one part/receipt per tool message; AC-3.4 and story §Anti-Shim require grouped run accounts. Restores spec compliance. | Done (fix-batch-002) |

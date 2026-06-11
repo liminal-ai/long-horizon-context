@@ -290,14 +290,18 @@ describe("TC-2.6 / AC-2.6: provider exhaustion lands the form failed; the messag
 });
 
 describe("TC-2.7 / AC-2.7: kinds with no derivable form queue no work and carry no state rows", () => {
-  it("assistant text and a runtime note: no items, no derivation rows, an empty drain", async () => {
+  it("assistant text, a runtime note, and assistant thinking: no items, no derivation rows, an empty drain", async () => {
     const double = createProviderDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
+    // assistant_thinking joins the no-derivable-form kinds (Fix 3.2 coverage):
+    // like assistant text and runtime notes it queues no work and carries no
+    // derivation state row.
     const batch = await send(sdk, filePath, [
       validEvent("assistant_text"),
       validEvent("runtime_note"),
+      validEvent("assistant_thinking"),
     ]);
     expect(batch.queuedWork).toEqual([]);
     expect(liveCount(filePath)).toBe(0);

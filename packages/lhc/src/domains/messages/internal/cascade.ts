@@ -276,6 +276,19 @@ export function cascadeMessageDelete(
 // (AC-6.6). Runs after the delete stamps land, so the live-member count
 // already excludes the deleted turn. Membership rows are untouched —
 // shrink-only: reads filter deleted turns; boundaries never re-cut.
+//
+// REVERIFY-02-001: the call/result pair is a source dependency (epic-fix-001),
+// and this third cascade caller honored it nowhere — a cross-turn pair is
+// reachable when a late result lands in a later turn. Deleting a member whose
+// counterpart lives in another (still-live) turn is a source change for that
+// counterpart's tool-activity summary, so each deleted member's live
+// counterpart joins the clear set and re-derives from the now-deleted record
+// (its outcome reverts to `unknown`). Same-turn counterparts are skipped: they
+// are themselves deleted members (the live-read filter already excludes them,
+// and we drop them explicitly), so they belong to the drop set, not the clear
+// set. AC-6.2's "nothing else changes" still bounds the cascade across other
+// turns/chunks — only the counterpart message, inside the dependency graph, is
+// pulled in; its own turn and chunk are deliberately not walked.
 export function cascadeTurnDelete(
   ctx: OperationContext,
   turnId: string,
@@ -288,10 +301,19 @@ export function cascadeTurnDelete(
     })),
     { subjectKind: "turn", subjectId: turnId },
   ];
+  const memberSet = new Set(memberMessageIds);
+  const counterparts = new Map<string, ChainSubject>();
+  for (const messageId of memberMessageIds) {
+    const counterpart = pairedCounterpartSubject(ctx.db, messageId);
+    if (counterpart !== undefined && !memberSet.has(counterpart.subjectId)) {
+      counterparts.set(counterpart.subjectId, counterpart);
+    }
+  }
+  const counterpartClears = [...counterparts.values()];
   const chunkRow = ctx.db
     .prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`)
     .get(turnId) as unknown as { chunk_id: string } | undefined;
-  if (chunkRow === undefined) return runCascade(ctx, drop, []);
+  if (chunkRow === undefined) return runCascade(ctx, drop, counterpartClears);
   const chunk: ChainSubject = { subjectKind: "chunk", subjectId: chunkRow.chunk_id };
   const remaining = ctx.db
     .prepare(
@@ -301,6 +323,6 @@ export function cascadeTurnDelete(
     )
     .get(chunkRow.chunk_id) as unknown as { n: number | bigint };
   return Number(remaining.n) > 0
-    ? runCascade(ctx, drop, [chunk])
-    : runCascade(ctx, [...drop, chunk], []);
+    ? runCascade(ctx, drop, [chunk, ...counterpartClears])
+    : runCascade(ctx, [...drop, chunk], counterpartClears);
 }

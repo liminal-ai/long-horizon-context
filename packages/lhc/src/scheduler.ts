@@ -8,7 +8,11 @@
 // advisory only: cross-process safety comes from the durable lease alone, so
 // a fresh handle sees identical drain behavior — the queue is the rows.
 import { existsSync } from "node:fs";
-import { setImmediate as scheduleMacrotask } from "node:timers";
+import {
+  clearTimeout as cancelTimer,
+  setImmediate as scheduleMacrotask,
+  setTimeout as scheduleTimer,
+} from "node:timers";
 import { DatabaseSync } from "node:sqlite";
 import { openThreadDatabase } from "./domains/threads/index.js";
 import type {
@@ -218,12 +222,21 @@ export async function runDrain(
 }
 
 interface ThreadDrainState {
+  threadId: string;
   filePath: string;
   running: boolean;
   pending: boolean;
   passes: number; // test-only observability (TC-1.2); must not become API
   waiters: Array<() => void>;
+  // Fix 1 (DD-4 completion): at most one pending backoff wake per thread; a
+  // poke or a newer wake clears it. unref'd so it never keeps the process
+  // alive. Background only — manual never reaches the drain loop.
+  wakeTimer: ReturnType<typeof scheduleTimer> | undefined;
 }
+
+// A wake floored to a sane minimum: an eligible_at already in the past must
+// nudge once, not busy-spin (the durable claimNext gate is the real guard).
+const WAKE_MIN_DELAY_MS = 5;
 
 export interface Scheduler {
   readonly mode: SchedulerMode;
@@ -272,35 +285,85 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
   function stateFor(threadId: string): ThreadDrainState {
     let st = states.get(threadId);
     if (st === undefined) {
-      st = { filePath: "", running: false, pending: false, passes: 0, waiters: [] };
+      st = {
+        threadId,
+        filePath: "",
+        running: false,
+        pending: false,
+        passes: 0,
+        waiters: [],
+        wakeTimer: undefined,
+      };
       states.set(threadId, st);
     }
     return st;
+  }
+
+  function clearWake(st: ThreadDrainState): void {
+    if (st.wakeTimer !== undefined) {
+      cancelTimer(st.wakeTimer);
+      st.wakeTimer = undefined;
+    }
+  }
+
+  // Arm the lone backoff wake (Fix 1): when a background pass stops on the
+  // eligibility gate, schedule a single nudge at the head's eligible_at that
+  // re-enters the existing poke path. The delay reads the SDK clock seam (no
+  // fresh Date here — E02-NB-001) and is floored to a sane minimum; correctness
+  // rides claimNext's durable gate, so a coarse timer never retries early.
+  function armWake(st: ThreadDrainState, waitingUntil: string): void {
+    clearWake(st);
+    const nowMs = deps.config.clock().getTime();
+    const delay = Math.max(WAKE_MIN_DELAY_MS, Date.parse(waitingUntil) - nowMs);
+    const timer = scheduleTimer(() => {
+      st.wakeTimer = undefined;
+      schedule(st.threadId);
+    }, delay);
+    timer.unref();
+    st.wakeTimer = timer;
   }
 
   async function runLoop(st: ThreadDrainState): Promise<void> {
     // Defer past the committing operation's synchronous tail so the drain
     // never contends with the transaction whose commit scheduled it.
     await new Promise((resolve) => scheduleMacrotask(resolve));
+    let lastReport: DrainReport | undefined;
     try {
       do {
         st.pending = false;
         st.passes += 1;
         // A failed pass (storage error) has no caller to report to in
         // background mode; the durable rows are untouched and the next poke
-        // or touch retries. A pass stopping on "waiting" likewise leaves the
-        // backing-off head for the next nudge — the lease and eligibility
-        // gates are durable, not timer state.
-        await runDrain(st.filePath, deps);
+        // or touch retries. A pass stopping on "waiting" leaves a backing-off
+        // head — handled below by arming a single eligibility wake.
+        const result = await runDrain(st.filePath, deps);
+        lastReport = result.ok ? result.value : undefined;
       } while (st.pending);
     } finally {
       st.running = false;
+      // Fix 1 (DD-4 completion): honor eligibility in background mode. A pass
+      // that stopped on "waiting" left a backing-off head that no later poke is
+      // guaranteed to revisit; arm one wake at its eligible_at through the poke
+      // path and stay unsettled until it fires, so drainSettled awaits the
+      // retry. Any other stop reason (empty / max_items / in_flight, or a
+      // failed pass) settles the thread now.
+      if (
+        st.wakeTimer === undefined &&
+        lastReport?.stoppedBecause === "waiting" &&
+        lastReport.waitingUntil !== undefined
+      ) {
+        armWake(st, lastReport.waitingUntil);
+        return; // waiters resolve when the wake's drain settles, not here
+      }
       for (const waiter of st.waiters.splice(0)) waiter();
     }
   }
 
   function schedule(threadId: string): void {
     const st = stateFor(threadId);
+    // A poke (or the wake itself) supersedes any pending backoff wake — we are
+    // about to drain or coalesce, so the timer's job is done (one wake max).
+    clearWake(st);
     if (st.filePath === "") return; // never touched here: no path to drain
     if (st.running) {
       st.pending = true; // burst coalesce: at most one further pass (AC-1.2)
@@ -332,7 +395,14 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
     },
     drainSettled(threadId: string): Promise<void> {
       const st = states.get(threadId);
-      if (st === undefined || (!st.running && !st.pending)) return Promise.resolve();
+      // A pending backoff wake counts as unsettled (Fix 1): the retry it will
+      // fire is part of this drain cycle, so the awaitable must span it.
+      if (
+        st === undefined ||
+        (!st.running && !st.pending && st.wakeTimer === undefined)
+      ) {
+        return Promise.resolve();
+      }
       return new Promise((resolve) => st.waiters.push(resolve));
     },
     testPassCount(threadId: string): number {

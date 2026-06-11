@@ -121,7 +121,7 @@ Risk Reminders:
 
 **Fallback rules**: prompt → raw content; tool call/result → deterministic truncation (Epic 01's truncation util); assistant text → raw (never had a form).
 
-**Chunk policy config** (DD-9, config-with-defaults): target 2200 projected tokens, max 8000; tests override (TC-3.6 uses 100/200-scale values). Values are tuning knobs, not architecture — the *rule* (accumulation, crossing-turn-excluded, max-self-chunk) is the contract.
+**Chunk policy config** (DD-9, config-with-defaults): target 2200 projected tokens, max 4400; tests override (TC-3.6 uses 100/200-scale values). Values are tuning knobs, not architecture — the *rule* (accumulation, crossing-turn-excluded, max-self-chunk) is the contract.
 
 **Cross-story debt** (coverage.md): TC-3.2's gapped-rendering state is the input TC-4.4 consumes; build it via the fixture builder so Story 4 reuses it.
 
@@ -146,7 +146,8 @@ Risk Reminders:
 
 #### Spec Deviations
 
-None.
+- **Tool-run grouping (Fix 2, fix-batch-002) — spec-compliance restoration, not a deviation.** `composeRenderingInput` folds maximal runs of consecutive tool activity into one `RenderingPart` and one tool-run receipt, each carrying an outcome-explicit run account (tools used, call count, per-call mechanical outcomes; mixed outcomes stay explicit, never collapsed into a vague success), as AC-3.4 and §Anti-Shim Requirements require. The initial build shimmed one part/receipt per tool message; this restores the grouped-run contract. Per-message mechanical stamping (AC-2.4) is untouched; gaps stay per-message.
+- **Decision (Fix 2): thinking and runtime notes do not break a tool run.** A run is broken only by a `user_prompt` or `assistant_text`. `assistant_thinking` and `runtime_note` are transparent to run continuity: interior ones (between two tool atoms of the same run) ride the run account inline; edge ones (before the first or after the last tool atom) stand alone as their own parts. Real agent turns interleave thinking between tool calls, so this keeps such a turn a single run account rather than fragmenting it into many one-call runs.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->
