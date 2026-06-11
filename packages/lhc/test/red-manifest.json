@@ -28,6 +28,13 @@
     "test/mutations-delete.test.ts": "dc2c238f278412796de0ac94e30e60240cc59a5fa05b0062bdfba0d6aded434a",
     "test/cli-process-mutations-delete.test.ts": "98898996cdf9eb06cdce0d0c31edce5a7710f92004ef1981cd0b72706fe548e3",
     "test/view-fixture.test.ts": "daebd6e969248dc08847945a92bbac159a319351dec1dac291f94641d97329c5",
-    "test/view-pull.test.ts": "0ddb9d41217d0aa0e87b79038801d2e9bf041e9cd0178242e839971fde756e2d"
+    "test/view-pull.test.ts": "6ff5dd603bb6445bdf1cda07fd85c93df7c6fbf70bff3fdb1557dd4b243ffac7",
+    "test/view-compact.test.ts": "ced6b8620b4e543aade68192b2da15ca424f247a4092f926d25872fb3392cb14",
+    "test/view-select-golden.test.ts": "85108fc2f2b913efa709e4429fee7cbd692444796ae3b7090abd23bc6a0eb92a",
+    "test/goldens/g1-proportions.json": "fdf041a02aa15c78407ed34b687c38195da0013a3f8f47f19635488ee2a0bdd9",
+    "test/goldens/g2-edge-inclusion.json": "e1e3806b4b20c7f3df4116109007824843baf86a71970d45c5011687ab71f4b0",
+    "test/goldens/g2-edge-exclusion.json": "851d12966180e109525394d059f82c2fbc566ada959240781f236759939686c9",
+    "test/goldens/g3-oversized-loner.json": "0268d5c71cb4c85abf2841d36edac2b17703cb4c1767083e6831cd0a308c0754",
+    "test/goldens/g4-turnless-straggler.json": "b1b3f482c2598a07e292150db7f6222574e5e25d800c6d6b57938fbbe75f5daf"
   }
 }

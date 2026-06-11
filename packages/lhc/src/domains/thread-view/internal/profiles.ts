@@ -46,26 +46,33 @@ function fail(detail: string): never {
 
 const BAND_KEYS = ["full", "smooth", "detailed", "brief"] as const;
 
+// The violated constraint, named, or null when the profile is sound: one
+// rule set shared by both rejection surfaces — SDK construction (throws,
+// below) and compact invocation (caller-error result, AC-2.3).
+export function profileViolation(profile: ViewProfile): string | null {
+  if (!Number.isFinite(profile.lowerBound) || profile.lowerBound <= 0) {
+    return `profile "${profile.name}": lowerBound must be a positive number, got ${profile.lowerBound}`;
+  }
+  for (const key of BAND_KEYS) {
+    const share = profile.percentages[key];
+    if (!Number.isFinite(share) || share < 0) {
+      return `profile "${profile.name}": percentage ${key} must be a non-negative number, got ${share}`;
+    }
+  }
+  const sum = BAND_KEYS.reduce((total, key) => total + profile.percentages[key], 0);
+  if (sum !== 100) {
+    return `profile "${profile.name}": percentages must sum to 100, got ${sum}`;
+  }
+  return null;
+}
+
 // A complete, merged profile validates whole: positive lower bound, finite
 // non-negative shares, shares summing to exactly 100. Errors name the
 // violated constraint and the profile (AC-2.3's vocabulary, applied at
 // construction).
 export function validateProfile(profile: ViewProfile): void {
-  if (!Number.isFinite(profile.lowerBound) || profile.lowerBound <= 0) {
-    fail(
-      `profile "${profile.name}": lowerBound must be a positive number, got ${profile.lowerBound}`,
-    );
-  }
-  for (const key of BAND_KEYS) {
-    const share = profile.percentages[key];
-    if (!Number.isFinite(share) || share < 0) {
-      fail(`profile "${profile.name}": percentage ${key} must be a non-negative number, got ${share}`);
-    }
-  }
-  const sum = BAND_KEYS.reduce((total, key) => total + profile.percentages[key], 0);
-  if (sum !== 100) {
-    fail(`profile "${profile.name}": percentages must sum to 100, got ${sum}`);
-  }
+  const violation = profileViolation(profile);
+  if (violation !== null) fail(violation);
 }
 
 function isCompleteOverride(entry: ViewProfileOverride): boolean {

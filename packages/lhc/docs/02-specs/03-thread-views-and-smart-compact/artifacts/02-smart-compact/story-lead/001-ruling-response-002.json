@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "02-smart-compact-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "rationale": "All remaining deviations are sanctioned: totalTokens was explicitly ordered by ruling 013; the 'absent' sweep literal is the story's stated cross-story debt to Story 3; ViewCompactParams (nested partial) is required to express AC-2.2's field-wise band override; ErrorCode additions are additive caller_error vocabulary. The earlier unsanctioned selection interpretations were withdrawn and the implementation now follows literal rules 1-6; verifier pass confirmed in 007-verify.json.",
+  "source": "impl-lead"
+}

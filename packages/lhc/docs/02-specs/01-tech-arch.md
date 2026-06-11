@@ -71,7 +71,7 @@ flowchart TD
 | `intake-stream` | SDK + CLI | Ordered event intake, stream contract, synchronous turn-boundary coordination | `threads`, `messages`, `turns` | All-or-nothing batches; idempotency keys; hot path is deterministic-only; intake coordinates but does not own message/turn mechanics |
 | `messages` | SDK + CLI | Message/block records, token stamping, read/search, edit and delete operations, message-level derivations (tool-result summaries, tool-call summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; delete is projection-level (source events remain); mutations target closed turns only and clear-and-regenerate dependents; deleting a turn-initiating prompt is refused toward `turns` delete; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
 | `turns` | SDK + CLI | Turn lifecycle and state machine, turn delete, turn-level derivations (smoothed turn composition, lower-band projection), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn delete removes the exchange unit, closed turns only, bounded cascade (one chunk re-derives, boundaries never move); turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
-| `thread-view` | SDK + CLI | View assembly, smart compact, band locking, tool-result visibility policy (eligible/activate), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; thread-view drives repair through owning domains' surfaces and derives nothing itself |
+| `thread-view` | SDK + CLI | View assembly, smart compact, band locking, tool-result visibility policy (source-event-order boundary, whole-message protection floor), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; source corruption blocks; thread-view drives repair through owning domains' surfaces and derives nothing itself |
 | `inspect` | SDK + CLI | Read-only reports: composition, sizes, derivation health, view contents and cost | all domain surfaces | Never writes, repairs, or derives; reads only through domain surfaces |
 
 ### Tech Utils
@@ -182,23 +182,28 @@ sequenceDiagram
 ## Constraints That Shape Epics
 
 - **No inference on the hot path.** Intake and view pulls are deterministic. Anything needing a model goes onto the work queue. Epics must not put provider calls in synchronous flows.
-- **Prompt-prefix stability is a budget.** Visible view content changes only at planned points (compact, batch activation). Features that would churn the rendered prefix per-turn are design errors with a direct dollar cost.
+- **Prompt-prefix stability is a budget.** Visible view content changes only at planned points (compact, tool-result boundary advance). Boundary advances happen in batches and protect newest whole tool-result messages rather than redeciding every result per turn. Features that would churn the rendered prefix per-turn are design errors with a direct dollar cost.
 - **Single writer per thread.** No epic may assume concurrent writers to one thread file. Parallelism is across threads.
 - **The record is append-plus-mutate only.** No feature destroys events; the only record mutations are the explicit edit and delete operations, both with clear-and-regenerate semantics, and delete is projection-level — the source event log retains what the readable record drops.
 - **Stateless operations.** Nothing requires a daemon. Long-lived processes (worker loops, harness extensions) are adapters over the same stateless calls.
 
 ---
 
-## Open Questions for Tech Design
+## Downstream Decisions and Remaining Open Questions
 
-- Canonical derivation state names and the repair contract shape (first derivation epic)
-- Work-queue schema, claim/lease, retry/backoff policy (first derivation epic)
-- Chunk close policy: target/max thresholds and whether the v1 reference's single-turn threshold check is replaced by accumulated-size logic (it should be; confirm in design)
-- Eligible/activate thresholds and batch sizing for tool-result visibility
-- Message search implementation: SQL `LIKE` vs FTS5 virtual table
-- Provider-file rendering: which provider formats ship in v1 beyond PI's, and where format adapters live
-- Operation context exact shape (first epic, then inherited)
-- `node:sqlite` stability flag status on current Node 24.x LTS
+Settled by downstream epics:
+
+- Operation context shape is pinned by Epic 1 and extended by later epics through explicit seams such as provider injection and post-commit callbacks.
+- Derivation state and repair contract are pinned by Epic 2: semantic artifact state belongs to domain records, retrying/exhaustion is queue/report detail, and repair runs through owning-domain surfaces.
+- Work-queue claim/lease/retry mechanics are pinned by Epic 2, including source-versioned work items and reason-code failure classification.
+- Chunk close policy is pinned by Epic 2 as accumulated-size behavior rather than the v1 reference's single-turn threshold check.
+- Tool-result visibility mechanics are pinned by Epic 3: a source-event-order boundary advances in batches, protects newest whole tool-result messages, and uses tunable max/target/floor values.
+- Provider-file rendering starts with PI session JSONL in Epic 3; additional provider formats are additive adapters later.
+
+Remaining open questions:
+
+- Message search implementation: SQL `LIKE` vs FTS5 virtual table.
+- `node:sqlite` stability flag status on current Node 24.x LTS.
 
 ---
 

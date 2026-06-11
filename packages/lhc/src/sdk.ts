@@ -35,6 +35,7 @@ import type {
   CompactReceipt,
   PullResult,
   SweepReceipt,
+  ViewCompactParams,
   ViewProfile,
   ViewStatus,
 } from "./shared/view.js";
@@ -112,6 +113,7 @@ export type {
   ResolvedViewConfig,
   SdkViewConfig,
   SweepReceipt,
+  ViewCompactParams,
   ViewMessage,
   ViewMeta,
   ViewProfile,
@@ -209,7 +211,7 @@ export interface ThreadViewSurface {
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
   compact(
     ref: threadsDomain.ThreadRef,
-    opts: { profile?: string; params?: Partial<ViewProfile>; sweep?: boolean },
+    opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
   ): Promise<OpResult<CompactReceipt>>;
   sweep(ref: threadsDomain.ThreadRef): Promise<OpResult<SweepReceipt>>;
   materialize(

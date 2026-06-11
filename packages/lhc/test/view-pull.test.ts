@@ -96,13 +96,11 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
 }
 
 describe("surface skeleton: unimplemented ops return structured results", () => {
-  it("compact, sweep, and materialize return ok:false not-implemented, never throw", async () => {
+  // Epic 03 Story 2 (sanctioned amendment): compact is real now, so its
+  // not-implemented leg moved out of this test; view-compact.test.ts owns the
+  // operation. sweep and materialize stay stubbed until Stories 3 and 5.
+  it("sweep and materialize return ok:false not-implemented, never throw", async () => {
     const ref = { filePath: fixture.filePath };
-    const compacted = await fixture.sdk.threadView.compact(ref, {});
-    expect(compacted).toEqual({
-      ok: false,
-      error: { errorClass: "system_error", code: "not_implemented", reason: "not implemented: compact" },
-    });
     const swept = await fixture.sdk.threadView.sweep(ref);
     expect(swept).toEqual({
       ok: false,

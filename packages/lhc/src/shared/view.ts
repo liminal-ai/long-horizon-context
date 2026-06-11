@@ -23,6 +23,16 @@ export interface ViewProfileOverride {
   percentages?: Partial<ViewProfile["percentages"]>;
 }
 
+// Compact-time explicit parameters (AC-2.2): field-wise overrides of the
+// base profile, down to single band percentages — the same depth the CLI's
+// per-band flags override at. A nested-partial deepening of the tech
+// design's `Partial<ViewProfile>` sketch, which could not express a
+// single-band override.
+export interface ViewCompactParams {
+  lowerBound?: number;
+  percentages?: Partial<ViewProfile["percentages"]>;
+}
+
 // Visibility-boundary budgets (AC-4.x): max > target ≥ floor, all positive.
 export interface VisibilityBudgets {
   maxTokens: number;
@@ -101,11 +111,19 @@ export interface CompactReceipt {
   config: ViewProfile["percentages"] & { lowerBound: number };
   bands: Record<Band, { entries: number; tokens: number }>;
   tailTokens: number;
+  // The assembled view's actual total (band tokens + tail tokens) against
+  // the configured lower bound — a target, not a cap: whole-entry fills may
+  // land under it, indivisible entries over it (AC-2.4; ruling 013).
+  totalTokens: number;
   coveredFrom: number;
   compactPoint: number;
   degraded: Array<{ band: Band; subjectId: string; usedForm: string }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
-  sweep: SweepReceipt | { skipped: true };
+  // Story 2 ships the compact with the sweep step ABSENT: the field reports
+  // the honest literal "absent" — never a fake empty SweepReceipt. Story 3
+  // adds the embedded sweep and flips this to SweepReceipt | { skipped: true }
+  // (cross-story debt, stated: stories/02-smart-compact.md §Scope out).
+  sweep: SweepReceipt | { skipped: true } | "absent";
 }
 
 export interface SweepReceipt {

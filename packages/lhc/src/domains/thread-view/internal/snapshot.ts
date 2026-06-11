@@ -1,8 +1,8 @@
 // The pull's read path (Story 1): the stored view snapshot — header plus
 // band rows, absent ⇒ tail-only signal — and the record reads the tail
 // assembly needs (live messages after the compact point, their ready
-// tool-result summaries, the tail token sum). Reads only; the atomic
-// replace at compact lands in Story 2. Direct record/derived_form reads are
+// tool-result summaries, the tail token sum). Story 2 adds the one writer:
+// the atomic replace at compact. Direct record/derived_form reads are
 // sanctioned for thread-view internals (tech design §System View — the
 // surface-import rule governs code imports, not SQL); what must NOT read
 // derived_form directly is the status's derivation counting, which goes
@@ -140,6 +140,63 @@ export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
     )
     .get(compactPoint) as { total: number | bigint };
   return Number(row.total);
+}
+
+// ── the atomic replace (Story 2, AC-2.6) ──────────────────────────
+
+export interface ViewReplaceInput {
+  viewId: string;
+  createdAt: string;
+  compactPoint: number;
+  coveredFrom: number;
+  profileName: string | null;
+  configJson: string;
+  arrangementJson: string;
+  gapsJson: string;
+  sourceStateJson: string;
+  bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
+}
+
+// Compact's one transaction: delete the singleton view row (the FK cascade
+// drops its bands), insert the new header and bands, and reset the boundary
+// to the compact point (AC-4.7) — all inside one BEGIN IMMEDIATE, so a crash
+// anywhere rolls the whole replace back and the previous view keeps serving
+// (AC-2.6, TC-2.4). Compact is the only writer of these rows; the boundary's
+// other writer is Story 4's advance.
+export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): void {
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    db.prepare(`DELETE FROM thread_view WHERE singleton = 1`).run();
+    db.prepare(
+      `INSERT INTO thread_view (singleton, view_id, created_at, compact_point, covered_from,
+         profile_name, config_json, arrangement_json, gaps_json, source_state_json)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.viewId,
+      input.createdAt,
+      input.compactPoint,
+      input.coveredFrom,
+      input.profileName,
+      input.configJson,
+      input.arrangementJson,
+      input.gapsJson,
+      input.sourceStateJson,
+    );
+    const insertBand = db.prepare(
+      `INSERT INTO thread_view_band (view_id, band, rendered_text, token_count)
+       VALUES (?, ?, ?, ?)`,
+    );
+    for (const band of input.bands) {
+      insertBand.run(input.viewId, band.band, band.renderedText, band.tokenCount);
+    }
+    db.prepare(
+      `UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`,
+    ).run(input.compactPoint, input.createdAt);
+    db.exec("COMMIT;");
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
 }
 
 // Ready tool-result summaries by message id — the short-form ladder's first

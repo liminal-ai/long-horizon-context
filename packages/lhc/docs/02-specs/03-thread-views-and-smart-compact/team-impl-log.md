@@ -3,8 +3,8 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
-- Current Story: 02-smart-compact
-- Current Phase: none
+- Current Story: 03-readiness-sweep
+- Current Phase: none (Story 3 hard gate check pending before launch)
 - Preflight: ready (artifacts/preflight/001-preflight.json, 2026-06-11). CLI persisted verification_gates into impl-run.config.json (expected side effect). Codex auth status unknown per preflight note; binary present.
 
 ## Run Configuration
@@ -72,10 +72,28 @@
 - Story-lead run: 01-pull-and-status-story-run-001, terminal accepted, recommendedImplLeadAction accept, no rulings. Final package: artifacts/01-pull-and-status/story-lead/001-final-package.json
 - Commit: landed (see git log)
 
+### 02-smart-compact
+- Story Title: Story 2: Smart Compact
+- Implementor Evidence: artifacts/02-smart-compact/003-implementor.json, 006-continue.json
+- Verifier Evidence:
+  - artifacts/02-smart-compact/004-verify.json (needs-human-ruling: SV-02-001 selection interpretations, SV-02-002 missing totalTokens)
+  - artifacts/02-smart-compact/007-verify.json (pass)
+- Story Gate: pnpm run green-verify — pass (immutability OK, 36 Red-phase files)
+- Completion Gate: pnpm run verify-all — pass (290 tests incl. process suite)
+- Dispositions:
+  - SV-02-001 (unsanctioned selection interpretations): fixed — ruling 013 rejected interpretations; implementor reverted to literal rules 1–6, goldens regenerated; withdrawn per 006-continue.json; verifier pass
+  - SV-02-002 (missing explicit totalTokens): fixed — CompactReceipt gains totalTokens per ruling 013; verifier pass
+  - Remaining deviations approved via ruling 02-smart-compact-story-run-001-ruling-spec-deviation: 'absent' sweep literal (stated Story 3 debt), ViewCompactParams nested partial (required for AC-2.2), additive ErrorCodes (caller_error class)
+- Open Risks: none
+- Baseline Before: 271 (verify-all) / 243 (default per story-lead)
+- Baseline After: 290 (verify-all) / 263 (default)
+- Story-lead run: 02-smart-compact-story-run-001, terminal needs-ruling twice (first: substantive — ruled reject-and-fix; second: spec-deviation approval — recorded, planner re-asked per known loop, impl-lead accepted directly). Final package: artifacts/02-smart-compact/story-lead/001-final-package.json
+- Commit: landed (see git log)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 271 (lhc package, verify-all count after 01-pull-and-status)
-- Expected After Current Story: ~287 (story 2 estimate ~16 tests)
-- Latest Actual Total: 271
+- Baseline Before Current Story: 290 (lhc package, verify-all count after 02-smart-compact)
+- Expected After Current Story: ~300 (story 3 estimate ~10 tests)
+- Latest Actual Total: 290
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

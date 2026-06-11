@@ -1,0 +1,14 @@
+{
+  "case": "G2b budget edge: smooth share (86) leaves a 29-token remainder after t8+t7 - t6 (30) is one token over, so it is excluded and the band stops; c2 becomes a detailed candidate (newest member t6 older than smooth coverage)",
+  "fixture": "derived-thread",
+  "params": { "lowerBound": 860, "percentages": { "full": 12, "smooth": 10, "detailed": 39, "brief": 39 } },
+  "compactPoint": 48,
+  "coveredFrom": 1,
+  "arrangement": [
+    { "band": "detailed", "subjectKind": "chunk", "subjectId": "c1", "formUsed": "chunk_summary_detailed", "degraded": false },
+    { "band": "detailed", "subjectKind": "chunk", "subjectId": "c2", "formUsed": "chunk_summary_detailed", "degraded": false },
+    { "band": "smooth", "subjectKind": "turn", "subjectId": "t7", "formUsed": "turn_rendering", "degraded": false },
+    { "band": "smooth", "subjectKind": "turn", "subjectId": "t8", "formUsed": "turn_rendering", "degraded": false }
+  ],
+  "gaps": []
+}

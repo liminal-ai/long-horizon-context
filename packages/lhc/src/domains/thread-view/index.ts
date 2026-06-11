@@ -17,6 +17,7 @@ import type {
   PullResult,
   ResolvedViewConfig,
   SweepReceipt,
+  ViewCompactParams,
   ViewMessage,
   ViewProfile,
   ViewStatus,
@@ -29,18 +30,29 @@ import {
   type ThreadRef,
 } from "../threads/index.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
-import { resolveViewConfig } from "./internal/profiles.js";
+import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import {
+  assembleBandText,
   renderBandMessage,
   renderTailMessage,
   toolNamesByCallId,
 } from "./internal/render.js";
+import { fireViewInjection } from "./internal/seam.js";
+import {
+  CanonicalCorruptionError,
+  readSelectionInputs,
+  selectArrangement,
+  type ArrangementEntry,
+} from "./internal/select.js";
 import {
   readReadyToolResultSummaries,
   readTailMessages,
   readViewSnapshot,
+  replaceViewSnapshot,
   tailTokenSum,
 } from "./internal/snapshot.js";
+import { estimateTokens } from "../../tech-utils/token-counting/index.js";
+import type { Band } from "../../shared/view.js";
 
 // Config resolution for the operation in hand: the SDK instance's resolved
 // view config rides the per-instance seam (epic-fix-001 pattern, tech design
@@ -243,7 +255,195 @@ async function statusInner(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   };
 }
 
-// ── stubs (Stories 2, 3, 5) ──────────────────────────────────────
+// ── compact (Flow 2: AC-2.1–2.7, 2.9, 2.10) ──────────────────────
+
+// The default base when no profile is named: the first built-in, matching
+// the epic's primary user (the PI continuation harness). Explicit params
+// override the base field-wise (AC-2.2).
+const DEFAULT_PROFILE_NAME = "continuation";
+
+function callerError(
+  code: "unknown_profile" | "invalid_view_config",
+  reason: string,
+): { ok: false; error: ErrorResult } {
+  return { ok: false, error: { errorClass: "caller_error", code, reason } };
+}
+
+const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
+
+// Compact runs only when invoked through this surface (AC-2.1: no code path
+// in core calls it). Flow, in order: validate profile/params (pre-IO, so a
+// rejection provably touches nothing) → [sweep step ABSENT this story — the
+// receipt's sweep field reports the literal "absent"; Story 3 embeds the
+// real sweep here per stories/02-smart-compact.md §Scope out] → read record
+// + forms with the corruption check in the reads (pre-transaction, prior
+// view trivially intact on refusal) → selection walk → band rendering → one
+// BEGIN IMMEDIATE replacing the view and resetting the boundary → receipt.
+// Assembly is entirely from stored artifacts: nothing here can reach a
+// provider (AC-2.4 zero-inference is structural).
+export async function compact(
+  ref: ThreadRef,
+  opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
+): Promise<OpResult<CompactReceipt>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const config = viewConfig();
+  const baseName = opts.profile ?? DEFAULT_PROFILE_NAME;
+  const base = config.profiles[baseName];
+  if (base === undefined) {
+    return callerError(
+      "unknown_profile",
+      `unknown profile "${baseName}"; configured profiles are ${Object.keys(config.profiles)
+        .map((name) => `"${name}"`)
+        .join(", ")}`,
+    );
+  }
+  const merged: ViewProfile = {
+    name: base.name,
+    lowerBound: opts.params?.lowerBound ?? base.lowerBound,
+    percentages: { ...base.percentages, ...opts.params?.percentages },
+  };
+  const violation = profileViolation(merged);
+  if (violation !== null) return callerError("invalid_view_config", violation);
+  // Receipt provenance: "null when explicit params" (tech design §Storage) —
+  // any param override means the config is no longer a named profile's mix,
+  // even when one served as the merge base; the receipt's config carries the
+  // resolved truth. A bare or profile-only call names its profile.
+  const profileName = opts.params === undefined ? baseName : null;
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    let inputs;
+    try {
+      inputs = readSelectionInputs(db);
+    } catch (cause) {
+      if (cause instanceof CanonicalCorruptionError) {
+        // Pre-transaction refusal: nothing was written, the prior view and
+        // the record are untouched (AC-2.5).
+        return {
+          ok: false,
+          error: { errorClass: "state_corruption", code: cause.code, reason: cause.message },
+        };
+      }
+      throw cause;
+    }
+    const selection = selectArrangement(inputs, {
+      lowerBound: merged.lowerBound,
+      percentages: merged.percentages,
+    });
+
+    const entriesByBand = (band: Band): ArrangementEntry[] =>
+      selection.entries.filter((entry) => entry.band === band);
+    const bands = BAND_ORDER.flatMap((band) => {
+      const entries = entriesByBand(band);
+      if (entries.length === 0) return [];
+      const renderedText = assembleBandText(entries.map((entry) => entry.text));
+      return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
+    });
+
+    const createdAt = new Date().toISOString();
+    // view_id is v<compact event order> — deterministic, and deliberately
+    // reused by an intake-free recompact (tech design L395: do not "fix"
+    // into a uniqueness scheme; the singleton row is replaced whole).
+    const viewId = `v${inputs.maxEventOrder}`;
+
+    // Story-0 injection point: TC-2.4's crash between the (absent) sweep and
+    // the view-write transaction. An installed hook's throw aborts here —
+    // before BEGIN — so the previous view keeps serving.
+    fireViewInjection("compact-write");
+
+    replaceViewSnapshot(db, {
+      viewId,
+      createdAt,
+      compactPoint: selection.compactPoint,
+      coveredFrom: selection.coveredFrom,
+      profileName,
+      configJson: JSON.stringify({
+        lowerBound: merged.lowerBound,
+        percentages: merged.percentages,
+      }),
+      arrangementJson: JSON.stringify(
+        selection.entries.map((entry) => ({
+          band: entry.band,
+          subjectKind: entry.subjectKind,
+          subjectId: entry.subjectId,
+          formUsed: entry.formUsed,
+          degraded: entry.degraded,
+        })),
+      ),
+      gapsJson: JSON.stringify(
+        selection.entries
+          .filter((entry) => entry.gap)
+          .map((entry) => ({
+            band: entry.band,
+            subjectId: entry.subjectId,
+            reason: entry.reason ?? "unknown",
+          })),
+      ),
+      sourceStateJson: JSON.stringify({
+        maxEventOrder: inputs.maxEventOrder,
+        formCounts: inputs.formCounts,
+      }),
+      bands,
+    });
+
+    const bandReport = {} as CompactReceipt["bands"];
+    for (const band of BAND_ORDER) {
+      const stored = bands.find((row) => row.band === band);
+      bandReport[band] = {
+        entries: entriesByBand(band).length,
+        tokens: stored?.tokenCount ?? 0,
+      };
+    }
+    const tailTokens = tailTokenSum(db, selection.compactPoint);
+    return {
+      ok: true,
+      value: {
+        viewId,
+        profile: profileName,
+        config: { ...merged.percentages, lowerBound: merged.lowerBound },
+        bands: bandReport,
+        tailTokens,
+        // Actual assembled total vs the bound (target, not cap — AC-2.4).
+        totalTokens:
+          bandReport.brief.tokens +
+          bandReport.detailed.tokens +
+          bandReport.smooth.tokens +
+          tailTokens,
+        coveredFrom: selection.coveredFrom,
+        compactPoint: selection.compactPoint,
+        degraded: selection.entries
+          .filter((entry) => entry.degraded)
+          .map((entry) => ({
+            band: entry.band,
+            subjectId: entry.subjectId,
+            usedForm: entry.formUsed,
+          })),
+        gaps: selection.entries
+          .filter((entry) => entry.gap)
+          .map((entry) => ({
+            band: entry.band,
+            subjectId: entry.subjectId,
+            reason: entry.reason ?? "unknown",
+          })),
+        // Sweep step absent this story (NOT skipped, NOT an empty receipt):
+        // Story 3 embeds the sweep and flips this field's vocabulary.
+        sweep: "absent",
+      },
+    };
+  } catch (cause) {
+    return storageFailure(`view compact failed: ${detail(cause)}`);
+  } finally {
+    db.close();
+  }
+}
+
+// ── stubs (Stories 3, 5) ─────────────────────────────────────────
 
 // The skeleton's stub contract (tech design §Interface Definitions):
 // structured result, machine-readable, never a throw on this surface.
@@ -256,15 +456,6 @@ function notImplemented(op: string): { ok: false; error: ErrorResult } {
       reason: `not implemented: ${op}`,
     },
   };
-}
-
-export async function compact(
-  ref: ThreadRef,
-  opts: { profile?: string; params?: Partial<ViewProfile>; sweep?: boolean },
-): Promise<OpResult<CompactReceipt>> {
-  void ref;
-  void opts;
-  return notImplemented("compact");
 }
 
 export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {

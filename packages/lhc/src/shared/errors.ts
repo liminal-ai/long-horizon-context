@@ -20,7 +20,12 @@ export type ErrorCode =
   | "source_damaged" // state_corruption — handler found corrupt source; form blocked
   // Epic 03 (tech design §Interface Definitions): the surface-skeleton stub
   // contract — machine-readable, never a throw on the thread-view surface.
-  | "not_implemented"; // system_error — operation's story has not landed yet
+  | "not_implemented" // system_error — operation's story has not landed yet
+  // Epic 03 Story 2 (AC-2.2/2.3): compact-time config rejection — unlike SDK
+  // construction (programmer error, throws), a bad compact invocation is an
+  // operational caller error returned as a result.
+  | "unknown_profile" // caller_error — named profile not configured
+  | "invalid_view_config"; // caller_error — band sum / bound violation, named
 
 export interface ErrorResult {
   errorClass: ErrorClass;

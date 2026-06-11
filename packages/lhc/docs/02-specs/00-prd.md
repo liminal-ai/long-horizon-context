@@ -97,7 +97,7 @@ The assembled working context: what a harness actually loads, sized to budget, s
 
 ### Scope
 
-In: view assembly from band materials (brief, detailed, smooth, full), smart compact producing a new view at a configured size with a configured band mix, locked bands with a live full-fidelity tail between compacts, tool-result visibility cycling (full to abbreviated) in eligible/activate batches, rendering as an in-memory message array and as a materialized provider-format file, the readiness sweep that checks and drives repair of the derivations the next view needs.
+In: view assembly from band materials (brief, detailed, smooth, full), smart compact producing a new view toward a configured lower-bound target with a configured band mix, locked bands with a live full-fidelity tail between compacts, tool-result visibility advancing in planned batches from full to abbreviated form using a source-event-order boundary, rendering as an in-memory message array and as a materialized provider-format file, the readiness sweep that checks and drives repair of the derivations the next view needs.
 
 Out: the derivation work itself (Feature 2), harness-side wiring that calls these operations (future PI extension work).
 
@@ -110,12 +110,12 @@ Out: the derivation work itself (Feature 2), harness-side wiring that calls thes
 
 **Scenario 2: The thread crosses its size threshold and compacts.** Smart compact assembles a new view at the configured lower bound with the configured band percentages, drawing each band's material from stored artifacts. The previous view's content remains derivable from the record; nothing canonical is destroyed.
 
-- AC-3.3: A compacted view lands within its configured size bound with bands proportioned per configuration, using stored artifacts without regenerating them
+- AC-3.3: A compacted view targets its configured lower bound and band proportions, reports actual token counts, and uses stored artifacts without regenerating them; whole turns, chunks, and messages may make the final size land under or over the target
 - AC-3.4: Compacting with missing band material produces a view that degrades those entries and reports the gaps; it does not fail the compact
 
 **Scenario 3: Old tool results age out of full visibility.** As the recent tail grows, older tool results become eligible for abbreviation, then activate in batches on budget pressure, so the prompt prefix changes in planned steps rather than every turn.
 
-- AC-3.5: Tool results become eligible by threshold but change visible form only at batch activation; activation brings the recent tail back under its target
+- AC-3.5: Tool results become eligible by threshold but change visible form only at batch activation; activation moves the recent tail toward its target while preserving a newest-whole-tool-result floor, so an oversized protected result can keep the tail above target
 - AC-3.6: An activated tool result renders its summarized abbreviation, or deterministic truncation when the summary is not usable
 
 **Scenario 4: A closed harness needs a file.** The same assembled view materializes as a provider-format session file. The file is a rendering, not a second source of truth.
