@@ -1,0 +1,41 @@
+{
+  "case": "Boundary G1 — trajectory: sums crossing max twice, one monster open turn, floor legs (whole-message join; oversized-newest protected alone)",
+  "budgets": { "maxTokens": 100, "targetTokens": 60, "floorTokens": 30 },
+  "batches": [
+    {
+      "label": "B1 under max: zone 40 <= 100, boundary holds at origin",
+      "resultTokens": [20, 20],
+      "turnEnd": true,
+      "expectedPosition": 0,
+      "expectedZoneTokens": 40
+    },
+    {
+      "label": "B2 still under max: zone 80 <= 100, boundary holds",
+      "resultTokens": [20, 20],
+      "turnEnd": true,
+      "expectedPosition": 0,
+      "expectedZoneTokens": 80
+    },
+    {
+      "label": "B3 crosses max: zone 120 > 100; flip oldest-first r1,r2,r3 (120->100->80->60 = target); protected set joins r6+r5 to 40 >= floor 30; position = r3's order",
+      "resultTokens": [20, 20],
+      "turnEnd": true,
+      "expectedPosition": 9,
+      "expectedZoneTokens": 60
+    },
+    {
+      "label": "B4 under max after the advance: zone 70 <= 100, no movement (never backward, no churn)",
+      "resultTokens": [10],
+      "turnEnd": true,
+      "expectedPosition": 9,
+      "expectedZoneTokens": 70
+    },
+    {
+      "label": "B5 monster open turn crosses max again: zone 230 > 100; the newest result (80 >= floor 30) is protected ALONE; flips stop at the protected set with the zone legally above target (80 > 60); position = m2's order, inside the open turn",
+      "resultTokens": [40, 40, 80],
+      "turnEnd": false,
+      "expectedPosition": 27,
+      "expectedZoneTokens": 80
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
-- Current Story: 04-tool-result-visibility
+- Current Story: 05-render-targets
 - Current Phase: none
 - (Story 3 history: PRIMITIVE PATH — story-lead run 001 terminal blocked after two transient provider failures (socket close after 51 turns, then 529 Overloaded); composed resume re-blocks without redispatching. Recovery: fresh story-implement primitive dispatched 2026-06-11T17:10Z against partial worktree completed the story: SV-03-001 closed (sweep.ts walk/classify/requeue + surface + compact embed landed by the partial worktree, verified against owners' contracts), SV-03-002 closed (test/view-sweep.test.ts added — 10 tests, TC-3.1–3.4, classification edges, five-op zero-provider; stale placeholder assertions in view-pull/view-compact amended under the sanctioned-amendment pattern, red-manifest re-recorded). Gates green 2026-06-11: green-verify (273 tests + immutability OK), verify-all (300 tests incl. process suite). Next: story-verify follow-up on retained verifier handle codex/019eb786-e7ae-7d92-84c3-8daefeb333c6 → receipt.)
 - Story 3 gate verified 2026-06-11 pre-launch (both legs): (1) requeue patch landed — messages.requeue (src/domains/messages/index.ts:284,357) and turns.requeue (src/domains/turns/index.ts:284,383) with already_queued noop, version-scoped idempotent item ids; (2) reason-class persistence — retryable flag flows through work-queue terminal failure path (src/tech-utils/work-queue/index.ts:383-394, scheduler.ts:148-174, handlers); FC-0.4 (passing since Story 0) proves distinguishable transient/permanent classes on read-back via production drains. No Epic 02 patch needed.
@@ -110,10 +110,24 @@
 - Path note: story-lead run 001 wedged after two transient provider errors (socket close, 529); recovered via primitives — story-implement (fresh) → story-self-review → story-verify follow-up on retained codex session. Improvement note 6 records the CLI gap.
 - Commit: landed (see git log)
 
+### 04-tool-result-visibility
+- Story Title: Story 4: Tool-Result Visibility
+- Implementor Evidence: artifacts/04-tool-result-visibility/003-implementor.json
+- Verifier Evidence:
+  - artifacts/04-tool-result-visibility/004-verify.json (pass, first pass)
+- Story Gate: pnpm run green-verify — pass (immutability OK, 39 Red-phase files)
+- Completion Gate: pnpm run verify-all — pass (313 tests incl. process suite)
+- Dispositions: none (clean first-pass verify)
+- Open Risks: none
+- Baseline Before: 300 (verify-all) / 273 (default)
+- Baseline After: 313 (verify-all) / 286 (default)
+- Story-lead run: 04-tool-result-visibility-story-run-001, terminal accepted, recommendedImplLeadAction accept, no rulings. Final package: artifacts/04-tool-result-visibility/story-lead/001-final-package.json
+- Commit: landed (see git log)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 290 (lhc package, verify-all count after 02-smart-compact)
-- Expected After Current Story: ~300 (story 3 estimate ~10 tests)
-- Latest Actual Total: 300 (verify-all 2026-06-11 after 03-readiness-sweep implement: 290 + 10 view-sweep tests; default suite 273)
+- Baseline Before Current Story: 313 (lhc package, verify-all count after 04-tool-result-visibility)
+- Expected After Current Story: ~324 (story 5 estimate ~11 tests)
+- Latest Actual Total: 313
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

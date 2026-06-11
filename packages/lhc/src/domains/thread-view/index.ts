@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import {
   resolveInstanceViewConfig,
   runWithThreadTouchSuppressed,
+  type OperationContext,
 } from "../../shared/context.js";
 import type { FormReportEntry } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
@@ -30,7 +31,11 @@ import {
   resolveThreadRef,
   type ThreadRef,
 } from "../threads/index.js";
-import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
+import {
+  executeBoundaryAdvance,
+  readBoundaryPosition,
+  visibilityZoneTokens,
+} from "./internal/boundary.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import {
   assembleBandText,
@@ -476,6 +481,31 @@ export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
   } catch (cause) {
     return storageFailure(`view sweep failed: ${detail(cause)}`);
   }
+}
+
+// ── boundary advance (Flow 4: AC-4.3–4.6, 4.9) ───────────────────
+
+// The post-commit advance, Story 4. NOT a host operation: no public advance
+// surface exists (story Anti-Shim Requirements) — the SDK's ThreadViewSurface
+// carries only the five operations, and this function's one production caller
+// is intake-stream's ctx.onCommit registration (the sanctioned
+// intake→thread-view surface import, tech design §Module Boundaries). It
+// runs at flush in BOTH host modes — unlike the queue poke it is cheap and
+// deterministic, and a CLI intake must advance too or CLI-driven threads
+// bloat. Budgets resolve through the per-instance seam exactly as the poke
+// does (the flush runs synchronously inside the SDK operation's seam scope),
+// falling back to the built-in defaults for direct domain calls.
+//
+// Synchronous and throw-permitted by contract: the registering site wraps it
+// (catch + diagnose) so a failure never reaches intake's caller and never
+// eats the queue poke; the boundary is then simply unchanged and the
+// over-budget condition stays visible because status computes the same zone
+// sum live (AC-4.9).
+export function runPostCommitBoundaryAdvance(ctx: OperationContext): void {
+  // Story-0 injection point (TC-4.6): fired before the advance computes; an
+  // installed hook's throw stands in for an advance failure.
+  fireViewInjection("post-commit-advance");
+  executeBoundaryAdvance(ctx.db, viewConfig().visibility, ctx.clock);
 }
 
 // ── stub (Story 5) ───────────────────────────────────────────────

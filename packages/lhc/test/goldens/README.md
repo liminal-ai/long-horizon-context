@@ -25,6 +25,7 @@ literal rules.
 | `g2-edge-exclusion.json` | G2b | one token under the exact fill → excluded, band stops |
 | `g3-oversized-loner.json` | G3 | oversized entry on an otherwise-empty band represents alone |
 | `g4-turnless-straggler.json` | G4 | rule 6: straggler rides the following turn's band entry; trailing straggler is tail |
+| `boundary-g1-trajectory.json` | Boundary G1 (Story 4) | advance trajectory: over-max trigger, oldest-first flips to target, whole-message floor join, oversized-newest protected alone, never-backward across batches |
 
 ## Regeneration (only with a granted deviation)
 

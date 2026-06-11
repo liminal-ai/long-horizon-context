@@ -13,6 +13,12 @@ import {
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import type { WorkItemRecord } from "../../../tech-utils/work-queue/index.js";
 import { createFromEvent, queueMessageWork } from "../../messages/index.js";
+// The sanctioned intake→thread-view surface import (Epic 03 Flow 4, named in
+// check-boundaries): the boundary-advance registration below, nothing else.
+// This is the domain graph's first surface-level cycle (intake → thread-view
+// → messages ← intake) — runtime-safe because thread-view never imports
+// intake-stream at runtime and the registration executes only at flush.
+import { runPostCommitBoundaryAdvance } from "../../thread-view/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../../threads/index.js";
 import { applyEvent as applyTurnEvent, listOpenTurnIds } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
@@ -131,6 +137,25 @@ export async function runMessageEvents(
       onCommit: hooks.register,
       poke: resolveInstancePoke(),
     };
+
+    // The boundary-advance registration (Epic 03 Flow 4, AC-4.9): registered
+    // FIRST so the flush runs it before any queue poke the walk's enqueues
+    // register — advance first, poke second, the pinned order. It runs in
+    // both host modes (deterministic and cheap, unlike the mode-gated drain).
+    // Throw-isolated: a failing advance is caught and diagnosed here, never
+    // thrown into the flush — it cannot eat the pokes behind it and cannot
+    // reach this batch's caller; intake's outcome never depends on it. The
+    // boundary is then unchanged and the over-budget condition stays visible
+    // in status (computed live); the next successful check heals.
+    ctx.onCommit(() => {
+      try {
+        runPostCommitBoundaryAdvance(ctx);
+      } catch (cause) {
+        process.stderr.write(
+          `lhc: boundary advance failed after intake commit (boundary unchanged; condition visible in view status): ${detail(cause)}\n`,
+        );
+      }
+    });
 
     // Corruption check at state load (AC-3.9): after BEGIN IMMEDIATE, before
     // any event is processed — once is sufficient because only this pipeline
