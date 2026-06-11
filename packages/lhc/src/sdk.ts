@@ -3,16 +3,31 @@ export * as intakeStream from "./domains/intake-stream/index.js";
 export * as messages from "./domains/messages/index.js";
 export * as turns from "./domains/turns/index.js";
 
+import * as intakeStreamDomain from "./domains/intake-stream/index.js";
+import * as messagesDomain from "./domains/messages/index.js";
+import * as threadsDomain from "./domains/threads/index.js";
+import * as turnsDomain from "./domains/turns/index.js";
+import { createScheduler, type Scheduler } from "./scheduler.js";
+import {
+  PROVIDER_OPERATIONS,
+  type ResolvedSdkConfig,
+  type SdkConfig,
+  type WorkHandler,
+} from "./shared/derivation.js";
+import type { ErrorResult, OpResult } from "./shared/errors.js";
+import type { WorkKind } from "./tech-utils/work-queue/index.js";
+
 export {
   estimateTokens,
   TOKEN_ESTIMATOR_ID,
 } from "./tech-utils/token-counting/index.js";
 
-export type {
-  WorkItemRecord,
-  WorkKind,
-  WorkOwner,
-  WorkSourceRef,
+export {
+  WORK_KIND_REGISTRY,
+  type WorkItemRecord,
+  type WorkKind,
+  type WorkOwner,
+  type WorkSourceRef,
 } from "./tech-utils/work-queue/index.js";
 
 export type {
@@ -21,7 +36,29 @@ export type {
   ErrorResult,
   OpResult,
 } from "./shared/errors.js";
-export type { OperationContext } from "./shared/context.js";
+export {
+  runInTransaction,
+  setSchedulerPoke,
+  type OperationContext,
+} from "./shared/context.js";
+
+export type {
+  DependencyGap,
+  DerivationProvider,
+  DerivedForm,
+  DerivedFormState,
+  FormKind,
+  HandlerOutcome,
+  HandlerRunContext,
+  ProviderResult,
+  RenderingPart,
+  ResolvedSdkConfig,
+  SdkConfig,
+  SubjectKind,
+  ToolOutcome,
+  WorkHandler,
+} from "./shared/derivation.js";
+export type { Scheduler, SchedulerMode } from "./scheduler.js";
 
 export type { ThreadRef } from "./domains/threads/index.js";
 export type {
@@ -36,3 +73,131 @@ export type {
   EventRecord,
   MessageEventInput,
 } from "./domains/intake-stream/index.js";
+
+// ── SDK assembly (DD-6/DD-7) ─────────────────────────────────────
+
+export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
+
+// Merge per-domain handler tables into the one join between the queue's
+// opaque kinds and domain code. A kind claimed by two tables is a wiring bug
+// (each kind has exactly one owner) and throws at construction.
+export function assembleWorkHandlerMap(
+  tables: ReadonlyArray<WorkHandlerMap>,
+): WorkHandlerMap {
+  const map: WorkHandlerMap = {};
+  for (const table of tables) {
+    for (const [kind, handler] of Object.entries(table)) {
+      if (map[kind as WorkKind] !== undefined) {
+        throw new TypeError(`work kind "${kind}" registered by more than one domain`);
+      }
+      map[kind as WorkKind] = handler;
+    }
+  }
+  return map;
+}
+
+function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: {
+      errorClass: "state_corruption",
+      code: "unknown_work_kind",
+      reason: `no handler registered for work kind "${kind}"`,
+    },
+  };
+}
+
+// Dispatch-time lookup: an unregistered kind is reported explicitly — never
+// a throw, never a silent undefined (DD-6, AC-1.8's foundation).
+export function lookupWorkHandler(
+  map: WorkHandlerMap,
+  kind: string,
+): OpResult<WorkHandler> {
+  const handler = map[kind as WorkKind];
+  if (handler === undefined) return unknownWorkKind(kind);
+  return { ok: true, value: handler };
+}
+
+export interface Lhc {
+  threads: typeof threadsDomain;
+  intakeStream: typeof intakeStreamDomain;
+  messages: typeof messagesDomain;
+  turns: typeof turnsDomain;
+  config: ResolvedSdkConfig;
+  scheduler: Scheduler;
+  workHandlers: WorkHandlerMap;
+  lookupWorkHandler(kind: string): OpResult<WorkHandler>;
+}
+
+function requirePositive(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TypeError(`createSdk config: ${name} must be a positive number, got ${value}`);
+  }
+}
+
+function requireNonNegative(value: number, name: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`createSdk config: ${name} must be a non-negative number, got ${value}`);
+  }
+}
+
+// The only assembly path: provider, mode, clock, and policy enter here.
+// Config mistakes are programmer errors at construction and throw; operating
+// failures after construction return OpResults per the error contract.
+export function createSdk(config: SdkConfig): Lhc {
+  if (config.mode !== "background" && config.mode !== "manual") {
+    throw new TypeError(
+      `createSdk config: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
+    );
+  }
+  if (config.provider === null || typeof config.provider !== "object") {
+    throw new TypeError("createSdk config: provider must implement DerivationProvider");
+  }
+  for (const operation of PROVIDER_OPERATIONS) {
+    if (typeof config.provider[operation] !== "function") {
+      throw new TypeError(`createSdk config: provider is missing operation ${operation}`);
+    }
+  }
+
+  const resolved: ResolvedSdkConfig = {
+    provider: config.provider,
+    mode: config.mode,
+    clock: config.clock ?? (() => new Date()),
+    retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
+    lease: config.lease ?? { durationMs: 120000 },
+    chunkPolicy:
+      config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
+  };
+  requirePositive(resolved.retry.budget, "retry.budget");
+  requireNonNegative(resolved.retry.backoffBaseMs, "retry.backoffBaseMs");
+  requireNonNegative(resolved.retry.backoffCapMs, "retry.backoffCapMs");
+  if (resolved.retry.backoffCapMs < resolved.retry.backoffBaseMs) {
+    throw new TypeError("createSdk config: retry.backoffCapMs must be >= retry.backoffBaseMs");
+  }
+  requirePositive(resolved.lease.durationMs, "lease.durationMs");
+  requirePositive(resolved.chunkPolicy.targetProjectedTokens, "chunkPolicy.targetProjectedTokens");
+  if (resolved.chunkPolicy.maxProjectedTokens < resolved.chunkPolicy.targetProjectedTokens) {
+    throw new TypeError(
+      "createSdk config: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens",
+    );
+  }
+
+  // Handler maps merge from per-domain contributions at construction (DD-6).
+  // The tables are empty until Stories 2–3 land the real handlers; the
+  // assembly mechanics are production code from day one.
+  const workHandlers = assembleWorkHandlerMap([
+    messagesDomain.workHandlers,
+    turnsDomain.workHandlers,
+  ]);
+
+  return {
+    threads: threadsDomain,
+    intakeStream: intakeStreamDomain,
+    messages: messagesDomain,
+    turns: turnsDomain,
+    config: resolved,
+    scheduler: createScheduler(resolved.mode),
+    workHandlers,
+    lookupWorkHandler: (kind) => lookupWorkHandler(workHandlers, kind),
+  };
+}

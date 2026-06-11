@@ -58,7 +58,7 @@ describe("Story 5 (process boundary): queued work through the spawned binary", (
     const batchResult = JSON.parse(recorded.stdout) as { ok: boolean; value: BatchResult };
     expect(batchResult.ok).toBe(true);
     expect(batchResult.value.queuedWork).toContainEqual({
-      workItemId: "w-t1-turn_derivation",
+      workItemId: "w-t1-turn_derivation-v1",
       owner: "turns",
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },
@@ -70,7 +70,7 @@ describe("Story 5 (process boundary): queued work through the spawned binary", (
     expect(parsed.ok).toBe(true);
     expect(parsed.value).toHaveLength(1);
     expect(parsed.value[0]).toMatchObject({
-      workItemId: "w-t1-turn_derivation",
+      workItemId: "w-t1-turn_derivation-v1",
       owner: "turns",
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },

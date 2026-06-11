@@ -5,7 +5,7 @@
 // transitions, and work queueing.
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext } from "../../../shared/context.js";
+import { createCommitHooks, type OperationContext } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import type { WorkItemRecord } from "../../../tech-utils/work-queue/index.js";
 import { createFromEvent, queueMessageWork } from "../../messages/index.js";
@@ -116,8 +116,16 @@ export async function runMessageEvents(
 
     // Cross-domain calls inside the transaction share the open handle through
     // the operation context (design decision 8); built once per batch, never
-    // stored.
-    const ctx: OperationContext = { db, clock, threadId: threadIdOf(db) };
+    // stored. onCommit registrations (the scheduler pokes enqueue makes,
+    // DD-5) flush only after COMMIT succeeds; a rollback path never flushes,
+    // so they drop with the transaction.
+    const hooks = createCommitHooks();
+    const ctx: OperationContext = {
+      db,
+      clock,
+      threadId: threadIdOf(db),
+      onCommit: hooks.register,
+    };
 
     // Corruption check at state load (AC-3.9): after BEGIN IMMEDIATE, before
     // any event is processed — once is sufficient because only this pipeline
@@ -217,6 +225,7 @@ export async function runMessageEvents(
 
     db.exec("COMMIT;");
     inTransaction = false;
+    hooks.flush();
 
     return {
       ok: true,

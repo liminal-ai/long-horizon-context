@@ -8,7 +8,15 @@ export type ErrorCode =
   | "empty_batch"
   | "empty_stdin" // CLI adapter only, emitted before any SDK call
   | "turn_state_corrupt"
-  | "storage_failure";
+  | "storage_failure"
+  // Epic 02 (tech design §Interfaces, issue 4):
+  | "turn_open" // caller_error — mutation against an open turn
+  | "message_initiates_turn" // caller_error — delete refused toward turns.delete
+  | "message_not_found" // caller_error
+  | "turn_not_found" // caller_error
+  | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
+  | "provider_failure" // system_error — exhausted retries; form.reason carries detail
+  | "source_damaged"; // state_corruption — handler found corrupt source; form blocked
 
 export interface ErrorResult {
   errorClass: ErrorClass;

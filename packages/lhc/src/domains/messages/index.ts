@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import type { OperationContext } from "../../shared/context.js";
+import type { FormKind, WorkHandler } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
+  enqueue,
   listItems,
-  recordItem,
   type WorkItemRecord,
   type WorkKind,
 } from "../../tech-utils/work-queue/index.js";
@@ -85,6 +86,20 @@ const MESSAGE_WORK_KINDS: Partial<Record<EventKind, WorkKind>> = {
   tool_result: "tool_result_summary",
 };
 
+// Which derived form each message-owned kind produces — the owning domain's
+// knowledge, handed to the meaning-blind enqueue so the form's pending row
+// rides the same transaction (DD-5).
+const MESSAGE_WORK_FORMS: Partial<Record<WorkKind, FormKind>> = {
+  prompt_smoothing: "smoothed_prompt",
+  tool_call_summary: "tool_call_summary",
+  tool_result_summary: "tool_result_summary",
+};
+
+// Message-owned work handlers, merged into the SDK's dispatch map at
+// construction (DD-6). Empty until Story 2 lands prompt smoothing and the
+// two tool summaries.
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {};
+
 export function queueMessageWork(
   ctx: OperationContext,
   message: MessageCreated,
@@ -92,11 +107,17 @@ export function queueMessageWork(
   if (message === null) return [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
   if (kind === undefined) return [];
-  const item = recordItem(
-    ctx.db,
-    { owner: "messages", kind, sourceRef: { messageId: message.messageId } },
-    ctx.clock().toISOString(),
-  );
+  const form = MESSAGE_WORK_FORMS[kind];
+  if (form === undefined) {
+    // Every queuing kind names its form above; a miss is a wiring bug.
+    throw new Error(`no derived form mapped for message work kind ${kind}`);
+  }
+  const item = enqueue(ctx, {
+    owner: "messages",
+    kind,
+    sourceRef: { messageId: message.messageId },
+    forms: [{ subjectKind: "message", subjectId: message.messageId, form }],
+  });
   return [item];
 }
 

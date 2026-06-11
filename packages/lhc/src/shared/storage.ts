@@ -14,6 +14,69 @@ export function openDatabase(path: string): DatabaseSync {
   return db;
 }
 
+// Epic 02's single migration (tech design §Storage): queue mechanical fields
+// on the existing work_item table, the derived_form state table, the chunk
+// tables, and the projection-level delete stamps. The whole epic's schema
+// lands in one version — behavior arrives story by story. Assembled into the
+// thread-file migration history by threads/internal/create.ts.
+export const MIGRATION_V5_STATEMENTS: readonly string[] = [
+  // claim mechanics on the existing table (DD-1: no disposition column —
+  // queue rows are live work only; terminal rows are deleted and their
+  // outcomes reported in-memory; durable outcome state lives on derived_form)
+  `ALTER TABLE work_item ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE work_item ADD COLUMN last_error TEXT;`,
+  `ALTER TABLE work_item ADD COLUMN claimed_at TEXT;`,
+  `ALTER TABLE work_item ADD COLUMN claim_expires_at TEXT;`,
+  `ALTER TABLE work_item ADD COLUMN eligible_at TEXT;`, // backoff gate; NULL = immediately eligible
+  `ALTER TABLE work_item ADD COLUMN payload TEXT;`, // JSON: { sourceVersion?, form? }; id format includes sourceVersion
+  // Tech design sketches (status, eligible_at, rowid); SQLite forbids rowid
+  // inside an index definition, so the index covers the two real columns and
+  // claimNext's ORDER BY rowid walks the head as before.
+  `CREATE INDEX idx_work_item_queue ON work_item (status, eligible_at);`,
+  `CREATE TABLE derived_form (
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('message','turn','chunk')),
+    subject_id   TEXT NOT NULL,
+    form         TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('pending','ready','failed','blocked')),
+    content      TEXT,
+    reason       TEXT,
+    metadata     TEXT,
+    source_version INTEGER NOT NULL DEFAULT 1,
+    gaps         TEXT,
+    derived_at   TEXT,
+    PRIMARY KEY (subject_kind, subject_id, form)
+  );`,
+  `CREATE TABLE chunk (
+    chunk_id     TEXT PRIMARY KEY,
+    chunk_order  INTEGER NOT NULL UNIQUE,
+    status       TEXT NOT NULL CHECK (status IN ('open','closed')),
+    accumulated_projected_tokens INTEGER NOT NULL DEFAULT 0
+  );`,
+  `CREATE TABLE chunk_member (
+    chunk_id   TEXT NOT NULL REFERENCES chunk(chunk_id),
+    turn_id    TEXT NOT NULL UNIQUE REFERENCES turns(turn_id),
+    member_idx INTEGER NOT NULL,
+    PRIMARY KEY (chunk_id, member_idx)
+  );`,
+  // projection-level delete (the record keeps everything; reads filter)
+  `ALTER TABLE message ADD COLUMN deleted_at TEXT;`,
+  `ALTER TABLE turns   ADD COLUMN deleted_at TEXT;`,
+  // F-02 backfill: pending form rows for work queued before v5 existed, so
+  // UPDATE-only completion finds them (row missing must mean deleted).
+  `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
+    SELECT 'message', json_extract(source_ref, '$.messageId'), 'smoothed_prompt', 'pending', 1
+    FROM work_item WHERE status = 'queued' AND kind = 'prompt_smoothing';`,
+  `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
+    SELECT 'message', json_extract(source_ref, '$.messageId'), 'tool_result_summary', 'pending', 1
+    FROM work_item WHERE status = 'queued' AND kind = 'tool_result_summary';`,
+  `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
+    SELECT 'turn', json_extract(source_ref, '$.turnId'), 'turn_rendering', 'pending', 1
+    FROM work_item WHERE status = 'queued' AND kind = 'turn_derivation';`,
+  `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
+    SELECT 'turn', json_extract(source_ref, '$.turnId'), 'lower_band_projection', 'pending', 1
+    FROM work_item WHERE status = 'queued' AND kind = 'turn_derivation';`,
+];
+
 export function getSchemaVersion(db: DatabaseSync): number {
   const row = db.prepare("PRAGMA user_version").get() as
     | { user_version: number | bigint }

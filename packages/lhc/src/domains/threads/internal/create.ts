@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import {
   getSchemaVersion,
+  MIGRATION_V5_STATEMENTS,
   openDatabase,
   runMigrations,
   type Migration,
@@ -108,6 +109,13 @@ function buildThreadMigrations(
           queued_at TEXT NOT NULL
         );`,
       ],
+    },
+    {
+      version: 5, // Epic 02 Story 0: queue mechanical fields, derived_form,
+      // chunk tables, deleted_at stamps, F-02 pending-row backfill — the
+      // epic's single migration (tech design §Storage), statements owned by
+      // shared/storage.ts.
+      statements: MIGRATION_V5_STATEMENTS,
     },
   ];
 }

@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import type { OperationContext } from "../../shared/context.js";
+import type { WorkHandler } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
+  enqueue,
   listItems,
-  recordItem,
   type WorkItemRecord,
+  type WorkKind,
 } from "../../tech-utils/work-queue/index.js";
 import type { EventKind } from "../intake-stream/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
@@ -59,12 +61,24 @@ function closeTurnAndQueueWork(
   eventOrder: number,
 ): WorkItemRecord {
   closeTurn(ctx.db, turnId, eventOrder);
-  return recordItem(
-    ctx.db,
-    { owner: "turns", kind: "turn_derivation", sourceRef: { turnId } },
-    ctx.clock().toISOString(),
-  );
+  // One work item, two derived forms: the turn_derivation handler (Story 3)
+  // lands the rendering and the lower-band projection as independent rows;
+  // both go pending with the enqueue (DD-5).
+  return enqueue(ctx, {
+    owner: "turns",
+    kind: "turn_derivation",
+    sourceRef: { turnId },
+    forms: [
+      { subjectKind: "turn", subjectId: turnId, form: "turn_rendering" },
+      { subjectKind: "turn", subjectId: turnId, form: "lower_band_projection" },
+    ],
+  });
 }
+
+// Turn-owned work handlers, merged into the SDK's dispatch map at
+// construction (DD-6). Empty until Story 3 lands turn derivation and the
+// chunk summaries.
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {};
 
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like

@@ -108,3 +108,333 @@ describe("FC-0.4: fixture builders", () => {
     store.cleanup();
   });
 });
+
+// ── Story 0 (Epic 02): provider double, shared types, fixture builders ──
+
+import { afterEach, beforeEach } from "vitest";
+import {
+  createSdk,
+  intakeStream,
+  messages,
+  turns,
+  type DerivationProvider,
+  type DerivedForm,
+  type ProviderResult,
+} from "../src/index.js";
+import {
+  createProviderDouble,
+  damagedSourceThread,
+  multiStateThread,
+  readDerivedForms,
+  threadWithClosedTurns,
+  threadWithToolRun,
+  twinThreads,
+  type TempStore,
+} from "./fixtures/index.js";
+
+// One call per operation with a fixed, distinct input — the seven-op sweep
+// FC-0.1/FC-0.2 iterate.
+function callAllSeven(double: DerivationProvider): Array<Promise<ProviderResult>> {
+  return [
+    double.smoothPrompt({ text: "please smooth this prompt text" }),
+    double.summarizeToolCall({
+      toolName: "read_file",
+      argsJson: JSON.stringify({ path: "notes.txt" }),
+      pairedResult: { content: "file contents here", isError: false },
+    }),
+    double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
+    double.composeTurnRendering({
+      parts: [
+        { messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false },
+      ],
+    }),
+    double.projectLowerBand({ rendering: "the rendering text" }),
+    double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
+    double.summarizeChunkBrief({ memberProjections: ["projection one", "projection two"] }),
+  ];
+}
+
+const SEVEN_MARKERS = [
+  "smoothed",
+  "toolcall",
+  "toolresult",
+  "rendering",
+  "projection",
+  "detailed",
+  "brief",
+] as const;
+
+describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
+  it("FC-0.1: implements all seven operations with marked, input-derived output", async () => {
+    const results = await Promise.all(callAllSeven(createProviderDouble()));
+    for (const [index, result] of results.entries()) {
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.text.startsWith(`${SEVEN_MARKERS[index]}(`)).toBe(true);
+    }
+    // Input-derived, not canned: a different input to the same operation
+    // yields different marked output.
+    const double = createProviderDouble();
+    const a = await double.smoothPrompt({ text: "first input" });
+    const b = await double.smoothPrompt({ text: "second input" });
+    if (!a.ok || !b.ok) throw new Error("double failed unscripted");
+    expect(a.text).not.toBe(b.text);
+    expect(a.text).toContain("first input");
+  });
+
+  it("FC-0.2: identical input yields identical output across double instances; operations are distinguishable", async () => {
+    const first = await Promise.all(callAllSeven(createProviderDouble()));
+    const second = await Promise.all(callAllSeven(createProviderDouble()));
+    expect(first).toEqual(second);
+    const texts = first.map((r) => (r.ok ? r.text : ""));
+    expect(new Set(texts).size).toBe(7);
+    expect(texts.map((t) => t.slice(0, t.indexOf("(")))).toEqual([...SEVEN_MARKERS]);
+  });
+
+  it("FC-0.2: failNext drives fail-N-then-succeed with the scripted retryability", async () => {
+    const double = createProviderDouble();
+    double.failNext(2, { retryable: true });
+    const r1 = await double.smoothPrompt({ text: "x" });
+    const r2 = await double.summarizeChunkBrief({ memberProjections: ["y"] });
+    const r3 = await double.smoothPrompt({ text: "x" });
+    expect(r1).toMatchObject({ ok: false, retryable: true });
+    expect(r2).toMatchObject({ ok: false, retryable: true });
+    expect(r3.ok).toBe(true);
+    // ...and exactly N calls consumed the script: the recovered output is
+    // the deterministic one a fresh double produces.
+    const fresh = await createProviderDouble().smoothPrompt({ text: "x" });
+    expect(r3).toEqual(fresh);
+  });
+
+  it("FC-0.2: failKind scripts terminal failure per operation, by kind alias, without touching other kinds", async () => {
+    const double = createProviderDouble();
+    double.failKind("prompt_smoothing", 99, { retryable: false, reason: "content refusal" });
+    const failed = await double.smoothPrompt({ text: "x" });
+    expect(failed).toEqual({ ok: false, retryable: false, reason: "content refusal" });
+    const other = await double.summarizeToolResult({ toolName: "t", content: "c" });
+    expect(other.ok).toBe(true);
+  });
+
+  it("FC-0.2: delayKind injects latency on the scripted operation", async () => {
+    const double = createProviderDouble();
+    double.delayKind("chunk_summary_detailed", 40);
+    const before = Date.now();
+    const result = await double.summarizeChunkDetailed({ memberProjections: ["p"] });
+    const elapsed = Date.now() - before;
+    expect(result.ok).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(35);
+  });
+
+  it("scripting and capture state are per-instance — nothing leaks across doubles", async () => {
+    const scripted = createProviderDouble();
+    const clean = createProviderDouble();
+    const capturedScripted = scripted.captureInputs();
+    scripted.failNext(1);
+    const cleanResult = await clean.smoothPrompt({ text: "untouched" });
+    expect(cleanResult.ok).toBe(true);
+    expect(capturedScripted).toHaveLength(0);
+    const capturedClean = clean.captureInputs();
+    await clean.projectLowerBand({ rendering: "r" });
+    expect(capturedClean).toEqual([{ op: "projectLowerBand", input: { rendering: "r" } }]);
+    expect(capturedScripted).toHaveLength(0);
+    const scriptedResult = await scripted.smoothPrompt({ text: "untouched" });
+    expect(scriptedResult.ok).toBe(false);
+    expect(capturedScripted).toEqual([{ op: "smoothPrompt", input: { text: "untouched" } }]);
+  });
+});
+
+describe("FC-0.1 (production seam): createSdk assembles with the double injected where production adapters go", () => {
+  it("resolves config defaults centrally and carries the injected provider and mode", () => {
+    const double = createProviderDouble();
+    const sdk = createSdk({ provider: double, mode: "manual" });
+    expect(sdk.config.provider).toBe(double);
+    expect(sdk.config.mode).toBe("manual");
+    expect(sdk.config.retry).toEqual({ budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 });
+    expect(sdk.config.lease).toEqual({ durationMs: 120000 });
+    expect(sdk.config.chunkPolicy).toEqual({
+      targetProjectedTokens: 2200,
+      maxProjectedTokens: 4400,
+    });
+    expect(sdk.scheduler.mode).toBe("manual");
+    // The Epic 01 surfaces ride the assembled SDK.
+    expect(sdk.threads.newThread).toBeTypeOf("function");
+    expect(sdk.intakeStream.messageEvents).toBeTypeOf("function");
+  });
+
+  it("background mode is a validated construction option (behavior lands in Story 1)", () => {
+    const sdk = createSdk({ provider: createProviderDouble(), mode: "background" });
+    expect(sdk.scheduler.mode).toBe("background");
+    expect(() => sdk.scheduler.poke("th_x")).not.toThrow();
+  });
+
+  it("rejects malformed config at construction: bad mode, incomplete provider, bad policy values", () => {
+    const double = createProviderDouble();
+    expect(() =>
+      createSdk({ provider: double, mode: "later" as unknown as "manual" }),
+    ).toThrow(/mode/);
+    const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
+    expect(() =>
+      createSdk({ provider: incomplete as unknown as DerivationProvider, mode: "manual" }),
+    ).toThrow(/missing operation/);
+    expect(() =>
+      createSdk({
+        provider: double,
+        mode: "manual",
+        chunkPolicy: { targetProjectedTokens: 4400, maxProjectedTokens: 2200 },
+      }),
+    ).toThrow(/chunkPolicy/);
+    expect(() =>
+      createSdk({
+        provider: double,
+        mode: "manual",
+        retry: { budget: 0, backoffBaseMs: 0, backoffCapMs: 0 },
+      }),
+    ).toThrow(/retry.budget/);
+  });
+});
+
+describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified by read-back", () => {
+  let store: TempStore;
+  beforeEach(() => {
+    store = tempStore();
+  });
+  afterEach(() => {
+    store.cleanup();
+  });
+
+  it("threadWithClosedTurns: n closed turns read back closed with their members", async () => {
+    const { filePath, turnIds } = await threadWithClosedTurns(store, 2);
+    expect(turnIds).toEqual(["t1", "t2"]);
+    const listed = await turns.listTurns({ filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.value.map((t) => [t.turnId, t.status])).toEqual([
+      ["t1", "closed"],
+      ["t2", "closed"],
+    ]);
+    expect(listed.value.every((t) => t.memberMessageIds.length === 2)).toBe(true);
+  });
+
+  it("threadWithToolRun: call+result pair recorded; error and missing-result variants hold their shapes", async () => {
+    const paired = await threadWithToolRun(store);
+    const pairedMessages = await messages.listMessages({ filePath: paired.filePath });
+    expect(pairedMessages.ok).toBe(true);
+    if (!pairedMessages.ok) return;
+    expect(pairedMessages.value.map((m) => m.kind)).toEqual([
+      "user_prompt",
+      "tool_call",
+      "tool_result",
+    ]);
+
+    const errored = await threadWithToolRun(store, { isError: true });
+    const erroredMessages = await messages.listMessages({ filePath: errored.filePath });
+    expect(erroredMessages.ok).toBe(true);
+    if (!erroredMessages.ok) return;
+    const resultBlock = erroredMessages.value[2]?.blocks[0];
+    expect(resultBlock?.content.isError).toBe(true);
+
+    const missing = await threadWithToolRun(store, { missingResult: true });
+    const missingMessages = await messages.listMessages({ filePath: missing.filePath });
+    expect(missingMessages.ok).toBe(true);
+    if (!missingMessages.ok) return;
+    expect(missingMessages.value.map((m) => m.kind)).toEqual(["user_prompt", "tool_call"]);
+  });
+
+  it("FC-0.6: the multi-state thread reads back every claimed state — all four in one file", async () => {
+    const { filePath, expected } = await multiStateThread(store);
+    const forms = readDerivedForms(filePath);
+    for (const claim of expected) {
+      const match = forms.find(
+        (f) =>
+          f.subjectKind === claim.subjectKind &&
+          f.subjectId === claim.subjectId &&
+          f.form === claim.form,
+      );
+      expect(match, `${claim.subjectKind}/${claim.subjectId}/${claim.form}`).toBeDefined();
+      expect(match?.state).toBe(claim.state);
+    }
+    const states = new Set(forms.map((f) => f.state));
+    expect([...states].sort()).toEqual(["blocked", "failed", "pending", "ready"]);
+    // State-shape contract: ready carries content, failed/blocked carry
+    // reasons, pending carries neither.
+    for (const form of forms) {
+      if (form.state === "ready") expect(form.content).toBeDefined();
+      if (form.state === "failed" || form.state === "blocked") {
+        expect(form.reason).toBeDefined();
+        expect(form.content).toBeUndefined();
+      }
+      if (form.state === "pending") {
+        expect(form.content).toBeUndefined();
+        expect(form.reason).toBeUndefined();
+      }
+    }
+  });
+
+  it("FC-0.3: tool-activity outcome lives in machine-readable metadata, never inside content", async () => {
+    const { filePath } = await multiStateThread(store);
+    const toolForm = readDerivedForms(filePath).find((f) => f.form === "tool_result_summary");
+    expect(toolForm).toBeDefined();
+    expect(toolForm?.metadata).toEqual({ outcome: "succeeded" });
+    expect(toolForm?.content).not.toContain("succeeded");
+    // The shared vocabulary is the compile-time contract both owning domains
+    // consume; this read shape is that type.
+    const typed: DerivedForm | undefined = toolForm;
+    expect(typed?.state).toBe("ready");
+  });
+
+  it("FC-0.6: the damaged-source thread reads back the corruption it claims (Epic 01 definition)", async () => {
+    const { filePath, turnId } = await damagedSourceThread(store);
+    expect(turnId).toBe("t1");
+    const db = openRaw(filePath);
+    try {
+      const open = db
+        .prepare("SELECT COUNT(*) AS n FROM turns WHERE status = 'open'")
+        .get() as { n: number | bigint };
+      expect(Number(open.n)).toBe(2);
+    } finally {
+      db.close();
+    }
+    // The damage is live: intake refuses the file as corrupt, exactly as
+    // Epic 01 defines the state.
+    const rejected = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.error.code).toBe("turn_state_corrupt");
+    // The queued turn_derivation work the damage sits under is still there.
+    const queued = await turns.listQueuedWork({ filePath });
+    expect(queued.ok).toBe(true);
+    if (!queued.ok) return;
+    expect(queued.value.map((item) => item.kind)).toEqual(["turn_derivation"]);
+  });
+
+  it("FC-0.6: twin SDK/CLI threads read back identical records through every surface", async () => {
+    const { sdkPath, cliPath } = await twinThreads(store);
+    const readBack = async (filePath: string) => {
+      const [events, projected, turnRecords, messageWork, turnWork] = await Promise.all([
+        intakeStream.listEvents({ filePath }),
+        messages.listMessages({ filePath }),
+        turns.listTurns({ filePath }),
+        messages.listQueuedWork({ filePath }),
+        turns.listQueuedWork({ filePath }),
+      ]);
+      if (!events.ok || !projected.ok || !turnRecords.ok || !messageWork.ok || !turnWork.ok) {
+        throw new Error("twin read-back failed");
+      }
+      return {
+        events: events.value,
+        messages: projected.value,
+        turns: turnRecords.value,
+        messageWork: messageWork.value,
+        turnWork: turnWork.value,
+        forms: readDerivedForms(filePath),
+      };
+    };
+    const sdkSide = await readBack(sdkPath);
+    const cliSide = await readBack(cliPath);
+    expect(sdkSide).toEqual(cliSide);
+    // And the twins are non-trivial: a full turn with a tool run.
+    expect(sdkSide.events).toHaveLength(5);
+    expect(sdkSide.turns).toHaveLength(1);
+    expect(sdkSide.forms.length).toBeGreaterThan(0);
+  });
+});

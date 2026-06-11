@@ -8,10 +8,12 @@
 // files without creating lhc schema or bumping user_version on them.
 import { readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { intakeStream, messages } from "../src/index.js";
+import { intakeStream, messages, turns } from "../src/index.js";
 import {
+  legacyEpic01ThreadFile,
   legacyStory2ThreadFile,
   openRaw,
+  readDerivedForms,
   schemaVersionOf,
   tempStore,
   validEvent,
@@ -57,7 +59,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
     expect(result.value.events[0]!.messageId).toBe("m2");
 
-    expect(schemaVersionOf(filePath)).toBe(4);
+    expect(schemaVersionOf(filePath)).toBe(5);
 
     // The legacy event survives the upgrade byte-for-byte at the SDK level.
     const events = await intakeStream.listEvents({ filePath });
@@ -98,7 +100,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     if (!projected.ok) return;
     expect(projected.value).toEqual([]);
 
-    expect(schemaVersionOf(filePath)).toBe(4);
+    expect(schemaVersionOf(filePath)).toBe(5);
 
     // The read-path upgrade changed no record content.
     const events = await intakeStream.listEvents({ filePath });
@@ -214,5 +216,111 @@ describe("F-03-002: non-thread files are rejected, not adopted", () => {
     expect(batched.error.code).toBe("thread_not_found");
 
     expect(readFileSync(filePath, "utf8")).toBe(original);
+  });
+});
+
+// Story 0 (Epic 02), FC-0.5 + architecture risk "migration on live data":
+// v5 applies in place to a populated Epic 01 file — existing rows intact,
+// new columns defaulted, the F-02 backfill creating pending derived_form
+// rows for live queued items. A fresh-file migration test would pass while
+// breaking real threads; this one runs over real Epic 01 data.
+describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
+  it("upgrades in place: records intact, queue columns defaulted, F-02 backfill pending rows present", async () => {
+    const filePath = store.threadPath();
+    legacyEpic01ThreadFile(filePath, "th_epic01");
+    expect(schemaVersionOf(filePath)).toBe(4);
+
+    // Any SDK read migrates lazily; the read itself must succeed post-v5.
+    const projected = await messages.listMessages({ filePath });
+    expect(projected.ok).toBe(true);
+    if (!projected.ok) return;
+    expect(schemaVersionOf(filePath)).toBe(5);
+
+    // Existing records intact through the production read surfaces.
+    expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
+    const events = await intakeStream.listEvents({ filePath });
+    expect(events.ok).toBe(true);
+    if (!events.ok) return;
+    expect(events.value).toHaveLength(4);
+    const turnRecords = await turns.listTurns({ filePath });
+    expect(turnRecords.ok).toBe(true);
+    if (!turnRecords.ok) return;
+    expect(turnRecords.value).toEqual([
+      {
+        turnId: "t1",
+        status: "closed",
+        memberMessageIds: ["m1", "m2", "m3"],
+        openedAtEventOrder: 1,
+        closedAtEventOrder: 4,
+      },
+    ]);
+
+    // Work rows survive with their pre-v5 ids; the queue's mechanical
+    // columns exist and default to not-claimed / immediately eligible.
+    const db = openRaw(filePath);
+    try {
+      const items = db
+        .prepare(
+          `SELECT work_item_id, status, attempts, last_error, claimed_at,
+                  claim_expires_at, eligible_at, payload
+           FROM work_item ORDER BY work_item_id`,
+        )
+        .all() as unknown as Array<Record<string, unknown>>;
+      expect(items.map((row) => row.work_item_id)).toEqual([
+        "w-m1-prompt_smoothing",
+        "w-m3-tool_result_summary",
+        "w-t1-turn_derivation",
+      ]);
+      for (const row of items) {
+        expect(row.status).toBe("queued");
+        expect(Number(row.attempts)).toBe(0);
+        expect(row.last_error).toBeNull();
+        expect(row.claimed_at).toBeNull();
+        expect(row.claim_expires_at).toBeNull();
+        expect(row.eligible_at).toBeNull();
+        expect(row.payload).toBeNull();
+      }
+      // The epic's other v5 surfaces exist (schema ships whole): chunk
+      // tables empty, deleted_at stamps present and null.
+      const chunkCount = db.prepare("SELECT COUNT(*) AS n FROM chunk").get() as { n: number | bigint };
+      expect(Number(chunkCount.n)).toBe(0);
+      const deleted = db
+        .prepare("SELECT COUNT(*) AS n FROM message WHERE deleted_at IS NOT NULL")
+        .get() as { n: number | bigint };
+      expect(Number(deleted.n)).toBe(0);
+    } finally {
+      db.close();
+    }
+
+    // F-02 backfill: one pending row per live queued item, mapped per kind —
+    // turn_derivation fans out to both turn forms; all at source version 1.
+    expect(
+      readDerivedForms(filePath).map(({ subjectKind, subjectId, form, state, sourceVersion }) => ({
+        subjectKind,
+        subjectId,
+        form,
+        state,
+        sourceVersion,
+      })),
+    ).toEqual([
+      { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt", state: "pending", sourceVersion: 1 },
+      { subjectKind: "message", subjectId: "m3", form: "tool_result_summary", state: "pending", sourceVersion: 1 },
+      { subjectKind: "turn", subjectId: "t1", form: "lower_band_projection", state: "pending", sourceVersion: 1 },
+      { subjectKind: "turn", subjectId: "t1", form: "turn_rendering", state: "pending", sourceVersion: 1 },
+    ]);
+
+    // The migrated file keeps working through the Epic 01 write path: a new
+    // batch records, projects, and queues against the v5 schema.
+    const batch = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "recorded after the upgrade" } }),
+      validEvent("turn_end"),
+    ]);
+    expect(batch.ok).toBe(true);
+    if (!batch.ok) return;
+    expect(batch.value.events.map((entry) => entry.outcome)).toEqual(["recorded", "recorded"]);
+    expect(batch.value.queuedWork.map((item) => item.workItemId)).toEqual([
+      "w-m5-prompt_smoothing-v1",
+      "w-t2-turn_derivation-v1",
+    ]);
   });
 });

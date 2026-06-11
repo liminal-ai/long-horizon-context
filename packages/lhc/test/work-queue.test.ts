@@ -103,13 +103,13 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
 
     // The batch result reports both items with full identity.
     expect(result.queuedWork).toContainEqual({
-      workItemId: "w-m1-prompt_smoothing",
+      workItemId: "w-m1-prompt_smoothing-v1",
       owner: "messages",
       kind: "prompt_smoothing",
       sourceRef: { messageId: "m1" },
     });
     expect(result.queuedWork).toContainEqual({
-      workItemId: "w-m2-tool_result_summary",
+      workItemId: "w-m2-tool_result_summary-v1",
       owner: "messages",
       kind: "tool_result_summary",
       sourceRef: { messageId: "m2" },
@@ -119,7 +119,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     // queued, queuedAt from the injected clock.
     expect(await queuedFor(filePath, "messages")).toEqual([
       {
-        workItemId: "w-m1-prompt_smoothing",
+        workItemId: "w-m1-prompt_smoothing-v1",
         owner: "messages",
         kind: "prompt_smoothing",
         sourceRef: { messageId: "m1" },
@@ -127,7 +127,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
         queuedAt: FIXED_INSTANT,
       },
       {
-        workItemId: "w-m2-tool_result_summary",
+        workItemId: "w-m2-tool_result_summary-v1",
         owner: "messages",
         kind: "tool_result_summary",
         sourceRef: { messageId: "m2" },
@@ -180,7 +180,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     expect(result.turnTransitions).toEqual([{ action: "closed", turnId: "t1" }]);
     expect(result.queuedWork).toEqual([
       {
-        workItemId: "w-t1-turn_derivation",
+        workItemId: "w-t1-turn_derivation-v1",
         owner: "turns",
         kind: "turn_derivation",
         sourceRef: { turnId: "t1" },
@@ -201,14 +201,14 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     ]);
 
     expect(result.queuedWork).toContainEqual({
-      workItemId: "w-t1-turn_derivation",
+      workItemId: "w-t1-turn_derivation-v1",
       owner: "turns",
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },
     });
     expect(await queuedFor(filePath, "turns")).toEqual([
       {
-        workItemId: "w-t1-turn_derivation",
+        workItemId: "w-t1-turn_derivation-v1",
         owner: "turns",
         kind: "turn_derivation",
         sourceRef: { turnId: "t1" },
@@ -236,7 +236,7 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     expect(contract(implicitItems)).toEqual(contract(explicitItems));
     expect(contract(explicitItems)).toEqual([
       {
-        workItemId: "w-t1-turn_derivation",
+        workItemId: "w-t1-turn_derivation-v1",
         owner: "turns",
         kind: "turn_derivation",
         sourceRef: { turnId: "t1" },
@@ -257,8 +257,8 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
 
     const turnWork = await queuedFor(filePath, "turns");
     expect(turnWork.map((item) => item.workItemId)).toEqual([
-      "w-t1-turn_derivation",
-      "w-t2-turn_derivation",
+      "w-t1-turn_derivation-v1",
+      "w-t2-turn_derivation-v1",
     ]);
     expect(turnWork.every((item) => item.kind === "turn_derivation")).toBe(true);
     expect(turnWork.every((item) => item.status === "queued")).toBe(true);
@@ -303,9 +303,9 @@ describe("architecture-risk: durability and rollback over the complete record su
         .prepare("SELECT work_item_id, status FROM work_item ORDER BY work_item_id")
         .all() as unknown as Array<{ work_item_id: string; status: string }>;
       expect(rows).toEqual([
-        { work_item_id: "w-m1-prompt_smoothing", status: "queued" },
-        { work_item_id: "w-m3-tool_result_summary", status: "queued" },
-        { work_item_id: "w-t1-turn_derivation", status: "queued" },
+        { work_item_id: "w-m1-prompt_smoothing-v1", status: "queued" },
+        { work_item_id: "w-m3-tool_result_summary-v1", status: "queued" },
+        { work_item_id: "w-t1-turn_derivation-v1", status: "queued" },
       ]);
     } finally {
       db.close();
@@ -348,7 +348,7 @@ describe("CLI in-process: list-queued-work on both owning domains", () => {
     expect(messagesParsed.ok).toBe(true);
     expect(messagesParsed.value).toHaveLength(1);
     expect(messagesParsed.value[0]).toMatchObject({
-      workItemId: "w-m1-prompt_smoothing",
+      workItemId: "w-m1-prompt_smoothing-v1",
       owner: "messages",
       kind: "prompt_smoothing",
       sourceRef: { messageId: "m1" },
@@ -364,7 +364,7 @@ describe("CLI in-process: list-queued-work on both owning domains", () => {
     expect(turnsParsed.ok).toBe(true);
     expect(turnsParsed.value).toHaveLength(1);
     expect(turnsParsed.value[0]).toMatchObject({
-      workItemId: "w-t1-turn_derivation",
+      workItemId: "w-t1-turn_derivation-v1",
       owner: "turns",
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },
@@ -385,5 +385,234 @@ describe("CLI in-process: list-queued-work on both owning domains", () => {
     const parsed = JSON.parse(listed.stdout) as { ok: boolean; error: { code: string } };
     expect(parsed.ok).toBe(false);
     expect(parsed.error.code).toBe("thread_not_found");
+  });
+});
+
+// ── Story 0 (Epic 02): work-kind registry, handler-map assembly, and the
+// enqueue wrapper's atomicity. The registry and map are FC-0.4; atomicity is
+// Chunk 0's named architecture risk — row + pending form + poke all drop on
+// rollback, because every later queue site (intake, cascade, repair) leans
+// on that invariant.
+import {
+  assembleWorkHandlerMap,
+  createSdk,
+  lookupWorkHandler,
+  runInTransaction,
+  setSchedulerPoke,
+  WORK_KIND_REGISTRY,
+  type WorkHandler,
+} from "../src/index.js";
+import { enqueue } from "../src/tech-utils/work-queue/index.js";
+import {
+  createProviderDouble,
+  readDerivedForms,
+  setIntakeWalkHook,
+} from "./fixtures/index.js";
+
+// Below-SDK read of derived_form rows — enqueue's pending rows are asserted
+// durably, not through the batch result.
+function rawFormRows(filePath: string): Array<{ key: string; state: string }> {
+  const db = openRaw(filePath);
+  try {
+    return db
+      .prepare(
+        `SELECT subject_kind || '/' || subject_id || '/' || form AS key, state
+         FROM derived_form ORDER BY key`,
+      )
+      .all() as unknown as Array<{ key: string; state: string }>;
+  } finally {
+    db.close();
+  }
+}
+
+describe("FC-0.4: work-kind registry and handler-map assembly", () => {
+  it("the registry covers all six kinds with owner and sourceRef semantics per the Work Item contract", () => {
+    expect(WORK_KIND_REGISTRY).toEqual({
+      prompt_smoothing: { owner: "messages", sourceRefKey: "messageId" },
+      tool_call_summary: { owner: "messages", sourceRefKey: "messageId" },
+      tool_result_summary: { owner: "messages", sourceRefKey: "messageId" },
+      turn_derivation: { owner: "turns", sourceRefKey: "turnId" },
+      chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
+      chunk_summary_brief: { owner: "turns", sourceRefKey: "chunkId" },
+    });
+  });
+
+  it("createSdk assembles the handler map from domain tables; an unregistered kind reports the miss explicitly", () => {
+    const sdk = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    // Domain tables are empty until Stories 2–3; assembly itself is live.
+    expect(sdk.workHandlers).toEqual({});
+    // The miss is reported as a structured result — not a throw, not silence.
+    const missed = sdk.lookupWorkHandler("prompt_smoothing");
+    expect(missed.ok).toBe(false);
+    if (missed.ok) return;
+    expect(missed.error.errorClass).toBe("state_corruption");
+    expect(missed.error.code).toBe("unknown_work_kind");
+    expect(missed.error.reason).toContain("prompt_smoothing");
+  });
+
+  it("assembly merges per-domain tables, dispatch finds a registered handler, and a doubly-claimed kind is refused", () => {
+    const handler: WorkHandler = async () => ({ ok: true });
+    const map = assembleWorkHandlerMap([
+      { prompt_smoothing: handler },
+      { turn_derivation: handler },
+    ]);
+    const found = lookupWorkHandler(map, "prompt_smoothing");
+    expect(found.ok).toBe(true);
+    if (!found.ok) return;
+    expect(found.value).toBe(handler);
+    const missed = lookupWorkHandler(map, "chunk_summary_brief");
+    expect(missed.ok).toBe(false);
+    // One owner per kind: a second table claiming the same kind is a wiring
+    // bug surfaced at construction.
+    expect(() =>
+      assembleWorkHandlerMap([{ prompt_smoothing: handler }, { prompt_smoothing: handler }]),
+    ).toThrow(/prompt_smoothing/);
+  });
+});
+
+describe("architecture-risk: enqueue atomicity — row, pending form, poke commit or vanish together", () => {
+  afterEach(() => {
+    setSchedulerPoke(null);
+    setIntakeWalkHook(null);
+  });
+
+  it("a committed intake batch durably writes work rows + pending forms and pokes once per enqueue, after commit", async () => {
+    const filePath = await createThread();
+    const pokes: string[] = [];
+    setSchedulerPoke((threadId) => pokes.push(threadId));
+
+    const result = await send(filePath, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
+    // Two enqueues (prompt smoothing + turn derivation) → two pokes, both
+    // carrying the thread's resolved id, fired only after COMMIT.
+    expect(pokes).toHaveLength(2);
+    expect(new Set(pokes).size).toBe(1);
+    expect(pokes[0]).toMatch(/^th_/);
+    expect(result.queuedWork).toHaveLength(2);
+
+    // The pending state rows rode the same transaction (DD-5): one for the
+    // prompt's form, two for the turn's rendering + projection.
+    expect(rawFormRows(filePath)).toEqual([
+      { key: "message/m1/smoothed_prompt", state: "pending" },
+      { key: "turn/t1/lower_band_projection", state: "pending" },
+      { key: "turn/t1/turn_rendering", state: "pending" },
+    ]);
+  });
+
+  it("an induced rollback after enqueue drops the work row, the pending form row, and the poke", async () => {
+    const filePath = await createThread();
+    const pokes: string[] = [];
+    setSchedulerPoke((threadId) => pokes.push(threadId));
+
+    // The prompt's enqueue has already run inside the walk when the hook
+    // fires on the second event and rejects the batch (production rollback
+    // path, same seam Epic 01's atomicity tests use).
+    setIntakeWalkHook((_db, eventIndex) => {
+      if (eventIndex === 1) throw new Error("induced mid-walk failure after enqueue");
+    });
+    const rejected = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+    ]);
+    expect(rejected.ok).toBe(false);
+
+    expect(rawWorkItemCount(filePath)).toBe(0);
+    expect(rawFormRows(filePath)).toEqual([]);
+    expect(pokes).toEqual([]);
+  });
+
+  it("enqueue via runInTransaction: rollback drops all three effects; commit lands them and then pokes", async () => {
+    const filePath = await createThread();
+    const opened = threads.openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    const pokes: string[] = [];
+    setSchedulerPoke((threadId) => pokes.push(threadId));
+    const clock = () => new Date(FIXED_INSTANT);
+
+    try {
+      // Rollback leg: the body enqueues, then throws.
+      expect(() =>
+        runInTransaction(db, clock, "th_direct", (ctx) => {
+          enqueue(ctx, {
+            owner: "turns",
+            kind: "chunk_summary_brief",
+            sourceRef: { chunkId: "c1" },
+            forms: [{ subjectKind: "chunk", subjectId: "c1", form: "chunk_summary_brief" }],
+          });
+          throw new Error("induced rollback");
+        }),
+      ).toThrow("induced rollback");
+      expect(rawWorkItemCount(filePath)).toBe(0);
+      expect(rawFormRows(filePath)).toEqual([]);
+      expect(pokes).toEqual([]);
+
+      // Commit leg: same enqueue, no failure — and the poke fires after the
+      // body, not inside it.
+      const item = runInTransaction(db, clock, "th_direct", (ctx) => {
+        const record = enqueue(ctx, {
+          owner: "turns",
+          kind: "chunk_summary_brief",
+          sourceRef: { chunkId: "c1" },
+          forms: [{ subjectKind: "chunk", subjectId: "c1", form: "chunk_summary_brief" }],
+        });
+        expect(pokes).toEqual([]); // not yet committed
+        return record;
+      });
+      expect(item.workItemId).toBe("w-c1-chunk_summary_brief-v1");
+      expect(pokes).toEqual(["th_direct"]);
+      expect(rawFormRows(filePath)).toEqual([
+        { key: "chunk/c1/chunk_summary_brief", state: "pending" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("re-enqueueing at a later source version resets the form row to pending at that version", async () => {
+    const filePath = await createThread();
+    const opened = threads.openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    const clock = () => new Date(FIXED_INSTANT);
+    try {
+      runInTransaction(db, clock, "th_direct", (ctx) => {
+        enqueue(ctx, {
+          owner: "messages",
+          kind: "prompt_smoothing",
+          sourceRef: { messageId: "mx" },
+          forms: [{ subjectKind: "message", subjectId: "mx", form: "smoothed_prompt" }],
+        });
+      });
+      // Versioned ids let the replacement coexist with (not collide into)
+      // the version-1 item (DD-1/DD-3).
+      const replacement = runInTransaction(db, clock, "th_direct", (ctx) =>
+        enqueue(ctx, {
+          owner: "messages",
+          kind: "prompt_smoothing",
+          sourceRef: { messageId: "mx" },
+          sourceVersion: 2,
+          forms: [{ subjectKind: "message", subjectId: "mx", form: "smoothed_prompt" }],
+        }),
+      );
+      expect(replacement.workItemId).toBe("w-mx-prompt_smoothing-v2");
+      const forms = readDerivedForms(filePath);
+      expect(forms).toHaveLength(1);
+      expect(forms[0]).toMatchObject({
+        subjectKind: "message",
+        subjectId: "mx",
+        form: "smoothed_prompt",
+        state: "pending",
+        sourceVersion: 2,
+      });
+      expect(rawWorkItemCount(filePath)).toBe(2);
+    } finally {
+      db.close();
+    }
   });
 });
