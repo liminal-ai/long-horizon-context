@@ -1,8 +1,8 @@
 # Team Impl Log — Epic 02: Derivation Pipeline
 
-State: EPIC_VERIFY_ACTIVE
-Current Story: — (all 7 accepted)
-Current Phase: epic-review
+State: COMPLETE
+Current Story: — (all 7 accepted; epic closed 2026-06-11T10:35Z)
+Current Phase: —
 Accepted: 00 (967a90f, 155) · 01 (794c877, 173) · 02 (cc304bb, 182) · 03 (c61397e, 195) · 04 (8b2d92b, 208) · 05 (da58dd5, 218) · 06 (64539ed, 231)
 Spec-Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline
 Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
@@ -156,4 +156,10 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Fix-batch-002 execution: attempt 1 blocked (auth expiry, no code). Attempt 2 (09:56–10:26Z) landed all 7 items: scheduler armWake timer (one per thread, unref'd, cleared on poke/newer wake — Fix 1); tool-run grouping in compose.ts (maximal consecutive runs → one part + one receipt, mixed outcomes explicit; thinking/notes don't break runs, recorded as story deviation — Fix 2); pairedCounterpartSubject in cascadeTurnDelete (REVERIFY-02-001); story-3 max 4400 doc fix; TC-2.7 thinking; delete-side stale-straggler test; epic-fix-02.test.ts +290 lines. Red manifest re-recorded for 2 amended files (blessed-change). Final envelope again PROVIDER_OUTPUT_INVALID — work verified on disk by impl-lead.
 - Impl-lead gates on fix-batch-002 tree: green-verify PASS (213, immutability OK 27); verify-all PASS (240).
 - Note: docs/02-specs/03-thread-views-and-smart-compact/* changes are the spec author's (outside this run) — kept out of fix commits.
-- Commit 40facf7. Current Phase: epic-reverify (round 2) applied — pending re-verify
+- Commit 40facf7. 10:28Z epic-reverify round 2 (003): substantive verdict ready-for-closeout — both canonical blockers re-verified fixed against the tree (per-instance seams + both-direction regressions; deleted filter on both pairing reads; counterpart cascade in all three DD-8 callers incl. cascadeTurnDelete with the prescribed cross-turn test); E02-NB-001/003/004/005 carried as recorded non-gating debt (NB-003 resolves with a real provider-adapter epic). Reverifier independently ran both gates: exit 0. Envelope itself PROVIDER_OUTPUT_INVALID (same cosmetic parser issue as both fix passes; substance read from stream log by impl-lead).
+
+#### EPIC CLOSEOUT (2026-06-11T10:35Z)
+- Final epic gate run by impl-lead: `pnpm run verify-all` PASS — 240 tests, including LHC_PROCESS_SUITE=1 process suite.
+- Epic test trajectory: 132 (pre-epic) → 240. All 47 ACs / 46 TCs landed across stories 0–6; architecture-risk four (TC-1.3, TC-1.4, TC-5.4, TC-3.9) green; two epic-fix batches applied and re-verified (mode isolation, pair-dependency cascade incl. turn-delete path, backoff wake, tool-run grouping, P3 cleanups).
+- Recorded debt for future epics: E02-NB-001 (clock bypass in mutations/requeue), NB-003 (deterministic-only provider, by design until adapter epic), NB-004 (thrown handler errors → retryable), NB-005 (attempts accounting asymmetry).
+- State: COMPLETE. applied — pending re-verify
