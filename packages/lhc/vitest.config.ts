@@ -20,6 +20,7 @@ export default defineConfig({
             "test/cli-process-work-queue.test.ts",
             "test/cli-process-work.test.ts",
             "test/cli-process-report-repair.test.ts",
+            "test/cli-process-mutations.test.ts",
             "test/cli-process-fix.test.ts",
           ]),
     ],

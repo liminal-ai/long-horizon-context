@@ -98,6 +98,7 @@ export type {
   Block,
   BlockType,
   MessageRecord,
+  MutationResult,
 } from "./domains/messages/index.js";
 export type { ChunkRecord, TurnRecord } from "./domains/turns/index.js";
 export type {

@@ -108,6 +108,17 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Baseline: 195 → 208 (no regression).
 - Dispositions: SV-04-001 fixed (after rejected deviation). Deviations: final set approved. Accepted-risk/defer: none. Open risks: none.
 
+### 05-message-edit-cascade
+- run 05:58Z; implementor ~18min; verifier initial F-05-001 (open-turn enforcement) → fixed with regression test; verifier follow-up pass (openFindings []).
+- 06:37Z needs-ruling (spec-deviation). 06:38Z impl-lead APPROVED 4 deviations: CLI parity in new cli-process-mutations.test.ts (Story 1 file hash-locked, Story 4 precedent); TC-5.4 via held manual-drain promise — real claimed pre-edit item across the edit, stale_discarded directly asserted (anti-shim satisfied); --message/--message-id aliases; tool_call edit content-verbatim noted for Story 6.
+- Two planner payload glitches (Codex schema drift) required plain resumes; final terminal accept-story, all acceptance checks pass.
+
+#### RECEIPT — 05-message-edit-cascade (ACCEPTED 2026-06-11T06:40Z)
+- Implementor: 003-implementor.json. Verifier: initial + follow-up pass.
+- Gates by impl-lead: green-verify PASS (194 tests, immutability OK 25 red files); verify-all PASS (218 tests).
+- Baseline: 208 → 218 (no regression). TC-5.4 (epic's named architecture-risk race) green in suite.
+- Dispositions: F-05-001 fixed. Deviations: 4 approved. Accepted-risk/defer: none. Open risks: none.
+
 ## Epic Closeout
 
 (pending)

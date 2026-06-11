@@ -24,7 +24,13 @@ import {
 } from "./internal/forms.js";
 import { messageWorkHandlers } from "./internal/handlers.js";
 import { projectEvent } from "./internal/project.js";
-import { insertMessage, readMessages } from "./internal/store.js";
+import { cascadeFromMessage, type CascadeClear } from "./internal/cascade.js";
+import {
+  applyMessageEdit,
+  insertMessage,
+  readMessages,
+  readMutableMessage,
+} from "./internal/store.js";
 
 export type BlockType = "text" | "tool_call" | "tool_result";
 
@@ -354,6 +360,103 @@ export async function requeue(
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`requeue failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+// ── mutations (Epic 02 Story 5, Flow 5) ──────────────────────────
+
+// The mutation result contract (tech design §Interfaces): what changed in
+// the record, which dependent forms cleared, which dropped (delete only),
+// what replacement work queued, and which still-queued old items the cascade
+// tidied away (issue 1). Shared by edit and the Story 6 deletes.
+export interface MutationResult {
+  changed: { messageIds: string[]; turnIds: string[] };
+  cleared: CascadeClear[];
+  dropped: CascadeClear[];
+  queued: Array<{ workItemId: string; kind: WorkKind }>;
+  superseded: string[];
+}
+
+// The record's first sanctioned mutation (AC-5.1–5.5): change a closed-turn
+// message's content and blocks, re-stamp the token estimate, and walk the
+// full dependent chain — clear to pending, supersede queued old work,
+// enqueue replacements at the next source version — in one transaction.
+// Synchronous and local by contract: everything above commits before this
+// returns; the re-queued rebuilds run through the normal drain (background
+// mode needs no further call — the enqueue pokes ride the commit). Events
+// are never touched (projection-level mutation, DD-12), and no generated
+// thread-view is either — visibility arrives at the next compact/rebuild.
+// Refusals read through the deleted-filtered view and enforce the closed-turn
+// target boundary: only a message in a closed turn is editable, so an
+// open-turn *or* a turnless (no-membership) gap target is refused turn_open —
+// the boundary's one stable code — a missing or deleted message is
+// message_not_found, and a refusal changes nothing.
+export async function edit(
+  thread: ThreadRef,
+  input: { messageId: string; content: string },
+): Promise<OpResult<MutationResult>> {
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const meta = db
+      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
+      .get() as { thread_id: string } | undefined;
+    const threadId = meta?.thread_id ?? "";
+    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
+      const target = readMutableMessage(ctx.db, input.messageId);
+      if (target === undefined) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no message ${input.messageId} exists in this thread`,
+          },
+        };
+      }
+      // The closed-turn target boundary (story scope; AC-5.1): the edit's
+      // editable class is a message in a *closed* turn. Both failing cases —
+      // an open turn and a turnless gap message (no membership) — refuse under
+      // the one stable code; the reason distinguishes them so the open-turn
+      // message reads exactly as before. A deleted/missing target never gets
+      // here (it misses the filtered read above as message_not_found).
+      if (target.turnStatus !== "closed") {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_open",
+            reason:
+              target.turnStatus === "open"
+                ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
+                : `message ${input.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
+          },
+        };
+      }
+      applyMessageEdit(ctx.db, input.messageId, input.content);
+      const cascade = cascadeFromMessage(ctx, input.messageId);
+      return {
+        ok: true,
+        value: {
+          changed: { messageIds: [input.messageId], turnIds: [] },
+          cleared: cascade.cleared,
+          dropped: [],
+          queued: cascade.queued,
+          superseded: cascade.superseded,
+        },
+      };
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`edit failed: ${reason}`);
   } finally {
     db.close();
   }

@@ -7,6 +7,7 @@ import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
 import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
+import { runMessagesEdit } from "./messages-mutate.js";
 import {
   runMessagesReport,
   runMessagesRequeue,
@@ -45,6 +46,7 @@ Usage:
   lhc messages list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc messages report (--thread-id <id> | --file-path <p>) [--not-ready] [--message-id <id>] [--registry <r>]
   lhc messages requeue (--thread-id <id> | --file-path <p>) --message-id <id> --form <form> [--registry <r>]
+  lhc messages edit (--thread-id <id> | --file-path <p>) --message <id> --content <text> [--registry <r>]
   lhc turns list (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-chunks (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
@@ -70,6 +72,7 @@ interface ParsedFlags {
   form?: string;
   subjectKind?: string;
   subjectId?: string;
+  content?: string;
 }
 
 // strict parse rejects unknown/misspelled flags so they are named back to the
@@ -99,6 +102,10 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
         form: { type: "string" },
         "subject-kind": { type: "string" },
         "subject-id": { type: "string" },
+        // `--message` is the edit command's spelling (story/tech design);
+        // it parses into the same messageId slot as `--message-id`.
+        message: { type: "string" },
+        content: { type: "string" },
       },
       strict: true,
       allowPositionals: true,
@@ -119,6 +126,8 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
   if (typeof values.provider === "string") flags.provider = values.provider;
   if (values["not-ready"] === true) flags.notReady = true;
   if (typeof values["message-id"] === "string") flags.messageId = values["message-id"];
+  if (typeof values.message === "string") flags.messageId = values.message;
+  if (typeof values.content === "string") flags.content = values.content;
   if (typeof values["turn-id"] === "string") flags.turnId = values["turn-id"];
   if (typeof values["chunk-id"] === "string") flags.chunkId = values["chunk-id"];
   if (typeof values.form === "string") flags.form = values.form;
@@ -282,6 +291,21 @@ export async function runCli(
       return runMessagesRequeue(threadRefFrom(flags), {
         messageId: flags.messageId,
         form: flags.form,
+      });
+    }
+    case "messages edit": {
+      const missingRef = requireThreadRef(flags, "messages edit");
+      if (missingRef !== undefined) return missingRef;
+      if (flags.messageId === undefined || flags.content === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "messages edit requires --message (or --message-id) and --content",
+        );
+      }
+      return runMessagesEdit(threadRefFrom(flags), {
+        messageId: flags.messageId,
+        content: flags.content,
       });
     }
     case "turns list":

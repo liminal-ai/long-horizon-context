@@ -22,6 +22,8 @@
     "test/derivation-messages.test.ts": "eacdfc02460eb4f76440d4d7cbe0f84aefb22c322c130163e350f67a2d4f440b",
     "test/derivation-turns.test.ts": "0e0fda1f761b4baa5b4d0d93ffd91f2a893bdb68fa7010d020c375de096bb4c8",
     "test/report-repair.test.ts": "22a9e4aec8eadf9e8dcf4af42c190ff44a22bee17f35e47e062263d77967829d",
-    "test/cli-process-report-repair.test.ts": "8da9e8fa308dc0f0ab81123f0dafcfac8f6c747ed424ff93590d8a4f4ddcdd2f"
+    "test/cli-process-report-repair.test.ts": "8da9e8fa308dc0f0ab81123f0dafcfac8f6c747ed424ff93590d8a4f4ddcdd2f",
+    "test/mutations.test.ts": "b60fd4f9a47bdbb35fdb10b5882f0d941677788c6ad5a8a98f8280500f8b6b88",
+    "test/cli-process-mutations.test.ts": "4d76715483eb5168957d34b8a3701cb5eb8a58f91f2aec0d543fb6a81650cf8e"
   }
 }
