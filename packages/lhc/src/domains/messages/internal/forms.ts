@@ -15,7 +15,9 @@ import type {
   DerivedFormMetadata,
   DerivedFormState,
   FormKind,
+  FormReportEntry,
 } from "../../../shared/derivation.js";
+import { reportEntryFromRow, type RawReportRow } from "../../../shared/report.js";
 
 export interface MessageSource {
   messageId: string;
@@ -93,6 +95,67 @@ export function readMessageForms(db: DatabaseSync): Map<string, DerivedForm[]> {
     byMessage.set(row.subject_id, forms);
   }
   return byMessage;
+}
+
+// One form row by exact key — the requeue operation's refusal read (missing
+// row, blocked state, current source version). State returned as stored.
+export function readMessageFormRow(
+  db: DatabaseSync,
+  messageId: string,
+  form: FormKind,
+): { state: DerivedFormState; reason?: string; sourceVersion: number } | undefined {
+  const row = db
+    .prepare(
+      `SELECT state, reason, source_version FROM derived_form
+       WHERE subject_kind = 'message' AND subject_id = ? AND form = ?`,
+    )
+    .get(messageId, form) as unknown as
+    | { state: string; reason: string | null; source_version: number | bigint }
+    | undefined;
+  if (row === undefined) return undefined;
+  const view: { state: DerivedFormState; reason?: string; sourceVersion: number } = {
+    state: row.state as DerivedFormState,
+    sourceVersion: Number(row.source_version),
+  };
+  if (row.reason !== null) view.reason = row.reason;
+  return view;
+}
+
+// The message owner's report (Flow 4): one query — message-owned form rows
+// LEFT JOINed with the live work_item still targeting each form at its
+// current source version, if any (DD-1: only live rows exist; terminal
+// outcomes already live on the form). No N+1, no in-memory assembly beyond
+// row mapping. The form→kind CASE is the owner's own queue-site mapping
+// (MESSAGE_WORK_FORMS) inverted.
+export function reportMessageForms(
+  db: DatabaseSync,
+  opts: { notReady?: boolean; messageId?: string } = {},
+): FormReportEntry[] {
+  const conditions = ["df.subject_kind = 'message'"];
+  const params: string[] = [];
+  if (opts.messageId !== undefined) {
+    conditions.push("df.subject_id = ?");
+    params.push(opts.messageId);
+  }
+  // notReady is exact set equality by construction: every state but ready.
+  if (opts.notReady === true) conditions.push("df.state <> 'ready'");
+  const rows = db
+    .prepare(
+      `SELECT df.subject_id, df.form, df.state, df.content, df.reason, df.metadata,
+              df.source_version, df.gaps, df.derived_at,
+              w.status AS queue_status, w.attempts AS queue_attempts,
+              w.last_error AS queue_last_error, w.eligible_at AS queue_eligible_at
+       FROM derived_form df
+       LEFT JOIN work_item w
+         ON w.status IN ('queued', 'claimed')
+        AND w.kind = CASE df.form WHEN 'smoothed_prompt' THEN 'prompt_smoothing' ELSE df.form END
+        AND json_extract(w.source_ref, '$.messageId') = df.subject_id
+        AND COALESCE(json_extract(w.payload, '$.sourceVersion'), 1) = df.source_version
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY df.subject_id, df.form`,
+    )
+    .all(...params) as unknown as RawReportRow[];
+  return rows.map((row) => reportEntryFromRow("message", row));
 }
 
 // The call-id pairing reads. Earliest-recorded block wins if a call id were

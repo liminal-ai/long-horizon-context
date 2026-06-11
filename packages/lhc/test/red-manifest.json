@@ -9,10 +9,10 @@
     "test/cli-process-intake.test.ts": "fb684b10aeb3b328e27811b5036467e0d1866d7b5accfc78eb0dee96d512872f",
     "test/projection.test.ts": "35c1b3fa2a45932df8f92a743d0f47f2b769aa5cda316c5f4e47483cc02ae039",
     "test/cli-process-projection.test.ts": "ef4770eacb01448c0414a4316ed0b1be17d45b42d2fa6dbead26f496f93b35e3",
-    "test/thread-migration.test.ts": "cea281e596a4296c4b047fdc116cbcda258b2cf434358cb4ccdfba7506ba887a",
-    "test/turns.test.ts": "e97608cae9dfbab3f71ad3643bd8e509d8a696e0b07028ee94b8c4abae3a3e4f",
+    "test/thread-migration.test.ts": "40c9fed4c11c21dcd80e3d535004b45178c9cefc2684c2875ba28d4fb4c4eda8",
+    "test/turns.test.ts": "792c827f8c30582a2faa51ba9784cfb3106355e8dd0f072830fd763324dbc437",
     "test/state-machine.test.ts": "c056bb4d49194d6157c8dcf98301a8a9fd028ef0a7aea74ddf136ff5945f84d9",
-    "test/cli-process-turns.test.ts": "baecaf4e8939e949e38cc21f2e78c342a21065aef55971412cc2f5d326e14ba2",
+    "test/cli-process-turns.test.ts": "e00475719784c77436cd7f6e1d82e135761c1f30f181cf69038eec3c1e3b0e59",
     "test/work-queue.test.ts": "b383468eb0d5e37f6a31f5b9912ab71f2f782e2b4febc46067ebc96bfe659ea0",
     "test/cli-process-work-queue.test.ts": "13bf1226de9cd52d7f10306c87dafea2930c10e43d5628080e3891b6a55f6686",
     "test/fixtures.test.ts": "d2f20683050ac412612b2fef1be5633ddfded6279182ac8ae3fe772907f7a4c3",
@@ -20,6 +20,8 @@
     "test/cli-process-work.test.ts": "35c0426345a6eba19240872128dc93d139e7c11c563f17746afa041064daae9f",
     "test/work-execution-legacy.test.ts": "cfe9779ecc130f19be97b859ba441abbb8e95711b55dec64a28a6569e42af69b",
     "test/derivation-messages.test.ts": "eacdfc02460eb4f76440d4d7cbe0f84aefb22c322c130163e350f67a2d4f440b",
-    "test/derivation-turns.test.ts": "0e0fda1f761b4baa5b4d0d93ffd91f2a893bdb68fa7010d020c375de096bb4c8"
+    "test/derivation-turns.test.ts": "0e0fda1f761b4baa5b4d0d93ffd91f2a893bdb68fa7010d020c375de096bb4c8",
+    "test/report-repair.test.ts": "22a9e4aec8eadf9e8dcf4af42c190ff44a22bee17f35e47e062263d77967829d",
+    "test/cli-process-report-repair.test.ts": "8da9e8fa308dc0f0ab81123f0dafcfac8f6c747ed424ff93590d8a4f4ddcdd2f"
   }
 }

@@ -442,6 +442,30 @@ export function supersedeQueued(
   return ids;
 }
 
+// The requeue no-op rule's EXISTS check (AC-4.5): is there a live item —
+// queued or in flight — for this kind and source at this source version?
+// Runs inside the caller's requeue transaction so the check and the enqueue
+// commit together (anti-shim: a check-then-enqueue split across transactions
+// reintroduces the duplicate-work race). Version-scoped on purpose: a
+// claimed pre-mutation item at an older version is dying work whose
+// completion DD-3 will discard — it must not block the repair.
+export function hasLiveItem(
+  db: DatabaseSync,
+  kind: WorkKind,
+  sourceRef: WorkSourceRef,
+  sourceVersion: number,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM work_item
+       WHERE status IN ('queued', 'claimed') AND kind = ? AND source_ref = ?
+         AND COALESCE(json_extract(payload, '$.sourceVersion'), 1) = ?
+       LIMIT 1`,
+    )
+    .get(kind, JSON.stringify(sourceRef), sourceVersion);
+  return row !== undefined;
+}
+
 // Live items left in the queue — the drain report's `remaining` and the
 // repair report's join source (Story 4).
 export function countLiveItems(db: DatabaseSync): number {

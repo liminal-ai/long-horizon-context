@@ -113,6 +113,8 @@ export {
 } from "./work-handlers.js";
 export {
   damagedSourceThread,
+  GAPPED_SMOOTHING_REASON,
+  gappedRenderingThread,
   multiStateThread,
   readChunks,
   readDerivedForms,

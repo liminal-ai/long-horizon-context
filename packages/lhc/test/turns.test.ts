@@ -111,6 +111,22 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 3,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
       {
         turnId: "t2",
@@ -141,6 +157,22 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 3,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
     ]);
   });
@@ -264,6 +296,22 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 3,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
       {
         turnId: "t2",
@@ -271,6 +319,22 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         memberMessageIds: ["m3", "m4"],
         openedAtEventOrder: 3,
         closedAtEventOrder: 5,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t2",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t2",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
     ]);
   });
@@ -374,6 +438,22 @@ describe("Flow 3 (CLI in-process): turns list", () => {
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 3,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
       {
         turnId: "t2",

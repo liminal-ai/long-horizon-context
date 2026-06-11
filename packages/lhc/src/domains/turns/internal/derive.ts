@@ -24,6 +24,7 @@ import {
   readMessageFormRows,
   readTurnSource,
 } from "./forms.js";
+import { selectOpenTurnIds } from "./store.js";
 
 function sourceDamaged(reason: string): HandlerOutcome {
   return { ok: false, blocked: true, reason: `source_damaged: ${reason}` };
@@ -55,6 +56,18 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     // Derivation is queued only at close; an open turn under a queued item
     // means the record was interfered with.
     return sourceDamaged(`turn ${turnId} is open under a derivation item`);
+  }
+  // Epic 01's corruption definition (AC-3.9 there, TC-4.6 here): only the
+  // batch pipeline writes turn state and it never leaves two turns open, so
+  // more than one open turn means the record was damaged below the SDK. A
+  // handler must not compose against a membership it cannot trust; the form
+  // lands blocked naming the damage, and requeue refuses with that reason
+  // until the source reads clean (Story 4).
+  const openTurnIds = selectOpenTurnIds(db);
+  if (openTurnIds.length > 1) {
+    return sourceDamaged(
+      `turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`,
+    );
   }
 
   // Compose from current message-form states: ready forms verbatim,

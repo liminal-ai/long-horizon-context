@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-11T05:40:25.501Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-11T05:40:25.509Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 04-derivation-state-report-repair."}
+{"timestamp":"2026-06-11T05:40:25.519Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 69742.","metadata":{"pid":69742}}
+{"timestamp":"2026-06-11T05:40:25.609Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-11T05:40:55.959Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:41:30.118Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:42:01.501Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:42:43.021Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:43:55.430Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:44:51.088Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T05:44:51.208Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":265690,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-11T05:44:51.211Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 04-derivation-state-report-repair.","metadata":{"outcome":"needs-human-ruling"}}
+{"timestamp":"2026-06-11T05:44:51.228Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 04-derivation-state-report-repair with outcome needs-human-ruling.","metadata":{"outcome":"needs-human-ruling","verifiersCompleted":1}}

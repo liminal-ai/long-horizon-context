@@ -1,0 +1,59 @@
+// The report row mapper shared by both owners' report queries (Flow 4).
+// Each domain's forms.ts owns its one-query join (owner scoping and the
+// form→kind mapping are the owner's knowledge); the raw-row → FormReportEntry
+// mapping is owner-blind and lives here so the two owners cannot drift on
+// how state, metadata, gaps, and queue detail read back (DD-2: one table,
+// one vocabulary).
+import type {
+  DependencyGap,
+  DerivedFormMetadata,
+  DerivedFormState,
+  FormKind,
+  FormReportEntry,
+  SubjectKind,
+} from "./derivation.js";
+
+export interface RawReportRow {
+  subject_id: string;
+  form: string;
+  state: string;
+  content: string | null;
+  reason: string | null;
+  metadata: string | null;
+  source_version: number | bigint;
+  gaps: string | null;
+  derived_at: string | null;
+  queue_status: string | null;
+  queue_attempts: number | bigint | null;
+  queue_last_error: string | null;
+  queue_eligible_at: string | null;
+}
+
+export function reportEntryFromRow(
+  subjectKind: SubjectKind,
+  row: RawReportRow,
+): FormReportEntry {
+  const entry: FormReportEntry = {
+    subjectKind,
+    subjectId: row.subject_id,
+    form: row.form as FormKind,
+    state: row.state as DerivedFormState,
+    sourceVersion: Number(row.source_version),
+  };
+  if (row.content !== null) entry.content = row.content;
+  if (row.reason !== null) entry.reason = row.reason;
+  if (row.metadata !== null) {
+    entry.metadata = JSON.parse(row.metadata) as DerivedFormMetadata;
+  }
+  if (row.gaps !== null) entry.gaps = JSON.parse(row.gaps) as DependencyGap[];
+  if (row.derived_at !== null) entry.derivedAt = row.derived_at;
+  if (row.queue_status !== null) {
+    entry.queue = {
+      status: row.queue_status as "queued" | "claimed",
+      attempts: Number(row.queue_attempts ?? 0),
+    };
+    if (row.queue_last_error !== null) entry.queue.lastError = row.queue_last_error;
+    if (row.queue_eligible_at !== null) entry.queue.eligibleAt = row.queue_eligible_at;
+  }
+  return entry;
+}

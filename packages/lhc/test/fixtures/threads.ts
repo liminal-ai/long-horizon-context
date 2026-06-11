@@ -13,12 +13,14 @@ import {
   type DerivedFormState,
   type DependencyGap,
   type FormKind,
+  type Lhc,
   type MessageEventInput,
   type SubjectKind,
   type ToolOutcome,
 } from "../../src/index.js";
 import { setIntakeClock } from "./intake-seam.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
+import type { ProviderDouble } from "./provider-double.js";
 import { validEvent, type TempStore } from "./index.js";
 
 async function newThreadFile(store: TempStore): Promise<string> {
@@ -313,6 +315,48 @@ export async function damagedSourceThread(
   const turnId = turnIds[0];
   if (turnId === undefined) throw new Error("fixture invariant: one closed turn expected");
   return { filePath, turnId };
+}
+
+// ── gapped-rendering thread (TC-3.2's state, shared) ─────────────
+
+// TC-3.2's gapped-rendering state as one shared builder (coverage.md
+// cross-story debt: TC-4.4 consumes this exact scenario; don't rebuild it by
+// hand). Expects a manual-mode SDK with retry budget 3 and zero backoff:
+// scripts the double to exhaust the prompt's smoothing, then drains — the
+// smoothing lands failed (its work row deleted at exhaustion, DD-1) and the
+// turn rendering lands ready with the recorded gap.
+export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing exhaustion";
+
+export async function gappedRenderingThread(
+  store: TempStore,
+  sdk: Lhc,
+  double: ProviderDouble,
+): Promise<{ filePath: string; messageId: string; turnId: string }> {
+  const filePath = await newThreadFile(store);
+  double.failKind("prompt_smoothing", 3, {
+    retryable: true,
+    reason: GAPPED_SMOOTHING_REASON,
+  });
+  await send(filePath, [
+    validEvent("user_prompt", { payload: { text: "gapped prompt" } }),
+    validEvent("assistant_text", { payload: { text: "gapped answer" } }),
+    validEvent("turn_end"),
+  ]);
+  const drained = await sdk.work.drain({ filePath });
+  if (!drained.ok) throw new Error(`fixture drain failed: ${drained.error.reason}`);
+  const forms = readDerivedForms(filePath);
+  const smoothing = forms.find((f) => f.subjectId === "m1" && f.form === "smoothed_prompt");
+  const rendering = forms.find((f) => f.subjectId === "t1" && f.form === "turn_rendering");
+  if (
+    smoothing?.state !== "failed" ||
+    rendering?.state !== "ready" ||
+    rendering.gaps === undefined
+  ) {
+    throw new Error(
+      "fixture invariant: failed smoothing under a ready, gapped rendering expected",
+    );
+  }
+  return { filePath, messageId: "m1", turnId: "t1" };
 }
 
 // ── twin SDK/CLI threads for parity tests ────────────────────────

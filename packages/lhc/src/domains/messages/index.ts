@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import type { OperationContext } from "../../shared/context.js";
-import type { FormKind, WorkHandler } from "../../shared/derivation.js";
+import { runInTransaction, type OperationContext } from "../../shared/context.js";
+import type { FormKind, FormReportEntry, WorkHandler } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
   enqueue,
+  hasLiveItem,
   listItems,
   type WorkItemRecord,
   type WorkKind,
@@ -15,7 +16,12 @@ import {
   type ThreadRef,
 } from "../threads/index.js";
 import type { DerivedForm } from "../../shared/derivation.js";
-import { findUnknownOutcomeCallSummary, readMessageForms } from "./internal/forms.js";
+import {
+  findUnknownOutcomeCallSummary,
+  readMessageFormRow,
+  readMessageForms,
+  reportMessageForms,
+} from "./internal/forms.js";
 import { messageWorkHandlers } from "./internal/handlers.js";
 import { projectEvent } from "./internal/project.js";
 import { insertMessage, readMessages } from "./internal/store.js";
@@ -228,6 +234,126 @@ export async function listQueuedWork(
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`queued-work read-back failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+// ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
+
+// This owner's repair report: every message-owned form's durable state
+// joined with live queue detail in one query — the five operational
+// situations (waiting, retrying, ready, failed, blocked) read from the rows
+// without any queue API. Needs no provider; reads degrade, never block.
+export async function report(
+  thread: ThreadRef,
+  opts?: { notReady?: boolean; messageId?: string },
+): Promise<OpResult<FormReportEntry[]>> {
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    return { ok: true, value: reportMessageForms(db, opts ?? {}) };
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`report read failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+export type RequeueOutcome = { workItemId: string } | { noop: "already_queued" };
+
+// Which work kind rebuilds each message-owned form — MESSAGE_WORK_FORMS
+// inverted; the requeue's join from the named form back to its queue site.
+const MESSAGE_FORM_KINDS: Partial<Record<FormKind, WorkKind>> = {
+  smoothed_prompt: "prompt_smoothing",
+  tool_call_summary: "tool_call_summary",
+  tool_result_summary: "tool_result_summary",
+};
+
+// Explicit re-queue through the owning surface (AC-4.4): the public,
+// supported rebuild act. Refused for blocked forms with the form's stored
+// damage reason (AC-4.6) and for missing rows; a no-op against work already
+// queued or in flight at the form's current source version (AC-4.5).
+// Otherwise the form clears to pending and re-enqueues at the next source
+// version — the same enqueue path intake uses, poke-on-commit included, so
+// background mode processes the repair with no further call. The no-op check
+// and the enqueue commit in one transaction (anti-shim: a split would
+// reintroduce the duplicate-work race).
+export async function requeue(
+  thread: ThreadRef,
+  target: { messageId: string; form: FormKind },
+): Promise<OpResult<RequeueOutcome>> {
+  const kind = MESSAGE_FORM_KINDS[target.form];
+  if (kind === undefined) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "message_not_found",
+        reason: `form ${target.form} is not message-owned; messages.requeue repairs smoothed_prompt, tool_call_summary, tool_result_summary`,
+      },
+    };
+  }
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const meta = db
+      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
+      .get() as { thread_id: string } | undefined;
+    const threadId = meta?.thread_id ?? "";
+    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<RequeueOutcome> => {
+      const row = readMessageFormRow(ctx.db, target.messageId, target.form);
+      if (row === undefined) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no derived form ${target.form} exists for message ${target.messageId}`,
+          },
+        };
+      }
+      if (row.state === "blocked") {
+        // The refusal carries the form's stored reason — the damage named at
+        // blocking time, not a generic string (AC-4.6).
+        return {
+          ok: false,
+          error: {
+            errorClass: "state_corruption",
+            code: "source_damaged",
+            reason: row.reason ?? `form ${target.form} for message ${target.messageId} is blocked`,
+          },
+        };
+      }
+      const sourceRef = { messageId: target.messageId };
+      if (hasLiveItem(ctx.db, kind, sourceRef, row.sourceVersion)) {
+        return { ok: true, value: { noop: "already_queued" } };
+      }
+      const item = enqueue(ctx, {
+        owner: "messages",
+        kind,
+        sourceRef,
+        sourceVersion: row.sourceVersion + 1,
+        forms: [{ subjectKind: "message", subjectId: target.messageId, form: target.form }],
+      });
+      return { ok: true, value: { workItemId: item.workItemId } };
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`requeue failed: ${reason}`);
   } finally {
     db.close();
   }

@@ -96,6 +96,18 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Baseline: 182 → 195 (no regression). TC-3.9 determinism + chunk golden cases in suite.
 - Dispositions: SV-3.8-001 fixed. Deviations: 3 approved. Accepted-risk/defer: none. Open risks: none.
 
+### 04-derivation-state-report-repair
+- run 05:17Z; implementor ~25min; verifier BLOCKED on SV-04-001 (AC-4.7: turn/chunk reads lacked direct form-state attachment; implementor had routed states through turns.report only).
+- 05:44Z needs-ruling (requirements-scope, ruling-012). Impl-lead REJECTED the deviation: AC-4.7 as written requires states attached on reads (Epic 03 consumer surface); sanctioned mechanical Epic 01 assertion edits if attachment broke exact shapes.
+- Resume 1: story-continue completed the fix (ready-for-verification), then planner emitted invalid payload (Codex schema drift) → interrupted. Resume 2: fresh planner turn, verifier follow-up 008-verify.json PASS (SV-04-001 fixed — TC-4.7 asserts direct attachment on message/turn/chunk reads).
+- 05:56Z spec-deviation ruling: impl-lead APPROVED final set (frozen-clock TC-4.2 mechanism; requeue at version+1; CLI parity in new process file — Story 1 file hash-locked; refusals reuse existing codes; original forms-deviation rejected-and-fixed). → accept-story.
+
+#### RECEIPT — 04-derivation-state-report-repair (ACCEPTED 2026-06-11T05:57Z)
+- Implementor: 003-implementor.json + story-continue. Verifier: 004 (block) → 008 (pass, openFindings []).
+- Gates by impl-lead: green-verify PASS (186 tests, immutability OK 23 red files); verify-all PASS (208 tests).
+- Baseline: 195 → 208 (no regression).
+- Dispositions: SV-04-001 fixed (after rejected deviation). Deviations: final set approved. Accepted-risk/defer: none. Open risks: none.
+
 ## Epic Closeout
 
 (pending)

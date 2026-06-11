@@ -68,6 +68,7 @@ export type {
   DerivedFormMetadata,
   DerivedFormState,
   FormKind,
+  FormReportEntry,
   HandlerFormWrite,
   HandlerOutcome,
   HandlerRunContext,
@@ -98,7 +99,7 @@ export type {
   BlockType,
   MessageRecord,
 } from "./domains/messages/index.js";
-export type { TurnRecord } from "./domains/turns/index.js";
+export type { ChunkRecord, TurnRecord } from "./domains/turns/index.js";
 export type {
   BatchResult,
   EventKind,

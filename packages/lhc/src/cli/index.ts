@@ -7,7 +7,13 @@ import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
 import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
-import { runWorkDrain } from "./work.js";
+import {
+  runMessagesReport,
+  runMessagesRequeue,
+  runTurnsReport,
+  runTurnsRequeue,
+  runWorkDrain,
+} from "./work.js";
 
 // Stdin seam: in-process tests inject a reader; the binary reads the real
 // process stdin. null means interactive (TTY) — distinct from empty input
@@ -37,8 +43,13 @@ Usage:
   lhc intake-stream list-events (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc messages list (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc messages list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc messages report (--thread-id <id> | --file-path <p>) [--not-ready] [--message-id <id>] [--registry <r>]
+  lhc messages requeue (--thread-id <id> | --file-path <p>) --message-id <id> --form <form> [--registry <r>]
   lhc turns list (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc turns list-chunks (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc turns report (--thread-id <id> | --file-path <p>) [--not-ready] [--turn-id <id>] [--chunk-id <id>] [--registry <r>]
+  lhc turns requeue (--thread-id <id> | --file-path <p>) --subject-kind (turn|chunk) --subject-id <id> --form <form> [--registry <r>]
   lhc work drain (--thread-id <id> | --file-path <p>) [--max-items <n>] [--provider <name>] [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on
@@ -52,6 +63,13 @@ interface ParsedFlags {
   registryPath?: string;
   maxItems?: string;
   provider?: string;
+  notReady?: boolean;
+  messageId?: string;
+  turnId?: string;
+  chunkId?: string;
+  form?: string;
+  subjectKind?: string;
+  subjectId?: string;
 }
 
 // strict parse rejects unknown/misspelled flags so they are named back to the
@@ -74,6 +92,13 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
         registry: { type: "string" },
         "max-items": { type: "string" },
         provider: { type: "string" },
+        "not-ready": { type: "boolean" },
+        "message-id": { type: "string" },
+        "turn-id": { type: "string" },
+        "chunk-id": { type: "string" },
+        form: { type: "string" },
+        "subject-kind": { type: "string" },
+        "subject-id": { type: "string" },
       },
       strict: true,
       allowPositionals: true,
@@ -92,6 +117,13 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
   if (typeof values.registry === "string") flags.registryPath = values.registry;
   if (typeof values["max-items"] === "string") flags.maxItems = values["max-items"];
   if (typeof values.provider === "string") flags.provider = values.provider;
+  if (values["not-ready"] === true) flags.notReady = true;
+  if (typeof values["message-id"] === "string") flags.messageId = values["message-id"];
+  if (typeof values["turn-id"] === "string") flags.turnId = values["turn-id"];
+  if (typeof values["chunk-id"] === "string") flags.chunkId = values["chunk-id"];
+  if (typeof values.form === "string") flags.form = values.form;
+  if (typeof values["subject-kind"] === "string") flags.subjectKind = values["subject-kind"];
+  if (typeof values["subject-id"] === "string") flags.subjectId = values["subject-id"];
   return { ok: true, flags };
 }
 
@@ -229,16 +261,80 @@ export async function runCli(
         requireThreadRef(flags, "messages list-queued-work") ??
         renderResult(await messages.listQueuedWork(threadRefFrom(flags)))
       );
+    case "messages report": {
+      const missingRef = requireThreadRef(flags, "messages report");
+      if (missingRef !== undefined) return missingRef;
+      const reportFlags: { notReady?: boolean; messageId?: string } = {};
+      if (flags.notReady === true) reportFlags.notReady = true;
+      if (flags.messageId !== undefined) reportFlags.messageId = flags.messageId;
+      return runMessagesReport(threadRefFrom(flags), reportFlags);
+    }
+    case "messages requeue": {
+      const missingRef = requireThreadRef(flags, "messages requeue");
+      if (missingRef !== undefined) return missingRef;
+      if (flags.messageId === undefined || flags.form === undefined) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "messages requeue requires --message-id and --form",
+        );
+      }
+      return runMessagesRequeue(threadRefFrom(flags), {
+        messageId: flags.messageId,
+        form: flags.form,
+      });
+    }
     case "turns list":
       return (
         requireThreadRef(flags, "turns list") ??
         renderResult(await turns.listTurns(threadRefFrom(flags)))
+      );
+    case "turns list-chunks":
+      return (
+        requireThreadRef(flags, "turns list-chunks") ??
+        renderResult(await turns.listChunks(threadRefFrom(flags)))
       );
     case "turns list-queued-work":
       return (
         requireThreadRef(flags, "turns list-queued-work") ??
         renderResult(await turns.listQueuedWork(threadRefFrom(flags)))
       );
+    case "turns report": {
+      const missingRef = requireThreadRef(flags, "turns report");
+      if (missingRef !== undefined) return missingRef;
+      const reportFlags: { notReady?: boolean; turnId?: string; chunkId?: string } = {};
+      if (flags.notReady === true) reportFlags.notReady = true;
+      if (flags.turnId !== undefined) reportFlags.turnId = flags.turnId;
+      if (flags.chunkId !== undefined) reportFlags.chunkId = flags.chunkId;
+      return runTurnsReport(threadRefFrom(flags), reportFlags);
+    }
+    case "turns requeue": {
+      const missingRef = requireThreadRef(flags, "turns requeue");
+      if (missingRef !== undefined) return missingRef;
+      if (
+        flags.subjectKind === undefined ||
+        flags.subjectId === undefined ||
+        flags.form === undefined
+      ) {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          "turns requeue requires --subject-kind, --subject-id, and --form",
+        );
+      }
+      if (flags.subjectKind !== "turn" && flags.subjectKind !== "chunk") {
+        return renderCliError(
+          "caller_error",
+          "missing_flag",
+          `--subject-kind must be "turn" or "chunk", got ${flags.subjectKind}`,
+        );
+      }
+      return runTurnsRequeue(threadRefFrom(flags), {
+        subjectKind: flags.subjectKind,
+        subjectId: flags.subjectId,
+        form: flags.form,
+      });
+    }
     case "work drain": {
       const missingRef = requireThreadRef(flags, "work drain");
       if (missingRef !== undefined) return missingRef;

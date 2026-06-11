@@ -68,6 +68,21 @@ export interface DerivedFormMetadata {
   lastError?: string;
 }
 
+// One row of an owner's repair report (Flow 4): the form's durable state
+// joined with the queue's mechanical detail for the live item still working
+// toward it, if any. The five operational situations read from this one row:
+// never-attempted (pending, no queue), retrying (pending + queue with
+// attempts > 0), ready, failed (+ reason), blocked (+ reason) — no caller
+// ever needs a queue API.
+export interface FormReportEntry extends DerivedForm {
+  queue?: {
+    status: "queued" | "claimed";
+    attempts: number;
+    lastError?: string;
+    eligibleAt?: string;
+  };
+}
+
 // ── provider seam (DD-7) ─────────────────────────────────────────
 // Every operation returns content or a structured failure carrying
 // retryable-or-not; classification is the adapter's duty.

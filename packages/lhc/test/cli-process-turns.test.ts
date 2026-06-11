@@ -81,6 +81,22 @@ describe("Story 4 (process boundary): turns list through the spawned binary", ()
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 3,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
       {
         turnId: "t2",

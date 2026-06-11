@@ -252,6 +252,22 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
         memberMessageIds: ["m1", "m2", "m3"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 4,
+        forms: [
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "lower_band_projection",
+            state: "pending",
+            sourceVersion: 1,
+          },
+          {
+            subjectKind: "turn",
+            subjectId: "t1",
+            form: "turn_rendering",
+            state: "pending",
+            sourceVersion: 1,
+          },
+        ],
       },
     ]);
 

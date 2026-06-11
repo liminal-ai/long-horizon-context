@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "04-derivation-state-report-repair-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "rationale": "Final deviation set approved: (1) TC-4.2 via frozen clock + non-zero backoff — the suggested maxItems:1/backoff-0 recipe was mechanically unreachable, asserted contract identical; (2) requeue at source version current+1 follows the story Test Mapping and Flow 3 over Flow 4's looser wording; (3) CLI parity tests in new file test/cli-process-report-repair.test.ts because the Story 1 process file is hash-locked by the red manifest and green phases may only add files; (4) requeue refusals reuse message_not_found/turn_not_found — no code was specified, reuse beats inventing; (5) the original TurnRecord-carries-no-forms deviation was REJECTED under ruling-012 and has been fixed: turn/chunk reads now attach form states directly, TC-4.7 verifies it, and any Epic 01 assertion edits were sanctioned under that ruling. No remaining contract drift.",
+  "source": "impl-lead"
+}
