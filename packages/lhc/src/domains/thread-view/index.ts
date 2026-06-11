@@ -1,10 +1,11 @@
 // thread-view surface (Epic 03): pull, status, compact, sweep, materialize.
-// Story 1 lands the skeleton with `pull` and `status` real — the hot-path
-// reads: local reads and deterministic string assembly only, no inference,
-// no network, no queue interaction, no writes (AC-1.1, AC-2.8). The other
-// three are structured-result stubs until their stories (2, 3, 5) land.
-// Story 0's substrate (profile resolution, consumed by createSdk) re-exports
-// at the bottom.
+// Story 1 landed the hot-path reads (`pull`, `status`): local reads and
+// deterministic string assembly only, no inference, no network, no queue
+// interaction, no writes (AC-1.1, AC-2.8). Story 2 landed `compact`;
+// Story 3 lands `sweep` (standalone and embedded default-on in compact).
+// `materialize` stays a structured-result stub until Story 5. Story 0's
+// substrate (profile resolution, consumed by createSdk) re-exports at the
+// bottom.
 import { existsSync } from "node:fs";
 import {
   resolveInstanceViewConfig,
@@ -51,6 +52,7 @@ import {
   replaceViewSnapshot,
   tailTokenSum,
 } from "./internal/snapshot.js";
+import { runSweep } from "./internal/sweep.js";
 import { estimateTokens } from "../../tech-utils/token-counting/index.js";
 import type { Band } from "../../shared/view.js";
 
@@ -273,14 +275,14 @@ const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
 // Compact runs only when invoked through this surface (AC-2.1: no code path
 // in core calls it). Flow, in order: validate profile/params (pre-IO, so a
-// rejection provably touches nothing) → [sweep step ABSENT this story — the
-// receipt's sweep field reports the literal "absent"; Story 3 embeds the
-// real sweep here per stories/02-smart-compact.md §Scope out] → read record
-// + forms with the corruption check in the reads (pre-transaction, prior
-// view trivially intact on refusal) → selection walk → band rendering → one
-// BEGIN IMMEDIATE replacing the view and resetting the boundary → receipt.
+// rejection provably touches nothing) → sweep, on by default, `sweep: false`
+// skips (AC-3.6; the receipt records which) → read record + forms with the
+// corruption check in the reads (pre-transaction, prior view trivially
+// intact on refusal) → selection walk → band rendering → one BEGIN
+// IMMEDIATE replacing the view and resetting the boundary → receipt.
 // Assembly is entirely from stored artifacts: nothing here can reach a
-// provider (AC-2.4 zero-inference is structural).
+// provider (AC-2.4 zero-inference is structural — the sweep step repairs
+// through owners' requeue surfaces and calls no provider either).
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
@@ -313,6 +315,20 @@ export async function compact(
   // even when one served as the merge base; the receipt's config carries the
   // resolved truth. A bare or profile-only call names its profile.
   const profileName = opts.params === undefined ? baseName : null;
+
+  // The sweep step (Flow 2 / Flow 3, AC-3.6): on by default so every compact
+  // leaves the thread healthier than it found it; `sweep: false` skips with
+  // the skip recorded in the receipt. Runs before this operation opens its
+  // own handle (the owners' surfaces open theirs), and before any view
+  // write — a sweep failure aborts the compact with the prior view intact.
+  let sweepOutcome: SweepReceipt | { skipped: true };
+  if (opts.sweep === false) {
+    sweepOutcome = { skipped: true };
+  } else {
+    const swept = await runSweep(filePath);
+    if (!swept.ok) return swept;
+    sweepOutcome = swept.value;
+  }
 
   const opened = openThreadDatabase(filePath);
   if (!opened.ok) return opened;
@@ -352,8 +368,8 @@ export async function compact(
     // into a uniqueness scheme; the singleton row is replaced whole).
     const viewId = `v${inputs.maxEventOrder}`;
 
-    // Story-0 injection point: TC-2.4's crash between the (absent) sweep and
-    // the view-write transaction. An installed hook's throw aborts here —
+    // Story-0 injection point: TC-2.4's crash between the sweep and the
+    // view-write transaction. An installed hook's throw aborts here —
     // before BEGIN — so the previous view keeps serving.
     fireViewInjection("compact-write");
 
@@ -431,9 +447,7 @@ export async function compact(
             subjectId: entry.subjectId,
             reason: entry.reason ?? "unknown",
           })),
-        // Sweep step absent this story (NOT skipped, NOT an empty receipt):
-        // Story 3 embeds the sweep and flips this field's vocabulary.
-        sweep: "absent",
+        sweep: sweepOutcome,
       },
     };
   } catch (cause) {
@@ -443,7 +457,28 @@ export async function compact(
   }
 }
 
-// ── stubs (Stories 3, 5) ─────────────────────────────────────────
+// ── sweep (Flow 3: AC-3.1–3.5, 3.7) ──────────────────────────────
+
+// The standalone readiness sweep: walk the owners' reports, requeue the
+// transiently-failed forms through the owners' requeue surfaces, return the
+// per-owner/kind receipt. The walk itself lives in internal/sweep.ts; the
+// compact embeds the same walk (AC-3.6), so standalone and embedded receipts
+// share one shape by construction (AC-3.7's SDK leg; the CLI leg rides
+// Story 5's process suite). Returns without waiting on any queued work
+// (AC-3.2): requeues are row writes; background mode's drain heals later.
+export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+  try {
+    return await runSweep(filePath);
+  } catch (cause) {
+    return storageFailure(`view sweep failed: ${detail(cause)}`);
+  }
+}
+
+// ── stub (Story 5) ───────────────────────────────────────────────
 
 // The skeleton's stub contract (tech design §Interface Definitions):
 // structured result, machine-readable, never a throw on this surface.
@@ -456,11 +491,6 @@ function notImplemented(op: string): { ok: false; error: ErrorResult } {
       reason: `not implemented: ${op}`,
     },
   };
-}
-
-export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
-  void ref;
-  return notImplemented("sweep");
 }
 
 export async function materialize(

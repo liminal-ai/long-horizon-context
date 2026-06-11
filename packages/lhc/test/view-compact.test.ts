@@ -193,9 +193,18 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       brief: 20,
       lowerBound: 120000,
     });
-    // Sweep step is absent this story (the honest literal, not a fake empty
-    // receipt — Story 3 flips it).
-    expect(receipt.value.sweep).toBe("absent");
+    // Story 3 (sanctioned amendment): the embedded sweep replaced Story 2's
+    // "absent" literal. This is the file's first default-sweep compact, so
+    // the fixture's transiently-failed summary requeues HERE — every later
+    // compact in this file sees it in-flight and writes nothing, which is
+    // what keeps the record-untouched assertions below honest. The sweep's
+    // own contract lives in view-sweep.test.ts.
+    expect(receipt.value.sweep).not.toEqual({ skipped: true });
+    if (!("owners" in receipt.value.sweep)) throw new Error("expected embedded sweep receipt");
+    const sweepLine = receipt.value.sweep.owners.find(
+      (line) => line.owner === "messages" && line.kind === "tool_result_summary",
+    );
+    expect(sweepLine?.requeued).toEqual([fixture.failedTransientMessageId]);
     // At a 120k bound this small thread is all tail: bands empty, compact
     // point at the origin, and the reported total IS the tail (totalTokens
     // receipt coverage, ruling 013).

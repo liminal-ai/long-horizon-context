@@ -93,6 +93,16 @@ export function openRaw(path: string): DatabaseSync {
 }
 
 export { corruptTwoOpenTurns } from "./corrupt.js";
+export { assertSweepReceiptShape } from "./receipt-schema.js";
+// The sweep's classification table, re-exported for the Story 3 unit legs:
+// fixtures are the one sanctioned bridge across the no-internal-imports
+// boundary (check-boundaries exempts test/fixtures/ by design), and the
+// table is exported from sweep.ts for tests by story contract.
+export {
+  classifyFailureReason,
+  REASON_CLASS_TABLE,
+  type ReasonClass,
+} from "../../src/domains/thread-view/internal/sweep.js";
 export {
   legacyEpic01ThreadFile,
   legacyEpic02ThreadFile,

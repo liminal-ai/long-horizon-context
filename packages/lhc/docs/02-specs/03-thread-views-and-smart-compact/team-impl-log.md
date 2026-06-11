@@ -3,8 +3,10 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
-- Current Story: 03-readiness-sweep
-- Current Phase: none (Story 3 hard gate check pending before launch)
+- Current Story: 04-tool-result-visibility
+- Current Phase: none
+- (Story 3 history: PRIMITIVE PATH — story-lead run 001 terminal blocked after two transient provider failures (socket close after 51 turns, then 529 Overloaded); composed resume re-blocks without redispatching. Recovery: fresh story-implement primitive dispatched 2026-06-11T17:10Z against partial worktree completed the story: SV-03-001 closed (sweep.ts walk/classify/requeue + surface + compact embed landed by the partial worktree, verified against owners' contracts), SV-03-002 closed (test/view-sweep.test.ts added — 10 tests, TC-3.1–3.4, classification edges, five-op zero-provider; stale placeholder assertions in view-pull/view-compact amended under the sanctioned-amendment pattern, red-manifest re-recorded). Gates green 2026-06-11: green-verify (273 tests + immutability OK), verify-all (300 tests incl. process suite). Next: story-verify follow-up on retained verifier handle codex/019eb786-e7ae-7d92-84c3-8daefeb333c6 → receipt.)
+- Story 3 gate verified 2026-06-11 pre-launch (both legs): (1) requeue patch landed — messages.requeue (src/domains/messages/index.ts:284,357) and turns.requeue (src/domains/turns/index.ts:284,383) with already_queued noop, version-scoped idempotent item ids; (2) reason-class persistence — retryable flag flows through work-queue terminal failure path (src/tech-utils/work-queue/index.ts:383-394, scheduler.ts:148-174, handlers); FC-0.4 (passing since Story 0) proves distinguishable transient/permanent classes on read-back via production drains. No Epic 02 patch needed.
 - Preflight: ready (artifacts/preflight/001-preflight.json, 2026-06-11). CLI persisted verification_gates into impl-run.config.json (expected side effect). Codex auth status unknown per preflight note; binary present.
 
 ## Run Configuration
@@ -90,10 +92,28 @@
 - Story-lead run: 02-smart-compact-story-run-001, terminal needs-ruling twice (first: substantive — ruled reject-and-fix; second: spec-deviation approval — recorded, planner re-asked per known loop, impl-lead accepted directly). Final package: artifacts/02-smart-compact/story-lead/001-final-package.json
 - Commit: landed (see git log)
 
+### 03-readiness-sweep
+- Story Title: Story 3: Readiness Sweep
+- Implementor Evidence: artifacts/03-readiness-sweep/009-implementor.json (fresh primitive after story-lead run blocked on transient provider failures), 010–013 self-review passes + batch
+- Verifier Evidence:
+  - artifacts/03-readiness-sweep/003-verify.json (revise: SV-03-001 sweep placeholder, SV-03-002 missing tests)
+  - artifacts/03-readiness-sweep/014-verify.json (pass; both findings resolved)
+- Story Gate: pnpm run green-verify — pass (immutability OK, 37 Red-phase files)
+- Completion Gate: pnpm run verify-all — pass (300 tests incl. process suite)
+- Dispositions:
+  - SV-03-001 (sweep production path placeholder): fixed — sweep.ts walk/classify/requeue, surface real, compact embed, receipt flip from 'absent'; verifier confirmed
+  - SV-03-002 (Story 3 tests missing): fixed — view-sweep.test.ts (TC-3.1–3.4, classification edges, five-op zero-provider); verifier confirmed
+- Open Risks: none
+- Hard gate: verified pre-launch, both legs (see Run Overview note); no Epic 02 patch needed
+- Baseline Before: 290 (verify-all)
+- Baseline After: 300 (verify-all) / 273 (default)
+- Path note: story-lead run 001 wedged after two transient provider errors (socket close, 529); recovered via primitives — story-implement (fresh) → story-self-review → story-verify follow-up on retained codex session. Improvement note 6 records the CLI gap.
+- Commit: landed (see git log)
+
 ## Cumulative Baselines
 - Baseline Before Current Story: 290 (lhc package, verify-all count after 02-smart-compact)
 - Expected After Current Story: ~300 (story 3 estimate ~10 tests)
-- Latest Actual Total: 290
+- Latest Actual Total: 300 (verify-all 2026-06-11 after 03-readiness-sweep implement: 290 + 10 view-sweep tests; default suite 273)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
@@ -113,6 +133,8 @@
 3. **Exit code 2 background failure semantics.** `story-orchestrate run` exiting 2 (needs-ruling) surfaces as a "failed" background task in the caller harness even though it is a normal decision point. Cosmetic, but the skill could note that exit 2 = decision-required, not failure.
 4. **Heartbeats not observed on backgrounded run.** Monitor polled the story-lead status.json fine, but no stderr heartbeat content reached the background output file until the terminal envelope. Worth verifying heartbeat emission when stdout/stderr is redirected to a file (non-TTY).
 5. **storyRunSelection/baseline mismatch.** `validate` reported `baselineBeforeCurrentStory: 365` (workspace-wide test-file count), while the story-lead final package reported baseline 240→255 (lhc package test count). Two different baseline definitions under one name; skill/CLI should pin which one impl-lead compares.
+
+6. **Transient provider failure wedges the composed run.** Story 3's implementor died twice on transient API errors (socket close mid-stream after 51 turns / $11.77 spent; then 529 Overloaded). The story-lead run went terminal `blocked`, and every subsequent `resume` returned the same blocked package in ~15s with `recommendedImplLeadAction: reopen` — but no reopen verb exists; resume never redispatched the implementor. Impl-lead had to drop to the primitive `story-implement`. The runtime should either retry transient provider errors with backoff inside the child op, or let `resume` redispatch the failed child when the blocker is PROVIDER_UNAVAILABLE. Also: the 51-turn partial session left no continuation handle, so its context was lost despite substantial worktree progress.
 
 ## Retained Notes (compaction-resilient)
 

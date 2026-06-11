@@ -1,0 +1,11 @@
+{"timestamp":"2026-06-11T16:32:12.088Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-11T16:32:12.099Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 03-readiness-sweep."}
+{"timestamp":"2026-06-11T16:32:12.110Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 16513.","metadata":{"pid":16513}}
+{"timestamp":"2026-06-11T16:32:12.203Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-11T16:32:45.442Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T16:33:15.629Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T16:33:48.026Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T16:34:58.672Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T16:34:58.832Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":166722,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-11T16:34:58.838Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 03-readiness-sweep.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-06-11T16:34:58.854Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 03-readiness-sweep with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

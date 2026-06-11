@@ -119,11 +119,11 @@ export interface CompactReceipt {
   compactPoint: number;
   degraded: Array<{ band: Band; subjectId: string; usedForm: string }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
-  // Story 2 ships the compact with the sweep step ABSENT: the field reports
-  // the honest literal "absent" — never a fake empty SweepReceipt. Story 3
-  // adds the embedded sweep and flips this to SweepReceipt | { skipped: true }
-  // (cross-story debt, stated: stories/02-smart-compact.md §Scope out).
-  sweep: SweepReceipt | { skipped: true } | "absent";
+  // The embedded sweep's receipt (AC-3.6): the sweep runs first by default
+  // and its full receipt embeds here; `sweep: false` records the skip — the
+  // receipt always says whether the sweep ran (Story 3 closed Story 2's
+  // "absent" placeholder).
+  sweep: SweepReceipt | { skipped: true };
 }
 
 export interface SweepReceipt {

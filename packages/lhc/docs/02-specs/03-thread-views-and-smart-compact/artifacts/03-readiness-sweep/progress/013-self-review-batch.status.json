@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-self-review",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-11T17:19:28.979Z",
+  "updatedAt": "2026-06-11T17:24:14.917Z",
+  "lastOutputAt": "2026-06-11T17:24:14.279Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 82952,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/03-readiness-sweep/013-self-review-batch.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/03-readiness-sweep/streams/013-self-review-batch.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/03-readiness-sweep/streams/013-self-review-batch.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/03-readiness-sweep/progress/013-self-review-batch.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/03-readiness-sweep/progress/013-self-review-batch.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-self-review completed for 03-readiness-sweep with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 3,
+  "selfReviewPassesPlanned": 3
+}
