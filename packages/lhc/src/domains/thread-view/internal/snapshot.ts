@@ -83,6 +83,9 @@ export interface TailMessageRow {
   messageId: string;
   sourceEventOrder: number;
   kind: RenderingPartKind;
+  // The source event's recorded_at — materialize's entry timestamp (AC-5.2:
+  // generated fields derive from record times, never write-time clocks).
+  recordedAt: string;
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
@@ -92,14 +95,16 @@ export interface TailMessageRow {
 export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMessageRow[] {
   const messageRows = db
     .prepare(
-      `SELECT message_id, source_event_order, kind FROM message
-       WHERE deleted_at IS NULL AND source_event_order > ?
-       ORDER BY source_event_order`,
+      `SELECT m.message_id, m.source_event_order, m.kind, e.recorded_at FROM message m
+       JOIN event e ON e.event_order = m.source_event_order
+       WHERE m.deleted_at IS NULL AND m.source_event_order > ?
+       ORDER BY m.source_event_order`,
     )
     .all(compactPoint) as unknown as Array<{
     message_id: string;
     source_event_order: number | bigint;
     kind: string;
+    recorded_at: string;
   }>;
   const blockRows = db
     .prepare(
@@ -126,8 +131,22 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
     messageId: row.message_id,
     sourceEventOrder: Number(row.source_event_order),
     kind: row.kind as RenderingPartKind,
+    recordedAt: row.recorded_at,
     blocks: blocksByMessage.get(row.message_id) ?? [],
   }));
+}
+
+// The thread's identity row — materialize's header source (AC-5.2: the
+// header id derives from thread id + view created-at; a never-compacted
+// thread's header uses the thread's created-at).
+export function readThreadMetadata(db: DatabaseSync): { threadId: string; createdAt: string } {
+  const row = db
+    .prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`)
+    .get() as { thread_id: string; created_at: string } | undefined;
+  if (row === undefined) {
+    throw new Error("thread_metadata singleton row missing (creation writes it)");
+  }
+  return { threadId: row.thread_id, createdAt: row.created_at };
 }
 
 // The tail's token sum for status (AC-2.8): every live message after the

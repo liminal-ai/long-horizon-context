@@ -1,9 +1,9 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: STORY_ACTIVE
+- State: PRE_EPIC_VERIFY
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
-- Current Story: 05-render-targets
+- Current Story: none (all six stories accepted)
 - Current Phase: none
 - (Story 3 history: PRIMITIVE PATH — story-lead run 001 terminal blocked after two transient provider failures (socket close after 51 turns, then 529 Overloaded); composed resume re-blocks without redispatching. Recovery: fresh story-implement primitive dispatched 2026-06-11T17:10Z against partial worktree completed the story: SV-03-001 closed (sweep.ts walk/classify/requeue + surface + compact embed landed by the partial worktree, verified against owners' contracts), SV-03-002 closed (test/view-sweep.test.ts added — 10 tests, TC-3.1–3.4, classification edges, five-op zero-provider; stale placeholder assertions in view-pull/view-compact amended under the sanctioned-amendment pattern, red-manifest re-recorded). Gates green 2026-06-11: green-verify (273 tests + immutability OK), verify-all (300 tests incl. process suite). Next: story-verify follow-up on retained verifier handle codex/019eb786-e7ae-7d92-84c3-8daefeb333c6 → receipt.)
 - Story 3 gate verified 2026-06-11 pre-launch (both legs): (1) requeue patch landed — messages.requeue (src/domains/messages/index.ts:284,357) and turns.requeue (src/domains/turns/index.ts:284,383) with already_queued noop, version-scoped idempotent item ids; (2) reason-class persistence — retryable flag flows through work-queue terminal failure path (src/tech-utils/work-queue/index.ts:383-394, scheduler.ts:148-174, handlers); FC-0.4 (passing since Story 0) proves distinguishable transient/permanent classes on read-back via production drains. No Epic 02 patch needed.
@@ -124,10 +124,26 @@
 - Story-lead run: 04-tool-result-visibility-story-run-001, terminal accepted, recommendedImplLeadAction accept, no rulings. Final package: artifacts/04-tool-result-visibility/story-lead/001-final-package.json
 - Commit: landed (see git log)
 
+### 05-render-targets
+- Story Title: Story 5: Render Targets
+- Implementor Evidence: artifacts/05-render-targets/003-implementor.json, 005-continue.json
+- Verifier Evidence:
+  - artifacts/05-render-targets/004-verify.json (revise: S5-001 CLI output shapes)
+  - artifacts/05-render-targets/006-verify.json (pass; no open findings)
+- Story Gate: pnpm run green-verify — pass (immutability OK, 41 Red-phase files)
+- Completion Gate: pnpm run verify-all — pass (325 tests incl. process suite)
+- Dispositions:
+  - S5-001 (CLI pull/materialize output shape): fixed — view pull emits top-level message array, materialize prints bare path; failures remain structured nonzero JSON; verifier confirmed
+- Open Risks: none
+- Baseline Before: 313 (verify-all)
+- Baseline After: 325 (verify-all)
+- Story-lead run: 05-render-targets-story-run-001, terminal accepted, recommendedImplLeadAction accept, no rulings. Closes Story 3's TC-3.3 CLI leg and Story 4's CLI-advance debt in the process suite. Final package: artifacts/05-render-targets/story-lead/001-final-package.json
+- Commit: landed (see git log)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 313 (lhc package, verify-all count after 04-tool-result-visibility)
-- Expected After Current Story: ~324 (story 5 estimate ~11 tests)
-- Latest Actual Total: 313
+- Baseline Before Current Story: n/a (all stories accepted)
+- Expected After Current Story: n/a
+- Latest Actual Total: 325 (verify-all after 05-render-targets)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

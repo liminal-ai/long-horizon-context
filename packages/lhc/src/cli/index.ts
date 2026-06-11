@@ -16,6 +16,7 @@ import {
   runTurnsRequeue,
   runWorkDrain,
 } from "./work.js";
+import { runViewCommand } from "./view.js";
 
 // Stdin seam: in-process tests inject a reader; the binary reads the real
 // process stdin. null means interactive (TTY) — distinct from empty input
@@ -56,9 +57,19 @@ Usage:
   lhc turns requeue (--thread-id <id> | --file-path <p>) --subject-kind (turn|chunk) --subject-id <id> --form <form> [--registry <r>]
   lhc turns delete (--thread-id <id> | --file-path <p>) --turn <id> [--registry <r>]
   lhc work drain (--thread-id <id> | --file-path <p>) [--max-items <n>] [--provider <name>] [--registry <r>]
+  lhc view pull (--thread-id <id> | --file-path <p>) [--json] [--registry <r>]
+  lhc view status (--thread-id <id> | --file-path <p>) [--json] [--registry <r>]
+  lhc view compact (--thread-id <id> | --file-path <p>) [--profile <name>]
+                   [--lower-bound <n>] [--full <n>] [--smooth <n>] [--detailed <n>] [--brief <n>]
+                   [--no-sweep] [--json] [--registry <r>]
+  lhc view sweep (--thread-id <id> | --file-path <p>) [--json] [--registry <r>]
+  lhc view materialize (--thread-id <id> | --file-path <p>) --out <path> [--format pi-session] [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on
 success, 1 on failure. message-events reads an events JSON array on stdin.
+View commands need no provider; output is always JSON (--json accepted).
+Two exceptions on success: view pull prints the message array itself, and
+view materialize prints the written path; their failures stay structured.
 `;
 
 interface ParsedFlags {
@@ -176,6 +187,12 @@ export async function runCli(
   }
 
   const [group, command, ...rest] = argv;
+  // The view group parses its own flag surface (band overrides, --out,
+  // --format) — routed before the shared parse so its flags never widen the
+  // other commands' accepted set.
+  if (group === "view") {
+    return runViewCommand(command, rest);
+  }
   const key = command === undefined ? group : `${group} ${command}`;
   const parsed = parseFlags(command === undefined ? [] : rest);
   if (!parsed.ok) {

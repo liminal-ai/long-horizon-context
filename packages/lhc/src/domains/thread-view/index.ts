@@ -2,11 +2,12 @@
 // Story 1 landed the hot-path reads (`pull`, `status`): local reads and
 // deterministic string assembly only, no inference, no network, no queue
 // interaction, no writes (AC-1.1, AC-2.8). Story 2 landed `compact`;
-// Story 3 lands `sweep` (standalone and embedded default-on in compact).
-// `materialize` stays a structured-result stub until Story 5. Story 0's
-// substrate (profile resolution, consumed by createSdk) re-exports at the
-// bottom.
+// Story 3 landed `sweep` (standalone and embedded default-on in compact);
+// Story 5 lands `materialize` (the PI session-file render target over the
+// same pull assembly). Story 0's substrate (profile resolution, consumed by
+// createSdk) re-exports at the bottom.
 import { existsSync } from "node:fs";
+import * as path from "node:path";
 import {
   resolveInstanceViewConfig,
   runWithThreadTouchSuppressed,
@@ -50,9 +51,11 @@ import {
   selectArrangement,
   type ArrangementEntry,
 } from "./internal/select.js";
+import { writePiSessionFile, type MaterializeInput } from "./internal/materialize.js";
 import {
   readReadyToolResultSummaries,
   readTailMessages,
+  readThreadMetadata,
   readViewSnapshot,
   replaceViewSnapshot,
   tailTokenSum,
@@ -104,6 +107,63 @@ export async function pull(ref: ThreadRef): Promise<OpResult<PullResult>> {
   return runWithThreadTouchSuppressed(() => pullInner(ref));
 }
 
+// The one assembly both render targets consume (Story 5): pull serves the
+// messages; materialize serves the same entries with the metadata the file's
+// generated fields derive from (entry ids, record-time timestamps). Sharing
+// the array is what makes AC-5.3's parity structural — materialize cannot
+// diverge from pull because there is no second assembly to diverge.
+interface AssembledView {
+  entries: Array<{ message: ViewMessage; entryId: string; timestamp: string }>;
+  meta: PullResult["meta"];
+  snapshot: ReturnType<typeof readViewSnapshot>;
+}
+
+function assembleView(db: Parameters<typeof readViewSnapshot>[0]): AssembledView {
+  const snapshot = readViewSnapshot(db);
+  const compactPoint = snapshot?.compactPoint ?? 0;
+  const boundaryPosition = readBoundaryPosition(db);
+  const tailRows = readTailMessages(db, compactPoint);
+  const renderCtx = {
+    boundaryPosition,
+    toolNameByCallId: toolNamesByCallId(tailRows),
+    toolResultSummaries: readReadyToolResultSummaries(db),
+  };
+
+  const entries: AssembledView["entries"] = [];
+  if (snapshot !== null) {
+    for (const band of snapshot.bands) {
+      entries.push({
+        message: renderBandMessage(band.band, band.renderedText),
+        // Band entries are not record messages; their generated fields
+        // derive from view metadata (AC-5.2).
+        entryId: `${snapshot.viewId}-${band.band}`,
+        timestamp: snapshot.createdAt,
+      });
+    }
+  }
+  for (const row of tailRows) {
+    entries.push({
+      message: renderTailMessage(row, renderCtx),
+      entryId: row.messageId,
+      timestamp: row.recordedAt,
+    });
+  }
+
+  return {
+    entries,
+    meta: {
+      compactPoint: snapshot?.compactPoint ?? null,
+      coveredFrom: snapshot?.coveredFrom ?? null,
+      boundaryPosition,
+      gapCount: snapshot?.gapCount ?? 0,
+      degradedCount: snapshot?.degradedCount ?? 0,
+      viewId: snapshot?.viewId ?? null,
+      createdAt: snapshot?.createdAt ?? null,
+    },
+    snapshot,
+  };
+}
+
 async function pullInner(ref: ThreadRef): Promise<OpResult<PullResult>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -114,39 +174,12 @@ async function pullInner(ref: ThreadRef): Promise<OpResult<PullResult>> {
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const snapshot = readViewSnapshot(db);
-    const compactPoint = snapshot?.compactPoint ?? 0;
-    const boundaryPosition = readBoundaryPosition(db);
-    const tailRows = readTailMessages(db, compactPoint);
-    const renderCtx = {
-      boundaryPosition,
-      toolNameByCallId: toolNamesByCallId(tailRows),
-      toolResultSummaries: readReadyToolResultSummaries(db),
-    };
-
-    const messages: ViewMessage[] = [];
-    if (snapshot !== null) {
-      for (const band of snapshot.bands) {
-        messages.push(renderBandMessage(band.band, band.renderedText));
-      }
-    }
-    for (const row of tailRows) {
-      messages.push(renderTailMessage(row, renderCtx));
-    }
-
+    const assembled = assembleView(db);
     return {
       ok: true,
       value: {
-        messages,
-        meta: {
-          compactPoint: snapshot?.compactPoint ?? null,
-          coveredFrom: snapshot?.coveredFrom ?? null,
-          boundaryPosition,
-          gapCount: snapshot?.gapCount ?? 0,
-          degradedCount: snapshot?.degradedCount ?? 0,
-          viewId: snapshot?.viewId ?? null,
-          createdAt: snapshot?.createdAt ?? null,
-        },
+        messages: assembled.entries.map((entry) => entry.message),
+        meta: assembled.meta,
       },
     };
   } catch (cause) {
@@ -508,28 +541,71 @@ export function runPostCommitBoundaryAdvance(ctx: OperationContext): void {
   executeBoundaryAdvance(ctx.db, viewConfig().visibility, ctx.clock);
 }
 
-// ── stub (Story 5) ───────────────────────────────────────────────
+// ── materialize (Flow 5: AC-5.2–5.5) ─────────────────────────────
 
-// The skeleton's stub contract (tech design §Interface Definitions):
-// structured result, machine-readable, never a throw on this surface.
-function notImplemented(op: string): { ok: false; error: ErrorResult } {
-  return {
-    ok: false,
-    error: {
-      errorClass: "system_error",
-      code: "not_implemented",
-      reason: `not implemented: ${op}`,
-    },
-  };
-}
-
+// PI session-file materialization: run the pull assembly internally, hand
+// the same entry array to the JSONL writer, return the written path. No
+// thread state changes (reads + a file write outside the thread file), and
+// every generated field derives from view/record metadata, never write-time
+// clocks — repeating after no thread changes produces a byte-identical file
+// (AC-5.2). Parity with pull is by construction: one assembly, two shapes
+// (AC-5.3). A never-compacted thread materializes its tail-only pull with
+// the header timestamp from the thread's created-at (AC-5.4). Like pull,
+// the whole operation runs touch-suppressed: a background SDK's materialize
+// can never schedule a catch-up drain.
 export async function materialize(
   ref: ThreadRef,
   opts: { path: string; format?: "pi-session" },
 ): Promise<OpResult<{ writtenPath: string }>> {
-  void ref;
-  void opts;
-  return notImplemented("materialize");
+  return runWithThreadTouchSuppressed(() => materializeInner(ref, opts));
+}
+
+async function materializeInner(
+  ref: ThreadRef,
+  opts: { path: string; format?: "pi-session" },
+): Promise<OpResult<{ writtenPath: string }>> {
+  const format = opts.format ?? "pi-session";
+  if (format !== "pi-session") {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "unknown_format",
+        reason: `unknown materialize format "${String(format)}"; accepted formats are "pi-session"`,
+      },
+    };
+  }
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  let input: MaterializeInput;
+  try {
+    const assembled = assembleView(db);
+    const threadMeta = readThreadMetadata(db);
+    input = {
+      threadId: threadMeta.threadId,
+      headerTimestamp: assembled.snapshot?.createdAt ?? threadMeta.createdAt,
+      // Deterministic per thread file — never the writing process's cwd.
+      cwd: path.dirname(path.resolve(filePath)),
+      entries: assembled.entries,
+    };
+  } catch (cause) {
+    return storageFailure(`view materialize failed: ${detail(cause)}`);
+  } finally {
+    db.close();
+  }
+  try {
+    return { ok: true, value: writePiSessionFile(input, opts.path) };
+  } catch (cause) {
+    return storageFailure(
+      `view materialize could not write ${opts.path}: ${detail(cause)}`,
+    );
+  }
 }
 
 // ── Story 0 substrate (consumed by createSdk at construction) ─────

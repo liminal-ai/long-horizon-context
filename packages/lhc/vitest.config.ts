@@ -23,6 +23,7 @@ export default defineConfig({
             "test/cli-process-mutations.test.ts",
             "test/cli-process-mutations-delete.test.ts",
             "test/cli-process-fix.test.ts",
+            "test/cli-process-view.test.ts",
           ]),
     ],
     passWithNoTests: true,

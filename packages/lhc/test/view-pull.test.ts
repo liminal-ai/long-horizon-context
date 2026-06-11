@@ -5,7 +5,6 @@
 // thread files; the provider double appears only in construction/fixture
 // setup — no Epic 03 operation may touch it.
 import { createHash } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createSdk, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/index.js";
 import {
@@ -95,22 +94,10 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
   }
 }
 
-describe("surface skeleton: unimplemented ops return structured results", () => {
-  // Epic 03 Story 2 (sanctioned amendment): compact is real now, so its
-  // not-implemented leg moved out of this test; view-compact.test.ts owns the
-  // operation. Story 3 (sanctioned amendment): sweep is real now too —
-  // view-sweep.test.ts owns it. materialize stays stubbed until Story 5.
-  it("materialize returns ok:false not-implemented, never throws", async () => {
-    const ref = { filePath: fixture.filePath };
-    const materialized = await fixture.sdk.threadView.materialize(ref, {
-      path: join(store.dir, "out.jsonl"),
-    });
-    expect(materialized).toEqual({
-      ok: false,
-      error: { errorClass: "system_error", code: "not_implemented", reason: "not implemented: materialize" },
-    });
-  });
-});
+// Surface-skeleton describe retired (Epic 03 Story 5, sanctioned amendment):
+// every thread-view operation is real now — compact since Story 2, sweep
+// since Story 3, materialize since Story 5 (view-render-targets.test.ts owns
+// the operation). No stubbed op remains on this surface.
 
 describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread pulls the full conversation in order; later intake appends", () => {
   it("carries both intake rounds in record order with tail-only meta", async () => {

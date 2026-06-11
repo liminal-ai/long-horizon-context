@@ -230,7 +230,9 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     );
 
     expect(pulled.ok && status.ok && compacted.ok && swept.ok).toBe(true);
-    expect(materialized.ok).toBe(false); // Story 5's stub — still no provider
+    // Epic 03 Story 5 (sanctioned amendment): materialize is real now — it
+    // succeeds, and like the other four it still calls no provider.
+    expect(materialized.ok).toBe(true);
     expect(captured.length).toBe(before);
   });
 });

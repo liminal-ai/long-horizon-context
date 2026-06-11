@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-11T18:10:07.473Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-11T18:10:07.482Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 05-render-targets."}
+{"timestamp":"2026-06-11T18:10:07.491Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 50874.","metadata":{"pid":50874}}
+{"timestamp":"2026-06-11T18:10:07.584Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-11T18:10:42.646Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:11:20.633Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:11:57.558Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:12:37.553Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:13:33.850Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:14:06.124Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-11T18:14:34.991Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":267500,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-11T18:14:34.994Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 05-render-targets.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-06-11T18:14:35.010Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 05-render-targets with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}

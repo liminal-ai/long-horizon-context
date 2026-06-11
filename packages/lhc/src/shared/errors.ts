@@ -25,7 +25,10 @@ export type ErrorCode =
   // construction (programmer error, throws), a bad compact invocation is an
   // operational caller error returned as a result.
   | "unknown_profile" // caller_error — named profile not configured
-  | "invalid_view_config"; // caller_error — band sum / bound violation, named
+  | "invalid_view_config" // caller_error — band sum / bound violation, named
+  // Epic 03 Story 5: materialize accepts pi-session only; an unknown format
+  // is a caller error naming the accepted values (story Scope).
+  | "unknown_format"; // caller_error — materialize format not supported
 
 export interface ErrorResult {
   errorClass: ErrorClass;
