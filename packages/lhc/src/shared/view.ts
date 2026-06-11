@@ -47,6 +47,23 @@ export interface ResolvedViewConfig {
 }
 
 // ── pull / status shapes (the product crossing to the harness) ────
+//
+// The pull's array shape (Story 1, load-bearing for Stories 2–5): band
+// messages first — one `user` message per non-empty band, gradient order
+// brief → detailed → smooth, marker header + snapshot bytes verbatim — then
+// the tail in record order. Tail messages render by the message-kind mapping
+// table (tech design §Tail message rendering), the contract every later
+// story renders into:
+//
+//   | Message kind                       | Role      | Content shape |
+//   |------------------------------------|-----------|---------------|
+//   | user_prompt                        | user      | text verbatim |
+//   | assistant_text                     | assistant | text verbatim |
+//   | assistant_thinking                 | assistant | fenced: `[thinking]\n<text>\n[/thinking]` — included (the tail is full fidelity) |
+//   | tool_call                          | assistant | `[tool call · <name>] <compact args>` — deterministic arg rendering, abbreviation rule for oversized args |
+//   | tool_result (ahead of boundary)    | user      | `[tool result · <name>]\n<full content>` |
+//   | tool_result (at-or-behind boundary)| user      | `[tool result · <name> · abridged]\n<summary or deterministic truncation>` (short-form ladder) |
+//   | runtime_note                       | user      | `[runtime note] <text>` |
 export interface ViewMessage {
   role: "user" | "assistant";
   content: string;

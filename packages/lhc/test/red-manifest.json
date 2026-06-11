@@ -27,6 +27,7 @@
     "test/cli-process-mutations.test.ts": "4d76715483eb5168957d34b8a3701cb5eb8a58f91f2aec0d543fb6a81650cf8e",
     "test/mutations-delete.test.ts": "dc2c238f278412796de0ac94e30e60240cc59a5fa05b0062bdfba0d6aded434a",
     "test/cli-process-mutations-delete.test.ts": "98898996cdf9eb06cdce0d0c31edce5a7710f92004ef1981cd0b72706fe548e3",
-    "test/view-fixture.test.ts": "daebd6e969248dc08847945a92bbac159a319351dec1dac291f94641d97329c5"
+    "test/view-fixture.test.ts": "daebd6e969248dc08847945a92bbac159a319351dec1dac291f94641d97329c5",
+    "test/view-pull.test.ts": "0ddb9d41217d0aa0e87b79038801d2e9bf041e9cd0178242e839971fde756e2d"
   }
 }

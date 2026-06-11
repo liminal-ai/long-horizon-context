@@ -2,8 +2,10 @@ export * as threads from "./domains/threads/index.js";
 export * as intakeStream from "./domains/intake-stream/index.js";
 export * as messages from "./domains/messages/index.js";
 export * as turns from "./domains/turns/index.js";
+export * as threadView from "./domains/thread-view/index.js";
 
 import * as intakeStreamDomain from "./domains/intake-stream/index.js";
+import * as threadViewDomain from "./domains/thread-view/index.js";
 import { resolveViewConfig } from "./domains/thread-view/index.js";
 import * as messagesDomain from "./domains/messages/index.js";
 import * as threadsDomain from "./domains/threads/index.js";
@@ -29,6 +31,13 @@ import {
   type WorkHandler,
 } from "./shared/derivation.js";
 import type { ErrorResult, OpResult } from "./shared/errors.js";
+import type {
+  CompactReceipt,
+  PullResult,
+  SweepReceipt,
+  ViewProfile,
+  ViewStatus,
+} from "./shared/view.js";
 import type { WorkKind } from "./tech-utils/work-queue/index.js";
 
 export {
@@ -189,11 +198,32 @@ export interface WorkSurface {
   ): Promise<OpResult<DrainReport>>;
 }
 
+// The thread-view surface as the SDK exposes it (Epic 03, tech design
+// §Interface Definitions): the five operations only — the Story 0 config
+// substrate the domain index also carries is construction machinery, not an
+// operation. pull and status are real from Story 1; compact, sweep, and
+// materialize return structured not-implemented results until their stories
+// land.
+export interface ThreadViewSurface {
+  pull(ref: threadsDomain.ThreadRef): Promise<OpResult<PullResult>>;
+  status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
+  compact(
+    ref: threadsDomain.ThreadRef,
+    opts: { profile?: string; params?: Partial<ViewProfile>; sweep?: boolean },
+  ): Promise<OpResult<CompactReceipt>>;
+  sweep(ref: threadsDomain.ThreadRef): Promise<OpResult<SweepReceipt>>;
+  materialize(
+    ref: threadsDomain.ThreadRef,
+    opts: { path: string; format?: "pi-session" },
+  ): Promise<OpResult<{ writtenPath: string }>>;
+}
+
 export interface Lhc {
   threads: typeof threadsDomain;
   intakeStream: typeof intakeStreamDomain;
   messages: typeof messagesDomain;
   turns: typeof turnsDomain;
+  threadView: ThreadViewSurface;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
   workHandlers: WorkHandlerMap;
@@ -302,13 +332,18 @@ export function createSdk(config: SdkConfig): Lhc {
   // alive in the process. A manual SDK therefore never auto-drains, whatever
   // the construction order, because its operations deliver to the no-op seam,
   // not to whatever a background SDK installed below.
+  // The seam also carries this instance's resolved view config (Epic 03,
+  // tech design Flow 4): thread-view operations invoked through sdk.* read
+  // THIS SDK's profiles/budgets/threshold; below-SDK direct domain calls
+  // fall back to the built-in defaults inside the thread-view surface.
   const seam: InstanceSeam =
     resolved.mode === "background"
       ? {
           poke: (threadId) => scheduler.poke(threadId),
           touch: (filePath, db) => scheduler.touch(filePath, db),
+          view: resolved.view,
         }
-      : { poke: () => {}, touch: () => {} };
+      : { poke: () => {}, touch: () => {}, view: resolved.view };
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the
@@ -335,6 +370,16 @@ export function createSdk(config: SdkConfig): Lhc {
     intakeStream: scopeSurface(intakeStreamDomain, seam),
     messages: scopeSurface(messagesDomain, seam),
     turns: scopeSurface(turnsDomain, seam),
+    threadView: scopeSurface<ThreadViewSurface>(
+      {
+        pull: threadViewDomain.pull,
+        status: threadViewDomain.status,
+        compact: threadViewDomain.compact,
+        sweep: threadViewDomain.sweep,
+        materialize: threadViewDomain.materialize,
+      },
+      seam,
+    ),
     config: resolved,
     scheduler,
     workHandlers,

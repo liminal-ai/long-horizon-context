@@ -1,9 +1,9 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: BETWEEN_STORIES
+- State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
-- Current Story: 01-pull-and-status
+- Current Story: 02-smart-compact
 - Current Phase: none
 - Preflight: ready (artifacts/preflight/001-preflight.json, 2026-06-11). CLI persisted verification_gates into impl-run.config.json (expected side effect). Codex auth status unknown per preflight note; binary present.
 
@@ -56,10 +56,26 @@
 - Story-lead run: 00-foundation-story-run-001, terminal needs-ruling (spec-deviation); ruling approved and durably recorded in callerInputHistory; planner re-asked same ruling id on resume, so impl-lead completed acceptance directly per ownership model. Final package: artifacts/00-foundation/story-lead/001-final-package.json
 - Commit: pending → landed (see git log)
 
+### 01-pull-and-status
+- Story Title: Story 1: Pull and Status on the Record
+- Implementor Evidence: artifacts/01-pull-and-status/003-implementor.json, 005-continue.json
+- Verifier Evidence:
+  - artifacts/01-pull-and-status/004-verify.json (revise: SV-01-PULL-STATUS-001)
+  - artifacts/01-pull-and-status/006-verify.json (pass)
+- Story Gate: pnpm run green-verify — pass (244 default tests, immutability OK)
+- Completion Gate: pnpm run verify-all — pass (271 tests incl. process suite)
+- Dispositions:
+  - SV-01-PULL-STATUS-001 (pull/status not read-only in background SDK mode): fixed — thread-touch suppression added; verifier confirmed resolved in 006-verify.json
+- Open Risks: none
+- Baseline Before: 255 (verify-all) / 228 (default suite per story-lead)
+- Baseline After: 271 (verify-all) / 244 (default suite)
+- Story-lead run: 01-pull-and-status-story-run-001, terminal accepted, recommendedImplLeadAction accept, no rulings. Final package: artifacts/01-pull-and-status/story-lead/001-final-package.json
+- Commit: landed (see git log)
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 255 (lhc package, verify-all count after 00-foundation)
-- Expected After Current Story: ~264 (story 1 estimate ~9 tests)
-- Latest Actual Total: 255
+- Baseline Before Current Story: 271 (lhc package, verify-all count after 01-pull-and-status)
+- Expected After Current Story: ~287 (story 2 estimate ~16 tests)
+- Latest Actual Total: 271
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

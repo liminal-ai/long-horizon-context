@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-11T15:06:49.859Z",
+  "updatedAt": "2026-06-11T15:09:04.915Z",
+  "lastOutputAt": "2026-06-11T15:09:04.782Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 28447,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/01-pull-and-status/006-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/01-pull-and-status/streams/006-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/01-pull-and-status/streams/006-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/01-pull-and-status/progress/006-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact/artifacts/01-pull-and-status/progress/006-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 01-pull-and-status with outcome pass.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

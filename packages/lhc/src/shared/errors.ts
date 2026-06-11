@@ -17,7 +17,10 @@ export type ErrorCode =
   | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
   | "provider_not_configured" // caller_error — CLI drain without --provider / LHC_PROVIDER (DD-11)
   | "provider_failure" // system_error — exhausted retries; form.reason carries detail
-  | "source_damaged"; // state_corruption — handler found corrupt source; form blocked
+  | "source_damaged" // state_corruption — handler found corrupt source; form blocked
+  // Epic 03 (tech design §Interface Definitions): the surface-skeleton stub
+  // contract — machine-readable, never a throw on the thread-view surface.
+  | "not_implemented"; // system_error — operation's story has not landed yet
 
 export interface ErrorResult {
   errorClass: ErrorClass;

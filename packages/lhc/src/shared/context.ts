@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
+import type { ResolvedViewConfig } from "./view.js";
 
 export interface OperationContext {
   db: DatabaseSync; // open thread-file handle, inside the batch transaction
@@ -50,6 +51,13 @@ export function createCommitHooks(): CommitHooks {
 export interface InstanceSeam {
   poke: (threadId: string) => void;
   touch: (filePath: string, db: DatabaseSync) => void;
+  // Epic 03 (tech design Flow 4): the instance's resolved view config rides
+  // the same seam the poke does, so a thread-view operation invoked through
+  // sdk.* reads THIS SDK's profiles/budgets/threshold. Below-SDK direct
+  // domain calls find no seam and fall back to the built-in defaults at the
+  // consuming site (thread-view), never here — shared/ may not import
+  // domains/, and the defaults' one resolution path lives there.
+  view?: ResolvedViewConfig;
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
 
@@ -89,6 +97,36 @@ export function resolveInstancePoke(): (threadId: string) => void {
   return (threadId) => {
     schedulerPoke?.(threadId);
   };
+}
+
+// The view config for the operation now running: the SDK seam's resolved
+// config when one is in scope, undefined for direct domain calls (the
+// thread-view surface defaults those itself — see InstanceSeam.view).
+export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
+  return seamStore.getStore()?.view;
+}
+
+// Reads-only operation scope (Epic 03 AC-1.1/AC-2.8): runs fn under the
+// current seam with the thread-touch announcement suppressed, so a pure read
+// — thread-view pull/status above all — can never schedule a background
+// scheduler's first-touch catch-up drain through its openThreadDatabase
+// calls (or those of the report surfaces it consumes). Everything else on
+// the seam (poke target, view config) carries through unchanged; for a
+// direct domain call with no seam in scope the installed scope delegates to
+// the below-SDK defaults, minus the touch. Write paths never use this.
+export function runWithThreadTouchSuppressed<T>(fn: () => T): T {
+  const seam = seamStore.getStore();
+  const base: InstanceSeam =
+    seam ??
+    {
+      poke: (threadId) => {
+        schedulerPoke?.(threadId);
+      },
+      touch: (filePath, db) => {
+        threadTouch?.(filePath, db);
+      },
+    };
+  return seamStore.run({ ...base, touch: () => {} }, fn);
 }
 
 // Thread-file open announcement (DD-10): openThreadDatabase fires this on
