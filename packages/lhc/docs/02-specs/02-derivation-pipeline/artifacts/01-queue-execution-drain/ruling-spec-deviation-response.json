@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "01-queue-execution-drain-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "source": "impl-lead",
+  "rationale": "All seven deviations approved: (1) HandlerOutcome.forms additive extension centralizes the version-checked UPDATE + row deletion in complete()'s single transaction — this strengthens the anti-shim 'one form-write path' rule rather than weakening it; (2) fail-closed background gating on an empty handler map protects pinned Story 0 tests and only defers scheduling that could do nothing useful; (3) provider_not_configured error code is named by DD-11, its absence from the interface list was a spec omission; (4) deterministic provider in src/providers/ is required for spawned CLI tests to reach the registry through dist/cli.js per the test plan's no-test-only-path rule; (5) payload { sourceVersion, forms } extension keeps terminal paths domain-blind; (6) attempts/lastError in DerivedFormMetadata JSON satisfies DD-1's copy-at-exhaustion without schema churn; (7) red-manifest regeneration for new red-phase files is the sanctioned mechanism. None alter epic contracts or AC semantics."
+}

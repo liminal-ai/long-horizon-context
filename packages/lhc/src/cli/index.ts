@@ -7,6 +7,7 @@ import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
 import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
+import { runWorkDrain } from "./work.js";
 
 // Stdin seam: in-process tests inject a reader; the binary reads the real
 // process stdin. null means interactive (TTY) — distinct from empty input
@@ -38,6 +39,7 @@ Usage:
   lhc messages list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc turns list-queued-work (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc work drain (--thread-id <id> | --file-path <p>) [--max-items <n>] [--provider <name>] [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on
 success, 1 on failure. message-events reads an events JSON array on stdin.
@@ -48,6 +50,8 @@ interface ParsedFlags {
   filePath?: string;
   title?: string;
   registryPath?: string;
+  maxItems?: string;
+  provider?: string;
 }
 
 // strict parse rejects unknown/misspelled flags so they are named back to the
@@ -68,6 +72,8 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
         "file-path": { type: "string" },
         title: { type: "string" },
         registry: { type: "string" },
+        "max-items": { type: "string" },
+        provider: { type: "string" },
       },
       strict: true,
       allowPositionals: true,
@@ -84,6 +90,8 @@ function parseFlags(args: readonly string[]): ParseFlagsResult {
   if (typeof values["file-path"] === "string") flags.filePath = values["file-path"];
   if (typeof values.title === "string") flags.title = values.title;
   if (typeof values.registry === "string") flags.registryPath = values.registry;
+  if (typeof values["max-items"] === "string") flags.maxItems = values["max-items"];
+  if (typeof values.provider === "string") flags.provider = values.provider;
   return { ok: true, flags };
 }
 
@@ -231,6 +239,24 @@ export async function runCli(
         requireThreadRef(flags, "turns list-queued-work") ??
         renderResult(await turns.listQueuedWork(threadRefFrom(flags)))
       );
+    case "work drain": {
+      const missingRef = requireThreadRef(flags, "work drain");
+      if (missingRef !== undefined) return missingRef;
+      const drainFlags: { provider?: string; maxItems?: number } = {};
+      if (flags.provider !== undefined) drainFlags.provider = flags.provider;
+      if (flags.maxItems !== undefined) {
+        const maxItems = Number(flags.maxItems);
+        if (!Number.isInteger(maxItems) || maxItems <= 0) {
+          return renderCliError(
+            "caller_error",
+            "missing_flag",
+            `--max-items must be a positive integer, got ${flags.maxItems}`,
+          );
+        }
+        drainFlags.maxItems = maxItems;
+      }
+      return runWorkDrain(threadRefFrom(flags), drainFlags);
+    }
     default:
       return renderCliError(
         "caller_error",

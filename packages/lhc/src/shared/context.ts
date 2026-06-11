@@ -47,6 +47,24 @@ export function fireSchedulerPoke(threadId: string): void {
   schedulerPoke?.(threadId);
 }
 
+// The thread-touch seam (DD-10). openThreadDatabase announces every open of a
+// thread file here, before any caller transaction begins. The background
+// scheduler installs a listener to learn threadId→filePath and to run the
+// first-touch catch-up check (one indexed query on the already-open handle);
+// with no listener installed — manual mode, or no SDK constructed — firing is
+// free. Lives in shared/ for the same reason as the poke slot: the threads
+// domain may not import the scheduler module.
+type ThreadTouch = (filePath: string, db: DatabaseSync) => void;
+let threadTouch: ThreadTouch | null = null;
+
+export function setThreadTouch(touch: ThreadTouch | null): void {
+  threadTouch = touch;
+}
+
+export function fireThreadTouch(filePath: string, db: DatabaseSync): void {
+  threadTouch?.(filePath, db);
+}
+
 // Transaction owner for operations outside the intake pipeline (mutations,
 // repair re-queues, tests of enqueue atomicity): BEGIN IMMEDIATE, run the
 // body with a context whose onCommit registrations flush only after COMMIT

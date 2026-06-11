@@ -40,8 +40,18 @@ export interface DerivedForm {
   reason?: string; // failed | blocked
   sourceVersion: number; // which version of the source this form derives from (DD-3)
   gaps?: DependencyGap[]; // composed forms; landed-with-fallback record
-  metadata?: { outcome?: ToolOutcome }; // mechanically stamped fields; never provider-authored
+  metadata?: DerivedFormMetadata; // mechanically stamped fields; never provider-authored
   derivedAt?: string;
+}
+
+// Mechanically stamped form metadata: tool outcomes (AC-2.4) plus — at retry
+// exhaustion — the final attempts/last-error copied from the work item before
+// its row is deleted (DD-1: the queue is not an audit table; durable outcome
+// detail lives here).
+export interface DerivedFormMetadata {
+  outcome?: ToolOutcome;
+  attempts?: number;
+  lastError?: string;
 }
 
 // ── provider seam (DD-7) ─────────────────────────────────────────
@@ -124,8 +134,23 @@ export interface HandlerRunContext {
   config: ResolvedSdkConfig;
 }
 
+// A successful handler hands its derived-form content back as data; the
+// drain's completion transaction performs the version-checked UPDATE and the
+// item-row deletion atomically (tech design §Mechanics: completion is one
+// short BEGIN IMMEDIATE doing the form write and the delete). The handler
+// never opens that transaction itself, so the version check and the
+// done/stale_discarded disposition stay in one place — the queue util.
+export interface HandlerFormWrite {
+  subjectKind: SubjectKind;
+  subjectId: string;
+  form: FormKind;
+  content: string;
+  metadata?: DerivedFormMetadata;
+  gaps?: DependencyGap[];
+}
+
 export type HandlerOutcome =
-  | { ok: true } // forms written by handler, version-checked
+  | { ok: true; forms?: HandlerFormWrite[] } // written version-checked in the completion txn
   | { ok: false; retryable: boolean; reason: string }
   | { ok: false; blocked: true; reason: string }; // source damage → form blocked, item terminal
 

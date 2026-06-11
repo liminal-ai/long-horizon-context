@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-11T04:06:51.803Z",
+  "updatedAt": "2026-06-11T04:10:04.799Z",
+  "lastOutputAt": "2026-06-11T04:10:04.632Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 36120,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline/artifacts/01-queue-execution-drain/005-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline/artifacts/01-queue-execution-drain/streams/005-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline/artifacts/01-queue-execution-drain/streams/005-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline/artifacts/01-queue-execution-drain/progress/005-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline/artifacts/01-queue-execution-drain/progress/005-continue.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-continue completed for 01-queue-execution-drain with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { fireThreadTouch } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import {
   getSchemaVersion,
@@ -194,6 +195,10 @@ export function openThreadDatabase(filePath: string): OpResult<DatabaseSync> {
     db.close();
     return storageFailure(`thread schema migration failed: ${errorDetail(cause)}`);
   }
+  // Announce the open (DD-10): the background scheduler's first-touch
+  // catch-up hangs off this seam. Fired before any caller transaction
+  // begins; a no-op unless a listener is installed.
+  fireThreadTouch(filePath, db);
   return { ok: true, value: db };
 }
 

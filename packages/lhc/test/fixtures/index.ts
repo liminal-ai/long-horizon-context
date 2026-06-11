@@ -107,6 +107,11 @@ export {
   type ProviderOpName,
 } from "./provider-double.js";
 export {
+  registerTestWorkHandlers,
+  testWorkHandlers,
+  type TestHandlerHooks,
+} from "./work-handlers.js";
+export {
   damagedSourceThread,
   multiStateThread,
   readDerivedForms,

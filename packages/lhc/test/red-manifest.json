@@ -15,6 +15,9 @@
     "test/cli-process-turns.test.ts": "baecaf4e8939e949e38cc21f2e78c342a21065aef55971412cc2f5d326e14ba2",
     "test/work-queue.test.ts": "797f5707a49b055689521c77ebed951849fa2eeebedbce9cd54b556725489bbc",
     "test/cli-process-work-queue.test.ts": "13bf1226de9cd52d7f10306c87dafea2930c10e43d5628080e3891b6a55f6686",
-    "test/fixtures.test.ts": "d2f20683050ac412612b2fef1be5633ddfded6279182ac8ae3fe772907f7a4c3"
+    "test/fixtures.test.ts": "d2f20683050ac412612b2fef1be5633ddfded6279182ac8ae3fe772907f7a4c3",
+    "test/work-execution.test.ts": "6dcd9665e0e531346b6e64469412086b704ceb6bce59a14ab493f55fc7c298fd",
+    "test/cli-process-work.test.ts": "4c8cd5b05be2990c819adfe8973244c0e77c972e050949502a9aa8579f19636e",
+    "test/work-execution-legacy.test.ts": "cfe9779ecc130f19be97b859ba441abbb8e95711b55dec64a28a6569e42af69b"
   }
 }

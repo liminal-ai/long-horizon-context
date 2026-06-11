@@ -15,6 +15,7 @@ export type ErrorCode =
   | "message_not_found" // caller_error
   | "turn_not_found" // caller_error
   | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
+  | "provider_not_configured" // caller_error — CLI drain without --provider / LHC_PROVIDER (DD-11)
   | "provider_failure" // system_error — exhausted retries; form.reason carries detail
   | "source_damaged"; // state_corruption — handler found corrupt source; form blocked
 

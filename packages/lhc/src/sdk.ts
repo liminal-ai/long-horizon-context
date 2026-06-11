@@ -7,7 +7,15 @@ import * as intakeStreamDomain from "./domains/intake-stream/index.js";
 import * as messagesDomain from "./domains/messages/index.js";
 import * as threadsDomain from "./domains/threads/index.js";
 import * as turnsDomain from "./domains/turns/index.js";
-import { createScheduler, type Scheduler } from "./scheduler.js";
+import {
+  createScheduler,
+  peekThreadId,
+  runDrain,
+  type DrainDeps,
+  type DrainReport,
+  type Scheduler,
+} from "./scheduler.js";
+import { setSchedulerPoke as installSchedulerPoke, setThreadTouch } from "./shared/context.js";
 import {
   PROVIDER_OPERATIONS,
   type ResolvedSdkConfig,
@@ -39,15 +47,25 @@ export type {
 export {
   runInTransaction,
   setSchedulerPoke,
+  setThreadTouch,
   type OperationContext,
 } from "./shared/context.js";
+
+export {
+  createDeterministicProvider,
+  deterministicText,
+  type DeterministicOpName,
+} from "./providers/deterministic.js";
+export { registeredProviderNames, resolveNamedProvider } from "./providers/registry.js";
 
 export type {
   DependencyGap,
   DerivationProvider,
   DerivedForm,
+  DerivedFormMetadata,
   DerivedFormState,
   FormKind,
+  HandlerFormWrite,
   HandlerOutcome,
   HandlerRunContext,
   ProviderResult,
@@ -58,7 +76,14 @@ export type {
   ToolOutcome,
   WorkHandler,
 } from "./shared/derivation.js";
-export type { Scheduler, SchedulerMode } from "./scheduler.js";
+export type { DrainReport, Scheduler, SchedulerMode } from "./scheduler.js";
+export {
+  countLiveItems,
+  queueDetail,
+  supersedeQueued,
+  type ClaimedWorkItem,
+  type QueueDetailRow,
+} from "./tech-utils/work-queue/index.js";
 
 export type { ThreadRef } from "./domains/threads/index.js";
 export type {
@@ -118,6 +143,15 @@ export function lookupWorkHandler(
   return { ok: true, value: handler };
 }
 
+// The work surface (CLI: lhc work …). Story 1 carries drain; report and
+// requeue land in Story 4.
+export interface WorkSurface {
+  drain(
+    ref: threadsDomain.ThreadRef,
+    opts?: { maxItems?: number },
+  ): Promise<OpResult<DrainReport>>;
+}
+
 export interface Lhc {
   threads: typeof threadsDomain;
   intakeStream: typeof intakeStreamDomain;
@@ -127,6 +161,11 @@ export interface Lhc {
   scheduler: Scheduler;
   workHandlers: WorkHandlerMap;
   lookupWorkHandler(kind: string): OpResult<WorkHandler>;
+  work: WorkSurface;
+  // Resolves when the scheduler has no running or pending drain for the
+  // thread (issue 3) — the awaitable for background mode, and a no-op
+  // resolve in manual mode.
+  drainSettled(ref: threadsDomain.ThreadRef): Promise<void>;
 }
 
 function requirePositive(value: number, name: string): void {
@@ -190,14 +229,48 @@ export function createSdk(config: SdkConfig): Lhc {
     turnsDomain.workHandlers,
   ]);
 
+  const drainDeps: DrainDeps = {
+    lookupHandler: (kind) => lookupWorkHandler(workHandlers, kind),
+    hasAnyHandler: () => Object.keys(workHandlers).length > 0,
+    config: resolved,
+  };
+  const scheduler = createScheduler(resolved.mode, drainDeps);
+
+  // Background mode wires the scheduler into the process-wide seams: enqueue
+  // pokes (DD-5) and thread-file touches (DD-10) reach it from then on, and
+  // queueing alone causes processing (AC-1.5). The slots hold one scheduler;
+  // constructing a later background SDK supersedes an earlier one (the
+  // displaced scheduler's in-memory state was advisory — the rows remain).
+  // Manual mode leaves the slots alone: pokes stay no-ops by contract.
+  if (resolved.mode === "background") {
+    installSchedulerPoke((threadId) => scheduler.poke(threadId));
+    setThreadTouch((filePath, db) => scheduler.touch(filePath, db));
+  }
+
+  const work: WorkSurface = {
+    drain: async (ref, opts) => {
+      const resolvedRef = await threadsDomain.resolveThreadRef(ref);
+      if (!resolvedRef.ok) return resolvedRef;
+      return runDrain(resolvedRef.value.filePath, drainDeps, opts);
+    },
+  };
+
   return {
     threads: threadsDomain,
     intakeStream: intakeStreamDomain,
     messages: messagesDomain,
     turns: turnsDomain,
     config: resolved,
-    scheduler: createScheduler(resolved.mode),
+    scheduler,
     workHandlers,
     lookupWorkHandler: (kind) => lookupWorkHandler(workHandlers, kind),
+    work,
+    drainSettled: async (ref) => {
+      const resolvedRef = await threadsDomain.resolveThreadRef(ref);
+      if (!resolvedRef.ok) return; // nothing can be scheduled for an unresolvable ref
+      const threadId = peekThreadId(resolvedRef.value.filePath);
+      if (threadId === null) return;
+      return scheduler.drainSettled(threadId);
+    },
   };
 }

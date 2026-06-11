@@ -7,10 +7,11 @@
 // distinguishable by marker. Scripting (failNext / failKind / delayKind /
 // captureInputs) is per-instance state and never leaks across tests that
 // construct their own double.
-import type {
-  DerivationProvider,
-  ProviderResult,
-  RenderingPart,
+import {
+  deterministicText,
+  type DerivationProvider,
+  type ProviderResult,
+  type RenderingPart,
 } from "../../src/index.js";
 
 export type ProviderOpName =
@@ -47,22 +48,6 @@ function resolveOpName(kind: string): ProviderOpName {
   const op = KIND_ALIASES[kind];
   if (op === undefined) throw new Error(`provider double: unknown operation/kind "${kind}"`);
   return op;
-}
-
-// FNV-1a 32-bit over the canonical input JSON: stable, dependency-free, and
-// input-sensitive enough that distinct inputs mark distinct outputs.
-function digest(input: unknown): string {
-  const text = JSON.stringify(input);
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
-function prefix40(text: string): string {
-  return text.slice(0, 40);
 }
 
 interface FailScript {
@@ -130,16 +115,10 @@ export class ProviderDouble implements DerivationProvider {
         return { ok: false, retryable: script.retryable, reason: script.reason };
       }
     }
-    const markers: Record<ProviderOpName, string> = {
-      smoothPrompt: "smoothed",
-      summarizeToolCall: "toolcall",
-      summarizeToolResult: "toolresult",
-      composeTurnRendering: "rendering",
-      projectLowerBand: "projection",
-      summarizeChunkDetailed: "detailed",
-      summarizeChunkBrief: "brief",
-    };
-    return { ok: true, text: `${markers[op]}(${digest(input)}:${prefix40(text)})` };
+    // Output format shared with src/providers/deterministic.ts so the double
+    // and the registry's "deterministic" provider produce byte-identical
+    // artifacts across in-process and spawned runs.
+    return { ok: true, text: deterministicText(op, input, text) };
   }
 
   smoothPrompt(i: { text: string }): Promise<ProviderResult> {

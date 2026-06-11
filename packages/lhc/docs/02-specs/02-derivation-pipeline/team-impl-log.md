@@ -1,8 +1,9 @@
 # Team Impl Log — Epic 02: Derivation Pipeline
 
 State: STORY_ACTIVE
-Current Story: 00-foundation
-Current Phase: implement (story-orchestrate run launched 2026-06-11T03:01Z, background task bxf5tdlko, monitor beur71wht)
+Current Story: 01-queue-execution-drain
+Current Phase: implement
+Accepted: 00-foundation (commit 967a90f, baseline 155)
 Spec-Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline
 Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 
@@ -63,6 +64,17 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Dispositions: 00F-001 fixed (via ruling-012 ratification). Spec deviations: 5 approved (see above). Accepted-risk: none. Defer: none.
 - Open risks: none.
 - Commit: pending → recorded below.
+
+### 01-queue-execution-drain
+- validate ready; run launched 03:34Z; implementor ~28min; verifier initial found 01F-001 → fixed in retained loop; final verifier pass (006-verify.json).
+- 04:04Z terminal needs-ruling (spec-deviation). 04:12Z impl-lead APPROVED 7 deviations (ruling-spec-deviation-response.json): HandlerOutcome.forms centralizing version-checked write in complete(); fail-closed background gating on empty handler map; provider_not_configured code added; deterministic provider in src/providers/ (DD-11 registry reachable from dist/cli.js); payload {sourceVersion, forms}; attempts/lastError in DerivedFormMetadata; red-manifest regen. Resumed → story-lead accept-story.
+
+#### RECEIPT — 01-queue-execution-drain (ACCEPTED 2026-06-11T04:14Z)
+- Implementor evidence: artifacts/01-queue-execution-drain/003-implementor.json. Verifier: 004-verify.json (initial, 01F-001) + 006-verify.json (pass, openFindings []).
+- Gates run by impl-lead: green-verify PASS (154 tests, immutability OK 19 red files); verify-all PASS (173 tests incl. process suite — TC-1.3 SIGKILL + TC-1.4 claim-exclusion ran).
+- Cumulative baseline: 155 → 173 (no regression).
+- Dispositions: 01F-001 fixed. Deviations: 7 approved. Accepted-risk/defer: none. Open risks: none.
+- Commit: recorded below.
 
 ## Epic Closeout
 
