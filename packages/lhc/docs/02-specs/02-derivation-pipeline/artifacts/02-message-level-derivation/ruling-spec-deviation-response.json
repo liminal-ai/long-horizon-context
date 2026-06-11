@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "02-message-level-derivation-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "source": "impl-lead",
+  "rationale": "All five deviations approved: (1) intake touches in messages/index.ts follow Epic 01's actual placement of the kind map — semantics (deterministic, local, batch transaction) unchanged; (2) call-id index added in-place to migration v5 honors the 'one migration per epic' rule and the pinned version-5 tests; (3) outcome metadata on result summaries matches the Story 0 multi-state fixture contract (FC-0.3); (4) form read-back deferral was superseded by the 02F-001 fix, which landed listMessages form attachment anyway; (5) extending the sanctioned mechanical amendment sweep to Epic 02 Story 0/1 test files is the same amendment class (tool_call now queues work), each edit recorded and red manifest regenerated. None alter epic contracts."
+}

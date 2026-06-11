@@ -109,7 +109,9 @@ function liveDetail(filePath: string): ReturnType<typeof queueDetail> {
 }
 
 describe("TC-1.1: a drain runs queued items one at a time, in queue order, and reports each disposition", () => {
-  it("three items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
+  // Epic 02 Story 2 (sanctioned amendment): tool_call now queues
+  // tool_call_summary, so this batch yields four items, not three.
+  it("four items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
     const double = createProviderDouble();
     let tick = 0;
     const base = Date.parse("2026-06-10T12:00:00.000Z");
@@ -121,17 +123,24 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       validEvent("tool_result"),
       validEvent("turn_end"),
     ]);
-    expect(liveCount(filePath)).toBe(3);
+    expect(liveCount(filePath)).toBe(4);
 
     const report = await drain(sdk, filePath);
-    // Queue order across owners: m1's smoothing, m3's result summary, then
-    // the turn derivation queued at close — never reordered.
+    // Queue order across owners: m1's smoothing, m2's call summary, m3's
+    // result summary, then the turn derivation queued at close — never
+    // reordered.
     expect(report.ran.map((entry) => entry.workItemId)).toEqual([
       "w-m1-prompt_smoothing-v1",
+      "w-m2-tool_call_summary-v1",
       "w-m3-tool_result_summary-v1",
       "w-t1-turn_derivation-v1",
     ]);
-    expect(report.ran.map((entry) => entry.disposition)).toEqual(["done", "done", "done"]);
+    expect(report.ran.map((entry) => entry.disposition)).toEqual([
+      "done",
+      "done",
+      "done",
+      "done",
+    ]);
     expect(report.stoppedBecause).toBe("empty");
     expect(report.remaining).toBe(0);
 
@@ -151,7 +160,13 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     // Artifacts landed in run order: derivedAt strictly monotone with the
     // injected clock from m1 to m3 to the turn's forms.
     const forms = readDerivedForms(filePath);
-    expect(forms.map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready"]);
+    expect(forms.map((form) => form.state)).toEqual([
+      "ready",
+      "ready",
+      "ready",
+      "ready",
+      "ready",
+    ]);
     const at = (subjectId: string, form: string): number => {
       const row = forms.find((f) => f.subjectId === subjectId && f.form === form);
       if (row?.derivedAt === undefined) throw new Error(`no derivedAt for ${subjectId}/${form}`);
@@ -439,7 +454,9 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     const report = await drain(sdk, filePath, { maxItems: 1 });
     expect(report.ran).toHaveLength(1);
     expect(report.stoppedBecause).toBe("max_items");
-    expect(report.remaining).toBe(2);
-    expect(liveCount(filePath)).toBe(2);
+    // 3 behind the stop since Epic 02 Story 2: tool_call queues its summary
+    // (sanctioned amendment — was 2).
+    expect(report.remaining).toBe(3);
+    expect(liveCount(filePath)).toBe(3);
   });
 });

@@ -33,6 +33,11 @@ export const MIGRATION_V5_STATEMENTS: readonly string[] = [
   // inside an index definition, so the index covers the two real columns and
   // claimNext's ORDER BY rowid walks the head as before.
   `CREATE INDEX idx_work_item_queue ON work_item (status, eligible_at);`,
+  // Call-id pairing index (Story 2): the tool-activity handlers' paired-read
+  // and intake's AC-2.8 late-result lookup are each one indexed query by
+  // call id — never a block scan (anti-shim requirement).
+  `CREATE INDEX idx_message_block_tool_call_id
+     ON message_block (block_type, json_extract(content, '$.toolCallId'));`,
   `CREATE TABLE derived_form (
     subject_kind TEXT NOT NULL CHECK (subject_kind IN ('message','turn','chunk')),
     subject_id   TEXT NOT NULL,

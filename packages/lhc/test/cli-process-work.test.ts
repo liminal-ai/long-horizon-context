@@ -152,7 +152,9 @@ describe("TC-1.3 / AC-1.3 (architecture risk): queued and claimed work survives 
       validEvent("turn_end"),
     ]);
     expect(seeded.ok).toBe(true);
-    expect(rawLiveCount(threadPath)).toBe(3);
+    // 4 items since Epic 02 Story 2: tool_call queues its summary
+    // (sanctioned amendment — was 3).
+    expect(rawLiveCount(threadPath)).toBe(4);
 
     // Runner: item 1 completes normally; from item 2 on, the handler holds —
     // so the HANDLER_START 2 marker means item 1's complete landed and item
@@ -175,7 +177,8 @@ describe("TC-1.3 / AC-1.3 (architecture risk): queued and claimed work survives 
     // as ready (NFR: a killed drain leaves no partial artifact).
     const afterKill = rawDetail(threadPath);
     expect(afterKill.map((row) => [row.workItemId, row.status])).toEqual([
-      ["w-m3-tool_result_summary-v1", "claimed"],
+      ["w-m2-tool_call_summary-v1", "claimed"],
+      ["w-m3-tool_result_summary-v1", "queued"],
       ["w-t1-turn_derivation-v1", "queued"],
     ]);
     const readyAfterKill = readDerivedForms(threadPath).filter((f) => f.state === "ready");
@@ -197,6 +200,7 @@ describe("TC-1.3 / AC-1.3 (architecture risk): queued and claimed work survives 
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
     expect(drained.value.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
+      ["w-m2-tool_call_summary-v1", "done"],
       ["w-m3-tool_result_summary-v1", "done"],
       ["w-t1-turn_derivation-v1", "done"],
     ]);
@@ -209,7 +213,7 @@ describe("TC-1.3 / AC-1.3 (architecture risk): queued and claimed work survives 
       (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
     );
     expect(postKill).toEqual(preKill);
-    expect(finalForms).toHaveLength(4);
+    expect(finalForms).toHaveLength(5);
     expect(finalForms.every((form) => form.state === "ready")).toBe(true);
     expect(rawLiveCount(threadPath)).toBe(0);
   }, 30000);
@@ -281,8 +285,9 @@ describe("CLI parity: lhc work drain through the spawned binary (DD-11 provider 
     expect(cliReport.ok).toBe(true);
 
     // The SDK twin drains through the same production assembly the CLI uses:
-    // registry provider, manual mode, Story 1's (still empty) domain handler
-    // tables — so the two reports must be identical, shape and content.
+    // registry provider, manual mode, the production domain handler tables
+    // (messages registered in Story 2) — so the two reports must be
+    // identical, shape and content.
     const provider = resolveNamedProvider("deterministic");
     if (provider === undefined) throw new Error("deterministic provider not registered");
     const sdk = createSdk({ provider, mode: "manual" });

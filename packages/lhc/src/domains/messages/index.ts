@@ -14,6 +14,9 @@ import {
   resolveThreadRef,
   type ThreadRef,
 } from "../threads/index.js";
+import type { DerivedForm } from "../../shared/derivation.js";
+import { findUnknownOutcomeCallSummary, readMessageForms } from "./internal/forms.js";
+import { messageWorkHandlers } from "./internal/handlers.js";
 import { projectEvent } from "./internal/project.js";
 import { insertMessage, readMessages } from "./internal/store.js";
 
@@ -33,6 +36,11 @@ export interface MessageRecord {
   actor: string;
   harness: string;
   turnId?: string;
+  // The message's derived forms as stored (Epic 02 Story 2): present only
+  // for messages that are derivation sources — kinds with no derivable form
+  // carry no rows and no key (AC-2.7). Stored state returned verbatim,
+  // never re-derived on read.
+  forms?: DerivedForm[];
 }
 
 // The event as the walk holds it after recording: the validated input plus
@@ -42,6 +50,9 @@ export type RecordedEvent = EventRecord;
 export type MessageCreated = {
   messageId: string;
   kind: Exclude<EventKind, "turn_end">;
+  // Carried for tool activity only: the pairing key the queue sites need —
+  // tool_result projection runs the AC-2.8 late-result lookup against it.
+  toolCallId?: string;
 } | null;
 
 // Cross-domain surface, called by intake-stream inside the batch transaction
@@ -72,17 +83,22 @@ export function createFromEvent(
     turnId,
     blocks: projected.blocks,
   });
+  if (event.eventKind === "tool_call" || event.eventKind === "tool_result") {
+    return { messageId, kind, toolCallId: event.payload.toolCallId };
+  }
   return { messageId, kind };
 }
 
 // The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
-// result queues tool_result_summary, nothing else queues anything — text,
-// thinking, and note messages are not derivation sources (AC-2.8, AC-2.7's
-// TC-2.9 half). Cross-domain surface, called by intake-stream inside the
-// batch transaction for every recorded message, so the item commits (or
-// rolls back) with the batch.
+// call queues tool_call_summary (Epic 02 Story 2's additive extension), a
+// tool result queues tool_result_summary, nothing else queues anything —
+// text, thinking, and note messages are not derivation sources (Epic 01
+// AC-2.8/TC-2.9; Epic 02 AC-2.2/AC-2.7). Cross-domain surface, called by
+// intake-stream inside the batch transaction for every recorded message, so
+// the item commits (or rolls back) with the batch.
 const MESSAGE_WORK_KINDS: Partial<Record<EventKind, WorkKind>> = {
   user_prompt: "prompt_smoothing",
+  tool_call: "tool_call_summary",
   tool_result: "tool_result_summary",
 };
 
@@ -96,29 +112,60 @@ const MESSAGE_WORK_FORMS: Partial<Record<WorkKind, FormKind>> = {
 };
 
 // Message-owned work handlers, merged into the SDK's dispatch map at
-// construction (DD-6). Empty until Story 2 lands prompt smoothing and the
-// two tool summaries.
-export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {};
+// construction (DD-6): prompt smoothing and the two tool-activity summaries.
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> =
+  messageWorkHandlers;
 
 export function queueMessageWork(
   ctx: OperationContext,
   message: MessageCreated,
 ): WorkItemRecord[] {
   if (message === null) return [];
+  const items: WorkItemRecord[] = [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
-  if (kind === undefined) return [];
-  const form = MESSAGE_WORK_FORMS[kind];
-  if (form === undefined) {
-    // Every queuing kind names its form above; a miss is a wiring bug.
-    throw new Error(`no derived form mapped for message work kind ${kind}`);
+  if (kind !== undefined) {
+    const form = MESSAGE_WORK_FORMS[kind];
+    if (form === undefined) {
+      // Every queuing kind names its form above; a miss is a wiring bug.
+      throw new Error(`no derived form mapped for message work kind ${kind}`);
+    }
+    items.push(
+      enqueue(ctx, {
+        owner: "messages",
+        kind,
+        sourceRef: { messageId: message.messageId },
+        forms: [{ subjectKind: "message", subjectId: message.messageId, form }],
+      }),
+    );
   }
-  const item = enqueue(ctx, {
-    owner: "messages",
-    kind,
-    sourceRef: { messageId: message.messageId },
-    forms: [{ subjectKind: "message", subjectId: message.messageId, form }],
-  });
-  return [item];
+  // Late-result repair (AC-2.8): a tool result landing after its call's
+  // summary already derived with outcome "unknown" means the summary's
+  // source — the call+result pair — completed underneath it; clear and
+  // regenerate at the next source version, in this same batch transaction.
+  // One indexed lookup; pending summaries (metadata NULL) never match, so
+  // the common call-and-result-in-one-batch case never triggers, and the
+  // version-scoped item id keeps the requeue idempotent.
+  if (message.kind === "tool_result" && message.toolCallId !== undefined) {
+    const stale = findUnknownOutcomeCallSummary(ctx.db, message.toolCallId);
+    if (stale !== undefined) {
+      items.push(
+        enqueue(ctx, {
+          owner: "messages",
+          kind: "tool_call_summary",
+          sourceRef: { messageId: stale.messageId },
+          sourceVersion: stale.sourceVersion + 1,
+          forms: [
+            {
+              subjectKind: "message",
+              subjectId: stale.messageId,
+              form: "tool_call_summary",
+            },
+          ],
+        }),
+      );
+    }
+  }
+  return items;
 }
 
 function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
@@ -148,7 +195,15 @@ export async function listMessages(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    return { ok: true, value: readMessages(db) };
+    // Form read-back rides the message read (AC-2.1): each record carries
+    // its stored derived forms, attached from one grouped query — the
+    // production path for "readable alongside the message".
+    const formsByMessage = readMessageForms(db);
+    const records = readMessages(db).map((record) => {
+      const forms = formsByMessage.get(record.messageId);
+      return forms === undefined ? record : { ...record, forms };
+    });
+    return { ok: true, value: records };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message read-back failed: ${reason}`);

@@ -76,6 +76,16 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 - Dispositions: 01F-001 fixed. Deviations: 7 approved. Accepted-risk/defer: none. Open risks: none.
 - Commit: recorded below.
 
+### 02-message-level-derivation
+- validate ready; run 04:15Z; implementor ~19min; verifier initial 02F-001 (form read-back on message reads) → fixed; final verifier pass.
+- 04:40Z needs-ruling (spec-deviation). 04:42Z impl-lead APPROVED 5 deviations: intake touches in messages/index.ts (Epic 01's actual kind-map placement); call-id index in-place in v5; outcome metadata on result summaries too (FC-0.3-consistent); read-back deferral superseded by 02F-001 fix; sanctioned amendment sweep extended to Epic 02 story 0/1 test files. Resumed → accept-story.
+
+#### RECEIPT — 02-message-level-derivation (ACCEPTED 2026-06-11T04:43Z)
+- Implementor: 003-implementor.json. Verifier: initial + follow-up pass (02F-001 fixed, openFindings []).
+- Gates by impl-lead: green-verify PASS (163 tests, immutability OK 20 red files); verify-all PASS (182 tests).
+- Baseline: 173 → 182 (no regression).
+- Dispositions: 02F-001 fixed. Deviations: 5 approved. Accepted-risk/defer: none. Open risks: none.
+
 ## Epic Closeout
 
 (pending)

@@ -142,6 +142,9 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     expect(rawWorkItemCount(filePath)).toBe(2);
   });
 
+  // Epic 02 Story 2 (sanctioned amendment, test plan §Sanctioned Amendments):
+  // the kind gate now also queues tool_call → tool_call_summary; the inert
+  // kinds below stay inert.
   it("TC-2.9: text, thinking, and note messages queue nothing — the kind gate is exact (AC-2.8)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
@@ -291,7 +294,9 @@ describe("architecture-risk: durability and rollback over the complete record su
       validEvent("turn_end"),
     ]);
     const before = await readBack(filePath);
-    expect(before.messageWork).toHaveLength(2);
+    // 3 message items since Epic 02 Story 2: tool_call queues its summary
+    // (sanctioned amendment — was 2).
+    expect(before.messageWork).toHaveLength(3);
     expect(before.turnWork).toHaveLength(1);
 
     // Every SDK operation opens and closes its own handle, so a fresh
@@ -304,6 +309,7 @@ describe("architecture-risk: durability and rollback over the complete record su
         .all() as unknown as Array<{ work_item_id: string; status: string }>;
       expect(rows).toEqual([
         { work_item_id: "w-m1-prompt_smoothing-v1", status: "queued" },
+        { work_item_id: "w-m2-tool_call_summary-v1", status: "queued" },
         { work_item_id: "w-m3-tool_result_summary-v1", status: "queued" },
         { work_item_id: "w-t1-turn_derivation-v1", status: "queued" },
       ]);
@@ -439,15 +445,21 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
 
   it("createSdk assembles the handler map from domain tables; an unregistered kind reports the miss explicitly", () => {
     const sdk = createSdk({ provider: createProviderDouble(), mode: "manual" });
-    // Domain tables are empty until Stories 2–3; assembly itself is live.
-    expect(sdk.workHandlers).toEqual({});
+    // Story 2 registered the three message-owned handlers; the turn-owned
+    // kinds arrive in Story 3 (amended from the empty-map assertion when the
+    // messages table was populated).
+    expect(Object.keys(sdk.workHandlers).sort()).toEqual([
+      "prompt_smoothing",
+      "tool_call_summary",
+      "tool_result_summary",
+    ]);
     // The miss is reported as a structured result — not a throw, not silence.
-    const missed = sdk.lookupWorkHandler("prompt_smoothing");
+    const missed = sdk.lookupWorkHandler("turn_derivation");
     expect(missed.ok).toBe(false);
     if (missed.ok) return;
     expect(missed.error.errorClass).toBe("state_corruption");
     expect(missed.error.code).toBe("unknown_work_kind");
-    expect(missed.error.reason).toContain("prompt_smoothing");
+    expect(missed.error.reason).toContain("turn_derivation");
   });
 
   it("assembly merges per-domain tables, dispatch finds a registered handler, and a doubly-claimed kind is refused", () => {
