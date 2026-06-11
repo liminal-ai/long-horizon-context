@@ -128,9 +128,9 @@ Compact never calls a model. The artifacts either exist (Epic 02 derived them) o
 
 #### Test Conditions
 
-- **TC-2.1** (AC-2.2, AC-2.3): Compact with a built-in profile → succeeds with that profile's bound and mix recorded in the receipt; compact with percentages summing to 105 → caller error naming the sum; unknown profile → caller error naming it; thread unchanged after both rejections.
+- **TC-2.1** (AC-2.2, AC-2.3, AC-2.7): Compact with a built-in profile → succeeds with that profile's bound and mix recorded in the receipt; compact with percentages summing to 105 → caller error naming the sum; unknown profile → caller error naming it; thread unchanged after both rejections.
 - **TC-2.2** (AC-2.4, AC-2.9): On a thread with full derivation coverage, compact → view within bound, band proportions per config, provider fake observes zero calls during the compact; read the record after → identical to before.
-- **TC-2.3** (AC-2.5): On a thread with one failed chunk summary and one pending turn rendering, compact → completes; degraded entries render fallbacks and are marked; receipt lists both with reasons; no span silently absent (every turn/chunk in the compacted range accounted for in some form).
+- **TC-2.3** (AC-2.5, AC-2.7): On a thread with one failed chunk summary and one pending turn rendering, compact → completes; degraded entries render fallbacks and are marked; receipt lists both with reasons and reports per-band counts; no span silently absent (every turn/chunk in the compacted range accounted for in some form).
 - **TC-2.4** (AC-2.6): Crash injection between sweep and view write (test seam) → previous view still serves; rerun compact → new view lands; no partial state.
 - **TC-2.5** (AC-2.1, AC-2.8): Status read on a heavy thread → tail tokens, threshold, `compactRecommended: true`, pending/failed counts; assert reads only (no work rows, no state change); intake more, status again → tail grew; no compact occurred without invocation.
 - **TC-2.6** (AC-2.10): Compact, pull, inspect band text → chunk keys present for brief/detailed entries, turn keys for smoothed entries.
@@ -158,7 +158,7 @@ The compact runs the sweep first by default so every compact leaves the thread h
 - **TC-3.1** (AC-3.1, AC-3.2, AC-3.3): Seed a thread with ready, pending, transiently-failed, non-transiently-failed, and blocked forms (fixture-manufactured states); sweep → returns immediately; transient failure requeued (work row exists, form pending), non-transient and blocked untouched and reported, pending untouched; provider fake observes zero calls from the sweep itself.
 - **TC-3.2** (AC-3.4): Sweep the same thread twice without draining → second sweep reports the requeued form as in-flight, does not requeue again; exactly one work row exists for it.
 - **TC-3.3** (AC-3.5, AC-3.7): Standalone sweep via SDK and via spawned CLI → same receipt shape; counts and reasons match the seeded states.
-- **TC-3.4** (AC-3.6): Compact with default options → receipt includes sweep section; compact with skip → receipt records the skip and no requeues occurred; drain after the default compact → requeued form heals; next compact's view includes the healed form.
+- **TC-3.4** (AC-3.6, AC-2.7): Compact with default options → receipt includes sweep section; compact with skip → receipt records the skip and no requeues occurred; drain after the default compact → requeued form heals; next compact's view includes the healed form.
 
 ## Flow 4: Tool-Result Visibility
 

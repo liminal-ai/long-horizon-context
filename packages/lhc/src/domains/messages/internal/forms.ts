@@ -159,7 +159,11 @@ export function reportMessageForms(
 }
 
 // The call-id pairing reads. Earliest-recorded block wins if a call id were
-// ever repeated; in a well-formed record the pair is unique.
+// ever repeated; in a well-formed record the pair is unique. Deleted messages
+// are excluded (tech-design §Mechanics' deleted-read rule, epic-fix-001):
+// composition inputs and derivation reads never see deleted records, so a
+// tool_call whose paired result has been deleted reads no pair and derives
+// outcome `unknown` — never the dead result's outcome.
 function findPairedBlock(
   db: DatabaseSync,
   blockType: "tool_call" | "tool_result",
@@ -168,7 +172,7 @@ function findPairedBlock(
   const row = db
     .prepare(
       `SELECT b.content FROM message_block b
-       JOIN message m ON m.message_id = b.message_id
+       JOIN message m ON m.message_id = b.message_id AND m.deleted_at IS NULL
        WHERE b.block_type = ? AND json_extract(b.content, '$.toolCallId') = ?
        ORDER BY m.source_event_order LIMIT 1`,
     )
@@ -211,6 +215,7 @@ export function findUnknownOutcomeCallSummary(
   const row = db
     .prepare(
       `SELECT df.subject_id, df.source_version FROM message_block b
+       JOIN message m ON m.message_id = b.message_id AND m.deleted_at IS NULL
        JOIN derived_form df ON df.subject_kind = 'message'
          AND df.subject_id = b.message_id AND df.form = 'tool_call_summary'
        WHERE b.block_type = 'tool_call' AND json_extract(b.content, '$.toolCallId') = ?

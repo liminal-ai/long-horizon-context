@@ -11,7 +11,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   createCommitHooks,
-  fireSchedulerPoke,
   type OperationContext,
 } from "../../shared/context.js";
 import type {
@@ -133,7 +132,7 @@ export function enqueue(ctx: OperationContext, input: EnqueueInput): WorkItemRec
   for (const target of input.forms) {
     upsert.run(target.subjectKind, target.subjectId, target.form, sourceVersion);
   }
-  ctx.onCommit(() => fireSchedulerPoke(ctx.threadId));
+  ctx.onCommit(() => ctx.poke(ctx.threadId));
   return item;
 }
 

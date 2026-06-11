@@ -7,6 +7,7 @@
 // accumulated close policy, and any close's summary enqueues all ride the
 // one commit (anti-shim: a crash leaves either a placed turn with queued
 // summaries or an open chunk — nothing between).
+import { resolveInstancePoke } from "../../../shared/context.js";
 import type {
   DependencyGap,
   HandlerOutcome,
@@ -117,7 +118,13 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
       const placement = placeTurn(tx.db, turnId, projectedTokens, run.config.chunkPolicy);
       for (const chunkId of placement.closedChunkIds) {
         enqueueChunkSummaries(
-          { db: tx.db, clock: run.clock, threadId, onCommit: tx.onCommit },
+          {
+            db: tx.db,
+            clock: run.clock,
+            threadId,
+            onCommit: tx.onCommit,
+            poke: resolveInstancePoke(),
+          },
           chunkId,
         );
       }

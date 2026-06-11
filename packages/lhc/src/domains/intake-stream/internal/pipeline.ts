@@ -5,7 +5,11 @@
 // transitions, and work queueing.
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { createCommitHooks, type OperationContext } from "../../../shared/context.js";
+import {
+  createCommitHooks,
+  resolveInstancePoke,
+  type OperationContext,
+} from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
 import type { WorkItemRecord } from "../../../tech-utils/work-queue/index.js";
 import { createFromEvent, queueMessageWork } from "../../messages/index.js";
@@ -125,6 +129,7 @@ export async function runMessageEvents(
       clock,
       threadId: threadIdOf(db),
       onCommit: hooks.register,
+      poke: resolveInstancePoke(),
     };
 
     // Corruption check at state load (AC-3.9): after BEGIN IMMEDIATE, before

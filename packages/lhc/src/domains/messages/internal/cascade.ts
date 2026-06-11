@@ -95,6 +95,50 @@ function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
   return subjects;
 }
 
+// The call/result pair as a source dependency (AC-2.8's pair-as-source model,
+// impl-lead ruling epic-fix-001): a tool summary derives from its message AND
+// the paired counterpart, so mutating one half is a source change for the
+// counterpart's summary. Find the live counterpart of a mutated tool message —
+// the opposite block type sharing its toolCallId — as a clear subject, so the
+// cascade clears and re-queues that summary alongside the rest of the chain.
+// Returns nothing when the mutated message carries no tool block, or the
+// counterpart is deleted or absent. The rebuilt summary derives from the live
+// record only: with the deleted-read filter (epic-fix-001), a gone result
+// reverts the call summary's outcome to `unknown`. AC-6.2's "nothing else
+// changes" still bounds the cascade across other turns and chunks — only the
+// counterpart message itself, inside the dependency graph, is in scope, so its
+// own turn and chunk are deliberately not walked.
+function pairedCounterpartSubject(
+  db: DatabaseSync,
+  messageId: string,
+): ChainSubject | undefined {
+  const own = db
+    .prepare(
+      `SELECT block_type, json_extract(content, '$.toolCallId') AS tool_call_id
+       FROM message_block
+       WHERE message_id = ? AND block_type IN ('tool_call', 'tool_result')
+       LIMIT 1`,
+    )
+    .get(messageId) as unknown as
+    | { block_type: string; tool_call_id: string | null }
+    | undefined;
+  if (own === undefined || own.tool_call_id === null) return undefined;
+  const counterpartType = own.block_type === "tool_call" ? "tool_result" : "tool_call";
+  const row = db
+    .prepare(
+      `SELECT m.message_id FROM message_block b
+       JOIN message m ON m.message_id = b.message_id AND m.deleted_at IS NULL
+       WHERE b.block_type = ? AND json_extract(b.content, '$.toolCallId') = ?
+         AND m.message_id <> ?
+       ORDER BY m.source_event_order LIMIT 1`,
+    )
+    .get(counterpartType, own.tool_call_id, messageId) as unknown as
+    | { message_id: string }
+    | undefined;
+  if (row === undefined) return undefined;
+  return { subjectKind: "message", subjectId: row.message_id };
+}
+
 interface RebuildGroup {
   subject: ChainSubject;
   kind: WorkKind;
@@ -195,11 +239,16 @@ function runCascade(
 
 // Edit's close path: clear-and-requeue for the full chain above (and
 // including) the edited message, inside the mutation's ambient transaction.
+// A call/result pair counterpart (epic-fix-001) joins the clear set: editing
+// one half is a source change for the other's summary.
 export function cascadeFromMessage(
   ctx: OperationContext,
   messageId: string,
 ): CascadeOutcome {
-  return runCascade(ctx, [], chainSubjects(ctx.db, messageId));
+  const clear = chainSubjects(ctx.db, messageId);
+  const counterpart = pairedCounterpartSubject(ctx.db, messageId);
+  if (counterpart !== undefined) clear.push(counterpart);
+  return runCascade(ctx, [], clear);
 }
 
 // Message delete's close path (Flow 6): the deleted message's own forms
@@ -211,6 +260,11 @@ export function cascadeMessageDelete(
   messageId: string,
 ): CascadeOutcome {
   const [own, ...upward] = chainSubjects(ctx.db, messageId);
+  // The deleted half's live pair counterpart re-derives from the live record
+  // (epic-fix-001): its summary clears and re-queues, reverting outcome to
+  // `unknown` for a call whose result is now gone.
+  const counterpart = pairedCounterpartSubject(ctx.db, messageId);
+  if (counterpart !== undefined) upward.push(counterpart);
   return runCascade(ctx, own === undefined ? [] : [own], upward);
 }
 

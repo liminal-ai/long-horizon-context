@@ -15,7 +15,12 @@ import {
   type DrainReport,
   type Scheduler,
 } from "./scheduler.js";
-import { setSchedulerPoke as installSchedulerPoke, setThreadTouch } from "./shared/context.js";
+import {
+  runWithInstanceSeam,
+  setSchedulerPoke as installSchedulerPoke,
+  setThreadTouch,
+  type InstanceSeam,
+} from "./shared/context.js";
 import {
   PROVIDER_OPERATIONS,
   type ResolvedSdkConfig,
@@ -189,6 +194,25 @@ function requireNonNegative(value: number, name: string): void {
   }
 }
 
+// Bind a domain surface to one SDK instance's delivery seam (epic-fix-001):
+// every operation invoked through sdk.* runs inside runWithInstanceSeam, so
+// the poke/touch it triggers deep inside reaches THIS SDK's scheduler
+// (background) or a no-op (manual) — never another SDK's. Non-function exports
+// (e.g. a domain's workHandlers table) pass through unchanged. The wrapped
+// object is the same shape as the namespace, so the public surface type holds.
+function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
+  const scoped: Record<string, unknown> = {};
+  for (const key of Object.keys(surface)) {
+    const value = (surface as Record<string, unknown>)[key];
+    scoped[key] =
+      typeof value === "function"
+        ? (...args: unknown[]): unknown =>
+            runWithInstanceSeam(seam, () => (value as (...a: unknown[]) => unknown)(...args))
+        : value;
+  }
+  return scoped as T;
+}
+
 // The only assembly path: provider, mode, clock, and policy enter here.
 // Config mistakes are programmer errors at construction and throw; operating
 // failures after construction return OpResults per the error contract.
@@ -245,30 +269,46 @@ export function createSdk(config: SdkConfig): Lhc {
   };
   const scheduler = createScheduler(resolved.mode, drainDeps);
 
-  // Background mode wires the scheduler into the process-wide seams: enqueue
-  // pokes (DD-5) and thread-file touches (DD-10) reach it from then on, and
-  // queueing alone causes processing (AC-1.5). The slots hold one scheduler;
-  // constructing a later background SDK supersedes an earlier one (the
-  // displaced scheduler's in-memory state was advisory — the rows remain).
-  // Manual mode leaves the slots alone: pokes stay no-ops by contract.
+  // This SDK's per-instance delivery seam (epic-fix-001). Every operation
+  // invoked through the scoped surfaces below runs inside it, so enqueue pokes
+  // (DD-5) and thread-file touches (DD-10) reach THIS instance's scheduler in
+  // background mode, or a no-op in manual mode — isolated from any other SDK
+  // alive in the process. A manual SDK therefore never auto-drains, whatever
+  // the construction order, because its operations deliver to the no-op seam,
+  // not to whatever a background SDK installed below.
+  const seam: InstanceSeam =
+    resolved.mode === "background"
+      ? {
+          poke: (threadId) => scheduler.poke(threadId),
+          touch: (filePath, db) => scheduler.touch(filePath, db),
+        }
+      : { poke: () => {}, touch: () => {} };
+
+  // Background mode also installs the below-SDK default seam so a direct
+  // domain call made with no SDK scope — a top-level mutation in the
+  // single-background "production path" — still reaches the one installed
+  // scheduler. The per-instance scoping above overrides this for every sdk.*
+  // call, so the default can never auto-drain a manual SDK's work. Manual mode
+  // leaves the default alone (pokes stay no-ops by contract).
   if (resolved.mode === "background") {
     installSchedulerPoke((threadId) => scheduler.poke(threadId));
     setThreadTouch((filePath, db) => scheduler.touch(filePath, db));
   }
 
   const work: WorkSurface = {
-    drain: async (ref, opts) => {
-      const resolvedRef = await threadsDomain.resolveThreadRef(ref);
-      if (!resolvedRef.ok) return resolvedRef;
-      return runDrain(resolvedRef.value.filePath, drainDeps, opts);
-    },
+    drain: (ref, opts) =>
+      runWithInstanceSeam(seam, async () => {
+        const resolvedRef = await threadsDomain.resolveThreadRef(ref);
+        if (!resolvedRef.ok) return resolvedRef;
+        return runDrain(resolvedRef.value.filePath, drainDeps, opts);
+      }),
   };
 
   return {
     threads: threadsDomain,
-    intakeStream: intakeStreamDomain,
-    messages: messagesDomain,
-    turns: turnsDomain,
+    intakeStream: scopeSurface(intakeStreamDomain, seam),
+    messages: scopeSurface(messagesDomain, seam),
+    turns: scopeSurface(turnsDomain, seam),
     config: resolved,
     scheduler,
     workHandlers,

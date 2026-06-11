@@ -1,9 +1,9 @@
 # Team Impl Log — Epic 02: Derivation Pipeline
 
-State: STORY_ACTIVE
-Current Story: 01-queue-execution-drain
-Current Phase: implement
-Accepted: 00-foundation (commit 967a90f, baseline 155)
+State: EPIC_VERIFY_ACTIVE
+Current Story: — (all 7 accepted)
+Current Phase: epic-review
+Accepted: 00 (967a90f, 155) · 01 (794c877, 173) · 02 (cc304bb, 182) · 03 (c61397e, 195) · 04 (8b2d92b, 208) · 05 (da58dd5, 218) · 06 (64539ed, 231)
 Spec-Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/02-derivation-pipeline
 Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 
@@ -131,4 +131,19 @@ Run Started: 2026-06-11T03:00Z (caller harness: Claude Code, impl-lead)
 
 ## Epic Closeout
 
-(pending)
+- 08:00Z epic-review (001-epic-review.json): reviewer-1 (fable-5) pass w/ 5 non-blocking; reviewer-2 (gpt-5.5) BLOCK w/ 2 majors, both dynamically verified; reconciliation upheld block.
+  - EPIC-02-BLOCK-001: module-global poke seams → manual SDK can auto-drain after background SDK construction in-process. IMPL-LEAD RULING: per-instance seam scoping (not clear-globals, not refuse-multi-SDK).
+  - EPIC-02-BLOCK-002: findPairedBlock reads deleted results (filter bug) + counterpart summary not cascaded. IMPL-LEAD RULING: pair is a source dependency per AC-2.8 symmetry — deleting/editing half a pair clears + requeues the counterpart summary; AC-6.2's bound applies across turns/chunks, not within the pair.
+  - Non-blocking recorded (not in this batch): E02-NB-001 clock bypass in mutations/requeue; NB-003 deterministic provider only registered provider; NB-004 thrown handler errors → retryable; NB-005 attempts accounting inconsistency.
+- 08:15Z epic-fix launched with fix-batch-001.md (both blockers, rulings embedded; 4 actionable items).
+- epic-fix applied fix-batch-001 (all 4 items):
+  - BLOCK-001 — per-SDK-instance seam scoping. Replaced the module-global poke/touch *as the SDK→scheduler binding*: each SDK now runs its operations inside an AsyncLocalStorage seam (background → its own scheduler; manual → no-op), carried onto `OperationContext.poke` and consulted by `openThreadDatabase`'s touch. The former global slots survive only as the below-SDK default seam (no SDK in scope: enqueue-atomicity tests + single-background direct-call production path), so they can never auto-drain a manual SDK whose own operations deliver to a no-op. Background still installs the default for direct top-level calls. Regression: `test/epic-fix-02.test.ts` (background-then-manual and manual-then-background, different threads, manual rows stay queued until explicit drain).
+  - BLOCK-002a — `findPairedBlock` (and `findUnknownOutcomeCallSummary`) now `JOIN message … AND m.deleted_at IS NULL`: a tool_call whose paired result is deleted derives outcome `unknown`.
+  - BLOCK-002b — pair counterpart joins the mutation cascade (`cascade.ts`: `pairedCounterpartSubject` added to the clear set in `cascadeFromMessage` and `cascadeMessageDelete`). Deleting/editing half a call/result pair clears + requeues the live counterpart's tool-activity summary at the next source version; it rebuilds from the live record only.
+- **Cascade-scope clarification (fix-batch item 4, impl-lead ruling epic-fix-001):** pair-counterpart summaries are part of the mutation cascade — the call/result pair is a source dependency per **AC-2.8 symmetry**, so a source change to one half clears/requeues the other half's summary. AC-6.2's "nothing else changes" bounds the cascade *across other turns/chunks*; the paired counterpart inside the dependency graph is in scope.
+  - Story-06 test-contract change: this ruling reverses exactly what the Story-06 architecture-risk test `mutations-delete.test.ts` TC-6.2 pinned ("nothing outside the chain"; m2's tool_call_summary byte-stable). TC-6.2's `cleared`/`queued` assertions were updated to include `message/m2/tool_call_summary` + `w-m2-tool_call_summary-v2`, and the red-manifest hash for `mutations-delete.test.ts` was re-recorded to bless the change. No other Red file changed.
+- Fix-batch-001 execution record: attempt 1 PROVIDER_STALLED at 32min (no code landed); attempt 2 (08:46–09:20Z) landed all 4 items but final envelope malformed (PROVIDER_OUTPUT_INVALID) — work verified on disk by impl-lead. Gates on fixed tree by impl-lead: green-verify PASS (207), verify-all PASS (234).
+- 09:29Z epic-reverify (002, fable-5): outcome **needs-fixes**. BLOCK-001/BLOCK-002 resolved. NEW: REVERIFY-02-001 (blocking-candidate) — cascadeTurnDelete missed the pair-counterpart cascade (third caller of DD-8's module; cross-turn pairs reachable, dynamically verified end-to-end). Retained non-blocking: E02-NB-001 (clock bypass), NB-003 (deterministic-only provider, by design), NB-004 (thrown→retryable, documented), NB-005 (attempts asymmetry).
+- External spec-vs-build review (3 reviewer agents, via user) — impl-lead verified all findings against the tree, AGREES: Fix 1 (P2) background backoff stall (no timer on 'waiting' stop, scheduler.ts:286-295); Fix 2 (P2) tool-run grouping unimplemented (per-message parts, compose.ts); P3: story-3 max 8000→4400 doc fix; TC-2.7 thinking coverage; delete-side stale-straggler test; impl-log completeness (this entry).
+- 09:45Z fix-batch-002.md compiled: Fix 1 P2 + Fix 2 P2 + REVERIFY-02-001 + 3 P3 items + deviation recording. epic-fix round 2 launched.
+- Current Phase: epic-fix (round 2, fix-batch-002)
