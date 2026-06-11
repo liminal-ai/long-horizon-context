@@ -1,10 +1,10 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: PRE_EPIC_VERIFY
+- State: COMPLETE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/03-thread-views-and-smart-compact
 - Current Story: none (all six stories accepted)
-- Current Phase: none
+- Current Phase: none (run complete 2026-06-11)
 - (Story 3 history: PRIMITIVE PATH — story-lead run 001 terminal blocked after two transient provider failures (socket close after 51 turns, then 529 Overloaded); composed resume re-blocks without redispatching. Recovery: fresh story-implement primitive dispatched 2026-06-11T17:10Z against partial worktree completed the story: SV-03-001 closed (sweep.ts walk/classify/requeue + surface + compact embed landed by the partial worktree, verified against owners' contracts), SV-03-002 closed (test/view-sweep.test.ts added — 10 tests, TC-3.1–3.4, classification edges, five-op zero-provider; stale placeholder assertions in view-pull/view-compact amended under the sanctioned-amendment pattern, red-manifest re-recorded). Gates green 2026-06-11: green-verify (273 tests + immutability OK), verify-all (300 tests incl. process suite). Next: story-verify follow-up on retained verifier handle codex/019eb786-e7ae-7d92-84c3-8daefeb333c6 → receipt.)
 - Story 3 gate verified 2026-06-11 pre-launch (both legs): (1) requeue patch landed — messages.requeue (src/domains/messages/index.ts:284,357) and turns.requeue (src/domains/turns/index.ts:284,383) with already_queued noop, version-scoped idempotent item ids; (2) reason-class persistence — retryable flag flows through work-queue terminal failure path (src/tech-utils/work-queue/index.ts:383-394, scheduler.ts:148-174, handlers); FC-0.4 (passing since Story 0) proves distinguishable transient/permanent classes on read-back via production drains. No Epic 02 patch needed.
 - Preflight: ready (artifacts/preflight/001-preflight.json, 2026-06-11). CLI persisted verification_gates into impl-run.config.json (expected side effect). Codex auth status unknown per preflight note; binary present.
@@ -146,11 +146,11 @@
 - Latest Actual Total: 325 (verify-all after 05-render-targets)
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifact: artifacts/epic/001-epic-review.json
+- Epic Review Status: pass (both reviewers pass, zero findings; canonical reconciliation pass)
+- Epic Fix Status: not-started (no findings — no fix batch warranted)
+- Epic Reverify Status: not-started (review converged at pass with zero findings; nothing to reverify)
+- Final Gate Status: pass (pnpm run verify-all, 2026-06-11: 38 files, 325 tests, incl. LHC_PROCESS_SUITE=1 process suite; run on the same candidate state the review assessed — no code changes between review and gate)
 
 ## Open Risks / Accepted Risks
 - Story 3 hard gate (cross-epic): before 03-readiness-sweep starts, verify (1) Epic 02 requeue patch landed (live-work-only queue rows), (2) terminal-failure write path persists a classifiable reason class. If opaque, halt story and surface the named Epic 02 patch (stamp provider `retryable` at exhaustion). FC-0.4 in Story 0 is the fixture-side proof.
