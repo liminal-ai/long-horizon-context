@@ -65,16 +65,30 @@ interface RawFormRow {
 // read-back joined onto message reads (AC-2.1's "readable alongside the
 // message"). Rows come back exactly as the queue landed them: state, content,
 // reason, mechanically stamped metadata; nothing is derived at read time.
-export function readMessageForms(db: DatabaseSync): Map<string, DerivedForm[]> {
+//
+// messageIds, when provided, scopes the read to just those subjects so a
+// bounded listMessages loads only its window's forms (AC-3.1's
+// no-load-everything clause), never every message-owned form in the thread.
+// Omitted — the report-surface path that already reads its own scope — reads
+// all message-owned form rows as before.
+export function readMessageForms(
+  db: DatabaseSync,
+  messageIds?: readonly string[],
+): Map<string, DerivedForm[]> {
+  const byMessage = new Map<string, DerivedForm[]>();
+  if (messageIds !== undefined && messageIds.length === 0) return byMessage;
+  const idFilter =
+    messageIds === undefined
+      ? ""
+      : ` AND subject_id IN (${messageIds.map(() => "?").join(", ")})`;
   const rows = db
     .prepare(
       `SELECT subject_id, form, state, content, reason, metadata,
               source_version, gaps, derived_at
-       FROM derived_form WHERE subject_kind = 'message'
+       FROM derived_form WHERE subject_kind = 'message'${idFilter}
        ORDER BY subject_id, form`,
     )
-    .all() as unknown as RawFormRow[];
-  const byMessage = new Map<string, DerivedForm[]>();
+    .all(...(messageIds ?? [])) as unknown as RawFormRow[];
   for (const row of rows) {
     const record: DerivedForm = {
       subjectKind: "message",

@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "01-message-read-surface-story-run-001-ruling-023",
+  "decision": "strict-read-purity-supersedes-first-touch-recovery",
+  "rationale": "Spec-backed: Epic 04 Story 1 architecture-risk tests require read-only drift protection (before/after observable-state snapshots equal for listMessages/show); the epic-wide read-only delta assert wraps every read op; AC-1.4 establishes the pure-read contract. Recovery belongs to explicit drain/work execution by the owning domain, never the hot read path. Follow-up: quick-fix the stale test/red-manifest.json (SV-01-004), then re-verify.",
+  "source": "impl-lead (Claude Code caller harness), per Epic 04 spec pack evidence"
+}

@@ -234,7 +234,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(liveCount(filePath)).toBe(0);
   });
 
-  it("reopening a thread with leftover queued rows runs them on first touch — a read, not a write", async () => {
+  it("reopening a thread with leftover queued rows recovers them when the process engages — message reads stay pure (Epic 04 DD-6)", async () => {
     // Build the leftover state with no background scheduler installed: rows
     // accumulate exactly as a dead process would have left them.
     const { filePath } = await newThread();
@@ -254,9 +254,21 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     });
     registerTestWorkHandlers(sdk, double);
 
-    // First touch of the thread in this process lifetime: a plain read.
+    // First touch of the thread in this process lifetime is a read. Message
+    // list/show are read-only (Epic 04 DD-6, SV-01-001): like thread-view's
+    // pull/status before them, they suppress the open announcement, so the
+    // read schedules no first-touch catch-up — the leftover rows stay exactly
+    // as the dead process left them, and no provider call fires off a read.
     const read = await sdk.messages.listMessages({ filePath });
     expect(read.ok).toBe(true);
+    await sdk.drainSettled({ filePath });
+    expect(liveCount(filePath)).toBe(2);
+
+    // Recovery arrives the moment the process engages the thread through a
+    // non-read path — here an explicit drain (an intake or any write touches
+    // the same way). The leftover work catches up to ready.
+    const recovered = await sdk.work.drain({ filePath });
+    expect(recovered.ok).toBe(true);
     await sdk.drainSettled({ filePath });
 
     expect(liveCount(filePath)).toBe(0);

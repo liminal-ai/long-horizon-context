@@ -28,7 +28,12 @@ export type ErrorCode =
   | "invalid_view_config" // caller_error — band sum / bound violation, named
   // Epic 03 Story 5: materialize accepts pi-session only; an unknown format
   // is a caller error naming the accepted values (story Scope).
-  | "unknown_format"; // caller_error — materialize format not supported
+  | "unknown_format" // caller_error — materialize format not supported
+  // Epic 04 Story 1: bounded listing — a bad bounds option (from > to,
+  // limit < 1, non-integer) is an operational caller error returned as a
+  // result, mirroring the compact-params precedent (additive code, the
+  // Epic 03 deviation pattern).
+  | "invalid_bounds"; // caller_error — listMessages bounds option rejected
 
 export interface ErrorResult {
   errorClass: ErrorClass;

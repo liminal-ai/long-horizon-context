@@ -189,6 +189,7 @@ interface RawMessageRow {
   actor: string;
   harness: string;
   turn_id: string | null;
+  deleted_at: string | null;
 }
 
 interface RawBlockRow {
@@ -197,13 +198,79 @@ interface RawBlockRow {
   content: string;
 }
 
-export function readMessages(db: DatabaseSync): MessageRecord[] {
+function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
+  const record: MessageRecord = {
+    messageId: row.message_id,
+    sourceEventOrder: Number(row.source_event_order),
+    kind: row.kind as MessageRecord["kind"],
+    blocks,
+    tokenEstimate: Number(row.token_estimate),
+    actor: row.actor,
+    harness: row.harness,
+  };
+  if (row.turn_id !== null) record.turnId = row.turn_id;
+  // The deleted marker (Epic 04 AC-3.3): present only on deleted rows, which
+  // only the includeDeleted read surfaces — never silently mixed in.
+  if (row.deleted_at !== null) record.deleted = true;
+  return record;
+}
+
+// Bounds in source-event-order coordinates (Epic 04 DD-3): the coordinate
+// the reports name, so drill-down uses what the operator already holds.
+// limit caps the count after bounds. Defaults preserve every existing
+// caller: visible messages, unbounded, record order.
+export interface MessageReadOptions {
+  from?: number;
+  to?: number;
+  limit?: number;
+  includeDeleted?: boolean;
+}
+
+export function readMessages(
+  db: DatabaseSync,
+  opts: MessageReadOptions = {},
+): MessageRecord[] {
+  // Bounds before content (AC-3.1 no-load-everything): the message query
+  // carries the deleted filter, the source-order window, and the limit, so a
+  // bounded list resolves its window from the message table first — never
+  // reading a row, or (below) parsing a block, outside that window.
+  //
+  // The deleted-read filter (tech design §Mechanics): message reads surface
+  // live projection rows only; a deleted message's source events stay
+  // readable through the Epic 01 event read-back, the one unfiltered surface.
+  // includeDeleted is the Epic 04 audit opt-in: deleted rows return flagged.
+  const conditions: string[] = [];
+  const params: number[] = [];
+  if (opts.includeDeleted !== true) conditions.push("deleted_at IS NULL");
+  if (opts.from !== undefined) {
+    conditions.push("source_event_order >= ?");
+    params.push(opts.from);
+  }
+  if (opts.to !== undefined) {
+    conditions.push("source_event_order <= ?");
+    params.push(opts.to);
+  }
+  if (opts.limit !== undefined) params.push(opts.limit);
+  const messageRows = db
+    .prepare(
+      `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, deleted_at
+       FROM message${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ""}
+       ORDER BY source_event_order${opts.limit !== undefined ? " LIMIT ?" : ""}`,
+    )
+    .all(...params) as unknown as RawMessageRow[];
+  if (messageRows.length === 0) return [];
+
+  // Block content only for the windowed messages — never the whole table:
+  // an out-of-window block is never selected, so its content is never loaded
+  // or parsed (the no-load-everything proof corrupts one to assert this).
+  const ids = messageRows.map((row) => row.message_id);
   const blockRows = db
     .prepare(
       `SELECT message_id, block_type, content FROM message_block
+       WHERE message_id IN (${ids.map(() => "?").join(", ")})
        ORDER BY message_id, block_index`,
     )
-    .all() as unknown as RawBlockRow[];
+    .all(...ids) as unknown as RawBlockRow[];
   const blocksByMessage = new Map<string, Block[]>();
   for (const row of blockRows) {
     const blocks = blocksByMessage.get(row.message_id) ?? [];
@@ -213,27 +280,35 @@ export function readMessages(db: DatabaseSync): MessageRecord[] {
     });
     blocksByMessage.set(row.message_id, blocks);
   }
+  return messageRows.map((row) =>
+    recordFromRow(row, blocksByMessage.get(row.message_id) ?? []),
+  );
+}
 
-  // The deleted-read filter (tech design §Mechanics): message reads surface
-  // live projection rows only; a deleted message's source events stay
-  // readable through the Epic 01 event read-back, the one unfiltered surface.
-  const messageRows = db
+// The show operation's by-id read (Epic 04 Flow 3): the canonical record —
+// full blocks verbatim, never view-shortened — with the deleted flag honest.
+// Deliberately unfiltered on deleted_at: show on a deleted message is the
+// audit read (AC-3.3), never a not-found.
+export function readMessageById(
+  db: DatabaseSync,
+  messageId: string,
+): (MessageRecord & { deleted: boolean }) | undefined {
+  const row = db
     .prepare(
-      `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id
-       FROM message WHERE deleted_at IS NULL ORDER BY source_event_order`,
+      `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, deleted_at
+       FROM message WHERE message_id = ?`,
     )
-    .all() as unknown as RawMessageRow[];
-  return messageRows.map((row) => {
-    const record: MessageRecord = {
-      messageId: row.message_id,
-      sourceEventOrder: Number(row.source_event_order),
-      kind: row.kind as MessageRecord["kind"],
-      blocks: blocksByMessage.get(row.message_id) ?? [],
-      tokenEstimate: Number(row.token_estimate),
-      actor: row.actor,
-      harness: row.harness,
-    };
-    if (row.turn_id !== null) record.turnId = row.turn_id;
-    return record;
-  });
+    .get(messageId) as unknown as RawMessageRow | undefined;
+  if (row === undefined) return undefined;
+  const blockRows = db
+    .prepare(
+      `SELECT message_id, block_type, content FROM message_block
+       WHERE message_id = ? ORDER BY block_index`,
+    )
+    .all(messageId) as unknown as RawBlockRow[];
+  const blocks = blockRows.map((block) => ({
+    blockType: block.block_type as Block["blockType"],
+    content: JSON.parse(block.content) as Record<string, unknown>,
+  }));
+  return { ...recordFromRow(row, blocks), deleted: row.deleted_at !== null };
 }

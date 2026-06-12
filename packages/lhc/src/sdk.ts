@@ -136,6 +136,8 @@ export type { ThreadRef } from "./domains/threads/index.js";
 export type {
   Block,
   BlockType,
+  MessageDetail,
+  MessageListOptions,
   MessageRecord,
   MutationResult,
 } from "./domains/messages/index.js";

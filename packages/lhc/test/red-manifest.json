@@ -16,7 +16,7 @@
     "test/work-queue.test.ts": "b383468eb0d5e37f6a31f5b9912ab71f2f782e2b4febc46067ebc96bfe659ea0",
     "test/cli-process-work-queue.test.ts": "13bf1226de9cd52d7f10306c87dafea2930c10e43d5628080e3891b6a55f6686",
     "test/fixtures.test.ts": "d2f20683050ac412612b2fef1be5633ddfded6279182ac8ae3fe772907f7a4c3",
-    "test/work-execution.test.ts": "697e1e42352fbaf9220bd478a507fd6075fb65cab7f5dfc3752a2d841fbf7b2d",
+    "test/work-execution.test.ts": "eccf1434cd245dd72862c5e45ec749b12d1565092ce8d95f99c45cac59cb42e7",
     "test/cli-process-work.test.ts": "35c0426345a6eba19240872128dc93d139e7c11c563f17746afa041064daae9f",
     "test/work-execution-legacy.test.ts": "cfe9779ecc130f19be97b859ba441abbb8e95711b55dec64a28a6569e42af69b",
     "test/derivation-messages.test.ts": "09f8c9747f7b401a100f5ce6bb341116fdb510f096e74ccd1918be472ae45dc9",
@@ -40,6 +40,8 @@
     "test/view-boundary.test.ts": "4afaf519dbcdcc85a111066e620fd2837d4ca83872c8356c875d806a70f639fc",
     "test/goldens/boundary-g1-trajectory.json": "a655e4cceb8be02b1a34f6974776acd07545b3f1061e0cf16e6635373d787ed4",
     "test/view-render-targets.test.ts": "a3195b6b56fbc1dc27b4bdd62b6cb717c3b2e0308fab92d711501125709e60c0",
-    "test/cli-process-view.test.ts": "f1f3c4e5b36f80c4510065fc24db5faa6c1de2890447a866d5869a63dd96f51c"
+    "test/cli-process-view.test.ts": "f1f3c4e5b36f80c4510065fc24db5faa6c1de2890447a866d5869a63dd96f51c",
+    "test/messages-read.test.ts": "0b6c53ae2a1c1c4cc8de303d39d978912e9d83907895379b4b3f80c39ce163c3",
+    "test/cli-process-inspect.test.ts": "19742b4c1693586313196fbf64eced4ab64e3d981df32c7c825c758f0f180cd3"
   }
 }

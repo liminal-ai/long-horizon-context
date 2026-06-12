@@ -1,5 +1,9 @@
 import { existsSync } from "node:fs";
-import { runInTransaction, type OperationContext } from "../../shared/context.js";
+import {
+  runInTransaction,
+  runWithThreadTouchSuppressed,
+  type OperationContext,
+} from "../../shared/context.js";
 import type { FormKind, FormReportEntry, WorkHandler } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
@@ -36,6 +40,7 @@ import {
   insertMessage,
   markMessageDeleted,
   markTurnMessagesDeleted,
+  readMessageById,
   readMessages,
   readMutableMessage,
 } from "./internal/store.js";
@@ -61,6 +66,10 @@ export interface MessageRecord {
   // carry no rows and no key (AC-2.7). Stored state returned verbatim,
   // never re-derived on read.
   forms?: DerivedForm[];
+  // The deleted-audit marker (Epic 04 AC-3.3): present (true) only on
+  // deleted records, which only the includeDeleted listing and the show
+  // read ever surface — a default list never carries the key.
+  deleted?: boolean;
 }
 
 // The event as the walk holds it after recording: the validated input plus
@@ -199,9 +208,65 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
   };
 }
 
-export async function listMessages(
+// Bounded-listing options (Epic 04 Story 1, DD-3): from/to are
+// source-event-order bounds, limit caps the count after bounds,
+// includeDeleted is the audit opt-in. All optional — existing callers see
+// identical results (visible messages, unbounded, record order).
+export interface MessageListOptions {
+  from?: number;
+  to?: number;
+  limit?: number;
+  includeDeleted?: boolean;
+}
+
+function invalidBounds(reason: string): ErrorResult {
+  return { errorClass: "caller_error", code: "invalid_bounds", reason };
+}
+
+// Bounds mistakes are operational caller errors returned as results (tech
+// design §Interface Definitions: from > to, limit < 1) — never a silent
+// empty list a caller could mistake for an empty window.
+function validateListOptions(opts: MessageListOptions): ErrorResult | undefined {
+  const integers: ReadonlyArray<readonly [string, number | undefined]> = [
+    ["from", opts.from],
+    ["to", opts.to],
+    ["limit", opts.limit],
+  ];
+  for (const [name, value] of integers) {
+    if (value !== undefined && !Number.isInteger(value)) {
+      return invalidBounds(`${name} must be an integer, got ${value}`);
+    }
+  }
+  if (opts.from !== undefined && opts.to !== undefined && opts.from > opts.to) {
+    return invalidBounds(`from (${opts.from}) must not exceed to (${opts.to})`);
+  }
+  if (opts.limit !== undefined && opts.limit < 1) {
+    return invalidBounds(`limit must be at least 1, got ${opts.limit}`);
+  }
+  return undefined;
+}
+
+// Reads-only is structural, not disciplined (DD-6, SV-01-001): the whole
+// operation runs in the touch-suppressed scope, so openThreadDatabase's open
+// announcement (openThreadDatabase → fireThreadTouch → scheduler.touch) can
+// never let a background SDK's scheduler hang a first-touch catch-up drain —
+// and the provider call that drain would make — off this read. A list calls
+// no provider and schedules no work in either host mode.
+export function listMessages(
   thread: ThreadRef,
+  opts?: MessageListOptions,
 ): Promise<OpResult<MessageRecord[]>> {
+  return runWithThreadTouchSuppressed(() => listMessagesInner(thread, opts));
+}
+
+async function listMessagesInner(
+  thread: ThreadRef,
+  opts?: MessageListOptions,
+): Promise<OpResult<MessageRecord[]>> {
+  if (opts !== undefined) {
+    const badBounds = validateListOptions(opts);
+    if (badBounds !== undefined) return { ok: false, error: badBounds };
+  }
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -215,18 +280,82 @@ export async function listMessages(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    // Form read-back rides the message read (AC-2.1): each record carries
-    // its stored derived forms, attached from one grouped query — the
-    // production path for "readable alongside the message".
-    const formsByMessage = readMessageForms(db);
-    const records = readMessages(db).map((record) => {
+    // Bounds resolve the window first (AC-3.1 no-load-everything), then the
+    // form read-back rides only that window (AC-2.1): each record carries its
+    // stored derived forms, attached from one grouped query scoped to the
+    // listed ids — never every message-owned form in a large thread.
+    const records = readMessages(db, opts ?? {});
+    const formsByMessage = readMessageForms(
+      db,
+      records.map((record) => record.messageId),
+    );
+    const withForms = records.map((record) => {
       const forms = formsByMessage.get(record.messageId);
       return forms === undefined ? record : { ...record, forms };
     });
-    return { ok: true, value: records };
+    return { ok: true, value: withForms };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message read-back failed: ${reason}`);
+  } finally {
+    db.close();
+  }
+}
+
+// The single-message view (Epic 04 AC-3.2): the canonical record — every
+// block with complete content, full tool results, never the view-shortened
+// forms — plus the message's derivation forms with their states and
+// mechanically stamped metadata, joined from the owner's report read.
+export interface MessageDetail extends Omit<MessageRecord, "forms"> {
+  // Always present and honest (AC-3.3): show on a deleted message returns
+  // the record flagged — audit is the point — never a not-found.
+  deleted: boolean;
+  // The owner report's queue-joined entries (DD-2), never synthesized here:
+  // the same `reportMessageForms` read messages.report serves, scoped by id.
+  forms: FormReportEntry[];
+}
+
+// Reads-only is structural (DD-6, SV-01-001), exactly as listMessages: the
+// open announcement that would let a background scheduler hang a first-touch
+// catch-up drain (and its provider call) off this show is suppressed for the
+// whole operation. show on a deleted message stays the audit read; neither
+// path touches the queue or the provider.
+export function show(
+  thread: ThreadRef,
+  messageId: string,
+): Promise<OpResult<MessageDetail>> {
+  return runWithThreadTouchSuppressed(() => showInner(thread, messageId));
+}
+
+async function showInner(
+  thread: ThreadRef,
+  messageId: string,
+): Promise<OpResult<MessageDetail>> {
+  const resolved = await resolveThreadRef(thread);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const record = readMessageById(db, messageId);
+    if (record === undefined) {
+      return {
+        ok: false,
+        error: {
+          errorClass: "caller_error",
+          code: "message_not_found",
+          reason: `no message ${messageId} exists in this thread`,
+        },
+      };
+    }
+    const forms = reportMessageForms(db, { messageId });
+    return { ok: true, value: { ...record, forms } };
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`message show failed: ${reason}`);
   } finally {
     db.close();
   }

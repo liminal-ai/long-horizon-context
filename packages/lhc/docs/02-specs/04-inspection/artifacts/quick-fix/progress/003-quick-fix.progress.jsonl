@@ -1,0 +1,12 @@
+{"timestamp":"2026-06-12T14:02:29.895Z","command":"quick-fix","phase":"quick-fix","event":"command-started","summary":"quick-fix started."}
+{"timestamp":"2026-06-12T14:02:29.904Z","command":"quick-fix","phase":"quick-fix","event":"provider-spawned","summary":"Provider spawned with pid 11334.","metadata":{"pid":11334}}
+{"timestamp":"2026-06-12T14:02:29.904Z","command":"quick-fix","phase":"quick-fix","event":"active-silent","summary":"Provider is active but silent.","metadata":{"silenceMs":0,"configuredSilenceTimeoutMs":300000,"configuredStartupTimeoutMs":300000}}
+{"timestamp":"2026-06-12T14:02:30.455Z","command":"quick-fix","phase":"quick-fix","event":"first-output-received","summary":"First provider stdout output received.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:03:00.623Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:03:38.014Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:04:09.347Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:04:39.566Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:05:10.287Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:05:41.965Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T14:05:53.543Z","command":"quick-fix","phase":"quick-fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":203640,"configuredTimeoutMs":1800000}}
+{"timestamp":"2026-06-12T14:05:53.545Z","command":"quick-fix","phase":"finalizing","event":"completed","summary":"quick-fix completed and is ready for verification.","metadata":{"outcome":"ready-for-verification"}}

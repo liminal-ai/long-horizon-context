@@ -92,7 +92,11 @@ export function openRaw(path: string): DatabaseSync {
   return new DatabaseSync(path);
 }
 
-export { corruptTwoOpenTurns } from "./corrupt.js";
+export {
+  corruptTwoOpenTurns,
+  poisonMessageBlockJson,
+  poisonMessageFormJson,
+} from "./corrupt.js";
 export { assertSweepReceiptShape } from "./receipt-schema.js";
 export { assertPiSessionConformance, loadPiSessionFixture } from "./pi-session-format.js";
 // The sweep's classification table, re-exported for the Story 3 unit legs:
