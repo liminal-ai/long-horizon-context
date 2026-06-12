@@ -3,7 +3,9 @@ export * as intakeStream from "./domains/intake-stream/index.js";
 export * as messages from "./domains/messages/index.js";
 export * as turns from "./domains/turns/index.js";
 export * as threadView from "./domains/thread-view/index.js";
+export * as inspect from "./domains/inspect/index.js";
 
+import * as inspectDomain from "./domains/inspect/index.js";
 import * as intakeStreamDomain from "./domains/intake-stream/index.js";
 import * as threadViewDomain from "./domains/thread-view/index.js";
 import { resolveViewConfig } from "./domains/thread-view/index.js";
@@ -132,7 +134,15 @@ export {
   type QueueDetailRow,
 } from "./tech-utils/work-queue/index.js";
 
-export type { ThreadRef } from "./domains/threads/index.js";
+// Epic 04 inspect vocabulary (shared/inspect.ts): the report shapes the
+// inspect surface serves.
+export type {
+  HealthReport,
+  InspectOverview,
+  ViewContentsReport,
+} from "./shared/inspect.js";
+
+export type { ThreadFileInfo, ThreadRef } from "./domains/threads/index.js";
 export type {
   Block,
   BlockType,
@@ -228,6 +238,10 @@ export interface Lhc {
   messages: typeof messagesDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
+  // Epic 04: the read-only report surface. Scoped through the instance seam
+  // like every other namespace so the status read it composes resolves THIS
+  // SDK's view config (threshold, visibility budgets).
+  inspect: typeof inspectDomain;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
   workHandlers: WorkHandlerMap;
@@ -384,6 +398,7 @@ export function createSdk(config: SdkConfig): Lhc {
       },
       seam,
     ),
+    inspect: scopeSurface(inspectDomain, seam),
     config: resolved,
     scheduler,
     workHandlers,

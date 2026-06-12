@@ -74,13 +74,45 @@ const ALLOWED_SURFACE_IMPORTS = {
   turns: new Set(["threads", "intake-stream", "messages"]),
   "thread-view": new Set(["threads", "messages", "turns"]),
   threads: new Set(),
+  // Epic 04: inspect sits at the top of the graph — pure consumer of the
+  // five surfaces, nothing imports it except sdk.ts and cli/. Acyclic by
+  // construction.
+  inspect: new Set(["threads", "intake-stream", "messages", "turns", "thread-view"]),
 };
+
+// Epic 04 source check (tech design §Testing Strategy): inspect composes
+// other domains' SURFACES — it owns no tables and may not reach storage at
+// all. Any sqlite usage or SQL keyword over a known table name inside
+// domains/inspect/** is a violation; a direct-SQL implementation could match
+// report output while violating inspect's entire contract.
+const INSPECT_FORBIDDEN_PATTERNS = [
+  [/node:sqlite/, "imports node:sqlite"],
+  [/DatabaseSync/, "references DatabaseSync"],
+  [/\.prepare\s*\(/, "prepares a SQL statement"],
+  [
+    /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:event|message|message_block|turns|chunk|chunk_member|work_item|derived_form|thread_metadata|thread_view|thread_view_band|view_boundary)\b/i,
+    "contains raw SQL over a domain table",
+  ],
+];
+
+function inspectSourceViolations(file, source) {
+  const rel = path.relative(srcRoot, file);
+  if (!rel.startsWith(path.join("domains", "inspect") + path.sep)) return [];
+  const found = [];
+  for (const [pattern, label] of INSPECT_FORBIDDEN_PATTERNS) {
+    if (pattern.test(source)) {
+      found.push(`${path.relative(pkgRoot, file)} ${label} — inspect may not read storage`);
+    }
+  }
+  return found;
+}
 
 const files = [...collectTsFiles(srcRoot), ...collectTsFiles(testRoot)];
 const violations = [];
 
 for (const file of files) {
   const source = readFileSync(file, "utf8");
+  violations.push(...inspectSourceViolations(file, source));
   const fileDomain = domainOf(file);
   const inTechUtilsOrShared =
     file.startsWith(path.join(srcRoot, "tech-utils") + path.sep) ||

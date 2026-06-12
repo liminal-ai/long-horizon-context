@@ -2,7 +2,7 @@
 
 State: STORY_ACTIVE
 Spec-pack root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/04-inspection
-Current Story: 01-message-read-surface
+Current Story: 02-inspect-domain-overview-and-health
 Current Phase: implement (story-orchestrate)
 
 ## Run Configuration
@@ -61,12 +61,24 @@ Current Phase: implement (story-orchestrate)
 - Open risks: none story-scoped.
 - Commit: story-scoped changes committed (see Transitions).
 
+## Receipt — Story 02: Inspect Domain Overview and Health (ACCEPTED 2026-06-12)
+
+- Story: 02-inspect-domain-overview-and-health — Story 2: Inspect Domain - Overview and Health.
+- Story-lead: story-orchestrate run-001. Implementor evidence: artifacts/02-inspect-domain-overview-and-health/003-implementor.json. Verifier evidence: 004-verify.json — final outcome PASS, zero findings.
+- Acceptance checks (story-lead): all pass incl. AC-1.1–1.4 overview, AC-4.1–4.5 health, check-boundaries no-raw-SQL source check, dist CLI parity probe.
+- Spec deviations: 3, all APPROVED by impl-lead ruling (artifacts/02-…/ruling-spec-deviation-response.json): (1) overview view-summary via pull().meta until Story 3 lands describe (shape-neutral swap); (2) threads.info(ref) in-domain identity read for filePath refs (AC-1.1 + inspect no-table-reads); (3) inspect.view stub routed, help-hidden until Story 3. Story-lead runtime again looped on deviation approval — impl-lead accepted directly per operating model (same defect as Story 1).
+- Findings dispositions: none (zero verifier findings).
+- Gates run by impl-lead: `pnpm verify` PASS (313 default); `pnpm verify-all` PASS (350 incl. process suite ran).
+- Baseline: before 300 → after 313. No regression.
+- Open risks: Story 3 must swap overview's view-summary source from pull().meta to describe (tracked into Story 3 scope).
+- Commit: see Transitions.
+
 ## Story Sequence Status
 
 | Story | Status |
 |---|---|
 | 01-message-read-surface | ACCEPTED |
-| 02-inspect-domain-overview-and-health | pending |
+| 02-inspect-domain-overview-and-health | ACCEPTED |
 | 03-view-contents-report | pending |
 | 04-lifecycle-exercise | pending |
 
@@ -74,5 +86,6 @@ Current Phase: implement (story-orchestrate)
 
 - 2026-06-12: Run created. State: SETUP. inspect ready; config authored; gates resolved from package scripts.
 - 2026-06-12: preflight ready (002-preflight.json). Gates persisted into impl-run.config.json by preflight (expected side effect). Baseline 290/27 recorded. State → STORY_ACTIVE, Story 01, phase implement.
+- 2026-06-12 14:20: Story 01 ACCEPTED by impl-lead. Gates: pnpm verify PASS (300), pnpm verify-all PASS (337, process suite ran). Baseline 290→300. Commit 225b6d9. Receipt above. Note: story-lead runtime kept re-emitting spec-deviation ruling despite recorded approvals — impl-lead exercised acceptance authority directly. Side note: impl-lead accidentally rm'd repo-root docs/ while cleaning a stray wrong-cwd artifacts dir; restored via git checkout (docs/taste.md intact). State → Story 02, phase implement.
 - 2026-06-12 13:55: Story 01 run-001 terminal needs-ruling (ruling-023, cross-story-contract): strict read purity for listMessages/show vs first-touch catch-up recovery. Impl-lead ruled strict-read-purity-supersedes-first-touch-recovery (spec-backed: S1 read-only drift risk test, epic read-only delta assert, AC-1.4). Ruling JSON at artifacts/01-message-read-surface/ruling-023-response.json; resumed with ruling. Verifier had reported pnpm verify and verify-all passing post quick-fix; green-verify failed only on stale red-manifest (SV-01-004) — routed to quick-fix after ruling.
 - 2026-06-12 13:23: Session restart. Story 01 run-001 found interrupted mid quick-fix (verifier had returned revise w/ 3 blocking findings; implementor session claude 92b30fef…, verifier session codex 019ebbeb…). Background process dead; resumed via story-orchestrate resume from durable checkpoint. Stray artifacts dir at repo root (wrong-cwd status call) removed.

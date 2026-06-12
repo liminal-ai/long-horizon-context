@@ -7,6 +7,7 @@ import type { MessageEventInput } from "../domains/intake-stream/index.js";
 import type { ThreadRef } from "../domains/threads/index.js";
 import type { OpResult } from "../shared/errors.js";
 import { renderCliError, renderResult, type CliResult } from "./render.js";
+import { runInspectHealth, runInspectOverview, runInspectView } from "./inspect.js";
 import { runMessagesDelete, runMessagesEdit } from "./messages-mutate.js";
 import { runMessagesList, runMessagesShow } from "./messages-read.js";
 import { runTurnsDelete } from "./turns-mutate.js";
@@ -67,6 +68,8 @@ Usage:
                    [--no-sweep] [--json] [--registry <r>]
   lhc view sweep (--thread-id <id> | --file-path <p>) [--json] [--registry <r>]
   lhc view materialize (--thread-id <id> | --file-path <p>) --out <path> [--format pi-session] [--registry <r>]
+  lhc inspect overview (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc inspect health   (--thread-id <id> | --file-path <p>) [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on
 success, 1 on failure. message-events reads an events JSON array on stdin.
@@ -457,6 +460,22 @@ export async function runCli(
       }
       return runTurnsDelete(threadRefFrom(flags), { turnId: flags.turnId });
     }
+    case "inspect overview":
+      return (
+        requireThreadRef(flags, "inspect overview") ??
+        runInspectOverview(threadRefFrom(flags))
+      );
+    case "inspect health":
+      return (
+        requireThreadRef(flags, "inspect health") ?? runInspectHealth(threadRefFrom(flags))
+      );
+    // Routed ahead of its story so the CLI mirrors the SDK surface: the stub
+    // returns the structured not-implemented result; Story 3 makes it real
+    // (and adds it to the help text).
+    case "inspect view":
+      return (
+        requireThreadRef(flags, "inspect view") ?? runInspectView(threadRefFrom(flags))
+      );
     case "work drain": {
       const missingRef = requireThreadRef(flags, "work drain");
       if (missingRef !== undefined) return missingRef;

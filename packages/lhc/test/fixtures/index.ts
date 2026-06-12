@@ -138,12 +138,21 @@ export {
   blockedSiblingThread,
   corruptedVariantThread,
   derivedThreadFixture,
+  mixedStateVariantThread,
+  mutationInFlightVariant,
   PERMANENT_FAILURE_REASON,
   stragglerVariantThread,
   TRANSIENT_EXHAUST_REASON,
   type DerivedThreadFixture,
   type DerivedThreadOptions,
+  type MixedStateFixture,
+  type MutationInFlightFixture,
 } from "./view-thread.js";
+export {
+  expectReadOnly,
+  observableState,
+  type ObservableState,
+} from "./read-only-delta.js";
 export {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,

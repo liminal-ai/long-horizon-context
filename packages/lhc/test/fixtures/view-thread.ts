@@ -9,9 +9,11 @@
 // story compacts against what this builder returns.
 import {
   createSdk,
+  type CompactReceipt,
   type FormReportEntry,
   type Lhc,
   type MessageEventInput,
+  type MutationResult,
 } from "../../src/index.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
 import { createProviderDouble, type ProviderDouble } from "./provider-double.js";
@@ -283,6 +285,118 @@ export async function corruptedVariantThread(
   ]);
   corruptTwoOpenTurns(filePath);
   return { filePath, sdk };
+}
+
+// ── Epic 04 Story 2 extensions (test plan: fixture extended in place) ──
+
+// The mutation-in-flight variant: the tool-heavy thread compacted, then ONE
+// edit applied through the production mutation path with the drain NOT
+// settled — so the cascade's cleared-pending states and their queued work
+// are real production states, never hand-written rows (FC-fidelity rule).
+// Serves the mid-rebuild overview shape (TC-1.1) and the rebuild bracket's
+// opening state (TC-4.3).
+export interface MutationInFlightFixture extends DerivedThreadFixture {
+  compactReceipt: CompactReceipt;
+  editedMessageId: string;
+  // The cascade contract's exact account of the edit: cleared set, queued
+  // replacements, superseded items — what the bracketing health reads
+  // assert against.
+  mutation: MutationResult;
+}
+
+export async function mutationInFlightVariant(
+  store: TempStore,
+): Promise<MutationInFlightFixture> {
+  // No manufactured failures: the bracket's "nothing outside the cascade
+  // changed state" assertion wants a clean baseline.
+  const fixture = await derivedThreadFixture(store, { failures: false });
+  const { sdk, filePath } = fixture;
+
+  const compacted = await sdk.threadView.compact({ filePath }, {});
+  if (!compacted.ok) {
+    throw new Error(`fixture compact failed: ${compacted.error.reason}`);
+  }
+
+  // A mid-thread closed-turn target: turn 2's prompt, so the cascade spans
+  // all three subject kinds — its own smoothed_prompt, t2's two turn forms,
+  // and c1's two chunk summaries.
+  const listed = await sdk.messages.listMessages({ filePath });
+  if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
+  const target = listed.value.find(
+    (record) => record.kind === "user_prompt" && record.turnId === "t2",
+  );
+  if (target === undefined) {
+    throw new Error("fixture invariant: turn 2 carries no prompt message");
+  }
+
+  const edited = await sdk.messages.edit(
+    { filePath },
+    { messageId: target.messageId, content: "turn 2 revised: investigate area 2 again" },
+  );
+  if (!edited.ok) throw new Error(`fixture edit failed: ${edited.error.reason}`);
+
+  return {
+    ...fixture,
+    compactReceipt: compacted.value,
+    editedMessageId: target.messageId,
+    mutation: edited.value,
+  };
+}
+
+// The mixed-state variant (TC-4.1's substrate): one thread carrying every
+// operational state at once — ready (the drained body), failed-transient and
+// failed-permanent (the scripted exhaustions), blocked (a turn derivation
+// meeting real source damage), and pending with live queued work (a partial
+// drain stopping short). All states reached through intake, mutation, and
+// drain behavior; the only below-SDK write is the sanctioned two-open-turns
+// corruption.
+export interface MixedStateFixture extends DerivedThreadFixture {
+  blockedTurnId: string; // t13: turn forms blocked through the terminal path
+  pendingPromptMessageId: string; // t14's prompt: smoothed_prompt still queued
+}
+
+export async function mixedStateVariantThread(store: TempStore): Promise<MixedStateFixture> {
+  const fixture = await derivedThreadFixture(store);
+  const { sdk, filePath } = fixture;
+
+  // Turn 13 closes cleanly but is NOT drained: its prompt smoothing and turn
+  // derivation sit queued (events: prompt, thinking, text, end — no tools).
+  await send(sdk, filePath, turnEvents(13));
+
+  // Turn 14 opens with a lone prompt: one more queued smoothing item that the
+  // partial drain below will leave pending.
+  const promptIds = await send(sdk, filePath, [
+    validEvent("user_prompt", {
+      payload: { text: "turn 14: this prompt's smoothing stays pending" },
+    }),
+  ]);
+  const pendingPromptMessageId = promptIds[0];
+  if (pendingPromptMessageId === undefined || pendingPromptMessageId === "") {
+    throw new Error("fixture invariant: turn 14 prompt did not project");
+  }
+
+  // Real source damage: t14 is open, the corruption writer adds a second open
+  // row — the state t13's claimed derivation meets at drain time.
+  corruptTwoOpenTurns(filePath);
+
+  // Partial drain, head-first FIFO: item 1 is t13's prompt smoothing (ready),
+  // item 2 is t13's turn derivation (terminal on the damage → blocked).
+  // t14's smoothing stays queued — the live pending state.
+  const report = await sdk.work.drain({ filePath }, { maxItems: 2 });
+  if (!report.ok) throw new Error(`fixture drain failed: ${report.error.reason}`);
+  const blockedRun = report.value.ran.find(
+    (entry) => entry.kind === "turn_derivation" && entry.disposition === "failed_terminal",
+  );
+  if (blockedRun === undefined) {
+    throw new Error("fixture invariant: turn 13 derivation expected to land terminal on damage");
+  }
+  if (report.value.remaining !== 1) {
+    throw new Error(
+      `fixture invariant: expected exactly one queued item left, got ${report.value.remaining}`,
+    );
+  }
+
+  return { ...fixture, blockedTurnId: "t13", pendingPromptMessageId };
 }
 
 // The blocked state's sacrificial sibling (FC-0.3): a closed turn whose

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { runWithThreadTouchSuppressed } from "../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
   createThreadFile,
@@ -158,6 +159,56 @@ export async function listThreads(input?: {
     return storageFailure(`registry read failed: ${detail(cause)}`);
   } finally {
     registry?.close();
+  }
+}
+
+// The thread file's own identity header (Epic 04): thread_metadata is this
+// domain's table — creation writes it (internal/create.ts) and only this
+// surface reads it back. Added for inspect's overview, which must report
+// thread identity for ANY resolvable ref — including a { filePath } ref that
+// no registry knows — without reading tables itself (inspect's must-not-own
+// rule). A pure read: the whole operation runs touch-suppressed (DD-6), so a
+// background SDK can never hang a first-touch catch-up drain off it.
+export interface ThreadFileInfo {
+  threadId: string;
+  createdAt: string;
+}
+
+export async function info(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
+  return runWithThreadTouchSuppressed(() => infoInner(ref));
+}
+
+async function infoInner(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "thread_not_found",
+        reason: `no thread file exists at ${filePath}`,
+      },
+    };
+  }
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const row = db
+      .prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`)
+      .get() as { thread_id: string; created_at: string } | undefined;
+    if (row === undefined) {
+      // openThreadDatabase validated the row exists; its absence here is
+      // external interference between the probe and this read.
+      return storageFailure(`thread file at ${filePath} lost its metadata row`);
+    }
+    return { ok: true, value: { threadId: row.thread_id, createdAt: row.created_at } };
+  } catch (cause) {
+    return storageFailure(`thread info read failed: ${detail(cause)}`);
+  } finally {
+    db.close();
   }
 }
 
