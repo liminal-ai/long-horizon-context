@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-12T23:07:30.537Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-12T23:07:30.546Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 04-failure-classification."}
+{"timestamp":"2026-06-12T23:07:30.555Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 20363.","metadata":{"pid":20363}}
+{"timestamp":"2026-06-12T23:07:30.669Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-12T23:08:04.374Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:08:38.532Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:09:08.691Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:09:43.429Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:10:34.833Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:11:05.467Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T23:11:30.028Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":239474,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-12T23:11:30.035Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 04-failure-classification.","metadata":{"outcome":"pass"}}
+{"timestamp":"2026-06-12T23:11:30.051Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 04-failure-classification with outcome pass.","metadata":{"outcome":"pass","verifiersCompleted":1}}

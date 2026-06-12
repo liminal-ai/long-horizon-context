@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/05-derivation-inference
-- Current Story: 04-failure-classification
+- Current Story: 05-real-inference-suite-and-capstone
 - Current Phase: implement
 - Notes: Story 1 accepted and committed 2026-06-12. Run provider-backed CLI calls detached (nohup) — never TaskStop mid-flight. Ruling files must be JSON: {rulingRequestId, decision, source, rationale}. Known story-lead defect: post-ruling planner may loop re-requesting the same ruling; if so, exit the loop and finish impl-lead acceptance from durable artifacts.
 
@@ -84,10 +84,24 @@
 - Baseline After: 353 (+26 adapter/prompt tests)
 - Notes: same post-ruling loop defect; accepted from durable artifacts.
 
+### 04-failure-classification
+- Story Title: Story 4: Failure Classification
+- Implementor Evidence: artifacts/04-failure-classification/003-implementor.json (ready-for-verification)
+- Verifier Evidence:
+  - artifacts/04-failure-classification/004-verify.json (pass, zero findings, codex/gpt-5.5)
+- Story Gate: cd packages/lhc && pnpm run verify — pass
+- Completion Gate: pnpm run verify-all — pass (38 files / 365 tests)
+- Dispositions:
+  - spec-deviation ruling: approved/ratified by impl-lead (bookkeeping only — re-recorded stale Story 3 hash for test/inference-prompts.test.ts in red-manifest.json; impl-lead verified file unchanged from accepted commit b7139e1)
+- Open Risks: none
+- Baseline Before: 353
+- Baseline After: 365 (+12 classification tests)
+- Notes: same post-ruling loop defect; accepted from durable artifacts.
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 353 tests (post Story 3)
-- Expected After Current Story: >= 353 + classification tests
-- Latest Actual Total: 353 (Story 3 acceptance)
+- Baseline Before Current Story: 365 tests (post Story 4)
+- Expected After Current Story: >= 365 + real-suite accounting tests
+- Latest Actual Total: 365 (Story 4 acceptance)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

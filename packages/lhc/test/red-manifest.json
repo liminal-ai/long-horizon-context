@@ -40,13 +40,14 @@
     "test/inference-construction.test.ts": "84c3e57d496b714a8f531dbea0559d4938f80fb17918851afd35a5ea8e974966",
     "test/inference-routing.test.ts": "cfcc021c9794efd8ca3249efc9640eff5ab7871a28b15701c5a1933975cc90ab",
     "test/inference-adapter.test.ts": "b6a00627f4b2a7bd1549ffa985b60833c8e0174ceb57608cd72df7dbcb50a08c",
-    "test/inference-prompts.test.ts": "0d354e74e70570df6fd0203eb93be5816fd133dd704c38dd82d347261f1818cd",
+    "test/inference-prompts.test.ts": "c747a4de7a7f295c6013d198a66c8ce2ba823dba9514a90b071b452429963949",
     "test/goldens/prompts/smoothing-v1.golden.json": "a0da6bbeb16840bc9edfacffa778da8db5e6b5d2f5112b837f1cc96f1498548d",
     "test/goldens/prompts/tool-call-v1.golden.json": "6c26b84831aaccc871a04657ac6da0564520137b62b916ea3327f984cea0894f",
     "test/goldens/prompts/tool-result-v1.golden.json": "715376aa96024603fb23492c280077cea5d51bd4523674f7701346bb3609f9da",
     "test/goldens/prompts/turn-compose-v1.golden.json": "ad9b5bdbc701c1ebc642e37c964ff0c818940441fd0c7643be648a65be9ce18c",
     "test/goldens/prompts/lower-band-v1.golden.json": "256c9c281ccd52d3418a20d412a08e9b5259a15f57fcf355b8a9fe964e90a886",
     "test/goldens/prompts/chunk-detailed-v1.golden.json": "db7d21cc8f03acae4bbbe4e140f058c4ff74b9c135f233c4a79f88c218bc0334",
-    "test/goldens/prompts/chunk-brief-v1.golden.json": "dd484a1fe3324110299f38be8773607a8fac6f7998c4f4e392435a2bd1befe34"
+    "test/goldens/prompts/chunk-brief-v1.golden.json": "dd484a1fe3324110299f38be8773607a8fac6f7998c4f4e392435a2bd1befe34",
+    "test/inference-classification.test.ts": "04b754229051220e6adaac93da94790c9ef69b6af650099cfabf10fe3bdce3df"
   }
 }

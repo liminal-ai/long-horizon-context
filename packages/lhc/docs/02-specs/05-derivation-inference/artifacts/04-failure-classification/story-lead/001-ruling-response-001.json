@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "04-failure-classification-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "rationale": "Approved: the only flagged item is bookkeeping — re-recording the stale Story 3 hash for test/inference-prompts.test.ts in test/red-manifest.json. Impl-lead verified via git that the test file content is unchanged from the accepted Story 3 commit (b7139e1), so the manifest update aligns the immutability baseline with accepted state and changes no behavior. Ratified.",
+  "source": "impl-lead"
+}

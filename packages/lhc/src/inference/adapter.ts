@@ -7,21 +7,16 @@
 // whitespace-only text as empty_output (AC-2.4), and return the shaped text
 // with config-known provenance (AC-2.5). The adapter never parses model text
 // for outcomes, receipts, or any mechanical fact — those stay
-// handler-authored from the record. The safeCall timeout race (DD-6)
-// supersedes the inline thrown-exception containment in the classification
-// story.
+// handler-authored from the record. Host containment (thrown exceptions,
+// the adapter-owned timeout) lives in safeCall (AC-3.3, DD-6).
 import type {
   DerivationProvider,
   FormKind,
   ProviderResult,
 } from "../shared/derivation.js";
-import { FAILURE_CLASSIFICATION } from "./classify.js";
+import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
-import type {
-  ModelCallFailureKind,
-  ModelCallResult,
-  ResolvedInferenceConfig,
-} from "./types.js";
+import type { ModelCallFailureKind, ResolvedInferenceConfig } from "./types.js";
 
 // DD-7: a pathological tool result must not blow a small-context model.
 // Content over the bound keeps its head and tail around a marker, and the
@@ -72,19 +67,14 @@ export function createInferenceProvider(config: ResolvedInferenceConfig): Deriva
       );
     }
     const messages = template.render(input);
-    let result: ModelCallResult;
-    try {
-      result = await config.call({
-        provider: assignment.provider,
-        model: assignment.model,
-        messages,
-      });
-    } catch (cause) {
-      // Thrown host exceptions classify as `other` (AC-3.3); the structured
-      // safeCall wrapper (timeout race, DD-6) supersedes this containment in
-      // the classification story.
-      result = { ok: false, kind: "other", message: String(cause) };
-    }
+    // safeCall contains the host (AC-3.3, DD-6): thrown exceptions arrive as
+    // structured `other` failures and a hung function loses the timeout race
+    // as `timeout` — both flow through the same classification below.
+    const result = await safeCall(
+      config.call,
+      { provider: assignment.provider, model: assignment.model, messages },
+      config.timeoutMs,
+    );
     if (!result.ok) {
       return classifiedFailure(result.kind, result.message);
     }
