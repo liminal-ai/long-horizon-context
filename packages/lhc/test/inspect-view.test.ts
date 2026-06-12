@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createSdk,
   estimateTokens,
-  runCli,
   type DerivationProvider,
   type Lhc,
   type MessageEventInput,
@@ -413,21 +412,5 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     if (missing.ok) return;
     expect(missing.error.errorClass).toBe("caller_error");
     expect(missing.error.code).toBe("thread_not_found");
-  });
-});
-
-describe("CLI parity: lhc inspect view returns SDK-parity JSON", () => {
-  it("the in-process CLI result deep-equals the SDK result on compacted and never-compacted threads", async () => {
-    const { filePath, sdk } = await degradedCompactedThread();
-    const viaSdk = await sdk.inspect.view({ filePath });
-    const viaCli = await runCli(["inspect", "view", "--file-path", filePath]);
-    expect(viaCli.exitCode).toBe(0);
-    expect(JSON.parse(viaCli.stdout)).toEqual(viaSdk);
-
-    const plain = await neverCompactedThread();
-    const plainSdk = await plain.sdk.inspect.view({ filePath: plain.filePath });
-    const plainCli = await runCli(["inspect", "view", "--file-path", plain.filePath]);
-    expect(plainCli.exitCode).toBe(0);
-    expect(JSON.parse(plainCli.stdout)).toEqual(plainSdk);
   });
 });

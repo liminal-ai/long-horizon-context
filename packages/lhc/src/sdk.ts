@@ -77,8 +77,6 @@ export {
   deterministicText,
   type DeterministicOpName,
 } from "./providers/deterministic.js";
-export { registeredProviderNames, resolveNamedProvider } from "./providers/registry.js";
-
 export type {
   CompletionTx,
   DependencyGap,
@@ -290,6 +288,14 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
 // Config mistakes are programmer errors at construction and throw; operating
 // failures after construction return OpResults per the error contract.
 export function createSdk(config: SdkConfig): Lhc {
+  // Provider arrival is injection at construction only (Epic 05 Flow 6):
+  // there is no named-provider registry and no env/flag resolution path left
+  // to fall back on. The `inference` alternative lands in Story 2; the XOR
+  // rule is named from day one so a missing provider reports the final
+  // contract, not a downstream symptom.
+  if (config.provider === undefined && (config as { inference?: unknown }).inference === undefined) {
+    throw new TypeError("createSdk config: exactly one of provider or inference");
+  }
   if (config.mode !== "background" && config.mode !== "manual") {
     throw new TypeError(
       `createSdk config: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,

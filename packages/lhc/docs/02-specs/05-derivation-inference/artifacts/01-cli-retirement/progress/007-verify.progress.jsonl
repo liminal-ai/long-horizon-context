@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-12T20:57:10.894Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-12T20:57:10.902Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 01-cli-retirement."}
+{"timestamp":"2026-06-12T20:57:10.912Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 80357.","metadata":{"pid":80357}}
+{"timestamp":"2026-06-12T20:57:10.999Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-12T20:57:44.347Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T20:58:23.028Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T20:58:54.611Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T20:59:32.038Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T21:00:03.584Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T21:01:07.973Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-12T21:01:08.126Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":237215,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-12T21:01:08.133Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 01-cli-retirement.","metadata":{"outcome":"pass"}}
+{"timestamp":"2026-06-12T21:01:08.148Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 01-cli-retirement with outcome pass.","metadata":{"outcome":"pass","verifiersCompleted":1}}

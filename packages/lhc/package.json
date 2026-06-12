@@ -2,7 +2,7 @@
   "name": "lhc",
   "version": "0.0.0",
   "private": true,
-  "description": "Long Horizon Context SDK and CLI core.",
+  "description": "Long Horizon Context SDK.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,9 +11,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
-  },
-  "bin": {
-    "lhc": "./dist/cli.js"
   },
   "files": [
     "dist",
@@ -25,12 +22,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "node scripts/lint.mjs",
     "boundaries": "node scripts/check-boundaries.mjs",
-    "dev:cli": "tsx src/cli.ts",
     "test": "vitest run",
     "red-verify": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm run boundaries",
-    "verify": "pnpm run red-verify && echo 'SKIP: cli-process suite — run verify-all' && vitest run",
+    "verify": "pnpm run red-verify && vitest run",
     "green-verify": "pnpm run verify && node scripts/check-test-immutability.mjs",
-    "verify-all": "pnpm run red-verify && LHC_PROCESS_SUITE=1 vitest run"
+    "verify-all": "pnpm run red-verify && vitest run"
   },
   "engines": {
     "node": ">=24"

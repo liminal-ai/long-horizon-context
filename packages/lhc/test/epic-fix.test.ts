@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
   messages,
-  runCli,
   threads,
   turns,
   type ThreadRef,
@@ -91,69 +90,6 @@ describe("F-EPIC-002 (SDK): read surfaces validate the thread reference", () => 
       if (result.ok) return;
       expect(result.error?.errorClass).toBe("caller_error");
       expect(result.error?.code).toBe("thread_not_found");
-    });
-  }
-});
-
-describe("F-EPIC-001 / NB-2 (CLI in-process): usage errors are named, not swallowed", () => {
-  interface CliErr {
-    ok: false;
-    error: { errorClass: string; code: string; reason: string };
-  }
-  function parseErr(stdout: string): CliErr {
-    return JSON.parse(stdout) as CliErr;
-  }
-
-  it("new-thread with an empty --file-path exits 1, JSON error, clean registry", async () => {
-    const result = await runCli([
-      "threads",
-      "new-thread",
-      "--file-path",
-      "",
-      "--registry",
-      store.registryPath,
-    ]);
-    expect(result.exitCode).toBe(1);
-    const parsed = parseErr(result.stdout);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error.errorClass).toBe("caller_error");
-    expect(parsed.error.code).toBe("invalid_thread_ref");
-    expect(existsSync(store.registryPath)).toBe(false);
-  });
-
-  it("an unknown/misspelled flag is rejected by name, exit 1, nothing created", async () => {
-    const result = await runCli([
-      "threads",
-      "new-thread",
-      "--file-path",
-      store.threadPath(),
-      "--titel",
-      "typo",
-      "--registry",
-      store.registryPath,
-    ]);
-    expect(result.exitCode).toBe(1);
-    const parsed = parseErr(result.stdout);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error.code).toBe("unknown_flag");
-    expect(parsed.error.reason).toContain("--titel");
-    // Strict parse fails before the SDK call, so no thread was created.
-    expect(existsSync(store.registryPath)).toBe(false);
-  });
-
-  for (const command of [
-    "messages list",
-    "messages list-queued-work",
-    "turns list",
-    "turns list-queued-work",
-  ]) {
-    it(`${command} without a thread reference is a missing-flag usage error`, async () => {
-      const result = await runCli(command.split(" "));
-      expect(result.exitCode).toBe(1);
-      const parsed = parseErr(result.stdout);
-      expect(parsed.ok).toBe(false);
-      expect(parsed.error.code).toBe("missing_flag");
-      expect(parsed.error.reason).toContain("--thread-id or --file-path");
     });
   }
 });

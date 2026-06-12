@@ -21,8 +21,8 @@
 // and the drain runs to empty.
 import { join } from "node:path";
 import {
+  createDeterministicProvider,
   createSdk,
-  resolveNamedProvider,
   type BatchResult,
   type CompactReceipt,
   type FormReportEntry,
@@ -40,8 +40,8 @@ import { validEvent, type TempStore } from "./index.js";
 
 // ── the one SDK configuration (AC-5.1) ────────────────────────────
 //
-// Deterministic provider from the production registry (the same resolution
-// seam the spawned CLI uses), background mode, zero-backoff retry so a
+// Deterministic provider injected at construction (the only provider-arrival
+// path since the CLI retired), background mode, zero-backoff retry so a
 // deterministic run never arms a wake timer, the Epic 03 fixture's pinned
 // chunk policy (12 fixed-shape turns cut into 4 chunks, c1–c3 closed), and
 // a named "lifecycle" profile so compact runs profile-addressed (story
@@ -54,10 +54,8 @@ export const LIFECYCLE_PROFILE = {
 } as const;
 
 export function createLifecycleSdk(): Lhc {
-  const provider = resolveNamedProvider("deterministic");
-  if (provider === undefined) throw new Error("deterministic provider not registered");
   return createSdk({
-    provider,
+    provider: createDeterministicProvider(),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },

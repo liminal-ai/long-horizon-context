@@ -2,16 +2,14 @@
 // through TC-3.8 (the work-item halves of TC-3.3/TC-3.6 are Story 5's named
 // debt), TC-4.4's three-way class assertion, TC-5.4's no-transition clause
 // re-asserted now that turns exist, and the corruption rung of the rollback
-// ladder. Everything enters through the SDK or the in-process CLI; the
-// spawned-CLI leg of `turns list` lives in cli-process-turns.test.ts. The
-// pure rule table is golden-cased in state-machine.test.ts.
+// ladder. Everything enters through the SDK (the CLI surface retired with Epic 05
+// Story 1). The pure rule table is golden-cased in state-machine.test.ts.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
   messages,
-  runCli,
   threads,
   turns,
   type MessageEventInput,
@@ -400,82 +398,5 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
       systemLeg.error.errorClass,
     ]);
     expect(classes.size).toBe(3);
-
-    // The corruption class reaches the CLI error rendering unchanged.
-    const cliCorruption = await runCli(
-      ["intake-stream", "message-events", "--file-path", corruptPath],
-      async () => JSON.stringify([validEvent("assistant_text")]),
-    );
-    expect(cliCorruption.exitCode).toBe(1);
-    const parsed = JSON.parse(cliCorruption.stdout) as {
-      ok: boolean;
-      error: { errorClass: string; code: string };
-    };
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error.errorClass).toBe("state_corruption");
-    expect(parsed.error.code).toBe("turn_state_corrupt");
-  });
-});
-
-describe("Flow 3 (CLI in-process): turns list", () => {
-  it("lists turn records with membership as JSON", async () => {
-    const filePath = await createThread();
-    await send(filePath, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text"),
-      validEvent("turn_end"),
-      validEvent("user_prompt"),
-    ]);
-
-    const listed = await runCli(["turns", "list", "--file-path", filePath]);
-    expect(listed.exitCode).toBe(0);
-    const parsed = JSON.parse(listed.stdout) as { ok: boolean; value: TurnRecord[] };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.value).toEqual([
-      {
-        turnId: "t1",
-        status: "closed",
-        memberMessageIds: ["m1", "m2"],
-        openedAtEventOrder: 1,
-        closedAtEventOrder: 3,
-        forms: [
-          {
-            subjectKind: "turn",
-            subjectId: "t1",
-            form: "lower_band_projection",
-            state: "pending",
-            sourceVersion: 1,
-          },
-          {
-            subjectKind: "turn",
-            subjectId: "t1",
-            form: "turn_rendering",
-            state: "pending",
-            sourceVersion: 1,
-          },
-        ],
-      },
-      {
-        turnId: "t2",
-        status: "open",
-        memberMessageIds: ["m4"],
-        openedAtEventOrder: 4,
-      },
-    ]);
-  });
-
-  it("turns list on an unknown thread id fails with thread_not_found", async () => {
-    const listed = await runCli([
-      "turns",
-      "list",
-      "--thread-id",
-      "th_nope",
-      "--registry",
-      store.registryPath,
-    ]);
-    expect(listed.exitCode).toBe(1);
-    const parsed = JSON.parse(listed.stdout) as { ok: boolean; error: { code: string } };
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error.code).toBe("thread_not_found");
   });
 });

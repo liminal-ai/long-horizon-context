@@ -6,7 +6,6 @@ export type ErrorCode =
   | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
   | "invalid_event"
   | "empty_batch"
-  | "empty_stdin" // CLI adapter only, emitted before any SDK call
   | "turn_state_corrupt"
   | "storage_failure"
   // Epic 02 (tech design §Interfaces, issue 4):
@@ -15,7 +14,6 @@ export type ErrorCode =
   | "message_not_found" // caller_error
   | "turn_not_found" // caller_error
   | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
-  | "provider_not_configured" // caller_error — CLI drain without --provider / LHC_PROVIDER (DD-11)
   | "provider_failure" // system_error — exhausted retries; form.reason carries detail
   | "source_damaged" // state_corruption — handler found corrupt source; form blocked
   // Epic 03 (tech design §Interface Definitions): the surface-skeleton stub

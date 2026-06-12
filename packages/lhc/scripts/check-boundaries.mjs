@@ -75,7 +75,7 @@ const ALLOWED_SURFACE_IMPORTS = {
   "thread-view": new Set(["threads", "messages", "turns"]),
   threads: new Set(),
   // Epic 04: inspect sits at the top of the graph — pure consumer of the
-  // five surfaces, nothing imports it except sdk.ts and cli/. Acyclic by
+  // five surfaces, nothing imports it except sdk.ts. Acyclic by
   // construction.
   inspect: new Set(["threads", "intake-stream", "messages", "turns", "thread-view"]),
 };

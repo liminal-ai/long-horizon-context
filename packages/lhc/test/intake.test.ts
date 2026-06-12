@@ -1,11 +1,10 @@
 // Flow 2 (recording half): TC-2.1, TC-2.8, TC-1.4 (closing Story 1's
 // deferral), the four architecture-risk tests (mid-walk rollback, restart
-// survival, no-lock-on-rejection, system_error rollback parity), and the CLI
-// in-process stdin legs.
+// survival, no-lock-on-rejection, system_error rollback parity). The CLI
+// in-process stdin legs retired with the CLI surface (Epic 05 Story 1).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
-  runCli,
   threads,
   type EventRecord,
   type MessageEventInput,
@@ -236,94 +235,5 @@ describe("Flow 2 (SDK): event recording", () => {
       locker.close();
     }
     expect(await readBack(filePath)).toEqual([]);
-  });
-});
-
-describe("Flow 2 (CLI in-process): message-events stdin handling", () => {
-  it("records a batch from stdin and reads it back through list-events", async () => {
-    const filePath = await createThread();
-    const batch = eventBatch(["user_prompt", "assistant_text"]);
-    const recorded = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => JSON.stringify(batch),
-    );
-    expect(recorded.exitCode).toBe(0);
-    const recordedParsed = JSON.parse(recorded.stdout) as {
-      ok: boolean;
-      value: { events: Array<{ outcome: string }>; threadPosition: { lastEventOrder: number } };
-    };
-    expect(recordedParsed.ok).toBe(true);
-    expect(recordedParsed.value.events.map((e) => e.outcome)).toEqual([
-      "recorded",
-      "recorded",
-    ]);
-    expect(recordedParsed.value.threadPosition.lastEventOrder).toBe(2);
-
-    const listed = await runCli(["intake-stream", "list-events", "--file-path", filePath]);
-    expect(listed.exitCode).toBe(0);
-    const listedParsed = JSON.parse(listed.stdout) as {
-      ok: boolean;
-      value: Array<{ eventOrder: number; eventKind: string }>;
-    };
-    expect(listedParsed.ok).toBe(true);
-    expect(listedParsed.value.map((e) => e.eventOrder)).toEqual([1, 2]);
-  });
-
-  it("a TTY stdin is refused with empty_stdin before any SDK call", async () => {
-    const filePath = await createThread();
-    const result = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => null,
-    );
-    expect(result.exitCode).toBe(1);
-    const parsed = JSON.parse(result.stdout) as {
-      ok: boolean;
-      error: { errorClass: string; code: string };
-    };
-    expect(parsed.error.errorClass).toBe("caller_error");
-    expect(parsed.error.code).toBe("empty_stdin");
-    expect(await readBack(filePath)).toEqual([]);
-  });
-
-  it("empty stdin is refused with empty_stdin; a JSON [] reaches the SDK as empty_batch — distinct codes", async () => {
-    const filePath = await createThread();
-
-    const empty = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => "",
-    );
-    expect(empty.exitCode).toBe(1);
-    const emptyParsed = JSON.parse(empty.stdout) as { error: { code: string } };
-    expect(emptyParsed.error.code).toBe("empty_stdin");
-
-    const emptyArray = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => "[]",
-    );
-    expect(emptyArray.exitCode).toBe(1);
-    const emptyArrayParsed = JSON.parse(emptyArray.stdout) as { error: { code: string } };
-    expect(emptyArrayParsed.error.code).toBe("empty_batch");
-  });
-
-  it("malformed stdin JSON and a missing thread flag are caller errors", async () => {
-    const filePath = await createThread();
-    const malformed = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => "{not json",
-    );
-    expect(malformed.exitCode).toBe(1);
-    const malformedParsed = JSON.parse(malformed.stdout) as {
-      error: { errorClass: string; code: string };
-    };
-    expect(malformedParsed.error.errorClass).toBe("caller_error");
-    expect(malformedParsed.error.code).toBe("invalid_event");
-
-    const missingFlag = await runCli(
-      ["intake-stream", "message-events"],
-      async () => "[]",
-    );
-    expect(missingFlag.exitCode).toBe(1);
-    const missingParsed = JSON.parse(missingFlag.stdout) as { error: { code: string } };
-    expect(missingParsed.error.code).toBe("missing_flag");
   });
 });

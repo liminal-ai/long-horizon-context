@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
   messages,
-  runCli,
   threads,
   type EventRecord,
   type MessageRecord,
@@ -297,36 +296,5 @@ describe("Flow 2 (SDK): message projection", () => {
     // both at baseline — projection failure stranded no event rows.
     expect(await readEvents(filePath)).toEqual(baselineEvents);
     expect(await readMessages(filePath)).toEqual(baselineMessages);
-  });
-});
-
-describe("Flow 2 (CLI in-process): messages list", () => {
-  it("lists projected messages with blocks and estimates as JSON", async () => {
-    const filePath = await createThread();
-    const recorded = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "cli read-back" } }),
-      validEvent("turn_end"),
-    ]);
-    expect(recorded.ok).toBe(true);
-
-    const listed = await runCli(["messages", "list", "--file-path", filePath]);
-    expect(listed.exitCode).toBe(0);
-    const parsed = JSON.parse(listed.stdout) as {
-      ok: boolean;
-      value: Array<{
-        messageId: string;
-        kind: string;
-        blocks: Array<{ blockType: string; content: { text?: string } }>;
-        tokenEstimate: number;
-      }>;
-    };
-    expect(parsed.ok).toBe(true);
-    expect(parsed.value).toHaveLength(1);
-    expect(parsed.value[0]!.messageId).toBe("m1");
-    expect(parsed.value[0]!.kind).toBe("user_prompt");
-    expect(parsed.value[0]!.blocks).toEqual([
-      { blockType: "text", content: { text: "cli read-back" } },
-    ]);
-    expect(parsed.value[0]!.tokenEstimate).toBeGreaterThan(0);
   });
 });

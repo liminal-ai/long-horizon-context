@@ -3,7 +3,7 @@
 // environment, so the lint gate enforces a minimal in-repo rule set:
 //   - no `var` declarations
 //   - no `any` escapes (`: any`, `as any`, `<any>`)
-//   - no `console.` usage in src/ (CLI output flows through render/CliResult)
+//   - no `console.` usage in src/
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

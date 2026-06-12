@@ -7,7 +7,6 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   intakeStream,
-  runCli,
   threads,
   type DerivedForm,
   type DerivedFormState,
@@ -357,58 +356,4 @@ export async function gappedRenderingThread(
     );
   }
   return { filePath, messageId: "m1", turnId: "t1" };
-}
-
-// ── twin SDK/CLI threads for parity tests ────────────────────────
-
-// The same batch recorded through the SDK entry and the in-process CLI
-// adapter, under one injected clock, so the two files are comparable
-// record-for-record. Distinct idempotency-key spaces are unnecessary: keys
-// scope per thread file.
-export async function twinThreads(
-  store: TempStore,
-  batch?: readonly MessageEventInput[],
-): Promise<{ sdkPath: string; cliPath: string; batch: readonly MessageEventInput[] }> {
-  const events =
-    batch ??
-    ([
-      validEvent("user_prompt", { payload: { text: "twin prompt" } }),
-      validEvent("assistant_text", { payload: { text: "twin answer" } }),
-      validEvent("tool_call", {
-        payload: { toolCallId: "call-twin-1", toolName: "read_file", arguments: { path: "t.txt" } },
-      }),
-      validEvent("tool_result", {
-        payload: { toolCallId: "call-twin-1", content: "twin tool output", isError: false },
-      }),
-      validEvent("turn_end"),
-    ] as const);
-
-  setIntakeClock(() => new Date("2026-06-10T12:00:00.000Z"));
-  try {
-    const sdkPath = await newThreadFile(store);
-    await send(sdkPath, events);
-
-    const cliPath = store.threadPath();
-    const created = await runCli([
-      "threads",
-      "new-thread",
-      "--file-path",
-      cliPath,
-      "--registry",
-      store.registryPath,
-    ]);
-    if (created.exitCode !== 0) {
-      throw new Error(`fixture CLI new-thread failed: ${created.stdout}`);
-    }
-    const recorded = await runCli(
-      ["intake-stream", "message-events", "--file-path", cliPath],
-      async () => JSON.stringify(events),
-    );
-    if (recorded.exitCode !== 0) {
-      throw new Error(`fixture CLI message-events failed: ${recorded.stdout}`);
-    }
-    return { sdkPath, cliPath, batch: events };
-  } finally {
-    setIntakeClock(null);
-  }
 }

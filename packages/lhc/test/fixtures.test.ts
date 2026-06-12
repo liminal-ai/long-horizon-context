@@ -128,7 +128,6 @@ import {
   readDerivedForms,
   threadWithClosedTurns,
   threadWithToolRun,
-  twinThreads,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -405,36 +404,5 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     expect(queued.ok).toBe(true);
     if (!queued.ok) return;
     expect(queued.value.map((item) => item.kind)).toEqual(["turn_derivation"]);
-  });
-
-  it("FC-0.6: twin SDK/CLI threads read back identical records through every surface", async () => {
-    const { sdkPath, cliPath } = await twinThreads(store);
-    const readBack = async (filePath: string) => {
-      const [events, projected, turnRecords, messageWork, turnWork] = await Promise.all([
-        intakeStream.listEvents({ filePath }),
-        messages.listMessages({ filePath }),
-        turns.listTurns({ filePath }),
-        messages.listQueuedWork({ filePath }),
-        turns.listQueuedWork({ filePath }),
-      ]);
-      if (!events.ok || !projected.ok || !turnRecords.ok || !messageWork.ok || !turnWork.ok) {
-        throw new Error("twin read-back failed");
-      }
-      return {
-        events: events.value,
-        messages: projected.value,
-        turns: turnRecords.value,
-        messageWork: messageWork.value,
-        turnWork: turnWork.value,
-        forms: readDerivedForms(filePath),
-      };
-    };
-    const sdkSide = await readBack(sdkPath);
-    const cliSide = await readBack(cliPath);
-    expect(sdkSide).toEqual(cliSide);
-    // And the twins are non-trivial: a full turn with a tool run.
-    expect(sdkSide.events).toHaveLength(5);
-    expect(sdkSide.turns).toHaveLength(1);
-    expect(sdkSide.forms.length).toBeGreaterThan(0);
   });
 });

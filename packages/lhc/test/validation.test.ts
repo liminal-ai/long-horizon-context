@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
-  runCli,
   threads,
   type EventRecord,
   type MessageEventInput,
@@ -136,35 +135,6 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
     expect(systemLeg.error.code).toBe("storage_failure");
 
     expect(callerLeg.error.errorClass).not.toBe(systemLeg.error.errorClass);
-
-    // Same shapes through the CLI adapter (in-process).
-    const cliCaller = await runCli(
-      ["intake-stream", "message-events", "--file-path", filePath],
-      async () => JSON.stringify([{ ...validEvent("user_prompt"), eventKind: "bogus" }]),
-    );
-    expect(cliCaller.exitCode).toBe(1);
-    const cliCallerParsed = JSON.parse(cliCaller.stdout) as {
-      ok: boolean;
-      error: { errorClass: string; code: string };
-    };
-    expect(cliCallerParsed.error.errorClass).toBe("caller_error");
-    expect(cliCallerParsed.error.code).toBe("invalid_event");
-
-    const cliSystem = await runCli([
-      "threads",
-      "new-thread",
-      "--file-path",
-      store.threadPath(),
-      "--registry",
-      join(blocker, "registry.sqlite"),
-    ]);
-    expect(cliSystem.exitCode).toBe(1);
-    const cliSystemParsed = JSON.parse(cliSystem.stdout) as {
-      ok: boolean;
-      error: { errorClass: string; code: string };
-    };
-    expect(cliSystemParsed.error.errorClass).toBe("system_error");
-    expect(cliSystemParsed.error.code).toBe("storage_failure");
   });
 
   it("TC-4.5: a batch mixing new, duplicate, and invalid events is rejected whole", async () => {

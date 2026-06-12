@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
   messages,
-  runCli,
   threads,
   turns,
   type MessageEventInput,
@@ -337,60 +336,6 @@ describe("architecture-risk: durability and rollback over the complete record su
 
     expect(await readBack(filePath)).toEqual(baseline);
     expect(rawWorkItemCount(filePath)).toBe(baselineCount);
-  });
-});
-
-describe("CLI in-process: list-queued-work on both owning domains", () => {
-  it("messages list-queued-work and turns list-queued-work each return only their owner's items", async () => {
-    const filePath = await createThread();
-    await send(filePath, [validEvent("user_prompt"), validEvent("turn_end")]);
-
-    const messagesListed = await runCli(["messages", "list-queued-work", "--file-path", filePath]);
-    expect(messagesListed.exitCode).toBe(0);
-    const messagesParsed = JSON.parse(messagesListed.stdout) as {
-      ok: boolean;
-      value: WorkItemRecord[];
-    };
-    expect(messagesParsed.ok).toBe(true);
-    expect(messagesParsed.value).toHaveLength(1);
-    expect(messagesParsed.value[0]).toMatchObject({
-      workItemId: "w-m1-prompt_smoothing-v1",
-      owner: "messages",
-      kind: "prompt_smoothing",
-      sourceRef: { messageId: "m1" },
-      status: "queued",
-    });
-
-    const turnsListed = await runCli(["turns", "list-queued-work", "--file-path", filePath]);
-    expect(turnsListed.exitCode).toBe(0);
-    const turnsParsed = JSON.parse(turnsListed.stdout) as {
-      ok: boolean;
-      value: WorkItemRecord[];
-    };
-    expect(turnsParsed.ok).toBe(true);
-    expect(turnsParsed.value).toHaveLength(1);
-    expect(turnsParsed.value[0]).toMatchObject({
-      workItemId: "w-t1-turn_derivation-v1",
-      owner: "turns",
-      kind: "turn_derivation",
-      sourceRef: { turnId: "t1" },
-      status: "queued",
-    });
-  });
-
-  it("list-queued-work on an unknown thread id fails with thread_not_found", async () => {
-    const listed = await runCli([
-      "messages",
-      "list-queued-work",
-      "--thread-id",
-      "th_nope",
-      "--registry",
-      store.registryPath,
-    ]);
-    expect(listed.exitCode).toBe(1);
-    const parsed = JSON.parse(listed.stdout) as { ok: boolean; error: { code: string } };
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error.code).toBe("thread_not_found");
   });
 });
 
