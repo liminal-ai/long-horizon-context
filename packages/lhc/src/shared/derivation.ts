@@ -4,18 +4,28 @@
 // cascade, and the drain all speak this vocabulary across domain lines, so it
 // lives in shared/ (tech design §Interfaces, DD-2/DD-7).
 import type { DatabaseSync } from "node:sqlite";
+// Type-only and erased at build: the runtime graph stays one-directional
+// (inference/ imports shared/, never the reverse).
+import type { InferenceConfig } from "../inference/types.js";
 import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
 
 export type SubjectKind = "message" | "turn" | "chunk";
 
-export type FormKind =
-  | "smoothed_prompt"
-  | "tool_call_summary"
-  | "tool_result_summary"
-  | "turn_rendering"
-  | "lower_band_projection"
-  | "chunk_summary_detailed"
-  | "chunk_summary_brief";
+// The kind set is a runtime constant with the type derived from it, so code
+// that must cover every kind — assignment validation above all (Epic 05
+// AC-1.3) — iterates the exported set instead of maintaining a second
+// literal list that can drift.
+export const FORM_KINDS = [
+  "smoothed_prompt",
+  "tool_call_summary",
+  "tool_result_summary",
+  "turn_rendering",
+  "lower_band_projection",
+  "chunk_summary_detailed",
+  "chunk_summary_brief",
+] as const;
+
+export type FormKind = (typeof FORM_KINDS)[number];
 
 export type DerivedFormState = "pending" | "ready" | "failed" | "blocked";
 
@@ -67,6 +77,10 @@ export interface DerivedFormMetadata {
   receipts?: ToolRunReceipt[];
   attempts?: number;
   lastError?: string;
+  // Epic 05 (DD-4): which provider/model/prompt produced the content —
+  // copied from the ProviderResult's config-known strings, never authored
+  // from model output. The deterministic provider never sets it.
+  provenance?: ProviderProvenance;
 }
 
 // One row of an owner's repair report (Flow 4): the form's durable state
@@ -87,8 +101,17 @@ export interface FormReportEntry extends DerivedForm {
 // ── provider seam (DD-7) ─────────────────────────────────────────
 // Every operation returns content or a structured failure carrying
 // retryable-or-not; classification is the adapter's duty.
+// Provenance: the three config-known assignment strings, stamped by the
+// inference adapter (it alone knows the assignment) and copied by handlers
+// into form metadata (Epic 05 DD-4). Never derived from model output.
+export interface ProviderProvenance {
+  provider: string;
+  model: string;
+  prompt: string;
+}
+
 export type ProviderResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; provenance?: ProviderProvenance }
   | { ok: false; retryable: boolean; reason: string };
 
 // Message kinds a rendering part can carry — mirrors the intake event-kind
@@ -149,8 +172,13 @@ export const PROVIDER_OPERATIONS = [
 export type ProviderOperationName = (typeof PROVIDER_OPERATIONS)[number];
 
 // ── SDK assembly config (tech design §Interfaces) ────────────────
+// Provider arrival is exactly one of `provider` (direct injection,
+// unchanged — the deterministic test default) or `inference` (host
+// model-call function + per-kind assignments, Epic 05 DD-5). Both or
+// neither is a construction TypeError naming the XOR rule (AC-1.1).
 export interface SdkConfig {
-  provider: DerivationProvider;
+  provider?: DerivationProvider;
+  inference?: InferenceConfig;
   mode: "background" | "manual";
   clock?: () => Date;
   retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number }; // 3 / 5000 / 60000

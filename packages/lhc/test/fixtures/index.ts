@@ -167,6 +167,24 @@ export {
   type LifecycleRun,
 } from "./lifecycle.js";
 export {
+  cannedResponses,
+  FAKE_MODEL_PREFIX,
+  FAKE_PROVIDER_PREFIX,
+  FORM_KINDS,
+  type FormKind,
+  hangingCall,
+  recordingCall,
+  scriptedCall,
+  throwingCall,
+  validAssignments,
+} from "./model-call.js";
+export {
+  assertModelCallContract,
+  assertRoutingThroughSdk,
+  probeInput,
+  type RoutingRunResult,
+} from "./seam-conformance.js";
+export {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,
   gappedRenderingThread,

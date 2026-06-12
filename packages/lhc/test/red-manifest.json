@@ -36,6 +36,8 @@
     "test/inspect-health.test.ts": "4e395d873c3469674d1829310d84afa508ad4eabf2a3e10fec1240f9c120fb4a",
     "test/inspect-view.test.ts": "983602b8d5923ea1e3e2c2a0258df5a0a10be57d9e8cd8cb2d9efae6ef192ece",
     "test/lifecycle.test.ts": "667f0aede54df3c8c008280e49543914d3e05994ee3751ae4c5d3aa029ce8fbf",
-    "test/retirement.test.ts": "6b5b1e45da6857b0bbf98502d9a91425e80d8ad331055e0a0b368afc22692345"
+    "test/retirement.test.ts": "6b5b1e45da6857b0bbf98502d9a91425e80d8ad331055e0a0b368afc22692345",
+    "test/inference-construction.test.ts": "84c3e57d496b714a8f531dbea0559d4938f80fb17918851afd35a5ea8e974966",
+    "test/inference-routing.test.ts": "cfcc021c9794efd8ca3249efc9640eff5ab7871a28b15701c5a1933975cc90ab"
   }
 }

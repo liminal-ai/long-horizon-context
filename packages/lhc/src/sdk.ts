@@ -26,8 +26,14 @@ import {
   setThreadTouch,
   type InstanceSeam,
 } from "./shared/context.js";
+import { createInferenceProvider } from "./inference/adapter.js";
+import { PROMPT_REGISTRY } from "./inference/prompts/index.js";
+import type { InferenceConfig, ModelAssignment } from "./inference/types.js";
 import {
+  FORM_KINDS,
   PROVIDER_OPERATIONS,
+  type DerivationProvider,
+  type FormKind,
   type ResolvedSdkConfig,
   type SdkConfig,
   type WorkHandler,
@@ -99,6 +105,19 @@ export type {
   WorkHandler,
 } from "./shared/derivation.js";
 export type { DrainReport, Scheduler, SchedulerMode } from "./scheduler.js";
+
+// Epic 05 inference vocabulary (inference/types.ts): the host-supplied
+// ModelCall boundary and the per-kind assignment config — type-only; the
+// adapter and registry are construction internals behind createSdk.
+export type {
+  InferenceConfig,
+  ModelAssignment,
+  ModelCall,
+  ModelCallFailureKind,
+  ModelCallInput,
+  ModelCallResult,
+} from "./inference/types.js";
+export type { ProviderProvenance } from "./shared/derivation.js";
 
 // Epic 03 view vocabulary (shared/view.ts): config shapes live on SdkConfig
 // from Story 0; the operation shapes land with Stories 1–5.
@@ -284,16 +303,74 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   return scoped as T;
 }
 
+// Resolve the `inference` construction path (Epic 05 Flow 1, DD-5): validate
+// the host function and the complete assignment map loudly — all seven kinds
+// present (iterating the exported FORM_KINDS set, never a second literal
+// list), no unknown kind keys, every prompt name in the registry, non-empty
+// provider/model routing keys — then build the adapter into the same
+// DerivationProvider slot direct injection uses. No partial construction:
+// every mistake throws before anything is assembled (AC-1.1, AC-1.3).
+function resolveInferenceProvider(inference: InferenceConfig): DerivationProvider {
+  if (typeof inference.call !== "function") {
+    throw new TypeError("createSdk config: inference.call must be a function");
+  }
+  const assignments = inference.assignments as unknown;
+  if (assignments === null || typeof assignments !== "object") {
+    throw new TypeError("createSdk config: inference.assignments must be an object");
+  }
+  const knownKinds = new Set<string>(FORM_KINDS);
+  for (const key of Object.keys(assignments)) {
+    if (!knownKinds.has(key)) {
+      throw new TypeError(
+        `createSdk config: inference.assignments has unknown kind key "${key}"`,
+      );
+    }
+  }
+  const map = assignments as Partial<Record<FormKind, ModelAssignment>>;
+  for (const kind of FORM_KINDS) {
+    const assignment = map[kind];
+    if (assignment === undefined || assignment === null || typeof assignment !== "object") {
+      throw new TypeError(`createSdk config: inference.assignments missing kind ${kind}`);
+    }
+    for (const field of ["provider", "model"] as const) {
+      const value = assignment[field];
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new TypeError(
+          `createSdk config: inference.assignments.${kind}.${field} must be a non-empty string`,
+        );
+      }
+    }
+    if (typeof assignment.prompt !== "string" || PROMPT_REGISTRY[assignment.prompt] === undefined) {
+      throw new TypeError(
+        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${String(assignment.prompt)}"`,
+      );
+    }
+  }
+  const timeoutMs = inference.timeoutMs ?? 60_000;
+  const maxInputChars = inference.maxInputChars ?? 200_000;
+  requirePositive(timeoutMs, "inference.timeoutMs");
+  requirePositive(maxInputChars, "inference.maxInputChars");
+  return createInferenceProvider({
+    call: inference.call,
+    assignments: map as Record<FormKind, ModelAssignment>,
+    timeoutMs,
+    maxInputChars,
+  });
+}
+
 // The only assembly path: provider, mode, clock, and policy enter here.
 // Config mistakes are programmer errors at construction and throw; operating
 // failures after construction return OpResults per the error contract.
 export function createSdk(config: SdkConfig): Lhc {
-  // Provider arrival is injection at construction only (Epic 05 Flow 6):
-  // there is no named-provider registry and no env/flag resolution path left
-  // to fall back on. The `inference` alternative lands in Story 2; the XOR
-  // rule is named from day one so a missing provider reports the final
-  // contract, not a downstream symptom.
-  if (config.provider === undefined && (config as { inference?: unknown }).inference === undefined) {
+  // Provider arrival is exactly one of direct injection or the inference
+  // config (Epic 05 DD-5); there is no named-provider registry and no
+  // env/flag resolution path to fall back on. The XOR rule is validated
+  // before anything downstream so the error names the caller's mistake, not
+  // a symptom (AC-1.1).
+  if (config.provider !== undefined && config.inference !== undefined) {
+    throw new TypeError("createSdk config: exactly one of provider or inference");
+  }
+  if (config.provider === undefined && config.inference === undefined) {
     throw new TypeError("createSdk config: exactly one of provider or inference");
   }
   if (config.mode !== "background" && config.mode !== "manual") {
@@ -301,17 +378,23 @@ export function createSdk(config: SdkConfig): Lhc {
       `createSdk config: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
     );
   }
-  if (config.provider === null || typeof config.provider !== "object") {
-    throw new TypeError("createSdk config: provider must implement DerivationProvider");
-  }
-  for (const operation of PROVIDER_OPERATIONS) {
-    if (typeof config.provider[operation] !== "function") {
-      throw new TypeError(`createSdk config: provider is missing operation ${operation}`);
+  let provider: DerivationProvider;
+  if (config.inference !== undefined) {
+    provider = resolveInferenceProvider(config.inference);
+  } else {
+    if (config.provider === null || typeof config.provider !== "object") {
+      throw new TypeError("createSdk config: provider must implement DerivationProvider");
     }
+    for (const operation of PROVIDER_OPERATIONS) {
+      if (typeof config.provider[operation] !== "function") {
+        throw new TypeError(`createSdk config: provider is missing operation ${operation}`);
+      }
+    }
+    provider = config.provider;
   }
 
   const resolved: ResolvedSdkConfig = {
-    provider: config.provider,
+    provider,
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },

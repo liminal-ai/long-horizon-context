@@ -1,10 +1,10 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: BETWEEN_STORIES
+- State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/05-derivation-inference
-- Current Story: 02-inference-seam-and-model-assignment
-- Current Phase: none
+- Current Story: 03-the-adapter-and-the-seven-prompts
+- Current Phase: implement
 - Notes: Story 1 accepted and committed 2026-06-12. Run provider-backed CLI calls detached (nohup) — never TaskStop mid-flight. Ruling files must be JSON: {rulingRequestId, decision, source, rationale}. Known story-lead defect: post-ruling planner may loop re-requesting the same ruling; if so, exit the loop and finish impl-lead acceptance from durable artifacts.
 
 ## Run Configuration
@@ -54,10 +54,24 @@
 - Baseline After: 309 tests (sanctioned drop: deletion of 12 spawned cli-process suites and 25 CLI-parity legs per AC-6.2 + approved ruling; retirement.test.ts coverage comparison guards SDK behavior coverage)
 - Notes: story-lead loop hit a defect at finalization — planner repeatedly re-requested the already-answered spec-deviation ruling (turns 7-9) despite apply-ruling artifacts visible in its prompt. Impl-lead exited the loop per ownership model and completed acceptance from durable artifacts (006/007 + gates). Epic 04 parity deviation recorded: spawned `inspect health` parity was backfilled before Epic 05; this story deletes the spawned-process parity surface instead of carrying it forward.
 
+### 02-inference-seam-and-model-assignment
+- Story Title: Story 2: Inference Seam and Model Assignment
+- Implementor Evidence: artifacts/02-inference-seam-and-model-assignment/005-implementor.json (ready-for-verification; 003 was a blocked first attempt from the session-limit interruption, replayed cleanly)
+- Verifier Evidence:
+  - artifacts/02-inference-seam-and-model-assignment/006-verify.json (pass, zero findings, codex/gpt-5.5)
+- Story Gate: cd packages/lhc && pnpm run verify — pass (327 tests)
+- Completion Gate: pnpm run verify-all — pass (327 tests)
+- Dispositions:
+  - spec-deviation ruling ...-ruling-spec-deviation: approved by impl-lead (FAILURE_CLASSIFICATION table landed this story instead of Chunk 4; matches AC-3.1 exactly; Story 4 will assert it as data)
+- Open Risks: none
+- Baseline Before: 309
+- Baseline After: 327 (+18 inference construction/routing tests)
+- Notes: same story-lead post-ruling loop defect as Story 1 (planner re-requested answered ruling); impl-lead exited loop and accepted from durable artifacts.
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 309 tests (post Story 1; measure = vitest "Tests passed" under pnpm run verify-all in packages/lhc)
-- Expected After Current Story: >= 309 + new inference tests
-- Latest Actual Total: 309 (Story 1 acceptance; sanctioned drop from 366 per CLI retirement)
+- Baseline Before Current Story: 327 tests (post Story 2)
+- Expected After Current Story: >= 327 + adapter/prompt tests
+- Latest Actual Total: 327 (Story 2 acceptance)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
