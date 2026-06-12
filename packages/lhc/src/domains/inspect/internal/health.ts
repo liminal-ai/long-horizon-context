@@ -88,7 +88,10 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
       }
       // Live queue visibility (AC-4.5), per report entry: every pending or
       // retrying entry rides a live item, so queued + claimed here equals
-      // pending + retrying above by construction.
+      // pending + retrying above by construction. Counts are per form-report
+      // entry by ratified contract (Epic 04 fix-batch-001): one work item
+      // (e.g. a turn_derivation) may back multiple form entries, so a raw
+      // listQueuedWork work-item count would break that identity.
       if (entry.queue !== undefined) {
         if (entry.queue.status === "queued") queue.queued += 1;
         else queue.claimed += 1;

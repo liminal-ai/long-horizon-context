@@ -45,7 +45,7 @@ Gate result: PASS. Every epic AC appears in a story. Every epic TC has exactly o
 | Stored view description | Inspect view reports stored bands, gaps, config, provenance, and degraded entries. | Story 3 | TC-2.1 |
 | Pull cost parity | Inspect view loadCost equals what pull serves for compacted and never-compacted threads. | Story 3 | TC-2.2, TC-2.3 |
 | Full SDK lifecycle | One SDK instance runs create, intake, drain, status, compact, pull, inspect, mutate, rebuild, compact, pull, materialize. | Story 4 | TC-5.1 |
-| Replay determinism | Fresh-thread replay produces byte-identical pull outputs and materialized files. | Story 4 | TC-5.2 |
+| Replay determinism | Fresh-thread replay produces byte-identical pull outputs and a materialized file byte-identical after normalizing only the random thread id (ids asserted to differ, every other byte exact). | Story 4 | TC-5.2 |
 | Reopen persistence | SDK teardown between phases yields the same final state as uninterrupted execution. | Story 4 | TC-5.3 |
 | Checkpoint CLI parity | Spawned CLI inspect/view/messages reads equal in-process SDK reads at checkpoints. | Story 4 | TC-5.4 |
 

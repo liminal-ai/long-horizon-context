@@ -118,7 +118,11 @@ Risk Reminders:
 
 #### Spec Deviations
 
-None.
+**Ruling-011** (`03-view-contents-report-story-run-001-ruling-011`) — decision: *approve measured `bandTokens` and nullable `sourceState` as accepted deviations* (the accepted public contract for `inspect.view`).
+
+- **Measured `loadCost.bandTokens` (AC-2.1 / AC-2.3).** AC-2.3 is the governing contract: `loadCost.total` must equal what an actual `pull` serves, verified against an independent pull. Stored band `token_count` prices snapshot bytes without the served `[context · <band>]` marker headers, and tokenization is non-additive, so a stored-count sum can never satisfy that equality. `bandTokens` is therefore measured over pull's served band messages with the shared estimator. AC-2.1's per-band stored token counts remain reported verbatim from the stored snapshot in the band section (`storedTokens`).
+- **Nullable `sourceState` (AC-2.4 / AC-2.5).** A never-compacted thread has no recorded compact provenance; AC-2.5 requires recorded provenance verbatim, so `sourceState` is `null` for such threads (mirroring AC-2.4's `meta: null`) rather than fabricated zeros.
+- **Not a weakening.** Both deviations honor the governing ACs more faithfully than the literal stored-sum / zeros reading would; approved on the merits via ruling-011 and recorded again for the spec-deviation gate.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->

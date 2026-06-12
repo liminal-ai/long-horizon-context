@@ -35,7 +35,7 @@ Fixture: Epic 03's tool-heavy fixture reused; extended in place (Story 2) with a
 | TC-4.2 | inspect-health :: failure detail + preview | failed: reason/attempts/lastError exact; blocked excluded from preview; preview = failed∧¬blocked set exactly |
 | TC-4.3 | inspect-health :: rebuild bracket | edit → health: cascade set pending with queued work visible (exact subjects per cascade contract); `drainSettled` → same set ready; disjoint forms untouched |
 | TC-5.1 | lifecycle :: full sequence + checkpoints | every phase ok; post-compact pull = bands+tail; mutate → pending; drain → ready; compact2 reflects edit; receipt sweep section field-equals pre-compact health snapshot |
-| TC-5.2 | lifecycle :: replay determinism | fresh thread, same script → hash-equal pull outputs and materialized file |
+| TC-5.2 | lifecycle :: replay determinism | fresh thread, same script → literal hash-equal pull outputs; materialized file hash-equal after normalizing only the random thread id (ids asserted to differ, every other byte exact) |
 | TC-5.3 | lifecycle :: teardown continuity | `freshSdk` between phase groups → final pull/health/file identical to TC-5.1 run |
 | TC-5.4 | cli-process-inspect :: checkpoint parity | spawned CLI overview/view/list at three checkpoints deep-equal in-process results at same checkpoints |
 

@@ -128,7 +128,7 @@ The state of every derived form, aggregated to act on. This is also where a muta
 - **AC-4.2**: Failures carry actionable detail: subject id, form kind, reason, attempts, last error — enough to decide and target a requeue without raw SQL.
 - **AC-4.3**: The report previews repair: which forms a requeue pass would touch (failed and not blocked), reported and never executed.
 - **AC-4.4**: Rebuild visibility: after an edit or delete, health shows the cascade-cleared forms as pending with their queued work visible; after the queue drains, the same forms report ready. Two reads bracket a rebuild.
-- **AC-4.5**: Live queue visibility: queued and claimed work counts from the owners' queue detail, consistent with the state counts in the same report.
+- **AC-4.5**: Live queue visibility: `health.queue` reports queued and claimed counts **per form-report entry**, tallied from each entry's live queue-item join in the owners' reports — every pending/retrying form rides one live queue item, so `queued + claimed` equals `pending + retrying` in the same report by construction. These are per-entry counts, not raw `listQueuedWork` work-item counts: one `turn_derivation` work item can back multiple form entries, so a raw work-item count would break that identity.
 
 #### Test Conditions
 
@@ -146,15 +146,15 @@ The sequence (PI-extension call order): create thread → intake multi-turn tool
 
 - **AC-5.1**: The full sequence completes through one real SDK configuration with the deterministic provider: every operation returns ok, zero network, zero real-provider calls.
 - **AC-5.2**: Checkpoint coherence: post-compact pull serves bands + tail; post-mutation health shows the cleared set pending; post-drain health shows it ready; the second compact's view reflects post-edit content; the second compact receipt's sweep section agrees with the health report taken immediately before it.
-- **AC-5.3**: End-to-end determinism: the whole sequence replayed on a fresh thread produces byte-identical pull outputs and materialized files.
+- **AC-5.3**: End-to-end determinism: the whole sequence replayed on a fresh thread produces literally byte-identical pull outputs (they carry no thread id, so equality is asserted with no normalization), and a materialized file byte-identical after normalizing only the intentionally random thread id — the two runs' thread ids are asserted to differ and every other byte must be exact (Story 4 ruling-011).
 - **AC-5.4**: No in-memory dependency: tearing down the SDK instance between phases and continuing on a fresh `createSdk` yields the same end state as the uninterrupted run.
 - **AC-5.5**: Operator parity: inspect and view reads driven through the spawned CLI at checkpoints return the same JSON as the in-process SDK calls at those checkpoints.
 
 #### Test Conditions
 
 - **TC-5.1** (AC-5.1, AC-5.2): Scripted lifecycle with checkpoint assertions at each named step; receipt-vs-health cross-check exact.
-- **TC-5.2** (AC-5.3): Replay on a fresh thread → hash equality on every pull output and the materialized file.
-- **TC-5.3** (AC-5.4): Teardown and recreate the SDK between intake/compact/mutation phases → final pull, health, and materialized file identical to TC-5.1's.
+- **TC-5.2** (AC-5.3): Replay on a fresh thread → literal hash equality on every pull output; materialized-file hash equality after substituting only the random thread id, asserting the two thread ids differ and every other byte is exact.
+- **TC-5.3** (AC-5.4): Teardown and recreate the SDK between intake/compact/mutation phases → final pull and health identical to TC-5.1's, and the materialized file hash-equal after substituting only the random thread id (every other byte exact).
 - **TC-5.4** (AC-5.5): Process-suite leg: spawned CLI inspect/view/messages reads at three checkpoints equal the in-process results.
 
 ## Data Contracts

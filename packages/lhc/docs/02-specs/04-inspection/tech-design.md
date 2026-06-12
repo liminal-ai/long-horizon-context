@@ -32,7 +32,7 @@ Designed from the epic; issues found and resolved during design:
         ▼                     ▼         ▼          ▼            ▼
    threads.resolve      intake-stream  thread-view  messages.report
    listThreads          .listEvents    .describe(NEW) turns.report
-                                       .pull        .listQueuedWork
+                                       .pull
                         messages.listMessages(+opts)
                         messages.show (NEW)          turns.listTurns/listChunks
 ```
@@ -46,7 +46,7 @@ Designed from the epic; issues found and resolved during design:
 | `listEvents` → ordered `EventRecord[]` | intake-stream (E01) | overview (count, span) |
 | `listMessages` → `MessageRecord[]` with `forms?` attached | messages (E01 + E02 AC-4.7) | overview, list/show |
 | `report(ref, {messageId?})` → `FormReportEntry[]` (queue join) | messages/turns (E02) | health, show |
-| `listTurns` / `listChunks` / `listQueuedWork` | turns (E01/E02) | overview, health |
+| `listTurns` / `listChunks` | turns (E01) | overview (turn/chunk counts) |
 | `status` → `ViewStatus` | thread-view (E03) | overview (visibility, derivation counts) |
 | `pull` → `PullResult` | thread-view (E03) | view (loadCost by construction) |
 | `thread_view` row + bands (storage, in-domain) | thread-view (E03) | `describe` only |
@@ -91,7 +91,7 @@ Design decisions:
 - **DD-1 (describe placement):** `describe` lives in thread-view because the stored view row is thread-view's table; inspect consuming it through the surface keeps the must-not-own rule airtight. Absent view → `ok` with `null`, mirroring `status`'s never-compacted behavior.
 - **DD-2 (show composes report):** `show` = internal single-message read (same store read as `listMessages`, by id, full blocks) + `messages.report(ref, {messageId})` for the queue-joined forms. No new join machinery; `FormReportEntry` is the forms shape `show` returns.
 - **DD-3 (list options):** `{ from?, to?, limit?, includeDeleted? }`, bounds in source event order. Existing callers unaffected (opts optional, default behavior unchanged: all visible messages).
-- **DD-4 (loadCost by construction):** `view-report.ts` calls `describe` (stored bands: entries, gaps, config, stored token counts) and `pull` (served messages). `loadCost.bandTokens` = sum of stored band counts; `loadCost.tailTokens` = estimator over pull's tail messages (band-absent entries); `total` = sum. Pull is the single costing authority for the tail — AC-2.2's boundary-aware shortening is inherited, not re-implemented.
+- **DD-4 (loadCost by construction):** `view-report.ts` calls `describe` (stored bands: entries, gaps, config, per-band stored token counts) and `pull` (served messages). `loadCost.bandTokens` = estimator over pull's served band messages; `loadCost.tailTokens` = estimator over pull's tail messages (band-absent entries); `total` = sum. Pull is the single costing authority for **both** bands and tail — AC-2.2's boundary-aware shortening is inherited, not re-implemented. The per-band stored token counts from `describe` are still reported verbatim in the band section per AC-2.1 (`storedTokens`); they price snapshot bytes and are deliberately not the served `loadCost`, because stored counts omit the served `[context · <band>]` marker headers and tokenization is non-additive (Story 3 ruling-011).
 - **DD-5 (overview's view section):** composed from `status` (boundary, zone, derivation counts, view health) + `describe` (viewId, createdAt, compactPoint, coveredFrom) — both already exist; overview adds no view logic.
 - **DD-6 (read-only, structurally tested):** the architecture-risk test snapshots observable state (work-item rows via `listQueuedWork`/reports, boundary position via `status`, view identity via `describe`, event/message counts) before and after every inspect/describe/show/list call and asserts deep equality. Read-only is asserted as absence-of-delta, not absence-of-write-code.
 - **DD-7 (no migration):** schema terminal at v6. The one index temptation (message kind counts) is declined — counts come from list reads (Spec Validation #2); if profiling ever demands an index, that is a v7 proposal.
@@ -131,7 +131,7 @@ inspect.view ──► threadView.describe ──► stored arrangement/gaps/con
                       │
                       ├─ band entries → cross-check count only (arrangement is describe's)
                       └─ tail entries → estimator → tailTokens (as served: short forms short)
-loadCost = { bandTokens: Σ stored, tailTokens: measured, total: sum }
+loadCost = { bandTokens: measured over served band messages, tailTokens: measured, total: sum }
 ```
 
 Never-compacted: `describe` → null ⇒ `meta: null`, bands empty, whole pull output is tail, parity contract unchanged (AC-2.4). The report never recomputes selection, rendering, or boundary state — stored snapshot + live pull are the only sources (AC-2.1's "not recomputed" is structural).
@@ -142,7 +142,7 @@ Never-compacted: `describe` → null ⇒ `meta: null`, bands empty, whole pull o
 
 ### Flow 4: Health
 
-`health(ref)`: `messages.report` + `turns.report` (full, not-ready included) + `listQueuedWork` both owners. Compose: counts by owner/kind/state from report entries' states; `failures[]` from `failed`/`blocked` entries (reason, attempts, lastError off `FormReportEntry`); `repairPreview[]` = failed-and-not-blocked subjects (reported, never requeued — AC-4.3); `queue` = queued/claimed counts from the live-item joins, consistent by construction with the same entries' states (AC-4.5). Rebuild visibility (AC-4.4) is two health calls bracketing a drain — no new mechanism, the cascade's pending states simply show.
+`health(ref)`: `messages.report` + `turns.report` (full, not-ready included), both owners. Compose: counts by owner/kind/state from report entries' states; `failures[]` from `failed`/`blocked` entries (reason, attempts, lastError off `FormReportEntry`); `repairPreview[]` = failed-and-not-blocked subjects (reported, never requeued — AC-4.3); `queue` = queued/claimed counts tallied **per form-report entry** from each `FormReportEntry`'s live queue-item join (the entry's `queue` field), so `queued + claimed` equals the same report's `pending + retrying` by construction (AC-4.5, ratified — Epic 04 fix-batch-001). This is deliberately *not* a raw `listQueuedWork` work-item count: one `turn_derivation` work item can back multiple form entries, which would break that identity. Rebuild visibility (AC-4.4) is two health calls bracketing a drain — no new mechanism, the cascade's pending states simply show.
 
 ### Flow 5: Lifecycle Exercise
 

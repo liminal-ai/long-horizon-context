@@ -470,9 +470,6 @@ export async function runCli(
       return (
         requireThreadRef(flags, "inspect health") ?? runInspectHealth(threadRefFrom(flags))
       );
-    // Routed ahead of its story so the CLI mirrors the SDK surface: the stub
-    // returns the structured not-implemented result; Story 3 makes it real
-    // (and adds it to the help text).
     case "inspect view":
       return (
         requireThreadRef(flags, "inspect view") ?? runInspectView(threadRefFrom(flags))
