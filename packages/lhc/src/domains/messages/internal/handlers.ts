@@ -11,6 +11,7 @@ import type {
   HandlerFormWrite,
   HandlerOutcome,
   HandlerRunContext,
+  ProviderResult,
   WorkHandler,
 } from "../../../shared/derivation.js";
 import type { WorkKind } from "../../../tech-utils/work-queue/index.js";
@@ -57,12 +58,17 @@ function loadSource(
   return { ok: true, messageId, source };
 }
 
-function landForm(
-  write: HandlerFormWrite,
-  result: { ok: true; text: string } | { ok: false; retryable: boolean; reason: string },
-): HandlerOutcome {
+function landForm(write: HandlerFormWrite, result: ProviderResult): HandlerOutcome {
   if (!result.ok) return { ok: false, retryable: result.retryable, reason: result.reason };
-  return { ok: true, forms: [{ ...write, content: result.text }] };
+  const form: HandlerFormWrite = { ...write, content: result.text };
+  // Provenance is copied from the provider result — stamped there from
+  // config-known strings, never authored here and never parsed from text
+  // (Epic 05 DD-4). The deterministic provider sets none, so its forms
+  // carry none.
+  if (result.provenance !== undefined) {
+    form.metadata = { ...(write.metadata ?? {}), provenance: result.provenance };
+  }
+  return { ok: true, forms: [form] };
 }
 
 const smoothPromptHandler: WorkHandler = async (run, item) => {

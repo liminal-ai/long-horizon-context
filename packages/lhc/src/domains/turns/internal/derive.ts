@@ -10,6 +10,7 @@
 import { resolveInstancePoke } from "../../../shared/context.js";
 import type {
   DependencyGap,
+  DerivedFormMetadata,
   HandlerOutcome,
   HandlerRunContext,
   WorkHandler,
@@ -92,6 +93,15 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const projectedTokens = estimateTokens(projection.text);
   const threadId = readThreadId(run);
   const renderingGaps: DependencyGap[] | undefined = gaps.length > 0 ? gaps : undefined;
+  // Tool-run receipts ride the rendering's metadata, mechanically restated
+  // from the composition input (AC-3.8) — the chunk summaries read them from
+  // here, never from provider prose. Provenance is copied from the provider
+  // result, stamped there from config-known strings (Epic 05 DD-4); the
+  // deterministic provider sets none.
+  const renderingMetadata: DerivedFormMetadata = {
+    ...(receipts.length > 0 ? { receipts } : {}),
+    ...(rendering.provenance === undefined ? {} : { provenance: rendering.provenance }),
+  };
 
   return {
     ok: true,
@@ -102,16 +112,16 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         form: "turn_rendering",
         content: rendering.text,
         ...(renderingGaps === undefined ? {} : { gaps: renderingGaps }),
-        // Tool-run receipts ride the rendering's metadata, mechanically
-        // restated from the composition input (AC-3.8) — the chunk
-        // summaries read them from here, never from provider prose.
-        ...(receipts.length > 0 ? { metadata: { receipts } } : {}),
+        ...(Object.keys(renderingMetadata).length > 0 ? { metadata: renderingMetadata } : {}),
       },
       {
         subjectKind: "turn",
         subjectId: turnId,
         form: "lower_band_projection",
         content: projection.text,
+        ...(projection.provenance === undefined
+          ? {}
+          : { metadata: { provenance: projection.provenance } }),
       },
     ],
     onApplied: (tx) => {
@@ -188,6 +198,9 @@ function chunkSummaryHandler(
           form: kind,
           content: result.text,
           ...(gaps.length > 0 ? { gaps } : {}),
+          ...(result.provenance === undefined
+            ? {}
+            : { metadata: { provenance: result.provenance } }),
         },
       ],
     };

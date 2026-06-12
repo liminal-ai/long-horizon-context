@@ -3,7 +3,7 @@
 ## Run Overview
 - State: STORY_ACTIVE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/05-derivation-inference
-- Current Story: 03-the-adapter-and-the-seven-prompts
+- Current Story: 04-failure-classification
 - Current Phase: implement
 - Notes: Story 1 accepted and committed 2026-06-12. Run provider-backed CLI calls detached (nohup) — never TaskStop mid-flight. Ruling files must be JSON: {rulingRequestId, decision, source, rationale}. Known story-lead defect: post-ruling planner may loop re-requesting the same ruling; if so, exit the loop and finish impl-lead acceptance from durable artifacts.
 
@@ -68,10 +68,26 @@
 - Baseline After: 327 (+18 inference construction/routing tests)
 - Notes: same story-lead post-ruling loop defect as Story 1 (planner re-requested answered ruling); impl-lead exited loop and accepted from durable artifacts.
 
+### 03-the-adapter-and-the-seven-prompts
+- Story Title: Story 3: The Adapter and the Seven Prompts
+- Implementor Evidence: artifacts/03-the-adapter-and-the-seven-prompts/003-implementor.json (ready-for-verification)
+- Verifier Evidence:
+  - artifacts/03-the-adapter-and-the-seven-prompts/004-verify.json (revise, finding SV-03-001)
+  - artifacts/03-the-adapter-and-the-seven-prompts/005-verify.json (pass; SV-03-001 fixed; convergence inside story-lead loop)
+- Story Gate: cd packages/lhc && pnpm run verify — pass (353 tests)
+- Completion Gate: pnpm run verify-all — pass (37 files / 353 tests)
+- Dispositions:
+  - SV-03-001: fixed (verified in 005-verify.json)
+  - spec-deviation ruling: approved by impl-lead (retryable failure reasons formatted 'provider_failure: <kind>: <message>' to satisfy both TC-2.3 exhaustion shape and immutable Epic 02 verbatim-copy contract; terminal kinds stay kind-led; Story 4 TC-3.1 must consume same format)
+- Open Risks: none
+- Baseline Before: 327
+- Baseline After: 353 (+26 adapter/prompt tests)
+- Notes: same post-ruling loop defect; accepted from durable artifacts.
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 327 tests (post Story 2)
-- Expected After Current Story: >= 327 + adapter/prompt tests
-- Latest Actual Total: 327 (Story 2 acceptance)
+- Baseline Before Current Story: 353 tests (post Story 3)
+- Expected After Current Story: >= 353 + classification tests
+- Latest Actual Total: 353 (Story 3 acceptance)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none

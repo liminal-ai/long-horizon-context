@@ -1,7 +1,9 @@
-// PRE-DIAL-IN: written to the POC smoothing prompt's standard (concrete
-// instruction, fact-preservation rule, length bound); the POC's settled text
-// is ported verbatim in the adapter/prompts story, and the dial-in working
-// period owns tuning after that.
+// SETTLED (AC-2.3): the POC's tuned smoothing prompt, ported verbatim from
+// pi-long-horizon's pi-codex-user-prompt-smoothing-provider (tested
+// extensively there against alternatives). The protected-literals sentence
+// rides along verbatim: LHC's smoothing input carries no literals list, so
+// the clause is simply inert here, and the dial-in period owns any rewording
+// under a new versioned name.
 import type { PromptTemplate } from "./index.js";
 
 export const smoothingV1: PromptTemplate<{ text: string }> = {
@@ -10,7 +12,7 @@ export const smoothingV1: PromptTemplate<{ text: string }> = {
     {
       role: "system",
       content:
-        "You rewrite a user's raw prompt into clear, well-formed prose for an engineering record. Preserve the user's intent, every constraint, and every concrete fact: paths, identifiers, names, numbers, error text. Do not add requests the user did not make and do not answer the prompt. Keep it at most as long as the original.",
+        "You smooth user prompts for long-horizon coding context.\n\nPreserve the user's intent, uncertainty, explicit constraints, file paths, commands, identifiers, numbers, thresholds, and priorities.\nWhen protected literals are provided, copy each one exactly; do not normalize, shorten, spell-correct, or regenerate those strings.\nFix typos, grammar, capitalization, and whitespace.\nReduce repetition, anger, profanity, and attention-spiking phrasing without moralizing, apologizing, or adding therapeutic framing.\nReturn only the smoothed prompt text.",
     },
     { role: "user", content: i.text },
   ],
