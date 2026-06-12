@@ -1,8 +1,8 @@
 # Team Impl Log — Epic 04: Inspection
 
-State: STORY_ACTIVE
+State: PRE_EPIC_VERIFY
 Spec-pack root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/04-inspection
-Current Story: 03-view-contents-report
+Current Story: 04-lifecycle-exercise
 Current Phase: implement (story-orchestrate)
 
 ## Run Configuration
@@ -85,6 +85,17 @@ Current Phase: implement (story-orchestrate)
 - Story 2's tracked risk closed: overview now consumes threadView.describe (overview.ts updated this story).
 - Open risks: none story-scoped.
 
+## Receipt — Story 04: Lifecycle Exercise (ACCEPTED 2026-06-12)
+
+- Story: 04-lifecycle-exercise — Story 4: Lifecycle Exercise (capstone, no new production surface).
+- Story-lead: run-001. Implementor evidence: artifacts/04-lifecycle-exercise/003-implementor.json. Verifier: initial BLOCK (SV-04-001), follow-up PASS via primitive story-verify (retained codex session 019ebc73…), zero open/new findings, recommendedNextStep pass.
+- Ruling-011 (spec-contract, APPROVED): accept-threadId-normalized-materialized-file-equality-and-update-story-spec. Thread id is the design's one random value; literal byte identity would need a forbidden test-only id-injection seam. Pull-output hash equality stays literal. Quick-fix 004 recorded the contract in stories/04-lifecycle-exercise.md (doc-only).
+- Findings dispositions: SV-04-001 fixed/resolved under ruling-011.
+- Process notes: story-lead planner (codex) emitted schema-invalid verify-followup actions twice → run terminal interrupted; impl-lead ran the missing bounded step directly via story-verify follow-up per skill recovery rules. Tooling defect, not story risk.
+- Gates run by impl-lead: `pnpm verify` PASS (328 default); `pnpm verify-all` PASS (366 incl. process suite ran). Verifier independently ran both: pass.
+- Baseline: before 320 → after 328. No regression.
+- Open risks: epic.md:149/156-157, coverage.md:48, test-plan.md:38 still carry the literal "byte-identical" phrasing — flagged for epic review awareness (story spec is the updated requirements source).
+
 ## Story Sequence Status
 
 | Story | Status |
@@ -92,7 +103,7 @@ Current Phase: implement (story-orchestrate)
 | 01-message-read-surface | ACCEPTED |
 | 02-inspect-domain-overview-and-health | ACCEPTED |
 | 03-view-contents-report | ACCEPTED |
-| 04-lifecycle-exercise | pending |
+| 04-lifecycle-exercise | ACCEPTED |
 
 ## Transitions
 

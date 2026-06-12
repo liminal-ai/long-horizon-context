@@ -42,9 +42,10 @@
     "test/view-render-targets.test.ts": "a3195b6b56fbc1dc27b4bdd62b6cb717c3b2e0308fab92d711501125709e60c0",
     "test/cli-process-view.test.ts": "f1f3c4e5b36f80c4510065fc24db5faa6c1de2890447a866d5869a63dd96f51c",
     "test/messages-read.test.ts": "0b6c53ae2a1c1c4cc8de303d39d978912e9d83907895379b4b3f80c39ce163c3",
-    "test/cli-process-inspect.test.ts": "19742b4c1693586313196fbf64eced4ab64e3d981df32c7c825c758f0f180cd3",
+    "test/cli-process-inspect.test.ts": "375adea25cea0ea1e7674f9904fedc3289ef27d8d4ff4c0980fdfe4d689ffe58",
     "test/inspect-overview.test.ts": "e7aebfc5020e3addd1f17123977cf48646be5db03b6a0d1ebcc5f9ff65bb4969",
     "test/inspect-health.test.ts": "4e395d873c3469674d1829310d84afa508ad4eabf2a3e10fec1240f9c120fb4a",
-    "test/inspect-view.test.ts": "b631376bfff9edeed0d11c2e324440254d0573fe4d02785fca1c9d081370a921"
+    "test/inspect-view.test.ts": "b631376bfff9edeed0d11c2e324440254d0573fe4d02785fca1c9d081370a921",
+    "test/lifecycle.test.ts": "667f0aede54df3c8c008280e49543914d3e05994ee3751ae4c5d3aa029ce8fbf"
   }
 }

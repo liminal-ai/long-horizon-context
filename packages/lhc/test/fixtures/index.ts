@@ -154,6 +154,19 @@ export {
   type ObservableState,
 } from "./read-only-delta.js";
 export {
+  createLifecycleSdk,
+  DELETE_TARGET,
+  DELETED_MESSAGE_TEXT,
+  EDIT_TARGET,
+  EDITED_MESSAGE_TEXT,
+  LIFECYCLE_PROFILE,
+  runLifecycle,
+  type LifecycleCheckpoint,
+  type LifecycleOptions,
+  type LifecyclePhases,
+  type LifecycleRun,
+} from "./lifecycle.js";
+export {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,
   gappedRenderingThread,

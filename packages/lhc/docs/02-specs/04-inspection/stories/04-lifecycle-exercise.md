@@ -24,13 +24,13 @@ Add the full-surface lifecycle exercise in PI-extension call order across SDK, r
 
 - **TC-5.1** (AC-5.1, AC-5.2): Scripted lifecycle with checkpoint assertions at each named step; receipt-vs-health cross-check exact.
 
-- **AC-5.3**: End-to-end determinism: the whole sequence replayed on a fresh thread produces byte-identical pull outputs and materialized files.
+- **AC-5.3**: End-to-end determinism: the whole sequence replayed on a fresh thread produces byte-identical pull outputs, and a materialized file that is byte-identical after normalizing only the intentionally random thread id (threads design decision 7) — the two runs' thread ids must differ and every other byte must be exact. Pull outputs carry no thread id, so their equality stays literal with no normalization. (See Spec Deviations: ruling-011.)
 
-- **TC-5.2** (AC-5.3): Replay on a fresh thread → hash equality on every pull output and the materialized file.
+- **TC-5.2** (AC-5.3): Replay on a fresh thread → literal hash equality on every pull output; materialized-file hash equality after substituting only the random thread id, asserting the two thread ids differ and every other byte is exact.
 
-- **AC-5.4**: No in-memory dependency: tearing down the SDK instance between phases and continuing on a fresh `createSdk` yields the same end state as the uninterrupted run.
+- **AC-5.4**: No in-memory dependency: tearing down the SDK instance between phases and continuing on a fresh `createSdk` yields the same end state as the uninterrupted run — final pull byte-identical and health deep-equal; the materialized file byte-identical after normalizing only the random thread id (the teardown run is itself a fresh thread, so its id differs and every other byte must be exact). (See Spec Deviations: ruling-011.)
 
-- **TC-5.3** (AC-5.4): Teardown and recreate the SDK between intake/compact/mutation phases → final pull, health, and materialized file identical to TC-5.1's.
+- **TC-5.3** (AC-5.4): Teardown and recreate the SDK between intake/compact/mutation phases → final pull and health identical to TC-5.1's, and the materialized file hash-equal after substituting only the random thread id (every other byte exact).
 
 - **AC-5.5**: Operator parity: inspect and view reads driven through the spawned CLI at checkpoints return the same JSON as the in-process SDK calls at those checkpoints.
 
@@ -82,8 +82,8 @@ Risk Reminders:
 | TC | Test File / Check | Test Description |
 |----|-------------------|------------------|
 | TC-5.1 | `test/lifecycle.test.ts :: full sequence + checkpoints` | Every phase returns ok; pull/health/compact/materialize checkpoints agree field-for-field where required. |
-| TC-5.2 | `test/lifecycle.test.ts :: replay determinism` | Fresh-thread replay produces hash-equal pull outputs and materialized file. |
-| TC-5.3 | `test/lifecycle.test.ts :: teardown continuity` | Fresh SDK between phase groups yields final pull, health, and materialized file equal to uninterrupted run. |
+| TC-5.2 | `test/lifecycle.test.ts :: replay determinism` | Fresh-thread replay: literal hash-equal pull outputs; materialized file hash-equal after normalizing only the random thread id (ids asserted to differ, every other byte exact). |
+| TC-5.3 | `test/lifecycle.test.ts :: teardown continuity` | Fresh SDK between phase groups: final pull and health equal to the uninterrupted run; materialized file hash-equal after normalizing only the random thread id. |
 | TC-5.4 | `test/cli-process-inspect.test.ts :: checkpoint parity` | Spawned CLI overview/view/list reads at checkpoints deep-equal in-process SDK results. |
 
 #### Architecture-Risk Tests
@@ -120,13 +120,18 @@ Risk Reminders:
 
 #### Spec Deviations
 
-None.
+**Ruling-011** (`04-lifecycle-exercise-story-run-001-ruling-011`) — decision: *accept threadId-normalized materialized-file equality and update story spec*. Refines the materialized-**file** half of AC-5.3 and AC-5.4; pull-output equality is unaffected.
+
+- **Context.** A thread's id is the design's one intentionally random value (threads design decision 7), and the PI session header embeds it (`id: "<threadId>:<timestamp>"`). Two real threads created through the public surface can never share an id, so a fresh-thread materialized file can never be *literally* byte-identical without injecting a test-only id seam into production thread creation — exactly the shim the anti-shim rules forbid.
+- **Accepted contract (TC-5.2 replay, TC-5.3 teardown).** Compare the two materialized files after substituting **only** the random thread id with a fixed placeholder; assert the two thread ids actually differ; require every other byte identical. Nothing else is normalized.
+- **Pull outputs stay literal.** Pull payloads carry no thread id, so their hash equality is asserted with zero normalization — the unweakened end-to-end determinism proof.
+- **Not a weakening.** The single sanctioned substitution plus "ids differ" and "every other byte exact" is strictly stronger than an unguarded file compare; it preserves AC-5.3's intent (determinism of all derived content) while respecting the one designed source of randomness. The lifecycle assertions in `test/lifecycle.test.ts` are unchanged in strength.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->
 - The scripted lifecycle runs through one SDK configuration with deterministic provider only.
 - Checkpoint assertions cover pull, health, compact receipt, rebuild, and materialized output.
-- Replay on a fresh thread produces byte-identical pull outputs and materialized files.
+- Replay on a fresh thread produces byte-identical pull outputs and a materialized file byte-identical after normalizing only the intentionally random thread id (ruling-011).
 - SDK teardown between phases produces the same final state as uninterrupted execution.
 - Spawned CLI checkpoint reads match in-process SDK JSON.
 - TC-5.1 through TC-5.4 pass with one primary owner in this story.

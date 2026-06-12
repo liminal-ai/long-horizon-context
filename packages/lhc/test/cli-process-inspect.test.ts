@@ -20,7 +20,12 @@ import {
   threads,
   type MessageListOptions,
 } from "../src/index.js";
-import { validEvent } from "./fixtures/index.js";
+import {
+  runLifecycle,
+  tempStore,
+  validEvent,
+  type LifecycleCheckpoint,
+} from "./fixtures/index.js";
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(pkgRoot, "dist", "cli.js");
@@ -153,4 +158,52 @@ describe("TC-3.4 / AC-3.4: spawned-CLI message list/show parity with the SDK", (
     // Same spawn-cost budget as the list leg, for the same gate-stability
     // reason (SV-01-003).
   }, 30000);
+});
+
+describe("TC-5.4 / AC-5.5: spawned-CLI checkpoint parity along the lifecycle", () => {
+  it("spawned overview/view/list reads at three lifecycle checkpoints deep-equal the in-process results", async () => {
+    // The SAME scripted sequence the default-suite legs drive
+    // (test/fixtures/lifecycle.ts, DD-8): the operator's spawned reads probe
+    // it at the three read checkpoints — post-compact (inspect1),
+    // post-rebuild (health2), and final (materialize) — and must return the
+    // same JSON as the in-process SDK calls at that exact state. Reads need
+    // no provider; the binary runs with LHC_PROVIDER unset. Parity is the
+    // production-path proof: cli/inspect.ts and cli/messages-read.ts route
+    // argv to the same surfaces, so any divergence is a bypass.
+    const store = tempStore();
+    const visited: LifecycleCheckpoint[] = [];
+    try {
+      await runLifecycle(store, {
+        name: "cli-parity",
+        onCheckpoint: async (checkpoint, { sdk, filePath }) => {
+          visited.push(checkpoint);
+          const inProcess = {
+            overview: await sdk.inspect.overview({ filePath }),
+            view: await sdk.inspect.view({ filePath }),
+            list: await sdk.messages.listMessages({ filePath }),
+          };
+          const spawned = {
+            overview: runBinary(["inspect", "overview", "--file-path", filePath]),
+            view: runBinary(["inspect", "view", "--file-path", filePath]),
+            list: runBinary(["messages", "list", "--file-path", filePath]),
+          };
+          for (const surface of ["overview", "view", "list"] as const) {
+            expect(spawned[surface].status, `${surface} at ${checkpoint}`).toBe(0);
+            expect(
+              JSON.parse(spawned[surface].stdout),
+              `${surface} at ${checkpoint}`,
+            ).toEqual(inProcess[surface]);
+          }
+        },
+      });
+    } finally {
+      store.cleanup();
+    }
+    // The checkpoints actually fired — a sequence change can never skip the
+    // parity probes silently (anti-shim: the process leg reports ran).
+    expect(visited).toEqual(["inspect1", "health2", "materialize"]);
+    // Nine serial dist/cli.js spawns plus the full scripted lifecycle: the
+    // same explicit budget rationale as the other process legs (SV-01-003),
+    // sized up for the spawn count.
+  }, 60000);
 });
