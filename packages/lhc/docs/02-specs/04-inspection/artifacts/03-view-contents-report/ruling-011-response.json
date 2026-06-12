@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "03-view-contents-report-story-run-001-ruling-011",
+  "decision": "Approve measured bandTokens and nullable sourceState as accepted deviations.",
+  "rationale": "AC-2.3 is the story's governing contract: loadCost.total must equal what an actual pull serves, verified against an independent pull. Stored band token_count prices snapshot bytes without the served '[context · <band>]' marker headers and tokenization is non-additive, so a stored-count sum can never satisfy that equality; measured pull-served bandTokens is the only implementation that honors the governing AC. AC-2.1's per-band stored token counts remain reported from the stored snapshot in the band section. For sourceState: a never-compacted thread has no recorded compact provenance, and AC-2.5 requires recorded provenance verbatim — null (mirroring AC-2.4's meta:null) is honest where fabricated zeros would not be. Implementation contract approved as the accepted public contract for inspect.view.",
+  "source": "impl-lead (Claude Code caller harness)"
+}

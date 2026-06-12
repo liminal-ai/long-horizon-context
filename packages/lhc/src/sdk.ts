@@ -36,6 +36,7 @@ import type { ErrorResult, OpResult } from "./shared/errors.js";
 import type {
   CompactReceipt,
   PullResult,
+  StoredView,
   SweepReceipt,
   ViewCompactParams,
   ViewProfile,
@@ -114,6 +115,7 @@ export type {
   PullResult,
   ResolvedViewConfig,
   SdkViewConfig,
+  StoredView,
   SweepReceipt,
   ViewCompactParams,
   ViewMessage,
@@ -213,14 +215,14 @@ export interface WorkSurface {
 }
 
 // The thread-view surface as the SDK exposes it (Epic 03, tech design
-// §Interface Definitions): the five operations only — the Story 0 config
+// §Interface Definitions): the operations only — the Story 0 config
 // substrate the domain index also carries is construction machinery, not an
-// operation. pull and status are real from Story 1; compact, sweep, and
-// materialize return structured not-implemented results until their stories
-// land.
+// operation. Epic 04 Story 3 adds `describe`, the stored-snapshot read the
+// inspect domain composes (DD-1).
 export interface ThreadViewSurface {
   pull(ref: threadsDomain.ThreadRef): Promise<OpResult<PullResult>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
+  describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
@@ -392,6 +394,7 @@ export function createSdk(config: SdkConfig): Lhc {
       {
         pull: threadViewDomain.pull,
         status: threadViewDomain.status,
+        describe: threadViewDomain.describe,
         compact: threadViewDomain.compact,
         sweep: threadViewDomain.sweep,
         materialize: threadViewDomain.materialize,

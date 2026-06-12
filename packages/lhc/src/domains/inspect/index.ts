@@ -4,8 +4,9 @@
 // reports repair targets without executing repair; mutations stay Feature 2
 // behavior on the owning surfaces.
 //
-// Story 2 lands overview and health; `view` returns the structured
-// not-implemented result until Story 3 lands the describe+pull report.
+// Story 2 landed overview and health; Story 3 lands `view` — the stored
+// snapshot from `threadView.describe` plus the serving cost measured from
+// `threadView.pull` (parity by construction, DD-4).
 //
 // Reads-only is structural, not disciplined (DD-6): every operation runs in
 // the touch-suppressed scope, so the open announcements fired by the surfaces
@@ -22,6 +23,7 @@ import type {
 import type { ThreadRef } from "../threads/index.js";
 import { composeHealth } from "./internal/health.js";
 import { composeOverview } from "./internal/overview.js";
+import { composeViewReport } from "./internal/view-report.js";
 
 export type { HealthReport, InspectOverview, ViewContentsReport };
 
@@ -33,15 +35,6 @@ export async function health(ref: ThreadRef): Promise<OpResult<HealthReport>> {
   return runWithThreadTouchSuppressed(() => composeHealth(ref));
 }
 
-// Story 3 (view contents report): the surface-skeleton stub contract —
-// machine-readable, never a throw (the Epic 03 precedent).
-export async function view(_ref: ThreadRef): Promise<OpResult<ViewContentsReport>> {
-  return {
-    ok: false,
-    error: {
-      errorClass: "system_error",
-      code: "not_implemented",
-      reason: "inspect.view lands with Epic 04 Story 3 (view contents report)",
-    },
-  };
+export async function view(ref: ThreadRef): Promise<OpResult<ViewContentsReport>> {
+  return runWithThreadTouchSuppressed(() => composeViewReport(ref));
 }

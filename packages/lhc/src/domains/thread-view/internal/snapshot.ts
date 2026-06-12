@@ -8,7 +8,7 @@
 // derived_form directly is the status's derivation counting, which goes
 // through the owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
-import type { Band } from "../../../shared/view.js";
+import type { Band, StoredView } from "../../../shared/view.js";
 import type { RenderingPartKind } from "../../../shared/derivation.js";
 
 // ── view snapshot (header + bands) ────────────────────────────────
@@ -73,6 +73,55 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
       return row === undefined
         ? []
         : [{ band, renderedText: row.rendered_text, tokenCount: Number(row.token_count) }];
+    }),
+  };
+}
+
+// The full stored row for `describe` (Epic 04 Story 3): everything the
+// compact wrote, parsed verbatim — arrangement, gaps, config, source-state
+// provenance, per-band stored token counts. Reading, never recomputing: the
+// JSON columns are the snapshot, and this read is the only path between
+// them and the describe surface.
+export function readStoredView(db: DatabaseSync): StoredView | null {
+  const header = db
+    .prepare(
+      `SELECT view_id, created_at, compact_point, covered_from, profile_name,
+              config_json, arrangement_json, gaps_json, source_state_json
+       FROM thread_view WHERE singleton = 1`,
+    )
+    .get() as
+    | {
+        view_id: string;
+        created_at: string;
+        compact_point: number | bigint;
+        covered_from: number | bigint;
+        profile_name: string | null;
+        config_json: string;
+        arrangement_json: string;
+        gaps_json: string;
+        source_state_json: string;
+      }
+    | undefined;
+  if (header === undefined) return null;
+
+  const bandRows = db
+    .prepare(`SELECT band, token_count FROM thread_view_band WHERE view_id = ?`)
+    .all(header.view_id) as unknown as Array<{ band: string; token_count: number | bigint }>;
+  const byBand = new Map(bandRows.map((row) => [row.band, row]));
+
+  return {
+    viewId: header.view_id,
+    createdAt: header.created_at,
+    compactPoint: Number(header.compact_point),
+    coveredFrom: Number(header.covered_from),
+    profileName: header.profile_name,
+    config: JSON.parse(header.config_json) as StoredView["config"],
+    arrangement: JSON.parse(header.arrangement_json) as StoredView["arrangement"],
+    gaps: JSON.parse(header.gaps_json) as StoredView["gaps"],
+    sourceState: JSON.parse(header.source_state_json) as StoredView["sourceState"],
+    bands: BAND_GRADIENT_ORDER.flatMap((band) => {
+      const row = byBand.get(band);
+      return row === undefined ? [] : [{ band, storedTokens: Number(row.token_count) }];
     }),
   };
 }

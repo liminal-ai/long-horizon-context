@@ -119,25 +119,24 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   bucketEntries(turnReport.value, derivation);
 
   // View summary and visibility (DD-5): zone tokens from status; view
-  // identity and boundary position from pull's meta — the stored snapshot
-  // fields verbatim. (Story 3's describe will serve the same stored fields;
-  // until it lands, pull's meta is the surface that exposes them.)
+  // identity from describe — the stored snapshot fields verbatim (the Story 3
+  // swap Story 2 tracked: pull's meta was the interim source). Boundary
+  // position still rides pull's meta, the serving surface that exposes it.
   const status = await threadView.status(ref);
   if (!status.ok) return status;
   const pulled = await threadView.pull(ref);
   if (!pulled.ok) return pulled;
-  const meta = pulled.value.meta;
+  const described = await threadView.describe(ref);
+  if (!described.ok) return described;
+  const stored = described.value;
   const view: InspectOverview["view"] =
-    meta.viewId === null ||
-    meta.createdAt === null ||
-    meta.compactPoint === null ||
-    meta.coveredFrom === null
+    stored === null
       ? null
       : {
-          viewId: meta.viewId,
-          createdAt: meta.createdAt,
-          compactPoint: meta.compactPoint,
-          coveredFrom: meta.coveredFrom,
+          viewId: stored.viewId,
+          createdAt: stored.createdAt,
+          compactPoint: stored.compactPoint,
+          coveredFrom: stored.coveredFrom,
         };
 
   return {
@@ -151,7 +150,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
       derivation,
       view,
       visibility: {
-        boundaryPosition: meta.boundaryPosition,
+        boundaryPosition: pulled.value.meta.boundaryPosition,
         zoneTokens: status.value.visibility.zoneTokens,
       },
     },

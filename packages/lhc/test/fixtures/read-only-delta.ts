@@ -17,6 +17,7 @@ export interface ObservableState {
   turnWork: unknown;
   viewStatus: unknown;
   pullMeta: unknown;
+  storedView: unknown;
   forms: unknown;
 }
 
@@ -29,6 +30,10 @@ export async function observableState(filePath: string): Promise<ObservableState
     turnWork: await turns.listQueuedWork({ filePath }),
     viewStatus: await threadView.status({ filePath }),
     pullMeta: pulled.ok ? pulled.value.meta : pulled,
+    // The stored snapshot whole (Story 3): a forgotten view touch — config,
+    // arrangement, band rows, provenance — moves this even when pull's meta
+    // would not show it.
+    storedView: await threadView.describe({ filePath }),
     forms: readDerivedForms(filePath),
   };
 }

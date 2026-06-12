@@ -1,4 +1,5 @@
-// thread-view surface (Epic 03): pull, status, compact, sweep, materialize.
+// thread-view surface (Epic 03): pull, status, compact, sweep, materialize;
+// Epic 04 Story 3 adds describe (the stored-snapshot read inspect composes).
 // Story 1 landed the hot-path reads (`pull`, `status`): local reads and
 // deterministic string assembly only, no inference, no network, no queue
 // interaction, no writes (AC-1.1, AC-2.8). Story 2 landed `compact`;
@@ -19,6 +20,7 @@ import type {
   CompactReceipt,
   PullResult,
   ResolvedViewConfig,
+  StoredView,
   SweepReceipt,
   ViewCompactParams,
   ViewMessage,
@@ -54,6 +56,7 @@ import {
 import { writePiSessionFile, type MaterializeInput } from "./internal/materialize.js";
 import {
   readReadyToolResultSummaries,
+  readStoredView,
   readTailMessages,
   readThreadMetadata,
   readViewSnapshot,
@@ -293,6 +296,37 @@ async function statusInner(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
       visibility: { zoneTokens, maxTokens: config.visibility.maxTokens },
     },
   };
+}
+
+// ── describe (Epic 04 Story 3: AC-2.1, AC-2.5) ───────────────────
+
+// The stored active view row, exposed read-only so inspect never reads
+// thread-view tables directly (DD-1). Everything is the snapshot verbatim —
+// arrangement, gaps, config, source-state provenance, per-band stored token
+// counts; nothing is recomputed, repaired, or read from the record. Absent
+// view ⇒ ok with null, mirroring status's never-compacted behavior. Like the
+// other reads, the whole operation runs touch-suppressed: a background SDK's
+// describe can never schedule a catch-up drain.
+export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
+  return runWithThreadTouchSuppressed(() => describeInner(ref));
+}
+
+async function describeInner(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    return { ok: true, value: readStoredView(db) };
+  } catch (cause) {
+    return storageFailure(`view describe failed: ${detail(cause)}`);
+  } finally {
+    db.close();
+  }
 }
 
 // ── compact (Flow 2: AC-2.1–2.7, 2.9, 2.10) ──────────────────────

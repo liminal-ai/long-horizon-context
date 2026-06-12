@@ -69,6 +69,7 @@ Usage:
   lhc view sweep (--thread-id <id> | --file-path <p>) [--json] [--registry <r>]
   lhc view materialize (--thread-id <id> | --file-path <p>) --out <path> [--format pi-session] [--registry <r>]
   lhc inspect overview (--thread-id <id> | --file-path <p>) [--registry <r>]
+  lhc inspect view     (--thread-id <id> | --file-path <p>) [--registry <r>]
   lhc inspect health   (--thread-id <id> | --file-path <p>) [--registry <r>]
 
 Every command prints the SDK result (value or error) as JSON and exits 0 on

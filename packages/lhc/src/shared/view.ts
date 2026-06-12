@@ -95,6 +95,36 @@ export interface PullResult {
   meta: ViewMeta;
 }
 
+// The stored active view row as `threadView.describe` exposes it (Epic 04
+// Story 3): the snapshot verbatim — arrangement, gaps, config, source-state
+// provenance, per-band stored token counts — never recomputed, never
+// repaired. Absent view ⇒ describe returns ok/null, mirroring status's
+// never-compacted behavior (DD-1).
+export interface StoredView {
+  viewId: string;
+  createdAt: string;
+  compactPoint: number;
+  coveredFrom: number;
+  // null when explicit params overrode a named base at compact (the stored
+  // config carries the resolved truth either way).
+  profileName: string | null;
+  config: { lowerBound: number; percentages: Record<string, number> };
+  // Every selected entry in served order, gap entries included (they are
+  // arrangement rows too; `gaps` carries their reasons).
+  arrangement: Array<{
+    band: Band;
+    subjectKind: "chunk" | "turn";
+    subjectId: string;
+    formUsed: string;
+    degraded: boolean;
+  }>;
+  gaps: Array<{ band: Band; subjectId: string; reason: string }>;
+  // What the compact saw (AC-2.5 provenance, stored verbatim).
+  sourceState: { maxEventOrder: number; formCounts: Record<string, number> };
+  // Non-empty bands in gradient order with their stored token counts.
+  bands: Array<{ band: Band; storedTokens: number }>;
+}
+
 export interface ViewStatus {
   tailTokens: number;
   threshold: number;

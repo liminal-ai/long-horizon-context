@@ -61,8 +61,17 @@ export interface ViewContentsReport {
   }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
   tail: { messageCount: number; tokens: number }; // as served (AC-2.2)
+  // loadCost totals what pull serves NOW (AC-2.3): band and tail tokens are
+  // both measured over pull's served messages with the shared estimator, so
+  // equality with an independent pull is structural. The stored per-band
+  // counts stay reported above (bands[].storedTokens, AC-2.1) — they price
+  // the snapshot bytes without the served band-marker header, so they are
+  // describe's truth, not the serving cost.
   loadCost: { bandTokens: number; tailTokens: number; total: number }; // = pull (AC-2.3)
-  sourceState: { maxEventOrder: number; formCounts: Record<string, number> }; // provenance verbatim (AC-2.5)
+  // Provenance verbatim (AC-2.5); null on a never-compacted thread — no
+  // compact ever recorded what it saw, and inventing zeros would fabricate
+  // provenance (AC-2.4's view-null shape extends here).
+  sourceState: { maxEventOrder: number; formCounts: Record<string, number> } | null;
 }
 
 export interface HealthReport {

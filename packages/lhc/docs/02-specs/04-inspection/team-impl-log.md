@@ -2,7 +2,7 @@
 
 State: STORY_ACTIVE
 Spec-pack root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/04-inspection
-Current Story: 02-inspect-domain-overview-and-health
+Current Story: 03-view-contents-report
 Current Phase: implement (story-orchestrate)
 
 ## Run Configuration
@@ -73,13 +73,25 @@ Current Phase: implement (story-orchestrate)
 - Open risks: Story 3 must swap overview's view-summary source from pull().meta to describe (tracked into Story 3 scope).
 - Commit: see Transitions.
 
+## Receipt — Story 03: View-Contents Report (ACCEPTED 2026-06-12)
+
+- Story: 03-view-contents-report — Story 3: View-Contents Report.
+- Story-lead: run-001. Implementor evidence: artifacts/03-view-contents-report/003-implementor.json. Verifier: initial BLOCK (SV-03-001 public-contract tension), final PASS with SV-03-001 fixed after impl-lead ruling-011.
+- Ruling-011 (public-contract-deviation, APPROVED): loadCost.bandTokens measured from pull-served band messages (AC-2.3 governing equality; stored sums structurally can't match served pull due to band marker headers + non-additive tokenization); sourceState nullable for never-compacted threads (AC-2.5 verbatim provenance, mirrors AC-2.4 meta:null). Spec-deviation gate approval also recorded (ruling-spec-deviation-response.json); same runtime approval-loop defect, impl-lead accepted directly.
+- Findings dispositions: SV-03-001 fixed.
+- One transient: first post-ruling resume ended `interrupted`; second resume completed verification cleanly from durable checkpoint.
+- Gates run by impl-lead: `pnpm verify` PASS (320 default); `pnpm verify-all` PASS (357 incl. process suite ran).
+- Baseline: before 313 → after 320. No regression.
+- Story 2's tracked risk closed: overview now consumes threadView.describe (overview.ts updated this story).
+- Open risks: none story-scoped.
+
 ## Story Sequence Status
 
 | Story | Status |
 |---|---|
 | 01-message-read-surface | ACCEPTED |
 | 02-inspect-domain-overview-and-health | ACCEPTED |
-| 03-view-contents-report | pending |
+| 03-view-contents-report | ACCEPTED |
 | 04-lifecycle-exercise | pending |
 
 ## Transitions
