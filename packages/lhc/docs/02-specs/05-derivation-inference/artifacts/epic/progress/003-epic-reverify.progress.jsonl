@@ -1,0 +1,12 @@
+{"timestamp":"2026-06-13T00:53:05.873Z","command":"epic-reverify","phase":"epic-reverify","event":"command-started","summary":"epic-reverify started."}
+{"timestamp":"2026-06-13T00:53:05.890Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-spawned","summary":"Provider spawned with pid 72970.","metadata":{"pid":72970}}
+{"timestamp":"2026-06-13T00:53:05.890Z","command":"epic-reverify","phase":"epic-reverify","event":"active-silent","summary":"Provider is active but silent.","metadata":{"silenceMs":0,"configuredSilenceTimeoutMs":600000,"configuredStartupTimeoutMs":300000}}
+{"timestamp":"2026-06-13T00:53:06.302Z","command":"epic-reverify","phase":"epic-reverify","event":"first-output-received","summary":"First provider stdout output received.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:53:37.537Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:54:08.352Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:54:39.046Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:55:09.919Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:55:40.911Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:56:11.210Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-13T00:56:35.743Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":209857,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-13T00:56:35.747Z","command":"epic-reverify","phase":"finalizing","event":"completed","summary":"epic-reverify completed with outcome ready-for-closeout.","metadata":{"outcome":"ready-for-closeout"}}

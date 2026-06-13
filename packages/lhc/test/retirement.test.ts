@@ -20,7 +20,9 @@ const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const SDK_ONLY_EXPORTS = [
   "BUILT_IN_PROFILES",
   "DEFAULT_COMPACT_THRESHOLD",
+  "DEFAULT_PROMPT_NAMES",
   "DEFAULT_VISIBILITY",
+  "PROMPT_NAMES",
   "TOKEN_ESTIMATOR_ID",
   "WORK_KIND_REGISTRY",
   "assembleWorkHandlerMap",

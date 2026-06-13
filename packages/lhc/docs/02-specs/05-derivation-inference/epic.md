@@ -1,6 +1,6 @@
 # Epic 05: Derivation Inference
 
-**Status:** Draft — pending review
+**Status:** Implemented — all six stories landed and verified; epic review passed (ruling-020 ratified, fix batch 001 applied)
 **PRD:** `../00-prd.md` (Feature 5 backfill rides this epic's spec cycle)
 **Tech Arch:** `../01-tech-arch.md`
 **Depends on:** Epic 02 (provider seam, queue/retry machinery, derived-form states), Epic 03 (visibility boundary — Flow 5 patches its contract), Epic 04 (lifecycle exercise — Flow 4 adds its real-inference leg; built, deviation state consumed as landed)
@@ -160,7 +160,7 @@ Everything else in Epic 03's boundary contract holds unchanged: monotonic forwar
 
 - **AC-5.1**: The advance check runs only when an intake batch commits a `turn_end`. Mid-turn batches never move the boundary regardless of zone size, and rendered bytes do not change between turn closes.
 - **AC-5.2**: Eviction is whole-turn, oldest-first: an advance flips every tool result in each evicted turn together; no turn is ever partially flipped.
-- **AC-5.3**: The peek-ahead stop: a turn is evicted only if the zone's sum after evicting it remains ≥ target. The advance lands in [target, target + one turn). The newest closed turn is never evicted.
+- **AC-5.3**: The peek-ahead stop: a turn is evicted only if the zone's sum after evicting it remains ≥ target. The advance lands in [target, target + one turn) — except where the explicit protections take precedence: the newest closed turn, plus any trailing turnless singleton groups recorded after it (structurally unevictable without first flipping that protected turn), may lawfully leave the zone above target + one turn (ruling-020, matching the tech design Flow 5 conditional-landing paragraph). The newest closed turn is never evicted.
 - **AC-5.4**: Config is max and target with defaults 64k/32k; max > target validated with a caller error; the floor token budget is retired from the config surface.
 - **AC-5.5**: All other Epic 03 boundary contracts hold under the new trigger: forward-only, summary-else-truncation short form, compact reset, deterministic replay, post-commit seam with non-blocking failure visible in status.
 

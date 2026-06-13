@@ -30,6 +30,11 @@ export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [chunkBriefV1.name]: chunkBriefV1,
 };
 
+// Every config-selectable prompt name — the catalog an operator's assignment
+// config picks from. Exposed through the SDK surface (sdk.ts) so valid names
+// are discoverable without reading source.
+export const PROMPT_NAMES: readonly string[] = Object.keys(PROMPT_REGISTRY);
+
 // The default template per kind — the seven names an operator's first config
 // reaches for, and what test fixtures assign.
 export const DEFAULT_PROMPT_NAMES: Record<FormKind, string> = {

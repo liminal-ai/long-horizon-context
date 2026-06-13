@@ -1,0 +1,7 @@
+# Epic 05 Fix Batch 001 (from canonical epic review artifacts/epic/002-epic-review.json)
+
+Fix-only items for this bounded pass:
+
+- E05-NB-1: `packages/lhc/package.json` — `verify` and `verify-all` are now textually identical after CLI retirement. Deduplicate: make `verify-all` delegate to `verify` (e.g. `"verify-all": "pnpm run verify"`) or otherwise remove the duplicated command text while preserving both script names (callers and docs reference both).
+- E05-NB-2: `packages/lhc/src/inference/prompts/index.ts` exports `PROMPT_REGISTRY` and `DEFAULT_PROMPT_NAMES`, but the package entry (`src/index.ts` → `sdk.js`) exposes no prompt-name catalog, so operators must read source to learn valid config-selectable prompt names. Export the names catalog (e.g. re-export `DEFAULT_PROMPT_NAMES` and registry name list) through the public SDK surface, keeping the SDK-only export snapshot in `test/retirement.test.ts` updated to include the new intentional exports.
+- E05-NB-5: stale pack status text. In `packages/lhc/docs/02-specs/05-derivation-inference/epic.md`: update the line-3 status header from "Status: Draft — pending review" to reflect implemented/reviewed state, and amend the AC-5.3 landing-window sentence with the ratified ruling-020 qualifier (protected newest closed turn plus trailing turnless singleton groups after it may lawfully leave the zone above target + one turn; matches the tech design Flow 5 conditional-landing paragraph).

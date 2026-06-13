@@ -26,7 +26,7 @@
     "red-verify": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm run boundaries",
     "verify": "pnpm run red-verify && vitest run",
     "green-verify": "pnpm run verify && node scripts/check-test-immutability.mjs",
-    "verify-all": "pnpm run red-verify && vitest run"
+    "verify-all": "pnpm run verify"
   },
   "engines": {
     "node": ">=24"

@@ -1,10 +1,10 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: STORY_ACTIVE
+- State: COMPLETE
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/docs/02-specs/05-derivation-inference
-- Current Story: 05-real-inference-suite-and-capstone
-- Current Phase: implement
+- Current Story: none (all accepted)
+- Current Phase: none
 - Notes: Story 1 accepted and committed 2026-06-12. Run provider-backed CLI calls detached (nohup) — never TaskStop mid-flight. Ruling files must be JSON: {rulingRequestId, decision, source, rationale}. Known story-lead defect: post-ruling planner may loop re-requesting the same ruling; if so, exit the loop and finish impl-lead acceptance from durable artifacts.
 
 ## Run Configuration
@@ -135,15 +135,17 @@
 - Latest Actual Total: 386 (377 passed + 9 env-gated keyed; verify-all)
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifact: artifacts/epic/002-epic-review.json (canonical; 001 attempt failed on provider JSON parse, retried)
+- Epic Review Status: pass (both reviewers pass, zero blocking findings; ruling-020 ratified; 5 non-blocking findings)
+- Epic Fix Status: cleaned (fix batch artifacts/fix/001-epic-fix-batch.md applied: E05-NB-1 verify-all delegates to verify, E05-NB-2 PROMPT_NAMES/DEFAULT_PROMPT_NAMES exported via SDK with retirement snapshot updated, E05-NB-5 epic.md status + AC-5.3 ruling-020 qualifier; epic-fix envelope itself hit PROVIDER_OUTPUT_INVALID after edits were applied — fixes verified by impl-lead via diff + gate)
+- Epic Reverify Status: ready-for-closeout (artifacts/epic/ reverify envelope)
+- Final Gate Status: pass — 2026-06-12, pnpm run verify-all exit 0, 40 files, 377 passed + 9 env-gated keyed legs (keyed path separately proven 13/13 on 2026-06-12 with openai/gpt-4o-mini)
+- Deferred non-blocking findings: E05-NB-3 (turn-derivation work item re-runs rendering when only projection fails — optimization, backlog), E05-NB-4 (describe.runIf skips alongside single accounting line — cosmetic, accepted)
 
 ## Open Risks / Accepted Risks
 - Codex auth status unknown at preflight (binary present, no non-mutating auth probe). Proceeding; if codex-backed roles fail to start, treat as PROVIDER_UNAVAILABLE and resolve.
-- Story 5 BLOCKED awaiting LHC_OPENROUTER_KEY from user: implementation complete (openrouter-call.ts fixture, inference-real.test.ts, lifecycle capstone parameterization), unkeyed accounting legs pass, but DoD-required keyed run cannot execute. Resume via story-orchestrate resume once key provided; then run keyed gate: cd packages/lhc && LHC_OPENROUTER_KEY=<key> pnpm exec vitest run test/inference-real.test.ts. Story 6 proceeding in parallel (independent).
+- (resolved) Story 5 key blocker: operator delivered LHC_OPENROUTER_KEY at /Users/leemoore/.lhc/openrouter.env on 2026-06-12; keyed run executed and recorded in the Story 5 receipt. Keyed path cannot gate CI by design — future keyed-path regressions detectable only by manual keyed re-run (epic-review unresolved item, accepted).
+- Prompt/model dial-in remains an explicit pre-acceptance backfill obligation of this pack (epic §Out of Scope) — plumbing proven, tuned prompts/models pending by design (epic-review unresolved item, accepted).
 
 ## Retained Run Notes (compaction-resilient essentials)
 - Epic 05 (derivation-inference): 6 stories, two-file tech-design shape, no prompt inserts. coverage.md confirms all 22 ACs / 15 TCs mapped.

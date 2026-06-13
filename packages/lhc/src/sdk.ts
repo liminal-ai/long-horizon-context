@@ -119,6 +119,15 @@ export type {
 } from "./inference/types.js";
 export type { ProviderProvenance } from "./shared/derivation.js";
 
+// The config-selectable prompt-name catalog (E05-NB-2): the full set of names
+// a per-kind assignment may select, and the default name per kind. Exposed so
+// operators discover valid prompt names from the SDK surface without reading
+// source. The registry itself stays a construction internal behind createSdk.
+export {
+  DEFAULT_PROMPT_NAMES,
+  PROMPT_NAMES,
+} from "./inference/prompts/index.js";
+
 // Epic 03 view vocabulary (shared/view.ts): config shapes live on SdkConfig
 // from Story 0; the operation shapes land with Stories 1–5.
 export {
