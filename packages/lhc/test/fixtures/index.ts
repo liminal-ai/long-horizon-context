@@ -128,6 +128,13 @@ export {
   type TestHandlerHooks,
 } from "./work-handlers.js";
 export {
+  boundaryTokens,
+  boundaryToolRun,
+  seedTurnedToolResults,
+  turnedToolResultEvents,
+  type TurnedToolResultsSpec,
+} from "./view-boundary.js";
+export {
   fireViewInjection,
   seedViewBoundary,
   setViewInjectionHook,
@@ -184,6 +191,15 @@ export {
   probeInput,
   type RoutingRunResult,
 } from "./seam-conformance.js";
+export {
+  createOpenRouterCall,
+  DEFAULT_OPENROUTER_MODEL,
+  emitRealSuiteAccounting,
+  OPENROUTER_ENDPOINT,
+  realSuiteAccountingEmissions,
+  resolveRealSuiteEnv,
+  type RealSuiteEnv,
+} from "./openrouter-call.js";
 export {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,

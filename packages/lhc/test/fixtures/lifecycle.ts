@@ -24,6 +24,7 @@ import {
   createDeterministicProvider,
   createSdk,
   type BatchResult,
+  type InferenceConfig,
   type CompactReceipt,
   type FormReportEntry,
   type HealthReport,
@@ -53,9 +54,15 @@ export const LIFECYCLE_PROFILE = {
   percentages: { full: 25, smooth: 16, detailed: 10, brief: 49 },
 } as const;
 
-export function createLifecycleSdk(): Lhc {
+// Epic 05 TC-4.2: the capstone replays this exact sequence with the real
+// inference adapter — the provider-arrival slot is the one swap point; the
+// sequence, phase names, and every other configuration value stay owned here
+// so the deterministic leg and the real leg run THE SAME lifecycle.
+export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
   return createSdk({
-    provider: createDeterministicProvider(),
+    ...(inference !== undefined
+      ? { inference }
+      : { provider: createDeterministicProvider() }),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
@@ -197,6 +204,10 @@ export interface LifecycleOptions {
     checkpoint: LifecycleCheckpoint,
     ctx: { sdk: Lhc; filePath: string },
   ) => Promise<void>;
+  // Epic 05 TC-4.2: run the sequence on the inference path instead of the
+  // deterministic provider. Same configuration otherwise (see
+  // createLifecycleSdk).
+  inference?: InferenceConfig;
 }
 
 export interface LifecycleRun {
@@ -224,12 +235,12 @@ export async function runLifecycle(
   const outPath = join(store.dir, `${name}-session.jsonl`);
   const ref = { filePath };
 
-  let sdk = createLifecycleSdk();
+  let sdk = createLifecycleSdk(opts.inference);
   const nextGroup = (): void => {
     // The fresh instance is the same configuration assembled again — the
     // continuity proof is that no phase depends on the prior instance's
     // memory, only on the thread file.
-    if (opts.freshSdkBetweenGroups) sdk = createLifecycleSdk();
+    if (opts.freshSdkBetweenGroups) sdk = createLifecycleSdk(opts.inference);
   };
   const checkpoint = async (cp: LifecycleCheckpoint): Promise<void> => {
     if (opts.onCheckpoint !== undefined) await opts.onCheckpoint(cp, { sdk, filePath });
