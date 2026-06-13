@@ -182,19 +182,20 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
   });
 });
 
-// ── Boundary G1 (Story 4, architecture-risk): the trajectory golden ─────
+// ── Boundary G1 (Epic 03 Story 4, re-cut by Epic 05 Story 6 for the
+// turn-end trigger and whole-turn eviction): the trajectory golden ─────
 //
-// Committed expected positions after each scripted batch — floor/target
+// Committed expected positions after each scripted batch — target/peek-ahead
 // arithmetic off-by-ones survive property tests, not goldens. The expected
-// values were hand-derived from the design rules (tech design §Boundary
-// advance) before implementation: contents are n joined "tok" words (exactly
+// values were hand-derived from the design rules (Epic 05 tech design
+// §Flow 5) before implementation: contents are n joined "tok" words (exactly
 // n o200k tokens each), so every sum in the golden is checkable by hand.
 // Every advance fires through a real intake commit; positions and zone sums
 // read back through real pull/status calls (no test-only advance surface).
 
 interface BoundaryGolden {
   case: string;
-  budgets: { maxTokens: number; targetTokens: number; floorTokens: number };
+  budgets: { maxTokens: number; targetTokens: number };
   batches: Array<{
     label: string;
     resultTokens: number[];
@@ -259,7 +260,7 @@ async function replayTrajectory(
   return observed;
 }
 
-describe("Boundary G1 (committed JSON): the advance trajectory, floor legs included", () => {
+describe("Boundary G1 (committed JSON): the advance trajectory under the turn-end trigger", () => {
   it("matches the committed positions and zone sums after every scripted batch", async () => {
     const golden = JSON.parse(
       readFileSync(join(import.meta.dirname, "goldens", "boundary-g1-trajectory.json"), "utf8"),

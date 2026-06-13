@@ -405,7 +405,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     const expectedZone = listed.value
       .filter((m) => m.kind === "tool_result")
       .reduce((sum, m) => sum + m.tokenEstimate, 0);
-    expect(status.value.visibility).toEqual({ zoneTokens: expectedZone, maxTokens: 32000 });
+    expect(status.value.visibility).toEqual({ zoneTokens: expectedZone, maxTokens: 64000 });
 
     // Reads only: no work rows, no form-state change, no view row, boundary
     // unmoved, zero provider calls — and no compact occurred uninvoked.

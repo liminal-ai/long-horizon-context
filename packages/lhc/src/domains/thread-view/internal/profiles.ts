@@ -1,7 +1,7 @@
 // Profile config resolution and validation (Story 0, FC-0.2): built-in
 // profiles, user profiles merged over them by name, and the budget rules —
-// band shares sum to 100, lower bound positive, visibility max > target ≥
-// floor. Pure functions, no IO. Config mistakes are programmer errors at SDK
+// band shares sum to 100, lower bound positive, visibility max > target.
+// Pure functions, no IO. Config mistakes are programmer errors at SDK
 // construction and throw naming the violation (Epic 02 rule); nothing here
 // returns OpResults.
 import type {
@@ -33,9 +33,8 @@ export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
 ];
 
 export const DEFAULT_VISIBILITY: VisibilityBudgets = {
-  maxTokens: 32000,
-  targetTokens: 24000,
-  floorTokens: 8000,
+  maxTokens: 64000,
+  targetTokens: 32000,
 };
 
 export const DEFAULT_COMPACT_THRESHOLD = 160000;
@@ -116,26 +115,32 @@ function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined)
   };
 }
 
+const BUDGET_KEYS = ["maxTokens", "targetTokens"] as const;
+
 function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): VisibilityBudgets {
+  // Unknown budget fields are config mistakes, not silent passengers — the
+  // retired floorTokens in particular must be rejected, never quietly carried
+  // (Epic 05 AC-5.4: no hidden floor fallback).
+  for (const key of Object.keys(partial ?? {})) {
+    if (!(BUDGET_KEYS as readonly string[]).includes(key)) {
+      fail(
+        `visibility.${key} is not a budget field (budgets are maxTokens and targetTokens; floorTokens was retired by Epic 05)`,
+      );
+    }
+  }
   const visibility: VisibilityBudgets = {
     maxTokens: partial?.maxTokens ?? DEFAULT_VISIBILITY.maxTokens,
     targetTokens: partial?.targetTokens ?? DEFAULT_VISIBILITY.targetTokens,
-    floorTokens: partial?.floorTokens ?? DEFAULT_VISIBILITY.floorTokens,
   };
-  for (const key of ["maxTokens", "targetTokens", "floorTokens"] as const) {
+  for (const key of BUDGET_KEYS) {
     if (!Number.isFinite(visibility[key]) || visibility[key] <= 0) {
       fail(`visibility.${key} must be a positive number, got ${visibility[key]}`);
     }
   }
-  // The budget ordering rule (AC-4.8): max > target ≥ floor.
+  // The budget ordering rule (Epic 05 AC-5.4): max > target.
   if (visibility.maxTokens <= visibility.targetTokens) {
     fail(
       `visibility.maxTokens (${visibility.maxTokens}) must be greater than targetTokens (${visibility.targetTokens})`,
-    );
-  }
-  if (visibility.targetTokens < visibility.floorTokens) {
-    fail(
-      `visibility.targetTokens (${visibility.targetTokens}) must be at least floorTokens (${visibility.floorTokens})`,
     );
   }
   return visibility;

@@ -23,7 +23,7 @@ Patch the Epic 03 visibility boundary to advance only at turn close, evict whole
 
 - **AC-5.1**: The advance check runs only when an intake batch commits a `turn_end`. Mid-turn batches never move the boundary regardless of zone size, and rendered bytes do not change between turn closes.
 - **AC-5.2**: Eviction is whole-turn, oldest-first: an advance flips every tool result in each evicted turn together; no turn is ever partially flipped.
-- **AC-5.3**: The peek-ahead stop: a turn is evicted only if the zone's sum after evicting it remains ≥ target. The advance lands in [target, target + one turn). The newest closed turn is never evicted.
+- **AC-5.3**: The peek-ahead stop: a turn is evicted only if the zone's sum after evicting it remains ≥ target. The advance lands in [target, target + one turn) only when that landing is achievable without violating newest-closed-turn protection or the structural protection of trailing turnless singleton groups positioned after the newest closed turn; when those protections would otherwise have to be broken to reach the window, they take precedence and the zone lawfully stays above [target, target + one turn). The newest closed turn is never evicted.
 - **AC-5.4**: Config is max and target with defaults 64k/32k; max > target validated with a caller error; the floor token budget is retired from the config surface.
 - **AC-5.5**: All other Epic 03 boundary contracts hold under the new trigger: forward-only, summary-else-truncation short form, compact reset, deterministic replay, post-commit seam with non-blocking failure visible in status.
 
@@ -135,7 +135,10 @@ Boundary decision:
 ```text
 advanceDecision(groups, { maxTokens, targetTokens }):
   total <= maxTokens -> no movement
-  walk groups oldest-first, excluding newest group always
+  walk groups oldest-first, stopping before the newest closed turn
+    (the newest closed turn and any trailing turnless singletons after it
+     are never candidates; with no closed turn present, exclude the newest
+     group instead)
   evict group only if (remaining - group.tokenSum) >= targetTokens
   boundary position = highest source_event_order in last evicted group
 ```

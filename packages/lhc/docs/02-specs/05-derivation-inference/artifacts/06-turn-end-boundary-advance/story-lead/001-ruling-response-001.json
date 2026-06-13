@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "06-turn-end-boundary-advance-story-run-001-ruling-020",
+  "decision": "Allow landing-window exception for protected trailing-turnless-after-newest-closed zones",
+  "rationale": "Approved: AC-5.3's protections are authoritative over the landing window when they conflict. The spec itself already contains this precedent — TC-5.2 requires the newest closed turn to remain intact even when it alone exceeds target, which necessarily lands the zone above target + one turn. Trailing turnless singleton groups positioned after the newest closed turn cannot be evicted without first evicting the protected newest turn, because the boundary is a positional marker advanced oldest-first; their protection is structural, not a new rule. Therefore the landing guarantee [target, target + one turn) applies only when achievable without violating the explicit protections. Keep current implementation and tests; update AC-5.3/tech-design wording to state the exception explicitly; rerun verification. This ruling will be surfaced at epic review for ratification.",
+  "source": "impl-lead"
+}

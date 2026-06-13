@@ -1,0 +1,6 @@
+{
+  "rulingRequestId": "06-turn-end-boundary-advance-story-run-001-ruling-spec-deviation",
+  "decision": "approve",
+  "rationale": "Approved: (1) seedTurnedToolResults implemented as (sdk, filePath, turns) seeding through a real intake commit rather than the test plan's sketched (db, turns) signature — a direct-DB seeder could never fire the production advance since no host-called advance surface exists; the fixture drives the production path, which is exactly what the anti-shim rule requires. (2) The landing-window exception for protected trailing-turnless-after-newest-closed zones was ruled in ruling-020 (impl-lead approved, to be ratified at epic review) and verification has since passed (008-verify).",
+  "source": "impl-lead"
+}

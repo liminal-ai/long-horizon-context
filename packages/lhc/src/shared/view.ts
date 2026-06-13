@@ -33,18 +33,20 @@ export interface ViewCompactParams {
   percentages?: Partial<ViewProfile["percentages"]>;
 }
 
-// Visibility-boundary budgets (AC-4.x): max > target ≥ floor, all positive.
+// Visibility-boundary budgets (Epic 03 AC-4.x as patched by Epic 05 AC-5.4):
+// max > target, both positive. The floor budget is retired — its job is done
+// structurally by the turn-end trigger (the open turn is untouchable) and the
+// never-evicted newest closed turn (Epic 05 DD-11).
 export interface VisibilityBudgets {
   maxTokens: number;
   targetTokens: number;
-  floorTokens: number;
 }
 
 // ── SDK assembly config (validated at construction, throws on nonsense
 // per the Epic 02 rule) ───────────────────────────────────────────
 export interface SdkViewConfig {
   profiles?: ViewProfileOverride[]; // merged over built-ins by name
-  visibility?: Partial<VisibilityBudgets>; // defaults: 32000 / 24000 / 8000
+  visibility?: Partial<VisibilityBudgets>; // defaults: 64000 / 32000
   compactThreshold?: number; // status trigger; default 160000
 }
 

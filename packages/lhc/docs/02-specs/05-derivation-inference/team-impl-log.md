@@ -98,10 +98,41 @@
 - Baseline After: 365 (+12 classification tests)
 - Notes: same post-ruling loop defect; accepted from durable artifacts.
 
+### 05-real-inference-suite-and-capstone
+- Story Title: Story 5: Real-Inference Suite and Capstone
+- Implementor Evidence: artifacts/05-real-inference-suite-and-capstone/003-implementor.json (ready-for-verification)
+- Verifier Evidence:
+  - artifacts/05-real-inference-suite-and-capstone/004-verify.json (block — keyed run not yet executed; correct silent-skip protection)
+  - artifacts/05-real-inference-suite-and-capstone/005-verify.json (pass after keyed-run evidence; follow-up retained session)
+- Story Gate: cd packages/lhc && pnpm run verify — pass
+- Completion Gate: pnpm run verify-all — pass (40 files / 377 passed, 9 env-gated keyed legs skipped with visible NOT-RAN accounting)
+- KEYED RUN RECEIPT (DoD): date 2026-06-12, model openai/gpt-4o-mini (fixture default, LHC_OPENROUTER_MODEL unset), 13/13 pass, exactly one accounting line "RAN: real-inference (model openai/gpt-4o-mini)"; ran twice (19:39 and 19:51 local); verbose log /tmp/lbuild-run/keyed-run-verbose.txt; key sourced from /Users/leemoore/.lhc/openrouter.env, never echoed or committed
+- Dispositions: none open
+- Open Risks: none
+- Baseline Before: 365
+- Baseline After: 386 total (377 passed + 9 keyed legs that run only with key; all 13 keyed tests verified passing in keyed run)
+
+### 06-turn-end-boundary-advance
+- Story Title: Story 6: Turn-End Boundary Advance
+- Implementor Evidence: artifacts/06-turn-end-boundary-advance/003-implementor.json (ready-for-verification)
+- Verifier Evidence:
+  - artifacts/06-turn-end-boundary-advance/004-verify.json (revise; F-06-001 fixed via quick-fix 002)
+  - artifacts/06-turn-end-boundary-advance/005-verify.json (needs-human-ruling; F-06-002 spec-contract conflict)
+  - artifacts/06-turn-end-boundary-advance/008-verify.json (pass after ruling-020)
+- Story Gate: cd packages/lhc && pnpm run verify — pass
+- Completion Gate: pnpm run verify-all — pass (shared run with Story 5: 377 passed / 9 skipped)
+- Dispositions:
+  - F-06-001: fixed
+  - F-06-002 / ruling-020: approved by impl-lead — landing-window exception allowed for protected trailing-turnless-after-newest-closed zones; rationale: TC-5.2 already sanctions over-target landing for oversized newest turn; trailing turnless groups after it are structurally protected by positional oldest-first boundary. FLAGGED FOR EPIC-REVIEW RATIFICATION (AC-5.3/tech-design wording update).
+  - spec-deviation (seedTurnedToolResults signature (sdk,filePath,turns) via real intake commit instead of sketched (db,turns)): approved — direct-DB seeder could not fire production advance; fixture drives production path per anti-shim rule
+- Open Risks: none
+- Baseline Before: 365 (combined acceptance with Story 5)
+- Baseline After: 386 total
+
 ## Cumulative Baselines
-- Baseline Before Current Story: 365 tests (post Story 4)
-- Expected After Current Story: >= 365 + real-suite accounting tests
-- Latest Actual Total: 365 (Story 4 acceptance)
+- Baseline Before Current Story: n/a — all stories accepted
+- Expected After Current Story: n/a
+- Latest Actual Total: 386 (377 passed + 9 env-gated keyed; verify-all)
 
 ## Epic Closeout
 - Current Epic Review Artifact: none
@@ -112,6 +143,7 @@
 
 ## Open Risks / Accepted Risks
 - Codex auth status unknown at preflight (binary present, no non-mutating auth probe). Proceeding; if codex-backed roles fail to start, treat as PROVIDER_UNAVAILABLE and resolve.
+- Story 5 BLOCKED awaiting LHC_OPENROUTER_KEY from user: implementation complete (openrouter-call.ts fixture, inference-real.test.ts, lifecycle capstone parameterization), unkeyed accounting legs pass, but DoD-required keyed run cannot execute. Resume via story-orchestrate resume once key provided; then run keyed gate: cd packages/lhc && LHC_OPENROUTER_KEY=<key> pnpm exec vitest run test/inference-real.test.ts. Story 6 proceeding in parallel (independent).
 
 ## Retained Run Notes (compaction-resilient essentials)
 - Epic 05 (derivation-inference): 6 stories, two-file tech-design shape, no prompt inserts. coverage.md confirms all 22 ACs / 15 TCs mapped.

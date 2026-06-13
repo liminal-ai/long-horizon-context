@@ -1,40 +1,47 @@
 {
-  "case": "Boundary G1 — trajectory: sums crossing max twice, one monster open turn, floor legs (whole-message join; oversized-newest protected alone)",
-  "budgets": { "maxTokens": 100, "targetTokens": 60, "floorTokens": 30 },
+  "case": "Boundary G1 (re-cut for Epic 05 Story 6) — trajectory: turn-end trigger, whole-turn eviction, peek-ahead stop, mid-turn batches never move, the close heals",
+  "budgets": { "maxTokens": 100, "targetTokens": 60 },
   "batches": [
     {
-      "label": "B1 under max: zone 40 <= 100, boundary holds at origin",
+      "label": "B1 under max: turn t1 closes at zone 40 <= 100, boundary holds at origin",
       "resultTokens": [20, 20],
       "turnEnd": true,
       "expectedPosition": 0,
       "expectedZoneTokens": 40
     },
     {
-      "label": "B2 still under max: zone 80 <= 100, boundary holds",
+      "label": "B2 still under max: t2 closes at zone 80 <= 100, boundary holds",
       "resultTokens": [20, 20],
       "turnEnd": true,
       "expectedPosition": 0,
       "expectedZoneTokens": 80
     },
     {
-      "label": "B3 crosses max: zone 120 > 100; flip oldest-first r1,r2,r3 (120->100->80->60 = target); protected set joins r6+r5 to 40 >= floor 30; position = r3's order",
+      "label": "B3 crosses max: t3 closes at zone 120 > 100; whole-turn walk excluding the newest closed turn: evict t1 (remaining 80 >= target 60), peek t2 would leave 40 < 60 -> stop; position = t1's last result (order 5)",
       "resultTokens": [20, 20],
       "turnEnd": true,
-      "expectedPosition": 9,
-      "expectedZoneTokens": 60
+      "expectedPosition": 5,
+      "expectedZoneTokens": 80
     },
     {
-      "label": "B4 under max after the advance: zone 70 <= 100, no movement (never backward, no churn)",
+      "label": "B4 under max after the advance: t4 closes at zone 90 <= 100, no movement (never backward, no churn)",
       "resultTokens": [10],
       "turnEnd": true,
-      "expectedPosition": 9,
-      "expectedZoneTokens": 70
+      "expectedPosition": 5,
+      "expectedZoneTokens": 90
     },
     {
-      "label": "B5 monster open turn crosses max again: zone 230 > 100; the newest result (80 >= floor 30) is protected ALONE; flips stop at the protected set with the zone legally above target (80 > 60); position = m2's order, inside the open turn",
-      "resultTokens": [40, 40, 80],
+      "label": "B5 mid-turn: t5 stays open with zone 170 > 100; no turn_end commits, so no check runs and the boundary holds (AC-5.1)",
+      "resultTokens": [40, 40],
       "turnEnd": false,
-      "expectedPosition": 27,
+      "expectedPosition": 5,
+      "expectedZoneTokens": 170
+    },
+    {
+      "label": "B6 the close heals: the prompt closes t5 (close_then_open) and the turn_end commits; zone 170 > 100; walk evicts t2 (130 >= 60), t3 (90 >= 60), t4 (80 >= 60) and stops at the newest closed turn t5 (80, never a candidate); position = t4's result (order 21)",
+      "resultTokens": [],
+      "turnEnd": true,
+      "expectedPosition": 21,
       "expectedZoneTokens": 80
     }
   ]

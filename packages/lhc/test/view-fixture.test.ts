@@ -5,7 +5,7 @@
 // hand-written rows), the corruption and turnless-straggler variants, and
 // the two-point test injection facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, messages, turns, type Lhc } from "../src/index.js";
+import { createSdk, messages, turns, type Lhc, type VisibilityBudgets } from "../src/index.js";
 import {
   blockedSiblingThread,
   corruptedVariantThread,
@@ -119,13 +119,15 @@ describe("FC-0.2: view config validated at SDK construction, errors naming the v
     ).toThrow(/profile "skewed": percentages must sum to 100, got 105/);
   });
 
-  it("rejects visibility budgets violating max > target >= floor, naming the constraint", () => {
+  it("rejects visibility budgets violating max > target, naming the constraint; the retired floorTokens is unknown config (Epic 05 AC-5.4)", () => {
     expect(() => manualSdk({ visibility: { maxTokens: 24000, targetTokens: 24000 } })).toThrow(
       /visibility\.maxTokens \(24000\) must be greater than targetTokens \(24000\)/,
     );
     expect(() =>
-      manualSdk({ visibility: { targetTokens: 7000, floorTokens: 8000, maxTokens: 32000 } }),
-    ).toThrow(/visibility\.targetTokens \(7000\) must be at least floorTokens \(8000\)/);
+      manualSdk({
+        visibility: { targetTokens: 7000, floorTokens: 8000, maxTokens: 32000 } as Partial<VisibilityBudgets>,
+      }),
+    ).toThrow(/visibility\.floorTokens is not a budget field/);
   });
 
   it("rejects a non-positive lower bound", () => {
@@ -151,9 +153,8 @@ describe("FC-0.2: view config validated at SDK construction, errors naming the v
   it("resolves defaults and merges a built-in override field-wise", () => {
     const sdk = manualSdk({ profiles: [{ name: "coding", lowerBound: 64000 }] });
     expect(sdk.config.view.visibility).toEqual({
-      maxTokens: 32000,
-      targetTokens: 24000,
-      floorTokens: 8000,
+      maxTokens: 64000,
+      targetTokens: 32000,
     });
     expect(sdk.config.view.compactThreshold).toBe(160000);
     // The override replaced only the named field; the built-in's percentages

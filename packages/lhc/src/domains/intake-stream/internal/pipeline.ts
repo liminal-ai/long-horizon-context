@@ -138,16 +138,26 @@ export async function runMessageEvents(
       poke: resolveInstancePoke(),
     };
 
-    // The boundary-advance registration (Epic 03 Flow 4, AC-4.9): registered
-    // FIRST so the flush runs it before any queue poke the walk's enqueues
-    // register — advance first, poke second, the pinned order. It runs in
-    // both host modes (deterministic and cheap, unlike the mode-gated drain).
-    // Throw-isolated: a failing advance is caught and diagnosed here, never
-    // thrown into the flush — it cannot eat the pokes behind it and cannot
-    // reach this batch's caller; intake's outcome never depends on it. The
-    // boundary is then unchanged and the over-budget condition stays visible
-    // in status (computed live); the next successful check heals.
+    // The boundary-advance registration (Epic 03 Flow 4, AC-4.9; trigger
+    // gated by Epic 05 AC-5.1): registered FIRST so the flush runs it before
+    // any queue poke the walk's enqueues register — advance first, poke
+    // second, the pinned order. It runs in both host modes (deterministic and
+    // cheap, unlike the mode-gated drain). Throw-isolated: a failing advance
+    // is caught and diagnosed here, never thrown into the flush — it cannot
+    // eat the pokes behind it and cannot reach this batch's caller; intake's
+    // outcome never depends on it. The boundary is then unchanged and the
+    // over-budget condition stays visible in status (computed live); the next
+    // turn-end batch's check heals.
+    //
+    // The gate (Epic 05 DD-9): the advance check runs only when this batch
+    // COMMITS a turn_end event. The registration site, ordering, and throw
+    // isolation are untouched — the callback consults a flag the walk below
+    // sets when it records a turn_end (skipped duplicates never set it, so a
+    // resent turn_end alone triggers nothing). Mid-turn batches therefore
+    // never move the boundary regardless of zone size.
+    let batchCommittedTurnEnd = false;
     ctx.onCommit(() => {
+      if (!batchCommittedTurnEnd) return;
       try {
         runPostCommitBoundaryAdvance(ctx);
       } catch (cause) {
@@ -206,6 +216,7 @@ export async function runMessageEvents(
         });
       } else {
         lastOrder += 1;
+        if (event.eventKind === "turn_end") batchCommittedTurnEnd = true;
         const recordedAt = clock().toISOString();
         insert.run(
           lastOrder,

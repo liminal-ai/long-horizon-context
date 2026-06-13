@@ -270,7 +270,7 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
     const sdk = createSdk({
       provider: createProviderDouble(),
       mode: "manual",
-      view: { visibility: { maxTokens: 100, targetTokens: 60, floorTokens: 30 } },
+      view: { visibility: { maxTokens: 100, targetTokens: 60 } },
     });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -295,9 +295,10 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 
-    // Two post-compact tool turns (80-token results). The second batch
-    // crosses max (zone 160 > 100): the advance flips the older result
-    // behind the boundary; the newer one is floor-protected and stays full.
+    // Two post-compact tool turns (80-token results). The second turn's
+    // close crosses max (zone 160 > 100): the advance flips the older turn
+    // behind the boundary; the newest closed turn is never evicted and
+    // stays full (Epic 05 turn-end semantics).
     for (const run of [1, 2]) {
       const sent = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `post-compact tool run ${run}` } }),

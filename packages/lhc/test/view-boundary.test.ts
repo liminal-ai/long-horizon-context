@@ -1,11 +1,22 @@
 // Epic 03 Story 4: the visibility boundary (TC-4.1–4.6, the seam-isolation
 // legs both directions, the both-host-modes in-process proof, and the DoD's
-// status-sum/advance-sum equality check). Every advance here fires through a
-// REAL `intake.messageEvents` commit — no host-called advance surface exists
-// and no test invents one (story Anti-Shim Requirements); rendering is proven
-// through real `pull` calls. Budgets resolve through SDK view config (the
-// per-instance seam); the one direct-domain-call leg proves the below-SDK
-// default-budget fallback while it proves poke-failure isolation.
+// status-sum/advance-sum equality check) — AMENDED by Epic 05 Story 6 per the
+// test plan's Epic 03 Test Amendment Ledger:
+//   - per-intake-advance legs are re-cut for the turn-end trigger and
+//     whole-turn eviction (TC-5.1 owns the inverted mid-turn-never-moves
+//     assertions in view-boundary-turn-end.test.ts);
+//   - floor-protection legs (the old TC-4.3 monster-turn and oversized-newest
+//     cases) are superseded by the newest-turn-protection legs in TC-5.2
+//     (view-boundary-turn-end.test.ts);
+//   - construction tests drop floorTokens for the two-field budgets and gain
+//     the rejected-unknown-config leg;
+//   - status zoneTokens legs are unchanged (shared-query invariant holds).
+// Every advance here fires through a REAL `intake.messageEvents` commit — no
+// host-called advance surface exists and no test invents one (story Anti-Shim
+// Requirements); rendering is proven through real `pull` calls. Budgets
+// resolve through SDK view config (the per-instance seam); the one
+// direct-domain-call leg proves the below-SDK default-budget fallback while
+// it proves poke-failure isolation.
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSdk,
@@ -14,6 +25,7 @@ import {
   type Lhc,
   type MessageEventInput,
   type SdkViewConfig,
+  type VisibilityBudgets,
 } from "../src/index.js";
 import {
   createProviderDouble,
@@ -30,8 +42,9 @@ function tokens(n: number): string {
   return Array<string>(n).fill("tok").join(" ");
 }
 
-// The story's test budgets: max 100 > target 60 ≥ floor 30 (AC-4.8 ordering).
-const BUDGETS = { maxTokens: 100, targetTokens: 60, floorTokens: 30 };
+// The story's test budgets: max 100 > target 60 (the two-field surface,
+// Epic 05 AC-5.4).
+const BUDGETS = { maxTokens: 100, targetTokens: 60 };
 
 const stores: TempStore[] = [];
 afterEach(() => {
@@ -110,12 +123,12 @@ function abridgedCount(messages: ReadonlyArray<{ content: string }>): number {
     .length;
 }
 
-describe("TC-4.1 (AC-4.3): under-max batches never move the boundary; the crossing batch moves once to target, oldest-first", () => {
-  it("holds position and bytes below max, then flips exactly one oldest-first batch of results", async () => {
+describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move the boundary; the crossing close evicts whole oldest turns", () => {
+  it("holds position and bytes below max, then flips exactly the oldest whole turn", async () => {
     const sdk = visSdk();
     const filePath = await newThread(sdk);
 
-    // Two under-max batches (zone 40, then 80 ≤ max 100): boundary unmoved.
+    // Two under-max closed turns (zone 40, then 80 ≤ max 100): boundary unmoved.
     await intake(sdk, filePath, toolTurn([20, 20]));
     const afterFirst = await sdk.threadView.pull({ filePath });
     expect(afterFirst.ok).toBe(true);
@@ -134,24 +147,25 @@ describe("TC-4.1 (AC-4.3): under-max batches never move the boundary; the crossi
     );
     expect(abridgedCount(afterSecond.value.messages)).toBe(0);
 
-    // The crossing batch (zone 120 > 100): one advance to target — the three
-    // oldest results flip (120→100→80→60 = target), the newer three stay
-    // full; the protected set (newest joined to 40 ≥ floor 30) is untouched.
+    // The crossing close (zone 120 > 100): one advance, whole-turn — turns
+    // are 40/40/40 oldest→newest; the newest closed turn is never a
+    // candidate; evicting t1 leaves 80 ≥ target 60, peeking t2 would leave
+    // 40 < 60 → stop. Both of t1's results flip together (Epic 05 AC-5.2).
     await intake(sdk, filePath, toolTurn([20, 20]));
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(6);
-    const expectedPosition = results[2]?.sourceEventOrder;
+    const expectedPosition = results[1]?.sourceEventOrder;
     const crossed = await sdk.threadView.pull({ filePath });
     expect(crossed.ok).toBe(true);
     if (!crossed.ok) return;
     expect(crossed.value.meta.boundaryPosition).toBe(expectedPosition);
-    expect(abridgedCount(crossed.value.messages)).toBe(3);
+    expect(abridgedCount(crossed.value.messages)).toBe(2);
 
-    // Oldest-first: precisely the first three results render abridged.
+    // Oldest-first: precisely the first turn's two results render abridged.
     const abridgedIds = results
       .filter((r) => r.sourceEventOrder <= (expectedPosition ?? 0))
       .map((r) => r.messageId);
-    expect(abridgedIds).toEqual(results.slice(0, 3).map((r) => r.messageId));
+    expect(abridgedIds).toEqual(results.slice(0, 2).map((r) => r.messageId));
 
     // DoD: status's zone sum equals the advance's decision sum on the same
     // state — the live tool-result estimates ahead of the boundary.
@@ -162,9 +176,9 @@ describe("TC-4.1 (AC-4.3): under-max batches never move the boundary; the crossi
       .filter((r) => r.sourceEventOrder > (expectedPosition ?? 0))
       .reduce((sum, r) => sum + r.tokenEstimate, 0);
     expect(status.value.visibility.zoneTokens).toBe(expectedZone);
-    expect(status.value.visibility.zoneTokens).toBe(60);
+    expect(status.value.visibility.zoneTokens).toBe(80);
 
-    // The next under-max batch (zone 70 ≤ 100): no movement.
+    // The next under-max close (zone 90 ≤ 100): no movement.
     await intake(sdk, filePath, toolTurn([10]));
     expect(await boundaryOf(sdk, filePath)).toBe(expectedPosition);
   });
@@ -210,8 +224,9 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — summary when usable, dete
     )?.content;
     expect(r2Summary).toBeDefined();
 
-    // The crossing batch: an 80-token result (zone 60+20+80 = 160 > max).
-    // Flips r1 and r2 (160→100→80); the newest is protected alone (≥ floor).
+    // The crossing close: an 80-token turn (zone 60+20+80 = 160 > max).
+    // Turn grouping: t1 {r1, r2} = 80 evicts whole (remaining 80 ≥ target
+    // 60); the newest closed turn is never a candidate.
     await intake(sdk, filePath, toolTurn([80]));
     expect(await boundaryOf(sdk, filePath)).toBe(r2.sourceEventOrder);
 
@@ -232,87 +247,16 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — summary when usable, dete
     // The interleaved assistant message renders full — non-tool-result
     // content is never affected by the boundary (AC-4.1).
     expect(contents).toContain("interleaved assistant text");
-    // The newest (protected) result renders full.
+    // The newest (protected) turn's result renders full.
     expect(contents).toContain(`[tool result · read_file]\n${tokens(80)}`);
   });
 });
 
-describe("TC-4.3 (AC-4.5): monster turn — the advance enters the open turn but stops at the whole-message protected set", () => {
-  it("flips into the open turn, keeps the newest whole results (joined ≥ floor) full, and leaves the turn's text full", async () => {
-    const sdk = visSdk();
-    const filePath = await newThread(sdk);
-    // One small closed turn, then one open turn whose tool results alone
-    // cross max: zone 20+40+40+40+25 = 165 > 100.
-    await intake(sdk, filePath, toolTurn([20]));
-    await intake(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "monster prompt" } }),
-      validEvent("assistant_thinking", { payload: { text: "monster thought" } }),
-      ...toolRun(40),
-      ...toolRun(40),
-      ...toolRun(40),
-      ...toolRun(25),
-      validEvent("assistant_text", { payload: { text: "monster narration" } }),
-      // No turn_end: the turn stays open.
-    ]);
-
-    const results = await toolResults(sdk, filePath);
-    expect(results).toHaveLength(5);
-    // Protected set, newest-backward joined to ≥ floor 30: m4 (25) alone is
-    // under the floor, so m3 joins (65) — whole messages, never a partial.
-    // Flips stop there with the zone at 65, legally above target 60.
-    const expectedPosition = results[2]?.sourceEventOrder; // m2: inside the open turn
-    expect(await boundaryOf(sdk, filePath)).toBe(expectedPosition);
-
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const contents = pulled.value.messages.map((m) => m.content);
-    expect(abridgedCount(pulled.value.messages)).toBe(3); // r0, m1, m2
-    // The protected newest results render full.
-    expect(contents).toContain(`[tool result · read_file]\n${tokens(40)}`);
-    expect(contents).toContain(`[tool result · read_file]\n${tokens(25)}`);
-    // The turn's own text messages all render full.
-    expect(contents).toContain("monster prompt");
-    expect(contents).toContain("[thinking]\nmonster thought\n[/thinking]");
-    expect(contents).toContain("monster narration");
-
-    const status = await sdk.threadView.status({ filePath });
-    expect(status.ok).toBe(true);
-    if (!status.ok) return;
-    expect(status.value.visibility.zoneTokens).toBe(65);
-  });
-
-  it("oversized-newest leg: a single result larger than the floor is protected alone; the zone legally sits above target", async () => {
-    const sdk = visSdk();
-    const filePath = await newThread(sdk);
-    await intake(sdk, filePath, toolTurn([20]));
-    // Open turn: 40 + 40 + 80; zone 180 > max. The newest (80) exceeds the
-    // floor by itself and is protected alone (AC-4.5).
-    await intake(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "oversized prompt" } }),
-      ...toolRun(40),
-      ...toolRun(40),
-      ...toolRun(80),
-    ]);
-    const results = await toolResults(sdk, filePath);
-    expect(results).toHaveLength(4);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[2]?.sourceEventOrder);
-
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    // The oversized newest renders full; everything older flipped.
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
-      `[tool result · read_file]\n${tokens(80)}`,
-    );
-    expect(abridgedCount(pulled.value.messages)).toBe(3);
-
-    const status = await sdk.threadView.status({ filePath });
-    expect(status.ok).toBe(true);
-    if (!status.ok) return;
-    expect(status.value.visibility.zoneTokens).toBe(80); // above target until room appears
-  });
-});
+// The old TC-4.3 (monster open turn entered by the advance; oversized-newest
+// floor protection) is SUPERSEDED per the Epic 05 amendment ledger: the
+// turn-end trigger makes the open turn structurally untouchable (TC-5.1's
+// mid-turn legs) and the newest-closed-turn protection replaces the floor
+// (TC-5.2's legs) — both in view-boundary-turn-end.test.ts.
 
 describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact resets to the compact point", () => {
   it("keeps flipped results flipped across small batches, then resets to the compact point with a full fresh tail", async () => {
@@ -320,10 +264,12 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
     const filePath = await newThread(sdk);
     for (let i = 0; i < 3; i += 1) await intake(sdk, filePath, toolTurn([20, 20]));
     const results = await toolResults(sdk, filePath);
-    const advanced = results[2]?.sourceEventOrder ?? 0;
+    // Turns 40/40/40: the third close crosses max (120 > 100); evict the
+    // whole oldest turn (remaining 80 ≥ target 60), peek stops at t2.
+    const advanced = results[1]?.sourceEventOrder ?? 0;
     expect(await boundaryOf(sdk, filePath)).toBe(advanced);
 
-    // Small tool-free batches: no backward motion, flipped stay flipped.
+    // Small tool-free closes: no backward motion, flipped stay flipped.
     for (let i = 0; i < 2; i += 1) {
       await intake(sdk, filePath, [
         validEvent("user_prompt", { payload: { text: `small batch ${i}` } }),
@@ -334,7 +280,7 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
       expect(pulled.ok).toBe(true);
       if (!pulled.ok) return;
       expect(pulled.value.meta.boundaryPosition).toBe(advanced);
-      expect(abridgedCount(pulled.value.messages)).toBe(3);
+      expect(abridgedCount(pulled.value.messages)).toBe(2);
     }
 
     // Compact: the boundary resets to the compact point (AC-4.7 — the reset
@@ -363,22 +309,24 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
   });
 });
 
-describe("TC-4.5 (AC-4.8): budget validation names the violated constraint (replay equality lives in the Boundary G1 golden)", () => {
+describe("TC-4.5 (AC-4.8 as amended by Epic 05 AC-5.4): budget validation names the violated constraint; floorTokens is rejected as unknown config", () => {
   it("rejects max ≤ target at construction, naming the constraint", () => {
     expect(() =>
-      visSdk({ visibility: { maxTokens: 100, targetTokens: 200, floorTokens: 50 } }),
+      visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } }),
     ).toThrow(/maxTokens \(100\) must be greater than targetTokens \(200\)/);
   });
 
-  it("rejects target < floor at construction, naming the constraint", () => {
+  it("rejects the retired floorTokens as an unknown budget field (no hidden floor fallback)", () => {
     expect(() =>
-      visSdk({ visibility: { maxTokens: 300, targetTokens: 100, floorTokens: 200 } }),
-    ).toThrow(/targetTokens \(100\) must be at least floorTokens \(200\)/);
+      visSdk({
+        visibility: { maxTokens: 300, targetTokens: 100, floorTokens: 50 } as Partial<VisibilityBudgets>,
+      }),
+    ).toThrow(/visibility\.floorTokens is not a budget field/);
   });
 });
 
-describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the condition visible; the next batch heals — and the poke still fires", () => {
-  it("background mode: intake succeeds, boundary holds, status shows over-max, the drain still ran; cleared, the next batch lands at target", async () => {
+describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the condition visible; the next turn close heals — and the poke still fires", () => {
+  it("background mode: intake succeeds, boundary holds, status shows over-max, the drain still ran; cleared, the next close lands in the target window", async () => {
     const sdk = visSdk({ visibility: BUDGETS }, "background");
     const filePath = await newThread(sdk);
 
@@ -390,8 +338,13 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
       throw new Error("injected advance failure");
     });
 
-    // One crossing batch: zone 120 > max 100.
-    const result = await sdk.intakeStream.messageEvents({ filePath }, toolTurn([40, 40, 40]));
+    // One crossing batch of three closed turns: zone 120 > max 100. The
+    // batch commits turn_ends, so the (failing) advance runs exactly once.
+    const result = await sdk.intakeStream.messageEvents({ filePath }, [
+      ...toolTurn([40]),
+      ...toolTurn([40]),
+      ...toolTurn([40]),
+    ]);
     expect(result.ok).toBe(true); // intake's outcome never depends on the advance
     if (!result.ok) return;
     expect(result.value.events.every((e) => e.outcome === "recorded")).toBe(true);
@@ -418,17 +371,17 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
       expect(m.forms?.find((f) => f.form === "tool_result_summary")?.state).toBe("ready");
     }
 
-    // Clear the injection; the next batch re-evaluates and lands at target:
-    // zone 130 → flip the two oldest (130→90→50 ≤ 60), stop before the
-    // protected set (r3+r4 joined to 50 ≥ floor 30).
+    // Clear the injection; the next turn close re-evaluates and heals: zone
+    // 130 > 100; turns 40/40/40/10 — evict t1 (remaining 90 ≥ 60), peek t2
+    // would leave 50 < 60 → stop; the newest closed turn never a candidate.
     setViewInjectionHook("post-commit-advance", null);
     await intake(sdk, filePath, toolTurn([10]));
     const all = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(all[1]?.sourceEventOrder);
+    expect(await boundaryOf(sdk, filePath)).toBe(all[0]?.sourceEventOrder);
     const healed = await sdk.threadView.status({ filePath });
     expect(healed.ok).toBe(true);
     if (!healed.ok) return;
-    expect(healed.value.visibility.zoneTokens).toBe(50);
+    expect(healed.value.visibility.zoneTokens).toBe(90);
   });
 });
 
@@ -436,7 +389,7 @@ describe("seam isolation, direction two (architecture-risk): a failing poke neve
   it("advances through a direct domain call (default budgets) even when the fallback poke throws", async () => {
     // Thread built through a manual SDK; the intake under test is a DIRECT
     // domain call with no SDK seam in scope, so budgets fall back to the
-    // built-in defaults (32000/24000/8000) and the poke falls back to the
+    // built-in defaults (64000/32000) and the poke falls back to the
     // below-SDK slot — which this leg makes throw.
     const sdk = visSdk();
     const filePath = await newThread(sdk);
@@ -444,14 +397,16 @@ describe("seam isolation, direction two (architecture-risk): a failing poke neve
       throw new Error("injected poke failure");
     });
 
-    // Zone 40000 > default max 32000: flip the older result (→ 20000 ≤
-    // target 24000); the newest (20000 ≥ floor 8000) is protected alone.
-    await intakeStream.messageEvents({ filePath }, toolTurn([20000, 20000]));
+    // Two closed turns of 40000 each: the second close crosses the default
+    // max (80000 > 64000); evicting the older whole turn leaves 40000 ≥
+    // target 32000; the newest closed turn is never a candidate.
+    await intakeStream.messageEvents({ filePath }, toolTurn([40000]));
+    await intakeStream.messageEvents({ filePath }, toolTurn([40000]));
     setSchedulerPoke(null);
 
     const results = await toolResults(sdk, filePath);
-    expect(results).toHaveLength(2); // the batch committed
-    // The advance ran before the throwing poke: position = the older result.
+    expect(results).toHaveLength(2); // the batches committed
+    // The advance ran before the throwing poke: position = the older turn.
     expect(await boundaryOf(sdk, filePath)).toBe(results[0]?.sourceEventOrder);
   });
 });
@@ -477,30 +432,31 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     if (!status.ok) return;
     expect(status.value.visibility.zoneTokens).toBe(40);
 
-    // The next batch's advance decides over the filtered population: live
+    // The next close's advance decides over the filtered population: live
     // zone 40+40+40 = 120 > max; the deleted row neither sums nor flips.
-    // Flips: the two oldest LIVE results (120→80→40 ≤ target 60); the newest
-    // (40 ≥ floor 30) is protected alone.
+    // Turn grouping: t1's surviving live result (40) evicts whole (remaining
+    // 80 ≥ target 60); the newest closed turn {40, 40} is never a candidate.
     await intake(sdk, filePath, toolTurn([40, 40]));
     const all = await toolResults(sdk, filePath); // listMessages is deleted-filtered too
     expect(all).toHaveLength(3);
-    expect(await boundaryOf(sdk, filePath)).toBe(all[1]?.sourceEventOrder);
+    expect(await boundaryOf(sdk, filePath)).toBe(all[0]?.sourceEventOrder);
     const after = await sdk.threadView.status({ filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
-    expect(after.value.visibility.zoneTokens).toBe(40);
+    expect(after.value.visibility.zoneTokens).toBe(80);
   });
 });
 
-describe("both host modes advance in-process (story DoD; the process-boundary CLI leg is Story 5's named debt)", () => {
+describe("both host modes advance in-process (story DoD)", () => {
   it.each(["manual", "background"] as const)("%s-mode SDK intake advances to the same position", async (mode) => {
     const sdk = visSdk({ visibility: BUDGETS }, mode);
     const filePath = await newThread(sdk);
-    // Zone 120 > 100: flip the two oldest (120→80→40 ≤ 60); the newest (40 ≥
-    // floor 30) is protected alone.
-    await intake(sdk, filePath, toolTurn([40, 40, 40]));
+    // Three closed turns of 40 in one batch: zone 120 > 100; evict the
+    // whole oldest turn (remaining 80 ≥ 60), peek stops at t2; the newest
+    // closed turn is never a candidate.
+    await intake(sdk, filePath, [...toolTurn([40]), ...toolTurn([40]), ...toolTurn([40])]);
     const results = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
+    expect(await boundaryOf(sdk, filePath)).toBe(results[0]?.sourceEventOrder);
     if (mode === "background") await sdk.drainSettled({ filePath });
   });
 });

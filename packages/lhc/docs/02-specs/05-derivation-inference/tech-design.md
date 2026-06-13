@@ -184,13 +184,20 @@ groupZone: consecutive rows by turn_id → groups, each { turnId, sourceEventOrd
            (turn_id NULL ⇒ singleton group, DD-10)
 advanceDecision(groups, { maxTokens, targetTokens }):
   total ≤ max → null
-  walk groups oldest-first, excluding the newest group always:
+  walk groups oldest-first, stopping before the protected tail
+    (the newest closed turn + any trailing turnless singletons recorded
+     after it; with no closed turn in the zone, the newest group):
     evict group only if (remaining − group.tokenSum) ≥ target   ← peek-ahead, AC-5.3
     newPosition = group's highest sourceEventOrder
-  return newPosition (lands in [target, target + one group))
+  return newPosition
+    (lands in [target, target + one group) only when reachable without
+     evicting the protected tail; otherwise the protections win and the
+     zone lawfully stays above the window, AC-5.3)
 ```
 
 Worked example (golden G2 in the test plan): groups of 30k/25k/20k/15k tokens (oldest→newest), max 64k, target 32k. Total 90k > max. Evict 30k → 60k remaining, ≥ 32k ✓. Evict 25k → 35k remaining, ≥ 32k ✓. Peek 20k: 35k − 20k = 15k < 32k → stop. Boundary lands after the 25k group; zone = 35k, in [32k, 32k+20k). The 15k newest group was never a candidate.
+
+The landing window is conditional, not absolute. The `[target, target + one group)` guarantee holds only when reachable without breaking the explicit protections: newest-closed-turn protection, and the structural protection of trailing turnless singleton groups recorded after the newest closed turn. Those trailing singletons cannot be evicted without first flipping the protected newest turn — the boundary is a positional marker advanced oldest-first, so any landing at or past them would render that turn short — which is why their protection is structural rather than a separate rule. When those protections force the zone to remain above the window, they take precedence and the landing guarantee does not apply; the zone lawfully sits above target, or even above max, until a newer turn closes or a compact creates room. TC-5.2's newest-turn-protection leg — the newest closed turn alone exceeding target, leaving the zone above `target + one turn` — is the canonical instance of this exception, and the implementation and tests already enforce it.
 
 The shared-query invariant survives: `visibilityZoneTokens` (status's sum) and the decision's walk read the same WHERE-clause population, so status and advance can never disagree about the zone — the property the existing code makes structural stays structural.
 
