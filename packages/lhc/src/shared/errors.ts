@@ -3,6 +3,7 @@ export type ErrorClass = "caller_error" | "state_corruption" | "system_error";
 export type ErrorCode =
   | "path_exists"
   | "thread_not_found"
+  | "ambiguous_thread_id" // caller_error — a partial thread id matched more than one thread (A-8 partial-id resolve)
   | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
   | "invalid_event"
   | "empty_batch"

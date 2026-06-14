@@ -47,7 +47,7 @@
     "provider_startup_timeout_ms": 300000,
     "story_lead_planner_ms": 600000,
     "story_orchestrate_ms": 7200000,
-    "story_implementor_silence_timeout_ms": 600000,
+    "story_implementor_silence_timeout_ms": 1200000,
     "story_verifier_silence_timeout_ms": 360000,
     "epic_fixer_ms": 3600000,
     "epic_fixer_silence_timeout_ms": 480000,

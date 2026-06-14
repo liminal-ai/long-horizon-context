@@ -19,6 +19,7 @@ import {
   resolveRegistryPath,
   selectAllThreadRows,
   selectThreadRow,
+  selectThreadRowsByPrefix,
   type RegistryRow,
 } from "./internal/registry.js";
 
@@ -29,6 +30,7 @@ export type ThreadRef =
 export interface NewThreadInput {
   filePath: string;
   title?: string;
+  cwd?: string;
   registryPath?: string;
 }
 
@@ -36,6 +38,7 @@ export interface ThreadInfo {
   threadId: string;
   filePath: string;
   title?: string;
+  cwd?: string;
   createdAt: string; // ISO-8601
 }
 
@@ -46,6 +49,7 @@ function toThreadInfo(row: RegistryRow): ThreadInfo {
     createdAt: row.createdAt,
   };
   if (row.title !== undefined) info.title = row.title;
+  if (row.cwd !== undefined) info.cwd = row.cwd;
   return info;
 }
 
@@ -56,6 +60,23 @@ function threadNotFound(threadId: string): { ok: false; error: ErrorResult } {
       errorClass: "caller_error",
       code: "thread_not_found",
       reason: `no thread registered with id ${threadId}`,
+    },
+  };
+}
+
+// A partial id that matches more than one thread is a caller error, not a
+// silent pick: resolution names the collision and the caller must disambiguate
+// (AC-1.6 — an ambiguous id fails loud, never resolves arbitrarily).
+function ambiguousThreadId(
+  prefix: string,
+  matchIds: readonly string[],
+): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: {
+      errorClass: "caller_error",
+      code: "ambiguous_thread_id",
+      reason: `thread id "${prefix}" is ambiguous: it matches ${matchIds.length} threads (${matchIds.join(", ")}); use a longer id`,
     },
   };
 }
@@ -118,6 +139,7 @@ export async function newThread(
     registry = openRegistryForWrite(resolveRegistryPath(input.registryPath));
     const row: RegistryRow = { threadId, filePath: input.filePath, createdAt };
     if (input.title !== undefined) row.title = input.title;
+    if (input.cwd !== undefined) row.cwd = input.cwd;
     insertThreadRow(registry, row);
   } catch (cause) {
     deleteThreadFile(input.filePath);
@@ -129,6 +151,11 @@ export async function newThread(
   return { ok: true, value: { threadId, filePath: input.filePath } };
 }
 
+// Resolution accepts a full or partial (prefix) thread id (A-8). An exact id
+// wins outright — a full id always resolves to itself, even if it is also a
+// prefix of a longer id — so only a genuinely partial id ever consults the
+// prefix path; that path resolves a unique prefix, fails ambiguous on more than
+// one match, and fails not-found on none. No path ever creates a thread.
 export async function resolve(input: {
   threadId: string;
   registryPath?: string;
@@ -137,9 +164,17 @@ export async function resolve(input: {
   try {
     registry = openRegistryForRead(resolveRegistryPath(input.registryPath));
     if (registry === null) return threadNotFound(input.threadId);
-    const row = selectThreadRow(registry, input.threadId);
-    if (row === undefined) return threadNotFound(input.threadId);
-    return { ok: true, value: toThreadInfo(row) };
+    const exact = selectThreadRow(registry, input.threadId);
+    if (exact !== undefined) return { ok: true, value: toThreadInfo(exact) };
+    const matches = selectThreadRowsByPrefix(registry, input.threadId);
+    if (matches.length === 1) return { ok: true, value: toThreadInfo(matches[0]!) };
+    if (matches.length > 1) {
+      return ambiguousThreadId(
+        input.threadId,
+        matches.map((m) => m.threadId),
+      );
+    }
+    return threadNotFound(input.threadId);
   } catch (cause) {
     return storageFailure(`registry read failed: ${detail(cause)}`);
   } finally {
@@ -148,13 +183,15 @@ export async function resolve(input: {
 }
 
 export async function listThreads(input?: {
+  cwd?: string;
   registryPath?: string;
 }): Promise<OpResult<ThreadInfo[]>> {
   let registry;
   try {
     registry = openRegistryForRead(resolveRegistryPath(input?.registryPath));
     if (registry === null) return { ok: true, value: [] };
-    return { ok: true, value: selectAllThreadRows(registry).map(toThreadInfo) };
+    const opts = input?.cwd === undefined ? {} : { cwd: input.cwd };
+    return { ok: true, value: selectAllThreadRows(registry, opts).map(toThreadInfo) };
   } catch (cause) {
     return storageFailure(`registry read failed: ${detail(cause)}`);
   } finally {

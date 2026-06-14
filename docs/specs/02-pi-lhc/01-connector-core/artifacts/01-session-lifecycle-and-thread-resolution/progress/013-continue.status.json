@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T05:48:04.835Z",
+  "updatedAt": "2026-06-14T06:03:46.592Z",
+  "lastOutputAt": "2026-06-14T06:03:46.364Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 32887,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 1200000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/01-session-lifecycle-and-thread-resolution/013-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/01-session-lifecycle-and-thread-resolution/streams/013-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/01-session-lifecycle-and-thread-resolution/streams/013-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/01-session-lifecycle-and-thread-resolution/progress/013-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/01-session-lifecycle-and-thread-resolution/progress/013-continue.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-continue completed for 01-session-lifecycle-and-thread-resolution with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

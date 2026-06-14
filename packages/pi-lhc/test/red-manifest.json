@@ -1,0 +1,6 @@
+{
+  "files": {
+    "test/lifecycle/instance.test.ts": "11deacd3e420f4d0ac257aa735dc80325176abf6bd6b6ebb72d447d3d9295681",
+    "test/lifecycle/thread-resolution.test.ts": "ff1aa1072f865d7b549f22b3d4731afbd128ed3492f2208d8127b548bb0cc680"
+  }
+}
