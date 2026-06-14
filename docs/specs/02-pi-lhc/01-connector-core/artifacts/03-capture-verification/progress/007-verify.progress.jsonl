@@ -1,0 +1,12 @@
+{"timestamp":"2026-06-14T11:36:12.357Z","command":"story-verify","phase":"verifier-initial","event":"command-started","summary":"story-verify started."}
+{"timestamp":"2026-06-14T11:36:12.397Z","command":"story-verify","phase":"verifier-initial","event":"verifier-started","summary":"Story verifier started for 03-capture-verification."}
+{"timestamp":"2026-06-14T11:36:12.430Z","command":"story-verify","phase":"verifier-initial","event":"provider-spawned","summary":"Provider spawned with pid 58761.","metadata":{"pid":58761}}
+{"timestamp":"2026-06-14T11:36:12.530Z","command":"story-verify","phase":"verifier-initial","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-14T11:36:48.428Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T11:37:26.387Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T11:37:59.463Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T11:38:44.785Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T11:40:00.903Z","command":"story-verify","phase":"verifier-initial","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T11:40:01.186Z","command":"story-verify","phase":"verifier-initial","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":228758,"configuredTimeoutMs":3600000}}
+{"timestamp":"2026-06-14T11:40:01.199Z","command":"story-verify","phase":"verifier-initial","event":"verifier-completed","summary":"Story verifier completed for 03-capture-verification.","metadata":{"outcome":"revise"}}
+{"timestamp":"2026-06-14T11:40:01.214Z","command":"story-verify","phase":"finalizing","event":"completed","summary":"story-verify completed for 03-capture-verification with outcome revise.","metadata":{"outcome":"revise","verifiersCompleted":1}}
