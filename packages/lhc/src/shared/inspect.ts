@@ -78,7 +78,7 @@ export interface HealthReport {
   // Counts by owner, form kind, and operational state (AC-4.1), assembled
   // entirely from the owners' report surfaces.
   owners: Array<{
-    owner: "messages" | "turns";
+    owner: "capture" | "messages" | "turns";
     kind: string;
     counts: {
       ready: number;

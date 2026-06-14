@@ -34,6 +34,8 @@ export interface SessionStartEvent {
   previousSessionFile?: string;
 }
 export interface MessageEndEvent {
+  entryId?: string;
+  position?: number;
   message: AgentMessage;
 }
 /** PI fires one turn_end per agent STEP (turnIndex resets to 0 each run); the
@@ -50,11 +52,13 @@ export interface AgentEndEvent {
 export interface ModelSelectEvent {
   model: ModelDescriptor;
   previousModel?: ModelDescriptor;
+  position?: number;
   source?: string;
 }
 export interface ThinkingLevelSelectEvent {
   level: string;
   previousLevel: string;
+  position?: number;
 }
 export interface SessionBeforeForkEvent {
   entryId: string;

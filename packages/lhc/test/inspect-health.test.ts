@@ -5,7 +5,7 @@
 // a drain (AC-4.4), and live queue visibility consistent with the state
 // counts in the same report (AC-4.5).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSdk, type HealthReport } from "../src/index.js";
+import { createSdk, intakeStream, threads, type HealthReport } from "../src/index.js";
 import {
   createProviderDouble,
   expectReadOnly,
@@ -14,6 +14,7 @@ import {
   PERMANENT_FAILURE_REASON,
   tempStore,
   TRANSIENT_EXHAUST_REASON,
+  validEvent,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -33,6 +34,13 @@ function valueOf(result: { ok: boolean }): HealthReport {
 }
 
 const ZERO = { ready: 0, pending: 0, retrying: 0, failed: 0, blocked: 0 };
+
+async function createThread(): Promise<string> {
+  const filePath = store.threadPath();
+  const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+  if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
+  return filePath;
+}
 
 describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consistency", () => {
   it("the mixed-state fixture reports exact counts and a queue section consistent with them", async () => {
@@ -132,6 +140,37 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
     // health did not requeue what it previewed.
     const again = valueOf(await sdk.inspect.health({ filePath }));
     expect(again).toEqual(report);
+  });
+});
+
+describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
+  it("reports durable capture-gap runtime_note markers as capture health failures", async () => {
+    const filePath = await createThread();
+    const gap = validEvent("runtime_note", {
+      idempotencyKey: "gap-1",
+      actor: "system",
+      harness: "pi",
+      payload: { text: "capture gap: 1 event(s) rejected - payload mismatch" },
+    });
+    const recorded = await intakeStream.messageEvents({ filePath }, [gap]);
+    expect(recorded.ok).toBe(true);
+
+    const reader = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    const report = valueOf(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
+    expect(report.owners).toContainEqual({
+      owner: "capture",
+      kind: "capture_gap",
+      counts: { ...ZERO, failed: 1 },
+    });
+    expect(report.failures).toContainEqual({
+      owner: "capture",
+      subjectKind: "event",
+      subjectId: "1",
+      form: "capture_gap",
+      reason: gap.payload.text,
+      attempts: 0,
+    });
+    expect(report.repairPreview).toEqual([]);
   });
 });
 

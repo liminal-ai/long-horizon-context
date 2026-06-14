@@ -1,0 +1,66 @@
+// Story 2 — graceful interrupt (TC-2.6). A turn PI marks aborted is captured
+// whole: the partial assistant content is recorded, the aborted disposition is
+// carried through (the mapper carries stopReason — research §5b — onto the only
+// durable vehicle, a runtime_note), and the turn closes complete-but-aborted at
+// agent_end. The interrupted content is never discarded.
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { MessageEventInput } from "lhc";
+import {
+  makeAgentEnd,
+  makeAssistantMessage,
+  makeMessageEnd,
+  makeUserMessage,
+} from "../fixtures/synthetic.js";
+import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
+
+let store: TempStore;
+beforeEach(() => {
+  store = tempStore();
+});
+afterEach(() => {
+  store.cleanup();
+});
+
+function textOf(event: MessageEventInput): string {
+  return (event.payload as { text?: string }).text ?? "";
+}
+
+describe("Story 2: graceful interrupt (TC-2.6)", () => {
+  it("records partial assistant content, carries the aborted disposition, and closes the turn complete-but-aborted", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx, threadRef } = started;
+
+    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("write a long essay")));
+    await connector.handlers.message_end(
+      ctx,
+      makeMessageEnd(
+        makeAssistantMessage({ thinking: "starting the essay", text: "Once upon a", stopReason: "aborted" }),
+      ),
+    );
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    // A graceful interrupt is not a capture failure.
+    expect(connector.snapshot().lastDiagnostic).toBeNull();
+
+    const events = await eventsAfterShutdown(started);
+    expect(kindsOf(events)).toEqual([
+      "user_prompt",
+      "assistant_thinking",
+      "assistant_text",
+      "runtime_note",
+      "turn_end",
+    ]);
+
+    // Partial content is preserved verbatim — nothing discarded.
+    expect(textOf(events[1]!)).toBe("starting the essay");
+    expect(textOf(events[2]!)).toBe("Once upon a");
+    // The aborted disposition is carried through on the runtime_note.
+    expect(textOf(events[3]!).toLowerCase()).toContain("abort");
+
+    // The turn closes complete-but-aborted (closed at agent_end, not left open).
+    const counts = await turnCounts(threadRef);
+    expect(counts.closed).toBe(1);
+    expect(counts.open).toBe(0);
+  });
+});

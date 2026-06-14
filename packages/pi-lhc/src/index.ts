@@ -8,7 +8,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  BatchResult,
   DerivationProvider,
+  MessageEventInput,
   OpResult,
   ProviderResult,
   SdkConfig,
@@ -31,6 +33,10 @@ import {
   type ResolveDeps,
 } from "./lifecycle/thread-resolution.js";
 import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
+import { capture, captureGap } from "./capture/converter.js";
+import { mapMessage, type MapCtx } from "./capture/map-message.js";
+import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
+import { TurnAccumulator } from "./capture/turn-accumulator.js";
 import type { LhcInstance } from "./shared/instance.js";
 
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
@@ -95,6 +101,23 @@ export interface Connector {
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
   readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>>>;
+}
+
+/** The connector's live capture state for one session: the open-turn
+ *  accumulator plus the stable PI session id used to scope idempotency keys.
+ *  Held in the closure alongside the live `LhcInstance` — engine state rebuilt
+ *  per session, never part of the plain-data snapshot and never a PI object. */
+interface CaptureSession {
+  piSessionId: string;
+  accumulator: TurnAccumulator;
+  sourceSeq: number;
+}
+
+/** A stable per-session id for idempotency-key scoping — the resolved thread's
+ *  identity, which survives reload/replay (the same thread re-resolves to the
+ *  same id). */
+function sessionIdOf(ref: ThreadRef): string {
+  return "threadId" in ref ? ref.threadId : ref.filePath;
 }
 
 const DEFAULT_LHC_DIR = join(homedir(), ".lhc");
@@ -200,6 +223,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let state: SessionState | null = null;
   let instance: LhcInstance | null = null;
   let lastDiagnostic: CaptureFailureDiagnostic | null = null;
+  let captureSession: CaptureSession | null = null;
 
   const buildSdkConfig = deps.buildSdkConfig ?? defaultBuildSdkConfig;
   const newThreadFilePath = deps.newThreadFilePath ?? defaultNewThreadFilePath;
@@ -282,6 +306,12 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     }
     instance = built.value;
     state = createSessionState(resolved.value);
+    const piSessionId = sessionIdOf(resolved.value);
+    captureSession = {
+      piSessionId,
+      accumulator: new TurnAccumulator({ piSessionId }),
+      sourceSeq: 0,
+    };
   };
 
   // Dispose with flush before any session swap (session_before_switch fires
@@ -292,6 +322,124 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     const result = await disposeInstance(instance);
     if (!result.ok) lastDiagnostic = diag("dispose_failed", result.error.reason);
     instance = null;
+    captureSession = null;
+  };
+
+  // Record a capture failure as a plain-data health diagnostic (AC-2.7). The
+  // converter already recorded a durable gap for a writable-thread malformed
+  // event (`invalid_event`); a store-unavailable failure could not, so it
+  // surfaces as an extension health signal with no gap. Neither path throws.
+  function recordCaptureOutcome(
+    result: OpResult<BatchResult>,
+    events: readonly MessageEventInput[],
+  ): void {
+    if (result.ok) return;
+    const recordedGap = result.error.code === "invalid_event";
+    const failure: CaptureFailureDiagnostic = {
+      code: result.error.code,
+      message: result.error.reason,
+      recordedGap,
+    };
+    if (events[0] !== undefined) failure.eventKey = events[0].idempotencyKey;
+    lastDiagnostic = failure;
+    if (state !== null) state.health.lastCaptureFailure = failure;
+  }
+
+  function nextSourceSeq(session: CaptureSession): number {
+    const sourceSeq = session.sourceSeq;
+    session.sourceSeq += 1;
+    return sourceSeq;
+  }
+
+  function fallbackIdFor(kind: string, position: number | undefined, sourceSeq: number): string {
+    // Last-resort id-less discriminator. PI position wins when present; the
+    // connector ordinal is used only when PI gives no event identity at all.
+    // For id-less + position-less reload replay, PI's deterministic redelivery
+    // order yields the same ordinal, which is the best identity available.
+    return position !== undefined ? `${kind}:${position}` : `${kind}:sourceSeq:${sourceSeq}`;
+  }
+
+  async function recordMappingFailure(
+    hook: string,
+    position: number | undefined,
+    sourceSeq: number,
+    cause: unknown,
+  ): Promise<void> {
+    if (instance === null) return;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const result = await captureGap(
+      fallbackIdFor(hook, position, sourceSeq),
+      `${hook}: ${message}`,
+      instance,
+    );
+    if (!result.ok) {
+      recordCaptureOutcome(result, []);
+      return;
+    }
+    const failure: CaptureFailureDiagnostic = {
+      code: "invalid_event",
+      message: `${hook}: ${message}`,
+      recordedGap: true,
+    };
+    lastDiagnostic = failure;
+    if (state !== null) state.health.lastCaptureFailure = failure;
+  }
+
+  // message_end: map the finalized PI message to ordered LHC events, track the
+  // open turn, and flush through the converter (AC-2.1).
+  const onMessageEnd: PiHookHandler<"message_end"> = async (_ctx, event) => {
+    if (instance === null || captureSession === null) return;
+    const sourceSeq = nextSourceSeq(captureSession);
+    const mapCtx: MapCtx =
+      event.entryId !== undefined && event.entryId !== ""
+        ? { piSessionId: captureSession.piSessionId, entryId: event.entryId }
+        : {
+            piSessionId: captureSession.piSessionId,
+            fallbackId: fallbackIdFor("message_end", event.position, sourceSeq),
+          };
+    let events: MessageEventInput[];
+    try {
+      events = mapMessage(event.message, mapCtx);
+    } catch (cause) {
+      await recordMappingFailure("message_end", event.position, sourceSeq, cause);
+      return;
+    }
+    captureSession.accumulator.onMessage(events);
+    if (events.length === 0) return;
+    recordCaptureOutcome(await capture(events, instance), events);
+  };
+
+  // model_select / thinking_level_select fire only in-stream — capture each as
+  // an ordered runtime_note the moment it fires (AC-2.8).
+  const onModelSelect: PiHookHandler<"model_select"> = async (_ctx, event) => {
+    if (instance === null || captureSession === null) return;
+    const sourceSeq = nextSourceSeq(captureSession);
+    const mapCtx: MapCtx = {
+      piSessionId: captureSession.piSessionId,
+      fallbackId: fallbackIdFor("model_select", event.position, sourceSeq),
+    };
+    const note = mapModelSelect(event, mapCtx);
+    recordCaptureOutcome(await capture([note], instance), [note]);
+  };
+
+  const onThinkingLevelSelect: PiHookHandler<"thinking_level_select"> = async (_ctx, event) => {
+    if (instance === null || captureSession === null) return;
+    const sourceSeq = nextSourceSeq(captureSession);
+    const mapCtx: MapCtx = {
+      piSessionId: captureSession.piSessionId,
+      fallbackId: fallbackIdFor("thinking_level_select", event.position, sourceSeq),
+    };
+    const note = mapThinkingLevelSelect(event, mapCtx);
+    recordCaptureOutcome(await capture([note], instance), [note]);
+  };
+
+  // agent_end closes the LHC turn — exactly one turn_end per agent run (AC-2.2).
+  // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
+  const onAgentEnd: PiHookHandler<"agent_end"> = async () => {
+    if (instance === null || captureSession === null) return;
+    const turnEnd = captureSession.accumulator.onAgentEnd();
+    if (turnEnd.length === 0) return;
+    recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
   };
 
   // Contain every handler: an observe-only hook must never throw back into PI
@@ -314,23 +462,25 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
-  // Observe-only foundation: capture-bearing hooks (message_end, turn_end,
-  // agent_end, runtime changes, fork) stay no-ops in Story 1 — capture and fork
-  // land in later stories. Each receives a FRESH ctx and retains none of it.
+  // Observe-only foundation: the remaining capture-bearing hooks (PI's per-step
+  // turn_end, fork) stay no-ops here — turn_end is deliberately ignored as an
+  // LHC turn boundary (AC-2.2), and fork lands in Story 4. Each receives a
+  // FRESH ctx and retains none of it.
   const noop: PiHookHandler<Epic1Hook> = () => {
-    // Intentionally empty — later stories replace this with real routing.
+    // Intentionally empty — turn_end is ignored as a boundary; fork is Story 4.
   };
 
-  // Bodies per hook: session lifecycle is live in Story 1; the rest are no-ops.
+  // Bodies per hook: session lifecycle (Story 1) and event capture (Story 2)
+  // are live; PI per-step turn_end and fork remain no-ops.
   const bodies: Record<Epic1Hook, PiHookHandler<Epic1Hook>> = {
     session_start: onSessionStart as PiHookHandler<Epic1Hook>,
     session_before_switch: onDispose,
     session_shutdown: onDispose,
-    message_end: noop,
+    message_end: onMessageEnd as PiHookHandler<Epic1Hook>,
     turn_end: noop,
-    agent_end: noop,
-    model_select: noop,
-    thinking_level_select: noop,
+    agent_end: onAgentEnd as PiHookHandler<Epic1Hook>,
+    model_select: onModelSelect as PiHookHandler<Epic1Hook>,
+    thinking_level_select: onThinkingLevelSelect as PiHookHandler<Epic1Hook>,
     session_before_fork: noop,
   };
 

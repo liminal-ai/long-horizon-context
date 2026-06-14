@@ -1,0 +1,19 @@
+{
+  "source": "impl-lead (Claude Code orchestrator)",
+  "decision": "reopen",
+  "summary": "story-continue 005 FAILED at finalize with PROVIDER_OUTPUT_INVALID (~1MB streaming output the runtime could not parse into a result envelope) — a recurring claude-code large-continue/session-resume finalize flakiness (NOT a code problem; edits are applied live to disk). Do NOT run-continue. Start a FRESH implementor pass (run-implement, new session) that re-hydrates from the on-disk Story 2 capture code — already substantial and present: src/capture/{converter,map-message,turn-accumulator,idempotency,runtime-changes}.ts, src/index.ts hook wiring, and test/capture/* — and resolves the one open verifier finding below, then proceed to verify. Build on the on-disk code; do not discard it. Fresh implements finalize reliably here; continues do not.",
+  "items": [
+    {
+      "id": "SV-001",
+      "severity": "blocker",
+      "concern": "Existing-thread resume/reload can silently skip new finalized events (verifier 004, critical). On resume/reload of an existing thread, newly finalized PI message_end events may be dropped from capture — a silent capture gap.",
+      "requiredResponse": "Fix the existing-thread resume/reload intake path so newly finalized PI events are captured and never silently skipped. Honor the no-silent-failure invariant (AC-2.7) and ensure idempotency dedup (AC-2.6) does not over-skip genuinely new events on resume/reload. Preserve the existing converter, turn-derivation (one LHC turn per exchange, closed at agent_end), parallel-tool correlation, error/abort capture, and runtime-note capture. Add/keep a test that proves resume/reload after new events captures them.",
+      "evidence": [
+        "docs/specs/02-pi-lhc/01-connector-core/artifacts/02-event-capture-and-turn-derivation/004-verify.json"
+      ]
+    }
+  ],
+  "evidence": [
+    "docs/specs/02-pi-lhc/01-connector-core/artifacts/02-event-capture-and-turn-derivation/004-verify.json"
+  ]
+}

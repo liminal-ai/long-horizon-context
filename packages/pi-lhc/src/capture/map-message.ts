@@ -1,19 +1,245 @@
-import type { MessageEventInput } from "lhc";
-import type { AgentMessage } from "../pi/types.js";
-import { NotImplementedError } from "../shared/not-implemented.js";
+import type { EventKind, MessageEventInput } from "lhc";
+import type {
+  AgentMessage,
+  AssistantMessage,
+  ContentPart,
+  FileRefPart,
+  ImagePart,
+  ToolResultMessage,
+  UserMessage,
+} from "../pi/types.js";
+import { eventKey } from "./idempotency.js";
 
-// AC-2.1, AC-2.3, AC-2.4, AC-2.5.
+// AC-2.1, AC-2.3, AC-2.4, AC-2.5. Pure (no I/O): one PI `AgentMessage` → the
+// ordered LHC events for it. A user message → one `user_prompt`; an assistant
+// message fans out `assistant_thinking` (if present) → `assistant_text` (if
+// present) → one `tool_call` per call, in that order; a tool result → one
+// `tool_result` correlated by `toolCallId`, carrying `isError`. Unsupported
+// parts and a wholly-empty message degrade to a `runtime_note` (never a silent
+// drop, tech design I-6). A graceful interrupt carries its disposition through
+// on a trailing `runtime_note` (research §5b).
 
 export interface MapCtx {
   piSessionId: string;
-  entryId?: string;
+  entryId?: string | undefined;
+  fallbackId?: string | undefined;
 }
 
-/** Pure: one PI `AgentMessage` → the ordered LHC events for it. A user message
- *  → one `user_prompt`; an assistant message fans out `assistant_thinking` (if
- *  present) → `assistant_text` (if present) → one `tool_call` per call, in that
- *  order; a tool result → one `tool_result` correlated by `toolCallId`, carrying
- *  `isError`; unsupported parts → `runtime_note` (never a silent drop). Story 2. */
+const HARNESS = "pi";
+
+/** The aborted-disposition note text. A graceful interrupt has no intake-schema
+ *  field to hold its disposition, so the mapper carries `stopReason` through on
+ *  the one durable vehicle — a `runtime_note` — rather than discarding it.
+ *  Exported so the aborted corpus fixture stays in lock-step with the mapper. */
+export const ABORTED_DISPOSITION_TEXT =
+  "turn aborted (stopReason: aborted) — partial content preserved";
+
+const EMPTY_MESSAGE_NOTE = "message omitted: no mappable content parts";
+
+function textOf(parts: ContentPart[]): string {
+  return parts
+    .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+}
+
+function thinkingOf(parts: ContentPart[]): string {
+  return parts
+    .filter((p): p is Extract<ContentPart, { type: "thinking" }> => p.type === "thinking")
+    .map((p) => p.thinking)
+    .join("");
+}
+
+function unsupportedOf(parts: ContentPart[]): Array<ImagePart | FileRefPart> {
+  return parts.filter(
+    (p): p is ImagePart | FileRefPart => p.type === "image" || p.type === "fileRef",
+  );
+}
+
+function omissionText(part: ImagePart | FileRefPart): string {
+  return part.type === "image"
+    ? `unsupported content omitted: image part${part.mimeType !== undefined ? ` (${part.mimeType})` : ""}`
+    : `unsupported content omitted: file reference (${part.path})`;
+}
+
+function buildKey(
+  ctx: MapCtx,
+  role: string,
+  kind: EventKind,
+  blockIndex: number,
+  opts: {
+    entryId?: string | undefined;
+    responseId?: string | undefined;
+    toolCallId?: string | undefined;
+    content?: string | undefined;
+  } = {},
+): string {
+  return eventKey({
+    piSessionId: ctx.piSessionId,
+    entryId: opts.entryId ?? ctx.entryId,
+    responseId: opts.responseId,
+    blockIndex,
+    kind,
+    role,
+    fallbackId: ctx.fallbackId,
+    toolCallId: opts.toolCallId,
+    content: opts.content,
+  });
+}
+
+function stringField(value: unknown, field: string): string | undefined {
+  if (typeof value !== "object" || value === null || !(field in value)) return undefined;
+  const candidate = (value as Record<string, unknown>)[field];
+  return typeof candidate === "string" && candidate !== "" ? candidate : undefined;
+}
+
+function entryIdOf(msg: AgentMessage): string | undefined {
+  return stringField(msg, "entryId");
+}
+
+function responseIdOf(msg: AgentMessage): string | undefined {
+  return stringField(msg, "responseId") ?? stringField(msg, "id");
+}
+
+// Per-kind builders — explicit eventKind literals so the discriminated union
+// narrows without a cast.
+function textEvent(
+  kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "runtime_note",
+  text: string,
+  actor: string,
+  key: string,
+): MessageEventInput {
+  return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
+}
+
+function toolCallEvent(
+  toolCallId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  key: string,
+): MessageEventInput {
+  return {
+    eventKind: "tool_call",
+    idempotencyKey: key,
+    actor: "assistant",
+    harness: HARNESS,
+    payload: { toolCallId, toolName, arguments: args },
+  };
+}
+
+function toolResultEvent(
+  toolCallId: string,
+  content: string,
+  isError: boolean,
+  key: string,
+): MessageEventInput {
+  return {
+    eventKind: "tool_result",
+    idempotencyKey: key,
+    actor: "tool",
+    harness: HARNESS,
+    payload: { toolCallId, content, isError },
+  };
+}
+
+function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
+  const events: MessageEventInput[] = [];
+  const entryId = entryIdOf(msg);
+  let block = 0;
+  if (msg.content.some((p) => p.type === "text")) {
+    const text = textOf(msg.content);
+    events.push(textEvent("user_prompt", text, "user", buildKey(ctx, "user", "user_prompt", block, { entryId, content: text })));
+    block += 1;
+  }
+  for (const part of unsupportedOf(msg.content)) {
+    const text = omissionText(part);
+    events.push(textEvent("runtime_note", text, "system", buildKey(ctx, "user", "runtime_note", block, { entryId, content: text })));
+    block += 1;
+  }
+  if (events.length === 0) {
+    events.push(
+      textEvent("runtime_note", EMPTY_MESSAGE_NOTE, "system", buildKey(ctx, "user", "runtime_note", block, { entryId, content: "empty:user" })),
+    );
+  }
+  return events;
+}
+
+function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
+  const events: MessageEventInput[] = [];
+  const entryId = entryIdOf(msg);
+  const responseId = responseIdOf(msg);
+  let block = 0;
+  // PI's confirmed part order: thinking → text → tool calls (research §5a).
+  if (msg.content.some((p) => p.type === "thinking")) {
+    const text = thinkingOf(msg.content);
+    events.push(textEvent("assistant_thinking", text, "assistant", buildKey(ctx, "assistant", "assistant_thinking", block, { entryId, responseId, content: text })));
+    block += 1;
+  }
+  if (msg.content.some((p) => p.type === "text")) {
+    const text = textOf(msg.content);
+    events.push(textEvent("assistant_text", text, "assistant", buildKey(ctx, "assistant", "assistant_text", block, { entryId, responseId, content: text })));
+    block += 1;
+  }
+  for (const part of msg.content) {
+    if (part.type !== "toolCall") continue;
+    events.push(
+      toolCallEvent(part.id, part.name, part.arguments, buildKey(ctx, "assistant", "tool_call", block, { entryId, responseId, toolCallId: part.id, content: part.name })),
+    );
+    block += 1;
+  }
+  for (const part of unsupportedOf(msg.content)) {
+    const text = omissionText(part);
+    events.push(textEvent("runtime_note", text, "system", buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: text })));
+    block += 1;
+  }
+  // Graceful interrupt: carry the aborted disposition through (never discarded).
+  if (msg.stopReason === "aborted") {
+    events.push(
+      textEvent("runtime_note", ABORTED_DISPOSITION_TEXT, "system", buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: ABORTED_DISPOSITION_TEXT })),
+    );
+    block += 1;
+  }
+  if (events.length === 0) {
+    events.push(
+      textEvent("runtime_note", EMPTY_MESSAGE_NOTE, "system", buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: "empty:assistant" })),
+    );
+  }
+  return events;
+}
+
+function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[] {
+  const events: MessageEventInput[] = [];
+  const entryId = entryIdOf(msg);
+  const content = textOf(msg.content);
+  const isError = msg.isError === true;
+  // Correlation is by toolCallId, not arrival order (AC-2.3); the error flag
+  // and content are always captured, even on failure (AC-2.4).
+  events.push(
+    toolResultEvent(
+      msg.toolCallId,
+      content,
+      isError,
+      buildKey(ctx, "toolResult", "tool_result", 0, { entryId, toolCallId: msg.toolCallId, content }),
+    ),
+  );
+  let block = 1;
+  for (const [partIndex, part] of unsupportedOf(msg.content).entries()) {
+    const text = omissionText(part);
+    events.push(textEvent("runtime_note", text, "system", buildKey(ctx, "toolResult", "runtime_note", block, { entryId, toolCallId: `${msg.toolCallId}:omission:${partIndex}`, content: text })));
+    block += 1;
+  }
+  return events;
+}
+
 export function mapMessage(msg: AgentMessage, ctx: MapCtx): MessageEventInput[] {
-  throw new NotImplementedError("capture.mapMessage");
+  switch (msg.role) {
+    case "user":
+      return mapUser(msg, ctx);
+    case "assistant":
+      return mapAssistant(msg, ctx);
+    case "toolResult":
+      return mapToolResult(msg, ctx);
+    default:
+      throw new Error(`unmappable PI message role: ${String((msg as { role?: unknown }).role)}`);
+  }
 }

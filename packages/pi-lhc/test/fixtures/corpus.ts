@@ -6,6 +6,7 @@
 // hardcodes a passing count (story §Anti-Shim Requirements).
 import type { EventKind } from "lhc";
 import type { Corpus } from "../../src/verify/replay.js";
+import { ABORTED_DISPOSITION_TEXT } from "../../src/capture/map-message.js";
 import {
   makeAssistantMessage,
   makeToolResult,
@@ -125,6 +126,9 @@ export function loadAbortedTurnCorpus(): Corpus {
       validEvent("user_prompt", { payload: { text: "write a long essay" } }),
       validEvent("assistant_thinking", { payload: { text: "starting the essay" } }),
       validEvent("assistant_text", { payload: { text: "Once upon a" } }),
+      // The aborted disposition rides a trailing runtime_note (the mapper carries
+      // stopReason through; research §5b), then the turn closes complete-but-aborted.
+      validEvent("runtime_note", { payload: { text: ABORTED_DISPOSITION_TEXT } }),
       validEvent("turn_end"),
     ],
   };

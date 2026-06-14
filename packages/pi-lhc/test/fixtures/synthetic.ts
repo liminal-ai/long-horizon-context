@@ -118,8 +118,15 @@ export function makeSessionStart(
   return ev;
 }
 
-export function makeMessageEnd(message: AgentMessage): MessageEndEvent {
-  return { message };
+export function makeMessageEnd(
+  message: AgentMessage,
+  entryId?: string,
+  position?: number,
+): MessageEndEvent {
+  const ev: MessageEndEvent = { message };
+  if (entryId !== undefined) ev.entryId = entryId;
+  if (position !== undefined) ev.position = position;
+  return ev;
 }
 
 export function makeAgentEnd(messages: AgentMessage[]): AgentEndEvent {

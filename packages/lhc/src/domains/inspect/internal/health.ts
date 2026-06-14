@@ -1,19 +1,24 @@
-// Health composition (Flow 4): both owners' report surfaces joined into
-// state counts, actionable failure detail, a repair preview, and live queue
-// visibility. Assembled ENTIRELY from FormReportEntry rows — never a
-// derived_form or work_item read (the must-not-own rule is this domain's
-// whole contract) — and never executing what it previews (AC-4.3).
+// Health composition (Flow 4): owners' report surfaces joined into state
+// counts, actionable failure detail, a repair preview, and live queue
+// visibility. Message/turn derivation health comes from FormReportEntry rows;
+// capture gaps come from durable source-event markers recorded by capture.
 import type { FormReportEntry } from "../../../shared/derivation.js";
 import type { OpResult } from "../../../shared/errors.js";
 import type { HealthReport } from "../../../shared/inspect.js";
+import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
 import * as turns from "../../turns/index.js";
 import type { ThreadRef } from "../../threads/index.js";
 
-type Owner = "messages" | "turns";
+type Owner = "capture" | "messages" | "turns";
 
 function emptyCounts(): HealthReport["owners"][number]["counts"] {
   return { ready: 0, pending: 0, retrying: 0, failed: 0, blocked: 0 };
+}
+
+function captureGapText(event: intakeStream.EventRecord): string | null {
+  if (event.eventKind !== "runtime_note") return null;
+  return event.payload.text.startsWith("capture gap:") ? event.payload.text : null;
 }
 
 // Failure detail (AC-4.2): attempts and last error read from wherever the
@@ -42,6 +47,8 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
   if (!messageReport.ok) return messageReport;
   const turnReport = await turns.report(ref);
   if (!turnReport.ok) return turnReport;
+  const events = await intakeStream.listEvents(ref);
+  if (!events.ok) return events;
 
   const sources: ReadonlyArray<readonly [Owner, readonly FormReportEntry[]]> = [
     ["messages", messageReport.value],
@@ -52,6 +59,27 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
   const failures: HealthReport["failures"] = [];
   const repairPreview: HealthReport["repairPreview"] = [];
   const queue = { queued: 0, claimed: 0 };
+
+  const captureGaps = events.value
+    .map((event) => ({ event, text: captureGapText(event) }))
+    .filter((gap): gap is { event: intakeStream.EventRecord; text: string } => gap.text !== null);
+  if (captureGaps.length > 0) {
+    countsByOwnerKind.set("capture:capture_gap", {
+      owner: "capture",
+      kind: "capture_gap",
+      counts: { ...emptyCounts(), failed: captureGaps.length },
+    });
+    for (const { event, text } of captureGaps) {
+      failures.push({
+        owner: "capture",
+        subjectKind: "event",
+        subjectId: String(event.eventOrder),
+        form: "capture_gap",
+        reason: text,
+        attempts: 0,
+      });
+    }
+  }
 
   for (const [owner, entries] of sources) {
     for (const entry of entries) {

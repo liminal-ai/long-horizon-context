@@ -250,15 +250,20 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     // Field-level agreement per owner/kind: the sweep saw exactly the state
     // health reported — same ready counts, in-flight = pending + retrying,
     // and the failed/requeued/blocked sets empty on both sides.
-    const expectedFromHealth = health.owners.map((row) => ({
-      owner: row.owner,
-      kind: row.kind,
-      ready: row.counts.ready,
-      inFlight: row.counts.pending + row.counts.retrying,
-      requeued: [],
-      blocked: [],
-      permanentFailed: [],
-    }));
+    const expectedFromHealth = health.owners
+      .filter(
+        (row): row is (typeof health.owners)[number] & { owner: "messages" | "turns" } =>
+          row.owner !== "capture",
+      )
+      .map((row) => ({
+        owner: row.owner,
+        kind: row.kind,
+        ready: row.counts.ready,
+        inFlight: row.counts.pending + row.counts.retrying,
+        requeued: [],
+        blocked: [],
+        permanentFailed: [],
+      }));
     expect(byOwnerKind(sweep.owners)).toEqual(byOwnerKind(expectedFromHealth));
     expect(health.failures).toEqual([]);
   });
