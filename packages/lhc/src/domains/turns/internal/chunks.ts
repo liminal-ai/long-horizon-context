@@ -136,7 +136,7 @@ export function enqueueChunkSummaries(
       owner: "turns",
       kind,
       sourceRef: { chunkId },
-      forms: [{ subjectKind: "chunk", subjectId: chunkId, form: kind }],
+      derivations: [{ subjectKind: "chunk", subjectId: chunkId, derivationType: kind }],
     }),
   );
 }

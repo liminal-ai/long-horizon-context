@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-15T06:12:56.826Z",
+  "updatedAt": "2026-06-15T06:19:26.980Z",
+  "lastOutputAt": "2026-06-15T06:19:26.872Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 59584,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/03-turn-construction-recovery-cascade/004-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/03-turn-construction-recovery-cascade/streams/004-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/03-turn-construction-recovery-cascade/streams/004-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/03-turn-construction-recovery-cascade/progress/004-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/03-turn-construction-recovery-cascade/progress/004-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 03-turn-construction-recovery-cascade with outcome revise.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

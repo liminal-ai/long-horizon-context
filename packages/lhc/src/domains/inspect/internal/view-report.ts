@@ -56,7 +56,7 @@ export async function composeViewReport(
             .map((entry) => ({
               subjectKind: entry.subjectKind,
               subjectId: entry.subjectId,
-              formUsed: entry.formUsed,
+              derivationUsed: entry.derivationUsed,
               degraded: entry.degraded,
             }));
           const storedBand = stored.bands.find((row) => row.band === band);

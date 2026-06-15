@@ -11,7 +11,7 @@
 // the adapter-owned timeout) lives in safeCall (AC-3.3, DD-6).
 import type {
   DerivationProvider,
-  FormKind,
+  DerivationType,
   ProviderResult,
 } from "../shared/derivation.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
@@ -55,7 +55,7 @@ function classifiedFailure(kind: ModelCallFailureKind, message: string): Provide
 }
 
 export function createInferenceProvider(config: ResolvedInferenceConfig): DerivationProvider {
-  const callKind = async (kind: FormKind, input: unknown): Promise<ProviderResult> => {
+  const callKind = async (kind: DerivationType, input: unknown): Promise<ProviderResult> => {
     const assignment = config.assignments[kind];
     // Construction validated the name (AC-1.3); a miss here is registry
     // drift after construction and is terminal, never retried into.
@@ -101,11 +101,15 @@ export function createInferenceProvider(config: ResolvedInferenceConfig): Deriva
 
   return {
     smoothPrompt: (i) => callKind("smoothed_prompt", i),
-    summarizeToolCall: (i) => callKind("tool_call_summary", i),
     summarizeToolResult: (i) =>
       callKind("tool_result_summary", {
         toolName: i.toolName,
         content: boundContent(i.content, config.maxInputChars),
+        outcome: i.outcome ?? "unknown",
+        targetTokens: i.targetTokens ?? 150,
+        guidance:
+          i.guidance ??
+          "Preserve the status, concrete identifiers, counts, paths, and any error text or result items needed to continue.",
       }),
     composeTurnRendering: (i) => callKind("turn_rendering", i),
     projectLowerBand: (i) => callKind("lower_band_projection", i),

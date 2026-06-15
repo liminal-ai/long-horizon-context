@@ -3,8 +3,8 @@
 // (DD-5). The util is domain-blind by the tech-arch capability rule — it
 // knows the item vocabulary (owner, kind, sourceRef) but nothing about what
 // a turn or a summary is; which kinds queue for which sources, and which
-// derived forms a kind produces, is the owning domains' business (callers
-// pass the form targets in). Writes run on the caller's handle inside the
+// derivations a kind produces, is the owning domains' business (callers
+// pass the derivation targets in). Writes run on the caller's handle inside the
 // ambient transaction, so items commit (or roll back) with the batch. No
 // public SDK surface: read-back reaches here only through the owning
 // domains' listQueuedWork.
@@ -15,15 +15,14 @@ import {
 } from "../../shared/context.js";
 import type {
   CompletionTx,
-  FormKind,
-  HandlerFormWrite,
+  DerivationType,
+  HandlerDerivationWrite,
   SubjectKind,
 } from "../../shared/derivation.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
   | "prompt_smoothing"
-  | "tool_call_summary"
   | "tool_result_summary"
   | "turn_derivation"
   | "chunk_summary_detailed"
@@ -37,7 +36,6 @@ export const WORK_KIND_REGISTRY: Readonly<
   Record<WorkKind, { owner: WorkOwner; sourceRefKey: "messageId" | "turnId" | "chunkId" }>
 > = {
   prompt_smoothing: { owner: "messages", sourceRefKey: "messageId" },
-  tool_call_summary: { owner: "messages", sourceRefKey: "messageId" },
   tool_result_summary: { owner: "messages", sourceRefKey: "messageId" },
   turn_derivation: { owner: "turns", sourceRefKey: "turnId" },
   chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
@@ -53,14 +51,14 @@ export interface WorkItemRecord {
   queuedAt: string;
 }
 
-// The derived forms an enqueue is scheduling work toward; the owning domain
+// The derivations an enqueue is scheduling work toward; the owning domain
 // names them (the util stays meaning-blind). Stored in the row's payload so
 // the drain's terminal paths (retry exhaustion, blocked source) can land the
-// form's failed/blocked state without asking any domain what a kind means.
-export interface EnqueueFormTarget {
+// derivation's failed/blocked state without asking any domain what a kind means.
+export interface EnqueueDerivationTarget {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
+  derivationType: DerivationType;
 }
 
 export interface WorkItemInput {
@@ -68,7 +66,7 @@ export interface WorkItemInput {
   kind: WorkKind;
   sourceRef: WorkSourceRef;
   sourceVersion?: number; // defaults to 1 — first version of a fresh source
-  forms?: readonly EnqueueFormTarget[]; // carried in payload for the drain's terminal paths
+  derivations?: readonly EnqueueDerivationTarget[]; // carried in payload for the drain's terminal paths
 }
 
 function sourceIdOf(sourceRef: WorkSourceRef): string {
@@ -98,7 +96,7 @@ export function recordItem(
     input.kind,
     JSON.stringify(input.sourceRef),
     queuedAt,
-    JSON.stringify({ sourceVersion, forms: input.forms ?? [] }),
+    JSON.stringify({ sourceVersion, derivations: input.derivations ?? [] }),
   );
   return {
     workItemId,
@@ -111,26 +109,26 @@ export function recordItem(
 }
 
 export interface EnqueueInput extends WorkItemInput {
-  forms: readonly EnqueueFormTarget[];
+  derivations: readonly EnqueueDerivationTarget[];
 }
 
-// The one way work is scheduled (DD-5): the work row, the form's `pending`
+// The one way work is scheduled (DD-5): the work row, the derivation's `pending`
 // state row, and the scheduler poke all ride the ambient transaction — they
 // commit together or vanish together. Enqueue is the *only* place a
-// derived_form row is created (completion is UPDATE-only); re-enqueueing
+// derivation row is created (completion is UPDATE-only); re-enqueueing
 // resets an existing row to pending at the enqueued source version.
 export function enqueue(ctx: OperationContext, input: EnqueueInput): WorkItemRecord {
   const item = recordItem(ctx.db, input, ctx.clock().toISOString());
   const sourceVersion = input.sourceVersion ?? 1;
   const upsert = ctx.db.prepare(
-    `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
+    `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
      VALUES (?, ?, ?, 'pending', ?)
-     ON CONFLICT (subject_kind, subject_id, form) DO UPDATE SET
+     ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
        state = 'pending', content = NULL, reason = NULL, metadata = NULL,
        gaps = NULL, derived_at = NULL, source_version = excluded.source_version`,
   );
-  for (const target of input.forms) {
-    upsert.run(target.subjectKind, target.subjectId, target.form, sourceVersion);
+  for (const target of input.derivations) {
+    upsert.run(target.subjectKind, target.subjectId, target.derivationType, sourceVersion);
   }
   ctx.onCommit(() => ctx.poke(ctx.threadId));
   return item;
@@ -161,7 +159,7 @@ export interface ClaimedWorkItem {
   attempts: number;
   queuedAt: string;
   sourceVersion: number;
-  forms: EnqueueFormTarget[];
+  derivations: EnqueueDerivationTarget[];
 }
 
 export type ClaimOutcome =
@@ -182,23 +180,23 @@ interface RawClaimRow {
 
 // Form targets for pre-v5 rows, whose payload is NULL (Epic 01 wrote no
 // payload column). Exactly the F-02 backfill's kind→form mapping (migration
-// v5, shared/storage.ts): the backfill created pending derived_form rows at
+// v5, shared/storage.ts): the backfill created pending derivation rows at
 // source version 1 for these kinds, and a terminal failure must find them —
 // otherwise exhaustion would delete the work row and strand the backfilled
 // form as pending forever, breaking AC-1.9/DD-1 for upgraded threads.
-const LEGACY_KIND_FORMS: Partial<
-  Record<string, ReadonlyArray<{ subjectKind: SubjectKind; form: FormKind }>>
+const LEGACY_KIND_DERIVATIONS: Partial<
+  Record<string, ReadonlyArray<{ subjectKind: SubjectKind; derivationType: DerivationType }>>
 > = {
-  prompt_smoothing: [{ subjectKind: "message", form: "smoothed_prompt" }],
-  tool_result_summary: [{ subjectKind: "message", form: "tool_result_summary" }],
+  prompt_smoothing: [{ subjectKind: "message", derivationType: "smoothed_prompt" }],
+  tool_result_summary: [{ subjectKind: "message", derivationType: "tool_result_summary" }],
   turn_derivation: [
-    { subjectKind: "turn", form: "turn_rendering" },
-    { subjectKind: "turn", form: "lower_band_projection" },
+    { subjectKind: "turn", derivationType: "turn_rendering" },
+    { subjectKind: "turn", derivationType: "lower_band_projection" },
   ],
 };
 
-function legacyFormTargets(kind: string, sourceRef: WorkSourceRef): EnqueueFormTarget[] {
-  const mapped = LEGACY_KIND_FORMS[kind];
+function legacyDerivationTargets(kind: string, sourceRef: WorkSourceRef): EnqueueDerivationTarget[] {
+  const mapped = LEGACY_KIND_DERIVATIONS[kind];
   if (mapped === undefined) return [];
   const subjectId = sourceIdOf(sourceRef);
   return mapped.map((target) => ({ ...target, subjectId }));
@@ -208,10 +206,10 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
   const sourceRef = JSON.parse(row.source_ref) as WorkSourceRef;
   const payload =
     row.payload === null
-      ? // Pre-v5 row: version 1 (matching the backfill) and form targets
+      ? // Pre-v5 row: version 1 (matching the backfill) and derivation targets
         // reconstructed from the backfill's own mapping.
-        { sourceVersion: 1, forms: legacyFormTargets(row.kind, sourceRef) }
-      : (JSON.parse(row.payload) as { sourceVersion?: number; forms?: EnqueueFormTarget[] });
+        { sourceVersion: 1, derivations: legacyDerivationTargets(row.kind, sourceRef) }
+      : (JSON.parse(row.payload) as { sourceVersion?: number; derivations?: EnqueueDerivationTarget[] });
   return {
     workItemId: row.work_item_id,
     owner: row.owner as WorkOwner,
@@ -220,7 +218,7 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
     attempts: Number(row.attempts),
     queuedAt: row.queued_at,
     sourceVersion: payload.sourceVersion ?? 1,
-    forms: payload.forms ?? [],
+    derivations: payload.derivations ?? [],
   };
 }
 
@@ -280,19 +278,19 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
   }
 }
 
-// Completion: the version-checked form writes and the item row's deletion in
+// Completion: the version-checked derivation writes and the item row's deletion in
 // one short transaction (DD-1: terminal transition deletes the row; the
 // disposition is reported in-memory, never stored). UPDATE-only, never
 // upsert — the pending row exists from enqueue; a write that finds no row at
 // the item's source version is discarded as stale (DD-3 truth table). The
 // optional onApplied hook (Story 3) runs inside this same transaction, after
-// the form writes and only when they landed — chunk placement and the
+// the derivation writes and only when they landed — chunk placement and the
 // close→summary enqueues ride the completion commit; its onCommit
 // registrations (the enqueue pokes) flush after COMMIT and drop on rollback.
 export function complete(
   db: DatabaseSync,
   item: ClaimedWorkItem,
-  writes: readonly HandlerFormWrite[],
+  writes: readonly HandlerDerivationWrite[],
   derivedAt: string,
   onApplied?: (tx: CompletionTx) => void,
 ): "done" | "stale_discarded" {
@@ -301,19 +299,18 @@ export function complete(
   try {
     let hits = 0;
     const update = db.prepare(
-      `UPDATE derived_form
-       SET state = 'ready', content = ?, reason = NULL, metadata = ?, gaps = ?, derived_at = ?
-       WHERE subject_kind = ? AND subject_id = ? AND form = ? AND source_version = ?`,
+      `UPDATE derivation
+       SET state = 'ready', content = ?, reason = NULL, metadata = ?, gaps = NULL, derived_at = ?
+       WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     for (const write of writes) {
       const changed = update.run(
         write.content,
         write.metadata === undefined ? null : JSON.stringify(write.metadata),
-        write.gaps === undefined ? null : JSON.stringify(write.gaps),
         derivedAt,
         write.subjectKind,
         write.subjectId,
-        write.form,
+        write.derivationType,
         item.sourceVersion,
       );
       hits += Number(changed.changes);
@@ -342,11 +339,11 @@ export type FailAttemptResult =
   | { terminal: false; attempts: number; eligibleAt: string }
   | { terminal: true; attempts: number };
 
-// Terminal failure: the form rows land `failed` (or `blocked` for source
+// Terminal failure: the derivation rows land `failed` (or `blocked` for source
 // damage) carrying the final reason plus attempts/last-error copied onto the
-// form's metadata, and the item row is deleted — one transaction (DD-1).
-// Form writes stay version-checked: if a mutation moved the source since this
-// item was queued, the stale failure must not stamp the rebuilt form.
+// derivation's metadata, and the item row is deleted — one transaction (DD-1).
+// Derivation writes stay version-checked: if a mutation moved the source since this
+// item was queued, the stale failure must not stamp the rebuilt derivation.
 export function failTerminal(
   db: DatabaseSync,
   item: ClaimedWorkItem,
@@ -355,12 +352,12 @@ export function failTerminal(
   db.exec("BEGIN IMMEDIATE;");
   try {
     const update = db.prepare(
-      `UPDATE derived_form
+      `UPDATE derivation
        SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
-       WHERE subject_kind = ? AND subject_id = ? AND form = ? AND source_version = ?`,
+       WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     const metadata = JSON.stringify({ attempts: opts.attempts, lastError: opts.reason });
-    for (const target of item.forms) {
+    for (const target of item.derivations) {
       update.run(
         opts.formState,
         opts.reason,
@@ -368,7 +365,7 @@ export function failTerminal(
         opts.now,
         target.subjectKind,
         target.subjectId,
-        target.form,
+        target.derivationType,
         item.sourceVersion,
       );
     }
@@ -383,7 +380,7 @@ export function failTerminal(
 // A failed run counts itself. Under budget and retryable: the row goes back
 // to `queued` with attempts incremented and eligibility pushed out by backoff
 // (min(base × 2^attempts, cap)) — retry is not a status (DD-1). At budget, or
-// on a non-retryable failure, the item is terminal: form `failed` with the
+// on a non-retryable failure, the item is terminal: derivation `failed` with the
 // final reason, row deleted (AC-1.9).
 export function failAttempt(
   db: DatabaseSync,
@@ -490,7 +487,7 @@ export interface QueueDetailRow {
 }
 
 // Mechanical detail of every live row in queue order — what the repair
-// report joins against derived_form (Flow 4) and what tests read to assert
+// report joins against derivation (Flow 4) and what tests read to assert
 // lease/backoff state without raw SQL at every call site.
 export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
   const rows = db

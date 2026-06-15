@@ -20,6 +20,8 @@ export type MessageEventInput =
   | BaseEvent<"assistant_text", { text: string }>
   | BaseEvent<"assistant_thinking", { text: string }>
   | BaseEvent<"runtime_note", { text: string }>
+  | BaseEvent<"model_change", { previousModel: string; newModel: string }>
+  | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
   | BaseEvent<
       "tool_call",
       { toolCallId: string; toolName: string; arguments: Record<string, unknown> }

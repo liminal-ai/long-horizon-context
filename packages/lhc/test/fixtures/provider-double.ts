@@ -20,7 +20,6 @@ import {
 
 export type ProviderOpName =
   | "smoothPrompt"
-  | "summarizeToolCall"
   | "summarizeToolResult"
   | "composeTurnRendering"
   | "projectLowerBand"
@@ -32,7 +31,6 @@ export type ProviderOpName =
 // as the operation names themselves.
 const KIND_ALIASES: Record<string, ProviderOpName> = {
   smoothPrompt: "smoothPrompt",
-  summarizeToolCall: "summarizeToolCall",
   summarizeToolResult: "summarizeToolResult",
   composeTurnRendering: "composeTurnRendering",
   projectLowerBand: "projectLowerBand",
@@ -40,7 +38,6 @@ const KIND_ALIASES: Record<string, ProviderOpName> = {
   summarizeChunkBrief: "summarizeChunkBrief",
   prompt_smoothing: "smoothPrompt",
   smoothed_prompt: "smoothPrompt",
-  tool_call_summary: "summarizeToolCall",
   tool_result_summary: "summarizeToolResult",
   turn_rendering: "composeTurnRendering",
   lower_band_projection: "projectLowerBand",
@@ -131,15 +128,13 @@ export class ProviderDouble implements DerivationProvider {
     return this.run("smoothPrompt", i, i.text);
   }
 
-  summarizeToolCall(i: {
+  summarizeToolResult(i: {
     toolName: string;
-    argsJson: string;
-    pairedResult?: { content: string; isError: boolean };
+    content: string;
+    outcome?: ToolOutcome;
+    targetTokens?: number;
+    guidance?: string;
   }): Promise<ProviderResult> {
-    return this.run("summarizeToolCall", i, `${i.toolName} ${i.argsJson}`);
-  }
-
-  summarizeToolResult(i: { toolName: string; content: string }): Promise<ProviderResult> {
     return this.run("summarizeToolResult", i, i.content);
   }
 

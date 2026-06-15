@@ -1,6 +1,6 @@
 // Epic 05 Story 2 — TC-1.1 (AC-1.1, AC-1.3): the construction matrix.
 // Construction is where every config mistake dies: provider XOR inference,
-// all seven kinds present (parameterized over the exported FORM_KINDS set so
+// all seven kinds present (parameterized over the exported DERIVATION_TYPES set so
 // a new kind fails the matrix automatically), no unknown kind keys, every
 // prompt name known, non-empty provider/model strings — each a TypeError
 // naming the violated rule, with no partial construction. A complete valid
@@ -10,13 +10,13 @@ import { createSdk, type ModelAssignment, type SdkConfig } from "../src/index.js
 import {
   cannedResponses,
   createProviderDouble,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   tempStore,
   validAssignments,
   validEvent,
-  type FormKind,
+  type DerivationType,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -61,8 +61,8 @@ describe("TC-1.1: provider XOR inference (AC-1.1)", () => {
 });
 
 describe("TC-1.1: assignment validation (AC-1.3)", () => {
-  it.each([...FORM_KINDS])("missing kind %s is a TypeError naming the kind", (kind) => {
-    const assignments: Partial<Record<FormKind, ModelAssignment>> = validAssignments();
+  it.each([...DERIVATION_TYPES])("missing kind %s is a TypeError naming the kind", (kind) => {
+    const assignments: Partial<Record<DerivationType, ModelAssignment>> = validAssignments();
     delete assignments[kind];
     const make = buildSdk(assignments);
     expect(make).toThrow(TypeError);
@@ -138,7 +138,7 @@ describe("TC-1.1: a complete valid config operates (AC-1.1, AC-1.3)", () => {
     }
 
     const smoothed = readDerivedForms(filePath).find(
-      (form) => form.form === "smoothed_prompt" && form.subjectId === "m1",
+      (form) => form.derivationType === "smoothed_prompt" && form.subjectId === "m1",
     );
     expect(smoothed?.state).toBe("ready");
     expect(smoothed?.content).toBe(responses.smoothed_prompt);

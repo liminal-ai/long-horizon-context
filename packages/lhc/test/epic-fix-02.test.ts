@@ -92,8 +92,8 @@ function liveCount(filePath: string): number {
   }
 }
 
-function formKey(form: { subjectKind: string; subjectId: string; form: string }): string {
-  return `${form.subjectKind}/${form.subjectId}/${form.form}`;
+function formKey(entry: { subjectKind: string; subjectId: string; derivationType: string }): string {
+  return `${entry.subjectKind}/${entry.subjectId}/${entry.derivationType}`;
 }
 
 // ── EPIC-02-BLOCK-001: per-SDK-instance scheduler seam ────────────
@@ -183,51 +183,37 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     return filePath;
   }
 
-  it("deleting a tool_result re-queues the paired tool_call summary; it rebuilds outcome unknown", async () => {
+  it("deleting a tool_result drops only its tool-result summary", async () => {
     const double = createProviderDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await toolRunThread(sdk);
 
-    // Before: m2's call summary derived with a real outcome (the result is
-    // present and clean), and the control prompt smoothing is ready at v1.
+    // Before: the result summary and the control prompt smoothing are ready.
     const before = readDerivedForms(filePath);
-    const callBefore = before.find(
-      (form) => form.subjectId === "m2" && form.form === "tool_call_summary",
+    const resultBefore = before.find(
+      (form) => form.subjectId === "m3" && form.derivationType === "tool_result_summary",
     );
-    expect(callBefore?.state).toBe("ready");
-    expect(callBefore?.sourceVersion).toBe(1);
-    expect(callBefore?.metadata?.outcome).toBe("succeeded");
+    expect(resultBefore?.state).toBe("ready");
     const promptBefore = before.find(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
 
-    // Delete the tool_result (m3). The pair counterpart (m2) joins the cascade.
+    // Delete the tool_result (m3). Tool calls no longer have summaries, so no
+    // paired call summary is cleared or re-queued.
     const result = await sdk.messages.deleteMessage({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.dropped.map(formKey)).toEqual(["message/m3/tool_result_summary"]);
-    expect(result.value.cleared.map(formKey)).toContain("message/m2/tool_call_summary");
-    expect(result.value.queued.map((item) => item.workItemId)).toContain(
-      "w-m2-tool_call_summary-v2",
-    );
+    expect(result.value.cleared.map(formKey)).not.toContain("message/m2/tool_call_summary");
+    expect(result.value.queued.map((item) => item.kind)).not.toContain("tool_call_summary");
 
-    // After rebuild: the call summary is ready at the bumped version, and its
-    // outcome reverts to `unknown` — the deleted-read filter (BLOCK-002a)
-    // excludes the dead result, so the call derives no pair.
     const rebuild = await sdk.work.drain({ filePath });
     expect(rebuild.ok).toBe(true);
     const after = readDerivedForms(filePath);
-    const callAfter = after.find(
-      (form) => form.subjectId === "m2" && form.form === "tool_call_summary",
-    );
-    expect(callAfter?.state).toBe("ready");
-    expect(callAfter?.sourceVersion).toBe(2);
-    expect(callAfter?.metadata?.outcome).toBe("unknown");
 
-    // Control: the unrelated prompt smoothing is byte-stable, source version
-    // included — the cascade reaches the pair, nothing else.
+    // Control: the unrelated prompt smoothing is byte-stable.
     const promptAfter = after.find(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(promptAfter).toEqual(promptBefore);
     expect(liveCount(filePath)).toBe(0);
@@ -259,7 +245,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     const elapsed = Date.now() - startedAt;
 
     // The form derived on the second attempt — the retry actually ran.
-    expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.form}/${f.state}`)).toEqual([
+    expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`)).toEqual([
       "m1/smoothed_prompt/ready",
     ]);
     // Two provider calls = attempts 2 (fail, then succeed).
@@ -344,7 +330,7 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     // The summaries live inside the run accounts, not as standalone parts: the
     // rendering carries no one-entry-per-tool-message segment.
     const rendering = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "t1" && f.form === "turn_rendering",
+      (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     );
     const receipts = rendering?.metadata?.receipts;
     expect(receipts).toHaveLength(2);
@@ -375,7 +361,7 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
 
     const receipts = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "t1" && f.form === "turn_rendering",
+      (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     )?.metadata?.receipts;
     expect(receipts).toHaveLength(1);
     const receipt = receipts?.[0];
@@ -384,20 +370,19 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     expect(receipt?.outcome).toBe("failed");
     expect(receipt?.account).toContain("1 succeeded, 1 failed");
     const failedResult = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "m5" && f.form === "tool_result_summary",
+      (f) => f.subjectId === "m5" && f.derivationType === "tool_result_summary",
     )?.content;
     expect(receipt?.account).toContain(`${failedResult} ⇒ failed`);
   });
 });
 
 // ── REVERIFY-02-001: cascadeTurnDelete cascades to a cross-turn pair ──────────
-describe("REVERIFY-02-001: cascadeTurnDelete clears a cross-turn pair counterpart", () => {
-  it("deleting the turn holding a late result reverts the earlier turn's call summary to unknown", async () => {
+describe("REVERIFY-02-001: cascadeTurnDelete ignores removed tool-call summaries", () => {
+  it("deleting the turn holding a late result does not requeue the earlier tool call", async () => {
     const double = createProviderDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("crossturn");
 
-    // t1: a tool_call whose result has not arrived — its summary derives unknown.
     const b1 = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "call now" } }),
       validEvent("tool_call", { payload: { toolCallId: "x", toolName: "run_cmd", arguments: {} } }),
@@ -405,14 +390,10 @@ describe("REVERIFY-02-001: cascadeTurnDelete clears a cross-turn pair counterpar
     ]);
     expect(b1.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-    const callV1 = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "m2" && f.form === "tool_call_summary",
-    );
-    expect(callV1?.state).toBe("ready");
-    expect(callV1?.metadata?.outcome).toBe("unknown");
+    expect(readDerivedForms(filePath).map((f) => f.derivationType)).not.toContain("tool_call_summary");
 
-    // t2: the paired result lands in a LATER (prompt-initiated) turn. Its
-    // intake re-queues m2's call summary (AC-2.8 cross-turn), rebuilt 'succeeded'.
+    // t2: the paired result lands in a later turn and derives only its own
+    // tool-result summary.
     const b2 = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "and the result" } }),
       validEvent("tool_result", { payload: { toolCallId: "x", content: "done", isError: false } }),
@@ -420,30 +401,14 @@ describe("REVERIFY-02-001: cascadeTurnDelete clears a cross-turn pair counterpar
     ]);
     expect(b2.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-    const callV2 = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "m2" && f.form === "tool_call_summary",
-    );
-    expect(callV2?.state).toBe("ready");
-    expect(callV2?.metadata?.outcome).toBe("succeeded");
-    expect(callV2?.sourceVersion).toBe(2);
 
-    // Delete t2 (the result's turn). REVERIFY-02-001: the cross-turn counterpart
-    // m2 joins the cascade — its call summary clears and re-queues.
     const deleted = await sdk.turns.deleteTurn({ filePath }, { turnId: "t2" });
     expect(deleted.ok).toBe(true);
     if (!deleted.ok) return;
-    expect(deleted.value.cleared.map(formKey)).toContain("message/m2/tool_call_summary");
-    expect(deleted.value.queued.map((q) => q.workItemId)).toContain("w-m2-tool_call_summary-v3");
+    expect(deleted.value.cleared.map(formKey)).not.toContain("message/m2/tool_call_summary");
+    expect(deleted.value.queued.map((q) => q.kind)).not.toContain("tool_call_summary");
 
-    // Rebuild: with the result gone (deleted-read filter), the call derives no
-    // pair — its outcome reverts to unknown.
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-    const callV3 = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "m2" && f.form === "tool_call_summary",
-    );
-    expect(callV3?.state).toBe("ready");
-    expect(callV3?.metadata?.outcome).toBe("unknown");
-    expect(callV3?.sourceVersion).toBe(3);
     expect(liveCount(filePath)).toBe(0);
   });
 });
@@ -457,43 +422,45 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
     const batch = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "prompt" } }),
       validEvent("tool_call", { payload: { toolCallId: "k", toolName: "run_cmd", arguments: {} } }),
-      validEvent("tool_result", { payload: { toolCallId: "k", content: "ok", isError: false } }),
+      validEvent("tool_result", {
+        payload: { toolCallId: "k", content: "ok ".repeat(100), isError: false },
+      }),
       validEvent("turn_end"),
     ]);
     expect(batch.ok).toBe(true);
 
-    // Hold m2's tool_call_summary in flight: the drain claims it, the handler
+    // Hold m3's tool_result_summary in flight: the drain claims it, the handler
     // awaits the delayed double, and the delete lands inside that window.
-    double.delayKind("tool_call_summary", 400);
+    double.delayKind("tool_result_summary", 400);
     const captured = double.captureInputs();
     const drainPromise = sdk.work.drain({ filePath });
     await until(
-      () => captured.some((c) => c.op === "summarizeToolCall"),
-      "m2's tool_call_summary to be claimed and in-handler",
+      () => captured.some((c) => c.op === "summarizeToolResult"),
+      "m3's tool_result_summary to be claimed and in-handler",
     );
 
-    // Delete m2 (the tool_call) while its summary item is claimed. Its own form
+    // Delete m3 (the tool_result) while its summary item is claimed. Its own form
     // drops; the claimed item is left to the version check (DD-3).
-    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: "m2" });
+    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: "m3" });
     expect(deleted.ok).toBe(true);
     if (!deleted.ok) return;
-    expect(deleted.value.dropped.map(formKey)).toContain("message/m2/tool_call_summary");
+    expect(deleted.value.dropped.map(formKey)).toContain("message/m3/tool_result_summary");
 
     const drained = await drainPromise;
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
     // The straggler completion is reported stale_discarded — not an error, not a
     // retry.
-    const m2Item = drained.value.ran.find((r) => r.workItemId === "w-m2-tool_call_summary-v1");
-    expect(m2Item?.disposition).toBe("stale_discarded");
+    const m3Item = drained.value.ran.find((r) => r.workItemId === "w-m3-tool_result_summary-v1");
+    expect(m3Item?.disposition).toBe("stale_discarded");
 
-    // Tombstone intact: m2 is gone from the live read and its summary form was
+    // Tombstone intact: m3 is gone from the live read and its summary form was
     // not resurrected by the stale completion.
     const listed = await sdk.messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.value.map((m) => m.messageId)).not.toContain("m2");
-    expect(readDerivedForms(filePath).some((f) => f.subjectId === "m2")).toBe(false);
+    expect(listed.value.map((m) => m.messageId)).not.toContain("m3");
+    expect(readDerivedForms(filePath).some((f) => f.subjectId === "m3")).toBe(false);
     // Cascade stands: the counterpart re-queue and the turn rebuild drained
     // clean behind the discarded straggler.
     expect(liveCount(filePath)).toBe(0);

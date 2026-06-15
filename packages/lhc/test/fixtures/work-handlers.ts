@@ -8,18 +8,18 @@
 // production domain tables merge into (DD-6).
 import type {
   DerivationProvider,
-  HandlerFormWrite,
+  HandlerDerivationWrite,
   Lhc,
   ProviderResult,
   SubjectKind,
-  FormKind,
+  DerivationType,
   WorkHandler,
   WorkKind,
 } from "../../src/index.js";
 
 interface FormSpec {
   subjectKind: SubjectKind;
-  form: FormKind;
+  derivationType: DerivationType;
   call: (provider: DerivationProvider, sourceId: string) => Promise<ProviderResult>;
 }
 
@@ -27,28 +27,21 @@ const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
   prompt_smoothing: [
     {
       subjectKind: "message",
-      form: "smoothed_prompt",
+      derivationType: "smoothed_prompt",
       call: (p, id) => p.smoothPrompt({ text: `prompt:${id}` }),
-    },
-  ],
-  tool_call_summary: [
-    {
-      subjectKind: "message",
-      form: "tool_call_summary",
-      call: (p, id) => p.summarizeToolCall({ toolName: "fixture", argsJson: `{"source":"${id}"}` }),
     },
   ],
   tool_result_summary: [
     {
       subjectKind: "message",
-      form: "tool_result_summary",
+      derivationType: "tool_result_summary",
       call: (p, id) => p.summarizeToolResult({ toolName: "fixture", content: `result:${id}` }),
     },
   ],
   turn_derivation: [
     {
       subjectKind: "turn",
-      form: "turn_rendering",
+      derivationType: "turn_rendering",
       call: (p, id) =>
         p.composeTurnRendering({
           parts: [{ messageId: id, kind: "user_prompt", text: `turn:${id}`, fallback: false }],
@@ -56,21 +49,21 @@ const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
     },
     {
       subjectKind: "turn",
-      form: "lower_band_projection",
+      derivationType: "lower_band_projection",
       call: (p, id) => p.projectLowerBand({ rendering: `turn:${id}` }),
     },
   ],
   chunk_summary_detailed: [
     {
       subjectKind: "chunk",
-      form: "chunk_summary_detailed",
+      derivationType: "chunk_summary_detailed",
       call: (p, id) => p.summarizeChunkDetailed({ memberProjections: [`chunk:${id}`] }),
     },
   ],
   chunk_summary_brief: [
     {
       subjectKind: "chunk",
-      form: "chunk_summary_brief",
+      derivationType: "chunk_summary_brief",
       call: (p, id) => p.summarizeChunkBrief({ memberProjections: [`chunk:${id}`] }),
     },
   ],
@@ -96,20 +89,20 @@ export function testWorkHandlers(
       if (sourceId === undefined) {
         return { ok: false, retryable: false, reason: "test handler: unrecognized sourceRef" };
       }
-      const forms: HandlerFormWrite[] = [];
+      const derivations: HandlerDerivationWrite[] = [];
       for (const spec of specs) {
         const result = await spec.call(provider, sourceId);
         if (!result.ok) {
           return { ok: false, retryable: result.retryable, reason: result.reason };
         }
-        forms.push({
+        derivations.push({
           subjectKind: spec.subjectKind,
           subjectId: sourceId,
-          form: spec.form,
+          derivationType: spec.derivationType,
           content: result.text,
         });
       }
-      return { ok: true, forms };
+      return { ok: true, derivations };
     };
   }
   return map;

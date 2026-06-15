@@ -1,4 +1,4 @@
-// Epic 02 shared vocabulary: the derived-form state machine's types, the
+// Epic 02 shared vocabulary: the derivation state machine's types, the
 // provider seam, and the handler contract. Both owning domains (messages,
 // turns) consume these; neither owns them — the repair report, the mutation
 // cascade, and the drain all speak this vocabulary across domain lines, so it
@@ -15,9 +15,8 @@ export type SubjectKind = "message" | "turn" | "chunk";
 // that must cover every kind — assignment validation above all (Epic 05
 // AC-1.3) — iterates the exported set instead of maintaining a second
 // literal list that can drift.
-export const FORM_KINDS = [
+export const DERIVATION_TYPES = [
   "smoothed_prompt",
-  "tool_call_summary",
   "tool_result_summary",
   "turn_rendering",
   "lower_band_projection",
@@ -25,33 +24,33 @@ export const FORM_KINDS = [
   "chunk_summary_brief",
 ] as const;
 
-export type FormKind = (typeof FORM_KINDS)[number];
+export type DerivationType = (typeof DERIVATION_TYPES)[number];
 
-export type DerivedFormState = "pending" | "ready" | "failed" | "blocked";
+export type DerivationState = "pending" | "ready" | "failed" | "blocked";
 
 // Outcome on tool-activity summaries — mechanically stamped from the record
 // (isError/presence), never authored by the provider (AC-2.4).
 export type ToolOutcome = "succeeded" | "failed" | "unknown";
 
-// A composed form's record of a dependency that fell back during composition:
-// names the source record and the form that was not ready (AC-3.2/3.3).
+// A composed derivation's record of a dependency that fell back during composition:
+// names the source record and the derivation type that was not ready (AC-3.2/3.3).
 export interface DependencyGap {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
+  derivationType: DerivationType;
 }
 
-// The read shape for one derived form's state row (DD-2, DD-3).
-export interface DerivedForm {
+// The read shape for one derivation's state row (DD-2, DD-3).
+export interface Derivation {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
-  state: DerivedFormState;
+  derivationType: DerivationType;
+  state: DerivationState;
   content?: string; // ready only
   reason?: string; // failed | blocked
-  sourceVersion: number; // which version of the source this form derives from (DD-3)
-  gaps?: DependencyGap[]; // composed forms; landed-with-fallback record
-  metadata?: DerivedFormMetadata; // mechanically stamped fields; never provider-authored
+  sourceVersion: number; // which version of the source this derivation derives from (DD-3)
+  gaps?: DependencyGap[]; // composed derivations; landed-with-fallback record
+  metadata?: DerivationMetadata; // mechanically stamped fields; never provider-authored
   derivedAt?: string;
 }
 
@@ -67,12 +66,12 @@ export interface ToolRunReceipt {
   outcome: ToolOutcome;
 }
 
-// Mechanically stamped form metadata: tool outcomes (AC-2.4), the turn
+// Mechanically stamped derivation metadata: tool outcomes (AC-2.4), the turn
 // rendering's tool-run receipts (AC-3.8), plus — at retry exhaustion — the
 // final attempts/last-error copied from the work item before its row is
 // deleted (DD-1: the queue is not an audit table; durable outcome detail
 // lives here).
-export interface DerivedFormMetadata {
+export interface DerivationMetadata {
   outcome?: ToolOutcome;
   receipts?: ToolRunReceipt[];
   attempts?: number;
@@ -83,13 +82,13 @@ export interface DerivedFormMetadata {
   provenance?: ProviderProvenance;
 }
 
-// One row of an owner's repair report (Flow 4): the form's durable state
+// One row of an owner's repair report (Flow 4): the derivation's durable state
 // joined with the queue's mechanical detail for the live item still working
 // toward it, if any. The five operational situations read from this one row:
 // never-attempted (pending, no queue), retrying (pending + queue with
 // attempts > 0), ready, failed (+ reason), blocked (+ reason) — no caller
 // ever needs a queue API.
-export interface FormReportEntry extends DerivedForm {
+export interface DerivationReportEntry extends Derivation {
   queue?: {
     status: "queued" | "claimed";
     attempts: number;
@@ -103,7 +102,7 @@ export interface FormReportEntry extends DerivedForm {
 // retryable-or-not; classification is the adapter's duty.
 // Provenance: the three config-known assignment strings, stamped by the
 // inference adapter (it alone knows the assignment) and copied by handlers
-// into form metadata (Epic 05 DD-4). Never derived from model output.
+// into derivation metadata (Epic 05 DD-4). Never derived from model output.
 export interface ProviderProvenance {
   provider: string;
   model: string;
@@ -122,25 +121,29 @@ export type RenderingPartKind =
   | "assistant_text"
   | "assistant_thinking"
   | "runtime_note"
+  | "model_change"
+  | "thinking_level_change"
   | "tool_call"
   | "tool_result";
 
 export interface RenderingPart {
   messageId: string;
   kind: RenderingPartKind;
-  text: string; // ready form content, or raw/truncated fallback
+  text: string; // ready derivation content, or raw/truncated fallback
   fallback: boolean; // true ⇒ gap recorded
+  blocks?: Array<{ blockType: string; content: Record<string, unknown> }>;
   outcome?: ToolOutcome; // tool activity only
 }
 
 export interface DerivationProvider {
   smoothPrompt(i: { text: string }): Promise<ProviderResult>;
-  summarizeToolCall(i: {
+  summarizeToolResult(i: {
     toolName: string;
-    argsJson: string;
-    pairedResult?: { content: string; isError: boolean };
+    content: string;
+    outcome?: ToolOutcome;
+    targetTokens?: number;
+    guidance?: string;
   }): Promise<ProviderResult>;
-  summarizeToolResult(i: { toolName: string; content: string }): Promise<ProviderResult>;
   composeTurnRendering(i: { parts: RenderingPart[] }): Promise<ProviderResult>;
   projectLowerBand(i: { rendering: string }): Promise<ProviderResult>;
   // The two summary inputs differ by contract (AC-3.8): detailed receives
@@ -161,7 +164,6 @@ export interface DerivationProvider {
 
 export const PROVIDER_OPERATIONS = [
   "smoothPrompt",
-  "summarizeToolCall",
   "summarizeToolResult",
   "composeTurnRendering",
   "projectLowerBand",
@@ -182,6 +184,13 @@ export interface SdkConfig {
   mode: "background" | "manual";
   clock?: () => Date;
   retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number }; // 3 / 5000 / 60000
+  smoothing?: { maxInferenceTokens: number }; // 4000
+  toolResult?: {
+    smallTierTokens: number;
+    largeTierTokens: number;
+    smallTargetRatio: number;
+    midTargetRatio: number;
+  }; // 1000 / 5000 / 0.15 / 0.04
   lease?: { durationMs: number }; // 120000
   chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
   view?: SdkViewConfig; // Epic 03: profiles, visibility budgets, compact threshold
@@ -193,6 +202,13 @@ export interface ResolvedSdkConfig {
   mode: "background" | "manual";
   clock: () => Date;
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
+  smoothing: { maxInferenceTokens: number };
+  toolResult: {
+    smallTierTokens: number;
+    largeTierTokens: number;
+    smallTargetRatio: number;
+    midTargetRatio: number;
+  };
   lease: { durationMs: number };
   chunkPolicy: { targetProjectedTokens: number; maxProjectedTokens: number };
   view: ResolvedViewConfig;
@@ -206,25 +222,25 @@ export interface HandlerRunContext {
   config: ResolvedSdkConfig;
 }
 
-// A successful handler hands its derived-form content back as data; the
+// A successful handler hands its derivation content back as data; the
 // drain's completion transaction performs the version-checked UPDATE and the
 // item-row deletion atomically (tech design §Mechanics: completion is one
-// short BEGIN IMMEDIATE doing the form write and the delete). The handler
+// short BEGIN IMMEDIATE doing the derivation write and the delete). The handler
 // never opens that transaction itself, so the version check and the
 // done/stale_discarded disposition stay in one place — the queue util.
-export interface HandlerFormWrite {
+export interface HandlerDerivationWrite {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
+  derivationType: DerivationType;
   content: string;
-  metadata?: DerivedFormMetadata;
+  metadata?: DerivationMetadata;
   gaps?: DependencyGap[];
 }
 
 // The completion-transaction hook (Story 3): work that must land atomically
-// with the version-checked form writes — chunk placement and the
+// with the version-checked derivation writes — chunk placement and the
 // close→summary enqueues above all. The queue util invokes it inside the
-// completion's BEGIN IMMEDIATE, after the form writes and only when they hit
+// completion's BEGIN IMMEDIATE, after the derivation writes and only when they hit
 // (a stale completion must not place a turn or enqueue summaries); onCommit
 // registrations flush after that COMMIT succeeds and drop on rollback, so a
 // crash leaves either a placed turn with its enqueues or nothing — never a
@@ -235,9 +251,9 @@ export interface CompletionTx {
 }
 
 export type HandlerOutcome =
-  | { ok: true; forms?: HandlerFormWrite[]; onApplied?: (tx: CompletionTx) => void }
+  | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (tx: CompletionTx) => void }
   | { ok: false; retryable: boolean; reason: string }
-  | { ok: false; blocked: true; reason: string }; // source damage → form blocked, item terminal
+  | { ok: false; blocked: true; reason: string }; // source damage → derivation blocked, item terminal
 
 // item is the queue util's WorkItemRecord; typed structurally here so the
 // shared layer does not depend on the util's module (and vice versa stays

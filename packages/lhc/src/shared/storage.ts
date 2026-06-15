@@ -5,8 +5,11 @@ export interface Migration {
   statements: readonly string[];
 }
 
+const databasePaths = new WeakMap<DatabaseSync, string>();
+
 export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
+  databasePaths.set(db, path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
@@ -14,15 +17,19 @@ export function openDatabase(path: string): DatabaseSync {
   return db;
 }
 
+export function databasePathFor(db: DatabaseSync): string | undefined {
+  return databasePaths.get(db);
+}
+
 // Epic 02's single migration (tech design §Storage): queue mechanical fields
-// on the existing work_item table, the derived_form state table, the chunk
+// on the existing work_item table, the derivation state table, the chunk
 // tables, and the projection-level delete stamps. The whole epic's schema
 // lands in one version — behavior arrives story by story. Assembled into the
 // thread-file migration history by threads/internal/create.ts.
 export const MIGRATION_V5_STATEMENTS: readonly string[] = [
   // claim mechanics on the existing table (DD-1: no disposition column —
   // queue rows are live work only; terminal rows are deleted and their
-  // outcomes reported in-memory; durable outcome state lives on derived_form)
+  // outcomes reported in-memory; durable outcome state lives on derivation)
   `ALTER TABLE work_item ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;`,
   `ALTER TABLE work_item ADD COLUMN last_error TEXT;`,
   `ALTER TABLE work_item ADD COLUMN claimed_at TEXT;`,
@@ -97,9 +104,9 @@ export const MIGRATION_V6_STATEMENTS: readonly string[] = [
     covered_from INTEGER NOT NULL,       -- oldest event_order represented in any band
     profile_name TEXT,                   -- null when explicit params
     config_json TEXT NOT NULL,           -- resolved bound + percentages
-    arrangement_json TEXT NOT NULL,      -- ordered entries: {band, subjectKind, subjectId, formUsed, degraded}
+    arrangement_json TEXT NOT NULL,      -- ordered entries: {band, subjectKind, subjectId, derivationUsed, degraded}
     gaps_json TEXT NOT NULL,             -- [{band, subjectId, reason}]
-    source_state_json TEXT NOT NULL      -- {maxEventOrder, formCounts} the compact saw — receipt/debug
+    source_state_json TEXT NOT NULL      -- {maxEventOrder, derivationCounts} the compact saw — receipt/debug
   );`,
   `CREATE TABLE thread_view_band (
     view_id TEXT NOT NULL REFERENCES thread_view(view_id) ON DELETE CASCADE,
@@ -117,6 +124,63 @@ export const MIGRATION_V6_STATEMENTS: readonly string[] = [
   // migration on, so the advance and the compact reset are UPDATE-only.
   `INSERT INTO view_boundary (thread_singleton, position, updated_at)
     VALUES (1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`,
+];
+
+// Epic 06 Story 0's single migration (tech design §DD-1, §DD-5):
+// 1. Rename derived_form table to derivation and column 'form' to 'derivation_type'
+// 2. Create the log table for fallback events and diagnostics
+// Singletons are CHECK-enforced structurally: one log entry per recorded event.
+// Assembled into the thread-file migration history by threads/internal/create.ts,
+// like v5 and v6.
+export const MIGRATION_V7_STATEMENTS: readonly string[] = [
+  // Rename table and column for derivation vocabulary (DD-1)
+  `ALTER TABLE derived_form RENAME TO derivation;`,
+  // SQLite doesn't support ALTER COLUMN directly, so we recreate the table
+  `CREATE TABLE derivation_new (
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('message','turn','chunk')),
+    subject_id   TEXT NOT NULL,
+    derivation_type TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('pending','ready','failed','blocked')),
+    content      TEXT,
+    reason       TEXT,
+    metadata     TEXT,
+    source_version INTEGER NOT NULL DEFAULT 1,
+    gaps         TEXT,
+    derived_at   TEXT,
+    PRIMARY KEY (subject_kind, subject_id, derivation_type)
+  );`,
+  `INSERT INTO derivation_new SELECT subject_kind, subject_id, form, state, content, reason, metadata, source_version, gaps, derived_at FROM derivation;`,
+  `DROP TABLE derivation;`,
+  `ALTER TABLE derivation_new RENAME TO derivation;`,
+  `UPDATE thread_view
+     SET arrangement_json = replace(arrangement_json, '"formUsed"', '"derivationUsed"')
+     WHERE arrangement_json LIKE '%"formUsed"%';`,
+  `UPDATE thread_view
+     SET source_state_json = replace(source_state_json, '"formCounts"', '"derivationCounts"')
+     WHERE source_state_json LIKE '%"formCounts"%';`,
+  // Create log table (DD-5)
+  `CREATE TABLE log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL CHECK (level IN ('info','warning','error')),
+    message TEXT NOT NULL,
+    derivation_type TEXT,
+    subject_id TEXT,
+    reason TEXT,
+    floor_used TEXT,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );`,
+  // Indexes for log queries by actionable fields
+  `CREATE INDEX idx_log_level ON log (level);`,
+  `CREATE INDEX idx_log_derivation_type ON log (derivation_type);`,
+  `CREATE INDEX idx_log_subject_id ON log (subject_id);`,
+  `CREATE INDEX idx_log_reason ON log (reason);`,
+];
+
+// Epic 06 Story 2: tool calls render as recorded, so the old
+// tool_call_summary derivation/work rows are no longer valid work.
+export const MIGRATION_V8_STATEMENTS: readonly string[] = [
+  `DELETE FROM work_item WHERE kind = 'tool_call_summary';`,
+  `DELETE FROM derivation WHERE subject_kind = 'message' AND derivation_type = 'tool_call_summary';`,
 ];
 
 export function getSchemaVersion(db: DatabaseSync): number {

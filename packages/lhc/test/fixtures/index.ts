@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { EventKind, MessageEventInput } from "../../src/index.js";
+import { openDatabase } from "../../src/shared/storage.js";
 
 export type EventByKind<K extends EventKind> = Extract<
   MessageEventInput,
@@ -16,6 +17,8 @@ const defaultPayloads: { [K in EventKind]: () => EventByKind<K>["payload"] } = {
   assistant_text: () => ({ text: "here is what I found" }),
   assistant_thinking: () => ({ text: "considering the file contents" }),
   runtime_note: () => ({ text: "harness restarted mid-turn" }),
+  model_change: () => ({ previousModel: "gpt-5", newModel: "gpt-5.1" }),
+  thinking_level_change: () => ({ previousLevel: "medium", newLevel: "high" }),
   tool_call: () => ({
     toolCallId: "call-1",
     toolName: "read_file",
@@ -89,7 +92,7 @@ export function tempStore(): TempStore {
 // Direct node:sqlite handle for below-SDK assertions. Read-only use by
 // convention; fixtures/corrupt.ts is the one sanctioned writer.
 export function openRaw(path: string): DatabaseSync {
-  return new DatabaseSync(path);
+  return openDatabase(path);
 }
 
 export {
@@ -177,8 +180,8 @@ export {
   cannedResponses,
   FAKE_MODEL_PREFIX,
   FAKE_PROVIDER_PREFIX,
-  FORM_KINDS,
-  type FormKind,
+  DERIVATION_TYPES,
+  type DerivationType,
   hangingCall,
   recordingCall,
   scriptedCall,

@@ -19,7 +19,7 @@ import {
   type BatchResult,
   type DerivationProvider,
   type DrainReport,
-  type FormReportEntry,
+  type DerivationReportEntry,
   type Lhc,
   type MessageEventInput,
   type SdkConfig,
@@ -92,9 +92,9 @@ async function drain(
   return result.value;
 }
 
-function formOf(filePath: string, subjectId: string, form: string) {
+function formOf(filePath: string, subjectId: string, derivationType: string) {
   return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.form === form,
+    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
   );
 }
 
@@ -117,11 +117,13 @@ function rawDetail(filePath: string): ReturnType<typeof queueDetail> {
 }
 
 function entryOf(
-  entries: readonly FormReportEntry[],
+  entries: readonly DerivationReportEntry[],
   subjectId: string,
-  form: string,
-): FormReportEntry | undefined {
-  return entries.find((entry) => entry.subjectId === subjectId && entry.form === form);
+  derivationType: string,
+): DerivationReportEntry | undefined {
+  return entries.find(
+    (entry) => entry.subjectId === subjectId && entry.derivationType === derivationType,
+  );
 }
 
 async function reportOf(
@@ -129,7 +131,7 @@ async function reportOf(
   filePath: string,
   owner: "messages" | "turns",
   opts?: { notReady?: boolean },
-): Promise<FormReportEntry[]> {
+): Promise<DerivationReportEntry[]> {
   const result =
     owner === "messages"
       ? await sdk.messages.report({ filePath }, opts)
@@ -269,7 +271,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
     expect(
       turnEntries.every((entry) => entry.subjectKind === "turn" || entry.subjectKind === "chunk"),
     ).toBe(true);
-    expect(turnEntries.map((entry) => [entry.subjectId, entry.form, entry.state])).toEqual([
+    expect(turnEntries.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["t1", "lower_band_projection", "blocked"],
       ["t1", "turn_rendering", "blocked"],
       ["t2", "lower_band_projection", "blocked"],
@@ -320,7 +322,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
 
     const turnEntries = await reportOf(sdk, filePath, "turns");
     const chunkEntries = turnEntries.filter((entry) => entry.subjectKind === "chunk");
-    expect(chunkEntries.map((entry) => [entry.subjectId, entry.form, entry.state])).toEqual([
+    expect(chunkEntries.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["c1", "chunk_summary_brief", "ready"],
       ["c1", "chunk_summary_detailed", "ready"],
       ["c2", "chunk_summary_brief", "failed"],
@@ -328,7 +330,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
     ]);
 
     const notReady = await reportOf(sdk, filePath, "turns", { notReady: true });
-    expect(notReady.map((entry) => [entry.subjectId, entry.form, entry.state])).toEqual([
+    expect(notReady.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["c2", "chunk_summary_brief", "failed"],
     ]);
 
@@ -339,7 +341,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
 
     // The chunk filter scopes to exactly the named chunk's summary forms.
     const oneChunk = await sdk.turns.report({ filePath }, { chunkId: "c2" });
-    expect(oneChunk.ok && oneChunk.value.map((entry) => [entry.subjectId, entry.form])).toEqual([
+    expect(oneChunk.ok && oneChunk.value.map((entry) => [entry.subjectId, entry.derivationType])).toEqual([
       ["c2", "chunk_summary_brief"],
       ["c2", "chunk_summary_detailed"],
     ]);
@@ -369,7 +371,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     });
     const requeued = await background.messages.requeue(
       { filePath },
-      { messageId, form: "smoothed_prompt" },
+      { messageId, derivationType: "smoothed_prompt" },
     );
     expect(requeued.ok).toBe(true);
     if (!requeued.ok) return;
@@ -393,25 +395,26 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     });
   });
 
-  it("turns.requeue rebuilds a gapped rendering at the next source version; gaps recompute from current dependency states", async () => {
+  it("turns.requeue rebuilds a fallback-composed rendering at the next source version", async () => {
     const double = createProviderDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId, turnId } = await gappedRenderingThread(store, sdk, double);
+    const beforeRepair = formOf(filePath, turnId, "turn_rendering");
 
     // Repair the dependency first (now healthy), then rebuild the composition.
     const repairSmoothing = await sdk.messages.requeue(
       { filePath },
-      { messageId, form: "smoothed_prompt" },
+      { messageId, derivationType: "smoothed_prompt" },
     );
     expect(repairSmoothing.ok).toBe(true);
     await drain(sdk, filePath);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
-    // No auto-cascade: the rendering still carries its recorded gap.
-    expect(formOf(filePath, turnId, "turn_rendering")?.gaps).toBeDefined();
+    // No auto-cascade: the rendering row is still exactly the fallback-composed row.
+    expect(formOf(filePath, turnId, "turn_rendering")).toEqual(beforeRepair);
 
     const rebuild = await sdk.turns.requeue(
       { filePath },
-      { subjectKind: "turn", subjectId: turnId, form: "turn_rendering" },
+      { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
     );
     expect(rebuild.ok).toBe(true);
     if (!rebuild.ok) return;
@@ -441,7 +444,7 @@ describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
 
     const first = await sdk.messages.requeue(
       { filePath },
-      { messageId, form: "smoothed_prompt" },
+      { messageId, derivationType: "smoothed_prompt" },
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -449,7 +452,7 @@ describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
 
     const second = await sdk.messages.requeue(
       { filePath },
-      { messageId, form: "smoothed_prompt" },
+      { messageId, derivationType: "smoothed_prompt" },
     );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -468,7 +471,7 @@ describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
     // One row per form by key — drain left no duplicate artifacts behind.
     const smoothings = readDerivedForms(filePath).filter(
-      (form) => form.subjectId === messageId && form.form === "smoothed_prompt",
+      (form) => form.subjectId === messageId && form.derivationType === "smoothed_prompt",
     );
     expect(smoothings).toHaveLength(1);
   });
@@ -499,7 +502,7 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
 
     // The report surfaces the blocked rows with their reasons.
     const notReady = await reportOf(sdk, filePath, "turns", { notReady: true });
-    expect(notReady.map((entry) => [entry.subjectId, entry.form, entry.state])).toEqual([
+    expect(notReady.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["t1", "lower_band_projection", "blocked"],
       ["t1", "turn_rendering", "blocked"],
     ]);
@@ -507,7 +510,7 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
     // The refusal carries the form's stored reason — not a generic string.
     const refused = await sdk.turns.requeue(
       { filePath },
-      { subjectKind: "turn", subjectId: turnId, form: "turn_rendering" },
+      { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
     );
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
@@ -532,7 +535,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     const formStates = new Map(
       messagesRead.value.map((record) => [
         record.messageId,
-        record.forms?.map((form) => form.state),
+        record.derivations?.map((form) => form.state),
       ]),
     );
     expect(formStates.get("m1")).toEqual(["failed"]);
@@ -557,7 +560,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     const turnFormStates = new Map(
       turnsRead.value.map((record) => [
         record.turnId,
-        record.forms?.map((form) => [form.form, form.state]),
+        record.derivations?.map((form) => [form.derivationType, form.state]),
       ]),
     );
     expect(turnFormStates.get("t1")).toEqual([
@@ -605,7 +608,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     ]);
     expect(chunksRead.value[0]?.memberTurnIds).toEqual(["t1"]);
     const chunkFormStates = chunksRead.value.map((record) =>
-      record.forms?.map((form) => [form.form, form.state]),
+      record.derivations?.map((form) => [form.derivationType, form.state]),
     );
     expect(chunkFormStates).toEqual([
       [
@@ -619,8 +622,8 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     ]);
     // The failed summary's read carries its stored reason — degraded, not
     // blocking, and never an error.
-    const failedBrief = chunksRead.value[1]?.forms?.find(
-      (form) => form.form === "chunk_summary_brief",
+    const failedBrief = chunksRead.value[1]?.derivations?.find(
+      (form) => form.derivationType === "chunk_summary_brief",
     );
     expect(failedBrief?.reason).toBe("provider_failure: scripted brief exhaustion");
   });

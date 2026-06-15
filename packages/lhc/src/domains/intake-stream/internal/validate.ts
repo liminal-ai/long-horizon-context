@@ -11,6 +11,8 @@ export const EVENT_KINDS = [
   "assistant_text",
   "assistant_thinking",
   "runtime_note",
+  "model_change",
+  "thinking_level_change",
   "tool_call",
   "tool_result",
   "turn_end",
@@ -53,6 +55,14 @@ const EventEnvelopeSchema = Schema.Struct({
 // Layer 3 — per-kind payload, closed. turn_end's empty-payload rule is its
 // own named check below (a closed Struct({}) admits any object).
 const TextPayloadSchema = Schema.Struct({ text: Schema.String });
+const ModelChangePayloadSchema = Schema.Struct({
+  previousModel: NonEmptyString,
+  newModel: NonEmptyString,
+});
+const ThinkingLevelChangePayloadSchema = Schema.Struct({
+  previousLevel: NonEmptyString,
+  newLevel: NonEmptyString,
+});
 const ToolCallPayloadSchema = Schema.Struct({
   toolCallId: NonEmptyString,
   toolName: NonEmptyString,
@@ -165,6 +175,12 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
       break;
     case "tool_result":
       issue = decodeIssue(ToolResultPayloadSchema, payload);
+      break;
+    case "model_change":
+      issue = decodeIssue(ModelChangePayloadSchema, payload);
+      break;
+    case "thinking_level_change":
+      issue = decodeIssue(ThinkingLevelChangePayloadSchema, payload);
       break;
     default:
       issue = decodeIssue(TextPayloadSchema, payload);

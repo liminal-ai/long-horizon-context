@@ -26,7 +26,7 @@ import {
   type BatchResult,
   type InferenceConfig,
   type CompactReceipt,
-  type FormReportEntry,
+  type DerivationReportEntry,
   type HealthReport,
   type InspectOverview,
   type Lhc,
@@ -178,8 +178,8 @@ export interface LifecyclePhases {
     // Captured inside the mutate phase, before the background drain's first
     // macrotask: the cleared-set-pending evidence (AC-5.2).
     healthAfterMutate: OpResult<HealthReport>;
-    messagesNotReady: OpResult<FormReportEntry[]>;
-    turnsNotReady: OpResult<FormReportEntry[]>;
+    messagesNotReady: OpResult<DerivationReportEntry[]>;
+    turnsNotReady: OpResult<DerivationReportEntry[]>;
   };
   rebuild: { settled: true };
   health2: OpResult<HealthReport>;

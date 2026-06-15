@@ -60,7 +60,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
     expect(result.value.events[0]!.messageId).toBe("m2");
 
-    expect(schemaVersionOf(filePath)).toBe(6);
+    expect(schemaVersionOf(filePath)).toBe(8);
 
     // The legacy event survives the upgrade byte-for-byte at the SDK level.
     const events = await intakeStream.listEvents({ filePath });
@@ -101,7 +101,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     if (!projected.ok) return;
     expect(projected.value).toEqual([]);
 
-    expect(schemaVersionOf(filePath)).toBe(6);
+    expect(schemaVersionOf(filePath)).toBe(8);
 
     // The read-path upgrade changed no record content.
     const events = await intakeStream.listEvents({ filePath });
@@ -222,7 +222,7 @@ describe("F-03-002: non-thread files are rejected, not adopted", () => {
 
 // Story 0 (Epic 02), FC-0.5 + architecture risk "migration on live data":
 // v5 applies in place to a populated Epic 01 file — existing rows intact,
-// new columns defaulted, the F-02 backfill creating pending derived_form
+// new columns defaulted, the F-02 backfill creating pending derivation
 // rows for live queued items. A fresh-file migration test would pass while
 // breaking real threads; this one runs over real Epic 01 data.
 describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
@@ -235,7 +235,7 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     const projected = await messages.listMessages({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    expect(schemaVersionOf(filePath)).toBe(6);
+    expect(schemaVersionOf(filePath)).toBe(8);
 
     // Existing records intact through the production read surfaces.
     expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
@@ -253,18 +253,18 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
         memberMessageIds: ["m1", "m2", "m3"],
         openedAtEventOrder: 1,
         closedAtEventOrder: 4,
-        forms: [
+        derivations: [
           {
             subjectKind: "turn",
             subjectId: "t1",
-            form: "lower_band_projection",
+            derivationType: "lower_band_projection",
             state: "pending",
             sourceVersion: 1,
           },
           {
             subjectKind: "turn",
             subjectId: "t1",
-            form: "turn_rendering",
+            derivationType: "turn_rendering",
             state: "pending",
             sourceVersion: 1,
           },
@@ -312,18 +312,18 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     // F-02 backfill: one pending row per live queued item, mapped per kind —
     // turn_derivation fans out to both turn forms; all at source version 1.
     expect(
-      readDerivedForms(filePath).map(({ subjectKind, subjectId, form, state, sourceVersion }) => ({
+      readDerivedForms(filePath).map(({ subjectKind, subjectId, derivationType, state, sourceVersion }) => ({
         subjectKind,
         subjectId,
-        form,
+        derivationType,
         state,
         sourceVersion,
       })),
     ).toEqual([
-      { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt", state: "pending", sourceVersion: 1 },
-      { subjectKind: "message", subjectId: "m3", form: "tool_result_summary", state: "pending", sourceVersion: 1 },
-      { subjectKind: "turn", subjectId: "t1", form: "lower_band_projection", state: "pending", sourceVersion: 1 },
-      { subjectKind: "turn", subjectId: "t1", form: "turn_rendering", state: "pending", sourceVersion: 1 },
+      { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt", state: "pending", sourceVersion: 1 },
+      { subjectKind: "message", subjectId: "m3", derivationType: "tool_result_summary", state: "pending", sourceVersion: 1 },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection", state: "pending", sourceVersion: 1 },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "pending", sourceVersion: 1 },
     ]);
 
     // The migrated file keeps working through the Epic 01 write path: a new
@@ -356,7 +356,7 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
     const projected = await messages.listMessages({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    expect(schemaVersionOf(filePath)).toBe(6);
+    expect(schemaVersionOf(filePath)).toBe(8);
 
     // The Epic 02 record is intact through the production read surface.
     expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
@@ -417,7 +417,7 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
     // re-runs the seed (the boundary row is byte-identical, still singular).
     const reread = await messages.listMessages({ filePath });
     expect(reread.ok).toBe(true);
-    expect(schemaVersionOf(filePath)).toBe(6);
+    expect(schemaVersionOf(filePath)).toBe(8);
     const again = openRaw(filePath);
     try {
       const rows = again

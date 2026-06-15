@@ -8,9 +8,12 @@
 // real source damage on a sacrificial sibling thread. Every later Epic 03
 // story compacts against what this builder returns.
 import {
+  DatabaseSync,
+} from "node:sqlite";
+import {
   createSdk,
   type CompactReceipt,
-  type FormReportEntry,
+  type DerivationReportEntry,
   type Lhc,
   type MessageEventInput,
   type MutationResult,
@@ -121,8 +124,30 @@ async function drain(sdk: Lhc, filePath: string): Promise<void> {
   }
 }
 
-function failedEntries(entries: readonly FormReportEntry[], reason: string): FormReportEntry[] {
+function failedEntries(entries: readonly DerivationReportEntry[], reason: string): DerivationReportEntry[] {
   return entries.filter((entry) => entry.state === "failed" && entry.reason === reason);
+}
+
+function setMessageDerivationFailed(filePath: string, subjectId: string, reason: string): void {
+  const db = new DatabaseSync(filePath);
+  try {
+    db.prepare(
+      `UPDATE derivation
+       SET state = 'failed', content = NULL, reason = ?, metadata = ?, derived_at = ?
+       WHERE subject_kind = 'message' AND subject_id = ?
+         AND derivation_type = 'tool_result_summary'`,
+    ).run(
+      reason,
+      JSON.stringify({
+        attempts: reason === TRANSIENT_EXHAUST_REASON ? 3 : 1,
+        lastError: reason,
+      }),
+      "2026-01-01T00:00:00.000Z",
+      subjectId,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 export async function derivedThreadFixture(
@@ -233,6 +258,20 @@ export async function derivedThreadFixture(
   }
 
   if (failures) {
+    if (fixture.failedTransientMessageId !== undefined) {
+      setMessageDerivationFailed(
+        filePath,
+        fixture.failedTransientMessageId,
+        TRANSIENT_EXHAUST_REASON,
+      );
+    }
+    if (fixture.failedPermanentMessageId !== undefined) {
+      setMessageDerivationFailed(
+        filePath,
+        fixture.failedPermanentMessageId,
+        PERMANENT_FAILURE_REASON,
+      );
+    }
     // Verify the manufactured states by read-back through the owning report
     // surface before handing the fixture to any test (FC-0.3's enforcement
     // lives in the tests; this guards the builder's own contract).

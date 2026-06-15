@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-15T05:55:59.334Z",
+  "updatedAt": "2026-06-15T05:59:41.793Z",
+  "lastOutputAt": "2026-06-15T05:59:41.694Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 21422,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/02-tool-result-rendering/005-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/02-tool-result-rendering/streams/005-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/02-tool-result-rendering/streams/005-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/02-tool-result-rendering/progress/005-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery/artifacts/02-tool-result-rendering/progress/005-continue.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-continue completed for 02-tool-result-rendering with outcome ready-for-verification.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

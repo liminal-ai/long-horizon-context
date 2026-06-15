@@ -25,6 +25,7 @@ export type ErrorCode =
   // operational caller error returned as a result.
   | "unknown_profile" // caller_error — named profile not configured
   | "invalid_view_config" // caller_error — band sum / bound violation, named
+  | "compact_stopped" // caller_error — caller stopped compact before it wrote a view
   // Epic 03 Story 5: materialize accepts pi-session only; an unknown format
   // is a caller error naming the accepted values (story Scope).
   | "unknown_format" // caller_error — materialize format not supported

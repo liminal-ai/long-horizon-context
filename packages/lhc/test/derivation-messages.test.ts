@@ -18,6 +18,7 @@ import {
   type Lhc,
   type MessageEventInput,
 } from "../src/index.js";
+import { truncateForFallback } from "../src/shared/tool-result-rendering.js";
 import {
   createProviderDouble,
   openRaw,
@@ -79,9 +80,9 @@ function liveCount(filePath: string): number {
   }
 }
 
-function formOf(filePath: string, subjectId: string, form: string) {
+function formOf(filePath: string, subjectId: string, derivationType: string) {
   return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.form === form,
+    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
   );
 }
 
@@ -103,17 +104,17 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
 
     // Readable alongside the message through the production read surface
     // (02F-001): listMessages carries the stored form on the message record —
-    // not a fixture read of derived_form.
+    // not a fixture read of derivation.
     const listed = await sdk.messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const message = listed.value[0];
     expect(message?.blocks[0]?.content["text"]).toBe(text);
-    expect(message?.forms).toEqual([
+    expect(message?.derivations).toEqual([
       expect.objectContaining({
         subjectKind: "message",
         subjectId: "m1",
-        form: "smoothed_prompt",
+        derivationType: "smoothed_prompt",
         state: "ready",
         // The content is the double's pure function of the prompt text — the
         // production smoothPrompt input shape, nothing else mixed in.
@@ -130,41 +131,20 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
   });
 });
 
-describe("TC-2.2 / AC-2.2: tool_call queues its summary additively; intake returns before any handler runs", () => {
-  it("the batch reports the queued item with the capture log still empty; the drained summary names tool and args", async () => {
+describe("TC-2.5 / AC-2.5: tool_call queues no summary", () => {
+  it("the batch reports no queued item and no derivation row", async () => {
     const double = createProviderDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
     const batch = await send(sdk, filePath, [validEvent("tool_call")]);
-    // Hot-path NFR made testable: the intake result is in hand and the
-    // provider has never been called — queueing and derivation are decoupled
-    // in time, not just in code.
     expect(captured).toHaveLength(0);
-    expect(batch.queuedWork).toEqual([
-      {
-        workItemId: "w-m1-tool_call_summary-v1",
-        owner: "messages",
-        kind: "tool_call_summary",
-        sourceRef: { messageId: "m1" },
-      },
-    ]);
+    expect(batch.queuedWork).toEqual([]);
 
     const report = await drain(sdk, filePath);
-    expect(report.ran).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-tool_call_summary-v1",
-        disposition: "done",
-      }),
-    ]);
-    const form = formOf(filePath, "m1", "tool_call_summary");
-    expect(form?.state).toBe("ready");
-    // Names the tool and describes its arguments (fixture default payload).
-    expect(form?.content).toContain("read_file");
-    expect(form?.content).toContain('{"path":"notes.txt"}');
-    // No paired result intaken: outcome stamped unknown, in metadata.
-    expect(form?.metadata).toEqual({ outcome: "unknown" });
+    expect(report.ran).toEqual([]);
+    expect(formOf(filePath, "m1", "tool_result_summary")).toBeUndefined();
   });
 });
 
@@ -178,9 +158,7 @@ describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stay
     await drain(sdk, filePath);
     const summary = formOf(filePath, "m3", "tool_result_summary");
     expect(summary?.state).toBe("ready");
-    expect(summary?.content?.startsWith("toolresult(")).toBe(true);
-    // Summarized means abbreviated: marker + digest + 40-char prefix.
-    expect(summary?.content?.length ?? 0).toBeLessThan(100);
+    expect(summary?.content).toBe(truncateForFallback(big));
     expect(summary?.metadata).toEqual({ outcome: "succeeded" });
 
     const listed = await sdk.messages.listMessages({ filePath });
@@ -192,16 +170,12 @@ describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stay
 });
 
 describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the record, never from provider text", () => {
-  it("three variants with identical provider text land succeeded / failed / unknown from metadata alone", async () => {
-    // The identical-text fixture: summarizeToolCall returns one constant
-    // string no matter the input, at the same production seam. If any code
-    // path inferred outcome from text, all three variants would agree.
-    const constantText = "the tool was invoked with some arguments";
+  it("tool-result summaries preserve succeeded / failed outcome from metadata alone", async () => {
     const double = createProviderDouble();
+    const constantText = "the tool output says nothing reliable about status";
     const provider: DerivationProvider = {
       smoothPrompt: (i) => double.smoothPrompt(i),
-      summarizeToolCall: () => Promise.resolve({ ok: true, text: constantText }),
-      summarizeToolResult: (i) => double.summarizeToolResult(i),
+      summarizeToolResult: () => Promise.resolve({ ok: true, text: constantText }),
       composeTurnRendering: (i) => double.composeTurnRendering(i),
       projectLowerBand: (i) => double.projectLowerBand(i),
       summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
@@ -211,45 +185,33 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
 
     const ok = await threadWithToolRun(store);
     const errored = await threadWithToolRun(store, { isError: true });
-    const missing = await threadWithToolRun(store, { missingResult: true });
-    for (const { filePath } of [ok, errored, missing]) await drain(sdk, filePath);
+    for (const { filePath } of [ok, errored]) await drain(sdk, filePath);
 
-    const summaries = [ok, errored, missing].map(({ filePath }) =>
-      formOf(filePath, "m2", "tool_call_summary"),
+    const summaries = [ok, errored].map(({ filePath }) =>
+      formOf(filePath, "m3", "tool_result_summary"),
     );
-    expect(summaries.map((f) => f?.state)).toEqual(["ready", "ready", "ready"]);
-    // Text identical across all three…
-    expect(summaries.map((f) => f?.content)).toEqual([
-      constantText,
-      constantText,
-      constantText,
-    ]);
-    // …while the outcome differs, read from metadata — machine-readable
-    // apart from the provider's prose, which mentions no outcome at all.
-    expect(summaries.map((f) => f?.metadata?.outcome)).toEqual([
-      "succeeded",
-      "failed",
-      "unknown",
-    ]);
+    expect(summaries.map((f) => f?.state)).toEqual(["ready", "ready"]);
+    expect(summaries.map((f) => f?.content)).toEqual([constantText, constantText]);
+    expect(summaries.map((f) => f?.metadata?.outcome)).toEqual(["succeeded", "failed"]);
   });
 });
 
 describe("TC-2.5 / AC-2.5: message-level input discipline — the message and its call-id pair only", () => {
-  it("the captured tool-call summary input is exactly the call plus its paired result", async () => {
+  it("the captured tool-result summary input carries tool guidance and outcome", async () => {
     const double = createProviderDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const { filePath } = await threadWithToolRun(store);
 
     await drain(sdk, filePath);
-    const inputs = captured.filter((entry) => entry.op === "summarizeToolCall");
+    const inputs = captured.filter((entry) => entry.op === "summarizeToolResult");
     expect(inputs).toHaveLength(1);
-    // Exact equality: no turn ids, no membership, no chunk context — the
-    // production seam receives the pair and nothing else.
     expect(inputs[0]?.input).toEqual({
       toolName: "read_file",
-      argsJson: '{"path":"notes.txt"}',
-      pairedResult: { content: "contents of notes.txt", isError: false },
+      content: "contents of notes.txt",
+      outcome: "succeeded",
+      targetTokens: expect.any(Number),
+      guidance: expect.stringContaining("paths"),
     });
   });
 });
@@ -313,65 +275,9 @@ describe("TC-2.7 / AC-2.7: kinds with no derivable form queue no work and carry 
   });
 });
 
-describe("TC-2.8 / AC-2.8 (architecture risk): a late result re-queues an unknown-outcome summary at intake", () => {
-  it("split batches: the result's intake re-queues the summary; the repair is a real queue round-trip", async () => {
+describe("TC-2.5 / AC-2.5: tool calls render as recorded and queue no summary", () => {
+  it("tool calls create no work item or derivation row", async () => {
     const double = createProviderDouble();
-    const sdk = manualSdk(double);
-    const filePath = await newThread();
-
-    // Batch 1: the call alone. Its summary derives with no pair in sight.
-    await send(sdk, filePath, [validEvent("tool_call")]);
-    await drain(sdk, filePath);
-    const before = formOf(filePath, "m1", "tool_call_summary");
-    expect(before?.state).toBe("ready");
-    expect(before?.metadata).toEqual({ outcome: "unknown" });
-    expect(before?.sourceVersion).toBe(1);
-
-    // Batch 2: the paired result lands later. The intake result itself
-    // reports the re-queued summary — repair is intake-time and visible,
-    // not a read-time join.
-    const batch = await send(sdk, filePath, [validEvent("tool_result")]);
-    expect(batch.queuedWork).toContainEqual({
-      workItemId: "w-m2-tool_result_summary-v1",
-      owner: "messages",
-      kind: "tool_result_summary",
-      sourceRef: { messageId: "m2" },
-    });
-    expect(batch.queuedWork).toContainEqual({
-      workItemId: "w-m1-tool_call_summary-v2",
-      owner: "messages",
-      kind: "tool_call_summary",
-      sourceRef: { messageId: "m1" },
-    });
-    // The clear half of clear-and-regenerate rode the batch transaction.
-    const cleared = formOf(filePath, "m1", "tool_call_summary");
-    expect(cleared?.state).toBe("pending");
-    expect(cleared?.sourceVersion).toBe(2);
-
-    const report = await drain(sdk, filePath);
-    expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
-      ["w-m2-tool_result_summary-v1", "done"],
-      ["w-m1-tool_call_summary-v2", "done"],
-    ]);
-
-    // One summary form, outcome repaired, source version advanced — the
-    // proof the artifact was re-derived through the queue, not patched.
-    const summaries = readDerivedForms(filePath).filter(
-      (f) => f.form === "tool_call_summary",
-    );
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0]).toMatchObject({
-      subjectId: "m1",
-      state: "ready",
-      sourceVersion: 2,
-      metadata: { outcome: "succeeded" },
-    });
-    expect(liveCount(filePath)).toBe(0);
-  });
-
-  it("control: call and result in one batch never trigger the re-queue; the summary runs exactly once", async () => {
-    const double = createProviderDouble();
-    const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
@@ -379,21 +285,12 @@ describe("TC-2.8 / AC-2.8 (architecture risk): a late result re-queues an unknow
       validEvent("tool_call"),
       validEvent("tool_result"),
     ]);
-    const summaryItems = batch.queuedWork.filter((item) => item.kind === "tool_call_summary");
-    expect(summaryItems.map((item) => item.workItemId)).toEqual([
-      "w-m1-tool_call_summary-v1",
-    ]);
+    expect(batch.queuedWork.map((item) => item.kind)).toEqual(["tool_result_summary"]);
 
     await drain(sdk, filePath);
-    // The capture log proves the summary ran once — after both halves of its
-    // pair landed, so it saw the result and stamped succeeded directly.
-    expect(captured.filter((entry) => entry.op === "summarizeToolCall")).toHaveLength(1);
-    const form = formOf(filePath, "m1", "tool_call_summary");
-    expect(form).toMatchObject({
-      state: "ready",
-      sourceVersion: 1,
-      metadata: { outcome: "succeeded" },
-    });
+    expect(readDerivedForms(filePath).map((f) => f.derivationType)).toEqual([
+      "tool_result_summary",
+    ]);
     expect(liveCount(filePath)).toBe(0);
   });
 });

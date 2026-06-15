@@ -1,0 +1,50 @@
+Reading additional input from stdin...
+2026-06-15T05:37:46.056363Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/test/smoothing-recovery.test.ts:
+    const provider: DerivationProvider = {
+      smoothPrompt: (i) => double.smoothPrompt(i),
+      summarizeToolCall: (i) => double.summarizeToolCall(i),
+      summarizeToolResult: (i) => double.summarizeToolResult(i),
+2026-06-15T05:38:40.279142Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/test/fixtures.test.ts:
+    const first = await Promise.all(callAllSeven(double));
+    const second = await Promise.all(callAllSeven(createProviderDouble()));
+2026-06-15T05:41:22.845270Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/test/derivation-messages.test.ts:
+describe("TC-2.2 / AC-2.2: tool_call queues its summary additively; intake returns before any handler runs", () => {
+  it("the batch reports the queued item with the capture log still empty; the drained summary names tool and args", async () => {
+    const double = createProviderDouble();
+    const captured = double.captureInputs();
+    const sdk = manualSdk(double);
+    const filePath = await newThread();
+
+    const batch = await send(sdk, filePath, [validEvent("tool_call")]);
+    // Hot-path NFR made testable: the intake result is in hand and the
+    // provider has never been called — queueing and derivation are decoupled
+    // in time, not just in code.
+    expect(captured).toHaveLength(0);
+    expect(batch.queuedWork).toEqual([
+      {
+        workItemId: "w-m1-tool_call_summary-v1",
+        owner: "messages",
+        kind: "tool_call_summary",
+        sourceRef: { messageId: "m1" },
+      },
+    ]);
+
+    const report = await drain(sdk, filePath);
+    expect(report.ran).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-tool_call_summary-v1",
+        disposition: "done",
+      }),
+    ]);
+    const form = formOf(filePath, "m1", "tool_call_summary");
+    expect(form?.state).toBe("ready");
+    // Names the tool and describes its arguments (fixture default payload).
+    expect(form?.content).toContain("read_file");
+    expect(form?.content).toContain('{"path":"notes.txt"}');
+  });
+});
+2026-06-15T05:47:36.314575Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/src/shared/context.ts:
+  // config when one is in scope, undefined for direct domain calls (the
+  // thread-view surface defaults those itself — see InstanceSeam.view).
+  view?: ResolvedViewConfig;
+}

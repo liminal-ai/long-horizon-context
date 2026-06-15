@@ -1,0 +1,3 @@
+Reading additional input from stdin...
+2026-06-15T06:29:28.383320Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/src/domains/turns/index.ts:
+export type { ChunkRecord, TurnRecord } from "./index.js";

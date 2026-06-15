@@ -55,10 +55,9 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
     // Every owner/kind/state count, exact, in deterministic order: 13 turns'
     // smoothings ready + t14's pending; the tool-heavy middle's summaries
     // with the two scripted failures; t13's turn forms blocked on the real
-    // source damage; the three closed chunks' summaries ready.
+      // source damage; the three closed chunks' summaries ready.
     expect(report.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 13, pending: 1 } },
-      { owner: "messages", kind: "tool_call_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 6, failed: 2 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 3 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 3 } },
@@ -91,7 +90,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
         owner: "messages",
         subjectKind: "message",
         subjectId: fixture.failedTransientMessageId,
-        form: "tool_result_summary",
+        derivationType: "tool_result_summary",
         reason: TRANSIENT_EXHAUST_REASON,
         attempts: 3,
         lastError: TRANSIENT_EXHAUST_REASON,
@@ -100,7 +99,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
         owner: "messages",
         subjectKind: "message",
         subjectId: fixture.failedPermanentMessageId,
-        form: "tool_result_summary",
+        derivationType: "tool_result_summary",
         reason: PERMANENT_FAILURE_REASON,
         attempts: 1,
         lastError: PERMANENT_FAILURE_REASON,
@@ -110,7 +109,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
     // Blocked forms surface as failures too — with the damage named — but
     // never as repair targets.
     const blocked = report.failures.filter((entry) => !failed.includes(entry));
-    expect(blocked.map((entry) => [entry.owner, entry.subjectKind, entry.subjectId, entry.form])).toEqual([
+    expect(blocked.map((entry) => [entry.owner, entry.subjectKind, entry.subjectId, entry.derivationType])).toEqual([
       ["turns", "turn", fixture.blockedTurnId, "lower_band_projection"],
       ["turns", "turn", fixture.blockedTurnId, "turn_rendering"],
     ]);
@@ -126,13 +125,13 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
         owner: "messages",
         subjectKind: "message",
         subjectId: fixture.failedTransientMessageId,
-        form: "tool_result_summary",
+        derivationType: "tool_result_summary",
       },
       {
         owner: "messages",
         subjectKind: "message",
         subjectId: fixture.failedPermanentMessageId,
-        form: "tool_result_summary",
+        derivationType: "tool_result_summary",
       },
     ]);
 
@@ -166,7 +165,7 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
       owner: "capture",
       subjectKind: "event",
       subjectId: "1",
-      form: "capture_gap",
+      derivationType: "capture_gap",
       reason: gap.payload.text,
       attempts: 0,
     });
@@ -182,7 +181,7 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     // The cascade contract's exact cleared set: the prompt's own smoothing,
     // t2's two turn forms, c1's two chunk summaries.
     const clearedKeys = fixture.mutation.cleared
-      .map((target) => `${target.subjectKind}:${target.subjectId}:${target.form}`)
+      .map((target) => `${target.subjectKind}:${target.subjectId}:${target.derivationType}`)
       .sort();
     expect(clearedKeys).toEqual(
       [
@@ -200,7 +199,6 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     // ready (failures-free fixture: full counts minus the cascade).
     expect(before.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 11, pending: 1 } },
-      { owner: "messages", kind: "tool_call_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 2, pending: 1 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 2, pending: 1 } },
@@ -222,7 +220,7 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     if (!messagesPending.ok || !turnsPending.ok) return;
     const pendingKeys = [...messagesPending.value, ...turnsPending.value]
       .filter((entry) => entry.state === "pending")
-      .map((entry) => `${entry.subjectKind}:${entry.subjectId}:${entry.form}`)
+      .map((entry) => `${entry.subjectKind}:${entry.subjectId}:${entry.derivationType}`)
       .sort();
     expect(pendingKeys).toEqual(clearedKeys);
 
@@ -236,7 +234,6 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     const after = valueOf(await sdk.inspect.health({ filePath }));
     expect(after.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 12 } },
-      { owner: "messages", kind: "tool_call_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 3 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 3 } },
@@ -259,7 +256,6 @@ describe("architecture risk: health is provider-free and surface-composed", () =
     const reader = createSdk({
       provider: {
         smoothPrompt: refuse,
-        summarizeToolCall: refuse,
         summarizeToolResult: refuse,
         composeTurnRendering: refuse,
         projectLowerBand: refuse,

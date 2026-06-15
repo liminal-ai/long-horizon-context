@@ -105,7 +105,7 @@ function bandsFromRaw(raw: StoredView): ViewContentsReport["bands"] {
       .map((entry) => ({
         subjectKind: entry.subjectKind,
         subjectId: entry.subjectId,
-        formUsed: entry.formUsed,
+        derivationUsed: entry.derivationUsed,
         degraded: entry.degraded,
       }));
     const stored = raw.bands.find((row) => row.band === band);
@@ -223,12 +223,12 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     expect(report.gaps).toEqual(raw.gaps);
     expect(report.sourceState).toEqual(raw.sourceState);
 
-    // Fixture sanity: the degraded entry (t8's smooth fallback) and the gap
-    // (c2, no usable form) both present and named.
+    // Fixture sanity: the degraded entries (t8's smooth fallback and c2's
+    // compact stored-member concat) are both present and named.
     const entries = report.bands.flatMap((band) => band.entries);
     expect(entries.some((entry) => entry.subjectId === "t8" && entry.degraded)).toBe(true);
-    expect(report.gaps.length).toBeGreaterThanOrEqual(1);
-    expect(report.gaps.some((gap) => gap.subjectId === "c2" && /no usable form/.test(gap.reason))).toBe(
+    expect(report.gaps).toHaveLength(0);
+    expect(entries.some((entry) => entry.subjectId === "c2" && entry.degraded)).toBe(
       true,
     );
 
@@ -391,7 +391,6 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     };
     const throwing: DerivationProvider = {
       smoothPrompt: refuse,
-      summarizeToolCall: refuse,
       summarizeToolResult: refuse,
       composeTurnRendering: refuse,
       projectLowerBand: refuse,

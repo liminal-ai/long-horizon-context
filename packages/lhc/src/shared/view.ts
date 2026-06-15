@@ -117,12 +117,12 @@ export interface StoredView {
     band: Band;
     subjectKind: "chunk" | "turn";
     subjectId: string;
-    formUsed: string;
+    derivationUsed: string;
     degraded: boolean;
   }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
   // What the compact saw (AC-2.5 provenance, stored verbatim).
-  sourceState: { maxEventOrder: number; formCounts: Record<string, number> };
+  sourceState: { maxEventOrder: number; derivationCounts: Record<string, number> };
   // Non-empty bands in gradient order with their stored token counts.
   bands: Array<{ band: Band; storedTokens: number }>;
 }
@@ -149,8 +149,14 @@ export interface CompactReceipt {
   totalTokens: number;
   coveredFrom: number;
   compactPoint: number;
-  degraded: Array<{ band: Band; subjectId: string; usedForm: string }>;
+  degraded: Array<{ band: Band; subjectId: string; usedDerivation: string }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
+  warnings?: Array<{
+    band: Band;
+    subjectId: string;
+    derivationType: "chunk_summary_detailed" | "chunk_summary_brief";
+    reason: string;
+  }>;
   // The embedded sweep's receipt (AC-3.6): the sweep runs first by default
   // and its full receipt embeds here; `sweep: false` records the skip — the
   // receipt always says whether the sweep ran (Story 3 closed Story 2's

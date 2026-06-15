@@ -2,7 +2,7 @@
 // summary is a pure function of the record — paired-result presence and its
 // isError flag — and nothing else. The signature takes no provider text on
 // purpose (anti-shim: the violation is unrepresentable); the handler stamps
-// the returned value into derived_form.metadata, apart from provider prose.
+// the returned value into derivation.metadata, apart from provider prose.
 import type { ToolOutcome } from "../../../shared/derivation.js";
 
 export function deriveToolOutcome(

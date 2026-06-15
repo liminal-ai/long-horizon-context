@@ -7,6 +7,8 @@ import {
   getSchemaVersion,
   MIGRATION_V5_STATEMENTS,
   MIGRATION_V6_STATEMENTS,
+  MIGRATION_V7_STATEMENTS,
+  MIGRATION_V8_STATEMENTS,
   openDatabase,
   runMigrations,
   type Migration,
@@ -113,7 +115,7 @@ function buildThreadMigrations(
       ],
     },
     {
-      version: 5, // Epic 02 Story 0: queue mechanical fields, derived_form,
+      version: 5, // Epic 02 Story 0: queue mechanical fields, derivation,
       // chunk tables, deleted_at stamps, F-02 pending-row backfill — the
       // epic's single migration (tech design §Storage), statements owned by
       // shared/storage.ts.
@@ -125,6 +127,14 @@ function buildThreadMigrations(
       // migration (tech design §Storage), statements owned by
       // shared/storage.ts.
       statements: MIGRATION_V6_STATEMENTS,
+    },
+    {
+      version: 7, // Epic 06 Story 0: derivation vocabulary rename and log table.
+      statements: MIGRATION_V7_STATEMENTS,
+    },
+    {
+      version: 8, // Epic 06 Story 2: remove tool_call_summary rows/work.
+      statements: MIGRATION_V8_STATEMENTS,
     },
   ];
 }

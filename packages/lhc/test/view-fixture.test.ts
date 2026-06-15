@@ -47,7 +47,7 @@ function manualSdk(view?: Parameters<typeof createSdk>[0]["view"]): Lhc {
 
 describe("FC-0.1: migration v6 storage on a current thread file", () => {
   it("creates the three view tables with their CHECK constraints and seeds the boundary at 0", () => {
-    expect(schemaVersionOf(fixture.filePath)).toBe(6);
+    expect(schemaVersionOf(fixture.filePath)).toBe(8);
     const db = openRaw(fixture.filePath);
     try {
       const tables = (
@@ -183,7 +183,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const report = await turns.report({ filePath: fixture.filePath });
     expect(report.ok).toBe(true);
     if (!report.ok) return;
-    const renderings = report.value.filter((entry) => entry.form === "turn_rendering");
+    const renderings = report.value.filter((entry) => entry.derivationType === "turn_rendering");
     expect(renderings.map((entry) => entry.subjectId).sort()).toEqual(
       [...fixture.turnIds].sort(),
     );
@@ -202,7 +202,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     for (const chunkId of ["c1", "c2", "c3"]) {
       for (const form of ["chunk_summary_detailed", "chunk_summary_brief"]) {
         const summary = report.value.find(
-          (entry) => entry.subjectId === chunkId && entry.form === form,
+          (entry) => entry.subjectId === chunkId && entry.derivationType === form,
         );
         expect(summary?.state).toBe("ready");
       }
@@ -216,12 +216,12 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const transient = report.value.find(
       (entry) => entry.subjectId === fixture.failedTransientMessageId,
     );
-    expect(transient?.form).toBe("tool_result_summary");
+    expect(transient?.derivationType).toBe("tool_result_summary");
     expect(transient?.state).toBe("failed");
     const permanent = report.value.find(
       (entry) => entry.subjectId === fixture.failedPermanentMessageId,
     );
-    expect(permanent?.form).toBe("tool_result_summary");
+    expect(permanent?.derivationType).toBe("tool_result_summary");
     expect(permanent?.state).toBe("failed");
     // Terminal failures left no live queue rows behind (DD-1): neither entry
     // carries queue detail.
@@ -237,7 +237,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const blocked = report.value.filter(
       (entry) => entry.subjectId === sibling.blockedTurnId && entry.state === "blocked",
     );
-    expect(blocked.map((entry) => entry.form).sort()).toEqual([
+    expect(blocked.map((entry) => entry.derivationType).sort()).toEqual([
       "lower_band_projection",
       "turn_rendering",
     ]);

@@ -18,7 +18,7 @@ export interface ObservableState {
   viewStatus: unknown;
   pullMeta: unknown;
   storedView: unknown;
-  forms: unknown;
+  derivations: unknown;
 }
 
 export async function observableState(filePath: string): Promise<ObservableState> {
@@ -34,7 +34,7 @@ export async function observableState(filePath: string): Promise<ObservableState
     // arrangement, band rows, provenance — moves this even when pull's meta
     // would not show it.
     storedView: await threadView.describe({ filePath }),
-    forms: readDerivedForms(filePath),
+    derivations: readDerivedForms(filePath),
   };
 }
 

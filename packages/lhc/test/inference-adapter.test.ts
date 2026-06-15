@@ -8,19 +8,19 @@
 // Empty or whitespace-only success text is a classified retryable failure,
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
-import { createDeterministicProvider, createSdk, type DerivedForm, type Lhc } from "../src/index.js";
+import { createDeterministicProvider, createSdk, type Derivation, type Lhc } from "../src/index.js";
 import { DEFAULT_PROMPT_NAMES } from "../src/inference/prompts/index.js";
 import type { ModelCall } from "../src/inference/types.js";
 import {
   cannedResponses,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   scriptedCall,
   tempStore,
   validAssignments,
   validEvent,
-  type FormKind,
+  type DerivationType,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -46,9 +46,8 @@ const MARKER_PATTERN = /^(smoothed|toolcall|toolresult|rendering|projection|deta
 // record's tool result carries isError: false. A stored outcome agreeing
 // with this prose would prove the adapter (or a handler) parsed model output
 // for mechanical facts.
-function adversarialResponses(): Record<FormKind, string> {
+function adversarialResponses(): Record<DerivationType, string> {
   const responses = cannedResponses();
-  responses.tool_call_summary = "the read_file call failed catastrophically and was aborted";
   responses.tool_result_summary = "error: the tool produced nothing and the run failed";
   return responses;
 }
@@ -82,7 +81,7 @@ async function seedSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   return filePath;
 }
 
-async function drainAll(sdk: Lhc, filePath: string): Promise<DerivedForm[]> {
+async function drainAll(sdk: Lhc, filePath: string): Promise<Derivation[]> {
   const drained = await sdk.work.drain({ filePath });
   expect(drained.ok).toBe(true);
   if (drained.ok) {
@@ -123,8 +122,8 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const { sdk, assignments } = inferenceSdk(call);
     const forms = await drainAll(sdk, await seedSevenKinds(sdk, freshStore()));
 
-    for (const kind of FORM_KINDS) {
-      const ready = forms.filter((form) => form.form === kind && form.state === "ready");
+    for (const kind of DERIVATION_TYPES) {
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) {
         // Content is the canned response, shaped — and provenance is the
@@ -145,15 +144,15 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const { sdk } = inferenceSdk(call);
     const forms = await drainAll(sdk, await seedSevenKinds(sdk, freshStore()));
 
-    // The record's tool result has isError: false, so both tool summaries
-    // must stamp "succeeded" even though their landed content claims failure.
-    for (const kind of ["tool_call_summary", "tool_result_summary"] as const) {
-      const form = forms.find((row) => row.form === kind && row.state === "ready");
-      expect(form?.metadata?.outcome).toBe("succeeded");
-      expect(form?.content).toContain("failed");
-    }
+    // The record's tool result has isError: false, so the tool-result summary
+    // must stamp "succeeded" even though its landed content claims failure.
+    const form = forms.find(
+      (row) => row.derivationType === "tool_result_summary" && row.state === "ready",
+    );
+    expect(form?.metadata?.outcome).toBe("succeeded");
+    expect(form?.content).toContain("failed");
     const rendering = forms.find(
-      (row) => row.form === "turn_rendering" && row.state === "ready" && row.metadata?.receipts,
+      (row) => row.derivationType === "turn_rendering" && row.state === "ready" && row.metadata?.receipts,
     );
     expect(rendering).toBeDefined();
     for (const receipt of rendering?.metadata?.receipts ?? []) {
@@ -180,8 +179,8 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     // Same handler code, same record: the same form rows, subjects, and
     // states land under both providers (message/turn/chunk ids are
     // deterministic functions of the event order).
-    const rowKey = (form: DerivedForm): string =>
-      `${form.subjectKind}|${form.subjectId}|${form.form}|${form.state}`;
+    const rowKey = (derivation: Derivation): string =>
+      `${derivation.subjectKind}|${derivation.subjectId}|${derivation.derivationType}|${derivation.state}`;
     expect(deterministicForms.map(rowKey).sort()).toEqual(adapterForms.map(rowKey).sort());
 
     for (const form of deterministicForms) {
@@ -210,7 +209,7 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
     const { sdk } = inferenceSdk(call);
     const forms = await drainAll(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
     expect(smoothed?.content).toBe("the real smoothing");
     // Two boundary calls: the whitespace-only first attempt was rejected and
@@ -232,7 +231,7 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
     const { sdk } = inferenceSdk(call);
     const forms = await drainAll(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("failed");
     expect(smoothed?.content).toBeUndefined();
     expect(smoothed?.reason?.startsWith("provider_failure")).toBe(true);
@@ -246,7 +245,7 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
     const { sdk } = inferenceSdk(scriptedCall([{ ok: true, text: "\n  shaped result text  \n" }]));
     const forms = await drainAll(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
     expect(smoothed?.content).toBe("shaped result text");
   });

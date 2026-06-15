@@ -4,8 +4,8 @@
 // Framework-agnostic on purpose: plain node:assert throws surface in vitest
 // and in any future runner identically.
 import assert from "node:assert/strict";
-import { createSdk, type DerivedForm, type Lhc } from "../../src/index.js";
-import { FORM_KINDS, type FormKind } from "../../src/shared/derivation.js";
+import { createSdk, type Derivation, type Lhc } from "../../src/index.js";
+import { DERIVATION_TYPES, type DerivationType } from "../../src/shared/derivation.js";
 import type {
   ModelAssignment,
   ModelCall,
@@ -65,7 +65,7 @@ export async function assertModelCallContract(
 export interface RoutingRunResult {
   sdk: Lhc;
   filePath: string;
-  forms: DerivedForm[];
+  derivations: Derivation[];
   log: ModelCallInput[];
 }
 
@@ -107,7 +107,7 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
 // user roles only, string content (AC-1.2, AC-1.4).
 export async function assertRoutingThroughSdk(
   call: ModelCall,
-  assignments: Record<FormKind, ModelAssignment>,
+  assignments: Record<DerivationType, ModelAssignment>,
   store: TempStore,
 ): Promise<RoutingRunResult> {
   const log: ModelCallInput[] = [];
@@ -131,16 +131,16 @@ export async function assertRoutingThroughSdk(
   assert.equal(drained.value.remaining, 0, "conformance drain left items remaining");
 
   const forms = readDerivedForms(filePath);
-  for (const kind of FORM_KINDS) {
+  for (const kind of DERIVATION_TYPES) {
     assert.ok(
-      forms.some((form) => form.form === kind && form.state === "ready"),
+      forms.some((form) => form.derivationType === kind && form.state === "ready"),
       `expected at least one ready ${kind} form after the drain`,
     );
   }
 
   assert.ok(log.length > 0, "no calls crossed the ModelCall boundary");
   for (const input of log) {
-    const matched = FORM_KINDS.filter(
+    const matched = DERIVATION_TYPES.filter(
       (kind) =>
         assignments[kind].provider === input.provider && assignments[kind].model === input.model,
     );
@@ -161,7 +161,7 @@ export async function assertRoutingThroughSdk(
       assert.equal(typeof message.content, "string", "message content must be a string");
     }
   }
-  for (const kind of FORM_KINDS) {
+  for (const kind of DERIVATION_TYPES) {
     assert.ok(
       log.some(
         (input) =>
@@ -170,5 +170,5 @@ export async function assertRoutingThroughSdk(
       `no boundary call carried ${kind}'s assigned provider/model lane`,
     );
   }
-  return { sdk, filePath, forms, log };
+  return { sdk, filePath, derivations: forms, log };
 }

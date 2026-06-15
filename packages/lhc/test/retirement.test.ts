@@ -22,7 +22,7 @@ const SDK_ONLY_EXPORTS = [
   "DEFAULT_COMPACT_THRESHOLD",
   "DEFAULT_PROMPT_NAMES",
   "DEFAULT_VISIBILITY",
-  "FORM_KINDS",
+  "DERIVATION_TYPES",
   "PROMPT_NAMES",
   "TOKEN_ESTIMATOR_ID",
   "WORK_KIND_REGISTRY",
@@ -37,8 +37,10 @@ const SDK_ONLY_EXPORTS = [
   "estimateTokens",
   "inspect",
   "intakeStream",
+  "logging",
   "lookupWorkHandler",
   "messages",
+  "queryLog",
   "queueDetail",
   "runInTransaction",
   "setSchedulerPoke",
@@ -47,6 +49,7 @@ const SDK_ONLY_EXPORTS = [
   "threadView",
   "threads",
   "turns",
+  "writeLog",
 ];
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {

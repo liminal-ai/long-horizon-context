@@ -2,12 +2,12 @@
 // Thread-view's only writing interaction with other domains — and it writes
 // nothing itself: derivation state is read exclusively through the owners'
 // report surfaces, repair goes exclusively through the owners' requeue
-// surfaces (must-not-own: never a direct work_item or derived_form touch).
+// surfaces (must-not-own: never a direct work_item or derivation touch).
 // No derivation, no provider calls, and no waiting: a requeue returns when
 // the queue row is written; background mode's drain heals it later. Any
 // drainSettled/polling in this module is a contract violation (anti-shim;
 // TC-3.1's elapsed bound is the tripwire).
-import type { FormReportEntry } from "../../../shared/derivation.js";
+import type { DerivationReportEntry } from "../../../shared/derivation.js";
 import type { OpResult } from "../../../shared/errors.js";
 import type { SweepReceipt } from "../../../shared/view.js";
 import * as messagesDomain from "../../messages/index.js";
@@ -52,17 +52,17 @@ type OwnerLine = SweepReceipt["owners"][number];
 function requeueThroughOwner(
   filePath: string,
   owner: Owner,
-  entry: FormReportEntry,
+  entry: DerivationReportEntry,
 ): Promise<OpResult<{ workItemId: string } | { noop: "already_queued" }>> {
   if (owner === "messages") {
-    return messagesDomain.requeue({ filePath }, { messageId: entry.subjectId, form: entry.form });
+    return messagesDomain.requeue({ filePath }, { messageId: entry.subjectId, derivationType: entry.derivationType });
   }
   return turnsDomain.requeue(
     { filePath },
     {
       subjectKind: entry.subjectKind === "chunk" ? "chunk" : "turn",
       subjectId: entry.subjectId,
-      form: entry.form,
+      derivationType: entry.derivationType,
     },
   );
 }
@@ -92,13 +92,13 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
     return line;
   };
 
-  const walks: Array<{ owner: Owner; entries: readonly FormReportEntry[] }> = [
+  const walks: Array<{ owner: Owner; entries: readonly DerivationReportEntry[] }> = [
     { owner: "messages", entries: messageReport.value },
     { owner: "turns", entries: turnReport.value },
   ];
   for (const { owner, entries } of walks) {
     for (const entry of entries) {
-      const line = lineFor(owner, entry.form);
+      const line = lineFor(owner, entry.derivationType);
       switch (entry.state) {
         case "ready":
           line.ready += 1;

@@ -40,7 +40,7 @@ interface Golden {
     band: string;
     subjectKind: string;
     subjectId: string;
-    formUsed: string;
+    derivationUsed: string;
     degraded: boolean;
   }>;
   gaps: Array<{ band: string; subjectId: string; reason: string }>;

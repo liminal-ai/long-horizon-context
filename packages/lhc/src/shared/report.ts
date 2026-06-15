@@ -1,21 +1,21 @@
 // The report row mapper shared by both owners' report queries (Flow 4).
 // Each domain's forms.ts owns its one-query join (owner scoping and the
-// form→kind mapping are the owner's knowledge); the raw-row → FormReportEntry
+// derivation_type→kind mapping are the owner's knowledge); the raw-row → DerivationReportEntry
 // mapping is owner-blind and lives here so the two owners cannot drift on
 // how state, metadata, gaps, and queue detail read back (DD-2: one table,
 // one vocabulary).
 import type {
   DependencyGap,
-  DerivedFormMetadata,
-  DerivedFormState,
-  FormKind,
-  FormReportEntry,
+  DerivationMetadata,
+  DerivationState,
+  DerivationType,
+  DerivationReportEntry,
   SubjectKind,
 } from "./derivation.js";
 
 export interface RawReportRow {
   subject_id: string;
-  form: string;
+  derivation_type: string;
   state: string;
   content: string | null;
   reason: string | null;
@@ -32,18 +32,18 @@ export interface RawReportRow {
 export function reportEntryFromRow(
   subjectKind: SubjectKind,
   row: RawReportRow,
-): FormReportEntry {
-  const entry: FormReportEntry = {
+): DerivationReportEntry {
+  const entry: DerivationReportEntry = {
     subjectKind,
     subjectId: row.subject_id,
-    form: row.form as FormKind,
-    state: row.state as DerivedFormState,
+    derivationType: row.derivation_type as DerivationType,
+    state: row.state as DerivationState,
     sourceVersion: Number(row.source_version),
   };
   if (row.content !== null) entry.content = row.content;
   if (row.reason !== null) entry.reason = row.reason;
   if (row.metadata !== null) {
-    entry.metadata = JSON.parse(row.metadata) as DerivedFormMetadata;
+    entry.metadata = JSON.parse(row.metadata) as DerivationMetadata;
   }
   if (row.gaps !== null) entry.gaps = JSON.parse(row.gaps) as DependencyGap[];
   if (row.derived_at !== null) entry.derivedAt = row.derived_at;

@@ -109,9 +109,7 @@ function liveDetail(filePath: string): ReturnType<typeof queueDetail> {
 }
 
 describe("TC-1.1: a drain runs queued items one at a time, in queue order, and reports each disposition", () => {
-  // Epic 02 Story 2 (sanctioned amendment): tool_call now queues
-  // tool_call_summary, so this batch yields four items, not three.
-  it("four items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
+  it("three items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
     const double = createProviderDouble();
     let tick = 0;
     const base = Date.parse("2026-06-10T12:00:00.000Z");
@@ -123,20 +121,17 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       validEvent("tool_result"),
       validEvent("turn_end"),
     ]);
-    expect(liveCount(filePath)).toBe(4);
+    expect(liveCount(filePath)).toBe(3);
 
     const report = await drain(sdk, filePath);
-    // Queue order across owners: m1's smoothing, m2's call summary, m3's
-    // result summary, then the turn derivation queued at close — never
-    // reordered.
+    // Queue order across owners: m1's smoothing, m3's result summary, then
+    // the turn derivation queued at close — never reordered.
     expect(report.ran.map((entry) => entry.workItemId)).toEqual([
       "w-m1-prompt_smoothing-v1",
-      "w-m2-tool_call_summary-v1",
       "w-m3-tool_result_summary-v1",
       "w-t1-turn_derivation-v1",
     ]);
     expect(report.ran.map((entry) => entry.disposition)).toEqual([
-      "done",
       "done",
       "done",
       "done",
@@ -165,11 +160,12 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       "ready",
       "ready",
       "ready",
-      "ready",
     ]);
-    const at = (subjectId: string, form: string): number => {
-      const row = forms.find((f) => f.subjectId === subjectId && f.form === form);
-      if (row?.derivedAt === undefined) throw new Error(`no derivedAt for ${subjectId}/${form}`);
+    const at = (subjectId: string, derivationType: string): number => {
+      const row = forms.find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
+      if (row?.derivedAt === undefined) {
+        throw new Error(`no derivedAt for ${subjectId}/${derivationType}`);
+      }
       return Date.parse(row.derivedAt);
     };
     expect(at("m1", "smoothed_prompt")).toBeLessThan(at("m3", "tool_result_summary"));
@@ -202,7 +198,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
 
     // Everything queued mid-drain was processed before the cycle ended…
     expect(liveCount(filePath)).toBe(0);
-    const smoothed = readDerivedForms(filePath).filter((f) => f.form === "smoothed_prompt");
+    const smoothed = readDerivedForms(filePath).filter((f) => f.derivationType === "smoothed_prompt");
     expect(smoothed.map((f) => f.state)).toEqual(["ready", "ready", "ready"]);
     // …and the burst coalesced: one initial pass plus exactly one follow-up,
     // not one pass per poke (the cost model is the assertion).
@@ -226,7 +222,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     await sdk.drainSettled({ filePath });
 
     const forms = readDerivedForms(filePath);
-    expect(forms.map((f) => `${f.subjectId}/${f.form}/${f.state}`).sort()).toEqual([
+    expect(forms.map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`).sort()).toEqual([
       "m1/smoothed_prompt/ready",
       "t1/lower_band_projection/ready",
       "t1/turn_rendering/ready",
@@ -377,12 +373,12 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     });
 
     const forms = readDerivedForms(filePath);
-    const failed = forms.find((f) => f.form === "smoothed_prompt");
+    const failed = forms.find((f) => f.derivationType === "smoothed_prompt");
     expect(failed?.state).toBe("failed");
     expect(failed?.reason).toBe("scripted exhaustion (smoothPrompt)");
     // Final attempts/last-error copied onto the form at exhaustion (DD-1).
     expect(failed?.metadata?.attempts).toBe(3);
-    expect(forms.find((f) => f.form === "turn_rendering")?.state).toBe("ready");
+    expect(forms.find((f) => f.derivationType === "turn_rendering")?.state).toBe("ready");
     expect(liveCount(filePath)).toBe(0);
   });
 
@@ -466,9 +462,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     const report = await drain(sdk, filePath, { maxItems: 1 });
     expect(report.ran).toHaveLength(1);
     expect(report.stoppedBecause).toBe("max_items");
-    // 3 behind the stop since Epic 02 Story 2: tool_call queues its summary
-    // (sanctioned amendment — was 2).
-    expect(report.remaining).toBe(3);
-    expect(liveCount(filePath)).toBe(3);
+    expect(report.remaining).toBe(2);
+    expect(liveCount(filePath)).toBe(2);
   });
 });

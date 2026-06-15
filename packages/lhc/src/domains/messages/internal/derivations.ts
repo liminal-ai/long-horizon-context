@@ -4,18 +4,18 @@
 // late-result repair lookup intake's projection step runs (AC-2.8): one
 // indexed query by call id, never a scan (the v5 expression index on
 // message_block covers it) and never a drain-time sweep or read-time join.
-// Completion writes for message forms ride the work-queue util's `complete`
+// Completion writes for message derivations ride the work-queue util's `complete`
 // (Story 1): UPDATE-only with the source-version check — no write path here.
-// Read-back of message-owned form rows (the listMessages join) also lives
+// Read-back of message-owned derivation rows (the listMessages join) also lives
 // here: stored state returned as stored — never re-derived on read.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   DependencyGap,
-  DerivedForm,
-  DerivedFormMetadata,
-  DerivedFormState,
-  FormKind,
-  FormReportEntry,
+  Derivation,
+  DerivationMetadata,
+  DerivationState,
+  DerivationType,
+  DerivationReportEntry,
 } from "../../../shared/derivation.js";
 import { reportEntryFromRow, type RawReportRow } from "../../../shared/report.js";
 
@@ -49,9 +49,9 @@ export function readMessageSource(
   };
 }
 
-interface RawFormRow {
+interface RawDerivationRow {
   subject_id: string;
-  form: string;
+  derivation_type: string;
   state: string;
   content: string | null;
   reason: string | null;
@@ -61,21 +61,21 @@ interface RawFormRow {
   derived_at: string | null;
 }
 
-// Every message-owned derived-form row, grouped by message id — the form
+// Every message-owned derivation row, grouped by message id — the derivation
 // read-back joined onto message reads (AC-2.1's "readable alongside the
 // message"). Rows come back exactly as the queue landed them: state, content,
 // reason, mechanically stamped metadata; nothing is derived at read time.
 //
 // messageIds, when provided, scopes the read to just those subjects so a
-// bounded listMessages loads only its window's forms (AC-3.1's
-// no-load-everything clause), never every message-owned form in the thread.
+// bounded listMessages loads only its window's derivations (AC-3.1's
+// no-load-everything clause), never every message-owned derivation in the thread.
 // Omitted — the report-surface path that already reads its own scope — reads
-// all message-owned form rows as before.
-export function readMessageForms(
+// all message-owned derivation rows as before.
+export function readMessageDerivations(
   db: DatabaseSync,
   messageIds?: readonly string[],
-): Map<string, DerivedForm[]> {
-  const byMessage = new Map<string, DerivedForm[]>();
+): Map<string, Derivation[]> {
+  const byMessage = new Map<string, Derivation[]>();
   if (messageIds !== undefined && messageIds.length === 0) return byMessage;
   const idFilter =
     messageIds === undefined
@@ -83,68 +83,68 @@ export function readMessageForms(
       : ` AND subject_id IN (${messageIds.map(() => "?").join(", ")})`;
   const rows = db
     .prepare(
-      `SELECT subject_id, form, state, content, reason, metadata,
+      `SELECT subject_id, derivation_type, state, content, reason, metadata,
               source_version, gaps, derived_at
-       FROM derived_form WHERE subject_kind = 'message'${idFilter}
-       ORDER BY subject_id, form`,
+       FROM derivation WHERE subject_kind = 'message'${idFilter}
+       ORDER BY subject_id, derivation_type`,
     )
-    .all(...(messageIds ?? [])) as unknown as RawFormRow[];
+    .all(...(messageIds ?? [])) as unknown as RawDerivationRow[];
   for (const row of rows) {
-    const record: DerivedForm = {
+    const record: Derivation = {
       subjectKind: "message",
       subjectId: row.subject_id,
-      form: row.form as FormKind,
-      state: row.state as DerivedFormState,
+      derivationType: row.derivation_type as DerivationType,
+      state: row.state as DerivationState,
       sourceVersion: Number(row.source_version),
     };
     if (row.content !== null) record.content = row.content;
     if (row.reason !== null) record.reason = row.reason;
     if (row.metadata !== null) {
-      record.metadata = JSON.parse(row.metadata) as DerivedFormMetadata;
+      record.metadata = JSON.parse(row.metadata) as DerivationMetadata;
     }
     if (row.gaps !== null) record.gaps = JSON.parse(row.gaps) as DependencyGap[];
     if (row.derived_at !== null) record.derivedAt = row.derived_at;
-    const forms = byMessage.get(row.subject_id) ?? [];
-    forms.push(record);
-    byMessage.set(row.subject_id, forms);
+    const derivations = byMessage.get(row.subject_id) ?? [];
+    derivations.push(record);
+    byMessage.set(row.subject_id, derivations);
   }
   return byMessage;
 }
 
-// One form row by exact key — the requeue operation's refusal read (missing
+// One derivation row by exact key — the requeue operation's refusal read (missing
 // row, blocked state, current source version). State returned as stored.
-export function readMessageFormRow(
+export function readMessageDerivationRow(
   db: DatabaseSync,
   messageId: string,
-  form: FormKind,
-): { state: DerivedFormState; reason?: string; sourceVersion: number } | undefined {
+  derivationType: DerivationType,
+): { state: DerivationState; reason?: string; sourceVersion: number } | undefined {
   const row = db
     .prepare(
-      `SELECT state, reason, source_version FROM derived_form
-       WHERE subject_kind = 'message' AND subject_id = ? AND form = ?`,
+      `SELECT state, reason, source_version FROM derivation
+       WHERE subject_kind = 'message' AND subject_id = ? AND derivation_type = ?`,
     )
-    .get(messageId, form) as unknown as
+    .get(messageId, derivationType) as unknown as
     | { state: string; reason: string | null; source_version: number | bigint }
     | undefined;
   if (row === undefined) return undefined;
-  const view: { state: DerivedFormState; reason?: string; sourceVersion: number } = {
-    state: row.state as DerivedFormState,
+  const view: { state: DerivationState; reason?: string; sourceVersion: number } = {
+    state: row.state as DerivationState,
     sourceVersion: Number(row.source_version),
   };
   if (row.reason !== null) view.reason = row.reason;
   return view;
 }
 
-// The message owner's report (Flow 4): one query — message-owned form rows
-// LEFT JOINed with the live work_item still targeting each form at its
+// The message owner's report (Flow 4): one query — message-owned derivation rows
+// LEFT JOINed with the live work_item still targeting each derivation at its
 // current source version, if any (DD-1: only live rows exist; terminal
-// outcomes already live on the form). No N+1, no in-memory assembly beyond
-// row mapping. The form→kind CASE is the owner's own queue-site mapping
-// (MESSAGE_WORK_FORMS) inverted.
-export function reportMessageForms(
+// outcomes already live on the derivation). No N+1, no in-memory assembly beyond
+// row mapping. The derivation_type→kind CASE is the owner's own queue-site mapping
+// (MESSAGE_WORK_DERIVATIONS) inverted.
+export function reportMessageDerivations(
   db: DatabaseSync,
   opts: { notReady?: boolean; messageId?: string } = {},
-): FormReportEntry[] {
+): DerivationReportEntry[] {
   const conditions = ["df.subject_kind = 'message'"];
   const params: string[] = [];
   if (opts.messageId !== undefined) {
@@ -155,25 +155,25 @@ export function reportMessageForms(
   if (opts.notReady === true) conditions.push("df.state <> 'ready'");
   const rows = db
     .prepare(
-      `SELECT df.subject_id, df.form, df.state, df.content, df.reason, df.metadata,
+      `SELECT df.subject_id, df.derivation_type, df.state, df.content, df.reason, df.metadata,
               df.source_version, df.gaps, df.derived_at,
               w.status AS queue_status, w.attempts AS queue_attempts,
               w.last_error AS queue_last_error, w.eligible_at AS queue_eligible_at
-       FROM derived_form df
+       FROM derivation df
        LEFT JOIN work_item w
          ON w.status IN ('queued', 'claimed')
-        AND w.kind = CASE df.form WHEN 'smoothed_prompt' THEN 'prompt_smoothing' ELSE df.form END
+        AND w.kind = CASE df.derivation_type WHEN 'smoothed_prompt' THEN 'prompt_smoothing' ELSE df.derivation_type END
         AND json_extract(w.source_ref, '$.messageId') = df.subject_id
         AND COALESCE(json_extract(w.payload, '$.sourceVersion'), 1) = df.source_version
        WHERE ${conditions.join(" AND ")}
-       ORDER BY df.subject_id, df.form`,
+       ORDER BY df.subject_id, df.derivation_type`,
     )
     .all(...params) as unknown as RawReportRow[];
   return rows.map((row) => reportEntryFromRow("message", row));
 }
 
 // The call-id pairing reads. Earliest-recorded block wins if a call id were
-// ever repeated; in a well-formed record the pair is unique. Deleted messages
+// ever repeated; in a valid record the pair is unique. Deleted messages
 // are excluded (tech-design §Mechanics' deleted-read rule, epic-fix-001):
 // composition inputs and derivation reads never see deleted records, so a
 // tool_call whose paired result has been deleted reads no pair and derives
@@ -214,31 +214,4 @@ export function findPairedToolCall(
   const block = findPairedBlock(db, "tool_call", toolCallId);
   if (block === undefined) return undefined;
   return { toolName: typeof block["toolName"] === "string" ? block["toolName"] : "" };
-}
-
-// AC-2.8's intake-time lookup: does the paired call's summary sit landed with
-// outcome "unknown"? Pending rows carry NULL metadata and never match, so the
-// common case — call and result in one batch, summary not yet run — never
-// triggers a requeue. Returns the call's message id and the form's current
-// source version (the requeue enqueues at version + 1: the pair is the
-// summary's source, and a source completing follows clear-and-regenerate).
-export function findUnknownOutcomeCallSummary(
-  db: DatabaseSync,
-  toolCallId: string,
-): { messageId: string; sourceVersion: number } | undefined {
-  const row = db
-    .prepare(
-      `SELECT df.subject_id, df.source_version FROM message_block b
-       JOIN message m ON m.message_id = b.message_id AND m.deleted_at IS NULL
-       JOIN derived_form df ON df.subject_kind = 'message'
-         AND df.subject_id = b.message_id AND df.form = 'tool_call_summary'
-       WHERE b.block_type = 'tool_call' AND json_extract(b.content, '$.toolCallId') = ?
-         AND json_extract(df.metadata, '$.outcome') = 'unknown'
-       LIMIT 1`,
-    )
-    .get(toolCallId) as unknown as
-    | { subject_id: string; source_version: number | bigint }
-    | undefined;
-  if (row === undefined) return undefined;
-  return { messageId: row.subject_id, sourceVersion: Number(row.source_version) };
 }

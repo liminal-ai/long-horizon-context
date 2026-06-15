@@ -11,10 +11,11 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import {
   resolveInstanceViewConfig,
+  resolveInstancePoke,
   runWithThreadTouchSuppressed,
   type OperationContext,
 } from "../../shared/context.js";
-import type { FormReportEntry } from "../../shared/derivation.js";
+import type { DerivationReportEntry } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import type {
   CompactReceipt,
@@ -29,6 +30,7 @@ import type {
 } from "../../shared/view.js";
 import * as messagesDomain from "../messages/index.js";
 import * as turnsDomain from "../turns/index.js";
+import { writeLog } from "../../tech-utils/logging/index.js";
 import {
   openThreadDatabase,
   resolveThreadRef,
@@ -199,7 +201,7 @@ async function pullInner(ref: ThreadRef): Promise<OpResult<PullResult>> {
 // pending, retrying (pending with attempts spent), failed, blocked. Ready
 // forms are healthy and not an operational situation.
 function bucketDerivation(
-  entries: readonly FormReportEntry[],
+  entries: readonly DerivationReportEntry[],
   counts: ViewStatus["derivation"],
 ): void {
   for (const entry of entries) {
@@ -224,7 +226,7 @@ function bucketDerivation(
 // configured trigger threshold with a compact recommendation (`tailTokens >
 // threshold`, nothing smarter — the caller owns policy), derivation counts
 // by state read through the OWNERS' report surfaces (must-not-own: never a
-// direct derived_form read here), the active view's health or null
+// direct derivation read here), the active view's health or null
 // pre-compact, and the visibility zone's sum against its max — computed live
 // by the same query the Story 4 advance will use, so "visible in status" is
 // structural, not stored.
@@ -337,7 +339,7 @@ async function describeInner(ref: ThreadRef): Promise<OpResult<StoredView | null
 const DEFAULT_PROFILE_NAME = "continuation";
 
 function callerError(
-  code: "unknown_profile" | "invalid_view_config",
+  code: "unknown_profile" | "invalid_view_config" | "compact_stopped",
   reason: string,
 ): { ok: false; error: ErrorResult } {
   return { ok: false, error: { errorClass: "caller_error", code, reason } };
@@ -345,10 +347,14 @@ function callerError(
 
 const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
+function compactStopped(signal: { aborted: boolean } | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 // Compact runs only when invoked through this surface (AC-2.1: no code path
 // in core calls it). Flow, in order: validate profile/params (pre-IO, so a
 // rejection provably touches nothing) → sweep, on by default, `sweep: false`
-// skips (AC-3.6; the receipt records which) → read record + forms with the
+// skips (AC-3.6; the receipt records which) → read record + derivations with the
 // corruption check in the reads (pre-transaction, prior view trivially
 // intact on refusal) → selection walk → band rendering → one BEGIN
 // IMMEDIATE replacing the view and resetting the boundary → receipt.
@@ -357,7 +363,7 @@ const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 // through owners' requeue surfaces and calls no provider either).
 export async function compact(
   ref: ThreadRef,
-  opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
+  opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
 ): Promise<OpResult<CompactReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -406,6 +412,9 @@ export async function compact(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
+    if (compactStopped(opts.signal)) {
+      return callerError("compact_stopped", "compact stopped before assembly");
+    }
     let inputs;
     try {
       inputs = readSelectionInputs(db);
@@ -420,10 +429,63 @@ export async function compact(
       }
       throw cause;
     }
+    const threadId = readThreadMetadata(db).threadId;
+    const ctx: OperationContext = {
+      db,
+      clock: () => new Date(),
+      threadId,
+      onCommit: () => {},
+      poke: resolveInstancePoke(),
+    };
+    const compactChunkMaterials = new Map<
+      string,
+      { kind: "ready"; content: string } | { kind: "concat"; content: string; reason: string }
+    >();
+    for (const chunk of inputs.chunks) {
+      if (chunk.status !== "closed") continue;
+      for (const derivationType of ["chunk_summary_detailed", "chunk_summary_brief"] as const) {
+        if (compactStopped(opts.signal)) {
+          return callerError("compact_stopped", "compact stopped during fallback assembly");
+        }
+        const material = turnsDomain.compactChunkMaterial(ctx, chunk.chunkId, derivationType);
+        if (material.kind === "blocked") {
+          return {
+            ok: false,
+            error: {
+              errorClass: "state_corruption",
+              code: "source_damaged",
+              reason: material.reason,
+            },
+          };
+        }
+        compactChunkMaterials.set(`${chunk.chunkId}/${derivationType}`, material);
+      }
+    }
+    inputs = { ...inputs, compactChunkMaterials };
     const selection = selectArrangement(inputs, {
       lowerBound: merged.lowerBound,
       percentages: merged.percentages,
     });
+
+    const warnings: CompactReceipt["warnings"] = selection.entries
+      .filter((entry) => entry.derivationUsed === "stored_member_concat")
+      .map((entry) => ({
+        band: entry.band,
+        subjectId: entry.subjectId,
+        derivationType:
+          entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
+        reason: entry.reason ?? "not_ready",
+      }));
+    for (const warning of warnings) {
+      writeLog(ctx, {
+        level: "warning",
+        message: "compact chunk fallback used",
+        derivationType: warning.derivationType,
+        subjectId: warning.subjectId,
+        reason: warning.reason,
+        floorUsed: "stored_member_concat",
+      });
+    }
 
     const entriesByBand = (band: Band): ArrangementEntry[] =>
       selection.entries.filter((entry) => entry.band === band);
@@ -460,7 +522,7 @@ export async function compact(
           band: entry.band,
           subjectKind: entry.subjectKind,
           subjectId: entry.subjectId,
-          formUsed: entry.formUsed,
+          derivationUsed: entry.derivationUsed,
           degraded: entry.degraded,
         })),
       ),
@@ -475,7 +537,7 @@ export async function compact(
       ),
       sourceStateJson: JSON.stringify({
         maxEventOrder: inputs.maxEventOrder,
-        formCounts: inputs.formCounts,
+        derivationCounts: inputs.derivationCounts,
       }),
       bands,
     });
@@ -510,7 +572,7 @@ export async function compact(
           .map((entry) => ({
             band: entry.band,
             subjectId: entry.subjectId,
-            usedForm: entry.formUsed,
+            usedDerivation: entry.derivationUsed,
           })),
         gaps: selection.entries
           .filter((entry) => entry.gap)
@@ -520,6 +582,7 @@ export async function compact(
             reason: entry.reason ?? "unknown",
           })),
         sweep: sweepOutcome,
+        warnings,
       },
     };
   } catch (cause) {
@@ -532,7 +595,7 @@ export async function compact(
 // ── sweep (Flow 3: AC-3.1–3.5, 3.7) ──────────────────────────────
 
 // The standalone readiness sweep: walk the owners' reports, requeue the
-// transiently-failed forms through the owners' requeue surfaces, return the
+// transiently-failed derivations through the owners' requeue surfaces, return the
 // per-owner/kind receipt. The walk itself lives in internal/sweep.ts; the
 // compact embeds the same walk (AC-3.6), so standalone and embedded receipts
 // share one shape by construction (AC-3.7's SDK leg; the CLI leg rides

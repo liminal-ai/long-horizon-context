@@ -41,7 +41,6 @@ function throwingProvider(): DerivationProvider {
   };
   return {
     smoothPrompt: refuse,
-    summarizeToolCall: refuse,
     summarizeToolResult: refuse,
     composeTurnRendering: refuse,
     projectLowerBand: refuse,
@@ -180,8 +179,8 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     expect(overview.turns).toEqual({ open: 0, closed: 2 });
     // Both closed turns placed by their derivations into the one open chunk.
     expect(overview.chunks).toEqual({ count: 1, unchunkedTurns: 0 });
-    // 2 smoothings + 1 call summary + 1 result summary + 2 turns × 2 forms.
-    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 8 });
+    // 2 smoothings + 1 result summary + 2 turns × 2 forms.
+    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 7 });
     expect(overview.view).toBeNull();
   });
 
@@ -210,10 +209,10 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     expect(overview.messages.visibleTokens).toBeGreaterThan(0);
     expect(overview.turns).toEqual({ open: 0, closed: 12 });
     expect(overview.chunks).toEqual({ count: 4, unchunkedTurns: 0 });
-    // 12 smoothings + 8 call summaries + 6 ready result summaries + 24 turn
+    // 12 smoothings + 6 ready result summaries + 24 turn
     // forms + 6 chunk summaries ready; the scripted transient and permanent
     // exhaustions stay failed.
-    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 56, failed: 2 });
+    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 48, failed: 2 });
     expect(overview.view).toEqual({
       viewId: compacted.value.viewId,
       createdAt: expect.any(String),
@@ -238,7 +237,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     // The edit cleared exactly the cascade set — its own smoothing, t2's two
     // turn forms, c1's two chunk summaries — all pending, drain not settled.
     expect(fixture.mutation.cleared).toHaveLength(5);
-    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 53, pending: 5 });
+    expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 45, pending: 5 });
     expect(overview.turns).toEqual({ open: 0, closed: 12 });
     expect(overview.chunks).toEqual({ count: 4, unchunkedTurns: 0 });
     // The view is the pre-edit compact's snapshot, untouched by the mutation.

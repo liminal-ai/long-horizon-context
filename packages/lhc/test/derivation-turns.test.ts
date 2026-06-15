@@ -99,9 +99,9 @@ async function sendTurn(
   ]);
 }
 
-function formOf(filePath: string, subjectId: string, form: string) {
+function formOf(filePath: string, subjectId: string, derivationType: string) {
   return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.form === form,
+    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
   );
 }
 
@@ -139,7 +139,6 @@ function withScriptedProjections(
 ): DerivationProvider {
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
-    summarizeToolCall: (i) => base.summarizeToolCall(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
     projectLowerBand: (): Promise<ProviderResult> =>
@@ -201,7 +200,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     const double = createProviderDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    double.failKind("prompt_smoothing", 3, { retryable: true, reason: "scripted smoothing failure" });
+    double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
     await sendTurn(sdk, filePath, "raw prompt one", "answer text");
 
     const report = await drain(sdk, filePath);
@@ -210,32 +209,35 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
       ["w-t1-turn_derivation-v1", "done"],
     ]);
 
-    // Message-form gaps degrade the rendering's inputs; they do not fail
-    // the turn: ready, raw text composed, the gap a recorded fact.
+    // Message-derivation fallback degrades the rendering's inputs; it does
+    // not fail the turn. The ready row stays clean; the fallback is durable
+    // in the log.
     const rendering = formOf(filePath, "t1", "turn_rendering");
     expect(rendering?.state).toBe("ready");
     expect(rendering?.content).toContain("raw prompt one");
-    expect(rendering?.gaps).toEqual([
-      { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt" },
+    expect(rendering?.gaps).toBeUndefined();
+    const log = await sdk.logging.query({ filePath }, { derivationType: "smoothed_prompt" });
+    expect(log.ok).toBe(true);
+    if (!log.ok) return;
+    expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([
+      ["smoothed_prompt", "m1"],
     ]);
     expect(formOf(filePath, "t1", "lower_band_projection")?.state).toBe("ready");
-    expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("failed");
+    expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
   });
 });
 
-describe("TC-3.3 / AC-3.3 (architecture risk): gaps stand after dependency repair; only an explicit rebuild clears them", () => {
-  it("repairing the smoothing changes nothing; re-queueing the rendering rebuilds it without the gap at the next source version", async () => {
+describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after dependency repair; only an explicit rebuild refreshes it", () => {
+  it("repairing the smoothing changes nothing; re-queueing the rendering rebuilds it at the next source version", async () => {
     const double = createProviderDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    double.failKind("prompt_smoothing", 3, { retryable: true, reason: "scripted smoothing failure" });
+    double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
     await sendTurn(sdk, filePath, "gapped prompt", "gapped answer");
     await drain(sdk, filePath);
     const gapped = formOf(filePath, "t1", "turn_rendering");
     expect(gapped?.state).toBe("ready");
-    expect(gapped?.gaps).toEqual([
-      { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt" },
-    ]);
+    expect(gapped?.gaps).toBeUndefined();
     const placedBefore = readChunks(filePath);
 
     // Leg 1: repair the failed smoothing through the queue util (now
@@ -245,15 +247,15 @@ describe("TC-3.3 / AC-3.3 (architecture risk): gaps stand after dependency repai
       owner: "messages",
       kind: "prompt_smoothing",
       sourceRef: { messageId: "m1" },
-      forms: [{ subjectKind: "message", subjectId: "m1", form: "smoothed_prompt" }],
+      derivations: [{ subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" }],
     });
     const repairReport = await drain(sdk, filePath);
     expect(repairReport.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "done"],
     ]);
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
-    // Byte-for-byte: the gapped rendering is exactly the row that landed —
-    // content, gaps, derivedAt, source version, all of it.
+    // Byte-for-byte: the fallback-composed rendering is exactly the row that landed —
+    // content, derivedAt, source version, all of it.
     expect(formOf(filePath, "t1", "turn_rendering")).toEqual(gapped);
     expect(liveCount(filePath)).toBe(0);
 
@@ -265,9 +267,9 @@ describe("TC-3.3 / AC-3.3 (architecture risk): gaps stand after dependency repai
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },
       sourceVersion: 2,
-      forms: [
-        { subjectKind: "turn", subjectId: "t1", form: "turn_rendering" },
-        { subjectKind: "turn", subjectId: "t1", form: "lower_band_projection" },
+      derivations: [
+        { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering" },
+        { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection" },
       ],
     });
     const rebuildReport = await drain(sdk, filePath);
@@ -330,16 +332,17 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
     // message's summary form content rides the run account verbatim, each
     // stamped with its record outcome — the failed pair (m4/m5) included.
     const toolMessages = [
-      { id: "m2", kind: "tool_call", outcome: "succeeded" },
+      { id: "m2", kind: "tool_call", outcome: "succeeded", text: 'edit_file({"path":"a.txt"})' },
       { id: "m3", kind: "tool_result", outcome: "succeeded" },
-      { id: "m4", kind: "tool_call", outcome: "failed" },
+      { id: "m4", kind: "tool_call", outcome: "failed", text: 'edit_file({"path":"b.txt"})' },
       { id: "m5", kind: "tool_result", outcome: "failed" },
-      { id: "m6", kind: "tool_call", outcome: "succeeded" },
+      { id: "m6", kind: "tool_call", outcome: "succeeded", text: 'edit_file({"path":"c.txt"})' },
       { id: "m7", kind: "tool_result", outcome: "succeeded" },
     ] as const;
     expect(run?.fallback).toBe(false);
     for (const m of toolMessages) {
-      const summary = formOf(filePath, m.id, `${m.kind}_summary`)?.content;
+      const summary =
+        m.kind === "tool_call" ? m.text : formOf(filePath, m.id, "tool_result_summary")?.content;
       expect(summary).toBeDefined();
       expect(account).toContain(`${summary} ⇒ ${m.outcome}`);
     }
@@ -556,9 +559,9 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // its account names each call's summary content with its record outcome,
     // and the run-level outcome is failed because one half failed. The summary
     // contents are what the detailed summary must preserve.
-    const callA = formOf(filePath, "m2", "tool_call_summary")?.content;
+    const callA = 'edit_file({"path":"ok.txt"})';
     const resultA = formOf(filePath, "m3", "tool_result_summary")?.content;
-    const callB = formOf(filePath, "m4", "tool_call_summary")?.content;
+    const callB = 'edit_file({"path":"ro.txt"})';
     const resultB = formOf(filePath, "m5", "tool_result_summary")?.content;
     const receipts = formOf(filePath, "t1", "turn_rendering")?.metadata?.receipts;
     expect(receipts).toHaveLength(1);
@@ -629,7 +632,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
       owner: "turns",
       kind: "chunk_summary_brief",
       sourceRef: { chunkId: "c1" },
-      forms: [{ subjectKind: "chunk", subjectId: "c1", form: "chunk_summary_brief" }],
+      derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
     });
     const requeued = await drain(sdk, filePath);
     expect(requeued.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([
@@ -673,7 +676,7 @@ describe("TC-3.9 / AC-3.9 (architecture risk): chunk boundaries are deterministi
     const summariesOf = (filePath: string) =>
       readDerivedForms(filePath)
         .filter((form) => form.subjectKind === "chunk")
-        .map((form) => [form.subjectId, form.form, form.state, form.content]);
+        .map((form) => [form.subjectId, form.derivationType, form.state, form.content]);
     expect(summariesOf(first)).toEqual(summariesOf(second));
   });
 });

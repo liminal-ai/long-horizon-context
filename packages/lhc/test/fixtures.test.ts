@@ -14,6 +14,8 @@ const ALL_KINDS: readonly EventKind[] = [
   "assistant_text",
   "assistant_thinking",
   "runtime_note",
+  "model_change",
+  "thinking_level_change",
   "tool_call",
   "tool_result",
   "turn_end",
@@ -24,6 +26,8 @@ const GOLDEN_PAYLOAD_KEYS: Record<EventKind, string[]> = {
   assistant_text: ["text"],
   assistant_thinking: ["text"],
   runtime_note: ["text"],
+  model_change: ["previousModel", "newModel"],
+  thinking_level_change: ["previousLevel", "newLevel"],
   tool_call: ["toolCallId", "toolName", "arguments"],
   tool_result: ["toolCallId", "content", "isError"],
   turn_end: [],
@@ -118,7 +122,7 @@ import {
   messages,
   turns,
   type DerivationProvider,
-  type DerivedForm,
+  type Derivation,
   type ProviderResult,
 } from "../src/index.js";
 import {
@@ -131,16 +135,11 @@ import {
   type TempStore,
 } from "./fixtures/index.js";
 
-// One call per operation with a fixed, distinct input — the seven-op sweep
+// One call per operation with a fixed, distinct input — the operation sweep
 // FC-0.1/FC-0.2 iterate.
-function callAllSeven(double: DerivationProvider): Array<Promise<ProviderResult>> {
+function callAllOperations(double: DerivationProvider): Array<Promise<ProviderResult>> {
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
-    double.summarizeToolCall({
-      toolName: "read_file",
-      argsJson: JSON.stringify({ path: "notes.txt" }),
-      pairedResult: { content: "file contents here", isError: false },
-    }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
     double.composeTurnRendering({
       parts: [
@@ -153,9 +152,8 @@ function callAllSeven(double: DerivationProvider): Array<Promise<ProviderResult>
   ];
 }
 
-const SEVEN_MARKERS = [
+const OPERATION_MARKERS = [
   "smoothed",
-  "toolcall",
   "toolresult",
   "rendering",
   "projection",
@@ -164,12 +162,12 @@ const SEVEN_MARKERS = [
 ] as const;
 
 describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
-  it("FC-0.1: implements all seven operations with marked, input-derived output", async () => {
-    const results = await Promise.all(callAllSeven(createProviderDouble()));
+  it("FC-0.1: implements all operations with marked, input-derived output", async () => {
+    const results = await Promise.all(callAllOperations(createProviderDouble()));
     for (const [index, result] of results.entries()) {
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
-      expect(result.text.startsWith(`${SEVEN_MARKERS[index]}(`)).toBe(true);
+      expect(result.text.startsWith(`${OPERATION_MARKERS[index]}(`)).toBe(true);
     }
     // Input-derived, not canned: a different input to the same operation
     // yields different marked output.
@@ -182,12 +180,12 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 
   it("FC-0.2: identical input yields identical output across double instances; operations are distinguishable", async () => {
-    const first = await Promise.all(callAllSeven(createProviderDouble()));
-    const second = await Promise.all(callAllSeven(createProviderDouble()));
+    const first = await Promise.all(callAllOperations(createProviderDouble()));
+    const second = await Promise.all(callAllOperations(createProviderDouble()));
     expect(first).toEqual(second);
     const texts = first.map((r) => (r.ok ? r.text : ""));
-    expect(new Set(texts).size).toBe(7);
-    expect(texts.map((t) => t.slice(0, t.indexOf("(")))).toEqual([...SEVEN_MARKERS]);
+    expect(new Set(texts).size).toBe(6);
+    expect(texts.map((t) => t.slice(0, t.indexOf("(")))).toEqual([...OPERATION_MARKERS]);
   });
 
   it("FC-0.2: failNext drives fail-N-then-succeed with the scripted retryability", async () => {
@@ -347,9 +345,9 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
         (f) =>
           f.subjectKind === claim.subjectKind &&
           f.subjectId === claim.subjectId &&
-          f.form === claim.form,
+          f.derivationType === claim.derivationType,
       );
-      expect(match, `${claim.subjectKind}/${claim.subjectId}/${claim.form}`).toBeDefined();
+      expect(match, `${claim.subjectKind}/${claim.subjectId}/${claim.derivationType}`).toBeDefined();
       expect(match?.state).toBe(claim.state);
     }
     const states = new Set(forms.map((f) => f.state));
@@ -371,13 +369,13 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
 
   it("FC-0.3: tool-activity outcome lives in machine-readable metadata, never inside content", async () => {
     const { filePath } = await multiStateThread(store);
-    const toolForm = readDerivedForms(filePath).find((f) => f.form === "tool_result_summary");
+    const toolForm = readDerivedForms(filePath).find((f) => f.derivationType === "tool_result_summary");
     expect(toolForm).toBeDefined();
     expect(toolForm?.metadata).toEqual({ outcome: "succeeded" });
     expect(toolForm?.content).not.toContain("succeeded");
     // The shared vocabulary is the compile-time contract both owning domains
     // consume; this read shape is that type.
-    const typed: DerivedForm | undefined = toolForm;
+    const typed: Derivation | undefined = toolForm;
     expect(typed?.state).toBe("ready");
   });
 

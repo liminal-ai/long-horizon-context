@@ -12,6 +12,10 @@
 // same entry renderer to price entries during the fill walk, so the tokens
 // the walk budgets are the tokens the band stores — one renderer, no drift.
 import type { Band, ViewMessage } from "../../../shared/view.js";
+import {
+  FALLBACK_TRUNCATION_LIMIT,
+  truncateForFallback,
+} from "../../../shared/tool-result-rendering.js";
 import type { TailMessageRow } from "./snapshot.js";
 
 // Epic 01's deterministic abbreviation rule: a fixed prefix plus an exact
@@ -19,12 +23,10 @@ import type { TailMessageRow } from "./snapshot.js";
 // byte-identical to turns/internal/compose.ts's truncateForFallback —
 // because cross-domain internals may not be imported and the turns domain
 // is frozen for this epic (tech design §Top-Tier Surfaces: no changes).
-export const ABBREVIATION_LIMIT = 200;
+export const ABBREVIATION_LIMIT = FALLBACK_TRUNCATION_LIMIT;
 
 export function deterministicTruncation(text: string): string {
-  if (text.length <= ABBREVIATION_LIMIT) return text;
-  const dropped = text.length - ABBREVIATION_LIMIT;
-  return `${text.slice(0, ABBREVIATION_LIMIT)}… [truncated ${dropped} chars]`;
+  return truncateForFallback(text);
 }
 
 function blockContent(message: TailMessageRow): Record<string, unknown> {
@@ -68,9 +70,7 @@ export function toolNamesByCallId(
 function renderToolCall(message: TailMessageRow): ViewMessage {
   const block = blockContent(message);
   const name = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
-  // Deterministic arg rendering: the projected arguments serialized verbatim,
-  // oversized args abbreviated by the same Epic 01 rule.
-  const args = deterministicTruncation(JSON.stringify(block["arguments"] ?? {}));
+  const args = JSON.stringify(block["arguments"] ?? {});
   return { role: "assistant", content: `[tool call · ${name}] ${args}` };
 }
 
@@ -84,11 +84,9 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): View
   if (message.sourceEventOrder > ctx.boundaryPosition) {
     return { role: "user", content: `[tool result · ${name}]\n${content}` };
   }
-  // At-or-behind the boundary: the short-form ladder — the ready summary
-  // when usable, else deterministic truncation of the raw content (AC-4.2's
-  // vocabulary; the default-boundary leg lands here in Story 1). Short-form
-  // rendering marks that fuller content exists in the record.
-  const short = ctx.toolResultSummaries.get(message.messageId) ?? deterministicTruncation(content);
+  // At-or-behind the boundary: the full-band floor is always deterministic
+  // truncation of the raw tool result, never provider summary content.
+  const short = deterministicTruncation(content);
   return {
     role: "user",
     content: `[tool result · ${name} · abridged]\n${short} [full content in record §${message.messageId}]`,
@@ -116,6 +114,20 @@ export function renderTailMessage(
       return renderToolResult(message, ctx);
     case "runtime_note":
       return { role: "user", content: `[runtime note] ${textOf(message)}` };
+    case "model_change": {
+      const block = message.blocks[0]?.content ?? {};
+      return {
+        role: "user",
+        content: `[model change] ${String(block["previousModel"] ?? "")} -> ${String(block["newModel"] ?? "")}`,
+      };
+    }
+    case "thinking_level_change": {
+      const block = message.blocks[0]?.content ?? {};
+      return {
+        role: "user",
+        content: `[thinking level change] ${String(block["previousLevel"] ?? "")} -> ${String(block["newLevel"] ?? "")}`,
+      };
+    }
   }
 }
 
@@ -128,21 +140,28 @@ export function renderBandMessage(band: Band, renderedText: string): ViewMessage
 
 // ── band entries: degrade ladders, gaps, keys (Story 2) ──────────
 
-// One derived form's stored state as the ladder reads it (a projection of
-// DerivedForm: the resolvers never write, never re-derive).
-export interface FormSnapshot {
+// One derivation's stored state as the ladder reads it (a projection of
+// Derivation: the resolvers never write, never re-derive).
+export interface DerivationSnapshot {
   state: "pending" | "ready" | "failed" | "blocked";
   content?: string;
   reason?: string;
 }
 
-export type FormLookup = (subjectId: string, form: string) => FormSnapshot | undefined;
+export type CompactChunkMaterialSnapshot =
+  | { kind: "ready"; content: string }
+  | { kind: "concat"; content: string; reason: string };
+
+export type DerivationLookup = (
+  subjectId: string,
+  derivationType: string,
+) => DerivationSnapshot | undefined;
 
 // A subject's resolved representation: which rung of its ladder renders.
-// `formUsed` is the arrangement/receipt vocabulary; `degradedMarker` is the
+// `derivationUsed` is the arrangement/receipt vocabulary; `degradedMarker` is the
 // rendered [degraded: …] text for fallback rungs.
 export interface ResolvedRepresentation {
-  formUsed: string;
+  derivationUsed: string;
   body: string;
   degraded: boolean;
   gap: boolean;
@@ -150,12 +169,12 @@ export interface ResolvedRepresentation {
   reason?: string;
 }
 
-function usable(form: FormSnapshot | undefined): form is FormSnapshot & { content: string } {
+function usable(form: DerivationSnapshot | undefined): form is DerivationSnapshot & { content: string } {
   // "Usable" means state = ready (tech design §Degrade ladders).
   return form?.state === "ready" && typeof form.content === "string";
 }
 
-function ladderState(form: FormSnapshot | undefined): string {
+function ladderState(form: DerivationSnapshot | undefined): string {
   return form === undefined ? "absent" : form.state;
 }
 
@@ -163,17 +182,17 @@ function ladderState(form: FormSnapshot | undefined): string {
 // deterministic excerpt of the turn's live messages → gap entry.
 export function resolveSmoothRepresentation(
   turnId: string,
-  lookup: FormLookup,
+  lookup: DerivationLookup,
   excerpt: string | null,
 ): ResolvedRepresentation {
   const rendering = lookup(turnId, "turn_rendering");
   if (usable(rendering)) {
-    return { formUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
+    return { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
   }
   const projection = lookup(turnId, "lower_band_projection");
   if (usable(projection)) {
     return {
-      formUsed: "lower_band_projection",
+      derivationUsed: "lower_band_projection",
       body: projection.content,
       degraded: true,
       gap: false,
@@ -182,7 +201,7 @@ export function resolveSmoothRepresentation(
   }
   if (excerpt !== null) {
     return {
-      formUsed: "message_excerpt",
+      derivationUsed: "message_excerpt",
       body: deterministicTruncation(excerpt),
       degraded: true,
       gap: false,
@@ -190,7 +209,7 @@ export function resolveSmoothRepresentation(
     };
   }
   return {
-    formUsed: "gap",
+    derivationUsed: "gap",
     body: "",
     degraded: false,
     gap: true,
@@ -202,38 +221,37 @@ export function resolveSmoothRepresentation(
 // concatenated member projections (truncated, marked) → gap entry.
 export function resolveDetailedRepresentation(
   chunkId: string,
-  lookup: FormLookup,
-  memberProjections: readonly string[],
+  lookup: DerivationLookup,
+  material?: CompactChunkMaterialSnapshot,
 ): ResolvedRepresentation {
   const detailed = lookup(chunkId, "chunk_summary_detailed");
   if (usable(detailed)) {
-    return { formUsed: "chunk_summary_detailed", body: detailed.content, degraded: false, gap: false };
+    return { derivationUsed: "chunk_summary_detailed", body: detailed.content, degraded: false, gap: false };
   }
-  const brief = lookup(chunkId, "chunk_summary_brief");
-  if (usable(brief)) {
+  if (material?.kind === "ready") {
     return {
-      formUsed: "chunk_summary_brief",
-      body: brief.content,
-      degraded: true,
+      derivationUsed: "chunk_summary_detailed",
+      body: material.content,
+      degraded: false,
       gap: false,
-      degradedMarker: "detailed-from-brief",
     };
   }
-  if (memberProjections.length > 0) {
+  if (material?.kind === "concat") {
     return {
-      formUsed: "member_projections",
-      body: deterministicTruncation(memberProjections.join("\n")),
+      derivationUsed: "stored_member_concat",
+      body: material.content,
       degraded: true,
       gap: false,
-      degradedMarker: "detailed-from-projections",
+      degradedMarker: "detailed-from-stored-members",
+      reason: material.reason,
     };
   }
   return {
-    formUsed: "gap",
+    derivationUsed: "gap",
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable form (chunk_summary_detailed: ${ladderState(detailed)}, chunk_summary_brief: ${ladderState(brief)}, member projections ready: 0)`,
+    reason: `no usable form (chunk_summary_detailed: ${ladderState(detailed)}, compact material absent)`,
   };
 }
 
@@ -241,28 +259,37 @@ export function resolveDetailedRepresentation(
 // truncated → gap entry (no projections rung in this band's ladder).
 export function resolveBriefRepresentation(
   chunkId: string,
-  lookup: FormLookup,
+  lookup: DerivationLookup,
+  material?: CompactChunkMaterialSnapshot,
 ): ResolvedRepresentation {
   const brief = lookup(chunkId, "chunk_summary_brief");
   if (usable(brief)) {
-    return { formUsed: "chunk_summary_brief", body: brief.content, degraded: false, gap: false };
+    return { derivationUsed: "chunk_summary_brief", body: brief.content, degraded: false, gap: false };
   }
-  const detailed = lookup(chunkId, "chunk_summary_detailed");
-  if (usable(detailed)) {
+  if (material?.kind === "ready") {
     return {
-      formUsed: "chunk_summary_detailed_truncated",
-      body: deterministicTruncation(detailed.content),
+      derivationUsed: "chunk_summary_brief",
+      body: material.content,
+      degraded: false,
+      gap: false,
+    };
+  }
+  if (material?.kind === "concat") {
+    return {
+      derivationUsed: "stored_member_concat",
+      body: material.content,
       degraded: true,
       gap: false,
-      degradedMarker: "brief-from-detailed",
+      degradedMarker: "brief-from-stored-members",
+      reason: material.reason,
     };
   }
   return {
-    formUsed: "gap",
+    derivationUsed: "gap",
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable form (chunk_summary_brief: ${ladderState(brief)}, chunk_summary_detailed: ${ladderState(detailed)}, member projections ready: 0)`,
+    reason: `no usable form (chunk_summary_brief: ${ladderState(brief)}, compact material absent)`,
   };
 }
 
@@ -301,7 +328,7 @@ export function renderArrangementEntry(
   if (rep.gap) {
     lines.push(`§${subjectId} [${subjectKind} ${subjectId} unavailable: ${rep.reason ?? "unknown"}]`);
   } else {
-    const marker = rep.degraded ? ` [degraded: ${rep.degradedMarker ?? rep.formUsed}]` : "";
+    const marker = rep.degraded ? ` [degraded: ${rep.degradedMarker ?? rep.derivationUsed}]` : "";
     lines.push(`§${subjectId}${marker}\n${rep.body}`);
   }
   return lines.join("\n");

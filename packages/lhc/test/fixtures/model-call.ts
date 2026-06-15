@@ -4,7 +4,7 @@
 // ends (tech design §Testing Strategy). All builders return
 // contract-conformant shapes (AC-1.2); seam-conformance.ts asserts that of
 // recordingCall in its own test so fixture drift is caught by the suite.
-import { FORM_KINDS, type FormKind } from "../../src/shared/derivation.js";
+import { DERIVATION_TYPES, type DerivationType } from "../../src/shared/derivation.js";
 import { DEFAULT_PROMPT_NAMES } from "../../src/inference/prompts/index.js";
 import type {
   ModelAssignment,
@@ -13,7 +13,7 @@ import type {
   ModelCallResult,
 } from "../../src/inference/types.js";
 
-export { FORM_KINDS, type FormKind };
+export { DERIVATION_TYPES, type DerivationType };
 
 // validAssignments gives every kind a distinct fake provider/model lane;
 // recordingCall infers the kind back from the model string, so per-kind
@@ -22,10 +22,10 @@ export const FAKE_PROVIDER_PREFIX = "prov-";
 export const FAKE_MODEL_PREFIX = "model-";
 
 export function validAssignments(
-  overrides: Partial<Record<FormKind, Partial<ModelAssignment>>> = {},
-): Record<FormKind, ModelAssignment> {
-  const map = {} as Record<FormKind, ModelAssignment>;
-  for (const kind of FORM_KINDS) {
+  overrides: Partial<Record<DerivationType, Partial<ModelAssignment>>> = {},
+): Record<DerivationType, ModelAssignment> {
+  const map = {} as Record<DerivationType, ModelAssignment>;
+  for (const kind of DERIVATION_TYPES) {
     map[kind] = {
       provider: `${FAKE_PROVIDER_PREFIX}${kind}`,
       model: `${FAKE_MODEL_PREFIX}${kind}`,
@@ -38,9 +38,9 @@ export function validAssignments(
 
 // One distinct canned sentence per kind, so cross-kind bleed is visible in
 // landed form content, never just in call counts.
-export function cannedResponses(): Record<FormKind, string> {
-  const map = {} as Record<FormKind, string>;
-  for (const kind of FORM_KINDS) {
+export function cannedResponses(): Record<DerivationType, string> {
+  const map = {} as Record<DerivationType, string>;
+  for (const kind of DERIVATION_TYPES) {
     map[kind] = `canned ${kind} text from the fake host`;
   }
   return map;
@@ -50,12 +50,12 @@ export function cannedResponses(): Record<FormKind, string> {
 // the model routing key validAssignments made unique per kind. Every input
 // is cloned into `log` in call order. An unknown model is a test bug and
 // throws loudly.
-export function recordingCall(responses: Record<FormKind, string>): {
+export function recordingCall(responses: Record<DerivationType, string>): {
   call: ModelCall;
   log: ModelCallInput[];
 } {
   const log: ModelCallInput[] = [];
-  const known = new Set<string>(FORM_KINDS);
+  const known = new Set<string>(DERIVATION_TYPES);
   const call: ModelCall = (input) => {
     log.push(structuredClone(input));
     const kind = input.model.startsWith(FAKE_MODEL_PREFIX)
@@ -64,7 +64,7 @@ export function recordingCall(responses: Record<FormKind, string>): {
     if (!known.has(kind)) {
       throw new Error(`recordingCall: no canned response for model "${input.model}"`);
     }
-    return Promise.resolve({ ok: true, text: responses[kind as FormKind] });
+    return Promise.resolve({ ok: true, text: responses[kind as DerivationType] });
   };
   return { call, log };
 }

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { runInTransaction, type OperationContext } from "../../shared/context.js";
 import type {
-  FormKind,
-  FormReportEntry,
+  DerivationType,
+  DerivationReportEntry,
   WorkHandler,
 } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
@@ -10,7 +10,7 @@ import {
   enqueue,
   hasLiveItem,
   listItems,
-  type EnqueueFormTarget,
+  type EnqueueDerivationTarget,
   type WorkItemRecord,
   type WorkKind,
   type WorkSourceRef,
@@ -23,14 +23,18 @@ import { transition } from "./internal/state-machine.js";
 // test plan's one sanctioned direct entry besides the tokenizer); production
 // callers go through applyEvent.
 export { transition, type TurnEffect, type TurnState } from "./internal/state-machine.js";
-import type { DerivedForm } from "../../shared/derivation.js";
+import type { Derivation } from "../../shared/derivation.js";
+import {
+  compactChunkMaterialFromStoredMembers,
+  type CompactChunkMaterial,
+} from "./internal/chunk-recovery.js";
 import { turnWorkHandlers } from "./internal/derive.js";
 import {
   readChunkRows,
-  readOwnedForms,
-  readTurnFormRow,
-  reportTurnForms,
-} from "./internal/forms.js";
+  readOwnedDerivations,
+  readTurnDerivationRow,
+  reportTurnDerivations,
+} from "./internal/derivations.js";
 import {
   applyTurnDeleteCascade,
   type MutationResult,
@@ -55,24 +59,24 @@ export interface TurnRecord {
   // derivation placed it — stored values read back, never recomputed.
   chunkId?: string;
   memberIdx?: number;
-  // The turn's derived forms as stored (Epic 02 Story 4, AC-4.7 ruling 012):
+  // The turn's derived derivations as stored (Epic 02 Story 4, AC-4.7 ruling 012):
   // present only when rows exist — a closed turn carries them from the
   // moment its derivation queues. Stored state returned verbatim, mirroring
-  // the message read's forms key; reads degrade, never block.
-  forms?: DerivedForm[];
+  // the message read's derivations key; reads degrade, never block.
+  derivations?: Derivation[];
 }
 
 // Chunk read-back (Epic 02 Story 4, AC-4.7 ruling 012): the stored chunk
-// record with live membership and its summary forms' states attached —
+// record with live membership and its summary derivations' states attached —
 // the chunk leg of "reading a message, turn, or chunk returns the record
-// with form states".
+// with derivation states".
 export interface ChunkRecord {
   chunkId: string;
   chunkOrder: number;
   status: "open" | "closed";
   accumulatedProjectedTokens: number;
   memberTurnIds: string[];
-  forms?: DerivedForm[];
+  derivations?: Derivation[];
 }
 
 export interface TurnTransitionOutcome {
@@ -104,16 +108,16 @@ function closeTurnAndQueueWork(
   eventOrder: number,
 ): WorkItemRecord {
   closeTurn(ctx.db, turnId, eventOrder);
-  // One work item, two derived forms: the turn_derivation handler (Story 3)
+  // One work item, two derived derivations: the turn_derivation handler (Story 3)
   // lands the rendering and the lower-band projection as independent rows;
   // both go pending with the enqueue (DD-5).
   return enqueue(ctx, {
     owner: "turns",
     kind: "turn_derivation",
     sourceRef: { turnId },
-    forms: [
-      { subjectKind: "turn", subjectId: turnId, form: "turn_rendering" },
-      { subjectKind: "turn", subjectId: turnId, form: "lower_band_projection" },
+    derivations: [
+      { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
+      { subjectKind: "turn", subjectId: turnId, derivationType: "lower_band_projection" },
     ],
   });
 }
@@ -188,13 +192,13 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    // Form read-back rides the turn read (AC-4.7): each record carries its
-    // stored derived forms, attached from one grouped query — mirroring the
+    // Derivation read-back rides the turn read (AC-4.7): each record carries its
+    // stored derived derivations, attached from one grouped query — mirroring the
     // message read's production path for "readable alongside the record".
-    const formsByTurn = readOwnedForms(db, "turn");
+    const derivationsByTurn = readOwnedDerivations(db, "turn");
     const records = readTurns(db).map((record) => {
-      const forms = formsByTurn.get(record.turnId);
-      return forms === undefined ? record : { ...record, forms };
+      const derivations = derivationsByTurn.get(record.turnId);
+      return derivations === undefined ? record : { ...record, derivations };
     });
     return { ok: true, value: records };
   } catch (cause) {
@@ -205,9 +209,9 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
   }
 }
 
-// Chunk read-back with summary-form states attached (AC-4.7 ruling 012):
-// returns stored records whatever the forms' states — reads degrade, never
-// block. Forms attach only where rows exist (a freshly opened chunk has no
+// Chunk read-back with summary-derivation states attached (AC-4.7 ruling 012):
+// returns stored records whatever the derivations' states — reads degrade, never
+// block. Derivations attach only where rows exist (a freshly opened chunk has no
 // summary rows until close queues them).
 export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
   const resolved = await resolveThreadRef(thread);
@@ -219,10 +223,10 @@ export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecor
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const formsByChunk = readOwnedForms(db, "chunk");
+    const derivationsByChunk = readOwnedDerivations(db, "chunk");
     const records: ChunkRecord[] = readChunkRows(db).map((row) => {
-      const forms = formsByChunk.get(row.chunkId);
-      return forms === undefined ? row : { ...row, forms };
+      const derivations = derivationsByChunk.get(row.chunkId);
+      return derivations === undefined ? row : { ...row, derivations };
     });
     return { ok: true, value: records };
   } catch (cause) {
@@ -254,15 +258,23 @@ export async function listQueuedWork(
   }
 }
 
+export function compactChunkMaterial(
+  ctx: OperationContext,
+  chunkId: string,
+  derivationType: "chunk_summary_detailed" | "chunk_summary_brief" = "chunk_summary_detailed",
+): CompactChunkMaterial {
+  return compactChunkMaterialFromStoredMembers(ctx.db, chunkId, derivationType);
+}
+
 // ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
 
-// This owner's repair report: every turn- and chunk-owned form's durable
+// This owner's repair report: every turn- and chunk-owned derivation's durable
 // state joined with live queue detail in one query. Needs no provider;
 // reads degrade, never block.
 export async function report(
   thread: ThreadRef,
   opts?: { notReady?: boolean; turnId?: string; chunkId?: string },
-): Promise<OpResult<FormReportEntry[]>> {
+): Promise<OpResult<DerivationReportEntry[]>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -272,7 +284,7 @@ export async function report(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    return { ok: true, value: reportTurnForms(db, opts ?? {}) };
+    return { ok: true, value: reportTurnDerivations(db, opts ?? {}) };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`report read failed: ${reason}`);
@@ -283,7 +295,7 @@ export async function report(
 
 export type RequeueOutcome = { workItemId: string } | { noop: "already_queued" };
 
-// The queue site each turn-owned form rebuilds through. Both turn forms ride
+// The queue site each turn-owned derivation rebuilds through. Both turn derivations ride
 // the one turn_derivation item (the handler lands rendering and projection
 // together, so a rebuild of either re-derives both — the rebuild rule from
 // Flow 3); each chunk summary rides its same-named kind alone (AC-3.8's
@@ -291,29 +303,29 @@ export type RequeueOutcome = { workItemId: string } | { noop: "already_queued" }
 function turnRequeueTarget(target: {
   subjectKind: "turn" | "chunk";
   subjectId: string;
-  form: FormKind;
-}): { kind: WorkKind; sourceRef: WorkSourceRef; forms: EnqueueFormTarget[] } | undefined {
+  derivationType: DerivationType;
+}): { kind: WorkKind; sourceRef: WorkSourceRef; derivations: EnqueueDerivationTarget[] } | undefined {
   if (
     target.subjectKind === "turn" &&
-    (target.form === "turn_rendering" || target.form === "lower_band_projection")
+    (target.derivationType === "turn_rendering" || target.derivationType === "lower_band_projection")
   ) {
     return {
       kind: "turn_derivation",
       sourceRef: { turnId: target.subjectId },
-      forms: [
-        { subjectKind: "turn", subjectId: target.subjectId, form: "turn_rendering" },
-        { subjectKind: "turn", subjectId: target.subjectId, form: "lower_band_projection" },
+      derivations: [
+        { subjectKind: "turn", subjectId: target.subjectId, derivationType: "turn_rendering" },
+        { subjectKind: "turn", subjectId: target.subjectId, derivationType: "lower_band_projection" },
       ],
     };
   }
   if (
     target.subjectKind === "chunk" &&
-    (target.form === "chunk_summary_detailed" || target.form === "chunk_summary_brief")
+    (target.derivationType === "chunk_summary_detailed" || target.derivationType === "chunk_summary_brief")
   ) {
     return {
-      kind: target.form,
+      kind: target.derivationType,
       sourceRef: { chunkId: target.subjectId },
-      forms: [{ subjectKind: "chunk", subjectId: target.subjectId, form: target.form }],
+      derivations: [{ subjectKind: "chunk", subjectId: target.subjectId, derivationType: target.derivationType }],
     };
   }
   return undefined;
@@ -323,11 +335,11 @@ function turnRequeueTarget(target: {
 // messages.requeue — blocked refused with the stored damage reason, missing
 // rows refused, no-op against live work at the current source version, and
 // the no-op check + enqueue in one transaction. A successful requeue rebuilds
-// at the next source version: composed forms recompute their gaps from
+// at the next source version: composed derivations recompute their gaps from
 // current dependency states (Flow 3's rebuild rule).
 export async function requeue(
   thread: ThreadRef,
-  target: { subjectKind: "turn" | "chunk"; subjectId: string; form: FormKind },
+  target: { subjectKind: "turn" | "chunk"; subjectId: string; derivationType: DerivationType },
 ): Promise<OpResult<RequeueOutcome>> {
   const mapped = turnRequeueTarget(target);
   if (mapped === undefined) {
@@ -336,7 +348,7 @@ export async function requeue(
       error: {
         errorClass: "caller_error",
         code: "turn_not_found",
-        reason: `form ${target.form} is not a ${target.subjectKind}-owned form; turns.requeue repairs turn_rendering and lower_band_projection (turn) or chunk_summary_detailed and chunk_summary_brief (chunk)`,
+        reason: `derivation ${target.derivationType} is not a ${target.subjectKind}-owned derivation; turns.requeue repairs turn_rendering and lower_band_projection (turn) or chunk_summary_detailed and chunk_summary_brief (chunk)`,
       },
     };
   }
@@ -354,19 +366,19 @@ export async function requeue(
       .get() as { thread_id: string } | undefined;
     const threadId = meta?.thread_id ?? "";
     return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<RequeueOutcome> => {
-      const row = readTurnFormRow(ctx.db, target.subjectKind, target.subjectId, target.form);
+      const row = readTurnDerivationRow(ctx.db, target.subjectKind, target.subjectId, target.derivationType);
       if (row === undefined) {
         return {
           ok: false,
           error: {
             errorClass: "caller_error",
             code: "turn_not_found",
-            reason: `no derived form ${target.form} exists for ${target.subjectKind} ${target.subjectId}`,
+            reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
           },
         };
       }
       if (row.state === "blocked") {
-        // The refusal carries the form's stored reason — the damage named at
+        // The refusal carries the derivation's stored reason — the damage named at
         // blocking time, not a generic string (AC-4.6).
         return {
           ok: false,
@@ -375,7 +387,7 @@ export async function requeue(
             code: "source_damaged",
             reason:
               row.reason ??
-              `form ${target.form} for ${target.subjectKind} ${target.subjectId} is blocked`,
+              `derivation ${target.derivationType} for ${target.subjectKind} ${target.subjectId} is blocked`,
           },
         };
       }
@@ -387,7 +399,7 @@ export async function requeue(
         kind: mapped.kind,
         sourceRef: mapped.sourceRef,
         sourceVersion: row.sourceVersion + 1,
-        forms: mapped.forms,
+        derivations: mapped.derivations,
       });
       return { ok: true, value: { workItemId: item.workItemId } };
     });
@@ -403,7 +415,7 @@ export async function requeue(
 
 // The whole-exchange removal (AC-6.4–6.7): "that exchange was a dead end —
 // kill it." One transaction stamps the turn and all its live member
-// messages deleted, drops the turn's and members' derived forms, and
+// messages deleted, drops the turn's and members' derivations, and
 // re-queues the containing chunk's summaries from the remaining live
 // members — or drops them when the chunk empties out (AC-6.6). The shared
 // machinery is the messages domain's cascade module (DD-8, one cascade,

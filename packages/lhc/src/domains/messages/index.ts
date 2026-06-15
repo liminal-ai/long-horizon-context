@@ -4,7 +4,7 @@ import {
   runWithThreadTouchSuppressed,
   type OperationContext,
 } from "../../shared/context.js";
-import type { FormKind, FormReportEntry, WorkHandler } from "../../shared/derivation.js";
+import type { DerivationType, DerivationReportEntry, WorkHandler } from "../../shared/derivation.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../shared/errors.js";
 import {
   enqueue,
@@ -19,14 +19,12 @@ import {
   resolveThreadRef,
   type ThreadRef,
 } from "../threads/index.js";
-import type { DerivedForm } from "../../shared/derivation.js";
-import {
-  findUnknownOutcomeCallSummary,
-  readMessageFormRow,
-  readMessageForms,
-  reportMessageForms,
-} from "./internal/forms.js";
+import type { Derivation, ResolvedSdkConfig } from "../../shared/derivation.js";
+import { truncateForFallback } from "../../shared/tool-result-rendering.js";
+import { estimateTokens } from "../../tech-utils/token-counting/index.js";
+import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
 import { messageWorkHandlers } from "./internal/handlers.js";
+export { cleanPrompt } from "./internal/smoothing.js";
 import { projectEvent } from "./internal/project.js";
 import {
   cascadeFromMessage,
@@ -45,7 +43,12 @@ import {
   readMutableMessage,
 } from "./internal/store.js";
 
-export type BlockType = "text" | "tool_call" | "tool_result";
+export type BlockType =
+  | "text"
+  | "tool_call"
+  | "tool_result"
+  | "model_change"
+  | "thinking_level_change";
 
 export interface Block {
   blockType: BlockType;
@@ -61,11 +64,11 @@ export interface MessageRecord {
   actor: string;
   harness: string;
   turnId?: string;
-  // The message's derived forms as stored (Epic 02 Story 2): present only
-  // for messages that are derivation sources — kinds with no derivable form
+  // The message's derived derivations as stored (Epic 02 Story 2): present only
+  // for messages that are derivation sources — kinds with no derivable derivation
   // carry no rows and no key (AC-2.7). Stored state returned verbatim,
   // never re-derived on read.
-  forms?: DerivedForm[];
+  derivations?: Derivation[];
   // The deleted-audit marker (Epic 04 AC-3.3): present (true) only on
   // deleted records, which only the includeDeleted listing and the show
   // read ever surface — a default list never carries the key.
@@ -119,80 +122,92 @@ export function createFromEvent(
 }
 
 // The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
-// call queues tool_call_summary (Epic 02 Story 2's additive extension), a
-// tool result queues tool_result_summary, nothing else queues anything —
+// result queues tool_result_summary, nothing else queues anything —
 // text, thinking, and note messages are not derivation sources (Epic 01
 // AC-2.8/TC-2.9; Epic 02 AC-2.2/AC-2.7). Cross-domain surface, called by
 // intake-stream inside the batch transaction for every recorded message, so
 // the item commits (or rolls back) with the batch.
 const MESSAGE_WORK_KINDS: Partial<Record<EventKind, WorkKind>> = {
   user_prompt: "prompt_smoothing",
-  tool_call: "tool_call_summary",
   tool_result: "tool_result_summary",
 };
 
-// Which derived form each message-owned kind produces — the owning domain's
-// knowledge, handed to the meaning-blind enqueue so the form's pending row
+// Which derived derivation each message-owned kind produces — the owning domain's
+// knowledge, handed to the meaning-blind enqueue so the derivation's pending row
 // rides the same transaction (DD-5).
-const MESSAGE_WORK_FORMS: Partial<Record<WorkKind, FormKind>> = {
+const MESSAGE_WORK_DERIVATIONS: Partial<Record<WorkKind, DerivationType>> = {
   prompt_smoothing: "smoothed_prompt",
-  tool_call_summary: "tool_call_summary",
   tool_result_summary: "tool_result_summary",
 };
 
+const DEFAULT_TOOL_RESULT_CONFIG: ResolvedSdkConfig["toolResult"] = {
+  smallTierTokens: 1000,
+  largeTierTokens: 5000,
+  smallTargetRatio: 0.15,
+  midTargetRatio: 0.04,
+};
+
+function writeLargeToolResultSummaryReady(
+  ctx: OperationContext,
+  messageId: string,
+  config: ResolvedSdkConfig["toolResult"],
+): boolean {
+  const row = ctx.db
+    .prepare(
+      `SELECT content FROM message_block
+       WHERE message_id = ? AND block_type = 'tool_result'
+       ORDER BY block_index LIMIT 1`,
+    )
+    .get(messageId) as { content: string } | undefined;
+  if (row === undefined) return false;
+  const block = JSON.parse(row.content) as Record<string, unknown>;
+  const content = block["content"];
+  if (typeof content !== "string") return false;
+  if (estimateTokens(content) <= config.largeTierTokens) return false;
+  const metadata = JSON.stringify({ outcome: block["isError"] === true ? "failed" : "succeeded" });
+  ctx.db
+    .prepare(
+      `INSERT INTO derivation
+         (subject_kind, subject_id, derivation_type, state, content, metadata, source_version, derived_at)
+       VALUES ('message', ?, 'tool_result_summary', 'ready', ?, ?, 1, ?)`,
+    )
+    .run(messageId, truncateForFallback(content), metadata, ctx.clock().toISOString());
+  return true;
+}
+
 // Message-owned work handlers, merged into the SDK's dispatch map at
-// construction (DD-6): prompt smoothing and the two tool-activity summaries.
+// construction (DD-6): prompt smoothing and tool-result summaries.
 export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> =
   messageWorkHandlers;
 
 export function queueMessageWork(
   ctx: OperationContext,
   message: MessageCreated,
+  toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
 ): WorkItemRecord[] {
   if (message === null) return [];
   const items: WorkItemRecord[] = [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
   if (kind !== undefined) {
-    const form = MESSAGE_WORK_FORMS[kind];
-    if (form === undefined) {
-      // Every queuing kind names its form above; a miss is a wiring bug.
-      throw new Error(`no derived form mapped for message work kind ${kind}`);
+    if (
+      message.kind === "tool_result" &&
+      writeLargeToolResultSummaryReady(ctx, message.messageId, toolResultConfig)
+    ) {
+      return items;
+    }
+    const derivation = MESSAGE_WORK_DERIVATIONS[kind];
+    if (derivation === undefined) {
+      // Every queuing kind names its derivation above; a miss is a wiring bug.
+      throw new Error(`no derived derivation mapped for message work kind ${kind}`);
     }
     items.push(
       enqueue(ctx, {
         owner: "messages",
         kind,
         sourceRef: { messageId: message.messageId },
-        forms: [{ subjectKind: "message", subjectId: message.messageId, form }],
+        derivations: [{ subjectKind: "message", subjectId: message.messageId, derivationType: derivation }],
       }),
     );
-  }
-  // Late-result repair (AC-2.8): a tool result landing after its call's
-  // summary already derived with outcome "unknown" means the summary's
-  // source — the call+result pair — completed underneath it; clear and
-  // regenerate at the next source version, in this same batch transaction.
-  // One indexed lookup; pending summaries (metadata NULL) never match, so
-  // the common call-and-result-in-one-batch case never triggers, and the
-  // version-scoped item id keeps the requeue idempotent.
-  if (message.kind === "tool_result" && message.toolCallId !== undefined) {
-    const stale = findUnknownOutcomeCallSummary(ctx.db, message.toolCallId);
-    if (stale !== undefined) {
-      items.push(
-        enqueue(ctx, {
-          owner: "messages",
-          kind: "tool_call_summary",
-          sourceRef: { messageId: stale.messageId },
-          sourceVersion: stale.sourceVersion + 1,
-          forms: [
-            {
-              subjectKind: "message",
-              subjectId: stale.messageId,
-              form: "tool_call_summary",
-            },
-          ],
-        }),
-      );
-    }
   }
   return items;
 }
@@ -281,19 +296,19 @@ async function listMessagesInner(
   const db = opened.value;
   try {
     // Bounds resolve the window first (AC-3.1 no-load-everything), then the
-    // form read-back rides only that window (AC-2.1): each record carries its
-    // stored derived forms, attached from one grouped query scoped to the
-    // listed ids — never every message-owned form in a large thread.
+    // derivation read-back rides only that window (AC-2.1): each record carries its
+    // stored derived derivations, attached from one grouped query scoped to the
+    // listed ids — never every message-owned derivation in a large thread.
     const records = readMessages(db, opts ?? {});
-    const formsByMessage = readMessageForms(
+    const derivationsByMessage = readMessageDerivations(
       db,
       records.map((record) => record.messageId),
     );
-    const withForms = records.map((record) => {
-      const forms = formsByMessage.get(record.messageId);
-      return forms === undefined ? record : { ...record, forms };
+    const withDerivations = records.map((record) => {
+      const derivations = derivationsByMessage.get(record.messageId);
+      return derivations === undefined ? record : { ...record, derivations };
     });
-    return { ok: true, value: withForms };
+    return { ok: true, value: withDerivations };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message read-back failed: ${reason}`);
@@ -304,15 +319,15 @@ async function listMessagesInner(
 
 // The single-message view (Epic 04 AC-3.2): the canonical record — every
 // block with complete content, full tool results, never the view-shortened
-// forms — plus the message's derivation forms with their states and
+// derivations — plus the message's derivation derivations with their states and
 // mechanically stamped metadata, joined from the owner's report read.
-export interface MessageDetail extends Omit<MessageRecord, "forms"> {
+export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
   // Always present and honest (AC-3.3): show on a deleted message returns
   // the record flagged — audit is the point — never a not-found.
   deleted: boolean;
   // The owner report's queue-joined entries (DD-2), never synthesized here:
-  // the same `reportMessageForms` read messages.report serves, scoped by id.
-  forms: FormReportEntry[];
+  // the same `reportMessageDerivations` read messages.report serves, scoped by id.
+  derivations: DerivationReportEntry[];
 }
 
 // Reads-only is structural (DD-6, SV-01-001), exactly as listMessages: the
@@ -351,8 +366,8 @@ async function showInner(
         },
       };
     }
-    const forms = reportMessageForms(db, { messageId });
-    return { ok: true, value: { ...record, forms } };
+    const derivations = reportMessageDerivations(db, { messageId });
+    return { ok: true, value: { ...record, derivations } };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message show failed: ${reason}`);
@@ -384,14 +399,14 @@ export async function listQueuedWork(
 
 // ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
 
-// This owner's repair report: every message-owned form's durable state
+// This owner's repair report: every message-owned derivation's durable state
 // joined with live queue detail in one query — the five operational
 // situations (waiting, retrying, ready, failed, blocked) read from the rows
 // without any queue API. Needs no provider; reads degrade, never block.
 export async function report(
   thread: ThreadRef,
   opts?: { notReady?: boolean; messageId?: string },
-): Promise<OpResult<FormReportEntry[]>> {
+): Promise<OpResult<DerivationReportEntry[]>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -401,7 +416,7 @@ export async function report(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    return { ok: true, value: reportMessageForms(db, opts ?? {}) };
+    return { ok: true, value: reportMessageDerivations(db, opts ?? {}) };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`report read failed: ${reason}`);
@@ -412,35 +427,34 @@ export async function report(
 
 export type RequeueOutcome = { workItemId: string } | { noop: "already_queued" };
 
-// Which work kind rebuilds each message-owned form — MESSAGE_WORK_FORMS
-// inverted; the requeue's join from the named form back to its queue site.
-const MESSAGE_FORM_KINDS: Partial<Record<FormKind, WorkKind>> = {
+// Which work kind rebuilds each message-owned derivation — MESSAGE_WORK_DERIVATIONS
+// inverted; the requeue's join from the named derivation back to its queue site.
+const MESSAGE_DERIVATION_KINDS: Partial<Record<DerivationType, WorkKind>> = {
   smoothed_prompt: "prompt_smoothing",
-  tool_call_summary: "tool_call_summary",
   tool_result_summary: "tool_result_summary",
 };
 
 // Explicit re-queue through the owning surface (AC-4.4): the public,
-// supported rebuild act. Refused for blocked forms with the form's stored
+// supported rebuild act. Refused for blocked derivations with the derivation's stored
 // damage reason (AC-4.6) and for missing rows; a no-op against work already
-// queued or in flight at the form's current source version (AC-4.5).
-// Otherwise the form clears to pending and re-enqueues at the next source
+// queued or in flight at the derivation's current source version (AC-4.5).
+// Otherwise the derivation clears to pending and re-enqueues at the next source
 // version — the same enqueue path intake uses, poke-on-commit included, so
 // background mode processes the repair with no further call. The no-op check
 // and the enqueue commit in one transaction (anti-shim: a split would
 // reintroduce the duplicate-work race).
 export async function requeue(
   thread: ThreadRef,
-  target: { messageId: string; form: FormKind },
+  target: { messageId: string; derivationType: DerivationType },
 ): Promise<OpResult<RequeueOutcome>> {
-  const kind = MESSAGE_FORM_KINDS[target.form];
+  const kind = MESSAGE_DERIVATION_KINDS[target.derivationType];
   if (kind === undefined) {
     return {
       ok: false,
       error: {
         errorClass: "caller_error",
         code: "message_not_found",
-        reason: `form ${target.form} is not message-owned; messages.requeue repairs smoothed_prompt, tool_call_summary, tool_result_summary`,
+        reason: `derivation ${target.derivationType} is not message-owned; messages.requeue repairs smoothed_prompt, tool_result_summary`,
       },
     };
   }
@@ -458,26 +472,26 @@ export async function requeue(
       .get() as { thread_id: string } | undefined;
     const threadId = meta?.thread_id ?? "";
     return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<RequeueOutcome> => {
-      const row = readMessageFormRow(ctx.db, target.messageId, target.form);
+      const row = readMessageDerivationRow(ctx.db, target.messageId, target.derivationType);
       if (row === undefined) {
         return {
           ok: false,
           error: {
             errorClass: "caller_error",
             code: "message_not_found",
-            reason: `no derived form ${target.form} exists for message ${target.messageId}`,
+            reason: `no derived derivation ${target.derivationType} exists for message ${target.messageId}`,
           },
         };
       }
       if (row.state === "blocked") {
-        // The refusal carries the form's stored reason — the damage named at
+        // The refusal carries the derivation's stored reason — the damage named at
         // blocking time, not a generic string (AC-4.6).
         return {
           ok: false,
           error: {
             errorClass: "state_corruption",
             code: "source_damaged",
-            reason: row.reason ?? `form ${target.form} for message ${target.messageId} is blocked`,
+            reason: row.reason ?? `derivation ${target.derivationType} for message ${target.messageId} is blocked`,
           },
         };
       }
@@ -490,7 +504,7 @@ export async function requeue(
         kind,
         sourceRef,
         sourceVersion: row.sourceVersion + 1,
-        forms: [{ subjectKind: "message", subjectId: target.messageId, form: target.form }],
+        derivations: [{ subjectKind: "message", subjectId: target.messageId, derivationType: target.derivationType }],
       });
       return { ok: true, value: { workItemId: item.workItemId } };
     });
@@ -505,7 +519,7 @@ export async function requeue(
 // ── mutations (Epic 02 Story 5, Flow 5) ──────────────────────────
 
 // The mutation result contract (tech design §Interfaces): what changed in
-// the record, which dependent forms cleared, which dropped (delete only),
+// the record, which dependent derivations cleared, which dropped (delete only),
 // what replacement work queued, and which still-queued old items the cascade
 // tidied away (issue 1). Shared by edit and the Story 6 deletes.
 export interface MutationResult {
@@ -603,7 +617,7 @@ export async function edit(
 
 // The record's removal mutation for one message (AC-6.1–6.3, 6.7):
 // projection-level delete — the deleted_at stamp plus the delete cascade
-// (own forms dropped, turn and chunk cleared and re-queued for minus-one
+// (own derivations dropped, turn and chunk cleared and re-queued for minus-one
 // composition) in one transaction. The source events are never touched;
 // event read-back keeps returning them (the audit surface). Validation
 // reads the same filtered view as edit, so a missing, deleted, or

@@ -22,6 +22,36 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
         blocks: [{ blockType: "text", content: { text: event.payload.text } }],
         tokenEstimate: estimateTokens(event.payload.text),
       };
+    case "model_change":
+      return {
+        blocks: [
+          {
+            blockType: "model_change",
+            content: {
+              previousModel: event.payload.previousModel,
+              newModel: event.payload.newModel,
+            },
+          },
+        ],
+        tokenEstimate: estimateTokens(
+          `${event.payload.previousModel} ${event.payload.newModel}`,
+        ),
+      };
+    case "thinking_level_change":
+      return {
+        blocks: [
+          {
+            blockType: "thinking_level_change",
+            content: {
+              previousLevel: event.payload.previousLevel,
+              newLevel: event.payload.newLevel,
+            },
+          },
+        ],
+        tokenEstimate: estimateTokens(
+          `${event.payload.previousLevel} ${event.payload.newLevel}`,
+        ),
+      };
     case "tool_call":
       return {
         blocks: [

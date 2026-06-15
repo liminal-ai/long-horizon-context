@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   estimateTokens,
-  type FormReportEntry,
+  type DerivationReportEntry,
   type HealthReport,
   type MutationResult,
   type OpResult,
@@ -75,15 +75,15 @@ function measured(messages: readonly ViewMessage[]): number {
 function clearedKeys(...mutations: MutationResult[]): string[] {
   return mutations
     .flatMap((mutation) => mutation.cleared)
-    .map((target) => `${target.subjectKind}:${target.subjectId}:${target.form}`)
+    .map((target) => `${target.subjectKind}:${target.subjectId}:${target.derivationType}`)
     .sort();
 }
 
-function pendingKeys(...reports: Array<readonly FormReportEntry[]>): string[] {
+function pendingKeys(...reports: Array<readonly DerivationReportEntry[]>): string[] {
   return reports
     .flat()
     .filter((entry) => entry.state === "pending")
-    .map((entry) => `${entry.subjectKind}:${entry.subjectId}:${entry.form}`)
+    .map((entry) => `${entry.subjectKind}:${entry.subjectId}:${entry.derivationType}`)
     .sort();
 }
 
@@ -175,7 +175,7 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     const deleted = ok(mutate.delete);
     expect(edit.superseded).toEqual([]);
     expect(deleted.superseded).toEqual([]);
-    // The deleted assistant_text owns no derived forms: its cascade clears
+    // The deleted assistant_text owns no derived derivations: its cascade clears
     // sibling turn forms only.
     expect(deleted.dropped).toEqual([]);
 

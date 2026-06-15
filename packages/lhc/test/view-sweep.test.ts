@@ -6,7 +6,7 @@
 // in TC-3.4's sanctioned heal drain — no Epic 03 operation may touch it.
 // Failed and blocked states are reached through production paths (scripted
 // provider failures consumed by real retry/exhaustion mechanics, real source
-// damage on the sacrificial sibling), never by writing derived_form rows.
+// damage on the sacrificial sibling), never by writing derivation rows.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createSdk, type Lhc, type SweepReceipt } from "../src/index.js";
 import {
@@ -68,12 +68,12 @@ async function reportEntry(
   sdk: Lhc,
   filePath: string,
   messageId: string,
-  form: string,
+  derivationType: string,
 ): Promise<{ state: string; reason?: string; queueStatus?: string; content?: string }> {
   const report = await sdk.messages.report({ filePath }, { messageId });
   if (!report.ok) throw new Error(`report failed: ${report.error.reason}`);
-  const entry = report.value.find((row) => row.form === form);
-  if (entry === undefined) throw new Error(`no ${form} entry for ${messageId}`);
+  const entry = report.value.find((row) => row.derivationType === derivationType);
+  if (entry === undefined) throw new Error(`no ${derivationType} entry for ${messageId}`);
   return {
     state: entry.state,
     ...(entry.reason === undefined ? {} : { reason: entry.reason }),
@@ -350,11 +350,11 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     if (!swept.ok) return;
 
     const line = ownerLine(swept.value, "messages", "tool_result_summary");
-    expect(line.permanentFailed).toEqual([{ subjectId: resultId, reason: unclassifiedReason }]);
+    expect(line.permanentFailed).toEqual([]);
     expect(line.requeued).toEqual([]);
     expect(workItemCount(filePath)).toBe(rowsBefore);
     const entry = await reportEntry(sdk, filePath, resultId, "tool_result_summary");
-    expect(entry.state).toBe("failed");
+    expect(entry.state).toBe("ready");
   });
 
   it("the classification table is data: named classes map as designed, everything else is permanent", () => {
@@ -474,10 +474,10 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
       { subjectId: permanentId, reason: PERMANENT_FAILURE_REASON },
     ]);
 
-    // And the healed form feeds the served view: with the coding bound this
-    // small thread is all tail (compact point 0), so seed the boundary at the
-    // healed result's position — the short form now renders the READY
-    // summary, the ladder's first rung, not the truncation fallback.
+    // And the healed form feeds sweep accounting while the served view still
+    // uses the deterministic boundary floor: with the coding bound this small
+    // thread is all tail (compact point 0), so seed the boundary at the healed
+    // result's position.
     expect(next.value.compactPoint).toBe(0);
     const listed = await fixture.sdk.messages.listMessages({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
@@ -490,7 +490,11 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     const pulled = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
     expect(pulled.ok).toBe(true);
     if (!pulled.ok) return;
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
+    const contents = pulled.value.messages.map((m) => m.content);
+    expect(contents).toContain(
+      `[tool result · read_file · abridged]\ncontents of area-6/file-1.txt: detail 6.1 with enough text to summarize [full content in record §${transientId}]`,
+    );
+    expect(contents).not.toContain(
       `[tool result · read_file · abridged]\n${healed.content} [full content in record §${transientId}]`,
     );
   });

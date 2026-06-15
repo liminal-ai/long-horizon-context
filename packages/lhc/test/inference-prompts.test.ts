@@ -1,4 +1,4 @@
-// Epic 05 Story 3 — TC-2.2 (AC-2.2, AC-2.3): the seven LHC-owned prompt
+// Epic 05 Story 3 — TC-2.2 (AC-2.2, AC-2.3): the LHC-owned prompt
 // templates. Goldens pin each template's rendered messages for a fixture
 // input (prompt/fixture drift is an architecture risk: a provider call could
 // succeed while a prompt silently loses required input fields); registry
@@ -19,7 +19,7 @@ import type { ModelCallInput, ResolvedInferenceConfig } from "../src/inference/t
 import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   recordingCall,
   validAssignments,
 } from "./fixtures/index.js";
@@ -38,17 +38,15 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     input: { text: "plz smooth this prmpt about src/app.ts line 42 thx" },
     embedded: ["src/app.ts line 42"],
   },
-  "tool-call-v1": {
+  "tool-result-v1": {
     input: {
       toolName: "read_file",
-      argsJson: '{"path":"notes/plan.md"}',
-      pairedResult: { content: "plan contents: ship story three", isError: false },
+      content: "contents of notes/plan.md: 3 open items",
+      outcome: "succeeded",
+      targetTokens: 120,
+      guidance: "Preserve paths and counts.",
     },
-    embedded: ['{"path":"notes/plan.md"}', "ship story three", "isError: false"],
-  },
-  "tool-result-v1": {
-    input: { toolName: "read_file", content: "contents of notes/plan.md: 3 open items" },
-    embedded: ["contents of notes/plan.md: 3 open items"],
+    embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120"],
   },
   "turn-compose-v1": {
     input: {
@@ -122,7 +120,7 @@ function userContent(input: ModelCallInput): string {
 }
 
 describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
-  for (const kind of FORM_KINDS) {
+  for (const kind of DERIVATION_TYPES) {
     const name = DEFAULT_PROMPT_NAMES[kind];
     it(`${name} renders its fixture input to the committed golden`, () => {
       const fixture = PROMPT_FIXTURES[name];
@@ -153,23 +151,23 @@ describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
 describe("TC-2.2: registry completeness (AC-2.3)", () => {
   it("every registry key resolves to a template carrying that exact name", () => {
     const names = Object.keys(PROMPT_REGISTRY);
-    expect(names.length).toBeGreaterThanOrEqual(7);
+    expect(names.length).toBeGreaterThanOrEqual(6);
     for (const name of names) {
       expect(PROMPT_REGISTRY[name]?.name).toBe(name);
       expect(typeof PROMPT_REGISTRY[name]?.render).toBe("function");
     }
   });
 
-  it("default names cover all seven kinds and each resolves in the registry", () => {
+  it("default names cover all derivation kinds and each resolves in the registry", () => {
     const defaultNames = new Set<string>();
-    for (const kind of FORM_KINDS) {
+    for (const kind of DERIVATION_TYPES) {
       const name = DEFAULT_PROMPT_NAMES[kind];
       expect(typeof name).toBe("string");
       expect(PROMPT_REGISTRY[name]).toBeDefined();
       defaultNames.add(name);
     }
-    // Seven kinds, seven distinct templates — no kind shares another's prompt.
-    expect(defaultNames.size).toBe(7);
+    // One distinct template per derivation kind — no kind shares another's prompt.
+    expect(defaultNames.size).toBe(DERIVATION_TYPES.length);
   });
 });
 

@@ -105,7 +105,7 @@ async function observableState(filePath: string): Promise<Record<string, unknown
     messageWork: await messages.listQueuedWork({ filePath }),
     turnWork: await turns.listQueuedWork({ filePath }),
     viewStatus: await threadView.status({ filePath }),
-    forms: readDerivedForms(filePath),
+    derivations: readDerivedForms(filePath),
   };
 }
 
@@ -194,9 +194,9 @@ describe("TC-3.2 / AC-3.2: show returns the full record with owner-reported form
     expect(detail.blocks[0]?.content["content"]).toBe(TOOL_RESULT_CONTENT);
     expect(detail.blocks[0]?.content["toolCallId"]).toBe("call-read-1");
     // Forms with states and tool-outcome metadata, joined from the owner.
-    expect(detail.forms).toHaveLength(1);
-    const summary = detail.forms[0];
-    expect(summary?.form).toBe("tool_result_summary");
+    expect(detail.derivations).toHaveLength(1);
+    const summary = detail.derivations[0];
+    expect(summary?.derivationType).toBe("tool_result_summary");
     expect(summary?.state).toBe("ready");
     expect(summary?.content).toBeDefined();
     expect(summary?.metadata?.outcome).toBe("succeeded");
@@ -205,7 +205,7 @@ describe("TC-3.2 / AC-3.2: show returns the full record with owner-reported form
     const report = await messages.report({ filePath }, { messageId: "m4" });
     expect(report.ok).toBe(true);
     if (!report.ok) return;
-    expect(detail.forms).toEqual(report.value);
+    expect(detail.derivations).toEqual(report.value);
   });
 
   it("a drained prompt shows its smoothing form alongside the full record", async () => {
@@ -214,7 +214,7 @@ describe("TC-3.2 / AC-3.2: show returns the full record with owner-reported form
     expect(shown.ok).toBe(true);
     if (!shown.ok) return;
     expect(shown.value.blocks[0]?.content["text"]).toBe("please read notes.txt");
-    expect(shown.value.forms.map((form) => [form.form, form.state])).toEqual([
+    expect(shown.value.derivations.map((form) => [form.derivationType, form.state])).toEqual([
       ["smoothed_prompt", "ready"],
     ]);
   });
@@ -321,10 +321,10 @@ function rawWorkAndForms(filePath: string): Record<string, unknown> {
       workItems: db
         .prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`)
         .all(),
-      forms: db
+      derivations: db
         .prepare(
-          `SELECT subject_id, form, state, source_version FROM derived_form
-           ORDER BY subject_id, form`,
+          `SELECT subject_id, derivation_type, state, source_version FROM derivation
+           ORDER BY subject_id, derivation_type`,
         )
         .all(),
     };
@@ -355,10 +355,10 @@ describe("architecture risk: background reads schedule no catch-up drain (DD-6, 
 
     // The reads ran against the live, undrained queue — the records carry
     // their pending forms — so this is no vacuous pass on an empty thread.
-    const listedForms = listed.value.flatMap((m) => m.forms ?? []);
+    const listedForms = listed.value.flatMap((m) => m.derivations ?? []);
     expect(listedForms.length).toBeGreaterThan(0);
     expect(listedForms.every((form) => form.state === "pending")).toBe(true);
-    expect(shown.value.forms.map((form) => form.state)).toEqual(["pending"]);
+    expect(shown.value.derivations.map((form) => form.state)).toEqual(["pending"]);
 
     // Give any wrongly-scheduled catch-up drain room to surface, then wait the
     // scheduler out before asserting nothing moved underneath the reads.

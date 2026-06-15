@@ -15,7 +15,6 @@ import type {
 
 export type DeterministicOpName =
   | "smoothPrompt"
-  | "summarizeToolCall"
   | "summarizeToolResult"
   | "composeTurnRendering"
   | "projectLowerBand"
@@ -24,7 +23,6 @@ export type DeterministicOpName =
 
 export const DETERMINISTIC_MARKERS: Record<DeterministicOpName, string> = {
   smoothPrompt: "smoothed",
-  summarizeToolCall: "toolcall",
   summarizeToolResult: "toolresult",
   composeTurnRendering: "rendering",
   projectLowerBand: "projection",
@@ -77,12 +75,13 @@ export function deterministicOutcomesSuffix(memberOutcomes?: ToolOutcome[][]): s
 export function createDeterministicProvider(): DerivationProvider {
   return {
     smoothPrompt: (i: { text: string }) => ok("smoothPrompt", i, i.text),
-    summarizeToolCall: (i: {
+    summarizeToolResult: (i: {
       toolName: string;
-      argsJson: string;
-      pairedResult?: { content: string; isError: boolean };
-    }) => ok("summarizeToolCall", i, `${i.toolName} ${i.argsJson}`),
-    summarizeToolResult: (i: { toolName: string; content: string }) =>
+      content: string;
+      outcome?: ToolOutcome;
+      targetTokens?: number;
+      guidance?: string;
+    }) =>
       ok("summarizeToolResult", i, i.content),
     composeTurnRendering: (i: { parts: RenderingPart[] }) =>
       ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),

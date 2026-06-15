@@ -4,7 +4,7 @@
 // reads (Spec Validation #2). Every thread shape falls out of this one
 // composition path: absent pieces normalize to zeros/nulls, no
 // shape-specific branch.
-import type { FormReportEntry } from "../../../shared/derivation.js";
+import type { DerivationReportEntry } from "../../../shared/derivation.js";
 import type { OpResult } from "../../../shared/errors.js";
 import type { InspectOverview } from "../../../shared/inspect.js";
 import * as intakeStream from "../../intake-stream/index.js";
@@ -18,7 +18,7 @@ import type { ThreadRef } from "../../threads/index.js";
 // reads (shared/derivation.ts): pending with attempts spent is retrying.
 // Unlike ViewStatus, overview counts ready too (AC-1.1).
 export function bucketEntries(
-  entries: readonly FormReportEntry[],
+  entries: readonly DerivationReportEntry[],
   counts: InspectOverview["derivation"],
 ): void {
   for (const entry of entries) {
@@ -103,7 +103,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   ).length;
 
   // Derivation counts across both owners' report surfaces (never a
-  // derived_form read), ready included.
+  // derivation read), ready included.
   const messageReport = await messages.report(ref);
   if (!messageReport.ok) return messageReport;
   const turnReport = await turns.report(ref);

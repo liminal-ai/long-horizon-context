@@ -8,6 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   createCommitHooks,
   resolveInstancePoke,
+  resolveInstanceToolResultConfig,
   type OperationContext,
 } from "../../../shared/context.js";
 import { storageFailure, type ErrorResult, type OpResult } from "../../../shared/errors.js";
@@ -253,7 +254,7 @@ export async function runMessageEvents(
         // recorded: a skipped event never reaches this call, so it queues
         // nothing (AC-5.4), and the kind gate inside queueMessageWork
         // decides which messages are derivation sources (AC-2.8).
-        queuedItems.push(...queueMessageWork(ctx, created));
+        queuedItems.push(...queueMessageWork(ctx, created, resolveInstanceToolResultConfig()));
         const entry: BatchResult["events"][number] = {
           idempotencyKey: event.idempotencyKey,
           outcome: "recorded",

@@ -5,7 +5,7 @@
 // temp thread files; the provider double appears only in fixture setup —
 // degraded states are reached through production paths (scripted provider
 // exhaustion at build, edit-cascade pending clears), never by writing
-// derived_form directly.
+// derivation directly.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -79,8 +79,8 @@ function recordSnapshot(filePath: string): string {
       turns: db.prepare(`SELECT * FROM turns ORDER BY turn_order`).all(),
       chunks: db.prepare(`SELECT * FROM chunk ORDER BY chunk_order`).all(),
       members: db.prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`).all(),
-      forms: db
-        .prepare(`SELECT * FROM derived_form ORDER BY subject_kind, subject_id, form`)
+      derivations: db
+        .prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`)
         .all(),
     });
   } finally {
@@ -538,22 +538,22 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     const t8 = receipt.value.degraded.find((entry) => entry.subjectId === "t8");
     expect(t8).toBeDefined();
     expect(t8?.band).toBe("smooth");
-    expect(t8?.usedForm).toBe("message_excerpt");
+    expect(t8?.usedDerivation).toBe("message_excerpt");
 
-    // The failed chunk summary (c1's brief): the brief entry renders the
-    // truncated detailed summary, marked.
+    // The failed chunk summary (c1's brief): compact falls back through the
+    // turns surface to stored-member concatenation, marked.
     const c1 = receipt.value.degraded.find((entry) => entry.subjectId === "c1");
     expect(c1).toBeDefined();
     expect(c1?.band).toBe("brief");
-    expect(c1?.usedForm).toBe("chunk_summary_detailed_truncated");
+    expect(c1?.usedDerivation).toBe("stored_member_concat");
 
     // The unusable chunk (c2: summaries pending, zero ready member
-    // projections): an explicit gap entry with its reason — never absence.
-    expect(receipt.value.gaps).toHaveLength(1);
-    const gap = receipt.value.gaps[0];
-    expect(gap?.subjectId).toBe("c2");
-    expect(gap?.reason).toMatch(/no usable form/);
-    expect(gap?.reason).toContain("chunk_summary_detailed: pending");
+    // projections): Story 4 compact recovery uses stored-member concat, not
+    // a gap, so the span remains present.
+    expect(receipt.value.gaps).toHaveLength(0);
+    const c2 = receipt.value.degraded.find((entry) => entry.subjectId === "c2");
+    expect(c2).toBeDefined();
+    expect(c2?.usedDerivation).toBe("stored_member_concat");
 
     // Per-band counts present; no span silently absent: every turn in the
     // compacted range is accounted for by a band subject (c1: t1–t3, c2:
@@ -569,9 +569,10 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     const bandText = bandMessages(messages)
       .map((message) => message.content)
       .join("\n\n");
-    expect(bandText).toContain("[degraded: brief-from-detailed]");
+    expect(bandText).toContain("[degraded: brief-from-stored-members]");
+    expect(bandText).toContain("[degraded: detailed-from-stored-members]");
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
-    expect(bandText).toMatch(/§c2 \[chunk c2 unavailable: no usable form/);
+    expect(bandText).toContain("§c2 [degraded: detailed-from-stored-members]");
 
     // Zero provider calls: missing material degrades, it is never re-derived
     // inline (AC-2.4's no-inference rule with teeth).
@@ -583,8 +584,8 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     expect(status.value.view).not.toBeNull();
-    expect(status.value.view?.degraded).toBe(2);
-    expect(status.value.view?.gaps).toBe(1);
+    expect(status.value.view?.degraded).toBe(3);
+    expect(status.value.view?.gaps).toBe(0);
     expect(typeof status.value.view?.builtAt).toBe("string");
     // The edits' requeued rebuild work is visible as pending derivation.
     expect(status.value.derivation.pending).toBeGreaterThan(0);
@@ -720,8 +721,8 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     try {
       const row = db
         .prepare(
-          `SELECT content FROM derived_form
-           WHERE subject_kind = 'chunk' AND subject_id = 'c2' AND form = 'chunk_summary_detailed'`,
+          `SELECT content FROM derivation
+           WHERE subject_kind = 'chunk' AND subject_id = 'c2' AND derivation_type = 'chunk_summary_detailed'`,
         )
         .get() as { content: string | null } | undefined;
       expect(row?.content).toBeDefined();

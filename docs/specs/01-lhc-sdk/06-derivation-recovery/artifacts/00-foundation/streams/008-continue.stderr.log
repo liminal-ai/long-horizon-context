@@ -1,0 +1,8 @@
+2026-06-15T04:55:55.579100Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/test/logging-surface.test.ts:
+        ).run("turn", "t1", "ready", "turn content");
+
+        expect(() =>
+2026-06-15T04:57:53.624251Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/src/domains/turns/internal/derive.ts:
+  DependencyGap,
+  DerivationMetadata,
+  HandlerOutcome,

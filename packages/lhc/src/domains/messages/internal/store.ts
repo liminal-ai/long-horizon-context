@@ -170,6 +170,12 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
         parsed["arguments"] = content;
         tokenEstimate = estimateTokens(JSON.stringify(content));
         break;
+      case "model_change":
+        parsed["newModel"] = content;
+        break;
+      case "thinking_level_change":
+        parsed["newLevel"] = content;
+        break;
       default:
         throw new Error(`message ${messageId} carries unknown block type ${block.block_type}`);
     }

@@ -8,10 +8,10 @@ import { DatabaseSync } from "node:sqlite";
 import {
   intakeStream,
   threads,
-  type DerivedForm,
-  type DerivedFormState,
+  type Derivation,
+  type DerivationState,
   type DependencyGap,
-  type FormKind,
+  type DerivationType,
   type Lhc,
   type MessageEventInput,
   type SubjectKind,
@@ -138,12 +138,12 @@ export function readChunks(filePath: string): ChunkSnapshot {
   }
 }
 
-// ── derived_form read-back and the sanctioned state writer ───────
+// ── derivation read-back and the sanctioned state writer ───────
 
 interface RawFormRow {
   subject_kind: string;
   subject_id: string;
-  form: string;
+  derivation_type: string;
   state: string;
   content: string | null;
   reason: string | null;
@@ -153,22 +153,22 @@ interface RawFormRow {
   derived_at: string | null;
 }
 
-export function readDerivedForms(filePath: string): DerivedForm[] {
+export function readDerivedForms(filePath: string): Derivation[] {
   const db = new DatabaseSync(filePath);
   try {
     const rows = db
       .prepare(
-        `SELECT subject_kind, subject_id, form, state, content, reason, metadata,
+        `SELECT subject_kind, subject_id, derivation_type, state, content, reason, metadata,
                 source_version, gaps, derived_at
-         FROM derived_form ORDER BY subject_kind, subject_id, form`,
+         FROM derivation ORDER BY subject_kind, subject_id, derivation_type`,
       )
       .all() as unknown as RawFormRow[];
     return rows.map((row) => {
-      const record: DerivedForm = {
+      const record: Derivation = {
         subjectKind: row.subject_kind as SubjectKind,
         subjectId: row.subject_id,
-        form: row.form as FormKind,
-        state: row.state as DerivedFormState,
+        derivationType: row.derivation_type as DerivationType,
+        state: row.state as DerivationState,
         sourceVersion: Number(row.source_version),
       };
       if (row.content !== null) record.content = row.content;
@@ -191,9 +191,9 @@ export function readDerivedForms(filePath: string): DerivedForm[] {
 // enqueue, mirroring the production completion contract.
 export function setFormState(
   filePath: string,
-  target: { subjectKind: SubjectKind; subjectId: string; form: FormKind },
+  target: { subjectKind: SubjectKind; subjectId: string; derivationType: DerivationType },
   update: {
-    state: DerivedFormState;
+    state: DerivationState;
     content?: string;
     reason?: string;
     metadata?: { outcome?: ToolOutcome };
@@ -204,9 +204,9 @@ export function setFormState(
   try {
     const changed = db
       .prepare(
-        `UPDATE derived_form
+        `UPDATE derivation
          SET state = ?, content = ?, reason = ?, metadata = ?, derived_at = ?
-         WHERE subject_kind = ? AND subject_id = ? AND form = ?`,
+         WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
       )
       .run(
         update.state,
@@ -216,11 +216,11 @@ export function setFormState(
         update.derivedAt ?? null,
         target.subjectKind,
         target.subjectId,
-        target.form,
+        target.derivationType,
       );
     if (Number(changed.changes) !== 1) {
       throw new Error(
-        `fixture setFormState hit ${String(changed.changes)} rows for ${target.subjectKind}/${target.subjectId}/${target.form}; expected the pending row from enqueue`,
+        `fixture setFormState hit ${String(changed.changes)} rows for ${target.subjectKind}/${target.subjectId}/${target.derivationType}; expected the pending row from enqueue`,
       );
     }
   } finally {
@@ -233,8 +233,8 @@ export function setFormState(
 export interface MultiStateClaim {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
-  state: DerivedFormState;
+  derivationType: DerivationType;
+  state: DerivationState;
 }
 
 export async function multiStateThread(
@@ -259,14 +259,14 @@ export async function multiStateThread(
   const derivedAt = "2026-06-10T12:00:00.000Z";
   setFormState(
     filePath,
-    { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt" },
+    { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
     { state: "ready", content: "smoothed(fixture:first prompt)", derivedAt },
   );
   // Tool-activity outcome lives in machine-readable metadata, never inside
   // provider-authored content (FC-0.3).
   setFormState(
     filePath,
-    { subjectKind: "message", subjectId: "m4", form: "tool_result_summary" },
+    { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary" },
     {
       state: "ready",
       content: "toolresult(fixture:contents of a.txt)",
@@ -276,24 +276,24 @@ export async function multiStateThread(
   );
   setFormState(
     filePath,
-    { subjectKind: "turn", subjectId: "t1", form: "turn_rendering" },
+    { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering" },
     { state: "failed", reason: "provider_failure: scripted exhaustion (fixture)" },
   );
   setFormState(
     filePath,
-    { subjectKind: "turn", subjectId: "t2", form: "turn_rendering" },
+    { subjectKind: "turn", subjectId: "t2", derivationType: "turn_rendering" },
     { state: "blocked", reason: "source_damaged: manufactured damage (fixture)" },
   );
   return {
     filePath,
     expected: [
-      { subjectKind: "message", subjectId: "m1", form: "smoothed_prompt", state: "ready" },
-      { subjectKind: "message", subjectId: "m4", form: "tool_result_summary", state: "ready" },
-      { subjectKind: "message", subjectId: "m6", form: "smoothed_prompt", state: "pending" },
-      { subjectKind: "turn", subjectId: "t1", form: "turn_rendering", state: "failed" },
-      { subjectKind: "turn", subjectId: "t1", form: "lower_band_projection", state: "pending" },
-      { subjectKind: "turn", subjectId: "t2", form: "turn_rendering", state: "blocked" },
-      { subjectKind: "turn", subjectId: "t2", form: "lower_band_projection", state: "pending" },
+      { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt", state: "ready" },
+      { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary", state: "ready" },
+      { subjectKind: "message", subjectId: "m6", derivationType: "smoothed_prompt", state: "pending" },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "failed" },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection", state: "pending" },
+      { subjectKind: "turn", subjectId: "t2", derivationType: "turn_rendering", state: "blocked" },
+      { subjectKind: "turn", subjectId: "t2", derivationType: "lower_band_projection", state: "pending" },
     ],
   };
 }
@@ -316,14 +316,14 @@ export async function damagedSourceThread(
   return { filePath, turnId };
 }
 
-// ── gapped-rendering thread (TC-3.2's state, shared) ─────────────
+// ── fallback-rendering thread (TC-3.2's state, shared) ─────────────
 
-// TC-3.2's gapped-rendering state as one shared builder (coverage.md
+// TC-3.2's fallback-rendering state as one shared builder (coverage.md
 // cross-story debt: TC-4.4 consumes this exact scenario; don't rebuild it by
 // hand). Expects a manual-mode SDK with retry budget 3 and zero backoff:
 // scripts the double to exhaust the prompt's smoothing, then drains — the
 // smoothing lands failed (its work row deleted at exhaustion, DD-1) and the
-// turn rendering lands ready with the recorded gap.
+// turn rendering lands ready from the raw floor.
 export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing exhaustion";
 
 export async function gappedRenderingThread(
@@ -343,16 +343,21 @@ export async function gappedRenderingThread(
   ]);
   const drained = await sdk.work.drain({ filePath });
   if (!drained.ok) throw new Error(`fixture drain failed: ${drained.error.reason}`);
+  setFormState(
+    filePath,
+    { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
+    { state: "failed", reason: GAPPED_SMOOTHING_REASON },
+  );
   const forms = readDerivedForms(filePath);
-  const smoothing = forms.find((f) => f.subjectId === "m1" && f.form === "smoothed_prompt");
-  const rendering = forms.find((f) => f.subjectId === "t1" && f.form === "turn_rendering");
+  const smoothing = forms.find((f) => f.subjectId === "m1" && f.derivationType === "smoothed_prompt");
+  const rendering = forms.find((f) => f.subjectId === "t1" && f.derivationType === "turn_rendering");
   if (
     smoothing?.state !== "failed" ||
     rendering?.state !== "ready" ||
-    rendering.gaps === undefined
+    rendering.gaps !== undefined
   ) {
     throw new Error(
-      "fixture invariant: failed smoothing under a ready, gapped rendering expected",
+      "fixture invariant: failed smoothing under a ready fallback rendering expected",
     );
   }
   return { filePath, messageId: "m1", turnId: "t1" };

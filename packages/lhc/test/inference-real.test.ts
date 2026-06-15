@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type {
-  DerivedForm,
+  Derivation,
   HealthReport,
   MutationResult,
   OpResult,
@@ -29,7 +29,7 @@ import {
   DELETED_MESSAGE_TEXT,
   EDITED_MESSAGE_TEXT,
   emitRealSuiteAccounting,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   probeInput,
   readDerivedForms,
   realSuiteAccountingEmissions,
@@ -37,7 +37,7 @@ import {
   runLifecycle,
   tempStore,
   validAssignments,
-  type FormKind,
+  type DerivationType,
   type LifecycleRun,
   type RoutingRunResult,
   type TempStore,
@@ -68,8 +68,8 @@ function ok<T>(result: OpResult<T>): T {
 // All seven kinds assigned to the one real lane; prompt names stay the
 // registry defaults validAssignments already wires.
 function realAssignments(model: string): ReturnType<typeof validAssignments> {
-  const overrides: Partial<Record<FormKind, { provider: string; model: string }>> = {};
-  for (const kind of FORM_KINDS) {
+  const overrides: Partial<Record<DerivationType, { provider: string; model: string }>> = {};
+  for (const kind of DERIVATION_TYPES) {
     overrides[kind] = { provider: "openrouter", model };
   }
   return validAssignments(overrides);
@@ -151,9 +151,9 @@ describe.runIf(keyed)(
     );
 
     it("TC-4.1: each of the seven kinds round-tripped real inference to a ready form", () => {
-      for (const kind of FORM_KINDS) {
-        const ready = routing.forms.filter(
-          (form) => form.form === kind && form.state === "ready",
+      for (const kind of DERIVATION_TYPES) {
+        const ready = routing.derivations.filter(
+          (form) => form.derivationType === kind && form.state === "ready",
         );
         expect(ready.length).toBeGreaterThan(0);
         for (const form of ready) {
@@ -165,7 +165,7 @@ describe.runIf(keyed)(
           expect(form.metadata?.provenance).toEqual({
             provider: "openrouter",
             model: realModel,
-            prompt: assignments[form.form].prompt,
+            prompt: assignments[form.derivationType].prompt,
           });
         }
       }
@@ -178,8 +178,8 @@ describe.runIf(keyed)(
 describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real adapter", () => {
   let store: TempStore;
   let run: LifecycleRun;
-  let preEditForms: DerivedForm[] = [];
-  let finalForms: DerivedForm[] = [];
+  let preEditForms: Derivation[] = [];
+  let finalForms: Derivation[] = [];
 
   beforeAll(async () => {
     store = tempStore();
@@ -205,8 +205,8 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   });
 
   it("every derivation kind lands ready at least once with non-empty content", () => {
-    for (const kind of FORM_KINDS) {
-      const ready = finalForms.filter((form) => form.form === kind && form.state === "ready");
+    for (const kind of DERIVATION_TYPES) {
+      const ready = finalForms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) {
         expect((form.content ?? "").trim()).not.toBe("");
@@ -242,12 +242,12 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
       ...ok(run.phases.mutate.delete).cleared,
     ];
     expect(cleared.length).toBeGreaterThan(0);
-    const find = (forms: DerivedForm[], target: (typeof cleared)[number]): DerivedForm | undefined =>
-      forms.find(
+    const find = (derivations: Derivation[], target: (typeof cleared)[number]): Derivation | undefined =>
+      derivations.find(
         (form) =>
           form.subjectKind === target.subjectKind &&
           form.subjectId === target.subjectId &&
-          form.form === target.form,
+          form.derivationType === target.derivationType,
       );
     for (const target of cleared) {
       const before = find(preEditForms, target);

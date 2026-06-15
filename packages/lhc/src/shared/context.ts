@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
+import type { ResolvedSdkConfig } from "./derivation.js";
 import type { ResolvedViewConfig } from "./view.js";
 
 export interface OperationContext {
@@ -58,6 +59,7 @@ export interface InstanceSeam {
   // consuming site (thread-view), never here — shared/ may not import
   // domains/, and the defaults' one resolution path lives there.
   view?: ResolvedViewConfig;
+  toolResult?: ResolvedSdkConfig["toolResult"];
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
 
@@ -104,6 +106,12 @@ export function resolveInstancePoke(): (threadId: string) => void {
 // thread-view surface defaults those itself — see InstanceSeam.view).
 export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
   return seamStore.getStore()?.view;
+}
+
+export function resolveInstanceToolResultConfig():
+  | ResolvedSdkConfig["toolResult"]
+  | undefined {
+  return seamStore.getStore()?.toolResult;
 }
 
 // Reads-only operation scope (Epic 03 AC-1.1/AC-2.8): runs fn under the

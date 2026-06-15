@@ -182,7 +182,7 @@ export function legacyEpic01ThreadFile(filePath: string, threadId: string): void
     ).run();
 
     // Live queued items with Epic 01's unversioned ids — exactly what the
-    // F-02 backfill must cover with pending derived_form rows at version 1.
+    // F-02 backfill must cover with pending derivation rows at version 1.
     const insertItem = db.prepare(
       `INSERT INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at)
        VALUES (?, ?, ?, ?, 'queued', ?)`,
@@ -218,7 +218,7 @@ export function legacyEpic01ThreadFile(filePath: string, threadId: string): void
 
 // Builds a thread file with the accepted Epic 02 on-disk schema (v5):
 // the Epic 01 layout plus the production v5 statements — the queue's
-// mechanical columns, derived_form, the chunk tables, the deleted_at stamps,
+// mechanical columns, derivation, the chunk tables, the deleted_at stamps,
 // and the F-02 backfill — applied exactly as the v5 migration applies them,
 // stopping before v6. Current code can no longer create this shape
 // (migration v6 runs at every open), so the fixture stands in for a real

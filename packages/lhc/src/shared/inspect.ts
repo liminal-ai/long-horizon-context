@@ -54,7 +54,7 @@ export interface ViewContentsReport {
     entries: Array<{
       subjectKind: "chunk" | "turn";
       subjectId: string;
-      formUsed: string;
+      derivationUsed: string;
       degraded: boolean;
     }>;
     storedTokens: number;
@@ -71,7 +71,7 @@ export interface ViewContentsReport {
   // Provenance verbatim (AC-2.5); null on a never-compacted thread — no
   // compact ever recorded what it saw, and inventing zeros would fabricate
   // provenance (AC-2.4's view-null shape extends here).
-  sourceState: { maxEventOrder: number; formCounts: Record<string, number> } | null;
+  sourceState: { maxEventOrder: number; derivationCounts: Record<string, number> } | null;
 }
 
 export interface HealthReport {
@@ -94,7 +94,7 @@ export interface HealthReport {
     owner: string;
     subjectKind: string;
     subjectId: string;
-    form: string;
+    derivationType: string;
     reason: string;
     attempts: number;
     lastError?: string;
@@ -105,7 +105,7 @@ export interface HealthReport {
     owner: string;
     subjectKind: string;
     subjectId: string;
-    form: string;
+    derivationType: string;
   }>;
   // Live queue visibility from the owners' queue detail (AC-4.5), counted
   // per report entry so the section is consistent by construction with the

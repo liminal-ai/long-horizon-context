@@ -51,7 +51,7 @@ export function poisonMessageFormJson(path: string, messageId: string): void {
   const db = new DatabaseSync(path);
   try {
     db.prepare(
-      `UPDATE derived_form SET metadata = ?
+      `UPDATE derivation SET metadata = ?
        WHERE subject_kind = 'message' AND subject_id = ?`,
     ).run(NOT_JSON, messageId);
   } finally {

@@ -152,7 +152,7 @@ export async function drainOpenDb(
       const disposition = complete(
         db,
         item,
-        outcome.forms ?? [],
+        outcome.derivations ?? [],
         clock().toISOString(),
         outcome.onApplied,
       );

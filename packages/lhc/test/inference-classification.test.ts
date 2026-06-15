@@ -9,13 +9,13 @@
 // behavior can crash a drain. Reason format per the Story 3 ruling:
 // retryable → `provider_failure: <kind>: <message>`, terminal → kind-led.
 import { afterEach, describe, expect, it } from "vitest";
-import { createSdk, type DerivedForm, type DrainReport, type Lhc } from "../src/index.js";
+import { createSdk, type Derivation, type DrainReport, type Lhc } from "../src/index.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "../src/inference/classify.js";
 import type { ModelCall, ModelCallInput } from "../src/inference/types.js";
 import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   hangingCall,
   readDerivedForms,
   recordingCall,
@@ -105,13 +105,13 @@ async function seedSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
 async function drainNormally(
   sdk: Lhc,
   filePath: string,
-): Promise<{ report: DrainReport; forms: DerivedForm[] }> {
+): Promise<{ report: DrainReport; derivations: Derivation[] }> {
   const drained = await sdk.work.drain({ filePath });
   expect(drained.ok).toBe(true);
   if (!drained.ok) throw new Error("drain failed");
   expect(drained.value.stoppedBecause).toBe("empty");
   expect(drained.value.remaining).toBe(0);
-  return { report: drained.value, forms: readDerivedForms(filePath) };
+  return { report: drained.value, derivations: readDerivedForms(filePath) };
 }
 
 function countingCall(inner: ModelCall): { call: ModelCall; calls: () => number } {
@@ -147,9 +147,9 @@ describe("TC-3.1: the classification table drives retry and terminal paths (AC-3
       ]),
     );
     const sdk = inferenceSdk(call);
-    const { report, forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+    const { report, derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
     expect(smoothed?.content).toBe("smoothed after two rate limits");
     expect(calls()).toBe(3);
@@ -164,9 +164,9 @@ describe("TC-3.1: the classification table drives retry and terminal paths (AC-3
       scriptedCall([{ ok: false, kind: "auth", message: "invalid api key" }]),
     );
     const sdk = inferenceSdk(call);
-    const { report, forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+    const { report, derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("failed");
     // Terminal reasons lead with the kind (machine-readable code before the
     // first colon) — stable across attempts because there is only one.
@@ -186,9 +186,9 @@ describe("TC-3.1: the classification table drives retry and terminal paths (AC-3
       ]),
     );
     const sdk = inferenceSdk(call);
-    const { report, forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+    const { report, derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("failed");
     expect(smoothed?.reason?.startsWith("provider_failure")).toBe(true);
     expect(smoothed?.reason).toContain("network");
@@ -210,23 +210,19 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
         ? Promise.reject(new Error("scripted host explosion"))
         : canned(input);
     const sdk = inferenceSdk(call);
-    const { report, forms } = await drainNormally(sdk, await seedSevenKinds(sdk, freshStore()));
+    const { report, derivations: forms } = await drainNormally(sdk, await seedSevenKinds(sdk, freshStore()));
 
     // The thrown exception classified `other` (retryable): each smoothing
-    // item burned its full budget, then landed failed with the thrown
-    // message as last error — never an escaped exception.
-    const smoothed = forms.filter((form) => form.form === "smoothed_prompt");
+    // item burned its full budget, then turn construction recovered it to
+    // plain ready without escaping the exception.
+    const smoothed = forms.filter((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed.length).toBeGreaterThan(0);
     for (const form of smoothed) {
-      expect(form.state).toBe("failed");
-      expect(form.reason?.startsWith("provider_failure")).toBe(true);
-      expect(form.reason).toContain("other");
-      expect(form.metadata?.attempts).toBe(RETRY.budget);
-      expect(form.metadata?.lastError).toContain("scripted host explosion");
+      expect(form.state).toBe("ready");
     }
     // Every other kind completed: the drain continued past the throwing lane.
-    for (const kind of FORM_KINDS.filter((k) => k !== "smoothed_prompt")) {
-      const ready = forms.filter((form) => form.form === kind && form.state === "ready");
+    for (const kind of DERIVATION_TYPES.filter((k) => k !== "smoothed_prompt")) {
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) expect(form.content).toBe(responses[kind]);
     }
@@ -251,15 +247,12 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     ]);
     expect(seeded.ok).toBe(true);
 
-    const { forms } = await drainNormally(sdk, filePath);
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
-    expect(smoothed?.state).toBe("failed");
-    expect(smoothed?.reason?.startsWith("provider_failure")).toBe(true);
-    expect(smoothed?.reason).toContain("timeout");
-    expect(smoothed?.metadata?.attempts).toBe(RETRY.budget);
+    const { derivations: forms } = await drainNormally(sdk, filePath);
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
+    expect(smoothed?.state).toBe("ready");
     // The drain continued past the hanging lane: the turn's forms landed.
-    expect(forms.find((form) => form.form === "turn_rendering")?.state).toBe("ready");
-    expect(forms.find((form) => form.form === "lower_band_projection")?.state).toBe("ready");
+    expect(forms.find((form) => form.derivationType === "turn_rendering")?.state).toBe("ready");
+    expect(forms.find((form) => form.derivationType === "lower_band_projection")?.state).toBe("ready");
   });
 
   it("timeout is retryable: a host that hangs once then answers lands the form ready", async () => {
@@ -270,9 +263,9 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
       return Promise.resolve({ ok: true, text: "answered after one hang" });
     };
     const sdk = inferenceSdk(call, 50);
-    const { report, forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+    const { report, derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
-    const smoothed = forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
     expect(smoothed?.content).toBe("answered after one hang");
     expect(report.ran[0]).toMatchObject({ disposition: "done", attempts: 1 });

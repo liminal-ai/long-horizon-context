@@ -1,8 +1,8 @@
 // Health composition (Flow 4): owners' report surfaces joined into state
 // counts, actionable failure detail, a repair preview, and live queue
-// visibility. Message/turn derivation health comes from FormReportEntry rows;
+// visibility. Message/turn derivation health comes from DerivationReportEntry rows;
 // capture gaps come from durable source-event markers recorded by capture.
-import type { FormReportEntry } from "../../../shared/derivation.js";
+import type { DerivationReportEntry } from "../../../shared/derivation.js";
 import type { OpResult } from "../../../shared/errors.js";
 import type { HealthReport } from "../../../shared/inspect.js";
 import * as intakeStream from "../../intake-stream/index.js";
@@ -27,13 +27,13 @@ function captureGapText(event: intakeStream.EventRecord): string | null {
 // on the queue join. Never synthesized.
 function failureOf(
   owner: Owner,
-  entry: FormReportEntry,
+  entry: DerivationReportEntry,
 ): HealthReport["failures"][number] {
   const failure: HealthReport["failures"][number] = {
     owner,
     subjectKind: entry.subjectKind,
     subjectId: entry.subjectId,
-    form: entry.form,
+    derivationType: entry.derivationType,
     reason: entry.reason ?? "",
     attempts: entry.metadata?.attempts ?? entry.queue?.attempts ?? 0,
   };
@@ -50,7 +50,7 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
   const events = await intakeStream.listEvents(ref);
   if (!events.ok) return events;
 
-  const sources: ReadonlyArray<readonly [Owner, readonly FormReportEntry[]]> = [
+  const sources: ReadonlyArray<readonly [Owner, readonly DerivationReportEntry[]]> = [
     ["messages", messageReport.value],
     ["turns", turnReport.value],
   ];
@@ -74,7 +74,7 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
         owner: "capture",
         subjectKind: "event",
         subjectId: String(event.eventOrder),
-        form: "capture_gap",
+        derivationType: "capture_gap",
         reason: text,
         attempts: 0,
       });
@@ -83,10 +83,10 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
 
   for (const [owner, entries] of sources) {
     for (const entry of entries) {
-      const key = `${owner}:${entry.form}`;
+      const key = `${owner}:${entry.derivationType}`;
       let row = countsByOwnerKind.get(key);
       if (row === undefined) {
-        row = { owner, kind: entry.form, counts: emptyCounts() };
+        row = { owner, kind: entry.derivationType, counts: emptyCounts() };
         countsByOwnerKind.set(key, row);
       }
       switch (entry.state) {
@@ -106,7 +106,7 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
             owner,
             subjectKind: entry.subjectKind,
             subjectId: entry.subjectId,
-            form: entry.form,
+            derivationType: entry.derivationType,
           });
           break;
         case "blocked":

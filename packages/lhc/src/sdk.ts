@@ -1,9 +1,11 @@
+import { existsSync } from "node:fs";
 export * as threads from "./domains/threads/index.js";
 export * as intakeStream from "./domains/intake-stream/index.js";
 export * as messages from "./domains/messages/index.js";
 export * as turns from "./domains/turns/index.js";
 export * as threadView from "./domains/thread-view/index.js";
 export * as inspect from "./domains/inspect/index.js";
+export * as logging from "./tech-utils/logging/index.js";
 
 import * as inspectDomain from "./domains/inspect/index.js";
 import * as intakeStreamDomain from "./domains/intake-stream/index.js";
@@ -12,6 +14,7 @@ import { resolveViewConfig } from "./domains/thread-view/index.js";
 import * as messagesDomain from "./domains/messages/index.js";
 import * as threadsDomain from "./domains/threads/index.js";
 import * as turnsDomain from "./domains/turns/index.js";
+import * as loggingDomain from "./tech-utils/logging/index.js";
 import {
   createScheduler,
   peekThreadId,
@@ -30,15 +33,16 @@ import { createInferenceProvider } from "./inference/adapter.js";
 import { PROMPT_REGISTRY } from "./inference/prompts/index.js";
 import type { InferenceConfig, ModelAssignment } from "./inference/types.js";
 import {
-  FORM_KINDS,
+  DERIVATION_TYPES,
   PROVIDER_OPERATIONS,
   type DerivationProvider,
-  type FormKind,
+  type DerivationType,
   type ResolvedSdkConfig,
   type SdkConfig,
   type WorkHandler,
 } from "./shared/derivation.js";
 import type { ErrorResult, OpResult } from "./shared/errors.js";
+import { storageFailure } from "./shared/errors.js";
 import type {
   CompactReceipt,
   PullResult,
@@ -87,12 +91,12 @@ export type {
   CompletionTx,
   DependencyGap,
   DerivationProvider,
-  DerivedForm,
-  DerivedFormMetadata,
-  DerivedFormState,
-  FormKind,
-  FormReportEntry,
-  HandlerFormWrite,
+  Derivation,
+  DerivationMetadata,
+  DerivationState,
+  DerivationType,
+  DerivationReportEntry,
+  HandlerDerivationWrite,
   HandlerOutcome,
   HandlerRunContext,
   ProviderResult,
@@ -117,7 +121,7 @@ export type {
   ModelCallInput,
   ModelCallResult,
 } from "./inference/types.js";
-export { FORM_KINDS, type ProviderProvenance } from "./shared/derivation.js";
+export { DERIVATION_TYPES, type ProviderProvenance } from "./shared/derivation.js";
 
 // The config-selectable prompt-name catalog (E05-NB-2): the full set of names
 // a per-kind assignment may select, and the default name per kind. Exposed so
@@ -157,10 +161,19 @@ export {
   queueDetail,
   supersedeQueued,
   type ClaimedWorkItem,
-  type EnqueueFormTarget,
+  type EnqueueDerivationTarget,
   type EnqueueInput,
   type QueueDetailRow,
 } from "./tech-utils/work-queue/index.js";
+
+export {
+  queryLog,
+  writeLog,
+  type LogEntry,
+  type LogQuery,
+  type LogLevel,
+  type StoredLogEntry,
+} from "./tech-utils/logging/index.js";
 
 // Epic 04 inspect vocabulary (shared/inspect.ts): the report shapes the
 // inspect surface serves.
@@ -251,13 +264,24 @@ export interface ThreadViewSurface {
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   compact(
     ref: threadsDomain.ThreadRef,
-    opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean },
+    opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
   ): Promise<OpResult<CompactReceipt>>;
   sweep(ref: threadsDomain.ThreadRef): Promise<OpResult<SweepReceipt>>;
   materialize(
     ref: threadsDomain.ThreadRef,
     opts: { path: string; format?: "pi-session" },
   ): Promise<OpResult<{ writtenPath: string }>>;
+}
+
+export interface LoggingSurface {
+  write(
+    ref: threadsDomain.ThreadRef,
+    entry: loggingDomain.LogEntry,
+  ): Promise<OpResult<void>>;
+  query(
+    ref: threadsDomain.ThreadRef,
+    q: loggingDomain.LogQuery,
+  ): Promise<OpResult<loggingDomain.StoredLogEntry[]>>;
 }
 
 export interface Lhc {
@@ -270,6 +294,7 @@ export interface Lhc {
   // like every other namespace so the status read it composes resolves THIS
   // SDK's view config (threshold, visibility budgets).
   inspect: typeof inspectDomain;
+  logging: LoggingSurface;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
   workHandlers: WorkHandlerMap;
@@ -314,7 +339,7 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
 
 // Resolve the `inference` construction path (Epic 05 Flow 1, DD-5): validate
 // the host function and the complete assignment map loudly — all seven kinds
-// present (iterating the exported FORM_KINDS set, never a second literal
+// present (iterating the exported DERIVATION_TYPES set, never a second literal
 // list), no unknown kind keys, every prompt name in the registry, non-empty
 // provider/model routing keys — then build the adapter into the same
 // DerivationProvider slot direct injection uses. No partial construction:
@@ -327,7 +352,7 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
   if (assignments === null || typeof assignments !== "object") {
     throw new TypeError("createSdk config: inference.assignments must be an object");
   }
-  const knownKinds = new Set<string>(FORM_KINDS);
+  const knownKinds = new Set<string>(DERIVATION_TYPES);
   for (const key of Object.keys(assignments)) {
     if (!knownKinds.has(key)) {
       throw new TypeError(
@@ -335,8 +360,8 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
       );
     }
   }
-  const map = assignments as Partial<Record<FormKind, ModelAssignment>>;
-  for (const kind of FORM_KINDS) {
+  const map = assignments as Partial<Record<DerivationType, ModelAssignment>>;
+  for (const kind of DERIVATION_TYPES) {
     const assignment = map[kind];
     if (assignment === undefined || assignment === null || typeof assignment !== "object") {
       throw new TypeError(`createSdk config: inference.assignments missing kind ${kind}`);
@@ -361,7 +386,7 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
   requirePositive(maxInputChars, "inference.maxInputChars");
   return createInferenceProvider({
     call: inference.call,
-    assignments: map as Record<FormKind, ModelAssignment>,
+    assignments: map as Record<DerivationType, ModelAssignment>,
     timeoutMs,
     maxInputChars,
   });
@@ -407,6 +432,13 @@ export function createSdk(config: SdkConfig): Lhc {
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
+    smoothing: config.smoothing ?? { maxInferenceTokens: 4000 },
+    toolResult: config.toolResult ?? {
+      smallTierTokens: 1000,
+      largeTierTokens: 5000,
+      smallTargetRatio: 0.15,
+      midTargetRatio: 0.04,
+    },
     lease: config.lease ?? { durationMs: 120000 },
     chunkPolicy:
       config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
@@ -420,6 +452,16 @@ export function createSdk(config: SdkConfig): Lhc {
   if (resolved.retry.backoffCapMs < resolved.retry.backoffBaseMs) {
     throw new TypeError("createSdk config: retry.backoffCapMs must be >= retry.backoffBaseMs");
   }
+  requirePositive(resolved.smoothing.maxInferenceTokens, "smoothing.maxInferenceTokens");
+  requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
+  requirePositive(resolved.toolResult.largeTierTokens, "toolResult.largeTierTokens");
+  if (resolved.toolResult.largeTierTokens < resolved.toolResult.smallTierTokens) {
+    throw new TypeError(
+      "createSdk config: toolResult.largeTierTokens must be >= smallTierTokens",
+    );
+  }
+  requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");
+  requirePositive(resolved.toolResult.midTargetRatio, "toolResult.midTargetRatio");
   requirePositive(resolved.lease.durationMs, "lease.durationMs");
   requirePositive(resolved.chunkPolicy.targetProjectedTokens, "chunkPolicy.targetProjectedTokens");
   if (resolved.chunkPolicy.maxProjectedTokens < resolved.chunkPolicy.targetProjectedTokens) {
@@ -460,8 +502,9 @@ export function createSdk(config: SdkConfig): Lhc {
           poke: (threadId) => scheduler.poke(threadId),
           touch: (filePath, db) => scheduler.touch(filePath, db),
           view: resolved.view,
+          toolResult: resolved.toolResult,
         }
-      : { poke: () => {}, touch: () => {}, view: resolved.view };
+      : { poke: () => {}, touch: () => {}, view: resolved.view, toolResult: resolved.toolResult };
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the
@@ -483,6 +526,73 @@ export function createSdk(config: SdkConfig): Lhc {
       }),
   };
 
+  const logging: LoggingSurface = {
+    write: (ref, entry) =>
+      runWithInstanceSeam(seam, async () => {
+        const resolvedRef = await threadsDomain.resolveThreadRef(ref);
+        if (!resolvedRef.ok) return resolvedRef;
+        const { filePath } = resolvedRef.value;
+        if (!existsSync(filePath)) {
+          return {
+            ok: false as const,
+            error: {
+              errorClass: "caller_error" as const,
+              code: "thread_not_found" as const,
+              reason: `no thread file exists at ${filePath}`,
+            },
+          };
+        }
+        const opened = threadsDomain.openThreadDatabase(filePath);
+        if (!opened.ok) return opened;
+        const db = opened.value;
+        try {
+          loggingDomain.writeLog(
+            {
+              db,
+              clock: resolved.clock,
+              threadId: peekThreadId(filePath) ?? "",
+              onCommit: () => {},
+              poke: () => {},
+            },
+            entry,
+          );
+          return { ok: true as const, value: undefined };
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : String(cause);
+          return storageFailure(`log write failed: ${reason}`);
+        } finally {
+          db.close();
+        }
+      }),
+    query: (ref, q) =>
+      runWithInstanceSeam(seam, async () => {
+        const resolvedRef = await threadsDomain.resolveThreadRef(ref);
+        if (!resolvedRef.ok) return resolvedRef;
+        const { filePath } = resolvedRef.value;
+        if (!existsSync(filePath)) {
+          return {
+            ok: false as const,
+            error: {
+              errorClass: "caller_error" as const,
+              code: "thread_not_found" as const,
+              reason: `no thread file exists at ${filePath}`,
+            },
+          };
+        }
+        const opened = threadsDomain.openThreadDatabase(filePath);
+        if (!opened.ok) return opened;
+        const db = opened.value;
+        try {
+          return { ok: true as const, value: loggingDomain.queryLog(db, q) };
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : String(cause);
+          return storageFailure(`log query failed: ${reason}`);
+        } finally {
+          db.close();
+        }
+      }),
+  };
+
   return {
     threads: threadsDomain,
     intakeStream: scopeSurface(intakeStreamDomain, seam),
@@ -500,6 +610,7 @@ export function createSdk(config: SdkConfig): Lhc {
       seam,
     ),
     inspect: scopeSurface(inspectDomain, seam),
+    logging,
     config: resolved,
     scheduler,
     workHandlers,

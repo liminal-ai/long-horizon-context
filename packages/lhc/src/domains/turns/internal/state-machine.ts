@@ -27,6 +27,8 @@ export function transition(state: TurnState, eventKind: EventKind): TurnEffect {
     case "assistant_text":
     case "assistant_thinking":
     case "runtime_note":
+    case "model_change":
+    case "thinking_level_change":
     case "tool_call":
     case "tool_result":
       return { kind: "none" };

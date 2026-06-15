@@ -99,8 +99,8 @@ function rawDetail(filePath: string): ReturnType<typeof queueDetail> {
   }
 }
 
-function clearKey(entry: { subjectKind: string; subjectId: string; form: string }): string {
-  return `${entry.subjectKind}/${entry.subjectId}/${entry.form}`;
+function clearKey(entry: { subjectKind: string; subjectId: string; derivationType: string }): string {
+  return `${entry.subjectKind}/${entry.subjectId}/${entry.derivationType}`;
 }
 
 function unwrap<T>(result: OpResult<T>): T {
@@ -125,7 +125,7 @@ async function readyTurnThread(sdk: Lhc): Promise<string> {
 async function snapshot(filePath: string): Promise<unknown> {
   return {
     messages: unwrap(await messages.listMessages({ filePath })),
-    forms: readDerivedForms(filePath),
+    derivations: readDerivedForms(filePath),
     queue: rawDetail(filePath),
   };
 }
@@ -180,7 +180,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     // edited content.
     await drain(sdk, filePath);
     const smoothing = readDerivedForms(filePath).find(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing?.state).toBe("ready");
     expect(smoothing?.content).toBe(
@@ -205,7 +205,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
       "w-m1-prompt_smoothing-v2",
       JSON.stringify({ messageId: "m1" }),
       "2026-06-11T00:00:00.000Z",
-      JSON.stringify({ sourceVersion: 2, forms: [] }),
+      JSON.stringify({ sourceVersion: 2, derivations: [] }),
     );
     db.close();
 
@@ -359,7 +359,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     // And the drain rebuilds the whole chain from the second edit's content.
     await drain(sdk, filePath);
     const smoothing = readDerivedForms(filePath).find(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing?.state).toBe("ready");
     expect(smoothing?.content).toBe(
@@ -424,7 +424,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
     // Exactly one ready smoothing row, derived from the post-edit content at
     // the post-edit source version — regardless of completion order.
     const rows = readDerivedForms(filePath).filter(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ state: "ready", sourceVersion: 2 });
@@ -525,7 +525,7 @@ describe("background mode: edit-and-walk-away (production path)", () => {
     await sdk.drainSettled({ filePath });
 
     const smoothing = readDerivedForms(filePath).find(
-      (form) => form.subjectId === "m1" && form.form === "smoothed_prompt",
+      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing).toMatchObject({ state: "ready", sourceVersion: 2 });
     expect(smoothing?.content).toBe(

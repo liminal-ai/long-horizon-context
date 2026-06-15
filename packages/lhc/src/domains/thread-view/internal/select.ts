@@ -3,7 +3,7 @@
 // turns, rule-6 turnless stragglers — plus the coverage edge (covered_from)
 // and canonical-corruption detection. Two halves, deliberately split:
 //
-//   - readSelectionInputs: the record/forms reads, with the corruption check
+//   - readSelectionInputs: the record/derivation reads, with the corruption check
 //     IN the reads, before any transaction opens (story Technical Notes) —
 //     a refusal here means nothing was written, so the prior view is
 //     trivially intact (AC-2.5). Never moved inside the transaction.
@@ -25,7 +25,8 @@ import {
   resolveBriefRepresentation,
   resolveDetailedRepresentation,
   resolveSmoothRepresentation,
-  type FormSnapshot,
+  type DerivationSnapshot,
+  type CompactChunkMaterialSnapshot,
 } from "./render.js";
 
 // Canonical source state needed to identify or read the compacted span is
@@ -68,16 +69,17 @@ export interface SelectionInputs {
   messages: SelectionMessage[]; // live only, ascending order
   turns: SelectionTurn[]; // ascending turnOrder
   chunks: SelectionChunk[]; // ascending chunkOrder
-  forms: Map<string, FormSnapshot>; // `${subjectId}/${form}` (turn/chunk subjects)
+  derivations: Map<string, DerivationSnapshot>; // `${subjectId}/${derivationType}` (turn/chunk subjects)
+  compactChunkMaterials?: Map<string, CompactChunkMaterialSnapshot>;
   maxEventOrder: number;
-  formCounts: Record<string, Record<string, number>>; // form → state → count
+  derivationCounts: Record<string, Record<string, number>>; // derivation type → state → count
 }
 
 export interface ArrangementEntry {
   band: Band;
   subjectKind: "turn" | "chunk";
   subjectId: string;
-  formUsed: string;
+  derivationUsed: string;
   degraded: boolean;
   gap: boolean;
   reason?: string; // gap entries
@@ -225,36 +227,41 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
 
   const formRows = db
     .prepare(
-      `SELECT subject_id, form, state, content, reason FROM derived_form
+      `SELECT subject_id, derivation_type, state, content, reason FROM derivation
        WHERE subject_kind IN ('turn', 'chunk')`,
     )
     .all() as unknown as Array<{
     subject_id: string;
-    form: string;
+    derivation_type: string;
     state: string;
     content: string | null;
     reason: string | null;
   }>;
-  const forms = new Map<string, FormSnapshot>();
+  const derivations = new Map<string, DerivationSnapshot>();
   for (const row of formRows) {
-    const snapshot: FormSnapshot = { state: row.state as FormSnapshot["state"] };
+    const snapshot: DerivationSnapshot = { state: row.state as DerivationSnapshot["state"] };
     if (row.content !== null) snapshot.content = row.content;
     if (row.reason !== null) snapshot.reason = row.reason;
-    forms.set(`${row.subject_id}/${row.form}`, snapshot);
+    derivations.set(`${row.subject_id}/${row.derivation_type}`, snapshot);
   }
 
   const maxRow = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as {
     m: number | bigint;
   };
   const countRows = db
-    .prepare(`SELECT form, state, COUNT(*) AS n FROM derived_form GROUP BY form, state`)
-    .all() as unknown as Array<{ form: string; state: string; n: number | bigint }>;
-  const formCounts: Record<string, Record<string, number>> = {};
+    .prepare(
+      `SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state`,
+    )
+    .all() as unknown as Array<{ derivation_type: string; state: string; n: number | bigint }>;
+  const derivationCounts: Record<string, Record<string, number>> = {};
   for (const row of countRows) {
-    formCounts[row.form] = { ...formCounts[row.form], [row.state]: Number(row.n) };
+    derivationCounts[row.derivation_type] = {
+      ...derivationCounts[row.derivation_type],
+      [row.state]: Number(row.n),
+    };
   }
 
-  return { messages, turns, chunks, forms, maxEventOrder: Number(maxRow.m), formCounts };
+  return { messages, turns, chunks, derivations, maxEventOrder: Number(maxRow.m), derivationCounts };
 }
 
 // ── the pure walk ─────────────────────────────────────────────────
@@ -268,9 +275,14 @@ export function selectArrangement(
   inputs: SelectionInputs,
   config: SelectionConfig,
 ): SelectionResult {
-  const { messages, turns, chunks, forms } = inputs;
-  const lookup = (subjectId: string, form: string): FormSnapshot | undefined =>
-    forms.get(`${subjectId}/${form}`);
+  const { messages, turns, chunks, derivations } = inputs;
+  const lookup = (subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
+    derivations.get(`${subjectId}/${derivationType}`);
+  const chunkMaterial = (
+    chunkId: string,
+    derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
+  ): CompactChunkMaterialSnapshot | undefined =>
+    inputs.compactChunkMaterials?.get(`${chunkId}/${derivationType}`);
   const budget = (share: number): number => (config.lowerBound * share) / 100;
 
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
@@ -378,7 +390,7 @@ export function selectArrangement(
       band: "smooth",
       subjectKind: "turn",
       subjectId: turn.turnId,
-      formUsed: rep.formUsed,
+      derivationUsed: rep.derivationUsed,
       degraded: rep.degraded,
       gap: rep.gap,
       startOrder: turnStartOrder(turn),
@@ -390,15 +402,18 @@ export function selectArrangement(
   }
 
   function buildChunkEntry(chunk: SelectionChunk, band: "detailed" | "brief"): ArrangementEntry {
-    const memberProjections = chunk.memberTurnIds
-      .map((turnId) => lookup(turnId, "lower_band_projection"))
-      .filter((form): form is FormSnapshot & { content: string } => form?.state === "ready")
-      .map((form) => form.content ?? "")
-      .filter((content) => content.length > 0);
     const rep =
       band === "detailed"
-        ? resolveDetailedRepresentation(chunk.chunkId, lookup, memberProjections)
-        : resolveBriefRepresentation(chunk.chunkId, lookup);
+        ? resolveDetailedRepresentation(
+            chunk.chunkId,
+            lookup,
+            chunkMaterial(chunk.chunkId, "chunk_summary_detailed"),
+          )
+        : resolveBriefRepresentation(
+            chunk.chunkId,
+            lookup,
+            chunkMaterial(chunk.chunkId, "chunk_summary_brief"),
+          );
     const noteTexts = chunk.memberTurnIds.flatMap((turnId) =>
       (notesByTurn.get(turnId) ?? []).map((note) => note.text),
     );
@@ -411,7 +426,7 @@ export function selectArrangement(
       band,
       subjectKind: "chunk",
       subjectId: chunk.chunkId,
-      formUsed: rep.formUsed,
+      derivationUsed: rep.derivationUsed,
       degraded: rep.degraded,
       gap: rep.gap,
       startOrder: memberStarts.length === 0 ? compactPoint : Math.min(...memberStarts),

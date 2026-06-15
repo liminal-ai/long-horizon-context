@@ -2,10 +2,10 @@
 // band rows, absent ⇒ tail-only signal — and the record reads the tail
 // assembly needs (live messages after the compact point, their ready
 // tool-result summaries, the tail token sum). Story 2 adds the one writer:
-// the atomic replace at compact. Direct record/derived_form reads are
+// the atomic replace at compact. Direct record/derivation reads are
 // sanctioned for thread-view internals (tech design §System View — the
 // surface-import rule governs code imports, not SQL); what must NOT read
-// derived_form directly is the status's derivation counting, which goes
+// derivation directly is the status's derivation counting, which goes
 // through the owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { Band, StoredView } from "../../../shared/view.js";
@@ -272,8 +272,8 @@ export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): 
 export function readReadyToolResultSummaries(db: DatabaseSync): Map<string, string> {
   const rows = db
     .prepare(
-      `SELECT subject_id, content FROM derived_form
-       WHERE subject_kind = 'message' AND form = 'tool_result_summary'
+      `SELECT subject_id, content FROM derivation
+       WHERE subject_kind = 'message' AND derivation_type = 'tool_result_summary'
          AND state = 'ready' AND content IS NOT NULL`,
     )
     .all() as unknown as Array<{ subject_id: string; content: string }>;

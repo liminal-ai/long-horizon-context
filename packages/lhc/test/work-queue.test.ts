@@ -141,9 +141,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     expect(rawWorkItemCount(filePath)).toBe(2);
   });
 
-  // Epic 02 Story 2 (sanctioned amendment, test plan §Sanctioned Amendments):
-  // the kind gate now also queues tool_call → tool_call_summary; the inert
-  // kinds below stay inert.
+  // Tool calls render as recorded; only tool results queue summary work.
   it("TC-2.9: text, thinking, and note messages queue nothing — the kind gate is exact (AC-2.8)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
@@ -293,9 +291,7 @@ describe("architecture-risk: durability and rollback over the complete record su
       validEvent("turn_end"),
     ]);
     const before = await readBack(filePath);
-    // 3 message items since Epic 02 Story 2: tool_call queues its summary
-    // (sanctioned amendment — was 2).
-    expect(before.messageWork).toHaveLength(3);
+    expect(before.messageWork).toHaveLength(2);
     expect(before.turnWork).toHaveLength(1);
 
     // Every SDK operation opens and closes its own handle, so a fresh
@@ -308,7 +304,6 @@ describe("architecture-risk: durability and rollback over the complete record su
         .all() as unknown as Array<{ work_item_id: string; status: string }>;
       expect(rows).toEqual([
         { work_item_id: "w-m1-prompt_smoothing-v1", status: "queued" },
-        { work_item_id: "w-m2-tool_call_summary-v1", status: "queued" },
         { work_item_id: "w-m3-tool_result_summary-v1", status: "queued" },
         { work_item_id: "w-t1-turn_derivation-v1", status: "queued" },
       ]);
@@ -360,15 +355,15 @@ import {
   setIntakeWalkHook,
 } from "./fixtures/index.js";
 
-// Below-SDK read of derived_form rows — enqueue's pending rows are asserted
+// Below-SDK read of derivation rows — enqueue's pending rows are asserted
 // durably, not through the batch result.
 function rawFormRows(filePath: string): Array<{ key: string; state: string }> {
   const db = openRaw(filePath);
   try {
     return db
       .prepare(
-        `SELECT subject_kind || '/' || subject_id || '/' || form AS key, state
-         FROM derived_form ORDER BY key`,
+        `SELECT subject_kind || '/' || subject_id || '/' || derivation_type AS key, state
+         FROM derivation ORDER BY key`,
       )
       .all() as unknown as Array<{ key: string; state: string }>;
   } finally {
@@ -377,10 +372,9 @@ function rawFormRows(filePath: string): Array<{ key: string; state: string }> {
 }
 
 describe("FC-0.4: work-kind registry and handler-map assembly", () => {
-  it("the registry covers all six kinds with owner and sourceRef semantics per the Work Item contract", () => {
+  it("the registry covers all five kinds with owner and sourceRef semantics per the Work Item contract", () => {
     expect(WORK_KIND_REGISTRY).toEqual({
       prompt_smoothing: { owner: "messages", sourceRefKey: "messageId" },
-      tool_call_summary: { owner: "messages", sourceRefKey: "messageId" },
       tool_result_summary: { owner: "messages", sourceRefKey: "messageId" },
       turn_derivation: { owner: "turns", sourceRefKey: "turnId" },
       chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
@@ -398,7 +392,6 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
       "chunk_summary_brief",
       "chunk_summary_detailed",
       "prompt_smoothing",
-      "tool_call_summary",
       "tool_result_summary",
       "turn_derivation",
     ]);
@@ -503,7 +496,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
             owner: "turns",
             kind: "chunk_summary_brief",
             sourceRef: { chunkId: "c1" },
-            forms: [{ subjectKind: "chunk", subjectId: "c1", form: "chunk_summary_brief" }],
+            derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
           });
           throw new Error("induced rollback");
         }),
@@ -519,7 +512,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
           owner: "turns",
           kind: "chunk_summary_brief",
           sourceRef: { chunkId: "c1" },
-          forms: [{ subjectKind: "chunk", subjectId: "c1", form: "chunk_summary_brief" }],
+          derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
         });
         expect(pokes).toEqual([]); // not yet committed
         return record;
@@ -547,7 +540,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
           owner: "messages",
           kind: "prompt_smoothing",
           sourceRef: { messageId: "mx" },
-          forms: [{ subjectKind: "message", subjectId: "mx", form: "smoothed_prompt" }],
+          derivations: [{ subjectKind: "message", subjectId: "mx", derivationType: "smoothed_prompt" }],
         });
       });
       // Versioned ids let the replacement coexist with (not collide into)
@@ -558,7 +551,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
           kind: "prompt_smoothing",
           sourceRef: { messageId: "mx" },
           sourceVersion: 2,
-          forms: [{ subjectKind: "message", subjectId: "mx", form: "smoothed_prompt" }],
+          derivations: [{ subjectKind: "message", subjectId: "mx", derivationType: "smoothed_prompt" }],
         }),
       );
       expect(replacement.workItemId).toBe("w-mx-prompt_smoothing-v2");
@@ -567,7 +560,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
       expect(forms[0]).toMatchObject({
         subjectKind: "message",
         subjectId: "mx",
-        form: "smoothed_prompt",
+        derivationType: "smoothed_prompt",
         state: "pending",
         sourceVersion: 2,
       });

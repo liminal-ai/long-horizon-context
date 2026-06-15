@@ -102,8 +102,8 @@ function rawDetail(filePath: string): ReturnType<typeof queueDetail> {
   }
 }
 
-function clearKey(entry: { subjectKind: string; subjectId: string; form: string }): string {
-  return `${entry.subjectKind}/${entry.subjectId}/${entry.form}`;
+function clearKey(entry: { subjectKind: string; subjectId: string; derivationType: string }): string {
+  return `${entry.subjectKind}/${entry.subjectId}/${entry.derivationType}`;
 }
 
 function unwrap<T>(result: OpResult<T>): T {
@@ -119,7 +119,7 @@ async function snapshot(filePath: string): Promise<unknown> {
     turns: unwrap(await turns.listTurns({ filePath })),
     chunks: unwrap(await turns.listChunks({ filePath })),
     events: unwrap(await intakeStream.listEvents({ filePath })),
-    forms: readDerivedForms(filePath),
+    derivations: readDerivedForms(filePath),
     queue: rawDetail(filePath),
   };
 }
@@ -146,7 +146,6 @@ const PROJ = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
 function withScriptedProjections(base: DerivationProvider): DerivationProvider {
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
-    summarizeToolCall: (i) => base.summarizeToolCall(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
     projectLowerBand: (): Promise<ProviderResult> =>
@@ -232,16 +231,11 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // The subject's own forms drop; the chain above clears — and so does the
-    // deleted result's live pair counterpart (m2's tool_call_summary), per
-    // the pair-as-source ruling (epic-fix-001): deleting the result is a
-    // source change for the call's summary, which rebuilds outcome `unknown`.
-    // Nothing outside the dependency graph — m2's own turn/chunk are already
-    // t1/c1 — is named.
+    // The subject's own forms drop; the chain above clears. Tool calls render
+    // as recorded and have no summary row to clear or requeue.
     expect(result.value.dropped.map(clearKey)).toEqual(["message/m3/tool_result_summary"]);
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
-        "message/m2/tool_call_summary",
         "turn/t1/lower_band_projection",
         "turn/t1/turn_rendering",
         "chunk/c1/chunk_summary_brief",
@@ -251,7 +245,6 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     expect(result.value.queued.map((item) => item.workItemId).sort()).toEqual([
       "w-c1-chunk_summary_brief-v2",
       "w-c1-chunk_summary_detailed-v2",
-      "w-m2-tool_call_summary-v2",
       "w-t1-turn_derivation-v2",
     ]);
 
@@ -265,9 +258,7 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
       expect(form.sourceVersion).toBe(2);
     }
     // Everything else — m1's message form, t2's forms, chunk 2's summaries —
-    // deep-equals its pre-delete row, source version included. (m2's
-    // tool_call_summary is now in the cleared set above, so it is excluded
-    // here by construction.)
+    // deep-equals its pre-delete row, source version included.
     expect(after.filter((form) => !clearedSet.has(clearKey(form)))).toEqual(
       before.filter(
         (form) => !clearedSet.has(clearKey(form)) && form.subjectId !== "m3",
@@ -471,7 +462,7 @@ describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summar
     const chunks = unwrap(await turns.listChunks({ filePath }));
     const emptied = chunks.find((chunk) => chunk.chunkId === "c1");
     expect(emptied?.memberTurnIds).toEqual([]);
-    expect(emptied?.forms).toBeUndefined();
+    expect(emptied?.derivations).toBeUndefined();
     expect(unwrap(await turns.listTurns({ filePath })).map((turn) => turn.turnId)).toEqual([
       "t3",
     ]);

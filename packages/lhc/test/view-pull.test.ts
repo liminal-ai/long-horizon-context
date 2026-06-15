@@ -78,8 +78,10 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
           .prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`)
           .all() as unknown as Array<{ work_item_id: string; status: string; attempts: number | bigint }>
       ).map((row) => ({ id: row.work_item_id, status: row.status, attempts: Number(row.attempts) })),
-      forms: db
-        .prepare(`SELECT subject_id, form, state FROM derived_form ORDER BY subject_id, form`)
+      derivations: db
+        .prepare(
+          `SELECT subject_id, derivation_type, state FROM derivation ORDER BY subject_id, derivation_type`,
+        )
         .all(),
       viewRows: Number(
         (db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number | bigint }).n,
@@ -256,7 +258,7 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
 });
 
 describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-tool content full everywhere", () => {
-  it("renders the ready summary behind the boundary and full content ahead of it", async () => {
+  it("renders deterministic tool-result floors behind the boundary and full content ahead of it", async () => {
     const sdk = manualSdk();
     const filePath = await newThread(sdk);
     for (const turn of [1, 2]) {
@@ -289,8 +291,8 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     expect(results).toHaveLength(2);
     const [behind, ahead] = results;
     if (behind === undefined || ahead === undefined) return;
-    const behindSummary = behind.forms?.find(
-      (form) => form.form === "tool_result_summary" && form.state === "ready",
+    const behindSummary = behind.derivations?.find(
+      (form) => form.derivationType === "tool_result_summary" && form.state === "ready",
     );
     expect(behindSummary?.content).toBeDefined();
 
@@ -305,9 +307,13 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (!pull.ok) return;
     const contents = pull.value.messages.map((m) => m.content);
 
-    // Behind: short form — the ready summary verbatim, abridged marker,
-    // record pointer.
+    // Behind: deterministic short form, abridged marker, record pointer.
+    // Ready provider summaries remain stored derivations but are not rendered
+    // on the at-or-behind-boundary full-band surface.
     expect(contents).toContain(
+      `[tool result · read_file · abridged]\nboundary output 1 [full content in record §${behind.messageId}]`,
+    );
+    expect(contents).not.toContain(
       `[tool result · read_file · abridged]\n${behindSummary?.content} [full content in record §${behind.messageId}]`,
     );
     // Ahead: full content.

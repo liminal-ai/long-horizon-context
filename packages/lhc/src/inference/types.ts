@@ -3,7 +3,7 @@
 // arrives at createSdk as the alternative to direct provider injection
 // (DD-1, DD-5). LHC treats provider/model strings as opaque routing keys —
 // the host's ModelCall implementation is the only code that interprets them.
-import type { FormKind } from "../shared/derivation.js";
+import type { DerivationType } from "../shared/derivation.js";
 
 /** The one function a host supplies. Single-turn completion; provider/model
  *  are opaque routing keys the host's implementation interprets. (AC-1.2) */
@@ -39,7 +39,7 @@ export interface ModelAssignment {
 /** SdkConfig.inference — the alternative to SdkConfig.provider (DD-5). */
 export interface InferenceConfig {
   call: ModelCall;
-  assignments: Record<FormKind, ModelAssignment>; // all seven, validated complete
+  assignments: Record<DerivationType, ModelAssignment>; // all seven, validated complete
   timeoutMs?: number; // default 60_000 (DD-6)
   maxInputChars?: number; // default 200_000 (DD-7)
 }
@@ -47,7 +47,7 @@ export interface InferenceConfig {
 /** InferenceConfig after createSdk validation: every optional filled. */
 export interface ResolvedInferenceConfig {
   call: ModelCall;
-  assignments: Record<FormKind, ModelAssignment>;
+  assignments: Record<DerivationType, ModelAssignment>;
   timeoutMs: number;
   maxInputChars: number;
 }

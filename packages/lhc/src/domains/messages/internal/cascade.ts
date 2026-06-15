@@ -1,41 +1,40 @@
 // The mutation cascade (DD-8, Flows 5/6): walk the derivation chain upward
-// from the mutated subject — the message's own forms, its turn's rendering
+// from the mutated subject — the message's own derivations, its turn's rendering
 // and projection, the containing chunk's two summaries — clearing each to
 // `pending` at the next source version and enqueueing replacement work, all
 // inside the caller's mutation transaction. The clear-set is derived from
 // the record's structure (the message → turn → chunk walk over the rows that
-// actually exist), never from a hardcoded form list: a future form on any
+// actually exist), never from a hardcoded derivation list: a future derivation on any
 // subject in the chain cascades without this module changing. Still-queued
 // old-version items are supersede-deleted (tech design issue 1) and reported
 // on the MutationResult; claimed items are deliberately left to the
 // source-version check (DD-3) — their stale completions discard. The two
 // close paths share one core walk parameterized drop-vs-clear: edit clears
-// the whole chain, delete *drops* the deleted subject's own forms (state
+// the whole chain, delete *drops* the deleted subject's own derivations (state
 // rows removed — a deleted source has nothing to rebuild) and clears
 // everything upward for minus-one composition. Turn delete enters at the
-// turn level, dropping the turn's and all live members' forms; a chunk left
-// with no live members drops its summary forms too — dropped, never failed,
+// turn level, dropping the turn's and all live members' derivations; a chunk left
+// with no live members drops its summary derivations too — dropped, never failed,
 // and no rebuild queued (AC-6.6).
 import type { DatabaseSync } from "node:sqlite";
 import type { OperationContext } from "../../../shared/context.js";
-import type { FormKind, SubjectKind } from "../../../shared/derivation.js";
+import type { DerivationType, SubjectKind } from "../../../shared/derivation.js";
 import {
   enqueue,
   supersedeQueued,
   WORK_KIND_REGISTRY,
-  type EnqueueFormTarget,
+  type EnqueueDerivationTarget,
   type WorkKind,
   type WorkSourceRef,
 } from "../../../tech-utils/work-queue/index.js";
 
-// Each form's rebuild queue-site — the owning domains' enqueue mappings,
+// Each derivation's rebuild queue-site — the owning domains' enqueue mappings,
 // gathered here because the cascade is the one place that re-queues across
 // the whole chain (module responsibility matrix: replacement enqueues for
-// all three mutations live with the cascade). Both turn forms ride the one
-// turn_derivation item; every other form rides its same-named kind.
-const FORM_REBUILD_KINDS: Record<FormKind, WorkKind> = {
+// all three mutations live with the cascade). Both turn derivations ride the one
+// turn_derivation item; every other derivation rides its same-named kind.
+const DERIVATION_REBUILD_KINDS: Record<DerivationType, WorkKind> = {
   smoothed_prompt: "prompt_smoothing",
-  tool_call_summary: "tool_call_summary",
   tool_result_summary: "tool_result_summary",
   turn_rendering: "turn_derivation",
   lower_band_projection: "turn_derivation",
@@ -46,7 +45,7 @@ const FORM_REBUILD_KINDS: Record<FormKind, WorkKind> = {
 export interface CascadeClear {
   subjectKind: SubjectKind;
   subjectId: string;
-  form: FormKind;
+  derivationType: DerivationType;
 }
 
 export interface CascadeOutcome {
@@ -142,21 +141,21 @@ function pairedCounterpartSubject(
 interface RebuildGroup {
   subject: ChainSubject;
   kind: WorkKind;
-  forms: EnqueueFormTarget[];
+  derivations: EnqueueDerivationTarget[];
   maxSourceVersion: number;
 }
 
-function rebuildKindFor(form: string): WorkKind {
-  const kind = FORM_REBUILD_KINDS[form as FormKind];
+function rebuildKindFor(derivationType: string): WorkKind {
+  const kind = DERIVATION_REBUILD_KINDS[derivationType as DerivationType];
   if (kind === undefined) {
-    // Every form names its queue site above; a miss is a wiring bug.
-    throw new Error(`no rebuild work kind mapped for derived form ${form}`);
+    // Every derivation names its queue site above; a miss is a wiring bug.
+    throw new Error(`no rebuild work kind mapped for derivation ${derivationType}`);
   }
   return kind;
 }
 
 // The shared core (DD-8's one cascade, parameterized): drop subjects lose
-// their form rows outright; clear subjects go pending at the next source
+// their derivation rows outright; clear subjects go pending at the next source
 // version with replacement work enqueued. Supersede-deletes land before the
 // replacement enqueues so a tidied id can never collide, and queued items
 // against dropped subjects are tidied with no replacement — dead work for a
@@ -166,24 +165,24 @@ function runCascade(
   dropSubjects: readonly ChainSubject[],
   clearSubjects: readonly ChainSubject[],
 ): CascadeOutcome {
-  const readForms = ctx.db.prepare(
-    `SELECT form, source_version FROM derived_form
-     WHERE subject_kind = ? AND subject_id = ? ORDER BY form`,
+  const readDerivations = ctx.db.prepare(
+    `SELECT derivation_type, source_version FROM derivation
+     WHERE subject_kind = ? AND subject_id = ? ORDER BY derivation_type`,
   );
 
   const dropped: CascadeClear[] = [];
   const supersedeTargets: Array<{ kind: WorkKind; sourceRef: WorkSourceRef }> = [];
   const dropRows = ctx.db.prepare(
-    `DELETE FROM derived_form WHERE subject_kind = ? AND subject_id = ?`,
+    `DELETE FROM derivation WHERE subject_kind = ? AND subject_id = ?`,
   );
   for (const subject of dropSubjects) {
-    const rows = readForms.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
-      form: string;
+    const rows = readDerivations.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
+      derivation_type: string;
     }>;
     const kinds = new Set<WorkKind>();
     for (const row of rows) {
-      dropped.push({ ...subject, form: row.form as FormKind });
-      kinds.add(rebuildKindFor(row.form));
+      dropped.push({ ...subject, derivationType: row.derivation_type as DerivationType });
+      kinds.add(rebuildKindFor(row.derivation_type));
     }
     for (const kind of kinds) {
       supersedeTargets.push({ kind, sourceRef: sourceRefFor(subject) });
@@ -194,22 +193,22 @@ function runCascade(
   const cleared: CascadeClear[] = [];
   const groups = new Map<string, RebuildGroup>();
   for (const subject of clearSubjects) {
-    const rows = readForms.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
-      form: string;
+    const rows = readDerivations.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
+      derivation_type: string;
       source_version: number | bigint;
     }>;
     for (const row of rows) {
-      const form = row.form as FormKind;
-      cleared.push({ ...subject, form });
-      const kind = rebuildKindFor(row.form);
+      const derivationType = row.derivation_type as DerivationType;
+      cleared.push({ ...subject, derivationType });
+      const kind = rebuildKindFor(row.derivation_type);
       const key = `${subject.subjectKind}:${subject.subjectId}:${kind}`;
       const group = groups.get(key) ?? {
         subject,
         kind,
-        forms: [],
+        derivations: [],
         maxSourceVersion: 0,
       };
-      group.forms.push({ subjectKind: subject.subjectKind, subjectId: subject.subjectId, form });
+      group.derivations.push({ subjectKind: subject.subjectKind, subjectId: subject.subjectId, derivationType });
       group.maxSourceVersion = Math.max(group.maxSourceVersion, Number(row.source_version));
       groups.set(key, group);
     }
@@ -229,7 +228,7 @@ function runCascade(
       kind: group.kind,
       sourceRef: sourceRefFor(group.subject),
       sourceVersion: group.maxSourceVersion + 1,
-      forms: group.forms,
+      derivations: group.derivations,
     });
     return { workItemId: item.workItemId, kind: group.kind };
   });
@@ -251,7 +250,7 @@ export function cascadeFromMessage(
   return runCascade(ctx, [], clear);
 }
 
-// Message delete's close path (Flow 6): the deleted message's own forms
+// Message delete's close path (Flow 6): the deleted message's own derivations
 // drop; its turn and chunk clear and re-queue for minus-one composition.
 // The message-delete validation refuses turn-initiating prompts, so the turn
 // always keeps members and never empties through this path.
@@ -268,11 +267,11 @@ export function cascadeMessageDelete(
   return runCascade(ctx, own === undefined ? [] : [own], upward);
 }
 
-// Turn delete's close path (Flow 6): the turn's forms and every live
-// member's forms drop — the drop-set walk goes down as well as up — and the
+// Turn delete's close path (Flow 6): the turn's derivations and every live
+// member's derivations drop — the drop-set walk goes down as well as up — and the
 // containing chunk clears and re-queues from its remaining live members.
-// A chunk left empty drops its summary forms instead: nothing remains to
-// summarize, so the forms are removed, never failed, and no rebuild queues
+// A chunk left empty drops its summary derivations instead: nothing remains to
+// summarize, so the derivations are removed, never failed, and no rebuild queues
 // (AC-6.6). Runs after the delete stamps land, so the live-member count
 // already excludes the deleted turn. Membership rows are untouched —
 // shrink-only: reads filter deleted turns; boundaries never re-cut.

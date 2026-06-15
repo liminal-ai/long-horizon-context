@@ -12,7 +12,7 @@ import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
   FAKE_PROVIDER_PREFIX,
-  FORM_KINDS,
+  DERIVATION_TYPES,
   probeInput,
   recordingCall,
   tempStore,
@@ -36,9 +36,9 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     const responses = cannedResponses();
     const { call, log } = recordingCall(responses);
     const assignments = validAssignments();
-    const { forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
+    const { derivations: forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
 
-    for (const kind of FORM_KINDS) {
+    for (const kind of DERIVATION_TYPES) {
       const lane = log.filter((input) => input.model === `${FAKE_MODEL_PREFIX}${kind}`);
       expect(lane.length).toBeGreaterThan(0);
       for (const input of lane) {
@@ -47,7 +47,7 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
       }
       // The landed content is the canned text the kind's lane returned —
       // routing proven end to end, not just at the call log.
-      const ready = forms.filter((form) => form.form === kind && form.state === "ready");
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) {
         expect(form.content).toBe(responses[kind]);
@@ -73,7 +73,6 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
   it("a three-lane mixed config routes each call by item kind with no cross-kind bleed", async () => {
     const lanes = {
       smoothed_prompt: "lane-alpha",
-      tool_call_summary: "lane-alpha",
       tool_result_summary: "lane-beta",
       turn_rendering: "lane-beta",
       lower_band_projection: "lane-beta",
@@ -82,7 +81,6 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     } as const;
     const assignments = validAssignments({
       smoothed_prompt: { provider: lanes.smoothed_prompt },
-      tool_call_summary: { provider: lanes.tool_call_summary },
       tool_result_summary: { provider: lanes.tool_result_summary },
       turn_rendering: { provider: lanes.turn_rendering },
       lower_band_projection: { provider: lanes.lower_band_projection },
@@ -91,9 +89,9 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     });
     const responses = cannedResponses();
     const { call, log } = recordingCall(responses);
-    const { forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
+    const { derivations: forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
 
-    for (const kind of FORM_KINDS) {
+    for (const kind of DERIVATION_TYPES) {
       // Models stay unique per kind, so the lane each item actually used is
       // readable from the log: every call for this kind's model must carry
       // this kind's lane provider — no bleed from the other lanes.
@@ -102,7 +100,7 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
       for (const input of calls) {
         expect(input.provider).toBe(lanes[kind]);
       }
-      const ready = forms.filter((form) => form.form === kind && form.state === "ready");
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) {
         expect(form.content).toBe(responses[kind]);

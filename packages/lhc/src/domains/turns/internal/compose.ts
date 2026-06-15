@@ -1,7 +1,7 @@
-// Rendering composition (Flow 3, AC-3.2–3.4): message-level forms become the
+// Rendering composition (Flow 3, AC-3.2–3.4): message-level derivations become the
 // ordered RenderingPart input for composeTurnRendering, with fallbacks and
-// gap records where a form is not ready. Pure by anti-shim requirement —
-// `(messages, forms) → { parts, gaps }` with no DB handle, no provider, no
+// gap records where a derivation is not ready. Pure by anti-shim requirement —
+// `(messages, derivations) → { parts, gaps }` with no DB handle, no provider, no
 // clock in the signature: determinism is structural, not disciplined.
 //
 // Tool activity stays in message order and groups into runs (AC-3.4, Fix 2):
@@ -16,14 +16,16 @@
 // part, not the prose.
 import type {
   DependencyGap,
-  DerivedFormMetadata,
-  DerivedFormState,
-  FormKind,
+  DerivationMetadata,
+  DerivationState,
+  DerivationType,
   RenderingPart,
   RenderingPartKind,
   ToolOutcome,
   ToolRunReceipt,
 } from "../../../shared/derivation.js";
+import { truncateForFallback } from "../../../shared/tool-result-rendering.js";
+import { cleanPrompt } from "../../messages/index.js";
 
 // The member message as the composer sees it: kind plus projected blocks,
 // verbatim from the record (already deleted-filtered by the caller's read).
@@ -33,21 +35,24 @@ export interface ComposeMessage {
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
-// One message-owned form row as composition input; keyed by the caller as
-// `${messageId}/${form}`.
-export interface ComposeFormRow {
-  state: DerivedFormState;
+// One message-owned derivation row as composition input; keyed by the caller as
+// `${messageId}/${derivation}`.
+export interface ComposeDerivationRow {
+  state: DerivationState;
   content?: string;
-  metadata?: DerivedFormMetadata;
+  metadata?: DerivationMetadata;
+  reason?: string;
+  sourceVersion: number;
 }
 
-export function composeFormKey(messageId: string, form: FormKind): string {
-  return `${messageId}/${form}`;
+export function composeDerivationKey(messageId: string, derivation: DerivationType): string {
+  return `${messageId}/${derivation}`;
 }
 
 export interface CompositionInput {
   parts: RenderingPart[];
   gaps: DependencyGap[];
+  recoveries: RecoveryReceipt[];
   // The turn's tool-run receipts (AC-3.8): the tool parts restated as
   // account + outcome, in message order — pure restatement of the
   // composition input, stamped on the rendering so chunk summaries read
@@ -55,20 +60,43 @@ export interface CompositionInput {
   receipts: ToolRunReceipt[];
 }
 
-// Deterministic truncation for tool-activity fallbacks (AC-3.2's "raw or
-// truncated content"): a fixed prefix plus an exact tail marker, a pure
-// function of the input string alone.
-export const FALLBACK_TRUNCATION_LIMIT = 200;
-
-export function truncateForFallback(text: string): string {
-  if (text.length <= FALLBACK_TRUNCATION_LIMIT) return text;
-  const dropped = text.length - FALLBACK_TRUNCATION_LIMIT;
-  return `${text.slice(0, FALLBACK_TRUNCATION_LIMIT)}… [truncated ${dropped} chars]`;
+export interface RecoveryReceipt {
+  subjectKind: "message";
+  subjectId: string;
+  derivationType: DerivationType;
+  content: string;
+  sourceVersion: number;
+  reason: "not_ready" | "failed_floor";
+  floorUsed: string;
 }
 
 function textOf(message: ComposeMessage): string {
   const text = message.blocks[0]?.content["text"];
   return typeof text === "string" ? text : "";
+}
+
+function modelChangeText(message: ComposeMessage): string {
+  const block = message.blocks[0]?.content ?? {};
+  const previous = block["previousModel"];
+  const next = block["newModel"];
+  return typeof previous === "string" && typeof next === "string"
+    ? `model_change ${previous} -> ${next}`
+    : "model_change";
+}
+
+function thinkingLevelChangeText(message: ComposeMessage): string {
+  const block = message.blocks[0]?.content ?? {};
+  const previous = block["previousLevel"];
+  const next = block["newLevel"];
+  return typeof previous === "string" && typeof next === "string"
+    ? `thinking_level_change ${previous} -> ${next}`
+    : "thinking_level_change";
+}
+
+function promptFallbackText(message: ComposeMessage): string {
+  const original = textOf(message);
+  const floor = cleanPrompt(original);
+  return floor.length === 0 && original.length > 0 ? original : floor;
 }
 
 // Mechanical outcome from the record alone (the AC-2.4 rule carried into
@@ -96,28 +124,29 @@ function outcomeFromRecord(
 }
 
 interface PartPlan {
-  form?: FormKind; // the message-level form this kind composes from, if any
+  derivation?: DerivationType; // the message-level derivation this kind composes from, if any
   fallbackText: (message: ComposeMessage) => string;
 }
 
 // The fallback rules table (story Technical Notes): prompt → raw text; tool
-// call/result → deterministic truncation; text/thinking/note → raw, no form
+// call → recorded args; result → deterministic truncation; text/thinking/note → raw, no derivation
 // to fall back from and therefore never a gap.
 const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
-  user_prompt: { form: "smoothed_prompt", fallbackText: textOf },
+  user_prompt: { derivation: "smoothed_prompt", fallbackText: promptFallbackText },
   assistant_text: { fallbackText: textOf },
   assistant_thinking: { fallbackText: textOf },
   runtime_note: { fallbackText: textOf },
+  model_change: { fallbackText: modelChangeText },
+  thinking_level_change: { fallbackText: thinkingLevelChangeText },
   tool_call: {
-    form: "tool_call_summary",
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
       const toolName = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
-      return truncateForFallback(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`);
+      return `${toolName}(${JSON.stringify(block["arguments"] ?? {})})`;
     },
   },
   tool_result: {
-    form: "tool_result_summary",
+    derivation: "tool_result_summary",
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
       return truncateForFallback(typeof block["content"] === "string" ? block["content"] : "");
@@ -140,38 +169,41 @@ interface ComposeAtom {
 const RUN_BREAK_KINDS: ReadonlySet<RenderingPartKind> = new Set(["user_prompt", "assistant_text"]);
 const TOOL_KINDS: ReadonlySet<RenderingPartKind> = new Set(["tool_call", "tool_result"]);
 
-// One message → its composed part (ready form verbatim, else raw/truncated
-// fallback) plus a gap when a derivable form was not ready. Gaps stay
+// One message → its composed part (ready derivation verbatim, else raw/truncated
+// fallback) plus a gap when a derivable derivation was not ready. Gaps stay
 // per-message — precise to the source record — regardless of run grouping
 // (AC-3.2/3.3): the caller lands them on the rendering and they hold until an
 // explicit rebuild recomposes from current states.
 function buildAtom(
   message: ComposeMessage,
-  forms: ReadonlyMap<string, ComposeFormRow>,
+  derivations: ReadonlyMap<string, ComposeDerivationRow>,
   resultByCallId: Map<string, boolean>,
-): { atom: ComposeAtom; gap?: DependencyGap } {
+): { atom: ComposeAtom; gap?: DependencyGap; recovery?: RecoveryReceipt } {
   const plan = PART_PLANS[message.kind];
-  const form =
-    plan.form === undefined
+  const derivation =
+    plan.derivation === undefined
       ? undefined
-      : forms.get(composeFormKey(message.messageId, plan.form));
-  const ready = form !== undefined && form.state === "ready" && form.content !== undefined;
+      : derivations.get(composeDerivationKey(message.messageId, plan.derivation));
+  const ready = derivation !== undefined && derivation.state === "ready" && derivation.content !== undefined;
   const block = message.blocks[0]?.content ?? {};
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text: ready ? (form.content as string) : plan.fallbackText(message),
-    fallback: plan.form !== undefined && !ready,
+    text: ready ? (derivation.content as string) : plan.fallbackText(message),
+    fallback: plan.derivation !== undefined && !ready,
   };
+  if (message.kind === "model_change" || message.kind === "thinking_level_change") {
+    part.blocks = message.blocks;
+  }
   if (message.kind === "tool_call") {
     part.outcome =
-      ready && form.metadata?.outcome !== undefined
-        ? form.metadata.outcome
+      ready && derivation.metadata?.outcome !== undefined
+        ? derivation.metadata.outcome
         : outcomeFromRecord(resultByCallId, block["toolCallId"]);
   } else if (message.kind === "tool_result") {
     part.outcome =
-      ready && form.metadata?.outcome !== undefined
-        ? form.metadata.outcome
+      ready && derivation.metadata?.outcome !== undefined
+        ? derivation.metadata.outcome
         : block["isError"] === true
           ? "failed"
           : "succeeded";
@@ -188,10 +220,22 @@ function buildAtom(
     atom.toolCallId = block["toolCallId"];
   }
   const gap: DependencyGap | undefined =
-    part.fallback && plan.form !== undefined
-      ? { subjectKind: "message", subjectId: message.messageId, form: plan.form }
+    part.fallback && plan.derivation !== undefined
+      ? { subjectKind: "message", subjectId: message.messageId, derivationType: plan.derivation }
       : undefined;
-  return gap === undefined ? { atom } : { atom, gap };
+  const recovery: RecoveryReceipt | undefined =
+    part.fallback && plan.derivation !== undefined
+      ? {
+          subjectKind: "message",
+          subjectId: message.messageId,
+          derivationType: plan.derivation,
+          content: part.text,
+          sourceVersion: derivation?.sourceVersion ?? 1,
+          reason: derivation?.state === "failed" ? "failed_floor" : "not_ready",
+          floorUsed: part.text,
+        }
+      : undefined;
+  return { atom, ...(gap === undefined ? {} : { gap }), ...(recovery === undefined ? {} : { recovery }) };
 }
 
 const RUN_OUTCOME_ORDER: readonly ToolOutcome[] = ["succeeded", "failed", "unknown"];
@@ -270,21 +314,23 @@ function composeRun(members: readonly ComposeAtom[]): {
 }
 
 // Compose the ordered RenderingParts and tool-run receipts. Per-message atoms
-// build first (forms verbatim or fallbacks, per-message gaps); then maximal
+// build first (derivations verbatim or fallbacks, per-message gaps); then maximal
 // runs of consecutive tool activity fold into one run part + one receipt each
 // (AC-3.4), with prompts/assistant text breaking runs and thinking/runtime
 // notes transparent to them.
 export function composeRenderingInput(
   messages: readonly ComposeMessage[],
-  forms: ReadonlyMap<string, ComposeFormRow>,
+  derivations: ReadonlyMap<string, ComposeDerivationRow>,
 ): CompositionInput {
   const resultByCallId = recordOutcomes(messages);
   const atoms: ComposeAtom[] = [];
   const gaps: DependencyGap[] = [];
+  const recoveries: RecoveryReceipt[] = [];
   for (const message of messages) {
-    const built = buildAtom(message, forms, resultByCallId);
+    const built = buildAtom(message, derivations, resultByCallId);
     atoms.push(built.atom);
     if (built.gap !== undefined) gaps.push(built.gap);
+    if (built.recovery !== undefined) recoveries.push(built.recovery);
   }
 
   const parts: RenderingPart[] = [];
@@ -318,5 +364,5 @@ export function composeRenderingInput(
     i = j + 1;
   }
 
-  return { parts, gaps, receipts };
+  return { parts, gaps, receipts, recoveries };
 }

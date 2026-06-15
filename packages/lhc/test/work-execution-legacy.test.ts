@@ -1,7 +1,7 @@
 // Verifier finding 01F-001: pre-v5 work_item rows carry payload NULL, so the
 // drain's terminal paths must reconstruct their form targets from the F-02
 // backfill's kind→form mapping — otherwise exhaustion deletes the work row
-// and strands the backfilled derived_form as pending forever. This suite
+// and strands the backfilled derivation as pending forever. This suite
 // drains a true Epic 01 legacy file (v4 schema, unversioned ids, no payload
 // column values) through the production upgrade path and pins AC-1.9/DD-1
 // for upgraded rows: terminal failure lands the form `failed` with the final
@@ -77,13 +77,13 @@ describe("01F-001: terminal failure on pre-v5 queued rows lands the backfilled f
     // reason and attempts copied, not stranded pending.
     expect(liveCount(filePath)).toBe(0);
     const forms = readDerivedForms(filePath);
-    const failed = forms.find((form) => form.subjectId === "m1" && form.form === "smoothed_prompt");
+    const failed = forms.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
     expect(failed?.state).toBe("failed");
     expect(failed?.reason).toBe("scripted legacy exhaustion (smoothPrompt)");
     expect(failed?.metadata?.attempts).toBe(3);
     expect(failed?.sourceVersion).toBe(1);
     // No form anywhere is left pending after the drain.
-    expect(forms.map((form) => `${form.subjectId}/${form.form}/${form.state}`).sort()).toEqual([
+    expect(forms.map((form) => `${form.subjectId}/${form.derivationType}/${form.state}`).sort()).toEqual([
       "m1/smoothed_prompt/failed",
       "m3/tool_result_summary/ready",
       "t1/lower_band_projection/ready",

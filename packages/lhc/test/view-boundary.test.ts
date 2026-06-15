@@ -184,8 +184,8 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
   });
 });
 
-describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — summary when usable, deterministic truncation with marker when not; non-tool content untouched", () => {
-  it("renders the ready summary, the truncation rung for the failed summary, and the interleaved assistant text full", async () => {
+describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses deterministic truncation; non-tool content untouched", () => {
+  it("renders deterministic tool-result floors even when a ready summary exists", async () => {
     const double = createProviderDouble();
     const sdk = createSdk({ provider: double, mode: "manual", view: { visibility: BUDGETS } });
     const filePath = await newThread(sdk);
@@ -217,10 +217,10 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — summary when usable, dete
     expect(r1 && r2).toBeTruthy();
     if (r1 === undefined || r2 === undefined) return;
     expect(
-      r1.forms?.find((f) => f.form === "tool_result_summary")?.state,
-    ).toBe("failed");
-    const r2Summary = r2.forms?.find(
-      (f) => f.form === "tool_result_summary" && f.state === "ready",
+      r1.derivations?.find((f) => f.derivationType === "tool_result_summary")?.state,
+    ).toBe("ready");
+    const r2Summary = r2.derivations?.find(
+      (f) => f.derivationType === "tool_result_summary" && f.state === "ready",
     )?.content;
     expect(r2Summary).toBeDefined();
 
@@ -240,8 +240,12 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — summary when usable, dete
     expect(contents).toContain(
       `[tool result · read_file · abridged]\n${tokens(60).slice(0, 200)}… [truncated 39 chars] [full content in record §${r1.messageId}]`,
     );
-    // r2: usable summary ⇒ the summary verbatim.
+    // r2: usable summary exists, but full-band boundary rendering still uses
+    // the deterministic raw-result floor, never provider summary content.
     expect(contents).toContain(
+      `[tool result · read_file · abridged]\n${tokens(20)} [full content in record §${r2.messageId}]`,
+    );
+    expect(contents).not.toContain(
       `[tool result · read_file · abridged]\n${r2Summary} [full content in record §${r2.messageId}]`,
     );
     // The interleaved assistant message renders full — non-tool-result
@@ -368,7 +372,7 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     for (const m of listed.value.filter((msg) => msg.kind === "tool_result")) {
-      expect(m.forms?.find((f) => f.form === "tool_result_summary")?.state).toBe("ready");
+      expect(m.derivations?.find((f) => f.derivationType === "tool_result_summary")?.state).toBe("ready");
     }
 
     // Clear the injection; the next turn close re-evaluates and heals: zone

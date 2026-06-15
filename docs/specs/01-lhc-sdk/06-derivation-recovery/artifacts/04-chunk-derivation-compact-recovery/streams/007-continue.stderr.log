@@ -1,0 +1,6 @@
+2026-06-15T07:12:41.500809Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/src/domains/turns/internal/forms.ts:
+    rendering_metadata: string | null;
+  }>;
+2026-06-15T07:12:50.583103Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/src/domains/turns/internal/forms.ts:
+    rendering_metadata: string | null;
+  }>;

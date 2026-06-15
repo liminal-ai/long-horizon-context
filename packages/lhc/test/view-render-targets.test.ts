@@ -63,8 +63,8 @@ function fullStateHash(filePath: string): string {
         members: db
           .prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`)
           .all(),
-        forms: db
-          .prepare(`SELECT * FROM derived_form ORDER BY subject_kind, subject_id, form`)
+        derivations: db
+          .prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`)
           .all(),
         views: db.prepare(`SELECT * FROM thread_view`).all(),
         bands: db.prepare(`SELECT * FROM thread_view_band ORDER BY band`).all(),
