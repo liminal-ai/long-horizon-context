@@ -1,0 +1,10 @@
+{"recordType":"pi_hook","hook":"message_end","entryId":"error-result-entry-0","position":0,"message":{"role":"user","content":[{"type":"text","text":"read missing.txt"}]}}
+{"recordType":"expected_event","eventKind":"user_prompt","payload":{"text":"read missing.txt"}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"error-result-entry-1","position":1,"message":{"role":"assistant","content":[{"type":"toolCall","id":"call_a|fc_1","name":"read_file","arguments":{"path":"missing.txt"}}]}}
+{"recordType":"expected_event","eventKind":"tool_call","payload":{"toolCallId":"call_a|fc_1","toolName":"read_file","arguments":{"path":"missing.txt"}}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"error-result-entry-2","position":2,"message":{"role":"toolResult","toolCallId":"call_a|fc_1","content":[{"type":"text","text":"ENOENT: no such file"}],"isError":true}}
+{"recordType":"expected_event","eventKind":"tool_result","payload":{"toolCallId":"call_a|fc_1","content":"ENOENT: no such file","isError":true}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"error-result-entry-3","position":3,"message":{"role":"assistant","content":[{"type":"text","text":"that file does not exist"}]}}
+{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"that file does not exist"}}
+{"recordType":"pi_lifecycle","hook":"agent_end","entryId":"error-result-agent-end-0","position":4}
+{"recordType":"expected_event","eventKind":"turn_end","payload":{}}

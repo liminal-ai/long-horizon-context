@@ -74,6 +74,10 @@
 - Use "async-thread-view" not "production path" or "hot path" for the synchronous extension path in PI. Confidence: 0.85
 - Never use "integration test" - there is no such thing. Confidence: 0.90
 
+## Output Routing
+
+- Devil's-advocate/downside analysis is for reasoning, not output: run it in thinking, then emit a caution only if it names a live decision Lee is facing. No nameable decision → it stays in thinking. Lee and his implementing models find obvious downsides instantly; an unattached caveat costs more than it protects. Signature of failure: "one caution/worth noting/the risk is" attached to nothing Lee is deciding. Confidence: 0.85
+
 ## Workflow and Process
 
 - Follow bounded action protocol - choose exactly one bounded next action per turn. Confidence: 0.85

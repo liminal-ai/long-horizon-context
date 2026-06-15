@@ -92,8 +92,8 @@ Design decisions:
 - **DD-2 (show composes report):** `show` = internal single-message read (same store read as `listMessages`, by id, full blocks) + `messages.report(ref, {messageId})` for the queue-joined forms. No new join machinery; `FormReportEntry` is the forms shape `show` returns.
 - **DD-3 (list options):** `{ from?, to?, limit?, includeDeleted? }`, bounds in source event order. Existing callers unaffected (opts optional, default behavior unchanged: all visible messages).
 - **DD-4 (loadCost by construction):** `view-report.ts` calls `describe` (stored bands: entries, gaps, config, per-band stored token counts) and `pull` (served messages). `loadCost.bandTokens` = estimator over pull's served band messages; `loadCost.tailTokens` = estimator over pull's tail messages (band-absent entries); `total` = sum. Pull is the single costing authority for **both** bands and tail — AC-2.2's boundary-aware shortening is inherited, not re-implemented. The per-band stored token counts from `describe` are still reported verbatim in the band section per AC-2.1 (`storedTokens`); they price snapshot bytes and are deliberately not the served `loadCost`, because stored counts omit the served `[context · <band>]` marker headers and tokenization is non-additive (Story 3 ruling-011).
-- **DD-5 (overview's view section):** composed from `status` (boundary, zone, derivation counts, view health) + `describe` (viewId, createdAt, compactPoint, coveredFrom) — both already exist; overview adds no view logic.
-- **DD-6 (read-only, structurally tested):** the architecture-risk test snapshots observable state (work-item rows via `listQueuedWork`/reports, boundary position via `status`, view identity via `describe`, event/message counts) before and after every inspect/describe/show/list call and asserts deep equality. Read-only is asserted as absence-of-delta, not absence-of-write-code.
+- **DD-5 (overview's view section):** composed from `status` (zone, derivation counts, view health), `describe` (viewId, createdAt, compactPoint, coveredFrom), and `pull.meta` (visibility boundary position). All reads stay on owning surfaces; overview adds no view logic.
+- **DD-6 (read-only, structurally tested):** the architecture-risk test snapshots observable state (work-item rows via `listQueuedWork`/reports, visibility state via owner surfaces, view identity via `describe`, event/message counts) before and after every inspect/describe/show/list call and asserts deep equality. Read-only is asserted as absence-of-delta, not absence-of-write-code.
 - **DD-7 (no migration):** schema terminal at v6. The one index temptation (message kind counts) is declined — counts come from list reads (Spec Validation #2); if profiling ever demands an index, that is a v7 proposal.
 - **DD-8 (suite placement):** TC-5.1–5.3 default suite; TC-5.4 process suite. The lifecycle script is a shared fixture helper (`test/fixtures/lifecycle.ts`) both suites drive, so the spawned leg replays the same sequence rather than a re-described one.
 
@@ -173,7 +173,7 @@ export interface ViewContentsReport {
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
   tail: { messageCount: number; tokens: number };          // as served (AC-2.2)
   loadCost: { bandTokens: number; tailTokens: number; total: number }; // = pull (AC-2.3)
-  sourceState: { maxEventOrder: number; formCounts: Record<string, number> }; // provenance verbatim (AC-2.5)
+  sourceState: { maxEventOrder: number; formCounts: Record<string, number> } | null; // recorded compact provenance; null when no view exists (AC-2.4/AC-2.5)
 }
 
 export interface HealthReport {

@@ -1,0 +1,14 @@
+{
+  "source": "caller-orchestrator",
+  "decision": "reopen",
+  "summary": "Story 4 recovered outside the interrupted story-lead child operation. quick-fix/009 addressed the first four verifier blockers. A direct bounded fix then resolved follow-up verifier findings SV-04-005 and SV-04-006. Follow-up story-verify artifact 011-verify.json reports outcome=pass with no open findings. Gates passed: pnpm --filter pi-lhc verify and verifier-reported pnpm --filter pi-lhc verify-all. Please reconcile durable story-lead state and close Story 4 if accepted; do not run the stale story-continue child operation.",
+  "items": [],
+  "evidence": [
+    "docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/009-quick-fix.json",
+    "docs/specs/02-pi-lhc/01-connector-core/artifacts/04-fork-as-new-thread/009-verify.json",
+    "docs/specs/02-pi-lhc/01-connector-core/artifacts/04-fork-as-new-thread/011-verify.json",
+    "packages/pi-lhc/src/index.ts",
+    "packages/pi-lhc/src/lifecycle/fork.ts",
+    "packages/pi-lhc/test/lifecycle/fork.test.ts"
+  ]
+}

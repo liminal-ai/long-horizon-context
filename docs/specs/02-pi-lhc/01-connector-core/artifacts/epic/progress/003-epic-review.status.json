@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "failed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T13:47:13.626Z",
+  "updatedAt": "2026-06-14T13:51:05.176Z",
+  "lastOutputAt": "2026-06-14T13:51:05.046Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 56402,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/003-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/003-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/003-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/003-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/003-epic-review.progress.jsonl"
+  },
+  "lastEvent": "failed",
+  "lastEventSummary": "epic-review failed during provider execution.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "claude-code",
+      "state": "failed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-06-14T13:49:43.167Z",
+      "lastEvent": "failed",
+      "lastEventSummary": "epic-reviewer-1 failed for epic review."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-06-14T13:51:05.046Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-2 completed for epic review."
+    }
+  ]
+}

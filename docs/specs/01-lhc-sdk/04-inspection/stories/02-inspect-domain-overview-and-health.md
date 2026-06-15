@@ -52,7 +52,7 @@ Create the inspect domain with read-only overview and derivation health reports.
 <!-- Jira: Technical Notes or sub-section of Description -->
 #### Architecture Context
 
-This story creates the inspect domain and its shared report shapes. `overview` composes list/status/describe reads into counts and summaries; `health` composes owner report surfaces and queue detail into state counts, failure detail, and repair preview.
+This story creates the inspect domain and its shared report shapes. `overview` composes list/status/describe reads into counts and summaries; `health` composes owner report surfaces into state counts, failure detail, repair preview, and per-form-entry queue visibility.
 
 Inspect is a pure consumer. It imports owner surfaces, owns no tables, performs no provider work, and reports repair targets without executing repair.
 
@@ -65,7 +65,7 @@ Reason:
 
 Risk Reminders:
 - Count correctness comes from list reads, not direct table reads.
-- Health must stay on owner report surfaces and queue detail.
+- Health must stay on owner report surfaces; queue visibility is counted per form-report entry via each entry's live queue-item join, not by raw work-item rows.
 - The mutation-in-flight fixture must reach states through production mutation/drain behavior, not hand-written derived rows.
 
 #### Implementation Targets
@@ -113,7 +113,7 @@ Risk Reminders:
 #### Technical Notes
 
 - Overview reads `listEvents`, `listMessages({ includeDeleted: true })`, `listTurns`, `listChunks`, `status`, and `describe`, then normalizes absent sections to zero/null.
-- Health reads owner reports and queued-work detail; `repairPreview` reports failed-not-blocked forms only.
+- Health reads owner reports; queue counts are per form-report entry so queued+claimed equals pending+retrying in the same report. `repairPreview` reports failed-not-blocked forms only.
 - No migration, new table, or new index ships in this story.
 
 #### Anti-Shim Requirements
@@ -136,7 +136,7 @@ Risk Reminders:
 
 #### Spec Deviations
 
-None.
+**EV-04-001 / fix-batch-001** — health queue counts follow the ratified per-form-entry contract. `health.queue` reports queued/claimed counts through each owner report entry's live queue-item join so `queued + claimed = pending + retrying` within the same report. It deliberately does not count raw work-item rows because one work item can back multiple form entries.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->

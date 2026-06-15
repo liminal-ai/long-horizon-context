@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-verify",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T13:03:06.927Z",
+  "updatedAt": "2026-06-14T13:04:50.343Z",
+  "lastOutputAt": "2026-06-14T13:04:50.202Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 80497,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 360000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/008-verify.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/streams/008-verify.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/streams/008-verify.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/progress/008-verify.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/progress/008-verify.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "story-verify completed for 05-inference-host-routing with outcome pass.",
+  "verifiersCompleted": 1,
+  "verifiersPlanned": 1
+}

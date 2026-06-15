@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "running",
+  "phase": "epic-verifier-2",
+  "startedAt": "2026-06-14T19:59:51.525Z",
+  "updatedAt": "2026-06-14T20:00:41.698Z",
+  "lastOutputAt": "2026-06-14T20:00:41.698Z",
+  "providerLiveness": "active-with-output",
+  "provider": "codex",
+  "pid": 27729,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/005-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/005-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/005-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/005-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/005-epic-review.progress.jsonl"
+  },
+  "lastEvent": "provider-output",
+  "lastEventSummary": "epic-reviewer-2 provider stdout output continues.",
+  "verifiersCompleted": 0,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "claude-code",
+      "state": "running",
+      "providerLiveness": "active-with-output",
+      "lastOutputAt": "2026-06-14T20:00:41.698Z",
+      "lastEvent": "provider-output",
+      "lastEventSummary": "epic-reviewer-1 provider stdout output continues."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "codex",
+      "state": "running",
+      "providerLiveness": "active-with-output",
+      "lastOutputAt": "2026-06-14T20:00:38.619Z",
+      "lastEvent": "provider-output",
+      "lastEventSummary": "epic-reviewer-2 provider stdout output continues."
+    }
+  ]
+}

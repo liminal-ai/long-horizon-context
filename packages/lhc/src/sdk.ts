@@ -117,7 +117,7 @@ export type {
   ModelCallInput,
   ModelCallResult,
 } from "./inference/types.js";
-export type { ProviderProvenance } from "./shared/derivation.js";
+export { FORM_KINDS, type ProviderProvenance } from "./shared/derivation.js";
 
 // The config-selectable prompt-name catalog (E05-NB-2): the full set of names
 // a per-kind assignment may select, and the default name per kind. Exposed so

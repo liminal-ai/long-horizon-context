@@ -105,46 +105,15 @@ export async function resolveThread(
   return { ok: true, value: threadRefById(created.value.threadId, deps.registryPath) };
 }
 
-/** Reload reconstruction (AC-1.5): on reload — the extension torn down and
- *  re-initialized while the same PI session continues — re-resolve the session's
- *  thread from DURABLE registry state. It reads no retained in-process memory and
- *  never creates a new thread or re-prompts a picker; the resolved id comes back
- *  out of the registry (the durable catalog), so reconstruction survives the loss
- *  of every in-memory holder (the architecture-risk scenario).
- *
- *  - `--session <id>` / `--continue`: re-resolve by the same durable launch input.
- *    Both are idempotent — resolving twice returns the same thread and creates
- *    nothing — so the normal resolver already reattaches correctly.
- *  - no flag or `--resume`: reattach to the cwd's most-recently-created thread,
- *    read from the registry. A no-flag Story-1 session created exactly one thread
- *    in its cwd, so that is the thread; re-running the launch instead would create
- *    a duplicate (no flag) or re-prompt the operator (`--resume`).
- *
- *  Returns `null` when the cwd has no thread to reattach (a reload against an
- *  empty registry); the caller records a diagnostic rather than creating one.
- *
- *  This is the answer to "where does the durable reload id live without a
- *  PI-session→thread mapping record" (epic I-1): it lives in the LHC registry,
- *  the system of record, not in a connector field or a recovery sidecar. The
- *  cwd-most-recent reattach is an Epic-1 convenience; the permanent home for
- *  reload/fork lineage is LHC thread metadata (Feature 2+). */
+/** Reload reconstruction (AC-1.5): on reload, re-resolve the exact prior
+ *  threadId that PI durably stored in the current session entries. This never
+ *  creates, never re-prompts, and never falls back to cwd-most-recent. */
 export async function resolveReloadThread(
-  launch: LaunchFlags,
+  threadId: string | null,
   deps: ResolveDeps,
 ): Promise<OpResult<ThreadRef | null>> {
-  if (launch.session !== undefined) {
-    return resolveThread({ session: launch.session }, deps);
-  }
-  if (launch.continue === true) {
-    return resolveThread({ continue: true }, deps);
-  }
-  const listed = await threads.listThreads({ cwd: deps.cwd, ...registryArg(deps.registryPath) });
-  if (!listed.ok) return listed;
-  // listThreads orders by created_at then rowid, so the last cwd-scoped row is
-  // the most recently created thread for this directory.
-  const mostRecent = listed.value.at(-1);
-  if (mostRecent === undefined) return { ok: true, value: null };
-  return { ok: true, value: threadRefById(mostRecent.threadId, deps.registryPath) };
+  if (threadId === null) return { ok: true, value: null };
+  return resolveThread({ session: threadId }, deps);
 }
 
 /** Map a launch argv to `LaunchFlags`. The connector runs in-process inside PI,

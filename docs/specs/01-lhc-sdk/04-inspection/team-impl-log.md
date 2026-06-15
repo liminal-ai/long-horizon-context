@@ -111,8 +111,10 @@ Current Phase: implement (story-orchestrate)
 - epic-review 001 (canonical, two reviewers + reconciliation): BLOCK — EV-04-001 health-queue counting semantics (human-ruling scope) + EV-04-002 doc lag + 2 non-blocking observations. Cumulative baseline confirmed monotonic 290→300→313→320→328; reviewer re-ran verify-all green.
 - Impl-lead ruling EV-04-001: RATIFIED form-entry queue semantics (TC-4.1's queued+claimed = pending+retrying identity is the binding consistency requirement; one work item may back multiple forms by design). Code unchanged; AC-4.5/tech-design amended. Recorded in artifacts/epic/fix-batch-001.md.
 - epic-fix (fix-batch-001): all 6 items applied (AC-4.5 + Flow 4 + External Contracts amendments, health.ts contract comment, byte-identical → ruling-011 phrasing in epic/test-plan/coverage, DD-4 measured wording, Story 3 deviations recorded, stale CLI comment removed). Fix-run envelope hit PROVIDER_OUTPUT_INVALID after edits landed; edits verified by impl-lead diff review; gate green after.
-- epic-reverify: ready-for-closeout. EV-04-001 downgraded under recorded ruling + amended spec (health.ts confirmed comment-only). Residual one-line Flow 2 diagram lag fixed directly by impl-lead (tech-design.md:134 → measured). Carried observation (non-blocking, future): DD-5 says boundary "via status" but ViewStatus lacks boundaryPosition; overview reads pull.meta.
+- epic-reverify: ready-for-closeout. EV-04-001 downgraded under recorded ruling + amended spec (health.ts confirmed comment-only). Residual one-line Flow 2 diagram lag fixed directly by impl-lead (tech-design.md:134 → measured). Follow-up cleanup resolved the DD-5 boundary-source doc lag: overview reads visibility boundary from `pull.meta`, not `status`.
 - Final epic gate: `pnpm verify-all` PASS — 44 files / 366 tests, process suite ran. Run COMPLETE.
+- M3/M4 close mechanically here only; view quality/inference-readiness halves remain transferred to the post-Epic-4 inference work because Epic 04 is read-only and deterministic-provider based.
+- Post-closeout doc cleanup: Story 2 queue wording, Story 3 `bandTokens` note, `sourceState` nullability, DD-5 boundary source, and fix-batch checkbox/disposition were backfilled to match delivered behavior.
 
 ## Transitions
 

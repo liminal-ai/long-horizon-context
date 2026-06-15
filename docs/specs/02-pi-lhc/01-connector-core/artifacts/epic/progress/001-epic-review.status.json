@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "command": "epic-review",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T13:37:31.634Z",
+  "updatedAt": "2026-06-14T13:41:35.089Z",
+  "lastOutputAt": "2026-06-14T13:41:28.117Z",
+  "providerLiveness": "completed",
+  "provider": "claude-code",
+  "pid": 46711,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 3600000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/001-epic-review.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/001-epic-review.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/streams/001-epic-review.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/001-epic-review.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/epic/progress/001-epic-review.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "epic-review completed with outcome block.",
+  "verifiersCompleted": 2,
+  "verifiersPlanned": 2,
+  "verifierLanes": [
+    {
+      "label": "epic-reviewer-1",
+      "provider": "claude-code",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-06-14T13:39:58.330Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-1 completed for epic review."
+    },
+    {
+      "label": "epic-reviewer-2",
+      "provider": "codex",
+      "state": "completed",
+      "providerLiveness": "completed",
+      "lastOutputAt": "2026-06-14T13:39:58.512Z",
+      "lastEvent": "verifier-completed",
+      "lastEventSummary": "epic-reviewer-2 completed for epic review."
+    }
+  ]
+}

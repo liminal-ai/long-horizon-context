@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "failed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T13:05:19.535Z",
+  "updatedAt": "2026-06-14T13:05:29.094Z",
+  "lastOutputAt": "2026-06-14T13:05:29.070Z",
+  "providerLiveness": "active-with-output",
+  "provider": "claude-code",
+  "pid": 84138,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 1200000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/010-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/streams/010-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/streams/010-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/progress/010-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/05-inference-host-routing/progress/010-continue.progress.jsonl"
+  },
+  "lastEvent": "failed",
+  "lastEventSummary": "story-continue failed during the follow-up implementor pass for 05-inference-host-routing.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

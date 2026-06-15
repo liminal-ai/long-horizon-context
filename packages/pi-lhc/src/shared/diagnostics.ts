@@ -9,6 +9,7 @@ import type { FormKind } from "lhc";
  *  defined here so the plain-data `SessionState.health` can reference it
  *  without a lifecycle→inference import edge (keeps the surface graph acyclic). */
 export interface ValidationReport {
+  message?: string;
   unreachable: {
     kind: FormKind;
     provider: string;

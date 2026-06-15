@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "command": "quick-fix",
+  "status": "completed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T12:58:57.783Z",
+  "updatedAt": "2026-06-14T13:02:59.072Z",
+  "lastOutputAt": "2026-06-14T13:02:58.980Z",
+  "providerLiveness": "completed",
+  "provider": "codex",
+  "pid": 74824,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 1800000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 300000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/010-quick-fix.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/streams/010-quick-fix.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/streams/010-quick-fix.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/progress/010-quick-fix.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/quick-fix/progress/010-quick-fix.progress.jsonl"
+  },
+  "lastEvent": "completed",
+  "lastEventSummary": "quick-fix completed and is ready for verification."
+}

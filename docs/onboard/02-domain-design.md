@@ -4,19 +4,21 @@ This document describes each domain in more depth: what it stores, the operation
 
 ## Domain surfaces
 
-A domain is both a vocabulary area and a service surface. The operations a domain exposes are the same operations everywhere they are reached: the SDK calls them as functions, the CLI wraps them as commands, a future app server can serve them as endpoints, and other domains call them in-process when they need work the domain owns. When one domain needs something from another, it calls that domain's surface; it does not reach into the other domain's storage or internal modules. One domain can coordinate a flow that spans several, the way `intake-stream` records a batch and calls `messages` and `turns` along the way, but the called domains keep ownership of their own work.
+A domain is both a vocabulary area and a service surface. The operations a domain exposes are the same operations everywhere they are reached: the host calls them as SDK functions in-process, a future app server can serve them as endpoints, and other domains call them in-process when they need work the domain owns. When one domain needs something from another, it calls that domain's surface; it does not reach into the other domain's storage or internal modules. One domain can coordinate a flow that spans several, the way `intake-stream` records a batch and calls `messages` and `turns` along the way, but the called domains keep ownership of their own work.
 
 ## Tech utils
 
-Beneath the domains sit a small number of **tech utils**: shared machinery that domains use but that owns no part of the conversation model. A tech util is not a domain. It has no surface, no CLI grouping, and no vocabulary of its own in the product; it is internal plumbing. The dependency runs one way: domains use tech utils, and a util never calls a domain or contains domain logic. The working test is the name: if a function inside a util mentions a turn, a chunk, or a summary, it belongs in a domain instead.
+Beneath the domains sit a small number of **tech utils**: shared machinery that domains use but that owns no part of the conversation model. A tech util is not a domain. It has no domain surface and no vocabulary of its own in the product; it is internal plumbing (the logging surface is the one util exposed externally, but it owns no part of the conversation model). The dependency runs one way: domains use tech utils, and a util never calls a domain or contains domain logic. The working test is the name: if a function inside a util mentions a turn, a chunk, or a summary, it belongs in a domain instead.
 
-The first util is the **durable work queue**. Some of what a domain owns cannot run in the hot path: smoothing a closed turn, summarizing a chunk, rebuilding derivations after an edit. The owning domain records that work as a durable work item and moves on; a worker picks it up later and runs the domain's handler for it. Two properties carry the design. Pending work is recorded durably, not held in memory, so a restart loses nothing. And a thread's queued work is ordered: work queued by an edit lands after work already in flight on the old content, so a rebuilt derivation is never overwritten by a straggler finishing late. Running one item at a time per thread is the current policy that provides this, and the simplest. Independent items could run in parallel later, but only in a way that preserves the ordering edits lean on.
+The first util is the **durable work queue**. Some of what a domain owns cannot run in the hot path: smoothing a closed turn, summarizing a chunk, rebuilding derivations after an edit. The owning domain records that work as a durable work item and moves on; a worker picks it up later and runs the domain's handler for it. Running one item at a time per thread means a chunk's two summaries derive sequentially, not in parallel. Two properties carry the design. Pending work is recorded durably, not held in memory, so a restart loses nothing. And a thread's queued work is ordered: work queued by an edit lands after work already in flight on the old content, so a rebuilt derivation is never overwritten by a straggler finishing late. Running one item at a time per thread is the current policy that provides this, and the simplest. Independent items could run in parallel later, but only in a way that preserves the ordering edits lean on.
 
 Each kind of queued work has exactly one owning domain. A domain queues its own work; it never queues work into another domain, and no domain watches for another domain's items. When a flow crosses domains, the crossing is a surface call, and the called domain queues whatever work its part needs. Asking a domain to repair its own derivations works the same way: the ask is a surface call, and the owning domain decides what to queue. The queue owns the mechanics of an item: recorded, picked up, retried, finished. What the work means belongs entirely to the owning domain.
 
-Derived artifacts carry state. The state names should be one shared vocabulary across domains, pinned once at implementation time rather than reinvented per domain; what a state means for a particular artifact, such as what usable means for a smoothed prompt, stays the owning domain's call. Whatever the names turn out to be, the artifact's own state has to distinguish: whether the artifact exists yet, whether it is usable, whether it has failed for good, and whether the derivation is blocked because its source is damaged. Whether a failed attempt will be retried is the work queue's business, not a property the artifact duplicates; a domain's derivation report joins the two, so a caller asking "is this still coming?" gets the answer without reading queue mechanics. Blocked-on-source is not a failure of the derivation; it points at the source problem, and no amount of retrying the derivation fixes it. Separate from all of these is what an artifact's absence means for a consumer. That is its own axis on purpose: the same missing summary that one consumer degrades around might matter more to another, and the consequence is the consumer's call, not a property of the artifact. A missing or failed derivation is a gap to report and repair while consumers degrade and continue; only damage to the source record itself stops a thread.
+Derivations carry state. The four states are one shared vocabulary across domains: `pending` (exists, not yet usable — covers never-attempted and retrying), `ready` (usable), `failed` (terminal), `blocked` (source damaged, retry won't help). What a state means for a particular derivation, such as what usable means for a smoothed prompt, stays the owning domain's call. State belongs to the derivation itself, never to its subject — a chunk does not carry "a state"; its detailed derivation and its brief derivation each carry their own. Whether a failed attempt will be retried is the work queue's business, not a property the derivation duplicates; a domain's derivation report joins the two, so a caller asking "is this still coming?" gets the answer without reading queue mechanics. Blocked-on-source is not a failure of the derivation; it points at the source problem, and no amount of retrying fixes it. Separate from all of these is what a derivation's absence means for a consumer. That is its own axis on purpose: the same missing summary that one consumer degrades around might matter more to another, and the consequence is the consumer's call, not a property of the derivation. A missing or failed derivation is a gap the consumer degrades around — the fallback goes into the view, the failure goes to the log — while only damage to the source record itself stops a thread.
 
-Local token counting is the other util already in the system: the tokenizer that stamps estimates is shared machinery with no surface of its own, reached through the domains that use it.
+Local token counting is another util already in the system: the tokenizer that stamps estimates is shared machinery with no surface of its own, reached through the domains that use it.
+
+Logging is a cross-cutting technical surface that, unlike the other utils, is exposed externally from LHC. Both LHC and the host write info/warning/error logs through it, stored in the thread's SQLite file. It carries diagnostics — such as a derivation falling back to a floor — collected for troubleshooting, not control flow. The record stays what is usable; the log says what went wrong.
 
 ## Threads
 
@@ -29,11 +31,7 @@ The thread file is authoritative for its own identity. It stores its thread id o
 
 ### Creating a thread
 
-`new-thread` creates a thread at a given file path, sets up the empty thread inside it, and adds a row to the thread catalog. It generates a thread id and records the id-to-path mapping. If a file already exists at the path, the operation fails instead of touching it.
-
-```
-lhc threads new-thread --file-path ./alpha.lhc
-```
+`new-thread` creates a thread at a given file path, sets up the empty thread inside it, and adds a row to the thread catalog. It generates a thread id and records the id-to-path mapping. If a file already exists at the path, the operation fails instead of touching it. The host calls it as an SDK function (`threads.newThread({ filePath })`).
 
 ```mermaid
 sequenceDiagram
@@ -51,7 +49,7 @@ sequenceDiagram
 
 A thread id is the primary, stable key a caller holds. It survives the thread file moving, which a file path does not. Other domains work with thread ids, and when one needs to act on a thread, it asks the threads domain to resolve the id to its file, then opens it. This resolution is the threads domain's main service to the rest of the system.
 
-How the threads domain resolves an id is its own concern and can change with the environment. In local CLI use it reads the thread catalog database; in a long-lived service it can hold the mapping in memory; in other deployments it can resolve through a different store. Callers above it pass a thread id and do not change. A caller that already holds a file path can pass the path directly and skip resolution.
+How the threads domain resolves an id is its own concern and can change with the environment. In a single-thread host it reads the thread catalog database; in a long-lived service it can hold the mapping in memory; in other deployments it can resolve through a different store. Callers above it pass a thread id and do not change. A caller that already holds a file path can pass the path directly and skip resolution.
 
 ```mermaid
 sequenceDiagram
@@ -68,11 +66,11 @@ sequenceDiagram
 
 ### Browsing threads
 
-A user who wants to see their threads starts at the threads domain. It lists threads from the thread catalog, searches across titles and metadata, and shows the high-level info for one thread without opening its file. From a list, a user picks a thread and drills into its messages, turns, or views through the other domains. The CLI presents this directly, and an SDK consumer can wire the same list, search, and show operations into a UI.
+A user who wants to see their threads starts at the threads domain. It lists threads from the thread catalog, searches across titles and metadata, and shows the high-level info for one thread without opening its file. From a list, a user picks a thread and drills into its messages, turns, or views through the other domains. A host wires these list, search, and show operations into its own UI or agent tools.
 
 ```mermaid
 sequenceDiagram
-  participant C as CLI or UI
+  participant C as host UI
   participant T as threads
   participant R as thread catalog
   participant O as messages, turns, thread-view
@@ -97,7 +95,7 @@ As a harness runs it produces a stream of events. An event is one recorded thing
 
 The `intake-stream` domain takes these events in and writes them into the thread in the order they happened. It is the only way thread content enters the system from a harness.
 
-These flows are about how data moves, not about a user interface. The operations exist to record incoming events and coordinate the synchronous domain work that follows from those events. As it records the stream, `intake-stream` calls `messages` to create the readable message-and-block view and calls `turns` to open or close turn state. Those calls are in-process calls to the domain surfaces, not CLI calls or separate service hops.
+These flows are about how data moves, not about a user interface. The operations exist to record incoming events and coordinate the synchronous domain work that follows from those events. As it records the stream, `intake-stream` calls `messages` to create the readable message-and-block view and calls `turns` to open or close turn state. Those calls are in-process calls to the domain surfaces, not separate service hops.
 
 A thread is single-threaded by definition: one conversation, one stream, no concurrent writers. That lets the domain treat the incoming stream as an ordered time series and make boundary decisions from position in that stream.
 
@@ -113,11 +111,7 @@ The contract:
 
 ### Taking in events
 
-A harness sends a batch of one or more events for a thread. The thread id rides outside the batch, since every event in a batch belongs to the same thread. The SDK takes typed event objects directly; the CLI reads a JSON array of events on stdin, parses it at the edge, and calls the same SDK operation.
-
-```
-cat events.json | lhc intake-stream message-events --thread <thread-id>
-```
+A harness sends a batch of one or more events for a thread. The thread id rides outside the batch, since every event in a batch belongs to the same thread. The host calls the SDK operation with typed event objects directly (`intakeStream.messageEvents(threadId, events)`).
 
 The domain maps the thread id to its file through the threads domain, then writes the batch to the thread's database in one coherent write flow. For each event it assigns the next position in the thread's order and records the source event. For events that produce readable conversation activity, it calls the `messages` surface to create messages and blocks. For events that affect turn state, it calls the `turns` surface to apply the open or close rule. It returns a result describing what happened to each event.
 
@@ -196,13 +190,13 @@ Blocks keep the parts of a message separate when they need separate handling. Te
 
 ### Message-level derivations
 
-Some derived forms belong to a single message and need nothing beyond it, so `messages` owns them and queues their work the moment the message lands, without waiting for a turn to close.
+Some derivations belong to a single message and need nothing beyond it, so `messages` owns them and queues their work the moment the message lands, without waiting for a turn to close.
 
-A tool result's full output is stored when its message is created. The full form is the record and is never discarded. A tool result also gets an abbreviated form: a summary produced by inference, which makes it a derivation like any other, carrying derivation state and able to fail. When a consumer needs the abbreviated form and the summary is not ready, the fallback is a deterministic truncation of the full output. Which form a given view shows, and when a result switches from one to the other, is thread-view's policy, not messages' concern; messages owns the forms themselves.
+A tool result's full output is stored when its message is created. The full output is the record and is never discarded. A tool result also gets an abbreviated derivation: a summary produced by inference, carrying derivation state and able to fail. When a consumer needs the abbreviated form and the summary is not ready, the fallback is a deterministic truncation of the full output — a tool result is never shown in full as a fallback; there is always at least a truncation. Which form a given view shows, and when a result switches from one to the other, is thread-view's policy, not messages' concern; messages owns the derivations themselves.
 
-A tool call gets a summarized form for the same reason: call arguments can be bulky — an edit carries everything it changed — while the useful residue is which tool ran, on what target, and what it did. The summary draws on the call and its paired result, found by the call id, so it can say how the call ended; it is message-level work like the other forms, needing no turn context. Every summarized form of tool activity states its outcome: succeeded, failed, or unknown — unknown covering a call whose result never arrived. A summary that describes what was attempted without saying how it ended invites a later reader to fill the gap with the most plausible ending, which is exactly the failure these forms exist to prevent.
+Tool calls are kept as-is, not summarized: call arguments are usually short and front-loaded, so the case for a separate inference pass on them does not hold. Where a tool result's summary needs to say how a call ended, it draws on the call and its paired result, found by the call id. Every summarized tool result states its outcome: succeeded, failed, or unknown — unknown covering a call whose result never arrived. A summary that describes what was attempted without saying how it ended invites a later reader to fill the gap with the most plausible ending, which is exactly the failure these derivations exist to prevent.
 
-A user prompt gets a smoothed form the same way: cleaned and attenuated with its content preserved, derived from the message alone and queued when the prompt lands. Turn-level renderings later compose these message-level forms rather than re-deriving them.
+A user prompt gets a smoothed derivation the same way: cleaned and attenuated with its content preserved, derived from the message alone and queued when the prompt lands. Turn-level renderings later compose these message-level derivations rather than re-deriving them.
 
 ### Token estimates
 
@@ -218,7 +212,7 @@ The messages domain lists, views, and searches messages for a thread. It is the 
 
 ```mermaid
 sequenceDiagram
-  participant C as CLI, UI, or agent
+  participant C as host UI or agent
   participant M as messages
   participant T as threads
   participant F as thread file
@@ -230,7 +224,7 @@ sequenceDiagram
   M-->>C: messages
 ```
 
-Each message carries the token estimate assigned when the message was created. The estimate describes the original message content. Derived forms, such as smoothed turns or lower-band summaries, carry their own counts.
+Each message carries the token estimate assigned when the message was created. The estimate describes the original message content. Derivations, such as smoothed turns or lower-band summaries, carry their own counts.
 
 ### Editing and deleting messages
 
@@ -238,7 +232,7 @@ Manual cleanup goes through messages, not `intake-stream`. Intake-stream records
 
 Delete is a projection-level operation. The message drops from reads and from its turn's membership, but the source events it was created from stay in the event log; the record underneath is never destroyed. Deleting a message that initiates a turn is refused — a turn is a prompt and what came back for it, so removing the prompt means removing the turn, and that goes through the `turns` surface as an explicit turn delete instead of hiding behind a one-message operation.
 
-An edit runs the same way creation does. The deterministic work happens synchronously in the edit: the message and its blocks are updated and the token estimate is re-stamped. Derivations built from the old content are cleared and their inference work is queued again, each by the domain that owns it, exactly as it was queued the first time. An edit never leaves an old derivation in place to be judged against new content later; after an edit, derived state is either current, or absent and queued to rebuild. Per-thread ordering of deferred work means a rebuilt derivation lands after any work that was already in flight on the old content.
+An edit runs the same way creation does. The deterministic work happens synchronously in the edit: the message and its blocks are updated and the token estimate is re-stamped. Derivations built from the old content are cleared and their inference work is queued again, each by the domain that owns it, exactly as it was queued the first time. An edit never leaves an old derivation in place to be judged against new content later; after an edit, a derivation is either current, or absent and queued to rebuild. Per-thread ordering of deferred work means a rebuilt derivation lands after any work that was already in flight on the old content.
 
 A delete cascades the same way, with one difference: the deleted message's own forms drop rather than re-queue — their source is gone — while everything composed above it rebuilds. The cascade is bounded by structure: a message affects its turn's composed rendering and projection, and that turn's one containing chunk re-derives its detailed and brief summaries. Neighboring chunks never re-derive, and chunk boundaries never move; a chunk shrinks in place, it is never re-cut.
 
@@ -270,7 +264,7 @@ Closing a turn makes its membership stable. The slow work that follows can run a
 
 Part of the turn-shaped result is the turn's tool activity: a run of calls and results that carried out one task is composed into a short account of what the run did and how it ended, not left as a list of separate calls. Runs that changed state keep their outcome explicit; a rendering may compress what a sequence of edits did, but never whether it landed.
 
-`turns` queues this work for itself when the close happens. Each derived artifact carries its own state, so a missing smoothing or a failed projection is visible as exactly that, and the `turns` surface exposes operations to check derivation state and re-queue what is missing or failed. A derivation that has not landed is a gap, not a blocker; consumers degrade and continue until repair fills it.
+`turns` queues this work for itself when the close happens. Each derivation carries its own state, so a missing smoothing or a failed projection is visible as exactly that, and the `turns` surface exposes operations to check derivation state and re-queue what is missing or failed. A derivation that has not landed is a gap, not a blocker; consumers degrade and continue until repair fills it. When a turn is composed and a member derivation is not ready, composition tries to produce it, then falls to a deterministic floor, then to the original content — it never blocks, and the fallback is logged.
 
 A closed turn keeps enough source information to trace back to the messages and events it came from. That lets a later edit, repair, or inspection report explain which source messages contributed to a turn and whether derived state is current.
 
@@ -292,7 +286,7 @@ The turns domain lists and views turns and chunks for a thread. These operations
 
 ```mermaid
 sequenceDiagram
-  participant C as CLI, UI, or agent
+  participant C as host UI or agent
   participant U as turns
   participant T as threads
   participant F as thread file
@@ -385,7 +379,7 @@ Inspect is read-only and reads through the other domains' surfaces. It never wri
 
 ```mermaid
 sequenceDiagram
-  participant C as CLI, UI, or agent
+  participant C as host UI or agent
   participant N as inspect
   participant D as messages, turns, thread-view
   participant F as thread file

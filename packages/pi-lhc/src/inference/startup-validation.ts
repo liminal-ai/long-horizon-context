@@ -1,29 +1,131 @@
+// AC-5.1, AC-5.2, AC-5.3. Startup validation: probe all seven assignments
+// against PI's registry, report unreachable lanes, leave capture running.
+//
+// This layer runs AFTER shape validation (which LHC's createSdk enforces at
+// construction). It adds a reachability probe on top: for each assignment,
+// check that the provider/model pair exists in PI's registry and that auth is
+// configured. This surfaces misconfigurations before the first derivation use,
+// rather than as a silent derivation failure later (AC-5.1).
+//
+// Reporting must not assume a TUI (AC-5.2). The report surfaces through ctx.ui
+// when available and always persists to SessionState.health for headless modes.
+
+import { writeSync } from "node:fs";
 import type { FormKind, ModelAssignment } from "lhc";
+import { FORM_KINDS } from "lhc";
 import type { ExtensionContext } from "../pi/types.js";
 import type { SessionState } from "../lifecycle/state.js";
 import type { ValidationReport } from "../shared/diagnostics.js";
-import { NotImplementedError } from "../shared/not-implemented.js";
 
-// AC-5.1, AC-5.2, AC-5.3. A reachability probe on top of LHC's shape
-// validation: existence (`modelRegistry.find`) then configured-auth
-// (`hasConfiguredAuth` / `getAvailable`). Reporting must not assume a TUI.
-
-/** Re-exported from its spec'd home here (defined in shared/diagnostics so the
- *  plain-data SessionState can reference it without a lifecycle→inference edge). */
+// Re-export ValidationReport from its spec'd home (defined in shared/diagnostics
+// so SessionState can reference it without a lifecycle→inference edge).
 export type { ValidationReport };
 
-/** Probe each assignment; classify unreachable lanes. Story 6. Throws until
- *  then — a stub returning `{ unreachable: [] }` would falsely report "all
- *  reachable" (story §Anti-Shim). */
+interface ReportDeps {
+  headlessLog?: (message: string) => void;
+}
+
+function defaultHeadlessLog(message: string): void {
+  writeSync(2, `${message}\n`);
+}
+
+/** Probe each assignment; classify unreachable lanes (AC-5.1, AC-5.2).
+ *
+ *  For each of the seven derivation kinds:
+ *  1. Call ctx.modelRegistry.find(provider, model) to check if the lane exists.
+ *  2. If found, call ctx.modelRegistry.hasConfiguredAuth(handle) to check auth.
+ *  3. Classify the failure:
+ *     - "unknown_model": provider/model not found in registry → fix assignment
+ *     - "auth_not_configured": lane exists but no auth → log in / configure auth
+ *
+ *  Returns a structured report listing all unreachable lanes with their fixes.
+ *  Reachable lanes are not listed; an empty `unreachable` array means all lanes
+ *  are reachable (AC-5.1). */
 export function validateReachable(
   assignments: Record<FormKind, ModelAssignment>,
   ctx: ExtensionContext,
 ): ValidationReport {
-  throw new NotImplementedError("inference.validateReachable");
+  const unreachable: ValidationReport["unreachable"] = [];
+
+  for (const kind of FORM_KINDS) {
+    const assignment = assignments[kind as FormKind];
+    const { provider, model } = assignment;
+
+    // Check if the model exists in PI's registry
+    const resolved = ctx.modelRegistry.find(provider, model);
+
+    if (resolved === undefined) {
+      // Unknown lane: provider/model not found → fix assignment
+      unreachable.push({
+        kind,
+        provider,
+        model,
+        reason: "unknown_model",
+        fix: `Update '${kind}' assignment to use a known provider/model pair available in PI's model registry`,
+      });
+      continue; // Skip auth check for unknown models
+    }
+
+    // Lane exists; check if auth is configured
+    if (!ctx.modelRegistry.hasConfiguredAuth(resolved)) {
+      // Known lane but no auth → log in / configure auth
+      unreachable.push({
+        kind,
+        provider,
+        model,
+        reason: "auth_not_configured",
+        fix: `Log in or configure auth for ${provider}/${model} in PI settings`,
+      });
+    }
+  }
+
+  return { unreachable };
 }
 
-/** Surface unreachable lanes via `ctx.ui` when available + a structured
- *  diagnostic in `SessionState.health` always (headless-safe). Story 6. */
-export function report(r: ValidationReport, ctx: ExtensionContext, state: SessionState): void {
-  throw new NotImplementedError("inference.report");
+/** Surface unreachable lanes via ctx.ui when available + structured diagnostic.
+ *
+ *  Reporting is headless-safe (AC-5.2):
+ *  - If ctx.hasUI is true, surface through ctx.ui.notify with a formatted report.
+ *  - Always persist the structured ValidationReport to SessionState.health.
+ *  - Capture continues running even when validation fails (AC-5.3).
+ *
+ *  This function never throws; validation failures are diagnostic, not fatal.
+ *  The affected lane's derivations will fail classified and queryable through
+ *  health (AC-5.3), but the session itself remains functional for capture. */
+export function report(
+  r: ValidationReport,
+  ctx: ExtensionContext,
+  state: SessionState,
+  deps: ReportDeps = {},
+): void {
+  // Mark that we've reported startup validation (avoids duplicate reporting)
+  state.flags.startupValidationReported = true;
+
+  // If there are unreachable lanes, surface them through ctx.ui when available
+  if (r.unreachable.length > 0) {
+    const lines = [
+      "pi-lhc startup validation: unreachable derivation lanes",
+      "",
+      ...r.unreachable.map(
+        (u) =>
+          `  • ${u.kind}: ${u.provider}/${u.model}\n    Reason: ${u.reason}\n    Fix: ${u.fix}`,
+      ),
+      "",
+      `Capture will continue, but derivations on these lanes will fail. Update your PI settings or assignment config to resolve.`,
+    ];
+
+    const message = lines.join("\n");
+    state.health.startupValidation = { ...r, message };
+
+    // Surface through UI when available (never assume a TUI; guard on ctx.hasUI)
+    if (ctx.hasUI) {
+      ctx.ui.notify(message, { level: "warn" });
+    } else {
+      const headlessLog = deps.headlessLog ?? defaultHeadlessLog;
+      headlessLog(message);
+    }
+  } else {
+    // Persist the structured report to SessionState.health (always, even in headless)
+    state.health.startupValidation = r;
+  }
 }

@@ -3,7 +3,7 @@
 // directly (launch modes, partial-id, ambiguity, cwd-scoping), and the
 // PRODUCTION connector path through createConnector with real defaults (no
 // injected SDK config or selector) for AC-1.2/1.5/1.7. Real temp registry
-// throughout; the module-level reload memory is reset per test.
+// throughout; reload identity is carried by durable PI session entries.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDeterministicProvider,
@@ -21,7 +21,7 @@ import {
   type ResolveDeps,
 } from "../../src/lifecycle/thread-resolution.js";
 import { pickThread, type ThreadChoice } from "../../src/lifecycle/picker.js";
-import type { ExtensionContext } from "../../src/pi/types.js";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "../../src/pi/types.js";
 import { eventBatch, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
 import { tempStore, type TempStore } from "../fixtures/thread.js";
 
@@ -66,7 +66,7 @@ async function makeThread(opts: { cwd?: string; title?: string } = {}): Promise<
 // A synthetic per-hook ctx carrying METHODS (not plain data) — so a retained
 // ctx would break the structuredClone plain-data guard. Each call is a distinct
 // object, modelling PI handing a fresh ctx to each hook.
-function syntheticCtx(cwd: string): ExtensionContext {
+function syntheticCtx(cwd: string, entries: SessionEntry[] = []): ExtensionContext {
   return {
     cwd,
     hasUI: false,
@@ -76,7 +76,7 @@ function syntheticCtx(cwd: string): ExtensionContext {
       getAvailable: () => [],
     },
     ui: { notify: () => {} },
-    sessionManager: { getEntries: () => [] },
+    sessionManager: { getEntries: () => entries },
   };
 }
 
@@ -89,6 +89,21 @@ function productionConnector(launch: () => { resume?: boolean; continue?: boolea
     newThreadFilePath: () => store.threadPath(),
     parseLaunch: launch,
   });
+}
+
+function registerConnector(
+  connector: ReturnType<typeof createConnector>,
+  entries: SessionEntry[],
+): void {
+  const pi: ExtensionAPI = {
+    registerHook: () => {},
+    registerCommand: () => {},
+    registerTool: () => {},
+    appendEntry: (type, data) => {
+      entries.push({ type, data });
+    },
+  };
+  connector.register(pi);
 }
 
 async function threadCount(): Promise<number> {
@@ -252,42 +267,81 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     expect(await threadCount()).toBe(before); // no second thread
   });
 
-  it("TC-1.7: production --resume presents the cwd-scoped titled candidates via ctx.ui.notify and resolves a selection", async () => {
-    await makeThread({ cwd: "/work/resume", title: "older" });
-    const recent = await makeThread({ cwd: "/work/resume", title: "newer" });
+  it("TC-1.7: production --resume uses the PI UI selector for multiple cwd-scoped candidates", async () => {
+    const older = await makeThread({ cwd: "/work/resume", title: "older" });
+    const newer = await makeThread({ cwd: "/work/resume", title: "newer" });
     await makeThread({ cwd: "/work/other", title: "different cwd" });
     const before = await threadCount();
 
-    // A ctx WITH a UI captures exactly what the picker presents to the operator.
-    const notes: string[] = [];
+    let selectTitle: string | undefined;
+    let selectOptions: readonly string[] = [];
     const ctx: ExtensionContext = {
       cwd: "/work/resume",
       hasUI: true,
       modelRegistry: { find: () => undefined, hasConfiguredAuth: () => false, getAvailable: () => [] },
-      ui: { notify: (message) => notes.push(message) },
+      ui: {
+        notify: () => {},
+        select: (title, options) => {
+          selectTitle = title;
+          selectOptions = options;
+          return Promise.resolve(options.find((option) => option.includes(newer)));
+        },
+      },
       sessionManager: { getEntries: () => [] },
     };
 
     const connector = productionConnector(() => ({ resume: true }));
     await connector.handlers.session_start(ctx, makeSessionStart("resume"));
 
-    // The operator was shown the cwd-scoped candidate list — only this cwd's
-    // threads, each with title and creation time — through ctx.ui.notify (the
-    // only PI v0.79.2 surface; selection resolves to the best available default).
-    expect(notes).toHaveLength(1);
-    const shown = notes[0]!;
-    expect(shown).toContain("older");
-    expect(shown).toContain("newer");
-    expect(shown).not.toContain("different cwd"); // a different cwd is not offered
-    const recentRow = await threads.resolve({ threadId: recent, registryPath: store.registryPath });
-    if (recentRow.ok) expect(shown).toContain(recentRow.value.createdAt); // creation time shown
+    expect(selectTitle).toBe("pi-lhc --resume: select a thread");
+    expect(selectOptions.some((option) => option.includes("older") && option.includes(older))).toBe(true);
+    expect(selectOptions.some((option) => option.includes("newer") && option.includes(newer))).toBe(true);
+    expect(selectOptions.some((option) => option.includes("different cwd"))).toBe(false);
+    const olderRow = await threads.resolve({ threadId: older, registryPath: store.registryPath });
+    const newerRow = await threads.resolve({ threadId: newer, registryPath: store.registryPath });
+    if (olderRow.ok) expect(selectOptions.some((option) => option.includes(olderRow.value.createdAt))).toBe(true);
+    if (newerRow.ok) expect(selectOptions.some((option) => option.includes(newerRow.value.createdAt))).toBe(true);
 
     const state = connector.getState();
     expect(state).not.toBeNull();
     if (state === null) return;
-    expect(idOf(state.threadRef)).toBe(recent); // best available explicit default selection
+    expect(idOf(state.threadRef)).toBe(newer);
     expect(connector.getInstance()).not.toBeNull();
-    expect(await threadCount()).toBe(before); // resumed, not created
+    expect(await threadCount()).toBe(before);
+  });
+
+  it("TC-1.7: production --resume fails closed when a UI selection is cancelled", async () => {
+    await makeThread({ cwd: "/work/resume-cancel", title: "older" });
+    await makeThread({ cwd: "/work/resume-cancel", title: "newer" });
+    const before = await threadCount();
+
+    const ctx: ExtensionContext = {
+      cwd: "/work/resume-cancel",
+      hasUI: true,
+      modelRegistry: { find: () => undefined, hasConfiguredAuth: () => false, getAvailable: () => [] },
+      ui: { notify: () => {}, select: () => Promise.resolve(undefined) },
+      sessionManager: { getEntries: () => [] },
+    };
+
+    const connector = productionConnector(() => ({ resume: true }));
+    await connector.handlers.session_start(ctx, makeSessionStart("resume"));
+
+    expect(connector.getState()).toBeNull();
+    expect(connector.getInstance()).toBeNull();
+    expect(await threadCount()).toBe(before);
+  });
+
+  it("TC-1.7: headless --resume with multiple candidates fails closed and requires --session", async () => {
+    await makeThread({ cwd: "/work/headless-many", title: "older" });
+    await makeThread({ cwd: "/work/headless-many", title: "newer" });
+    const before = await threadCount();
+
+    const connector = productionConnector(() => ({ resume: true }));
+    await connector.handlers.session_start(syntheticCtx("/work/headless-many"), makeSessionStart("resume"));
+
+    expect(connector.getState()).toBeNull();
+    expect(connector.getInstance()).toBeNull();
+    expect(await threadCount()).toBe(before);
   });
 
   it("TC-1.7: production --resume is headless-safe — no notify when ctx.hasUI is false, still resolves", async () => {
@@ -332,17 +386,23 @@ describe("Story 1: plain-data state across hooks", () => {
 });
 
 describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", () => {
-  it("TC-1.5: a FRESH connector reattaches to the same thread from the registry on reload — no module handoff, no duplicate", async () => {
+  it("TC-1.5: a FRESH connector reattaches to the exact durable threadId PI replayed on reload — no duplicate", async () => {
     const cwd = "/work/reload";
+    const entries: SessionEntry[] = [];
 
     // Connector A: a no-flag session creates the thread (cwd + default title).
     const connectorA = productionConnector(() => ({}));
-    await connectorA.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));
+    registerConnector(connectorA, entries);
+    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("new"));
     const stateA = connectorA.getState();
     expect(stateA).not.toBeNull();
     if (stateA === null) return;
     const firstId = idOf(stateA.threadRef);
     const countAfterNew = await threadCount();
+    expect(entries.at(-1)).toEqual({
+      type: "pi-lhc.thread",
+      data: { threadId: firstId, registryPath: store.registryPath },
+    });
 
     const row = await threads.resolve({ threadId: firstId, registryPath: store.registryPath });
     expect(row.ok).toBe(true);
@@ -352,15 +412,14 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     }
 
     // Reload: shutdown{reload}, then connector A is TORN DOWN and never
-    // referenced again. A brand-new connector handles the reload with an EMPTY
-    // closure and a still-no-flag launch (which would otherwise create a
-    // duplicate). The connector keeps NO module-level handoff state, so the only
-    // thing bridging the teardown is the durable registry — this is what proves
-    // reconstruction survives loss of every in-memory holder (SV-001).
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd), { reason: "reload" });
+    // referenced again. PI replays the durable pi-lhc.thread entry through
+    // ctx.sessionManager.getEntries(); the fresh connector uses that exact id
+    // even though the launch is still no-flag.
+    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
 
     const connectorB = productionConnector(() => ({}));
-    await connectorB.handlers.session_start(syntheticCtx(cwd), makeSessionStart("reload"));
+    registerConnector(connectorB, entries);
+    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
 
     const stateB = connectorB.getState();
     expect(stateB).not.toBeNull();
@@ -370,21 +429,58 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     expect(await threadCount()).toBe(countAfterNew); // no duplicate thread created
   });
 
+  it("TC-1.5: reload returns the prior durable thread even when a newer same-cwd thread exists", async () => {
+    const cwd = "/work/reload-exact";
+    const entries: SessionEntry[] = [];
+
+    const connectorA = productionConnector(() => ({}));
+    registerConnector(connectorA, entries);
+    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("new"));
+    const priorId = idOf(connectorA.getState()!.threadRef);
+    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
+
+    const newerId = await makeThread({ cwd, title: "newer same cwd" });
+    expect(newerId).not.toBe(priorId);
+
+    const connectorB = productionConnector(() => ({}));
+    registerConnector(connectorB, entries);
+    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
+
+    expect(idOf(connectorB.getState()!.threadRef)).toBe(priorId);
+    expect(idOf(connectorB.getState()!.threadRef)).not.toBe(newerId);
+  });
+
   it("reload reattaches by re-resolving --session from the registry (durable id evidence), creating nothing", async () => {
     const cwd = "/work/reload-session";
     const existing = await makeThread({ cwd, title: "carried" });
     const before = await threadCount();
+    const entries: SessionEntry[] = [];
 
     // Launched with --session <id>: reload re-resolves the SAME id from the
     // durable registry, independent of any in-memory state.
     const connectorA = productionConnector(() => ({ session: existing }));
-    await connectorA.handlers.session_start(syntheticCtx(cwd), makeSessionStart("startup"));
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd), { reason: "reload" });
+    registerConnector(connectorA, entries);
+    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("startup"));
+    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
 
     const connectorB = productionConnector(() => ({ session: existing }));
-    await connectorB.handlers.session_start(syntheticCtx(cwd), makeSessionStart("reload"));
+    registerConnector(connectorB, entries);
+    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
     expect(idOf(connectorB.getState()!.threadRef)).toBe(existing);
     expect(await threadCount()).toBe(before); // no thread created on reload
+  });
+
+  it("reload with no durable pi-lhc.thread entry fails closed and creates nothing", async () => {
+    const cwd = "/work/reload-empty-entry";
+    await makeThread({ cwd, title: "existing but not attached" });
+    const before = await threadCount();
+
+    const connector = productionConnector(() => ({}));
+    await connector.handlers.session_start(syntheticCtx(cwd), makeSessionStart("reload"));
+
+    expect(connector.getState()).toBeNull();
+    expect(connector.getInstance()).toBeNull();
+    expect(await threadCount()).toBe(before);
   });
 
   it("a no-flag 'new' session always creates a new thread — reattach is reload-only, keyed on the start reason, not on retained memory", async () => {

@@ -2,13 +2,11 @@
 
 ## User Profile
 
-Three consumers use LHC, through two surfaces.
+Two consumers use LHC through host processes.
 
-**Agentic harnesses** integrate the SDK in-process. A harness sends LHC the events its conversation produces and pulls assembled context views back when it calls its model. PI is the first harness; the SDK surface is designed so other harnesses can wire in the same way.
+**Agentic harnesses** integrate the SDK in-process. A harness sends LHC the events its conversation produces, supplies model-call capability for derivations, and pulls assembled context views back when it calls its model. PI is the first harness; the SDK surface is designed so other harnesses can wire in the same way.
 
-**Agents** work inside those harnesses and use the CLI directly: inspecting threads, searching history, checking derivation health, pulling reports during their own work.
-
-**Operators** are the people running long-horizon agentic work. They configure compaction, audit what an agent's context contains, curate the record when something needs fixing, and diagnose threads that misbehave.
+**Operators** are the people running long-horizon agentic work. They configure compaction through the host, audit what an agent's context contains, curate the record when something needs fixing, and diagnose threads that misbehave. Agents inspect and operate through the host-provided surfaces, not an out-of-process LHC CLI.
 
 ## Problem Statement
 
@@ -18,7 +16,7 @@ LHC separates the record from the working view. The full history of a thread is 
 
 ## Product Summary
 
-LHC is a TypeScript SDK with a thin CLI over it. Every operation is stateless: each call takes a thread id or file path, operates on durable storage, and returns. Six domains organize the operations — `threads`, `intake-stream`, `messages`, `turns`, `thread-view`, and `inspect` — with shared tech utils (a durable work queue, token counting) beneath them. The domain model and its vocabulary are defined in `../01-onboard/01-core-concepts.md` and `../01-onboard/02-domain-design.md`; this PRD scopes that model into buildable features.
+LHC is a TypeScript SDK consumed in-process by a host. Every operation is stateless: each call takes a thread id or file path, operates on durable storage, and returns. Six domains organize the operations — `threads`, `intake-stream`, `messages`, `turns`, `thread-view`, and `inspect` — with shared tech utils (a durable work queue, token counting) beneath them. The domain model and its vocabulary are defined in `../01-onboard/01-core-concepts.md` and `../01-onboard/02-domain-design.md`; this PRD scopes that model into buildable features.
 
 Each thread lives in its own SQLite file. A harness streams events in; synchronous intake records them, projects messages, and settles turn membership on the spot. Slow derivation runs through a durable work queue along three ownership paths: message-level forms (prompt smoothing, tool-call and tool-result summaries) queue when the message lands and belong to `messages`; turn and chunk derivations queue at close and belong to `turns`; view assembly consumes both and belongs to `thread-view`, which derives nothing itself. Thread views assemble locked summary bands plus a live full-fidelity tail, and render as an in-memory message array or a provider-format file. Missing derivations degrade a view, marked and reported; only damage to the source record blocks.
 
@@ -132,9 +130,9 @@ Seeing the record: read operations across the history and reports across the thr
 
 ### Scope
 
-In: listing, viewing, and searching messages; inspect reports — thread size and composition, turn and chunk counts, derivation health, current view contents and load cost.
+In: listing and viewing messages; inspect reports — thread size and composition, turn and chunk counts, derivation health, current view contents and load cost.
 
-Out: write paths (mutations are Feature 2's edit and delete operations), repair execution (owned by Feature 2's domain surfaces, reported on here).
+Out: write paths (mutations are Feature 2's edit and delete operations), repair execution (owned by Feature 2's domain surfaces, reported on here), message search (deferred post-v1 — its shape gets decided from real usage once LHC and the PI extension are integrated; see Future Directions).
 
 ### Scenarios
 
@@ -143,14 +141,40 @@ Out: write paths (mutations are Feature 2's edit and delete operations), repair 
 - AC-4.1: Inspect reports the active view's band composition, entry sources, and token cost
 - AC-4.2: Messages are listable and viewable in order with blocks, token estimates, turn membership, and derivation states
 
-**Scenario 2: An agent searches its own history.** Mid-task, the agent searches old messages by text from the CLI and reads what it finds.
-
-- AC-4.3: Message search returns matches across a thread's history with enough context to locate each in its turn
-
-**Scenario 3: An operator watches a repair land.** A message was edited or deleted (Feature 2's operations); inspect shows the rebuild's progress — which derivations cleared, what is queued, what has landed.
+**Scenario 2: An operator watches a repair land.** A message was edited or deleted (Feature 2's operations); inspect shows the rebuild's progress — which derivations cleared, what is queued, what has landed.
 
 - AC-4.4: Inspect reflects mutation-driven rebuilds in progress: cleared derivations show as pending with their queued work visible
 - AC-4.5: Inspect reports derivation health across a thread: counts by state, failures with reasons, and what repair would re-queue
+
+## Feature 5: Derivation Inference and SDK Consolidation
+
+The completion pass that makes derivation output come from real model calls and removes the temporary out-of-process CLI surface.
+
+### Scope
+
+In: host-supplied model-call function, per-derivation model assignment, LHC-owned prompt templates for every derivation kind, failure classification for real provider results, provenance on model-produced derived forms, opt-in real-inference verification, turn-end-only tool-result boundary advancement, and deletion of the LHC CLI/binary surface.
+
+Out: PI extension wiring, host auth implementation, prompt/model quality dial-in, new derivation kinds, and a long-running daemon.
+
+### Scenarios
+
+**Scenario 1: A host wires real inference into LHC.** The host constructs the SDK with one model-call function and explicit model/prompt assignments for every derivation kind. LHC owns what to ask and where each kind routes; the host owns credentials and how the call reaches a provider.
+
+- AC-5.1: SDK construction accepts either a direct deterministic provider or the host model-call function plus complete assignments, and rejects both/neither or incomplete assignments
+- AC-5.2: Every derivation kind renders an LHC-owned prompt, calls the assigned provider/model through the host function, and records provider/model/prompt provenance on ready output
+
+**Scenario 2: Real providers fail.** Provider/auth/network/model failures are classified into retryable or terminal outcomes and flow through the existing derivation state and repair machinery.
+
+- AC-5.3: Retryable model-call failures retry through the work queue and eventually land ready or failed with attempts and last error recorded
+- AC-5.4: Terminal failures such as auth or invalid request land failed without burning retry budget and are visible in derivation health
+
+**Scenario 3: Delivery proves actual inference.** The default suite remains deterministic, but an opt-in verification suite spends real tokens through a test-owned host function and records whether it ran.
+
+- AC-5.5: The opt-in real-inference suite visibly reports ran/not-ran and, when configured, proves every derivation kind can land non-empty non-marker output from a real endpoint
+
+**Scenario 4: The SDK is the only LHC product surface.** The previous CLI parity burden is removed; future command-line behavior belongs to host applications or wrappers over the SDK.
+
+- AC-5.6: The package publishes no LHC binary and no env/flag provider-resolution path; provider capability arrives through SDK construction only
 
 ## Cross-Cutting Decisions
 
@@ -160,7 +184,7 @@ Out: write paths (mutations are Feature 2's edit and delete operations), repair 
 
 **All-or-nothing intake batches.** A rejected event rejects its whole batch. Rationale: binary outcomes for harness debugging; idempotency keys make resend-after-fix safe.
 
-**SDK-first.** The SDK is the product surface; the CLI wraps it; a future app server wraps the same operations. Nothing is CLI-only.
+**SDK-only.** The SDK is the product surface. Host applications may wrap it with commands or UI, but LHC itself does not maintain a separate out-of-process CLI surface. Provider capability arrives through SDK construction, not env/flag resolution inside LHC.
 
 **Stateless operations.** Every call carries what it needs. No daemon, no session state between calls.
 
@@ -177,13 +201,15 @@ Out: write paths (mutations are Feature 2's edit and delete operations), repair 
 - **M2 — Derivation (Feature 2):** derivations land asynchronously and survive failure and restart; repair works. Feedback gate: kill and resume the worker mid-thread; edit a message and watch the rebuild.
 - **M3 — Views (Feature 3):** a thread compacts and serves PI-shaped context at budget. Feedback gate: drive a long recorded thread through compact cycles and review view quality.
 - **M4 — Inspection and hardening (Feature 4):** inspection complete; SDK exercised end-to-end at its integration points. Feedback gate: run the full SDK surface the way the PI extension will.
+- **M5 — Real inference and SDK consolidation (Feature 5):** derivations run through real model calls when configured, and LHC exposes only the SDK surface. Feedback gate: opt-in real-inference suite lands every derivation kind with provider/model/prompt provenance.
 
 ## Future Directions
 
 Not v1 scope; they shape architecture:
 
-- PI extension wiring: intake on harness events, context hook serving views, commands (next PRD)
+- PI extension wiring: intake on harness events, context hook serving views, commands over the LHC SDK, and provider/auth integration for the host model-call function (next PRD)
 - Model-specific token weights over the base estimate
+- Message search across a thread's history (deferred from Feature 4 — was AC-4.3, id retired with it: shape decided from real post-integration usage)
 - Retrieval keys on chunks and a pull-chunk tool for agent-driven recall
 - Offline consolidation/distillation and a retrieval surfacer layered beside the core
 - Aging very old full-fidelity material out of the thread file to archive storage
@@ -197,9 +223,10 @@ flowchart LR
   E2 --> E3[Epic 3: Views and Smart Compact]
   E2 --> E4[Epic 4: Inspection]
   E3 --> E4
+  E4 --> E5[Epic 5: Derivation Inference]
 ```
 
-Epic 1 has no dependencies and proves the hot path. Epic 2 consumes Epic 1's queued work and owns the record's mutations (edit and delete ride the same clear-and-regenerate machinery as derivation). Epic 3 consumes Epic 2's artifacts. Epic 4 reads everything and lands last, though its message read/search portion could start after Epic 1. Likely split if an epic runs large: Epic 3 into assembly/compact versus rendering/readiness.
+Epic 1 has no dependencies and proves the hot path. Epic 2 consumes Epic 1's queued work and owns the record's mutations (edit and delete ride the same clear-and-regenerate machinery as derivation). Epic 3 consumes Epic 2's artifacts. Epic 4 reads everything. Epic 5 lands after the full deterministic surface exists: it replaces deterministic derivation delivery with host-supplied real inference and retires the temporary LHC CLI surface. Likely split if an epic runs large: Epic 3 into assembly/compact versus rendering/readiness.
 
 ## Relationship to Downstream Specs
 

@@ -7,7 +7,6 @@
 // SDK runs real against a temp SQLite thread with the deterministic provider
 // (selected by explicit name, never a production default).
 import {
-  createDeterministicProvider,
   inspect,
   intakeStream,
   type EventKind,
@@ -18,20 +17,45 @@ import {
 } from "lhc";
 import { createConnector, type Connector } from "../../src/index.js";
 import type { LaunchFlags } from "../../src/lifecycle/thread-resolution.js";
-import type { ExtensionContext, SessionStartReason } from "../../src/pi/types.js";
+import { fakeModelCallText } from "../fixtures/model-call.js";
+import { DEFAULT_PROMPT_NAMES } from "lhc";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionStartReason } from "../../src/pi/types.js";
 import { makeSessionStart } from "../fixtures/synthetic.js";
 import type { TempStore } from "../fixtures/thread.js";
 
 /** A per-hook ctx carrying methods (not plain data), exactly as PI hands each
  *  hook a fresh context object. Headless (`hasUI:false`) — capture must not
  *  assume a TUI. */
-export function syntheticCtx(cwd = "/work/capture"): ExtensionContext {
+const sessionEntriesByStore = new WeakMap<TempStore, SessionEntry[]>();
+
+function entriesFor(store: TempStore): SessionEntry[] {
+  let entries = sessionEntriesByStore.get(store);
+  if (entries === undefined) {
+    entries = [];
+    sessionEntriesByStore.set(store, entries);
+  }
+  return entries;
+}
+
+function registerConnector(connector: Connector, entries: SessionEntry[]): void {
+  const pi: ExtensionAPI = {
+    registerHook: () => {},
+    registerCommand: () => {},
+    registerTool: () => {},
+    appendEntry: (type, data) => {
+      entries.push({ type, data });
+    },
+  };
+  connector.register(pi);
+}
+
+export function syntheticCtx(cwd = "/work/capture", entries: SessionEntry[] = []): ExtensionContext {
   return {
     cwd,
     hasUI: false,
     modelRegistry: { find: () => undefined, hasConfiguredAuth: () => false, getAvailable: () => [] },
     ui: { notify: () => {} },
-    sessionManager: { getEntries: () => [] },
+    sessionManager: { getEntries: () => entries },
   };
 }
 
@@ -39,7 +63,24 @@ export function syntheticCtx(cwd = "/work/capture"): ExtensionContext {
  *  deterministic provider, so a captured user_prompt's queued derivation has a
  *  handler to settle and never strands background work. */
 export function captureConfig(): OpResult<SdkConfig> {
-  return { ok: true, value: { provider: createDeterministicProvider(), mode: "background" } };
+  return {
+    ok: true,
+    value: {
+      inference: {
+        call: fakeModelCallText("deterministic text"),
+        assignments: {
+          smoothed_prompt: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
+          tool_call_summary: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.tool_call_summary },
+          tool_result_summary: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.tool_result_summary },
+          turn_rendering: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.turn_rendering },
+          lower_band_projection: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.lower_band_projection },
+          chunk_summary_detailed: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed },
+          chunk_summary_brief: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
+        },
+      },
+      mode: "background",
+    },
+  };
 }
 
 export interface StartedCapture {
@@ -64,7 +105,9 @@ export async function attachCapture(
     parseLaunch: () => launch,
     buildSdkConfig: () => captureConfig(),
   });
-  const ctx = syntheticCtx(cwd);
+  const entries = entriesFor(store);
+  registerConnector(connector, entries);
+  const ctx = syntheticCtx(cwd, entries);
   await connector.handlers.session_start(ctx, makeSessionStart(reason));
   const state = connector.getState();
   if (state === null) throw new Error("attachCapture: session_start did not resolve a thread");

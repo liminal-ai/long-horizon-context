@@ -1,11 +1,11 @@
 # Team Implementation Log
 
 ## Run Overview
-- State: STORY_ACTIVE
+- State: EPIC_READY_FOR_CLOSEOUT
 - Spec Pack Root: /Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core
-- Current Story: 03-capture-verification
-- Current Phase: implement (story-orchestrate run)
-- Last Completed Checkpoint: Story 2 ACCEPTED + committed (345033a). Story 3 validate => ready (baselineBefore 390). Story 3 run launched. Recovery playbook for claude-code >1MB finalize / codex resume drift is in memory + above.
+- Current Story: none — Stories 0-6 implemented and story-verified/accepted by impl-lead
+- Current Phase: epic closeout complete pending final packaging/commit
+- Last Completed Checkpoint: Recovery quick-fix 014 brought the dirty candidate back under CLI process and resolved epic-review 006 blockers EV-001/EV-002. Epic reverify 007 => `ready-for-closeout`, confirmed no open blocking issues, and reports all 146 pi-lhc tests passing.
 - Update7 (Story 2 RESOLVED): verify7 narrowed SV-001 to its irreducible core — "fresh attach can skip a new same-content id-less message." ANALYSIS (impl-lead, grounded in research + code): the connector keys real message_end events off PI entryId (Tier-1, always present per research line 142 "every entry carries id+parentId"; reload-stable AND occurrence-unique). The verifier's failing repro constructs a message_end with NO entryId AND NO position — input the REAL PI hook path never produces (verified: research §44/§84 idempotency built on pi:<session>:entry:<entryId>; production index.ts threads entryId as Tier-1; reattach-idempotency.test.ts + parallel-and-errors.test.ts assert real-entryId reload dedup = skipped). For a truly identity-less + content-identical event across a fresh attach, "same key on redelivery" and "distinct key per occurrence" are information-theoretically mutually exclusive — unsolvable from the connector, NOT a production defect. DISPOSITION: accepted-risk (documented limitation) + hardening note. The two genuine bugs (reload-dedup-dup, gap-in-health) and omission issues were REAL and are FIXED. Gates green: pi-lhc 14f/71t, lhc 41f/389p/9skip.
 - Update6: verify6 (fresh) confirmed SV-002 (unmappable-hook gap) + SV-003 (per-part omission) RESOLVED. Remaining: SV-001 narrowed to "no-id + NO-POSITION events collide". Root-cause analysis (impl-lead, read index.ts): production builds fallbackId = entryId? -> "<kind>:<position>" -> CONSTANT "no-source-position"; `event.position` arrives ON the hook event and the connector never GUARANTEES one. So no-entryId+no-position => constant discriminator => collision. The verifier keeps (correctly) stripping whatever discriminator the last patch added. STRUCTURAL FIX (quickfix4, codex, /tmp/lbuild/s2-quickfix4.md): connector assigns its OWN monotonic per-capture sourceSeq ordinal as the LAST-RESORT discriminator (eliminate the constant), keeping entryId/toolCallId/responseId/position as higher tiers for reload-stability. This is the 4th and FINAL piecemeal pass on this area — if verify7 still finds a NEW same-area major, accept Story 2 with the residual id-less-collision dispositioned as a documented limitation (an event PI gives ZERO identity to cannot satisfy both stable-on-redelivery AND unique-per-occurrence from content alone — a fundamental constraint, not a code defect) rather than looping further. gates currently green: pi-lhc 14f/68t, lhc 389p.
 - Update5: verify4 (fresh) confirmed prior SV-001/002/003 RESOLVED; verify5 (fresh, after quickfix2) => revise, 3 related edge findings (verifier proved each via focused repro): SV-001 major (no-entryId same-content events still collide — idempotency.ts HAS a fallbackId discriminator slot but CALLERS pass none, so Tier-4 uses constant default), SV-002 major (unmappable hook input e.g. invalid role records no durable gap on writable thread — mapMessage throw not converted to gap), SV-003 minor (multiple unsupported tool-result parts share one omission key). Root cause SV-001: callers must thread a per-occurrence, reload-stable discriminator (PI monotonic source position) into fallbackId. Routing quick-fix3 (codex) /tmp/lbuild/s2-quickfix3.md. NOTE: 3rd quick-fix on Story 2; if verify6 still finds new same-area edges, consider escalating to a fresh full implement of the capture story (claude can't due to >1MB, so a focused codex rebuild of idempotency+callers) or accept with the converger's residual minor items dispositioned — judge at verify6.
@@ -15,7 +15,7 @@
 - RECURRING-PATTERN (recovery playbook for this run): verify=revise -> planner runs story-continue -> large continues FAIL at finalize with PROVIDER_OUTPUT_INVALID (claude-code session-resume + big streaming output). FRESH run-implement (fresh session) finalizes reliably. STANDARD FIX: on a continue PROVIDER_OUTPUT_INVALID / interrupted, send a reopen review-request directing run-implement (fresh session) building on the on-disk code; raised silence timeout (1200000) already handles the separate silence-stall failure mode.
 - Decision discipline (Lee, 2026-06-14): do NOT block on AskUserQuestion AND do NOT rubber-stamp. For each decision, think through the options and choose the genuinely best one — route fixes / reject when work is deficient; accept only when justified; approve deviations only when truly forced (e.g., verified platform limits). Story 2 (converter + PI->LHC turn derivation) is the highest-risk story — scrutinize verifier findings hard. See memory autonomous-deviation-rulings-no-blocking.
 - Update2: continue 013 (healthy fc8b0d70, 20min timeout) SUCCEEDED = ready-for-verification; SV-001/002 fixes on disk (index.ts +296, thread-resolution.ts +174). Then the codex story-lead PLANNER's next turn emitted invalid JSON (provider-output-invalid) -> resume terminated `interrupted`. Transient planner blip, NOT a continue failure (the 20min timeout fixed the continue-stall). The continue work is durable. Plain `story-orchestrate resume` to let the planner retry -> run-verify on the SV fixes. (Earlier 005/007 continue failures were the old broken session + 10min timeout; resolved.)
-- Update (recovery worked): reopen review-request -> planner ran FRESH implement 010 (healthy session fc8b0d70). It fixed SV-003 (newThread title) and the placeholder-activate path. Verifier 011 = `revise` (fresh-fix-path), 2 open findings: SV-001 (reload uses module-scope rememberedSessionThreadId, not durable registry re-resolution -> AC-1.5 + arch-risk test) and SV-002 (production --resume auto-resumes most-recent cwd thread, not operator selection -> AC-1.7). Wiring research confirms PI v0.79.2 has ctx.ui.notify (output) but NO interactive input/selection surface -> SV-002 fix must wire picker presentation + selection via available surface OR record an explicit declared deviation (not a silent AC bypass). Routing a `revise` review-request (/tmp/lbuild/s1-review-request-2.json) to story-continue on the HEALTHY fc8b0d70. baseline now 381->384. story-orchestrate will re-emit needs-ruling at the end (deviations); after verifier=pass I rule+accept directly. If verifier still blocks SV-002 as infeasible interactive selection, escalate to user.
+- Historical update, superseded by recovery quick-fix: reopen review-request -> planner ran FRESH implement 010 (healthy session fc8b0d70). It fixed SV-003 (newThread title) and the placeholder-activate path. Verifier 011 = `revise` (fresh-fix-path), 2 open findings: SV-001 (reload used module-scope rememberedSessionThreadId instead of durable exact-thread reconstruction) and SV-002 (production --resume auto-resumed most-recent cwd thread instead of operator selection). Current disposition below marks both fixed: reload now uses durable `pi-lhc.thread` session entries, and `--resume` uses `ctx.ui.select` when available with headless fail-closed behavior.
 - Last Completed Checkpoint: Story 1 attempt-1 stuck. Implement 003 (40m, fresh session) landed substantial+compiling code (pi-lhc lifecycle + A-8 lhc registry). Verifier 004 = `revise`, 3 major findings (SV-001 placeholder activate path; SV-002 reload-from-memory not durable [AC-1.5]; SV-003 newThread missing title), recommendedFixScope=fresh-fix-path. story-continue then failed TWICE resuming implementor session 3bd99b80 (005: silence-timeout stall; 007: PROVIDER_OUTPUT_INVALID truncated-stream after stale-session kill). Runtime replayBoundary keeps saying resume-current-attempt w/ requiresFreshChildProviderSession=false (won't auto-fresh the dead session); validate=blocked resume-required (can't start a new attempt). RECOVERY: raised story_implementor_silence_timeout_ms 600000->1200000, and resuming with an impl-lead review-request (decision=reopen, /tmp/lbuild/s1-review-request.json) that DIRECTS run-implement (fresh session) building on the on-disk code + fixing SV-001/002/003. If the planner still run-continues the dead session and fails, escalate to primitive recovery (fresh story-implement) or user.
 - LEARNING: resuming a large/mid-turn-killed claude-code implementor session is unreliable; prefer fresh rehydration (per ls-impl recovery rule). Captured as a follow-up to the needs-ruling memory.
 - NOTE: Story 1 includes A-8 LHC-side registry work in packages/lhc (cwd column, partial-id resolve, cwd-filtered listThreads, title). Configured gates are pi-lhc-scoped only, so at Story 1 acceptance ALSO run `pnpm --filter lhc verify` (or lhc test) to catch LHC regressions the pi-lhc gate cannot. Same rule for any later story that touches packages/lhc.
@@ -98,11 +98,11 @@ When the story implementor surfaces spec deviations, the CLI's `buildStoryLeadFi
 - Dispositions:
   - placeholder-activate path (orig SV-001): fixed (real activate/hook lifecycle wired).
   - title metadata (orig SV-003): fixed (newThread sets title = cwd leaf default).
-  - SV-001 reload reconstruction: accepted-risk — reload now re-resolves from the durable LHC registry (cwd-most-recent), NOT module memory; exact-prior-thread reconstruction deferred (design forbids a PI-session->thread map and a durable resolved-id store). Approved by impl-lead under Lee's standing authorization.
-  - SV-002 --resume operator selection: accepted-risk — PI v0.79.2 exposes no interactive input/selection surface (verified wiring research); picker logic is implemented + tested; production presents candidates via ctx.ui.notify and auto-selects most-recent. Approved by impl-lead. UPSTREAM REQUEST: PI extension input/selection API needed for real --resume picker + exact-thread reload.
+  - SV-001 reload reconstruction: fixed in recovery quick-fix 014 — production persists the resolved thread id through PI session entries and reload reconstructs that exact thread id rather than using cwd-most-recent fallback; tests cover a newer same-cwd thread existing at reload time.
+  - SV-002 --resume operator selection: fixed in recovery quick-fix 014 — production uses `ctx.ui.select` when available, includes title/created/threadId labels, preserves headless fail-closed behavior for ambiguous resume, and keeps single-candidate headless resume.
   - Story 0 inherited deviations (local PI types, initLhc wrapper): accepted-risk (already approved Story 0).
 - Open Risks:
-  - PI lacks an extension input/selection API -> real --resume operator selection and exact-prior-thread reload are deferred until that API exists (or real PI is wired, Epic 2/4). Filed as an upstream request.
+  - none blocking for Story 1.
 - Baseline Before: 381
 - Baseline After: 384
 - Acceptance note: verifier final = block on SV-001/SV-002 (PI-platform-constrained ACs). Per ls-impl, accepting a blocked finding as risk is permitted when concrete tech-arch evidence supports the interpretation AND the user accepts; the tech-arch explicitly states PI-API gaps "constrain what an epic can promise" and Lee gave standing authorization to rule such deviations autonomously. A-8 LHC registry work (cwd column, partial-id resolve, cwd-filtered listThreads, title) landed in packages/lhc and passes lhc verify.
@@ -124,24 +124,72 @@ When the story implementor surfaces spec deviations, the CLI's `buildStoryLeadFi
 - Baseline After: 387 (pi-lhc test files 14; workspace test-file count +3 net from new capture tests)
 - Acceptance note: Highest-risk story. Initial implement + fixes hit claude-code's >1MB provider-output finalize limit repeatedly (PROVIDER_OUTPUT_INVALID), so fixes were driven via codex quick-fix (no size bug) + fresh codex story-verify (codex follow-up/resume drifts — use fresh initial verifies). Two genuine bugs fixed and independently re-verified; residual is a non-production unsolvable edge.
 
+### 04-fork-as-new-thread
+- Story Title: Story 4: Fork as New Thread
+- Implementor Evidence: artifacts/04-fork-as-new-thread/003-implementor.json plus recovery artifacts quick-fix/009 and direct bounded impl-lead fix.
+- Verifier Evidence: artifacts/04-fork-as-new-thread/004-verify.json (initial revise), 009-verify.json (follow-up revise), 011-verify.json (final pass; no open findings).
+- Story Gate: pnpm --filter pi-lhc verify — PASS (impl-lead independent run: 16 test files / 83 tests). Story-lead package also records verify-all=pass.
+- Dispositions:
+  - SV-04-001 through SV-04-004: fixed by quick-fix/009 and confirmed by 011-verify.json.
+  - SV-04-005: fixed by direct bounded impl-lead edit; fallback detection now reads previousSessionFile and current session entries, then uses shared ids / parentId links as PI session-tree evidence.
+  - SV-04-006: fixed by direct bounded impl-lead edit; fork thread creation/init failures now fail closed instead of falling through to normal launch.
+  - Derived form reuse deviation: accepted-risk — v1 requeues derived forms rather than copying/reusing ready forms because provenance-identity safety is not implemented yet. This preserves correctness and was approved in artifacts/04-fork-as-new-thread/story-lead/001-ruling-response-001.json.
+- Open Risks: none for Story 4.
+- Baseline Before: 390
+- Baseline After: 392
+- Acceptance note: story-orchestrate terminal remains `needs-ruling` because implementor-surfaced deviations are re-injected by the CLI; ruling was supplied and the story is accepted directly by impl-lead under the documented Orchestration Note.
+
+### 05-inference-host-routing
+- Story Title: Story 5: Inference Host Routing
+- Implementor Evidence: artifacts/05-inference-host-routing/003-implementor.json plus quick-fix/010 after verifier findings.
+- Verifier Evidence: artifacts/05-inference-host-routing/004-verify.json (initial revise), 006-verify.json (final pass; no open findings).
+- Story Gate: pnpm --filter pi-lhc verify — PASS.
+- Dispositions:
+  - SV-05-001..SV-05-005: fixed by quick-fix/010 and verified pass.
+  - Production createModelCall now routes through PI/pi-ai when available, classifies host/provider failures, and keeps deterministic seams for tests.
+- Open Risks: none for Story 5.
+- Baseline Before: 392
+- Baseline After: 395
+- Acceptance note: story-orchestrate remained interrupted after stale claude-code continue failure; story was accepted directly from verifier pass + gate.
+
+### 06-startup-validation-and-assignment-config
+- Story Title: Story 6: Startup Validation and Assignment Config
+- Implementor Evidence: artifacts/06-startup-validation-and-assignment-config/003-implementor.json plus quick-fix/011, quick-fix/012, and one direct bounded model-default edit.
+- Verifier Evidence: artifacts/06-startup-validation-and-assignment-config/004-verify.json (initial revise), 006/008-verify.json (follow-up revise), 009-verify.json (final pass; no open findings).
+- Story Gate: pnpm --filter pi-lhc verify — PASS. Epic gate later also PASS.
+- Dispositions:
+  - SV-001..SV-005: fixed and verified pass.
+  - Default assignments now use production-reachable PI lane `openai-codex/gpt-5.4`; startup validation reports unreachable lanes visibly while capture continues.
+- Open Risks: none for Story 6.
+- Baseline Before: 395
+- Baseline After: 398
+- Acceptance note: story-orchestrate remained interrupted after stale claude-code continue failure; story was accepted directly from verifier pass + gate.
+
 ## Cumulative Baselines
 - Baseline metric: count of workspace test FILES matching `\.(test|spec)\.[cm]?[jt]sx?$` (the runtime's regression metric, from validate baselineSeed) — NOT pi-lhc test-case count.
 - Story 0 (00-foundation): before 375 -> after 381 (+6 pi-lhc foundation test files). No regression. ACCEPTED.
 - Story 1 (01-session-lifecycle): before 381 -> after 384. No regression (pi-lhc 8 files/33 tests pass; lhc 41 files/388 pass after A-8). ACCEPTED.
 - Story 2 (02-event-capture): before 384 -> after 387. No regression (pi-lhc 14 files/71 tests pass; lhc 41 files/389 pass). ACCEPTED.
-- Latest Actual Total: 387
-- Next: Story 3 baseline-before = 387.
+- Story 3 (03-capture-verification): before 387 -> after 390. No regression. ACCEPTED + committed (bacc61d).
+- Story 4 (04-fork-as-new-thread): before 390 -> after 392. No regression (pi-lhc 16 files/83 tests pass). ACCEPTED.
+- Story 5 (05-inference-host-routing): before 392 -> after 395. No regression. ACCEPTED.
+- Story 6 (06-startup-validation-and-assignment-config): before 395 -> after 398. No regression. ACCEPTED.
+- Latest Actual Total: 398
+- Next: final package/commit.
 
 ## Epic Closeout
-- Current Epic Review Artifact: none
-- Epic Review Status: not-started
-- Epic Fix Status: not-started
-- Epic Reverify Status: not-started
-- Final Gate Status: not-run
+- Current Epic Review Artifacts: artifacts/epic/006-epic-review.json (block on EV-001/EV-002), artifacts/epic/007-epic-reverify.json (`ready-for-closeout`).
+- Epic Review Status: ready-for-closeout after reverify.
+- Epic Fix Status: recovery quick-fix 014 applied and verified:
+  - EV-001 fixed: corpus replay now consumes recorded PI hook/lifecycle JSONL fixtures with `message_end` entry ids and `agent_end` boundaries, driven through the real converter/accumulator/intake path.
+  - EV-002 fixed: reload reconstructs the exact persisted resolved thread id instead of cwd-most-recent fallback; interactive `--resume` uses PI `ctx.ui.select`; headless ambiguous resume fails closed with explicit `--session <id>` path.
+  - EF-001 LHC retirement snapshot updated for current exported SDK names.
+- Epic Reverify Status: artifacts/epic/007-epic-reverify.json => `ready-for-closeout`, confirmed no blocking issues.
+- Final Gate Status: PASS — epic reverify reports all 146 pi-lhc tests passing; prior `pnpm --filter lhc verify` also passed after closeout fixes.
 
 ## Open Risks / Accepted Risks
 - A-8 (LHC registry additions: cwd column, partial-id resolve, cwd-filtered listThreads, title) is Story 1 implementation scope and touches packages/lhc/, not just packages/pi-lhc/. Gated before AC-1.6/1.7.
-- M0 inputs pending per spec: recorded corpora are Story 3 fixtures; image/file-ref handling (safe interim = degrade-to-runtime_note) and tool-call rendering are M0 decisions. Story 3 fixture breadth widens as corpora arrive.
+- M0 inputs pending per spec: image/file-ref handling (safe interim = degrade-to-runtime_note) and tool-call rendering are M0 decisions. Story 3 now has recorded PI hook/lifecycle JSONL fixtures for the required corpus set; fixture breadth can widen as more recordings arrive.
 - createSdk→initLhc rename (A-4) pending but mechanical; spec uses initLhc.
 
 ## Retained Operating Notes (carried forward to survive compaction)

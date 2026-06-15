@@ -142,10 +142,12 @@ export interface ModelRegistry {
 
 export interface ExtensionUI {
   notify(message: string, options?: { level?: "info" | "warn" | "error" }): void;
+  select?(title: string, options: readonly string[]): Promise<string | undefined>;
 }
 
 export interface SessionEntry {
   type: string;
+  data?: unknown;
   readonly [k: string]: unknown;
 }
 

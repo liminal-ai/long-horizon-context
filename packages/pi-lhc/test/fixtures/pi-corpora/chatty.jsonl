@@ -1,0 +1,12 @@
+{"recordType":"pi_hook","hook":"message_end","entryId":"chatty-entry-0","position":0,"message":{"role":"user","content":[{"type":"text","text":"what does this repo do?"}]}}
+{"recordType":"expected_event","eventKind":"user_prompt","payload":{"text":"what does this repo do?"}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"chatty-entry-1","position":1,"message":{"role":"assistant","content":[{"type":"text","text":"it is the LHC SDK"}]}}
+{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"it is the LHC SDK"}}
+{"recordType":"pi_lifecycle","hook":"agent_end","entryId":"chatty-agent-end-0","position":2}
+{"recordType":"expected_event","eventKind":"turn_end","payload":{}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"chatty-entry-2","position":3,"message":{"role":"user","content":[{"type":"text","text":"and the connector?"}]}}
+{"recordType":"expected_event","eventKind":"user_prompt","payload":{"text":"and the connector?"}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"chatty-entry-3","position":4,"message":{"role":"assistant","content":[{"type":"text","text":"it wires PI to LHC"}]}}
+{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"it wires PI to LHC"}}
+{"recordType":"pi_lifecycle","hook":"agent_end","entryId":"chatty-agent-end-1","position":5}
+{"recordType":"expected_event","eventKind":"turn_end","payload":{}}

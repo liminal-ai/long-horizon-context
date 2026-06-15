@@ -12,7 +12,7 @@ import { mapMessage } from "../../src/capture/map-message.js";
 import { mapModelSelect } from "../../src/capture/runtime-changes.js";
 import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
-import type { AgentMessage } from "../../src/pi/types.js";
+import type { RecordedPiHookEvent } from "../../src/verify/replay.js";
 import { loadToolHeavyCorpus } from "../fixtures/corpus.js";
 import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
 
@@ -97,15 +97,18 @@ describe("Story 2: idempotency key construction (deterministic goldens)", () => 
   });
 });
 
-function buildCorpusBatch(source: AgentMessage[]): MessageEventInput[] {
+function buildCorpusBatch(source: RecordedPiHookEvent[]): MessageEventInput[] {
   const acc = new TurnAccumulator({ piSessionId: "corpus" });
   const events: MessageEventInput[] = [];
-  source.forEach((message, index) => {
-    const mapped = mapMessage(message, { piSessionId: "corpus", entryId: `s${index}` });
+  for (const record of source) {
+    if (record.hook === "agent_end") {
+      events.push(...acc.onAgentEnd());
+      continue;
+    }
+    const mapped = mapMessage(record.message, { piSessionId: "corpus", entryId: record.entryId });
     acc.onMessage(mapped);
     events.push(...mapped);
-  });
-  events.push(...acc.onAgentEnd());
+  }
   return events;
 }
 

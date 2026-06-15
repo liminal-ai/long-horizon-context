@@ -33,12 +33,16 @@ import { TurnAccumulator } from "../capture/turn-accumulator.js";
 // events/messages/turns/order, never just counts. inspect's overview/health are
 // the live read-back surfaces a Story-3 test asserts on for AC-6.3.
 
-/** A loaded corpus: synthetic PI source messages (the stand-in until M0
- *  delivers recordings) paired with the expected LHC intake events. Both
- *  `verify/replay` and the corpus fixtures consume this shape. */
+export type RecordedPiHookEvent =
+  | { recordType: "pi_hook"; hook: "message_end"; entryId: string; position?: number; message: AgentMessage }
+  | { recordType: "pi_lifecycle"; hook: "agent_end"; entryId?: string; position?: number };
+
+/** A loaded corpus: recorded PI hook/lifecycle events paired with the expected
+ *  LHC intake events. Both `verify/replay` and the corpus fixtures consume this
+ *  shape. */
 export interface Corpus {
   name: string;
-  source: AgentMessage[];
+  source: RecordedPiHookEvent[];
   expected: MessageEventInput[];
 }
 
@@ -108,43 +112,30 @@ function replaySessionId(corpus: Corpus): string {
   return `replay:${corpus.name}`;
 }
 
-/** Drive one corpus through the real converter into the thread, reconstructing
- *  the PI hook stream a live session would have fired: each source message is a
- *  `message_end` (mapped + accumulated + flushed), and an `agent_end` closes the
- *  LHC turn at each agent-run boundary — before a fresh user prompt and once at
- *  end-of-stream — so PI's "a new prompt starts a new run" shows up as exactly
- *  one `turn_end` per run (AC-2.2 semantics, exercised end to end here). */
+/** Drive one recorded PI hook/lifecycle corpus through the real converter into
+ *  the thread. `message_end` records map through Story 2's mapper; `agent_end`
+ *  records close turns through the same accumulator operation used live. */
 async function driveCorpus(corpus: Corpus, instance: LhcInstance): Promise<void> {
   const piSessionId = replaySessionId(corpus);
   const accumulator = new TurnAccumulator({ piSessionId });
 
-  for (const [index, message] of corpus.source.entries()) {
-    // A new user prompt with a turn already open means the previous agent run
-    // ended: close it first (agent_end), then record the prompt that opens the
-    // next run.
-    if (message.role === "user" && accumulator.hasOpenTurn()) {
+  for (const [index, record] of corpus.source.entries()) {
+    if (record.hook === "agent_end") {
       await flush(accumulator.onAgentEnd(), instance);
+      continue;
     }
 
-    // Real recorded PI message_end always carries a stable entry id; the
-    // synthetic corpora omit it, so stamp a deterministic per-message id so the
-    // converter keys off its Tier-1 path exactly as production does.
-    const mapCtx: MapCtx = { piSessionId, entryId: `${piSessionId}:entry:${index}` };
+    const mapCtx: MapCtx = { piSessionId, entryId: record.entryId };
     let events: MessageEventInput[];
     try {
-      events = mapMessage(message, mapCtx);
+      events = mapMessage(record.message, mapCtx);
     } catch (cause) {
-      // An unmappable source message degrades to a durable, queryable gap —
-      // never a thrown replay (mirrors index.ts's capture-failure isolation).
-      await captureGap(`${piSessionId}:entry:${index}`, `replay map failed: ${detail(cause)}`, instance);
+      await captureGap(record.entryId || `${piSessionId}:entry:${index}`, `replay map failed: ${detail(cause)}`, instance);
       continue;
     }
     accumulator.onMessage(events);
     await flush(events, instance);
   }
-
-  // Close the final open turn (the last agent run's agent_end).
-  await flush(accumulator.onAgentEnd(), instance);
 }
 
 async function flush(events: MessageEventInput[], instance: LhcInstance): Promise<void> {

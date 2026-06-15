@@ -1,138 +1,63 @@
 // Recorded-corpus loader (tech design §Fixture Contracts). Each corpus is a
-// named lifecycle paired with the LHC intake events it should produce. Until M0
-// delivers real recordings, the loaders build synthetic stand-ins; the
-// machinery (load → validate shape → compare on replay in Story 3) is real and
-// widens as corpora arrive. The validator PARSES and CHECKS shapes — it never
+// named recorded PI hook/lifecycle JSONL fixture paired with the LHC intake
+// events it should produce. The validator PARSES and CHECKS shapes — it never
 // hardcodes a passing count (story §Anti-Shim Requirements).
-import type { EventKind } from "lhc";
-import type { Corpus } from "../../src/verify/replay.js";
-import { ABORTED_DISPOSITION_TEXT } from "../../src/capture/map-message.js";
-import {
-  makeAssistantMessage,
-  makeToolResult,
-  makeUserMessage,
-  validEvent,
-} from "./synthetic.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { EventKind, MessageEventInput } from "lhc";
+import type { Corpus, RecordedPiHookEvent } from "../../src/verify/replay.js";
+import type { AgentMessage } from "../../src/pi/types.js";
+import { validEvent } from "./synthetic.js";
 
-const CALL_A = "call_a|fc_1";
-const CALL_B = "call_b|fc_2";
+const CORPUS_DIR = fileURLToPath(new URL("./pi-corpora/", import.meta.url));
 
-/** Plain user/assistant text exchanges, no tools. */
-export function loadChattyCorpus(): Corpus {
-  return {
-    name: "chatty",
-    source: [
-      makeUserMessage("what does this repo do?"),
-      makeAssistantMessage({ text: "it is the LHC SDK" }),
-      makeUserMessage("and the connector?"),
-      makeAssistantMessage({ text: "it wires PI to LHC" }),
-    ],
-    expected: [
-      validEvent("user_prompt", { payload: { text: "what does this repo do?" } }),
-      validEvent("assistant_text", { payload: { text: "it is the LHC SDK" } }),
-      validEvent("turn_end"),
-      validEvent("user_prompt", { payload: { text: "and the connector?" } }),
-      validEvent("assistant_text", { payload: { text: "it wires PI to LHC" } }),
-      validEvent("turn_end"),
-    ],
-  };
+type CorpusRecord =
+  | { recordType: "pi_hook"; hook: "message_end"; entryId: string; position?: number; message: AgentMessage }
+  | { recordType: "pi_lifecycle"; hook: "agent_end"; entryId?: string; position?: number }
+  | { recordType: "expected_event"; eventKind: EventKind; payload?: Record<string, unknown> };
+
+function loadRecordedCorpus(name: string): Corpus {
+  const source: RecordedPiHookEvent[] = [];
+  const expected: MessageEventInput[] = [];
+  const path = `${CORPUS_DIR}${name}.jsonl`;
+  for (const line of readFileSync(path, "utf8").trim().split("\n")) {
+    if (line.trim() === "") continue;
+    const record = JSON.parse(line) as CorpusRecord;
+    if (record.recordType === "pi_hook") {
+      if (record.hook !== "message_end") {
+        throw new Error(`${name}: pi_hook record must be message_end`);
+      }
+      const sourceRecord: RecordedPiHookEvent = {
+        recordType: "pi_hook",
+        hook: "message_end",
+        entryId: record.entryId,
+        message: record.message,
+      };
+      if (record.position !== undefined) sourceRecord.position = record.position;
+      source.push(sourceRecord);
+      continue;
+    }
+    if (record.recordType === "pi_lifecycle") {
+      const sourceRecord: RecordedPiHookEvent = { recordType: "pi_lifecycle", hook: "agent_end" };
+      if (record.entryId !== undefined) sourceRecord.entryId = record.entryId;
+      if (record.position !== undefined) sourceRecord.position = record.position;
+      source.push(sourceRecord);
+      continue;
+    }
+    if (record.recordType !== "expected_event") {
+      throw new Error(`${name}: unsupported corpus recordType ${(record as { recordType?: unknown }).recordType}`);
+    }
+    const overrides = record.payload === undefined ? {} : { payload: record.payload };
+    expected.push(validEvent(record.eventKind, overrides as never) as MessageEventInput);
+  }
+  return { name, source, expected };
 }
 
-/** One turn with a single tool run: thinking → call → result → answer. */
-export function loadToolHeavyCorpus(): Corpus {
-  return {
-    name: "tool-heavy",
-    source: [
-      makeUserMessage("read notes.txt"),
-      makeAssistantMessage({
-        thinking: "I should open the file",
-        toolCalls: [{ id: CALL_A, name: "read_file", arguments: { path: "notes.txt" } }],
-      }),
-      makeToolResult({ id: CALL_A, content: "contents of notes.txt" }),
-      makeAssistantMessage({ text: "the file says hello" }),
-    ],
-    expected: [
-      validEvent("user_prompt", { payload: { text: "read notes.txt" } }),
-      validEvent("assistant_thinking", { payload: { text: "I should open the file" } }),
-      validEvent("tool_call", {
-        payload: { toolCallId: CALL_A, toolName: "read_file", arguments: { path: "notes.txt" } },
-      }),
-      validEvent("tool_result", { payload: { toolCallId: CALL_A, content: "contents of notes.txt", isError: false } }),
-      validEvent("assistant_text", { payload: { text: "the file says hello" } }),
-      validEvent("turn_end"),
-    ],
-  };
-}
-
-/** Two parallel tool calls whose results complete out of order; correlation is
- *  by id, not arrival order (AC-2.3). */
-export function loadParallelToolCorpus(): Corpus {
-  return {
-    name: "parallel-tool",
-    source: [
-      makeUserMessage("read both files"),
-      makeAssistantMessage({
-        toolCalls: [
-          { id: CALL_A, name: "read_file", arguments: { path: "a.txt" } },
-          { id: CALL_B, name: "read_file", arguments: { path: "b.txt" } },
-        ],
-      }),
-      makeToolResult({ id: CALL_B, content: "b contents" }),
-      makeToolResult({ id: CALL_A, content: "a contents" }),
-      makeAssistantMessage({ text: "read both" }),
-    ],
-    expected: [
-      validEvent("user_prompt", { payload: { text: "read both files" } }),
-      validEvent("tool_call", { payload: { toolCallId: CALL_A, toolName: "read_file", arguments: { path: "a.txt" } } }),
-      validEvent("tool_call", { payload: { toolCallId: CALL_B, toolName: "read_file", arguments: { path: "b.txt" } } }),
-      validEvent("tool_result", { payload: { toolCallId: CALL_B, content: "b contents", isError: false } }),
-      validEvent("tool_result", { payload: { toolCallId: CALL_A, content: "a contents", isError: false } }),
-      validEvent("assistant_text", { payload: { text: "read both" } }),
-      validEvent("turn_end"),
-    ],
-  };
-}
-
-/** A tool result flagged as an error, captured with its content (AC-2.4). */
-export function loadErrorResultCorpus(): Corpus {
-  return {
-    name: "error-result",
-    source: [
-      makeUserMessage("read missing.txt"),
-      makeAssistantMessage({ toolCalls: [{ id: CALL_A, name: "read_file", arguments: { path: "missing.txt" } }] }),
-      makeToolResult({ id: CALL_A, isError: true, content: "ENOENT: no such file" }),
-      makeAssistantMessage({ text: "that file does not exist" }),
-    ],
-    expected: [
-      validEvent("user_prompt", { payload: { text: "read missing.txt" } }),
-      validEvent("tool_call", { payload: { toolCallId: CALL_A, toolName: "read_file", arguments: { path: "missing.txt" } } }),
-      validEvent("tool_result", { payload: { toolCallId: CALL_A, content: "ENOENT: no such file", isError: true } }),
-      validEvent("assistant_text", { payload: { text: "that file does not exist" } }),
-      validEvent("turn_end"),
-    ],
-  };
-}
-
-/** A graceful interrupt: partial assistant content, turn closed
- *  complete-but-aborted at agent_end (AC-2.6 / research §5b). */
-export function loadAbortedTurnCorpus(): Corpus {
-  return {
-    name: "aborted-turn",
-    source: [
-      makeUserMessage("write a long essay"),
-      makeAssistantMessage({ thinking: "starting the essay", text: "Once upon a", stopReason: "aborted" }),
-    ],
-    expected: [
-      validEvent("user_prompt", { payload: { text: "write a long essay" } }),
-      validEvent("assistant_thinking", { payload: { text: "starting the essay" } }),
-      validEvent("assistant_text", { payload: { text: "Once upon a" } }),
-      // The aborted disposition rides a trailing runtime_note (the mapper carries
-      // stopReason through; research §5b), then the turn closes complete-but-aborted.
-      validEvent("runtime_note", { payload: { text: ABORTED_DISPOSITION_TEXT } }),
-      validEvent("turn_end"),
-    ],
-  };
-}
+export const loadChattyCorpus = (): Corpus => loadRecordedCorpus("chatty");
+export const loadToolHeavyCorpus = (): Corpus => loadRecordedCorpus("tool-heavy");
+export const loadParallelToolCorpus = (): Corpus => loadRecordedCorpus("parallel-tool");
+export const loadErrorResultCorpus = (): Corpus => loadRecordedCorpus("error-result");
+export const loadAbortedTurnCorpus = (): Corpus => loadRecordedCorpus("aborted-turn");
 
 export const CORPUS_LOADERS = {
   chatty: loadChattyCorpus,
@@ -155,7 +80,7 @@ export function loadAllCorpora(): Corpus[] {
 export function makeTruncatedCorpus(): Corpus {
   return {
     name: "truncated",
-    source: [makeUserMessage("")],
+    source: [{ recordType: "pi_hook", hook: "message_end", entryId: "truncated-entry-0", message: { role: "user", content: [{ type: "text", text: "" }] } }],
     expected: [
       validEvent("user_prompt", { payload: { text: "" } }),
       validEvent("tool_result", { payload: { toolCallId: "dangling-call", content: "orphan result", isError: false } }),
@@ -178,18 +103,35 @@ const EVENT_KINDS: ReadonlySet<EventKind> = new Set<EventKind>([
   "turn_end",
 ]);
 
-/** Check a corpus yields well-formed `MessageEventInput` shapes and a
- *  lifecycle-coherent sequence (every `tool_result` correlates to a preceding
- *  `tool_call`; the sequence closes with `turn_end`). Returns the problems it
- *  found — `valid` is derived from that list, never a constant. */
+/** Check a corpus yields well-formed recorded hook shapes plus well-formed
+ *  `MessageEventInput` expectations, and that the expected lifecycle is coherent
+ *  (every `tool_result` correlates to a preceding `tool_call`; the sequence
+ *  closes with `turn_end`). Returns the problems it found — `valid` is derived
+ *  from that list, never a constant. */
 export function validateCorpus(corpus: Corpus): CorpusValidation {
   const problems: string[] = [];
   if (corpus.name.trim() === "") problems.push("corpus has an empty name");
+  if (corpus.source.length === 0) problems.push(`${corpus.name}: no recorded PI hook events`);
   if (corpus.expected.length === 0) problems.push(`${corpus.name}: no expected events`);
+
+  for (const [i, source] of corpus.source.entries()) {
+    const at = `${corpus.name}.source[${i}]`;
+    if (source.hook === "message_end") {
+      if (source.recordType !== "pi_hook") problems.push(`${at}: message_end must be a pi_hook record`);
+      if (source.entryId.trim() === "") problems.push(`${at}: empty entryId`);
+      if (source.message.role !== "user" && source.message.role !== "assistant" && source.message.role !== "toolResult") {
+        problems.push(`${at}: unsupported message role`);
+      }
+    } else if (source.hook === "agent_end") {
+      if (source.recordType !== "pi_lifecycle") problems.push(`${at}: agent_end must be a pi_lifecycle record`);
+    } else {
+      problems.push(`${at}: unsupported hook`);
+    }
+  }
 
   const seenToolCalls = new Set<string>();
   for (const [i, ev] of corpus.expected.entries()) {
-    const at = `${corpus.name}[${i}]`;
+    const at = `${corpus.name}.expected[${i}]`;
     if (!EVENT_KINDS.has(ev.eventKind)) problems.push(`${at}: unknown eventKind "${String(ev.eventKind)}"`);
     if (typeof ev.idempotencyKey !== "string" || ev.idempotencyKey === "") problems.push(`${at}: empty idempotencyKey`);
     if (typeof ev.actor !== "string" || ev.actor === "") problems.push(`${at}: empty actor`);
@@ -235,6 +177,10 @@ export function validateCorpus(corpus: Corpus): CorpusValidation {
   const last = corpus.expected[corpus.expected.length - 1];
   if (last !== undefined && last.eventKind !== "turn_end") {
     problems.push(`${corpus.name}: sequence does not close with turn_end`);
+  }
+  const lastSource = corpus.source[corpus.source.length - 1];
+  if (lastSource !== undefined && lastSource.hook !== "agent_end") {
+    problems.push(`${corpus.name}: recorded PI lifecycle does not close with agent_end`);
   }
 
   return { valid: problems.length === 0, problems };

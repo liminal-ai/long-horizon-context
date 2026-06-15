@@ -1,0 +1,11 @@
+{"timestamp":"2026-06-14T13:22:35.772Z","command":"quick-fix","phase":"quick-fix","event":"command-started","summary":"quick-fix started."}
+{"timestamp":"2026-06-14T13:22:35.789Z","command":"quick-fix","phase":"quick-fix","event":"provider-spawned","summary":"Provider spawned with pid 9464.","metadata":{"pid":9464}}
+{"timestamp":"2026-06-14T13:22:35.918Z","command":"quick-fix","phase":"quick-fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
+{"timestamp":"2026-06-14T13:23:08.469Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:23:39.300Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:24:10.558Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:24:41.264Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:25:14.696Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:25:45.489Z","command":"quick-fix","phase":"quick-fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
+{"timestamp":"2026-06-14T13:26:10.821Z","command":"quick-fix","phase":"quick-fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":215033,"configuredTimeoutMs":1800000}}
+{"timestamp":"2026-06-14T13:26:10.843Z","command":"quick-fix","phase":"finalizing","event":"completed","summary":"quick-fix completed and is ready for verification.","metadata":{"outcome":"ready-for-verification"}}

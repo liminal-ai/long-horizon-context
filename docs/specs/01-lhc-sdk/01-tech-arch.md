@@ -8,7 +8,7 @@ This document defines the technical architecture for LHC. It establishes the sys
 
 ## Architecture Thesis
 
-LHC is a local-first TypeScript SDK with a thin CLI over it, built as one package organized by domain service surfaces. Each thread is one SQLite file; a registry database maps thread ids to files. Every operation is stateless: a call takes a thread id or path, opens what it needs, works, and returns. The hot path — event intake and view pulls — is synchronous, deterministic, and local; everything involving inference runs later through a durable work queue, each piece owned by the domain that queued it. Domains call each other only through their public surfaces, enforced by import boundaries, so the same operations serve the SDK, the CLI, in-process cross-domain calls, and a future app server without divergence.
+LHC is a local-first TypeScript SDK, built as one package organized by domain service surfaces. Each thread is one SQLite file; a registry database maps thread ids to files. Every operation is stateless: a call takes a thread id or path, opens what it needs, works, and returns. The hot path — event intake and view pulls — is synchronous, deterministic, and local; everything involving inference runs later through a durable work queue, each piece owned by the domain that queued it. Domains call each other only through their public surfaces, enforced by import boundaries, so the same operations serve the SDK, in-process cross-domain calls, and future host applications without divergence.
 
 ---
 
@@ -23,8 +23,7 @@ LHC is a local-first TypeScript SDK with a thin CLI over it, built as one packag
 | Validation | Effect Schema (`effect`) | ^3.21 | Real decode/reject at the intake boundary with structured errors | 2026-06-09 | Scope pinned by prior decision: schema validation only; public APIs stay Promise/plain-object; no Effect SQL/queue/runtime |
 | Token counting | `js-tiktoken` (`o200k_base`) | ^1.0 | Deterministic local base counts; pure JS, no native deps | 2026-06-09 | Base unit stored once; model-specific weights are derived later, never stored per-model |
 | Tests | vitest | ^4 | Already in use; fast TS-native | 2026-06-09 | |
-| CLI arg handling | `node:util` `parseArgs` + hand-rolled command routing | Node built-in | CLI is a thin adapter; a framework would invert that | 2026-06-09 | Revisit only if command surface outgrows it |
-| Dev runner | tsx | ^4 | `dev:cli` ergonomics | 2026-06-09 | |
+| Dev/test TypeScript runner | tsx | ^4 | Script and test ergonomics | 2026-06-09 | |
 
 ### Rejected Alternatives
 
@@ -41,7 +40,7 @@ LHC is a local-first TypeScript SDK with a thin CLI over it, built as one packag
 
 ## System Shape
 
-One package (`lhc`) exposing an SDK; the CLI is a thin wrapper over it; a future app server wraps the same operations. All state lives in SQLite files on local disk.
+One package (`lhc`) exposing an SDK. Host applications wrap the SDK with whatever commands or UI they need; LHC does not maintain its own out-of-process CLI surface. All state lives in SQLite files on local disk.
 
 ```mermaid
 flowchart TD
@@ -67,12 +66,12 @@ flowchart TD
 
 | Domain | Runtime Surface | Owns | Depends On | Downstream Inherits |
 |--------|----------------|------|------------|---------------------|
-| `threads` | SDK + CLI | Thread creation, registry, id→file resolution, thread metadata | SQLite storage | Thread file is authoritative for identity; registry is a refreshable convenience index; id stored once in file metadata |
-| `intake-stream` | SDK + CLI | Ordered event intake, stream contract, synchronous turn-boundary coordination | `threads`, `messages`, `turns` | All-or-nothing batches; idempotency keys; hot path is deterministic-only; intake coordinates but does not own message/turn mechanics |
-| `messages` | SDK + CLI | Message/block records, token stamping, read/search, edit and delete operations, message-level derivations (tool-result summaries, tool-call summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; delete is projection-level (source events remain); mutations target closed turns only and clear-and-regenerate dependents; deleting a turn-initiating prompt is refused toward `turns` delete; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
-| `turns` | SDK + CLI | Turn lifecycle and state machine, turn delete, turn-level derivations (smoothed turn composition, lower-band projection), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn delete removes the exchange unit, closed turns only, bounded cascade (one chunk re-derives, boundaries never move); turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
-| `thread-view` | SDK + CLI | View assembly, smart compact, band locking, tool-result visibility policy (source-event-order boundary, whole-message protection floor), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; source corruption blocks; thread-view drives repair through owning domains' surfaces and derives nothing itself |
-| `inspect` | SDK + CLI | Read-only reports: composition, sizes, derivation health, view contents and cost | all domain surfaces | Never writes, repairs, or derives; reads only through domain surfaces |
+| `threads` | SDK | Thread creation, registry, id→file resolution, thread metadata | SQLite storage | Thread file is authoritative for identity; registry is a refreshable convenience index; id stored once in file metadata |
+| `intake-stream` | SDK | Ordered event intake, stream contract, synchronous turn-boundary coordination | `threads`, `messages`, `turns` | All-or-nothing batches; idempotency keys; hot path is deterministic-only; intake coordinates but does not own message/turn mechanics |
+| `messages` | SDK | Message/block records, token stamping, reads (search deferred post-v1), edit and delete operations, message-level derivations (tool-result summaries, tool-call summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; delete is projection-level (source events remain); mutations target closed turns only and clear-and-regenerate dependents; deleting a turn-initiating prompt is refused toward `turns` delete; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
+| `turns` | SDK | Turn lifecycle and state machine, turn delete, turn-level derivations (smoothed turn composition, lower-band projection), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn delete removes the exchange unit, closed turns only, bounded cascade (one chunk re-derives, boundaries never move); turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
+| `thread-view` | SDK | View assembly, smart compact, band locking, tool-result visibility policy (source-event-order boundary, whole-message protection floor), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; source corruption blocks; thread-view drives repair through owning domains' surfaces and derives nothing itself |
+| `inspect` | SDK | Read-only reports: composition, sizes, derivation health, view contents and cost | all domain surfaces | Never writes, repairs, or derives; reads only through domain surfaces |
 
 ### Tech Utils
 
@@ -121,14 +120,14 @@ New functionality lands inside an owning domain or as a new adapter over the SDK
 ### Validation and Errors
 
 **Choice:** Effect Schema decodes every external input at the SDK boundary — strict shapes, per-kind payloads, rejection of caller-supplied server-generated fields. Errors are typed, structured results in three classes: caller error, state corruption, and system error (storage and environment failures, with stable codes). Corruption (for example, two open turns) fails loudly and stops the operation. Derivation gaps are artifact state, not operation errors; they report and degrade.
-**Rationale:** The CLI and future server inherit validation for free because it lives in the SDK. The corruption/gap split is the load-bearing lesson from the POC.
+**Rationale:** Host applications inherit validation for free because it lives in the SDK. The corruption/gap split is the load-bearing lesson from the POC.
 **Consequence:** No silent field-dropping, no permissive fallbacks on the record. Stubs fail closed with a typed error rather than returning fake success.
 
 ### Inference Access
 
-**Choice:** Derivation handlers call inference through an injected provider seam. Provider calls never run inside database transactions and never on the hot path.
-**Rationale:** Keeps the core provider-neutral and testable; keeps transactions short; keeps the hot path deterministic.
-**Consequence:** Epics that add derivations specify their provider interface and a deterministic test double. Provider configuration is an adapter concern, not core.
+**Choice:** Derivation handlers call inference through an SDK-construction seam. Tests may inject a `DerivationProvider` directly; production hosts supply one model-call function plus per-kind provider/model/prompt assignments, and LHC builds the adapter that implements `DerivationProvider` over it. Provider calls never run inside database transactions and never on the hot path.
+**Rationale:** LHC owns derivation prompts, routing, failure classification, and provenance, while the host owns credentials and transport. Transactions stay short and the hot path stays deterministic.
+**Consequence:** The core never opens auth stores or API clients. Real-inference delivery is proven by an opt-in suite whose host function reaches a real endpoint; deterministic doubles remain the default CI path.
 
 ### Token Accounting
 
@@ -140,7 +139,7 @@ New functionality lands inside an owning domain or as a new adapter over the SDK
 
 ## Boundaries and Flows
 
-The major seams: harness → SDK (in-process call), CLI → SDK (process per invocation), domain → domain (surface call sharing the operation context), domain → tech util (internal use), worker → thread file (claimed work items).
+The major seams: harness/host → SDK (in-process call), domain → domain (surface call sharing the operation context), domain → tech util (internal use), worker → thread file (claimed work items), derivation handler → host model-call function.
 
 The defining path — one conversational exchange:
 
@@ -185,7 +184,7 @@ sequenceDiagram
 - **Prompt-prefix stability is a budget.** Visible view content changes only at planned points (compact, tool-result boundary advance). Boundary advances happen in batches and protect newest whole tool-result messages rather than redeciding every result per turn. Features that would churn the rendered prefix per-turn are design errors with a direct dollar cost.
 - **Single writer per thread.** No epic may assume concurrent writers to one thread file. Parallelism is across threads.
 - **The record is append-plus-mutate only.** No feature destroys events; the only record mutations are the explicit edit and delete operations, both with clear-and-regenerate semantics, and delete is projection-level — the source event log retains what the readable record drops.
-- **Stateless operations.** Nothing requires a daemon. Long-lived processes (worker loops, harness extensions) are adapters over the same stateless calls.
+- **Stateless operations.** Nothing requires a daemon. Long-lived processes (worker loops, harness extensions, app servers) are host applications over the same stateless SDK calls.
 
 ---
 
@@ -199,11 +198,15 @@ Settled by downstream epics:
 - Chunk close policy is pinned by Epic 2 as accumulated-size behavior rather than the v1 reference's single-turn threshold check.
 - Tool-result visibility mechanics are pinned by Epic 3: a source-event-order boundary advances in batches, protects newest whole tool-result messages, and uses tunable max/target/floor values.
 - Provider-file rendering starts with PI session JSONL in Epic 3; additional provider formats are additive adapters later.
+- Real-inference delivery and SDK-only consolidation are pinned by Epic 5: production hosts supply a model-call function and complete assignments at SDK construction, LHC owns the derivation prompts/adapter/classification/provenance, and the temporary LHC CLI surface is retired.
 
 Remaining open questions:
 
-- Message search implementation: SQL `LIKE` vs FTS5 virtual table.
 - `node:sqlite` stability flag status on current Node 24.x LTS.
+
+Deferred post-v1 (not open questions for v1 epics):
+
+- Message search: deferred out of Feature 4; shape (`LIKE` vs FTS5, ranking, result granularity) gets decided from real usage once LHC and the PI extension are integrated.
 
 ---
 
@@ -215,7 +218,7 @@ Remaining open questions:
 | A2 | PI is the first harness; its extension wires in-process via the SDK | Accepted | Extension itself is outside this PRD's scope |
 | A3 | Harnesses honor the stream contract (ordered events, `turn_end`, prompts open turns) | Accepted | Violations fail loudly by design; uncontrolled harnesses are a future adapter problem |
 | A4 | `node:sqlite` is stable enough for production use in Node >=24 | To verify | Exercised green in the v1 reference build; confirm flag/stability status at first epic |
-| A5 | A single inference provider seam suffices for v1 derivations | Accepted | Multi-provider routing is future work |
+| A5 | A single SDK-construction inference seam suffices for v1 derivations | Accepted | Multi-provider routing is per-call through host-supplied provider/model assignment strings; LHC owns routing config, the host owns credentials and transport |
 
 ---
 

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "failed",
+  "phase": "finalizing",
+  "startedAt": "2026-06-14T13:20:18.167Z",
+  "updatedAt": "2026-06-14T13:22:25.109Z",
+  "lastOutputAt": "2026-06-14T13:22:25.077Z",
+  "providerLiveness": "active-with-output",
+  "provider": "claude-code",
+  "pid": 6485,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 1200000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/06-startup-validation-and-assignment-config/005-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/06-startup-validation-and-assignment-config/streams/005-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/06-startup-validation-and-assignment-config/streams/005-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/06-startup-validation-and-assignment-config/progress/005-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/02-pi-lhc/01-connector-core/artifacts/06-startup-validation-and-assignment-config/progress/005-continue.progress.jsonl"
+  },
+  "lastEvent": "failed",
+  "lastEventSummary": "story-continue failed during the follow-up implementor pass for 06-startup-validation-and-assignment-config.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

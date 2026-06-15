@@ -1,0 +1,13 @@
+{"recordType":"pi_hook","hook":"message_end","entryId":"parallel-tool-entry-0","position":0,"message":{"role":"user","content":[{"type":"text","text":"read both files"}]}}
+{"recordType":"expected_event","eventKind":"user_prompt","payload":{"text":"read both files"}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"parallel-tool-entry-1","position":1,"message":{"role":"assistant","content":[{"type":"toolCall","id":"call_a|fc_1","name":"read_file","arguments":{"path":"a.txt"}},{"type":"toolCall","id":"call_b|fc_2","name":"read_file","arguments":{"path":"b.txt"}}]}}
+{"recordType":"expected_event","eventKind":"tool_call","payload":{"toolCallId":"call_a|fc_1","toolName":"read_file","arguments":{"path":"a.txt"}}}
+{"recordType":"expected_event","eventKind":"tool_call","payload":{"toolCallId":"call_b|fc_2","toolName":"read_file","arguments":{"path":"b.txt"}}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"parallel-tool-entry-2","position":2,"message":{"role":"toolResult","toolCallId":"call_b|fc_2","content":[{"type":"text","text":"b contents"}],"isError":false}}
+{"recordType":"expected_event","eventKind":"tool_result","payload":{"toolCallId":"call_b|fc_2","content":"b contents","isError":false}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"parallel-tool-entry-3","position":3,"message":{"role":"toolResult","toolCallId":"call_a|fc_1","content":[{"type":"text","text":"a contents"}],"isError":false}}
+{"recordType":"expected_event","eventKind":"tool_result","payload":{"toolCallId":"call_a|fc_1","content":"a contents","isError":false}}
+{"recordType":"pi_hook","hook":"message_end","entryId":"parallel-tool-entry-4","position":4,"message":{"role":"assistant","content":[{"type":"text","text":"read both"}]}}
+{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"read both"}}
+{"recordType":"pi_lifecycle","hook":"agent_end","entryId":"parallel-tool-agent-end-0","position":5}
+{"recordType":"expected_event","eventKind":"turn_end","payload":{}}

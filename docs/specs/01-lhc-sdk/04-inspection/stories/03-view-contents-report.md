@@ -96,7 +96,7 @@ Risk Reminders:
 
 - `threadView.describe` returns ok/null for absent views.
 - `inspect.view` should not recompute arrangement, form choice, gaps, or source-state provenance.
-- `loadCost.bandTokens` sums stored band counts; tail tokens are measured from pull's served tail.
+- `loadCost.bandTokens` is measured from pull-served band messages; stored per-band token counts remain reported separately as `storedTokens`. Tail tokens are measured from pull's served tail.
 
 #### Anti-Shim Requirements
 

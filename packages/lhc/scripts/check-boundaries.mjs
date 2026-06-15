@@ -114,9 +114,12 @@ for (const file of files) {
   const source = readFileSync(file, "utf8");
   violations.push(...inspectSourceViolations(file, source));
   const fileDomain = domainOf(file);
+  // Epic 05: inference/ implements the provider seam, owns no thread state,
+  // and depends only on shared/ types — it may not import domains/.
   const inTechUtilsOrShared =
     file.startsWith(path.join(srcRoot, "tech-utils") + path.sep) ||
-    file.startsWith(path.join(srcRoot, "shared") + path.sep);
+    file.startsWith(path.join(srcRoot, "shared") + path.sep) ||
+    file.startsWith(path.join(srcRoot, "inference") + path.sep);
 
   for (const spec of importSpecifiers(source)) {
     if (!spec.startsWith(".")) continue; // only relative imports cross our tree
@@ -149,7 +152,7 @@ for (const file of files) {
     }
     if (inTechUtilsOrShared && parts[0] === "domains") {
       violations.push(
-        `${path.relative(pkgRoot, file)} imports ${spec} — tech-utils/shared may not import domains/`,
+        `${path.relative(pkgRoot, file)} imports ${spec} — tech-utils/shared/inference may not import domains/`,
       );
     }
   }
