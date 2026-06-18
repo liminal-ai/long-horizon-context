@@ -123,7 +123,7 @@ import {
   turns,
   type InferenceCallbacks,
   type Derivation,
-  type ProviderResult,
+  type InferenceResult,
 } from "../src/index.js";
 import {
   createProviderDouble,
@@ -137,7 +137,7 @@ import {
 
 // One call per operation with a fixed, distinct input — the operation sweep
 // FC-0.1/FC-0.2 iterate.
-function callAllOperations(double: InferenceCallbacks): Array<Promise<ProviderResult>> {
+function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceResult>> {
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
@@ -291,15 +291,6 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
     ).toThrow(/retry.budget/);
   });
 
-  it("accepts provider as a deprecated direct-callback alias and rejects both spellings together", () => {
-    const double = createProviderDouble();
-    const sdk = initLhc({ provider: double, mode: "manual" });
-    expect(sdk.config.inferenceCallbacks).toBe(double);
-    expect(sdk.config.provider).toBe(double);
-    expect(() =>
-      initLhc({ inferenceCallbacks: double, provider: double, mode: "manual" }),
-    ).toThrow(/inferenceCallbacks and provider are aliases/);
-  });
 });
 
 describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified by read-back", () => {

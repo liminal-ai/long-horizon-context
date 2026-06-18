@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkSource } from "../scripts/check-boundaries.mjs";
-import { createDeterministicProvider, initLhc } from "../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc } from "../src/index.js";
 import { openDatabase } from "../src/shared-tech/storage.js";
 import { openThreadDatabase } from "../src/threads/index.js";
 import { tempStore, type TempStore } from "./fixtures/index.js";
@@ -134,7 +134,7 @@ describe("AC-0.4 architecture-risk: stale lower_band_projection work items are d
     const store = tempStore();
     stores.push(store);
     const filePath = store.threadPath();
-    const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicProvider() });
+    const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
 

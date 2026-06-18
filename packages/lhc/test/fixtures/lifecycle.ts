@@ -21,7 +21,7 @@
 // and the drain runs to empty.
 import { join } from "node:path";
 import {
-  createDeterministicProvider,
+  createDeterministicInferenceCallbacks,
   initLhc,
   type BatchResult,
   type InferenceConfig,
@@ -62,7 +62,7 @@ export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
   return initLhc({
     ...(inference !== undefined
       ? { inference }
-      : { inferenceCallbacks: createDeterministicProvider() }),
+      : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },

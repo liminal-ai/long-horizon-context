@@ -24,7 +24,7 @@ import {
   type EnqueueInput,
   type Lhc,
   type MessageEventInput,
-  type ProviderResult,
+  type InferenceResult,
   type RenderingPart,
   type SdkConfig,
 } from "../src/index.js";
@@ -141,7 +141,7 @@ function withScriptedProjections(
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
-    compressSmoothTurn: (): Promise<ProviderResult> =>
+    compressSmoothTurn: (): Promise<InferenceResult> =>
       Promise.resolve({ ok: true, text: next() }),
     summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
     summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),

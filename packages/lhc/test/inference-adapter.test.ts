@@ -8,7 +8,7 @@
 // Empty or whitespace-only success text is a classified retryable failure,
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
-import { createDeterministicProvider, initLhc, type Derivation, type Lhc } from "../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, type Derivation, type Lhc } from "../src/index.js";
 import type { ModelCall } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
@@ -169,7 +169,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const adapterForms = await drainAll(adapterSdk, await seedSevenKinds(adapterSdk, freshStore()));
 
     const deterministicSdk = initLhc({
-      inferenceCallbacks: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "manual",
       retry: RETRY,
       chunkPolicy: CHUNK_POLICY,

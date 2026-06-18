@@ -8,9 +8,9 @@
 // production domain tables merge into (DD-6).
 import type {
   InferenceCallbacks,
+  InferenceResult,
   HandlerDerivationWrite,
   Lhc,
-  ProviderResult,
   SubjectKind,
   WorkHandler,
   WorkKind,
@@ -20,7 +20,7 @@ import type { DerivationType } from "./model-call.js";
 interface FormSpec {
   subjectKind: SubjectKind;
   derivationType: DerivationType;
-  call: (inferenceCallbacks: InferenceCallbacks, sourceId: string) => Promise<ProviderResult>;
+  call: (inferenceCallbacks: InferenceCallbacks, sourceId: string) => Promise<InferenceResult>;
 }
 
 const KIND_SPECS: Record<WorkKind, FormSpec[]> = {

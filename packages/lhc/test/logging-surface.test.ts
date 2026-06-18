@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createDeterministicProvider,
+  createDeterministicInferenceCallbacks,
   initLhc,
   writeLog,
   type InferenceCallbacks,
@@ -17,7 +17,7 @@ let sdk: Lhc;
 
 beforeEach(() => {
   store = tempStore();
-  sdk = initLhc({ inferenceCallbacks: createDeterministicProvider(), mode: "manual" });
+  sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "manual" });
 });
 
 afterEach(() => {

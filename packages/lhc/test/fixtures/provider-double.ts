@@ -12,7 +12,7 @@ import {
   deterministicReceiptsSuffix,
   deterministicText,
   type InferenceCallbacks,
-  type ProviderResult,
+  type InferenceResult,
   type RenderingPart,
   type ToolOutcome,
   type ToolRunReceipt,
@@ -104,7 +104,7 @@ export class ProviderDouble implements InferenceCallbacks {
     input: unknown,
     text: string,
     suffix = "",
-  ): Promise<ProviderResult> {
+  ): Promise<InferenceResult> {
     if (this.capturing) this.captured.push({ op, input: structuredClone(input) });
     const delay = this.delayByOp.get(op);
     if (delay !== undefined && delay > 0) {
@@ -124,7 +124,7 @@ export class ProviderDouble implements InferenceCallbacks {
     return { ok: true, text: deterministicText(op, input, text) + suffix };
   }
 
-  smoothPrompt(i: { text: string }): Promise<ProviderResult> {
+  smoothPrompt(i: { text: string }): Promise<InferenceResult> {
     return this.run("smoothPrompt", i, i.text);
   }
 
@@ -134,22 +134,22 @@ export class ProviderDouble implements InferenceCallbacks {
     outcome?: ToolOutcome;
     targetTokens?: number;
     guidance?: string;
-  }): Promise<ProviderResult> {
+  }): Promise<InferenceResult> {
     return this.run("summarizeToolResult", i, i.content);
   }
 
-  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<ProviderResult> {
+  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult> {
     return this.run("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | "));
   }
 
-  compressSmoothTurn(i: { rendering: string }): Promise<ProviderResult> {
+  compressSmoothTurn(i: { rendering: string }): Promise<InferenceResult> {
     return this.run("compressSmoothTurn", i, i.rendering);
   }
 
   summarizeChunkDetailed(i: {
     memberProjections: string[];
     memberReceipts?: ToolRunReceipt[][];
-  }): Promise<ProviderResult> {
+  }): Promise<InferenceResult> {
     return this.run(
       "summarizeChunkDetailed",
       i,
@@ -161,7 +161,7 @@ export class ProviderDouble implements InferenceCallbacks {
   summarizeChunkBrief(i: {
     memberProjections: string[];
     memberOutcomes?: ToolOutcome[][];
-  }): Promise<ProviderResult> {
+  }): Promise<InferenceResult> {
     return this.run(
       "summarizeChunkBrief",
       i,

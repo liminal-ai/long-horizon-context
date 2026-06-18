@@ -11,6 +11,16 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import * as api from "../src/index.js";
 import { initLhc, type SdkConfig } from "../src/index.js";
+import {
+  INFERENCE_CALLBACK_OPERATIONS,
+  PROVIDER_OPERATIONS,
+  type DerivationProvider,
+  type InferenceCallbackName,
+  type InferenceCallbacks,
+  type InferenceResult,
+  type ProviderOperationName,
+  type ProviderResult,
+} from "../src/shared-tech/index.js";
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -69,6 +79,33 @@ describe("TC-6.1: deletion proof — SDK-only public API, no binary (AC-6.1, AC-
 
   it("createSdk remains a compatibility alias for initLhc", () => {
     expect(api.createSdk).toBe(api.initLhc);
+  });
+
+  it("createDeterministicProvider remains a compatibility alias for createDeterministicInferenceCallbacks", () => {
+    expect(api.createDeterministicProvider).toBe(api.createDeterministicInferenceCallbacks);
+  });
+
+  it("provider remains a deprecated direct-callback config alias", () => {
+    const inferenceCallbacks = api.createDeterministicInferenceCallbacks();
+    const sdk = initLhc({ provider: inferenceCallbacks, mode: "manual" });
+    expect(sdk.config.inferenceCallbacks).toBe(inferenceCallbacks);
+    expect(sdk.config.provider).toBe(inferenceCallbacks);
+    expect(() =>
+      initLhc({ inferenceCallbacks, provider: inferenceCallbacks, mode: "manual" }),
+    ).toThrow(/inferenceCallbacks and provider are aliases/);
+  });
+
+  it("shared-tech provider vocabulary remains compatibility aliases for inference vocabulary", () => {
+    expect(PROVIDER_OPERATIONS).toBe(INFERENCE_CALLBACK_OPERATIONS);
+
+    const result: ProviderResult = { ok: true, text: "ok" } satisfies InferenceResult;
+    expect(result.ok).toBe(true);
+
+    const operation: ProviderOperationName = "smoothPrompt" satisfies InferenceCallbackName;
+    expect(operation).toBe("smoothPrompt");
+
+    const callbacks: DerivationProvider = api.createDeterministicInferenceCallbacks() satisfies InferenceCallbacks;
+    expect(callbacks).toHaveProperty("smoothPrompt");
   });
 
   it("the CLI-only entries are gone from the surface", () => {

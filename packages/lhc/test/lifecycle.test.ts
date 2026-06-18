@@ -1,8 +1,8 @@
 // Story 4 (Epic 04), default suite: TC-5.1–5.3 — the full-surface lifecycle
 // exercise. One scripted sequence (test/fixtures/lifecycle.ts) drives every
 // built v1 surface in PI-extension call order against one real SDK
-// configuration with the registry's deterministic provider: zero network and
-// zero real-provider calls are structural (no other provider exists in the
+// configuration with deterministic inference callbacks: zero network and
+// zero model calls are structural (no model-call config exists in the
 // configuration), and every checkpoint assertion lives here, not in the
 // script, so the replay (TC-5.2), teardown (TC-5.3), and process (TC-5.4,
 // cli-process-inspect.test.ts) legs replay the same sequence.
