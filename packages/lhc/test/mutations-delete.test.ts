@@ -64,11 +64,11 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock" | "mode">> = {},
 ): Lhc {
   const config: SdkConfig = {
-    provider,
+    inferenceCallbacks,
     mode: overrides.mode ?? "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 5000 },

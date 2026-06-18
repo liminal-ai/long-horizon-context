@@ -32,7 +32,7 @@ afterAll(() => {
 
 function manualSdk(view?: SdkViewConfig): Lhc {
   return initLhc({
-    provider: createProviderDouble(),
+    inferenceCallbacks: createProviderDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
   });
@@ -475,7 +475,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
     const bgDouble = createProviderDouble();
     const bg = initLhc({
-      provider: bgDouble,
+      inferenceCallbacks: bgDouble,
       mode: "background",
       view: { compactThreshold: 100 },
     });

@@ -206,7 +206,7 @@ describe("TC-5.2 (AC-5.2, AC-5.3): materialize/pull parity, byte-identical repea
 
 describe("TC-5.3 (AC-5.4): a never-compacted thread materializes its tail-only view", () => {
   it("valid file, tail-only content, loadable against the format fixture, header from the thread's created-at", async () => {
-    const sdk: Lhc = initLhc({ provider: createProviderDouble(), mode: "manual" });
+    const sdk: Lhc = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
     const filePath = store.threadPath("never-compacted");
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);

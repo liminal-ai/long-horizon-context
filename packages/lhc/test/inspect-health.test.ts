@@ -154,7 +154,7 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
     const recorded = await intakeStream.messageEvents({ filePath }, [gap]);
     expect(recorded.ok).toBe(true);
 
-    const reader = initLhc({ provider: createProviderDouble(), mode: "manual" });
+    const reader = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
     const report = valueOf(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
     expect(report.owners).toContainEqual({
       owner: "capture",
@@ -254,7 +254,7 @@ describe("architecture risk: health is provider-free and surface-composed", () =
       throw new Error("provider must never be called by a read operation");
     };
     const reader = initLhc({
-      provider: {
+      inferenceCallbacks: {
         smoothPrompt: refuse,
         summarizeToolResult: refuse,
         composeTurnRendering: refuse,

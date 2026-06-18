@@ -194,7 +194,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     const call = createOpenRouterCall(suiteEnv.key, realModel);
     // The Epic 04 sequence verbatim — intake, drain, compact, pull, inspect,
     // edit, rebuild, drain, compact, materialize — with the inference
-    // adapter in the provider-arrival slot (the one swap point).
+    // adapter in the inference-callback slot (the one swap point).
     run = await runLifecycle(store, {
       name: "real-capstone",
       inference: { call, assignments: realAssignments(realModel) },

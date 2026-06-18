@@ -20,7 +20,7 @@ import type { DerivationType } from "./model-call.js";
 interface FormSpec {
   subjectKind: SubjectKind;
   derivationType: DerivationType;
-  call: (provider: InferenceCallbacks, sourceId: string) => Promise<ProviderResult>;
+  call: (inferenceCallbacks: InferenceCallbacks, sourceId: string) => Promise<ProviderResult>;
 }
 
 const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
@@ -77,7 +77,7 @@ export interface TestHandlerHooks {
 }
 
 export function testWorkHandlers(
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   hooks: TestHandlerHooks = {},
 ): Partial<Record<WorkKind, WorkHandler>> {
   const map: Partial<Record<WorkKind, WorkHandler>> = {};
@@ -91,7 +91,7 @@ export function testWorkHandlers(
       }
       const derivations: HandlerDerivationWrite[] = [];
       for (const spec of specs) {
-        const result = await spec.call(provider, sourceId);
+        const result = await spec.call(inferenceCallbacks, sourceId);
         if (!result.ok) {
           return { ok: false, retryable: result.retryable, reason: result.reason };
         }
@@ -112,8 +112,8 @@ export function testWorkHandlers(
 // map initLhc merged the (empty until Stories 2–3) domain tables into.
 export function registerTestWorkHandlers(
   sdk: Lhc,
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   hooks?: TestHandlerHooks,
 ): void {
-  Object.assign(sdk.workHandlers, testWorkHandlers(provider, hooks));
+  Object.assign(sdk.workHandlers, testWorkHandlers(inferenceCallbacks, hooks));
 }

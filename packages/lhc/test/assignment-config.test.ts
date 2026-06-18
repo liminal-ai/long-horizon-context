@@ -27,19 +27,19 @@ function recordingCall(): { call: ModelCall; log: ModelCallInput[] } {
   return { call, log };
 }
 
-// The four inference derivation types and the minimal input each provider
+// The four inference derivation types and the minimal input each callback
 // operation accepts, so TC-6.4a can drive every default-routed lane.
 const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> = [
-  { kind: "smoothed_prompt", run: (p) => p.config.provider.smoothPrompt({ text: "x" }) },
+  { kind: "smoothed_prompt", run: (p) => p.config.inferenceCallbacks.smoothPrompt({ text: "x" }) },
   {
     kind: "tool_result_summary",
     run: (p) =>
-      p.config.provider.summarizeToolResult({ toolName: "read", content: "c", outcome: "succeeded" }),
+      p.config.inferenceCallbacks.summarizeToolResult({ toolName: "read", content: "c", outcome: "succeeded" }),
   },
-  { kind: "smooth_turn_compression", run: (p) => p.config.provider.compressSmoothTurn({ rendering: "r" }) },
+  { kind: "smooth_turn_compression", run: (p) => p.config.inferenceCallbacks.compressSmoothTurn({ rendering: "r" }) },
   {
     kind: "chunk_summary_brief",
-    run: (p) => p.config.provider.summarizeChunkBrief({ memberProjections: ["m"] }),
+    run: (p) => p.config.inferenceCallbacks.summarizeChunkBrief({ memberProjections: ["m"] }),
   },
 ];
 

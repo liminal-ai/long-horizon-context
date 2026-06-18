@@ -460,38 +460,44 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
 // failures after construction return OpResults per the error contract.
 export function initLhc(config: SdkConfig): Lhc {
   // Inference callbacks arrive by direct injection or by the inference config
-  // (Epic 05 DD-5); there is no named-provider registry and no
-  // env/flag resolution path to fall back on. The XOR rule is validated
-  // before anything downstream so the error names the caller's mistake, not
-  // a symptom (AC-1.1).
-  if (config.provider !== undefined && config.inference !== undefined) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of provider or inference`);
+  // (Epic 05 DD-5); there is no named-provider registry and no env/flag
+  // resolution path to fall back on. The XOR rule is validated before anything
+  // downstream so the error names the caller's mistake, not a symptom (AC-1.1).
+  if (config.inferenceCallbacks !== undefined && config.provider !== undefined) {
+    throw new TypeError(
+      `${INIT_CONFIG_PREFIX}: inferenceCallbacks and provider are aliases; supply only inferenceCallbacks`,
+    );
   }
-  if (config.provider === undefined && config.inference === undefined) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of provider or inference`);
+  const directCallbacks = config.inferenceCallbacks ?? config.provider;
+  if (directCallbacks !== undefined && config.inference !== undefined) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
+  }
+  if (directCallbacks === undefined && config.inference === undefined) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
   }
   if (config.mode !== "background" && config.mode !== "manual") {
     throw new TypeError(
       `${INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
     );
   }
-  let provider: InferenceCallbacks;
+  let inferenceCallbacks: InferenceCallbacks;
   if (config.inference !== undefined) {
-    provider = resolveInferenceCallbacks(config.inference);
+    inferenceCallbacks = resolveInferenceCallbacks(config.inference);
   } else {
-    if (config.provider === null || typeof config.provider !== "object") {
-      throw new TypeError(`${INIT_CONFIG_PREFIX}: provider must implement InferenceCallbacks`);
+    if (directCallbacks === null || typeof directCallbacks !== "object") {
+      throw new TypeError(`${INIT_CONFIG_PREFIX}: inferenceCallbacks must implement InferenceCallbacks`);
     }
     for (const operation of INFERENCE_CALLBACK_OPERATIONS) {
-      if (typeof config.provider[operation] !== "function") {
-        throw new TypeError(`${INIT_CONFIG_PREFIX}: provider is missing operation ${operation}`);
+      if (typeof directCallbacks[operation] !== "function") {
+        throw new TypeError(`${INIT_CONFIG_PREFIX}: inferenceCallbacks is missing operation ${operation}`);
       }
     }
-    provider = config.provider;
+    inferenceCallbacks = directCallbacks;
   }
 
   const resolved: ResolvedSdkConfig = {
-    provider,
+    inferenceCallbacks,
+    provider: inferenceCallbacks,
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },

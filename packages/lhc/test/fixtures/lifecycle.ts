@@ -41,7 +41,7 @@ import { validEvent, type TempStore } from "./index.js";
 
 // ── the one SDK configuration (AC-5.1) ────────────────────────────
 //
-// Deterministic provider injected at construction (the only provider-arrival
+// Deterministic callbacks injected at construction (the only direct-callback
 // path since the CLI retired), background mode, zero-backoff retry so a
 // deterministic run never arms a wake timer, the Epic 03 fixture's pinned
 // chunk policy (12 fixed-shape turns cut into 4 chunks, c1–c3 closed), and
@@ -55,14 +55,14 @@ export const LIFECYCLE_PROFILE = {
 } as const;
 
 // Epic 05 TC-4.2: the capstone replays this exact sequence with the real
-// inference adapter — the provider-arrival slot is the one swap point; the
+// inference adapter — the inference-callback slot is the one swap point; the
 // sequence, phase names, and every other configuration value stay owned here
 // so the deterministic leg and the real leg run THE SAME lifecycle.
 export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
   return initLhc({
     ...(inference !== undefined
       ? { inference }
-      : { provider: createDeterministicProvider() }),
+      : { inferenceCallbacks: createDeterministicProvider() }),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },

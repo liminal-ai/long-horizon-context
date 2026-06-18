@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }): Lhc {
-  return initLhc({ provider: createProviderDouble(), mode: "manual", view });
+  return initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual", view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

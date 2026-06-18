@@ -122,13 +122,13 @@ describe("TC-6.2: the env/flag provider-resolution path is gone (AC-6.3)", () =>
     else process.env[envKey] = priorEnv;
   });
 
-  it("neither provider nor inference is the XOR TypeError; no fallback resolution catches it", () => {
+  it("neither inferenceCallbacks nor inference is the XOR TypeError; no fallback resolution catches it", () => {
     // Even with the retired env variable set, construction must throw: the
-    // only provider-arrival path is injection at initLhc.
+    // only inference-callback arrival path is injection at initLhc.
     process.env[envKey] = "deterministic";
     expect(() => initLhc({ mode: "manual" } as unknown as SdkConfig)).toThrow(TypeError);
     expect(() => initLhc({ mode: "manual" } as unknown as SdkConfig)).toThrow(
-      /exactly one of provider or inference/,
+      /exactly one of inferenceCallbacks or inference/,
     );
   });
 });

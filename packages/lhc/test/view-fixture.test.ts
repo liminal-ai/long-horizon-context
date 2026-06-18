@@ -39,7 +39,7 @@ afterAll(() => {
 
 function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
   return initLhc({
-    provider: createProviderDouble(),
+    inferenceCallbacks: createProviderDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
   });

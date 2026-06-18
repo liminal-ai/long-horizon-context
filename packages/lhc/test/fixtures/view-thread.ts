@@ -159,7 +159,7 @@ export async function derivedThreadFixture(
 
   const double = createProviderDouble();
   const sdk = initLhc({
-    provider: double,
+    inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
@@ -309,7 +309,7 @@ export async function corruptedVariantThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createProviderDouble();
-  const sdk = initLhc({ provider: double, mode: "manual" });
+  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
@@ -446,7 +446,7 @@ export async function blockedSiblingThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc; blockedTurnId: string }> {
   const double = createProviderDouble();
-  const sdk = initLhc({ provider: double, mode: "manual" });
+  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);

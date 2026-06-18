@@ -241,9 +241,10 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
 });
 
 describe("FC-0.1 (production seam): initLhc assembles with the double injected where production adapters go", () => {
-  it("resolves config defaults centrally and carries the injected provider and mode", () => {
+  it("resolves config defaults centrally and carries the injected inference callbacks and mode", () => {
     const double = createProviderDouble();
-    const sdk = initLhc({ provider: double, mode: "manual" });
+    const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+    expect(sdk.config.inferenceCallbacks).toBe(double);
     expect(sdk.config.provider).toBe(double);
     expect(sdk.config.mode).toBe("manual");
     expect(sdk.config.retry).toEqual({ budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 });
@@ -260,34 +261,44 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
   });
 
   it("background mode is a validated construction option (behavior lands in Story 1)", () => {
-    const sdk = initLhc({ provider: createProviderDouble(), mode: "background" });
+    const sdk = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "background" });
     expect(sdk.scheduler.mode).toBe("background");
     expect(() => sdk.scheduler.poke("th_x")).not.toThrow();
   });
 
-  it("rejects malformed config at construction: bad mode, incomplete provider, bad policy values", () => {
+  it("rejects malformed config at construction: bad mode, incomplete callbacks, bad policy values", () => {
     const double = createProviderDouble();
     expect(() =>
-      initLhc({ provider: double, mode: "later" as unknown as "manual" }),
+      initLhc({ inferenceCallbacks: double, mode: "later" as unknown as "manual" }),
     ).toThrow(/mode/);
     const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
     expect(() =>
-      initLhc({ provider: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
+      initLhc({ inferenceCallbacks: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
     ).toThrow(/missing operation/);
     expect(() =>
       initLhc({
-        provider: double,
+        inferenceCallbacks: double,
         mode: "manual",
         chunkPolicy: { targetProjectedTokens: 4400, maxProjectedTokens: 2200 },
       }),
     ).toThrow(/chunkPolicy/);
     expect(() =>
       initLhc({
-        provider: double,
+        inferenceCallbacks: double,
         mode: "manual",
         retry: { budget: 0, backoffBaseMs: 0, backoffCapMs: 0 },
       }),
     ).toThrow(/retry.budget/);
+  });
+
+  it("accepts provider as a deprecated direct-callback alias and rejects both spellings together", () => {
+    const double = createProviderDouble();
+    const sdk = initLhc({ provider: double, mode: "manual" });
+    expect(sdk.config.inferenceCallbacks).toBe(double);
+    expect(sdk.config.provider).toBe(double);
+    expect(() =>
+      initLhc({ inferenceCallbacks: double, provider: double, mode: "manual" }),
+    ).toThrow(/inferenceCallbacks and provider are aliases/);
   });
 });
 

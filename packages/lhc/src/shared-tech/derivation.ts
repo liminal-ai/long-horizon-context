@@ -168,12 +168,14 @@ export const PROVIDER_OPERATIONS = INFERENCE_CALLBACK_OPERATIONS;
 /** @deprecated Use InferenceCallbackName. */
 export type ProviderOperationName = InferenceCallbackName;
 
-// ── SDK assembly config (tech design §Interfaces) ────────────────
-// Provider arrival is exactly one of `provider` (direct injection,
-// unchanged — the deterministic test default) or `inference` (host
-// model-call function + per-kind assignments, Epic 05 DD-5). Both or
-// neither is a construction TypeError naming the XOR rule (AC-1.1).
+// ── LHC initialization config (tech design §Interfaces) ──────────
+// Inference callbacks arrive exactly one way: direct callback injection
+// (`inferenceCallbacks`) or `inference` (host model-call function + per-kind
+// assignments, Epic 05 DD-5). `provider` remains only as a deprecated spelling
+// for direct callbacks.
 export interface SdkConfig {
+  inferenceCallbacks?: InferenceCallbacks;
+  /** @deprecated Use inferenceCallbacks. */
   provider?: InferenceCallbacks;
   inference?: InferenceConfig;
   mode: "background" | "manual";
@@ -193,6 +195,8 @@ export interface SdkConfig {
 
 // Every optional filled by initLhc's central defaults.
 export interface ResolvedSdkConfig {
+  inferenceCallbacks: InferenceCallbacks;
+  /** @deprecated Use inferenceCallbacks. */
   provider: InferenceCallbacks;
   mode: "background" | "manual";
   clock: () => Date;

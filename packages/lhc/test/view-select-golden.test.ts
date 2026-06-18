@@ -237,7 +237,7 @@ async function replayTrajectory(
   golden: BoundaryGolden,
 ): Promise<Array<{ position: number; zoneTokens: number }>> {
   const sdk = initLhc({
-    provider: createProviderDouble(),
+    inferenceCallbacks: createProviderDouble(),
     mode: "manual",
     view: { visibility: golden.budgets },
   });

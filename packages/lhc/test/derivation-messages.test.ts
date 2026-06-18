@@ -46,9 +46,9 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function manualSdk(provider: InferenceCallbacks): Lhc {
+function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
@@ -173,7 +173,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
   it("tool-result summaries preserve succeeded / failed outcome from metadata alone", async () => {
     const double = createProviderDouble();
     const constantText = "the tool output says nothing reliable about status";
-    const provider: InferenceCallbacks = {
+    const callbacks: InferenceCallbacks = {
       smoothPrompt: (i) => double.smoothPrompt(i),
       summarizeToolResult: () => Promise.resolve({ ok: true, text: constantText }),
       composeTurnRendering: (i) => double.composeTurnRendering(i),
@@ -181,7 +181,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
       summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };
-    const sdk = manualSdk(provider);
+    const sdk = manualSdk(callbacks);
 
     const ok = await threadWithToolRun(store);
     const errored = await threadWithToolRun(store, { isError: true });

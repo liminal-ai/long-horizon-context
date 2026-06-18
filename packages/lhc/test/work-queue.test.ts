@@ -383,7 +383,7 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
   });
 
   it("initLhc assembles the handler map from domain tables; an unregistered kind reports the miss explicitly", () => {
-    const sdk = initLhc({ provider: createProviderDouble(), mode: "manual" });
+    const sdk = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
     // All six kinds registered: Story 2's message-owned handlers plus
     // Story 3's turn-owned ones (amended each story as the domain tables
     // populated — Story 0 asserted an empty map, Story 2 the three message

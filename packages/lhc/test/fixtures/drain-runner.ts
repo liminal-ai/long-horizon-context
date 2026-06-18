@@ -32,7 +32,7 @@ async function main(): Promise<void> {
 
   const double = createProviderDouble();
   const sdk = initLhc({
-    provider: double,
+    inferenceCallbacks: double,
     mode: "manual",
     lease: { durationMs: config.leaseMs },
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

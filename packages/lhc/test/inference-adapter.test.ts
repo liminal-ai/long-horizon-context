@@ -169,7 +169,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const adapterForms = await drainAll(adapterSdk, await seedSevenKinds(adapterSdk, freshStore()));
 
     const deterministicSdk = initLhc({
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicProvider(),
       mode: "manual",
       retry: RETRY,
       chunkPolicy: CHUNK_POLICY,

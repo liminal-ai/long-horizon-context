@@ -1,6 +1,6 @@
 // Epic 05 boundary vocabulary (tech design §Interface Definitions): the one
 // function a host supplies, its structured result shapes, and the config that
-// arrives at initLhc as the alternative to direct provider injection
+// arrives at initLhc as the alternative to direct inference callback injection
 // (DD-1, DD-5). LHC treats provider/model strings as opaque routing keys —
 // the host's ModelCall implementation is the only code that interprets them.
 
@@ -55,7 +55,7 @@ export interface DerivationGuards {
   };
 }
 
-/** SdkConfig.inference — the alternative to SdkConfig.provider (DD-5). */
+/** SdkConfig.inference — the alternative to SdkConfig.inferenceCallbacks (DD-5). */
 export interface InferenceConfig {
   call: ModelCall;
   // Partial by design (AC-0.3, AC-6.2, AC-6.3): inference derivation types the

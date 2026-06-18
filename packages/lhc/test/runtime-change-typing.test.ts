@@ -31,9 +31,9 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: InferenceCallbacks): Lhc {
+function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },

@@ -351,7 +351,7 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
-    const fresh = initLhc({ provider: createProviderDouble(), mode: "manual" });
+    const fresh = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
     const after = await fresh.threadView.pull({ filePath: fixture.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -465,7 +465,7 @@ interface DegradedThread {
 async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread> {
   const double = createProviderDouble();
   const sdk = initLhc({
-    provider: double,
+    inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
@@ -595,7 +595,7 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
     const corruptStore = tempStore();
     try {
       const double = createProviderDouble();
-      const sdk = initLhc({ provider: double, mode: "manual" });
+      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({
         filePath,

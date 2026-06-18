@@ -38,9 +38,9 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
+function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
   return initLhc({
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
@@ -204,7 +204,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     let probeAcquired = false;
     let filePath = "";
     const double = createProviderDouble();
-    const provider: InferenceCallbacks = {
+    const callbacks: InferenceCallbacks = {
       smoothPrompt: async (input) => {
         const probe = openRaw(filePath);
         try {
@@ -222,7 +222,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
-    const sdk = sdkFor(provider);
+    const sdk = sdkFor(callbacks);
     filePath = await newThread();
 
     await send(sdk, filePath, [
@@ -257,7 +257,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     let workerCompleted = false;
     const double = createProviderDouble();
     const captured = double.captureInputs();
-    const provider: InferenceCallbacks = {
+    const callbacks: InferenceCallbacks = {
       smoothPrompt: async () => {
         execSql(
           filePath,
@@ -277,7 +277,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
-    const sdk = sdkFor(provider);
+    const sdk = sdkFor(callbacks);
     filePath = await newThread();
 
     await send(sdk, filePath, [

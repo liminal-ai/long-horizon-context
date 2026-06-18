@@ -58,11 +58,11 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "retry" | "chunkPolicy" | "clock">> = {},
 ): Lhc {
   const config: SdkConfig = {
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
@@ -364,7 +364,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     // Background SDK first, so the requeue's poke-on-commit has a scheduler
     // to land on; the repair must then run with no drain call at all.
     const background = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },

@@ -1,5 +1,5 @@
 // Epic 05 Story 2 — TC-1.1 (AC-1.1, AC-1.3): the construction matrix.
-// Construction is where every config mistake dies: provider XOR inference,
+// Construction is where every config mistake dies: inferenceCallbacks XOR inference,
 // all seven kinds present (parameterized over the exported DERIVATION_TYPES set so
 // a new kind fails the matrix automatically), no unknown kind keys, every
 // prompt name known, non-empty provider/model strings — each a TypeError
@@ -38,23 +38,23 @@ function buildSdk(assignments: unknown): () => unknown {
     } as unknown as SdkConfig);
 }
 
-describe("TC-1.1: provider XOR inference (AC-1.1)", () => {
-  it("both provider and inference is a TypeError naming the XOR rule", () => {
+describe("TC-1.1: inferenceCallbacks XOR inference (AC-1.1)", () => {
+  it("both inferenceCallbacks and inference is a TypeError naming the XOR rule", () => {
     const { call } = recordingCall(cannedResponses());
     const make = (): unknown =>
       initLhc({
         mode: "manual",
-        provider: createProviderDouble(),
+        inferenceCallbacks: createProviderDouble(),
         inference: { call, assignments: validAssignments() },
       });
     expect(make).toThrow(TypeError);
-    expect(make).toThrow(/exactly one of provider or inference/);
+    expect(make).toThrow(/exactly one of inferenceCallbacks or inference/);
   });
 
-  it("neither provider nor inference is a TypeError naming the XOR rule", () => {
+  it("neither inferenceCallbacks nor inference is a TypeError naming the XOR rule", () => {
     const make = (): unknown => initLhc({ mode: "manual" } as unknown as SdkConfig);
     expect(make).toThrow(TypeError);
-    expect(make).toThrow(/exactly one of provider or inference/);
+    expect(make).toThrow(/exactly one of inferenceCallbacks or inference/);
   });
 });
 

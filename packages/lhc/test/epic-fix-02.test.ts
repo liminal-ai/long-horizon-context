@@ -74,9 +74,9 @@ async function newThread(name: string): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: ProviderDouble, mode: SdkConfig["mode"]): Lhc {
+function sdkFor(inferenceCallbacks: ProviderDouble, mode: SdkConfig["mode"]): Lhc {
   return initLhc({
-    provider,
+    inferenceCallbacks,
     mode,
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 1000 },
@@ -227,7 +227,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 25, backoffCapMs: 60000 },
       lease: { durationMs: 1000 },
@@ -260,7 +260,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       // A long backoff parks the head far past the window we observe.
       retry: { budget: 3, backoffBaseMs: 60000, backoffCapMs: 60000 },

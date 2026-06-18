@@ -56,11 +56,11 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   chunkPolicy?: SdkConfig["chunkPolicy"],
 ): Lhc {
   const config: SdkConfig = {
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
@@ -129,7 +129,7 @@ function requeueDirect(filePath: string, input: EnqueueInput): void {
   }
 }
 
-// A provider that delegates to the deterministic double except for scripted
+// Callbacks that delegate to the deterministic double except for scripted
 // lower-band projections — the seam tests use to pin projected token counts
 // for the placement golden cases (the projection content is what placement
 // arithmetic measures, exactly once, at landing).
@@ -366,8 +366,8 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
   it("three turns at ~equal size: the third's placement closes the chunk holding two, and the third opens chunk 2", async () => {
     const per = estimateTokens(PROJ);
     const double = createProviderDouble();
-    const provider = withScriptedProjections(double, () => PROJ);
-    const sdk = manualSdk(provider, {
+    const callbacks = withScriptedProjections(double, () => PROJ);
+    const sdk = manualSdk(callbacks, {
       targetProjectedTokens: 2 * per + 1,
       maxProjectedTokens: 100 * per,
     });
@@ -396,8 +396,8 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
   it("threshold exactness: accumulated + incoming equal to the target closes (inclusive), holding only the prior member", async () => {
     const per = estimateTokens(PROJ);
     const double = createProviderDouble();
-    const provider = withScriptedProjections(double, () => PROJ);
-    const sdk = manualSdk(provider, {
+    const callbacks = withScriptedProjections(double, () => PROJ);
+    const sdk = manualSdk(callbacks, {
       targetProjectedTokens: 2 * per,
       maxProjectedTokens: 100 * per,
     });
@@ -424,8 +424,8 @@ describe("TC-3.7 / AC-3.7: a single projection at or above the max forms its own
   it("one oversized turn → its own closed chunk with both summaries derived", async () => {
     const big = estimateTokens(BIG);
     const double = createProviderDouble();
-    const provider = withScriptedProjections(double, () => BIG);
-    const sdk = manualSdk(provider, {
+    const callbacks = withScriptedProjections(double, () => BIG);
+    const sdk = manualSdk(callbacks, {
       targetProjectedTokens: big,
       maxProjectedTokens: big,
     });
@@ -448,7 +448,7 @@ describe("TC-3.7 / AC-3.7: a single projection at or above the max forms its own
     const big = estimateTokens(BIG);
     const projections = [SMALL, BIG];
     const double = createProviderDouble();
-    const provider = withScriptedProjections(double, () => {
+    const callbacks = withScriptedProjections(double, () => {
       const next = projections.shift();
       if (next === undefined) throw new Error("scripted projections exhausted");
       return next;
@@ -456,7 +456,7 @@ describe("TC-3.7 / AC-3.7: a single projection at or above the max forms its own
     // target = max = big: the small turn sits safely under both; the big
     // turn's arrival crosses the target (small + big ≥ big) and its own
     // projection meets the max.
-    const sdk = manualSdk(provider, {
+    const sdk = manualSdk(callbacks, {
       targetProjectedTokens: big,
       maxProjectedTokens: big,
     });
@@ -504,7 +504,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
     // Detailed is deterministic material assembly; brief still goes through
-    // its own provider operation over projections + outcomes.
+    // its own inference operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
     expect(detailed?.content).toBe(memberProjections.join(" | "));
     expect(brief?.content).toBe(
@@ -563,7 +563,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(account).toContain(`${callB} ⇒ failed`);
     expect(account).toContain(`${resultB} ⇒ failed`);
 
-    // Seam evidence: only the brief call crosses the provider boundary, and
+    // Seam evidence: only the brief call crosses the inference boundary, and
     // receives the run outcome only — no receipt account text anywhere in its
     // input, so brief structurally cannot preserve more.
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;

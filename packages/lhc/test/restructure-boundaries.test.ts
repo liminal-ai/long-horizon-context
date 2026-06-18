@@ -125,7 +125,7 @@ describe("AC-0.4 architecture-risk: stale lower_band_projection work items are d
     const store = tempStore();
     stores.push(store);
     const filePath = store.threadPath();
-    const sdk = initLhc({ mode: "manual", provider: createDeterministicProvider() });
+    const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicProvider() });
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
 

@@ -17,7 +17,7 @@ let sdk: Lhc;
 
 beforeEach(() => {
   store = tempStore();
-  sdk = initLhc({ provider: createDeterministicProvider(), mode: "manual" });
+  sdk = initLhc({ inferenceCallbacks: createDeterministicProvider(), mode: "manual" });
 });
 
 afterEach(() => {
@@ -36,9 +36,9 @@ async function write(filePath: string, entry: LogEntry): Promise<void> {
   expect(written.ok).toBe(true);
 }
 
-function manualSdk(provider: InferenceCallbacks): Lhc {
+function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },

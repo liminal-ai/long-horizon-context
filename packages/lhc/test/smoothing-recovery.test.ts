@@ -39,11 +39,11 @@ async function newThread(): Promise<string> {
 }
 
 function sdkFor(
-  provider: InferenceCallbacks,
+  inferenceCallbacks: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "retry" | "smoothing">> = {},
 ): Lhc {
   const config: SdkConfig = {
-    provider,
+    inferenceCallbacks,
     mode: "manual",
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
@@ -172,7 +172,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     const fenced = "```ts\n\tconst  i = 1;\n\n\t\treturn  i;\n```";
     const promptText = `plz\t\t fix this\n${fenced}\nthx`;
     let providerInput: string | undefined;
-    const provider: InferenceCallbacks = {
+    const callbacks: InferenceCallbacks = {
       smoothPrompt: (i) => {
         providerInput = i.text;
         return Promise.resolve({ ok: true, text: `Please fix this.\n${fenced}\nThanks.` });
@@ -183,7 +183,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
       summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };
-    const sdk = sdkFor(provider);
+    const sdk = sdkFor(callbacks);
     const filePath = await newThread();
 
     await send(sdk, filePath, [

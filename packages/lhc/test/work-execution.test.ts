@@ -70,7 +70,7 @@ function manualSdk(
   } = {},
 ): Lhc {
   const sdk = initLhc({
-    provider: double,
+    inferenceCallbacks: double,
     mode: "manual",
     clock: overrides.clock ?? (() => new Date()),
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -179,7 +179,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
     const double = createProviderDouble();
     double.delayKind("prompt_smoothing", 100);
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 1000 },
@@ -210,7 +210,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
   it("an intake batch is processed with no drain call; drainSettled is the completion signal", async () => {
     const double = createProviderDouble();
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 1000 },
@@ -243,7 +243,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
     const double = createProviderDouble();
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 1000 },

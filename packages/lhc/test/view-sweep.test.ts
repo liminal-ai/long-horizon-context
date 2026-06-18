@@ -277,7 +277,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     // and this test is what notices if Epic 02's requeue ever stops nooping.
     const double = createProviderDouble();
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     });
@@ -315,7 +315,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
   it("an unclassified reason code lands in permanentFailed with its literal reason and is never requeued", async () => {
     const double = createProviderDouble();
     const sdk = initLhc({
-      provider: double,
+      inferenceCallbacks: double,
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     });
@@ -427,7 +427,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // full receipt embeds (Story 2's "absent" placeholder is gone from the
     // vocabulary), and the embedded requeue's poke-on-commit lands on the
     // background scheduler — the production repair path needs no drain call.
-    const bg = initLhc({ provider: createProviderDouble(), mode: "background" });
+    const bg = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "background" });
     const receipt = await bg.threadView.compact(
       { filePath: fixture.filePath },
       { profile: "coding" },
