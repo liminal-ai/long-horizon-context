@@ -1,8 +1,6 @@
 // TC-4.5: closed-loop proof through the PI connector hooks.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  DEFAULT_PROMPT_NAMES,
-  type FormKind,
   type ModelAssignment,
   type ModelCall,
   type ModelCallResult,
@@ -10,6 +8,7 @@ import {
   type ThreadRef,
 } from "lhc";
 import { createConnector, type Connector } from "../../src/index.js";
+import { defaultAssignments, type AssignmentKind } from "../../src/inference/model-call.js";
 import type { ExtensionContext } from "../../src/pi/types.js";
 import { makeAssistantMessage, makeUserMessage } from "../fixtures/synthetic.js";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "../fixtures/model-call.js";
@@ -25,16 +24,13 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-function assignments(overrides: Partial<Record<FormKind, Partial<ModelAssignment>>> = {}): Record<FormKind, ModelAssignment> {
-  const base = { provider: "openai", model: "good" };
+function assignments(overrides: Partial<Record<AssignmentKind, Partial<ModelAssignment>>> = {}): Record<AssignmentKind, ModelAssignment> {
+  const base = defaultAssignments({ provider: "openai", id: "good" });
   return {
-    smoothed_prompt: { ...base, prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt, ...(overrides.smoothed_prompt ?? {}) },
-    tool_call_summary: { ...base, prompt: DEFAULT_PROMPT_NAMES.tool_call_summary, ...(overrides.tool_call_summary ?? {}) },
-    tool_result_summary: { ...base, prompt: DEFAULT_PROMPT_NAMES.tool_result_summary, ...(overrides.tool_result_summary ?? {}) },
-    turn_rendering: { ...base, prompt: DEFAULT_PROMPT_NAMES.turn_rendering, ...(overrides.turn_rendering ?? {}) },
-    lower_band_projection: { ...base, prompt: DEFAULT_PROMPT_NAMES.lower_band_projection, ...(overrides.lower_band_projection ?? {}) },
-    chunk_summary_detailed: { ...base, prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed, ...(overrides.chunk_summary_detailed ?? {}) },
-    chunk_summary_brief: { ...base, prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief, ...(overrides.chunk_summary_brief ?? {}) },
+    smoothed_prompt: { ...base.smoothed_prompt, ...(overrides.smoothed_prompt ?? {}) },
+    smooth_turn_compression: { ...base.smooth_turn_compression, ...(overrides.smooth_turn_compression ?? {}) },
+    tool_result_summary: { ...base.tool_result_summary, ...(overrides.tool_result_summary ?? {}) },
+    chunk_summary_brief: { ...base.chunk_summary_brief, ...(overrides.chunk_summary_brief ?? {}) },
   };
 }
 
@@ -95,7 +91,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     const sdkConfig: SdkConfig = {
       inference: {
         call: modelCall,
-        assignments: assignments({ turn_rendering: { model: "fail" } }),
+        assignments: assignments({ smooth_turn_compression: { model: "fail" } }),
       },
       mode: "background",
       retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -124,14 +120,14 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     expect(health.value.owners).toContainEqual(
       expect.objectContaining({
         owner: "turns",
-        kind: "turn_rendering",
+        kind: "smooth_turn_compression",
         counts: expect.objectContaining({ failed: 1 }),
       }),
     );
     expect(health.value.failures).toContainEqual(
       expect.objectContaining({
         owner: "turns",
-        form: "turn_rendering",
+        derivationType: "smooth_turn_compression",
         reason: expect.stringContaining("auth"),
       }),
     );
@@ -216,7 +212,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     expect(afterEdit.ok).toBe(true);
     if (!afterEdit.ok) return;
     expect(afterEdit.value.blocks[0]?.content["text"]).toBe(editedText);
-    const smoothed = afterEdit.value.forms.find((form) => form.form === "smoothed_prompt");
+    const smoothed = afterEdit.value.derivations.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed).toEqual(
       expect.objectContaining({
         state: "ready",

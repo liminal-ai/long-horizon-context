@@ -12,7 +12,13 @@
 // Spec Deviation: Local pi-ai types in pi-ai.ts instead of importing from
 // @earendil-works/pi-ai (package not yet available).
 
-import { DEFAULT_PROMPT_NAMES, type ModelCall, type ModelCallFailureKind, type ModelCallResult } from "lhc";
+import {
+  DEFAULT_PROMPT_NAMES,
+  type ModelAssignment,
+  type ModelCall,
+  type ModelCallFailureKind,
+  type ModelCallResult,
+} from "lhc";
 import type { ExtensionContext, ModelHandle } from "../pi/types.js";
 import type { PiAiComplete } from "./pi-ai.js";
 
@@ -142,8 +148,24 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
   };
 }
 
+export const ASSIGNMENT_KINDS = [
+  "smoothed_prompt",
+  "tool_result_summary",
+  "smooth_turn_compression",
+  "chunk_summary_brief",
+] as const;
+
+export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
+
+export const DEFAULT_ASSIGNMENT_PROMPTS: Record<AssignmentKind, string> = {
+  smoothed_prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
+  tool_result_summary: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v1",
+  smooth_turn_compression: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "lower-band-v1",
+  chunk_summary_brief: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v1",
+};
+
 /**
- * Default assignments for all seven FormKinds.
+ * Default assignments for the inference-backed LHC derivations.
  *
  * Story 6 implements config loading; these defaults use a real PI registry
  * lane, so the shipped production path can resolve through createModelCall().
@@ -157,14 +179,14 @@ export const DEFAULT_PI_MODEL = { provider: "openai-codex", id: "gpt-5.4" } as c
 
 export function defaultAssignments(
   model: { provider: string; id: string } = DEFAULT_PI_MODEL,
-): Record<string, { provider: string; model: string; prompt: string }> {
-  return {
-    smoothed_prompt: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-    tool_call_summary: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.tool_call_summary },
-    tool_result_summary: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.tool_result_summary },
-    turn_rendering: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.turn_rendering },
-    lower_band_projection: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.lower_band_projection },
-    chunk_summary_detailed: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed },
-    chunk_summary_brief: { provider: model.provider, model: model.id, prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
-  };
+): Record<AssignmentKind, ModelAssignment> {
+  const assignment = (kind: AssignmentKind): ModelAssignment => ({
+    provider: model.provider,
+    model: model.id,
+    prompt: DEFAULT_ASSIGNMENT_PROMPTS[kind],
+  });
+  return Object.fromEntries(ASSIGNMENT_KINDS.map((kind) => [kind, assignment(kind)])) as Record<
+    AssignmentKind,
+    ModelAssignment
+  >;
 }

@@ -217,7 +217,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
       owner: "capture",
       subjectKind: "event",
       subjectId: String(gaps[0]!.eventOrder),
-      form: "capture_gap",
+      derivationType: "capture_gap",
       reason: (gaps[0]!.payload as { text: string }).text,
       attempts: 0,
     });
@@ -294,7 +294,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
       owner: "capture",
       subjectKind: "event",
       subjectId: String(gaps[0]!.eventOrder),
-      form: "capture_gap",
+      derivationType: "capture_gap",
       reason: (gaps[0]!.payload as { text: string }).text,
       attempts: 0,
     });

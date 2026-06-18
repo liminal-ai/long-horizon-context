@@ -1,4 +1,4 @@
-import type { FormKind } from "lhc";
+import type { AssignmentKind } from "../inference/model-call.js";
 
 /** The startup reachability probe's structured result (tech design Flow 5,
  *  AC-5.1–5.3): which assignment lanes PI cannot reach, each with the distinct
@@ -11,7 +11,7 @@ import type { FormKind } from "lhc";
 export interface ValidationReport {
   message?: string;
   unreachable: {
-    kind: FormKind;
+    kind: AssignmentKind;
     provider: string;
     model: string;
     reason: "unknown_model" | "auth_not_configured";

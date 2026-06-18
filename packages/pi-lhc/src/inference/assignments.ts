@@ -1,18 +1,18 @@
-// AC-5.4, AC-5.5. Load the seven assignments from config; fail loud on
+// AC-5.4, AC-5.5. Load inference assignment config; fail loud on
 // missing/unknown/placeholder.
 //
-// Assignments provide provider, model, and prompt for all seven derivation
-// kinds. LHC's createSdk already validates assignment shape at construction
-// (all seven kinds present, non-empty provider/model, prompt-name registered).
+// Assignments provide provider, model, and prompt for LHC's inference-backed
+// derivation kinds. LHC validates assignment shape at construction
+// (non-empty provider/model, prompt-name registered).
 // This layer adds operator config loading on top, with user overrides that
 // take effect on the next session start (no code change).
 //
 // Shipped defaults are defined in model-call.ts (defaultAssignments). This
 // module merges operator config over those defaults and validates the result.
 
-import type { FormKind, ModelAssignment } from "lhc";
-import { DEFAULT_PROMPT_NAMES, FORM_KINDS } from "lhc";
-import { defaultAssignments } from "./model-call.js";
+import type { ModelAssignment } from "lhc";
+import { DEFAULT_PROMPT_NAMES } from "lhc";
+import { ASSIGNMENT_KINDS, defaultAssignments, type AssignmentKind } from "./model-call.js";
 
 /** Operator config shape for derivation assignments.
  *
@@ -34,10 +34,10 @@ export interface AssignmentConfig {
  *  Carries the kind and the specific validation problem for actionable error
  *  reporting (AC-5.5: "fails loudly at initialization with an actionable error"). */
 export class AssignmentValidationError extends Error {
-  readonly kind: FormKind;
+  readonly kind: AssignmentKind;
   readonly problem: "incomplete" | "unknown_prompt" | "placeholder";
 
-  constructor(kind: FormKind, problem: "incomplete" | "unknown_prompt" | "placeholder") {
+  constructor(kind: AssignmentKind, problem: "incomplete" | "unknown_prompt" | "placeholder") {
     let message: string;
     switch (problem) {
       case "incomplete":
@@ -91,7 +91,7 @@ function isPromptRegistered(promptName: string): boolean {
 }
 
 /** Validate a single assignment and throw if it fails shape checks. */
-function validateAssignment(kind: FormKind, assignment: Partial<ModelAssignment>): ModelAssignment {
+function validateAssignment(kind: AssignmentKind, assignment: Partial<ModelAssignment>): ModelAssignment {
   if (!isComplete(assignment)) {
     throw new AssignmentValidationError(kind, "incomplete");
   }
@@ -109,7 +109,7 @@ function validateAssignment(kind: FormKind, assignment: Partial<ModelAssignment>
   return assignment;
 }
 
-/** Load + shape-validate the seven derivation assignments from operator config.
+/** Load + shape-validate inference derivation assignments from operator config.
  *
  *  - Merges operator config over shipped defaults (AC-5.4).
  *  - Falls back to defaults when config is missing or undefined (AC-5.4).
@@ -122,38 +122,36 @@ function validateAssignment(kind: FormKind, assignment: Partial<ModelAssignment>
  *  the caller (typically the session_start hook) catches and surfaces the error
  *  as an actionable diagnostic. It never returns an incomplete or placeholder map
  *  that would mask a misconfiguration (story §Anti-Shim Requirements). */
-export function loadAssignments(config: unknown): Record<FormKind, ModelAssignment> {
-  // Start with shipped defaults (all seven kinds with concrete assignments)
-  const baseAssignments = defaultAssignments() as Partial<Record<FormKind, ModelAssignment>>;
-  const mergedAssignments: Partial<Record<FormKind, ModelAssignment>> = {};
+export function loadAssignments(config: unknown): Record<AssignmentKind, ModelAssignment> {
+  const baseAssignments = defaultAssignments();
+  const mergedAssignments: Partial<Record<AssignmentKind, ModelAssignment>> = {};
 
-  for (const kind of FORM_KINDS) {
+  for (const kind of ASSIGNMENT_KINDS) {
     mergedAssignments[kind] = validateAssignment(kind, baseAssignments[kind] ?? {});
   }
 
   // If config is missing/null/undefined, use defaults as-is
   if (config === null || config === undefined || typeof config !== "object") {
-    return mergedAssignments as Record<FormKind, ModelAssignment>;
+    return mergedAssignments as Record<AssignmentKind, ModelAssignment>;
   }
 
-  const configObj = config as Partial<Record<FormKind, Partial<ModelAssignment>>>;
+  const configObj = config as Partial<Record<AssignmentKind, Partial<ModelAssignment>>>;
 
   // Check for unknown assignment keys (SV-002: fail loud on extra keys)
   const configKeys = Object.keys(configObj) as Array<string>;
   for (const key of configKeys) {
-    if (key !== "" && !FORM_KINDS.includes(key as FormKind)) {
-      throw new Error(`Unknown assignment key '${key}': must be one of ${FORM_KINDS.join(", ")}`);
+    if (key !== "" && !ASSIGNMENT_KINDS.includes(key as AssignmentKind)) {
+      throw new Error(`Unknown assignment key '${key}': must be one of ${ASSIGNMENT_KINDS.join(", ")}`);
     }
   }
 
   // Merge operator config over defaults for kinds that are specified
-  for (const kind of FORM_KINDS) {
-    const override = configObj[kind as FormKind];
+  for (const kind of ASSIGNMENT_KINDS) {
+    const override = configObj[kind];
     if (override !== undefined) {
       mergedAssignments[kind] = validateAssignment(kind, override);
     }
   }
 
-  // At this point we have validated all seven kinds (FORM_KINDS covers all seven)
-  return mergedAssignments as Record<FormKind, ModelAssignment>;
+  return mergedAssignments as Record<AssignmentKind, ModelAssignment>;
 }

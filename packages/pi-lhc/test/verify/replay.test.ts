@@ -188,7 +188,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     expect(
       health2.value.owners.some((owner) => owner.kind === "capture_gap" && owner.counts.failed > 0),
     ).toBe(true);
-    expect(health2.value.failures.some((failure) => failure.form === "capture_gap")).toBe(true);
+    expect(health2.value.failures.some((failure) => failure.derivationType === "capture_gap")).toBe(true);
 
     // The gap note is itself a recorded event — the last recorded position
     // advances, proving the surface reflects new capture rather than a snapshot.

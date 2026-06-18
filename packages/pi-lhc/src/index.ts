@@ -479,7 +479,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       sourceSeq: 0,
     };
 
-    // Story 6: Startup validation - probe all seven assignments before first use
+    // Story 6: Startup validation - probe inference assignments before first use
     // This runs after instance creation but before capture begins (AC-5.1).
     // Validation failures are reported but do NOT stop capture (AC-5.3).
     if (config.value.inference === undefined) {

@@ -1,16 +1,16 @@
 import {
-  createSdk,
+  initLhc,
   inspect,
   intakeStream,
   messages,
   turns,
-  type DerivationProvider,
   type EventRecord,
+  type InferenceCallbacks,
+  type InferenceResult,
   type InspectOverview,
   type MessageEventInput,
   type MessageRecord,
   type OpResult,
-  type ProviderResult,
   type ThreadRef,
   type TurnRecord,
 } from "lhc";
@@ -58,14 +58,14 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-/** A construction-valid, fail-closed inference provider — the same observe-only
+/** Construction-valid, fail-closed inference callbacks — the same observe-only
  *  shape the live Epic-1 session runs on (index.ts). Replay never serves context
  *  to a model, so every derivation operation fails closed (non-retryable) rather
  *  than fabricating derived text; the resulting failed derivations are exactly
  *  what inspect health must surface (AC-6.3), so the harness mirrors production
  *  rather than hiding them behind a succeeding fake. */
-function observeOnlyProvider(): DerivationProvider {
-  const notConfigured = (): Promise<ProviderResult> =>
+function observeOnlyInferenceCallbacks(): InferenceCallbacks {
+  const notConfigured = (): Promise<InferenceResult> =>
     Promise.resolve({
       ok: false,
       retryable: false,
@@ -73,10 +73,9 @@ function observeOnlyProvider(): DerivationProvider {
     });
   return {
     smoothPrompt: notConfigured,
-    summarizeToolCall: notConfigured,
     summarizeToolResult: notConfigured,
     composeTurnRendering: notConfigured,
-    projectLowerBand: notConfigured,
+    compressSmoothTurn: notConfigured,
     summarizeChunkDetailed: notConfigured,
     summarizeChunkBrief: notConfigured,
   };
@@ -88,7 +87,7 @@ function observeOnlyProvider(): DerivationProvider {
  *  flush-on-dispose contract the lifecycle instance uses, rebuilt here because
  *  `verify` may not import `lifecycle` (boundary rule 3). */
 function buildReplayInstance(threadRef: ThreadRef): LhcInstance {
-  const sdk = createSdk({ provider: observeOnlyProvider(), mode: "background" });
+  const sdk = initLhc({ inferenceCallbacks: observeOnlyInferenceCallbacks(), mode: "background" });
   return {
     sdk,
     threadRef,
@@ -245,6 +244,10 @@ function expectedBlocks(event: MessageEventInput): MessageRecord["blocks"] {
     case "assistant_thinking":
     case "runtime_note":
       return [{ blockType: "text", content: { text: event.payload.text } }];
+    case "model_change":
+      return [{ blockType: "model_change", content: event.payload }];
+    case "thinking_level_change":
+      return [{ blockType: "thinking_level_change", content: event.payload }];
     case "tool_call":
       return [
         {

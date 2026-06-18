@@ -1,24 +1,27 @@
 // TC-5.4..5.6. Assignment loading tests.
 //
-// TC-5.4: Seven kinds load (provider,model,prompt) with shipped defaults; prompts resolve.
+// TC-5.4: Inference-backed kinds load (provider,model,prompt) with shipped defaults; prompts resolve.
 // TC-5.5: Override takes effect next start, no code change.
 // TC-5.6: Incomplete/unknown assignment fails loud at init (missing kind, unknown prompt, incomplete, placeholder).
 
 import { describe, expect, it } from "vitest";
-import { FORM_KINDS, DEFAULT_PROMPT_NAMES, type FormKind } from "lhc";
+import {
+  ASSIGNMENT_KINDS,
+  DEFAULT_ASSIGNMENT_PROMPTS as DEFAULT_PROMPT_NAMES,
+} from "../../src/inference/model-call.js";
 import { loadAssignments, AssignmentValidationError } from "../../src/inference/assignments.js";
 import { DEFAULT_PI_MODEL } from "../../src/inference/model-call.js";
 
 describe("Story 6: Startup Validation and Assignment Config", () => {
-  describe("TC-5.4: Seven kinds load with shipped defaults", () => {
-    it("loads all seven kinds with provider, model, and prompt from shipped defaults", () => {
+  describe("TC-5.4: Inference-backed kinds load with shipped defaults", () => {
+    it("loads all inference-backed kinds with provider, model, and prompt from shipped defaults", () => {
       const assignments = loadAssignments(undefined);
 
-      // All seven kinds are present
-      expect(FORM_KINDS.every((kind) => kind in assignments)).toBe(true);
+      // All inference-backed kinds are present
+      expect(ASSIGNMENT_KINDS.every((kind) => kind in assignments)).toBe(true);
 
       // Each assignment has provider, model, and prompt
-      for (const kind of FORM_KINDS) {
+      for (const kind of ASSIGNMENT_KINDS) {
         const assignment = assignments[kind];
         expect(assignment).toBeDefined();
         expect(assignment.provider).toBeDefined();
@@ -33,7 +36,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
     it("uses a production PI registry lane for shipped defaults", () => {
       const assignments = loadAssignments(undefined);
 
-      for (const kind of FORM_KINDS) {
+      for (const kind of ASSIGNMENT_KINDS) {
         expect(assignments[kind].provider).toBe(DEFAULT_PI_MODEL.provider);
         expect(assignments[kind].model).toBe(DEFAULT_PI_MODEL.id);
       }
@@ -44,7 +47,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       // Every prompt should match a registered prompt name
       const registeredPrompts = Object.values(DEFAULT_PROMPT_NAMES);
-      for (const kind of FORM_KINDS) {
+      for (const kind of ASSIGNMENT_KINDS) {
         const assignment = assignments[kind];
         expect(registeredPrompts).toContain(assignment.prompt);
         expect(assignment.prompt).toBe(DEFAULT_PROMPT_NAMES[kind]);
@@ -69,13 +72,13 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       expect(assignments.smoothed_prompt.prompt).toBe(DEFAULT_PROMPT_NAMES.smoothed_prompt);
 
       // Other kinds retain defaults
-      expect(assignments.tool_call_summary.provider).toBe(DEFAULT_PI_MODEL.provider);
-      expect(assignments.tool_call_summary.model).toBe(DEFAULT_PI_MODEL.id);
+      expect(assignments.smooth_turn_compression.provider).toBe(DEFAULT_PI_MODEL.provider);
+      expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
     });
 
     it("applies partial override (provider only, keeps model/prompt from default)", () => {
       const config = {
-        tool_call_summary: {
+        smooth_turn_compression: {
           provider: "openai",
           // model and prompt omitted - should throw incomplete
         },
@@ -88,7 +91,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       } catch (e) {
         expect(e).toBeInstanceOf(AssignmentValidationError);
         if (e instanceof AssignmentValidationError) {
-          expect(e.kind).toBe("tool_call_summary");
+          expect(e.kind).toBe("smooth_turn_compression");
           expect(e.problem).toBe("incomplete");
         }
       }
@@ -97,15 +100,15 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
     it("applies multiple overrides in a single config", () => {
       const config = {
         smoothed_prompt: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        tool_call_summary: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.tool_call_summary },
-        turn_rendering: { provider: "google", model: "gemini-pro", prompt: DEFAULT_PROMPT_NAMES.turn_rendering },
+        smooth_turn_compression: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
+        chunk_summary_brief: { provider: "google", model: "gemini-pro", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
       };
 
       const assignments = loadAssignments(config);
 
       expect(assignments.smoothed_prompt.provider).toBe("anthropic");
-      expect(assignments.tool_call_summary.provider).toBe("openai");
-      expect(assignments.turn_rendering.provider).toBe("google");
+      expect(assignments.smooth_turn_compression.provider).toBe("openai");
+      expect(assignments.chunk_summary_brief.provider).toBe("google");
     });
 
     it("takes effect with no code change - config change only", () => {
@@ -153,10 +156,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws when model is omitted", () => {
         const config = {
-          tool_call_summary: {
+          smooth_turn_compression: {
             provider: "openai",
             // model missing
-            prompt: DEFAULT_PROMPT_NAMES.tool_call_summary,
+            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
           },
         };
 
@@ -166,7 +169,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("tool_call_summary");
+            expect(e.kind).toBe("smooth_turn_compression");
             expect(e.problem).toBe("incomplete");
           }
         }
@@ -174,7 +177,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws when prompt is omitted", () => {
         const config = {
-          turn_rendering: {
+          smooth_turn_compression: {
             provider: "google",
             model: "gemini-pro",
             // prompt missing
@@ -187,7 +190,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("turn_rendering");
+            expect(e.kind).toBe("smooth_turn_compression");
             expect(e.problem).toBe("incomplete");
           }
         }
@@ -246,7 +249,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
             model: "claude-3-opus",
             prompt: "unknown-1",
           },
-          tool_call_summary: {
+          smooth_turn_compression: {
             provider: "openai",
             model: "gpt-4o",
             prompt: "unknown-2",
@@ -290,10 +293,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws when model contains placeholder pattern", () => {
         const config = {
-          tool_call_summary: {
+          smooth_turn_compression: {
             provider: "openai",
             model: "your-model",
-            prompt: DEFAULT_PROMPT_NAMES.tool_call_summary,
+            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
           },
         };
 
@@ -303,7 +306,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("tool_call_summary");
+            expect(e.kind).toBe("smooth_turn_compression");
             expect(e.problem).toBe("placeholder");
           }
         }
@@ -311,10 +314,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws for 'unconfigured' placeholder", () => {
         const config = {
-          turn_rendering: {
+          smooth_turn_compression: {
             provider: "google",
             model: "unconfigured",
-            prompt: DEFAULT_PROMPT_NAMES.turn_rendering,
+            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
           },
         };
 
@@ -324,7 +327,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("turn_rendering");
+            expect(e.kind).toBe("smooth_turn_compression");
             expect(e.problem).toBe("placeholder");
           }
         }
@@ -332,10 +335,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws for 'placeholder' literal", () => {
         const config = {
-          lower_band_projection: {
+          smooth_turn_compression: {
             provider: "placeholder",
             model: "some-model",
-            prompt: DEFAULT_PROMPT_NAMES.lower_band_projection,
+            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
           },
         };
 
@@ -344,10 +347,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws for 'example' placeholder pattern", () => {
         const config = {
-          chunk_summary_detailed: {
+          chunk_summary_brief: {
             provider: "example-provider",
             model: "example-model-123",
-            prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed,
+            prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief,
           },
         };
 
@@ -399,19 +402,19 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
     it("handles null config by using defaults", () => {
       const assignments = loadAssignments(null);
       expect(assignments).toBeDefined();
-      expect(FORM_KINDS.every((kind) => kind in assignments)).toBe(true);
+      expect(ASSIGNMENT_KINDS.every((kind) => kind in assignments)).toBe(true);
     });
 
     it("handles empty object config by using defaults", () => {
       const assignments = loadAssignments({});
       expect(assignments).toBeDefined();
-      expect(FORM_KINDS.every((kind) => kind in assignments)).toBe(true);
+      expect(ASSIGNMENT_KINDS.every((kind) => kind in assignments)).toBe(true);
     });
 
     it("handles non-object config by using defaults", () => {
       const assignments = loadAssignments("string-config");
       expect(assignments).toBeDefined();
-      expect(FORM_KINDS.every((kind) => kind in assignments)).toBe(true);
+      expect(ASSIGNMENT_KINDS.every((kind) => kind in assignments)).toBe(true);
     });
 
     it("rejects array config loudly instead of treating indexes as assignment kinds", () => {

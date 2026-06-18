@@ -4,8 +4,7 @@
 // converter → real LHC intake) so every capture test asserts on recorded
 // thread state, never on a mocked intake. The two external edges stay as the
 // tech design fixes them — the PI hook surface is fed synthetic events, and the
-// SDK runs real against a temp SQLite thread with the deterministic provider
-// (selected by explicit name, never a production default).
+// SDK runs real against a temp SQLite thread with deterministic model-call text.
 import {
   inspect,
   intakeStream,
@@ -18,7 +17,7 @@ import {
 import { createConnector, type Connector } from "../../src/index.js";
 import type { LaunchFlags } from "../../src/lifecycle/thread-resolution.js";
 import { fakeModelCallText } from "../fixtures/model-call.js";
-import { DEFAULT_PROMPT_NAMES } from "lhc";
+import { defaultAssignments } from "../../src/inference/model-call.js";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionStartReason } from "../../src/pi/types.js";
 import { makeSessionStart } from "../fixtures/synthetic.js";
 import type { TempStore } from "../fixtures/thread.js";
@@ -60,7 +59,7 @@ export function syntheticCtx(cwd = "/work/capture", entries: SessionEntry[] = []
 }
 
 /** The capture-suite SDK config: a real background instance on the
- *  deterministic provider, so a captured user_prompt's queued derivation has a
+ *  deterministic model-call route, so a captured user_prompt's queued derivation has a
  *  handler to settle and never strands background work. */
 export function captureConfig(): OpResult<SdkConfig> {
   return {
@@ -68,15 +67,7 @@ export function captureConfig(): OpResult<SdkConfig> {
     value: {
       inference: {
         call: fakeModelCallText("deterministic text"),
-        assignments: {
-          smoothed_prompt: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-          tool_call_summary: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.tool_call_summary },
-          tool_result_summary: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.tool_result_summary },
-          turn_rendering: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.turn_rendering },
-          lower_band_projection: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.lower_band_projection },
-          chunk_summary_detailed: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed },
-          chunk_summary_brief: { provider: "deterministic", model: "default", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
-        },
+        assignments: defaultAssignments({ provider: "deterministic", id: "default" }),
       },
       mode: "background",
     },

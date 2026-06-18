@@ -9,8 +9,8 @@
 // on the ModelCallResult shapes, exercising classification and routing without
 // a live provider.
 import { describe, expect, it, vi } from "vitest";
-import { createSdk, DEFAULT_PROMPT_NAMES, threads, type ModelCallFailureKind, type ModelCallInput } from "lhc";
-import { classifyFailure, createModelCall } from "../../src/inference/model-call.js";
+import { createSdk, threads, type ModelCallFailureKind, type ModelCallInput } from "lhc";
+import { classifyFailure, createModelCall, defaultAssignments } from "../../src/inference/model-call.js";
 import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
 import type { PiAiComplete } from "../../src/inference/pi-ai.js";
 import { tempStore } from "../fixtures/thread.js";
@@ -263,15 +263,7 @@ describe("Story 5: Inference Host Routing", () => {
         const sdk = createSdk({
           inference: {
             call: async () => ({ ok: true, text: "" }),
-            assignments: {
-              smoothed_prompt: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-              tool_call_summary: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.tool_call_summary },
-              tool_result_summary: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.tool_result_summary },
-              turn_rendering: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.turn_rendering },
-              lower_band_projection: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.lower_band_projection },
-              chunk_summary_detailed: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_detailed },
-              chunk_summary_brief: { provider: "openai", model: "gpt-4o-mini", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
-            },
+            assignments: defaultAssignments({ provider: "openai", id: "gpt-4o-mini" }),
           },
           mode: "manual",
           retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -296,7 +288,7 @@ describe("Story 5: Inference Host Routing", () => {
         const health = await sdk.inspect.health({ filePath: created.value.filePath });
         expect(health.ok).toBe(true);
         if (health.ok) {
-          const failures = health.value.failures.filter((f) => f.form === "smoothed_prompt");
+          const failures = health.value.failures.filter((f) => f.derivationType === "smoothed_prompt");
           expect(failures).toEqual([
             expect.objectContaining({
               reason: expect.stringContaining("empty_output"),

@@ -1,4 +1,4 @@
-// AC-5.1, AC-5.2, AC-5.3. Startup validation: probe all seven assignments
+// AC-5.1, AC-5.2, AC-5.3. Startup validation: probe inference assignments
 // against PI's registry, report unreachable lanes, leave capture running.
 //
 // This layer runs AFTER shape validation (which LHC's createSdk enforces at
@@ -11,11 +11,11 @@
 // when available and always persists to SessionState.health for headless modes.
 
 import { writeSync } from "node:fs";
-import type { FormKind, ModelAssignment } from "lhc";
-import { FORM_KINDS } from "lhc";
+import type { ModelAssignment } from "lhc";
 import type { ExtensionContext } from "../pi/types.js";
 import type { SessionState } from "../lifecycle/state.js";
 import type { ValidationReport } from "../shared/diagnostics.js";
+import { ASSIGNMENT_KINDS } from "./model-call.js";
 
 // Re-export ValidationReport from its spec'd home (defined in shared/diagnostics
 // so SessionState can reference it without a lifecycle→inference edge).
@@ -31,7 +31,7 @@ function defaultHeadlessLog(message: string): void {
 
 /** Probe each assignment; classify unreachable lanes (AC-5.1, AC-5.2).
  *
- *  For each of the seven derivation kinds:
+ *  For each inference derivation kind:
  *  1. Call ctx.modelRegistry.find(provider, model) to check if the lane exists.
  *  2. If found, call ctx.modelRegistry.hasConfiguredAuth(handle) to check auth.
  *  3. Classify the failure:
@@ -42,13 +42,14 @@ function defaultHeadlessLog(message: string): void {
  *  Reachable lanes are not listed; an empty `unreachable` array means all lanes
  *  are reachable (AC-5.1). */
 export function validateReachable(
-  assignments: Record<FormKind, ModelAssignment>,
+  assignments: Record<string, ModelAssignment> | undefined,
   ctx: ExtensionContext,
 ): ValidationReport {
   const unreachable: ValidationReport["unreachable"] = [];
 
-  for (const kind of FORM_KINDS) {
-    const assignment = assignments[kind as FormKind];
+  for (const kind of ASSIGNMENT_KINDS) {
+    const assignment = assignments?.[kind];
+    if (assignment === undefined) continue;
     const { provider, model } = assignment;
 
     // Check if the model exists in PI's registry

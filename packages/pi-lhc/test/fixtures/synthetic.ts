@@ -32,6 +32,8 @@ const defaultPayloads: { [K in EventKind]: () => EventByKind<K>["payload"] } = {
   assistant_text: () => ({ text: "here is what I found" }),
   assistant_thinking: () => ({ text: "considering the file contents" }),
   runtime_note: () => ({ text: "model changed: anthropic/claude → openai/gpt" }),
+  model_change: () => ({ previousModel: "anthropic/claude", newModel: "openai/gpt" }),
+  thinking_level_change: () => ({ previousLevel: "medium", newLevel: "high" }),
   tool_call: () => ({ toolCallId: "call-1", toolName: "read_file", arguments: { path: "notes.txt" } }),
   tool_result: () => ({ toolCallId: "call-1", content: "contents of notes.txt", isError: false }),
   turn_end: () => ({}),
