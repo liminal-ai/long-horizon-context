@@ -97,6 +97,7 @@ export type {
   HandlerDerivationWrite,
   HandlerOutcome,
   HandlerRunContext,
+  InferenceResult,
   ProviderResult,
   RenderingPart,
   ResolvedSdkConfig,
@@ -460,7 +461,7 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
 // failures after construction return OpResults per the error contract.
 export function initLhc(config: SdkConfig): Lhc {
   // Inference callbacks arrive by direct injection or by the inference config
-  // (Epic 05 DD-5); there is no named-provider registry and no env/flag
+  // (Epic 05 DD-5); there is no named inference-callback registry and no env/flag
   // resolution path to fall back on. The XOR rule is validated before anything
   // downstream so the error names the caller's mistake, not a symptom (AC-1.1).
   if (config.inferenceCallbacks !== undefined && config.provider !== undefined) {

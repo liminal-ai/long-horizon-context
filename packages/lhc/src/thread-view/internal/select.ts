@@ -8,7 +8,7 @@
 //     a refusal here means nothing was written, so the prior view is
 //     trivially intact (AC-2.5). Never moved inside the transaction.
 //   - selectArrangement: a pure function over those inputs. No DB handle, no
-//     clock, no provider — same inputs ⇒ same arrangement, byte-for-byte
+//     clock, no inference — same inputs ⇒ same arrangement, byte-for-byte
 //     (AC-2.9; goldens G1–G4 pin the tie-breakers).
 //
 // Tie-breakers, pinned (tech design): inclusion thresholds are ≤; walks are

@@ -12,7 +12,7 @@ import type {
   DerivationMetadata,
   HandlerOutcome,
   HandlerRunContext,
-  ProviderResult,
+  InferenceResult,
   ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
@@ -48,7 +48,7 @@ function sourceDamaged(reason: string): HandlerOutcome {
   return { ok: false, blocked: true, reason: `source_damaged: ${reason}` };
 }
 
-function providerFailed(result: { retryable: boolean; reason: string }): HandlerOutcome {
+function inferenceFailed(result: { retryable: boolean; reason: string }): HandlerOutcome {
   return { ok: false, retryable: result.retryable, reason: result.reason };
 }
 
@@ -155,14 +155,14 @@ async function recoverMessageDerivations(
 
     const block = message.blocks[0]?.content ?? {};
     const content = typeof block["content"] === "string" ? block["content"] : "";
-    let result: ProviderResult;
+    let result: InferenceResult;
     if (message.kind === "user_prompt") {
       const text = typeof block["text"] === "string" ? block["text"] : "";
       const cleaned = cleanPrompt(text);
       result =
         estimateTokens(cleaned) > run.config.smoothing.maxInferenceTokens
           ? { ok: true, text: cleaned }
-          : await run.provider.smoothPrompt({ text: cleaned });
+          : await run.inferenceCallbacks.smoothPrompt({ text: cleaned });
     } else {
       const tokens = estimateTokens(content);
       const outcome = toolOutcomeFromMessage(message);
@@ -174,7 +174,7 @@ async function recoverMessageDerivations(
         result =
           tokens <= targetTokens
             ? { ok: true, text: content }
-            : await run.provider.summarizeToolResult({
+            : await run.inferenceCallbacks.summarizeToolResult({
                 toolName,
                 content,
                 outcome,
@@ -244,7 +244,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
 
   // Compose from current message-derivation states: ready derivations verbatim,
   // non-ready fall back with one gap each (AC-3.2). Pure — both reads land
-  // before any provider call, and no transaction is held across them.
+  // before any inference call, and no transaction is held across them.
   const messages = readMemberMessages(db, turnId);
   const derivations = readMessageDerivationRows(
     db,
@@ -270,8 +270,8 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   }
 
   const renderingText = composeTurnRenderingText(parts);
-  const projection = await run.provider.compressSmoothTurn({ rendering: renderingText });
-  if (!projection.ok) return providerFailed(projection);
+  const projection = await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText });
+  if (!projection.ok) return inferenceFailed(projection);
 
   // The projection's token count is estimated exactly once, here, as the
   // artifact lands; placement reads this stored arithmetic and never
@@ -280,7 +280,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const threadId = readThreadId(run);
   // Tool-run receipts ride the rendering's metadata, mechanically restated
   // from the composition input (AC-3.8) — the chunk summaries read them from
-  // here, never from provider prose.
+  // here, never from inference prose.
   const renderingMetadata: DerivationMetadata = {
     ...(receipts.length > 0 ? { receipts } : {}),
   };
@@ -326,7 +326,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
 // One read for both summary kinds — member projections in turn order. Detailed
 // is deterministic material assembly from member projections plus full
 // tool-run receipts. Brief is still inference-backed and receives outcomes
-// only, the receipt text stripped here so the brief provider call structurally
+// only, the receipt text stripped here so the brief inference call structurally
 // cannot carry it. Two work items, two handlers' runs, independent retry and
 // states. A member whose projection is not ready waits: chunk summary
 // derivation is background work, so it requeues until the member lower-band
@@ -369,13 +369,13 @@ function chunkSummaryHandler(
               members.map((member) => member.receipts),
             ),
           }
-        : await run.provider.summarizeChunkBrief({
+        : await run.inferenceCallbacks.summarizeChunkBrief({
             memberProjections,
             memberOutcomes: members.map((member) =>
               member.receipts.map((receipt) => receipt.outcome),
             ),
           });
-    if (!result.ok) return providerFailed(result);
+    if (!result.ok) return inferenceFailed(result);
 
     return {
       ok: true,

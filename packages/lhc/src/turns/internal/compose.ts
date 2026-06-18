@@ -1,7 +1,7 @@
 // Rendering composition (Flow 3, AC-3.2–3.4): message-level derivations become the
 // ordered RenderingPart input for composeTurnRendering, with fallbacks and
 // gap records where a derivation is not ready. Pure by anti-shim requirement —
-// `(messages, derivations) → { parts, gaps }` with no DB handle, no provider, no
+// `(messages, derivations) → { parts, gaps }` with no DB handle, no inference, no
 // clock in the signature: determinism is structural, not disciplined.
 //
 // Tool activity stays in message order and groups into runs (AC-3.4, Fix 2):

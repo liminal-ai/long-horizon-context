@@ -1,7 +1,7 @@
 // SDK-internal scheduler and drain (DD-4): the one component holding
 // cross-operation in-memory state. The drain loop lives here per the tech
 // design's placement — claim under BEGIN IMMEDIATE, dispatch through the
-// handler map with no open transaction (the provider call lives there),
+// handler map with no open transaction (the inference call lives there),
 // complete in a second short transaction. Background mode adds per-thread
 // single-flight with pending-flag coalescing, post-commit pokes, first-touch
 // catch-up (DD-10), and drainSettled (issue 3). The in-memory state is
@@ -95,7 +95,7 @@ export async function drainOpenDb(
   deps: DrainDeps,
   opts?: { maxItems?: number },
 ): Promise<DrainReport> {
-  const { clock, lease, retry, provider } = deps.config;
+  const { clock, lease, retry, inferenceCallbacks } = deps.config;
   const ran: DrainReport["ran"] = [];
   let stoppedBecause: DrainReport["stoppedBecause"];
   let waitingUntil: string | undefined;
@@ -139,7 +139,7 @@ export async function drainOpenDb(
     let outcome: HandlerOutcome;
     try {
       outcome = await lookedUp.value(
-        { openDb: () => db, provider, clock, config: deps.config },
+        { openDb: () => db, inferenceCallbacks, clock, config: deps.config },
         {
           workItemId: item.workItemId,
           kind: item.kind,

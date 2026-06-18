@@ -265,8 +265,8 @@ function validateListOptions(opts: MessageListOptions): ErrorResult | undefined 
 // operation runs in the touch-suppressed scope, so openThreadDatabase's open
 // announcement (openThreadDatabase → fireThreadTouch → scheduler.touch) can
 // never let a background SDK's scheduler hang a first-touch catch-up drain —
-// and the provider call that drain would make — off this read. A list calls
-// no provider and schedules no work in either host mode.
+// and the inference call that drain would make — off this read. A list calls
+// no inference and schedules no work in either host mode.
 export function listMessages(
   thread: ThreadRef,
   opts?: MessageListOptions,
@@ -332,9 +332,9 @@ export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
 
 // Reads-only is structural (DD-6, SV-01-001), exactly as listMessages: the
 // open announcement that would let a background scheduler hang a first-touch
-// catch-up drain (and its provider call) off this show is suppressed for the
+// catch-up drain (and its inference call) off this show is suppressed for the
 // whole operation. show on a deleted message stays the audit read; neither
-// path touches the queue or the provider.
+// path touches the queue or inference callbacks.
 export function show(
   thread: ThreadRef,
   messageId: string,
@@ -402,7 +402,7 @@ export async function listQueuedWork(
 // This owner's repair report: every message-owned derivation's durable state
 // joined with live queue detail in one query — the five operational
 // situations (waiting, retrying, ready, failed, blocked) read from the rows
-// without any queue API. Needs no provider; reads degrade, never block.
+// without any queue API. Needs no inference; reads degrade, never block.
 export async function report(
   thread: ThreadRef,
   opts?: { notReady?: boolean; messageId?: string },

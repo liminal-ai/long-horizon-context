@@ -135,7 +135,7 @@ export interface InferenceCallbacks {
   // The two summary inputs differ by contract (AC-3.8): detailed receives
   // the members' tool-run receipts (what changed, outcome) alongside the
   // projections; brief receives outcomes only — receipt text is stripped
-  // before the provider is called, so brief structurally cannot leak it.
+  // before inference is called, so brief structurally cannot leak it.
   // The receipt fields are optional in the type for callers without member
   // context (the production chunk handlers always pass them).
   summarizeChunkDetailed(i: {
@@ -215,8 +215,8 @@ export interface ResolvedSdkConfig {
 
 // ── handler contract (DD-6; the map's value type) ────────────────
 export interface HandlerRunContext {
-  openDb(): DatabaseSync; // short-txn access; NEVER held across provider calls
-  provider: InferenceCallbacks;
+  openDb(): DatabaseSync; // short-txn access; NEVER held across inference calls
+  inferenceCallbacks: InferenceCallbacks;
   clock: () => Date;
   config: ResolvedSdkConfig;
 }

@@ -11,7 +11,7 @@
 // the adapter-owned timeout) lives in safeCall (AC-3.3, DD-6).
 import type {
   InferenceCallbacks,
-  ProviderResult,
+  InferenceResult,
 } from "./derivation.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
@@ -39,11 +39,11 @@ function boundContent(content: string, maxInputChars: number): string {
 // Failure mapping (DD-3): the queue consumes `retryable` exactly as it always
 // has, and the reason string is machine-readable by the established
 // code-before-first-colon convention. Retryable failures lead with
-// `provider_failure` — the code Epic 02 has always landed on exhausted forms
-// (the queue copies the provider's reason verbatim at exhaustion, AC-3.2) —
+// `provider_failure` — the legacy code Epic 02 has always landed on exhausted forms
+// (the queue copies the inference failure reason verbatim at exhaustion, AC-3.2) —
 // with the failure kind named next; terminal kinds lead with the kind itself
 // and land failed immediately.
-function classifiedFailure(kind: ModelCallFailureKind, message: string): ProviderResult {
+function classifiedFailure(kind: ModelCallFailureKind, message: string): InferenceResult {
   const { retryable } = FAILURE_CLASSIFICATION[kind];
   const detail = message === "" ? kind : `${kind}: ${message}`;
   return {
@@ -80,7 +80,7 @@ function withTargetRatios(input: unknown, assignment: ModelAssignment): unknown 
 }
 
 export function createInferenceCallbacks(config: ResolvedInferenceConfig): InferenceCallbacks {
-  const callKind = async (kind: string, input: unknown): Promise<ProviderResult> => {
+  const callKind = async (kind: string, input: unknown): Promise<InferenceResult> => {
     const assignment = config.assignments[kind];
     if (assignment === undefined) {
       return classifiedFailure(

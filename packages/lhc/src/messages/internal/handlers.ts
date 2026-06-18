@@ -1,17 +1,17 @@
 // The message-level derivation handlers (Flow 2): prompt smoothing and
 // tool-result summary. One shape throughout — read the
 // source message (a tool-activity handler additionally joins its call-id
-// pair, nothing more: AC-2.5), call exactly one provider operation, hand the
+// pair, nothing more: AC-2.5), call exactly one inference operation, hand the
 // derivation content back through HandlerOutcome. The drain's completion
 // transaction does the version-checked UPDATE-only write (Story 1), so a
 // stale or deleted source discards here exactly as everywhere else. Outcomes
 // on tool-activity summaries come from outcome.ts — the record, never the
-// provider's text (AC-2.4) — and land in derivation metadata apart from content.
+// inference text (AC-2.4) — and land in derivation metadata apart from content.
 import type {
   HandlerDerivationWrite,
   HandlerOutcome,
   HandlerRunContext,
-  ProviderResult,
+  InferenceResult,
   WorkHandler,
 } from "../../shared-tech/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
@@ -60,10 +60,10 @@ function loadSource(
   return { ok: true, messageId, source };
 }
 
-function landDerivation(write: HandlerDerivationWrite, result: ProviderResult): HandlerOutcome {
+function landDerivation(write: HandlerDerivationWrite, result: InferenceResult): HandlerOutcome {
   if (!result.ok) return { ok: false, retryable: result.retryable, reason: result.reason };
   const derivation: HandlerDerivationWrite = { ...write, content: result.text };
-  // Provenance is copied from the provider result — stamped there from
+  // Provenance is copied from the inference result — stamped there from
   // config-known strings, never authored here and never parsed from text
   // (Epic 05 DD-4). Deterministic domain assembly sets none, so its derivations
   // carry none.
@@ -101,7 +101,7 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
       derivationType: "smoothed_prompt",
       content: "",
     },
-    await run.provider.smoothPrompt({ text: cleaned }),
+    await run.inferenceCallbacks.smoothPrompt({ text: cleaned }),
   );
 };
 
@@ -181,7 +181,7 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
       content: "",
       metadata: { outcome },
     },
-    await run.provider.summarizeToolResult({
+    await run.inferenceCallbacks.summarizeToolResult({
       toolName: pairedCall?.toolName ?? "unknown_tool",
       content,
       outcome,

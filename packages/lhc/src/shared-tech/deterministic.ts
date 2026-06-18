@@ -1,13 +1,11 @@
 // Deterministic inference callbacks: marked, input-derived output for every seam
 // operation — `<marker>(<digest>:<prefix>)` where digest and prefix are pure
-// functions of the input. It backs the named-provider registry's
-// "deterministic" entry (DD-11) so spawned-CLI tests exercise the production
-// resolution seam, and the test double reuses these helpers so in-process and
-// spawned runs produce byte-identical artifacts. It is selectable only by
-// explicit name — never a production default.
+// functions of the input. The test double reuses these helpers so in-process
+// and spawned runs produce byte-identical artifacts. It is selectable only by
+// explicit construction — never a production default.
 import type {
   InferenceCallbacks,
-  ProviderResult,
+  InferenceResult,
   RenderingPart,
   ToolOutcome,
   ToolRunReceipt,
@@ -50,7 +48,7 @@ export function deterministicText(
   return `${DETERMINISTIC_MARKERS[op]}(${deterministicDigest(input)}:${text.slice(0, 40)})`;
 }
 
-function ok(op: DeterministicOpName, input: unknown, text: string): Promise<ProviderResult> {
+function ok(op: DeterministicOpName, input: unknown, text: string): Promise<InferenceResult> {
   return Promise.resolve({ ok: true, text: deterministicText(op, input, text) });
 }
 

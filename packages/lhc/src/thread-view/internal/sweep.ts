@@ -3,7 +3,7 @@
 // nothing itself: derivation state is read exclusively through the owners'
 // report surfaces, repair goes exclusively through the owners' requeue
 // surfaces (must-not-own: never a direct work_item or derivation touch).
-// No derivation, no provider calls, and no waiting: a requeue returns when
+// No derivation, no inference calls, and no waiting: a requeue returns when
 // the queue row is written; background mode's drain heals it later. Any
 // drainSettled/polling in this module is a contract violation (anti-shim;
 // TC-3.1's elapsed bound is the tripwire).

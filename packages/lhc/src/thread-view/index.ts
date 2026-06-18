@@ -359,8 +359,8 @@ function compactStopped(signal: { aborted: boolean } | undefined): boolean {
 // intact on refusal) → selection walk → band rendering → one BEGIN
 // IMMEDIATE replacing the view and resetting the boundary → receipt.
 // Assembly is entirely from stored artifacts: nothing here can reach a
-// provider (AC-2.4 zero-inference is structural — the sweep step repairs
-// through owners' requeue surfaces and calls no provider either).
+// inference (AC-2.4 zero-inference is structural — the sweep step repairs
+// through owners' requeue surfaces and calls no inference either).
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },

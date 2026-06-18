@@ -1,5 +1,5 @@
 // Deterministic prompt floor for smoothing recovery. Pure by construction:
-// no DB, no clock, no provider.
+// no DB, no clock, no inference.
 function cleanProse(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")

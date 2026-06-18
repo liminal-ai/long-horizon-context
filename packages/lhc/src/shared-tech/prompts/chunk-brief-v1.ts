@@ -1,6 +1,6 @@
 // PRE-DIAL-IN: structurally sound, untuned (AC-2.3); the dial-in working
 // period produces the tuned text under a new versioned name. Receipt text is
-// structurally absent here: the brief handler strips it before the provider
+// structurally absent here: the brief handler strips it before inference
 // is called (AC-3.8) and this template's input carries outcomes only.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";

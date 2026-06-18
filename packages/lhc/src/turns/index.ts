@@ -268,7 +268,7 @@ export function compactChunkMaterial(
 // ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
 
 // This owner's repair report: every turn- and chunk-owned derivation's durable
-// state joined with live queue detail in one query. Needs no provider;
+// state joined with live queue detail in one query. Needs no inference;
 // reads degrade, never block.
 export async function report(
   thread: ThreadRef,

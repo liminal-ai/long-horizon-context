@@ -2,7 +2,7 @@
 // (tech design §Tail message rendering — contract, not implementation
 // choice), short/full tool-result selection by boundary position, and the
 // short-form ladder (ready summary → deterministic truncation). Pure
-// functions over read state by design: no DB handle, no provider, no clock —
+// functions over read state by design: no DB handle, no inference, no clock —
 // determinism is structural (AC-1.7 byte-identical pulls fall out of it).
 //
 // Story 2 adds the band-entry side: the degrade ladders (tech design
@@ -85,7 +85,7 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): View
     return { role: "user", content: `[tool result · ${name}]\n${content}` };
   }
   // At-or-behind the boundary: the full-band floor is always deterministic
-  // truncation of the raw tool result, never provider summary content.
+  // truncation of the raw tool result, never inference summary content.
   const short = deterministicTruncation(content);
   return {
     role: "user",
@@ -132,7 +132,7 @@ export function renderTailMessage(
 }
 
 // One non-empty band → one labeled `user` message: band-marker header, then
-// the snapshot bytes verbatim (AC-5.1 resolution: provider APIs reject
+// the snapshot bytes verbatim (AC-5.1 resolution: inference APIs reject
 // unknown roles; `user` is what the MVP's injection used).
 export function renderBandMessage(band: Band, renderedText: string): ViewMessage {
   return { role: "user", band, content: `[context · ${band}]\n${renderedText}` };
