@@ -1,6 +1,6 @@
-// The real provider (DD-2): createInferenceProvider returns the same
-// DerivationProvider interface the deterministic provider implements, so
-// createSdk and everything below it see a provider, full stop. Every
+// The inference adapter (DD-2): createInferenceCallbacks returns the same
+// InferenceCallbacks interface direct injection implements, so createSdk and
+// everything below it sees callback operations, full stop. Every
 // operation is the same five-step pipeline (Flow 2): bound the input where
 // DD-7 applies, render the kind's prompt template into single-turn messages,
 // call the host ModelCall with the kind's assignment, reject empty or
@@ -10,7 +10,7 @@
 // handler-authored from the record. Host containment (thrown exceptions,
 // the adapter-owned timeout) lives in safeCall (AC-3.3, DD-6).
 import type {
-  DerivationProvider,
+  InferenceCallbacks,
   ProviderResult,
 } from "./derivation.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
@@ -79,7 +79,7 @@ function withTargetRatios(input: unknown, assignment: ModelAssignment): unknown 
   return { ...(input as Record<string, unknown>), ...ratios };
 }
 
-export function createInferenceProvider(config: ResolvedInferenceConfig): DerivationProvider {
+export function createInferenceCallbacks(config: ResolvedInferenceConfig): InferenceCallbacks {
   const callKind = async (kind: string, input: unknown): Promise<ProviderResult> => {
     const assignment = config.assignments[kind];
     if (assignment === undefined) {

@@ -26,7 +26,7 @@ import {
   setThreadTouch,
   threads,
   turns,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type Lhc,
   type MessageEventInput,
@@ -64,7 +64,7 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock" | "mode">> = {},
 ): Lhc {
   const config: SdkConfig = {
@@ -143,7 +143,7 @@ async function toolRunThread(sdk: Lhc): Promise<string> {
 // Scripted lower-band projections of a fixed size, every other operation on
 // the deterministic double — the TC-3.6 pattern for exact chunk membership.
 const PROJ = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
-function withScriptedProjections(base: DerivationProvider): DerivationProvider {
+function withScriptedProjections(base: InferenceCallbacks): InferenceCallbacks {
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
@@ -158,7 +158,7 @@ function withScriptedProjections(base: DerivationProvider): DerivationProvider {
 // Prompt+answer turns sized so chunks close at exactly two members:
 // target 2·per+1 means the third turn's placement closes the chunk holding
 // the first two (TC-3.6's golden case, reused as this story's fixture).
-function twoTurnChunkSdk(double: DerivationProvider): Lhc {
+function twoTurnChunkSdk(double: InferenceCallbacks): Lhc {
   const per = estimateTokens(PROJ);
   return manualSdk(withScriptedProjections(double), {
     chunkPolicy: { targetProjectedTokens: 2 * per + 1, maxProjectedTokens: 100 * per },

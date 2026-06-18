@@ -121,7 +121,7 @@ import {
   intakeStream,
   messages,
   turns,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Derivation,
   type ProviderResult,
 } from "../src/index.js";
@@ -137,7 +137,7 @@ import {
 
 // One call per operation with a fixed, distinct input — the operation sweep
 // FC-0.1/FC-0.2 iterate.
-function callAllOperations(double: DerivationProvider): Array<Promise<ProviderResult>> {
+function callAllOperations(double: InferenceCallbacks): Array<Promise<ProviderResult>> {
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
@@ -271,7 +271,7 @@ describe("FC-0.1 (production seam): createSdk assembles with the double injected
     ).toThrow(/mode/);
     const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
     expect(() =>
-      createSdk({ provider: incomplete as unknown as DerivationProvider, mode: "manual" }),
+      createSdk({ provider: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
     ).toThrow(/missing operation/);
     expect(() =>
       createSdk({

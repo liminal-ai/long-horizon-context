@@ -17,7 +17,7 @@ import {
   setThreadTouch,
   threads,
   type BatchResult,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type DerivationReportEntry,
   type Lhc,
@@ -58,7 +58,7 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "retry" | "chunkPolicy" | "clock">> = {},
 ): Lhc {
   const config: SdkConfig = {

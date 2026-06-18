@@ -4,7 +4,7 @@ import {
   createSdk,
   queueDetail,
   threads,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Lhc,
   type MessageEventInput,
   type SdkConfig,
@@ -35,7 +35,7 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: DerivationProvider, overrides: Partial<SdkConfig> = {}): Lhc {
+function sdkFor(provider: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
   return createSdk({
     provider,
     mode: "manual",

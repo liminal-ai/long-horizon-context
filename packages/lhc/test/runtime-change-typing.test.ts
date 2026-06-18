@@ -3,7 +3,7 @@ import {
   createSdk,
   messages,
   threads,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Lhc,
   type MessageEventInput,
 } from "../src/index.js";
@@ -31,7 +31,7 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: DerivationProvider): Lhc {
+function sdkFor(provider: InferenceCallbacks): Lhc {
   return createSdk({
     provider,
     mode: "manual",

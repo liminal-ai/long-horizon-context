@@ -6,7 +6,7 @@ import {
   estimateTokens,
   queueDetail,
   threads,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Lhc,
   type MessageEventInput,
   type SdkConfig,
@@ -38,7 +38,7 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: DerivationProvider, overrides: Partial<SdkConfig> = {}): Lhc {
+function sdkFor(provider: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
   return createSdk({
     provider,
     mode: "manual",
@@ -204,7 +204,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     let probeAcquired = false;
     let filePath = "";
     const double = createProviderDouble();
-    const provider: DerivationProvider = {
+    const provider: InferenceCallbacks = {
       smoothPrompt: async (input) => {
         const probe = openRaw(filePath);
         try {
@@ -257,7 +257,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     let workerCompleted = false;
     const double = createProviderDouble();
     const captured = double.captureInputs();
-    const provider: DerivationProvider = {
+    const provider: InferenceCallbacks = {
       smoothPrompt: async () => {
         execSql(
           filePath,

@@ -24,7 +24,7 @@ import {
   setSchedulerPoke,
   setThreadTouch,
   threads,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type Lhc,
   type MessageEventInput,
@@ -61,7 +61,7 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock" | "mode">> = {},
 ): Lhc {
   const config: SdkConfig = {

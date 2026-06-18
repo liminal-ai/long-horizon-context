@@ -19,7 +19,7 @@ import {
   runInTransaction,
   threads,
   type BatchResult,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type EnqueueInput,
   type Lhc,
@@ -56,7 +56,7 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   chunkPolicy?: SdkConfig["chunkPolicy"],
 ): Lhc {
   const config: SdkConfig = {
@@ -134,9 +134,9 @@ function requeueDirect(filePath: string, input: EnqueueInput): void {
 // for the placement golden cases (the projection content is what placement
 // arithmetic measures, exactly once, at landing).
 function withScriptedProjections(
-  base: DerivationProvider,
+  base: InferenceCallbacks,
   next: () => string,
-): DerivationProvider {
+): InferenceCallbacks {
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),

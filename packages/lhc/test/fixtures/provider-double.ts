@@ -1,4 +1,4 @@
-// Deterministic DerivationProvider double (DD-7, test plan §Test Substrate).
+// Deterministic InferenceCallbacks double (DD-7, test plan §Test Substrate).
 // Injected at the same seam production adapters use — dependency injection,
 // not a mock of internals. Every operation returns marked, input-derived
 // output: `<marker>(<digest>:<prefix>)` where the digest and prefix are pure
@@ -11,7 +11,7 @@ import {
   deterministicOutcomesSuffix,
   deterministicReceiptsSuffix,
   deterministicText,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type ProviderResult,
   type RenderingPart,
   type ToolOutcome,
@@ -62,7 +62,7 @@ export interface CapturedInput {
   input: unknown;
 }
 
-export class ProviderDouble implements DerivationProvider {
+export class ProviderDouble implements InferenceCallbacks {
   private failNextScript: FailScript | null = null;
   private readonly failByOp = new Map<ProviderOpName, FailScript>();
   private readonly delayByOp = new Map<ProviderOpName, number>();

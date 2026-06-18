@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { createInferenceProvider } from "../src/shared-tech/inference-adapter.js";
+import { createInferenceCallbacks } from "../src/shared-tech/inference-adapter.js";
 import {
   DEFAULT_PROMPT_NAMES,
   PROMPT_REGISTRY,
@@ -178,7 +178,7 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
 
   it("the brief rendering carries outcome tokens but no receipt text from its input", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceProvider(resolvedConfig({ call }));
+    const provider = createInferenceCallbacks(resolvedConfig({ call }));
 
     const brief = await provider.summarizeChunkBrief({
       memberProjections: ["turn one: planning work"],
@@ -203,7 +203,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("oversized summarizeToolResult input renders head + tail + marker under maxInputChars", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceProvider(
+    const provider = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
     );
     const content = "H".repeat(150) + "M".repeat(700) + "T".repeat(150);
@@ -230,7 +230,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     // head+tail+marker bound: with no room for the marker, that bound returns
     // the marker alone and overshoots the cap it was meant to hold.
     const tinyMax = 40;
-    const provider = createInferenceProvider(
+    const provider = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: tinyMax }),
     );
     const content = "H".repeat(40) + "M".repeat(700) + "T".repeat(40);
@@ -253,7 +253,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("under-limit input renders whole, no marker", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceProvider(
+    const provider = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
     );
     const content = "W".repeat(MAX_INPUT_CHARS);

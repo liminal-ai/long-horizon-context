@@ -29,12 +29,12 @@ import {
   setThreadTouch,
   type InstanceSeam,
 } from "./shared-tech/context.js";
-import { createInferenceProvider } from "./shared-tech/inference-adapter.js";
+import { createInferenceCallbacks } from "./shared-tech/inference-adapter.js";
 import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
 import { resolveGuards, type InferenceConfig, type ModelAssignment } from "./shared-tech/inference-types.js";
 import {
-  PROVIDER_OPERATIONS,
-  type DerivationProvider,
+  INFERENCE_CALLBACK_OPERATIONS,
+  type InferenceCallbacks,
   type ResolvedSdkConfig,
   type SdkConfig,
   type WorkHandler,
@@ -79,6 +79,7 @@ export {
 } from "./shared-tech/context.js";
 
 export {
+  createDeterministicInferenceCallbacks,
   createDeterministicProvider,
   deterministicOutcomesSuffix,
   deterministicReceiptsSuffix,
@@ -88,7 +89,7 @@ export {
 export type {
   CompletionTx,
   DependencyGap,
-  DerivationProvider,
+  InferenceCallbacks,
   Derivation,
   DerivationMetadata,
   DerivationState,
@@ -379,10 +380,10 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 // then fill defaults. Provided inference assignments must carry non-empty
 // provider/model and a registry-known prompt (AC-6.1). Inference types the host
 // omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS (AC-6.2, AC-6.4).
-// Unknown keys are rejected — never silently ignored. Then the adapter is built into the same DerivationProvider
+// Unknown keys are rejected — never silently ignored. Then the adapter is built into the same InferenceCallbacks
 // slot direct injection uses. No partial construction: every mistake throws
 // before anything is assembled (AC-1.1, AC-1.3).
-function resolveInferenceProvider(inference: InferenceConfig): DerivationProvider {
+function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbacks {
   if (typeof inference.call !== "function") {
     throw new TypeError("createSdk config: inference.call must be a function");
   }
@@ -439,7 +440,7 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
   const maxInputChars = inference.maxInputChars ?? 200_000;
   requirePositive(timeoutMs, "inference.timeoutMs");
   requirePositive(maxInputChars, "inference.maxInputChars");
-  return createInferenceProvider({
+  return createInferenceCallbacks({
     call: inference.call,
     assignments: merged,
     guards: resolvedGuards,
@@ -452,8 +453,8 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
 // Config mistakes are programmer errors at construction and throw; operating
 // failures after construction return OpResults per the error contract.
 export function createSdk(config: SdkConfig): Lhc {
-  // Provider arrival is exactly one of direct injection or the inference
-  // config (Epic 05 DD-5); there is no named-provider registry and no
+  // Inference callbacks arrive by direct injection or by the inference config
+  // (Epic 05 DD-5); there is no named-provider registry and no
   // env/flag resolution path to fall back on. The XOR rule is validated
   // before anything downstream so the error names the caller's mistake, not
   // a symptom (AC-1.1).
@@ -468,14 +469,14 @@ export function createSdk(config: SdkConfig): Lhc {
       `createSdk config: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
     );
   }
-  let provider: DerivationProvider;
+  let provider: InferenceCallbacks;
   if (config.inference !== undefined) {
-    provider = resolveInferenceProvider(config.inference);
+    provider = resolveInferenceCallbacks(config.inference);
   } else {
     if (config.provider === null || typeof config.provider !== "object") {
-      throw new TypeError("createSdk config: provider must implement DerivationProvider");
+      throw new TypeError("createSdk config: provider must implement InferenceCallbacks");
     }
-    for (const operation of PROVIDER_OPERATIONS) {
+    for (const operation of INFERENCE_CALLBACK_OPERATIONS) {
       if (typeof config.provider[operation] !== "function") {
         throw new TypeError(`createSdk config: provider is missing operation ${operation}`);
       }

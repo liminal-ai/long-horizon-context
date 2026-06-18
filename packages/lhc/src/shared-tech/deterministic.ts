@@ -1,4 +1,4 @@
-// The deterministic provider: marked, input-derived output for every seam
+// Deterministic inference callbacks: marked, input-derived output for every seam
 // operation — `<marker>(<digest>:<prefix>)` where digest and prefix are pure
 // functions of the input. It backs the named-provider registry's
 // "deterministic" entry (DD-11) so spawned-CLI tests exercise the production
@@ -6,7 +6,7 @@
 // spawned runs produce byte-identical artifacts. It is selectable only by
 // explicit name — never a production default.
 import type {
-  DerivationProvider,
+  InferenceCallbacks,
   ProviderResult,
   RenderingPart,
   ToolOutcome,
@@ -72,7 +72,7 @@ export function deterministicOutcomesSuffix(memberOutcomes?: ToolOutcome[][]): s
   return `[outcomes ${outcomes.join(",")}]`;
 }
 
-export function createDeterministicProvider(): DerivationProvider {
+export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
   return {
     smoothPrompt: (i: { text: string }) => ok("smoothPrompt", i, i.text),
     summarizeToolResult: (i: {
@@ -104,3 +104,6 @@ export function createDeterministicProvider(): DerivationProvider {
     },
   };
 }
+
+/** @deprecated Use createDeterministicInferenceCallbacks. */
+export const createDeterministicProvider = createDeterministicInferenceCallbacks;

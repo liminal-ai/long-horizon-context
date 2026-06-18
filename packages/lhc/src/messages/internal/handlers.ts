@@ -65,7 +65,7 @@ function landDerivation(write: HandlerDerivationWrite, result: ProviderResult): 
   const derivation: HandlerDerivationWrite = { ...write, content: result.text };
   // Provenance is copied from the provider result — stamped there from
   // config-known strings, never authored here and never parsed from text
-  // (Epic 05 DD-4). The deterministic provider sets none, so its derivations
+  // (Epic 05 DD-4). Deterministic domain assembly sets none, so its derivations
   // carry none.
   if (result.provenance !== undefined) {
     derivation.metadata = { ...(write.metadata ?? {}), provenance: result.provenance };

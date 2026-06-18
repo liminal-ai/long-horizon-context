@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createSdk,
   estimateTokens,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Lhc,
   type MessageEventInput,
   type StoredView,
@@ -389,7 +389,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     const refuse = (): never => {
       throw new Error("provider must never be called by a read operation");
     };
-    const throwing: DerivationProvider = {
+    const throwing: InferenceCallbacks = {
       smoothPrompt: refuse,
       summarizeToolResult: refuse,
       composeTurnRendering: refuse,

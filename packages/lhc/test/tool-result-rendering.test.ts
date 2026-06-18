@@ -4,7 +4,7 @@ import {
   createSdk,
   threads,
   type BatchResult,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type Lhc,
   type MessageEventInput,
@@ -36,7 +36,7 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(provider: DerivationProvider): Lhc {
+function sdkFor(provider: InferenceCallbacks): Lhc {
   return createSdk({
     provider,
     mode: "manual",

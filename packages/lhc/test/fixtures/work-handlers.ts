@@ -7,7 +7,7 @@
 // test. Registered by assigning into the SDK's assembled map, the same map
 // production domain tables merge into (DD-6).
 import type {
-  DerivationProvider,
+  InferenceCallbacks,
   HandlerDerivationWrite,
   Lhc,
   ProviderResult,
@@ -20,7 +20,7 @@ import type { DerivationType } from "./model-call.js";
 interface FormSpec {
   subjectKind: SubjectKind;
   derivationType: DerivationType;
-  call: (provider: DerivationProvider, sourceId: string) => Promise<ProviderResult>;
+  call: (provider: InferenceCallbacks, sourceId: string) => Promise<ProviderResult>;
 }
 
 const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
@@ -77,7 +77,7 @@ export interface TestHandlerHooks {
 }
 
 export function testWorkHandlers(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   hooks: TestHandlerHooks = {},
 ): Partial<Record<WorkKind, WorkHandler>> {
   const map: Partial<Record<WorkKind, WorkHandler>> = {};
@@ -112,7 +112,7 @@ export function testWorkHandlers(
 // map createSdk merged the (empty until Stories 2–3) domain tables into.
 export function registerTestWorkHandlers(
   sdk: Lhc,
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   hooks?: TestHandlerHooks,
 ): void {
   Object.assign(sdk.workHandlers, testWorkHandlers(provider, hooks));

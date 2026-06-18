@@ -1,8 +1,8 @@
 // Epic 02 shared vocabulary: the derivation state machine's types, the
-// provider seam, and the handler contract. Both owning domains (messages,
-// turns) consume these; neither owns them — the repair report, the mutation
-// cascade, and the drain all speak this vocabulary across domain lines, so it
-// lives in shared-tech/ (tech design §Interfaces, DD-2/DD-7).
+// inference callback seam, and the handler contract. Both owning domains
+// (messages, turns) consume these; neither owns them — the repair report, the
+// mutation cascade, and the drain all speak this vocabulary across domain
+// lines, so it lives in shared-tech/ (tech design §Interfaces, DD-2/DD-7).
 import type { DatabaseSync } from "node:sqlite";
 import type { InferenceConfig } from "./inference-types.js";
 import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
@@ -12,7 +12,7 @@ export type SubjectKind = "message" | "turn" | "chunk";
 export type DerivationState = "pending" | "ready" | "failed" | "blocked";
 
 // Outcome on tool-activity summaries — mechanically stamped from the record
-// (isError/presence), never authored by the provider (AC-2.4).
+// (isError/presence), never authored by model text (AC-2.4).
 export type ToolOutcome = "succeeded" | "failed" | "unknown";
 
 // A composed derivation's record of a dependency that fell back during composition:
@@ -33,14 +33,14 @@ export interface Derivation {
   reason?: string; // failed | blocked
   sourceVersion: number; // which version of the source this derivation derives from (DD-3)
   gaps?: DependencyGap[]; // composed derivations; landed-with-fallback record
-  metadata?: DerivationMetadata; // mechanically stamped fields; never provider-authored
+  metadata?: DerivationMetadata; // mechanically stamped fields; never model-authored
   derivedAt?: string;
 }
 
 // One tool call's or result's receipt within a turn's composed account
 // (AC-3.8): the account text — what changed, as composed — plus the
 // mechanically derived outcome. Derived from the composition input, never
-// from provider prose; stamped on the turn_rendering form so the chunk
+// from model prose; stamped on the turn_rendering form so the chunk
 // summaries can read receipts machine-readably in turn order.
 export interface ToolRunReceipt {
   messageId: string;
@@ -60,8 +60,8 @@ export interface DerivationMetadata {
   attempts?: number;
   lastError?: string;
   // Epic 05 (DD-4): which provider/model/prompt produced the content —
-  // copied from the ProviderResult's config-known strings, never authored
-  // from model output. The deterministic provider never sets it.
+  // copied from the InferenceResult's config-known strings, never authored
+  // from model output. Deterministic domain assembly never sets it.
   provenance?: ProviderProvenance;
 }
 
@@ -80,7 +80,7 @@ export interface DerivationReportEntry extends Derivation {
   };
 }
 
-// ── provider seam (DD-7) ─────────────────────────────────────────
+// ── inference callback seam (DD-7) ───────────────────────────────
 // Every operation returns content or a structured failure carrying
 // retryable-or-not; classification is the adapter's duty.
 // Provenance: the three config-known assignment strings, stamped by the
@@ -92,9 +92,12 @@ export interface ProviderProvenance {
   prompt: string;
 }
 
-export type ProviderResult =
+export type InferenceResult =
   | { ok: true; text: string; provenance?: ProviderProvenance }
   | { ok: false; retryable: boolean; reason: string };
+
+/** @deprecated Use InferenceResult. */
+export type ProviderResult = InferenceResult;
 
 // Message kinds a rendering part can carry — mirrors the intake event-kind
 // vocabulary minus turn_end (turn_end never projects a message). Mirrored
@@ -118,17 +121,17 @@ export interface RenderingPart {
   outcome?: ToolOutcome; // tool activity only
 }
 
-export interface DerivationProvider {
-  smoothPrompt(i: { text: string }): Promise<ProviderResult>;
+export interface InferenceCallbacks {
+  smoothPrompt(i: { text: string }): Promise<InferenceResult>;
   summarizeToolResult(i: {
     toolName: string;
     content: string;
     outcome?: ToolOutcome;
     targetTokens?: number;
     guidance?: string;
-  }): Promise<ProviderResult>;
-  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<ProviderResult>;
-  compressSmoothTurn(i: { rendering: string }): Promise<ProviderResult>;
+  }): Promise<InferenceResult>;
+  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult>;
+  compressSmoothTurn(i: { rendering: string }): Promise<InferenceResult>;
   // The two summary inputs differ by contract (AC-3.8): detailed receives
   // the members' tool-run receipts (what changed, outcome) alongside the
   // projections; brief receives outcomes only — receipt text is stripped
@@ -138,14 +141,17 @@ export interface DerivationProvider {
   summarizeChunkDetailed(i: {
     memberProjections: string[];
     memberReceipts?: ToolRunReceipt[][];
-  }): Promise<ProviderResult>;
+  }): Promise<InferenceResult>;
   summarizeChunkBrief(i: {
     memberProjections: string[];
     memberOutcomes?: ToolOutcome[][];
-  }): Promise<ProviderResult>;
+  }): Promise<InferenceResult>;
 }
 
-export const PROVIDER_OPERATIONS = [
+/** @deprecated Use InferenceCallbacks. */
+export type DerivationProvider = InferenceCallbacks;
+
+export const INFERENCE_CALLBACK_OPERATIONS = [
   "smoothPrompt",
   "summarizeToolResult",
   "composeTurnRendering",
@@ -154,7 +160,13 @@ export const PROVIDER_OPERATIONS = [
   "summarizeChunkBrief",
 ] as const;
 
-export type ProviderOperationName = (typeof PROVIDER_OPERATIONS)[number];
+export type InferenceCallbackName = (typeof INFERENCE_CALLBACK_OPERATIONS)[number];
+
+/** @deprecated Use INFERENCE_CALLBACK_OPERATIONS. */
+export const PROVIDER_OPERATIONS = INFERENCE_CALLBACK_OPERATIONS;
+
+/** @deprecated Use InferenceCallbackName. */
+export type ProviderOperationName = InferenceCallbackName;
 
 // ── SDK assembly config (tech design §Interfaces) ────────────────
 // Provider arrival is exactly one of `provider` (direct injection,
@@ -162,7 +174,7 @@ export type ProviderOperationName = (typeof PROVIDER_OPERATIONS)[number];
 // model-call function + per-kind assignments, Epic 05 DD-5). Both or
 // neither is a construction TypeError naming the XOR rule (AC-1.1).
 export interface SdkConfig {
-  provider?: DerivationProvider;
+  provider?: InferenceCallbacks;
   inference?: InferenceConfig;
   mode: "background" | "manual";
   clock?: () => Date;
@@ -181,7 +193,7 @@ export interface SdkConfig {
 
 // Every optional filled by createSdk's central defaults.
 export interface ResolvedSdkConfig {
-  provider: DerivationProvider;
+  provider: InferenceCallbacks;
   mode: "background" | "manual";
   clock: () => Date;
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
@@ -200,7 +212,7 @@ export interface ResolvedSdkConfig {
 // ── handler contract (DD-6; the map's value type) ────────────────
 export interface HandlerRunContext {
   openDb(): DatabaseSync; // short-txn access; NEVER held across provider calls
-  provider: DerivationProvider;
+  provider: InferenceCallbacks;
   clock: () => Date;
   config: ResolvedSdkConfig;
 }

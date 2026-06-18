@@ -27,6 +27,7 @@ const SDK_ONLY_EXPORTS = [
   "WORK_KIND_REGISTRY",
   "assembleWorkHandlerMap",
   "countLiveItems",
+  "createDeterministicInferenceCallbacks",
   "createDeterministicProvider",
   "createSdk",
   "deterministicOutcomesSuffix",

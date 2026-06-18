@@ -7,7 +7,7 @@ import {
   messages,
   queueDetail,
   threads,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type Lhc,
   type MessageEventInput,
   type SdkConfig,
@@ -39,7 +39,7 @@ async function newThread(): Promise<string> {
 }
 
 function sdkFor(
-  provider: DerivationProvider,
+  provider: InferenceCallbacks,
   overrides: Partial<Pick<SdkConfig, "retry" | "smoothing">> = {},
 ): Lhc {
   const config: SdkConfig = {
@@ -172,7 +172,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     const fenced = "```ts\n\tconst  i = 1;\n\n\t\treturn  i;\n```";
     const promptText = `plz\t\t fix this\n${fenced}\nthx`;
     let providerInput: string | undefined;
-    const provider: DerivationProvider = {
+    const provider: InferenceCallbacks = {
       smoothPrompt: (i) => {
         providerInput = i.text;
         return Promise.resolve({ ok: true, text: `Please fix this.\n${fenced}\nThanks.` });

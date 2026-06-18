@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createSdk,
   threadView,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type InspectOverview,
   type Lhc,
   type MessageEventInput,
@@ -35,7 +35,7 @@ afterEach(() => {
 // A provider whose every operation throws: any inference reached through an
 // inspect read fails the test loudly (the suite-wide zero-provider assert
 // extended to the new operations).
-function throwingProvider(): DerivationProvider {
+function throwingProvider(): InferenceCallbacks {
   const refuse = (): never => {
     throw new Error("provider must never be called by a read operation");
   };

@@ -3,7 +3,7 @@ import {
   createDeterministicProvider,
   createSdk,
   writeLog,
-  type DerivationProvider,
+  type InferenceCallbacks,
   type DrainReport,
   type Lhc,
   type LogEntry,
@@ -36,7 +36,7 @@ async function write(filePath: string, entry: LogEntry): Promise<void> {
   expect(written.ok).toBe(true);
 }
 
-function manualSdk(provider: DerivationProvider): Lhc {
+function manualSdk(provider: InferenceCallbacks): Lhc {
   return createSdk({
     provider,
     mode: "manual",
