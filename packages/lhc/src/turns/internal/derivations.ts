@@ -15,8 +15,8 @@ import type {
   RenderingPartKind,
   ToolRunReceipt,
   SubjectKind,
-} from "../../shared-tech/derivation.js";
-import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/report.js";
+} from "../../shared-tech/index.js";
+import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/index.js";
 import type { ComposeDerivationRow, ComposeMessage } from "./compose.js";
 import { composeDerivationKey } from "./compose.js";
 

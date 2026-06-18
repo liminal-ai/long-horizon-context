@@ -4,7 +4,7 @@
 // property of the definitions, not a remembered rule. Validation never touches
 // a database; a rejected batch costs no write lock.
 import { Either, ParseResult, Schema } from "effect";
-import type { ErrorResult } from "../../shared-tech/errors.js";
+import type { ErrorResult } from "../../shared-tech/index.js";
 
 export const EVENT_KINDS = [
   "user_prompt",

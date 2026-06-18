@@ -3,9 +3,9 @@ import {
   runInTransaction,
   runWithThreadTouchSuppressed,
   type OperationContext,
-} from "../shared-tech/context.js";
-import type { DerivationReportEntry, WorkHandler } from "../shared-tech/derivation.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/errors.js";
+} from "../shared-tech/index.js";
+import type { DerivationReportEntry, WorkHandler } from "../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
 import {
   enqueue,
   hasLiveItem,
@@ -19,8 +19,8 @@ import {
   resolveThreadRef,
   type ThreadRef,
 } from "../threads/index.js";
-import type { Derivation, ResolvedSdkConfig } from "../shared-tech/derivation.js";
-import { truncateForFallback } from "../shared-tech/tool-result-rendering.js";
+import type { Derivation, ResolvedSdkConfig } from "../shared-tech/index.js";
+import { truncateForFallback } from "../shared-tech/index.js";
 import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
 import { messageWorkHandlers } from "./internal/handlers.js";

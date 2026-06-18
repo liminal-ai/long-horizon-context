@@ -14,9 +14,9 @@ import {
   resolveInstancePoke,
   runWithThreadTouchSuppressed,
   type OperationContext,
-} from "../shared-tech/context.js";
-import type { DerivationReportEntry } from "../shared-tech/derivation.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/errors.js";
+} from "../shared-tech/index.js";
+import type { DerivationReportEntry } from "../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
 import type {
   CompactReceipt,
   PullResult,
@@ -27,7 +27,7 @@ import type {
   ViewMessage,
   ViewProfile,
   ViewStatus,
-} from "../shared-tech/view.js";
+} from "../shared-tech/index.js";
 import * as messagesDomain from "../messages/index.js";
 import * as turnsDomain from "../turns/index.js";
 import { writeLog } from "../shared-tech/logging/index.js";
@@ -67,7 +67,7 @@ import {
 } from "./internal/snapshot.js";
 import { runSweep } from "./internal/sweep.js";
 import { estimateTokens } from "../shared-tech/token-counting/index.js";
-import type { Band } from "../shared-tech/view.js";
+import type { Band } from "../shared-tech/index.js";
 
 // Config resolution for the operation in hand: the SDK instance's resolved
 // view config rides the per-instance seam (epic-fix-001 pattern, tech design

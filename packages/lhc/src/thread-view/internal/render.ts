@@ -11,11 +11,11 @@
 // [inter-turn note] markers, and band-text assembly. select.ts consumes the
 // same entry renderer to price entries during the fill walk, so the tokens
 // the walk budgets are the tokens the band stores — one renderer, no drift.
-import type { Band, ViewMessage } from "../../shared-tech/view.js";
+import type { Band, ViewMessage } from "../../shared-tech/index.js";
 import {
   FALLBACK_TRUNCATION_LIMIT,
   truncateForFallback,
-} from "../../shared-tech/tool-result-rendering.js";
+} from "../../shared-tech/index.js";
 import type { TailMessageRow } from "./snapshot.js";
 
 // Epic 01's deterministic abbreviation rule: a fixed prefix plus an exact

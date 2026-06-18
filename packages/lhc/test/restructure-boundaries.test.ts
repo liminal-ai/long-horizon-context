@@ -95,12 +95,21 @@ describe("TC-0.6a / TC-0.6b: import-boundary rules enforced (AC-0.6)", () => {
     expect(violations.join("\n")).toMatch(/reaches into domain "messages" internal/);
   });
 
-  it("a domain importing shared-tech is allowed (dependency direction)", () => {
+  it("a domain importing shared-tech through the public index is allowed", () => {
+    const violations = checkSource(
+      path.join(srcRoot, "turns", "x.ts"),
+      `import { c } from "../shared-tech/index.js";`,
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it("a domain importing arbitrary shared-tech files is a violation", () => {
     const violations = checkSource(
       path.join(srcRoot, "turns", "x.ts"),
       `import { c } from "../shared-tech/derivation.js";`,
     );
-    expect(violations).toEqual([]);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.join("\n")).toMatch(/shared-tech public entrypoint/);
   });
 
   it("a domain importing another domain's pinned surface is allowed", () => {

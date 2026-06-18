@@ -4,9 +4,9 @@
 // reads (Spec Validation #2). Every thread shape falls out of this one
 // composition path: absent pieces normalize to zeros/nulls, no
 // shape-specific branch.
-import type { DerivationReportEntry } from "../../shared-tech/derivation.js";
-import type { OpResult } from "../../shared-tech/errors.js";
-import type { InspectOverview } from "../../shared-tech/inspect.js";
+import type { DerivationReportEntry } from "../../shared-tech/index.js";
+import type { OpResult } from "../../shared-tech/index.js";
+import type { InspectOverview } from "../../shared-tech/index.js";
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
 import * as threads from "../../threads/index.js";

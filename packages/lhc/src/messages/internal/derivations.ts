@@ -15,8 +15,8 @@ import type {
   DerivationMetadata,
   DerivationState,
   DerivationReportEntry,
-} from "../../shared-tech/derivation.js";
-import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/report.js";
+} from "../../shared-tech/index.js";
+import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/index.js";
 
 export interface MessageSource {
   messageId: string;

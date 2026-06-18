@@ -8,8 +8,8 @@
 // derivation directly is the status's derivation counting, which goes
 // through the owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
-import type { Band, StoredView } from "../../shared-tech/view.js";
-import type { RenderingPartKind } from "../../shared-tech/derivation.js";
+import type { Band, StoredView } from "../../shared-tech/index.js";
+import type { RenderingPartKind } from "../../shared-tech/index.js";
 
 // ── view snapshot (header + bands) ────────────────────────────────
 

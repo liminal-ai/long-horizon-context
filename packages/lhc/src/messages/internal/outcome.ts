@@ -3,7 +3,7 @@
 // isError flag — and nothing else. The signature takes no provider text on
 // purpose (anti-shim: the violation is unrepresentable); the handler stamps
 // the returned value into derivation.metadata, apart from provider prose.
-import type { ToolOutcome } from "../../shared-tech/derivation.js";
+import type { ToolOutcome } from "../../shared-tech/index.js";
 
 export function deriveToolOutcome(
   pairedResult: { isError: boolean } | undefined,

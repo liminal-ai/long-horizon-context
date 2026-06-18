@@ -17,8 +17,8 @@
 // with no live members drops its summary derivations too — dropped, never failed,
 // and no rebuild queued (AC-6.6).
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext } from "../../shared-tech/context.js";
-import type { SubjectKind } from "../../shared-tech/derivation.js";
+import type { OperationContext } from "../../shared-tech/index.js";
+import type { SubjectKind } from "../../shared-tech/index.js";
 import {
   enqueue,
   supersedeQueued,

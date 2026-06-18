@@ -7,7 +7,7 @@
 // accumulated close policy, and any close's summary enqueues all ride the
 // one commit (anti-shim: a crash leaves either a placed turn with queued
 // summaries or an open chunk — nothing between).
-import { resolveInstancePoke } from "../../shared-tech/context.js";
+import { resolveInstancePoke } from "../../shared-tech/index.js";
 import type {
   DerivationMetadata,
   HandlerOutcome,
@@ -16,11 +16,11 @@ import type {
   ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
-} from "../../shared-tech/derivation.js";
+} from "../../shared-tech/index.js";
 import { writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
-import { truncateForFallback } from "../../shared-tech/tool-result-rendering.js";
+import { truncateForFallback } from "../../shared-tech/index.js";
 import {
   cleanPrompt,
   findPairedToolCall,

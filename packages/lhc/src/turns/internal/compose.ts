@@ -22,8 +22,8 @@ import type {
   RenderingPartKind,
   ToolOutcome,
   ToolRunReceipt,
-} from "../../shared-tech/derivation.js";
-import { truncateForFallback } from "../../shared-tech/tool-result-rendering.js";
+} from "../../shared-tech/index.js";
+import { truncateForFallback } from "../../shared-tech/index.js";
 import { cleanPrompt } from "../../messages/index.js";
 
 // The member message as the composer sees it: kind plus projected blocks,

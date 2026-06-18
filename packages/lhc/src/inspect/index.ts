@@ -13,13 +13,13 @@
 // it composes can never let a background SDK's scheduler hang a first-touch
 // catch-up drain — and the provider call that drain would make — off an
 // inspect read.
-import { runWithThreadTouchSuppressed } from "../shared-tech/context.js";
-import type { OpResult } from "../shared-tech/errors.js";
+import { runWithThreadTouchSuppressed } from "../shared-tech/index.js";
+import type { OpResult } from "../shared-tech/index.js";
 import type {
   HealthReport,
   InspectOverview,
   ViewContentsReport,
-} from "../shared-tech/inspect.js";
+} from "../shared-tech/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { composeHealth } from "./internal/health.js";
 import { composeOverview } from "./internal/overview.js";

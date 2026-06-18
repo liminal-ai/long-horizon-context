@@ -7,7 +7,7 @@
 // turn-derivation completion transaction; a crash leaves either a placed
 // turn (with any close's summary enqueues) or nothing.
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext } from "../../shared-tech/context.js";
+import type { OperationContext } from "../../shared-tech/index.js";
 import { enqueue, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 
 export interface ChunkPolicy {

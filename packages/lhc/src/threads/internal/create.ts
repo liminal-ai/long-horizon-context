@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { fireThreadTouch } from "../../shared-tech/context.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/errors.js";
+import { fireThreadTouch } from "../../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/index.js";
 import {
   getSchemaVersion,
   MIGRATION_V5_STATEMENTS,
@@ -13,7 +13,7 @@ import {
   openDatabase,
   runMigrations,
   type Migration,
-} from "../../shared-tech/storage.js";
+} from "../../shared-tech/index.js";
 import { TOKEN_ESTIMATOR_ID } from "../../shared-tech/token-counting/index.js";
 
 // The one random id: its uniqueness scope is global across files and

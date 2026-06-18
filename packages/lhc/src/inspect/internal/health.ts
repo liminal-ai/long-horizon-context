@@ -2,9 +2,9 @@
 // counts, actionable failure detail, a repair preview, and live queue
 // visibility. Message/turn derivation health comes from DerivationReportEntry rows;
 // capture gaps come from durable source-event markers recorded by capture.
-import type { DerivationReportEntry } from "../../shared-tech/derivation.js";
-import type { OpResult } from "../../shared-tech/errors.js";
-import type { HealthReport } from "../../shared-tech/inspect.js";
+import type { DerivationReportEntry } from "../../shared-tech/index.js";
+import type { OpResult } from "../../shared-tech/index.js";
+import type { HealthReport } from "../../shared-tech/index.js";
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
 import * as turns from "../../turns/index.js";

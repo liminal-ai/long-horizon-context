@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { runInTransaction, type OperationContext } from "../shared-tech/context.js";
+import { runInTransaction, type OperationContext } from "../shared-tech/index.js";
 import type {
   DerivationReportEntry,
   WorkHandler,
-} from "../shared-tech/derivation.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/errors.js";
+} from "../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
 import {
   enqueue,
   hasLiveItem,
@@ -22,7 +22,7 @@ import { transition } from "./internal/state-machine.js";
 // test plan's one sanctioned direct entry besides the tokenizer); production
 // callers go through applyEvent.
 export { transition, type TurnEffect, type TurnState } from "./internal/state-machine.js";
-import type { Derivation } from "../shared-tech/derivation.js";
+import type { Derivation } from "../shared-tech/index.js";
 import {
   compactChunkMaterialFromStoredMembers,
   type CompactChunkMaterial,

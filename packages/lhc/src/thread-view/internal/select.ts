@@ -18,7 +18,7 @@
 // so the budgeted tokens are the stored tokens — no second estimate.
 import type { DatabaseSync } from "node:sqlite";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
-import type { Band } from "../../shared-tech/view.js";
+import type { Band } from "../../shared-tech/index.js";
 import {
   excerptLine,
   renderArrangementEntry,

@@ -22,25 +22,25 @@ import {
   type DrainDeps,
   type DrainReport,
   type Scheduler,
-} from "./shared-tech/scheduler.js";
+} from "./shared-tech/index.js";
 import {
   runWithInstanceSeam,
   setSchedulerPoke as installSchedulerPoke,
   setThreadTouch,
   type InstanceSeam,
-} from "./shared-tech/context.js";
-import { createInferenceCallbacks } from "./shared-tech/inference-adapter.js";
+} from "./shared-tech/index.js";
+import { createInferenceCallbacks } from "./shared-tech/index.js";
 import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
-import { resolveGuards, type InferenceConfig, type ModelAssignment } from "./shared-tech/inference-types.js";
+import { resolveGuards, type InferenceConfig, type ModelAssignment } from "./shared-tech/index.js";
 import {
   INFERENCE_CALLBACK_OPERATIONS,
   type InferenceCallbacks,
   type ResolvedSdkConfig,
   type SdkConfig,
   type WorkHandler,
-} from "./shared-tech/derivation.js";
-import type { ErrorResult, OpResult } from "./shared-tech/errors.js";
-import { storageFailure } from "./shared-tech/errors.js";
+} from "./shared-tech/index.js";
+import type { ErrorResult, OpResult } from "./shared-tech/index.js";
+import { storageFailure } from "./shared-tech/index.js";
 import type {
   CompactReceipt,
   PullResult,
@@ -49,7 +49,7 @@ import type {
   ViewCompactParams,
   ViewProfile,
   ViewStatus,
-} from "./shared-tech/view.js";
+} from "./shared-tech/index.js";
 import type { WorkKind } from "./shared-tech/work-queue/index.js";
 
 export {
@@ -70,13 +70,13 @@ export type {
   ErrorCode,
   ErrorResult,
   OpResult,
-} from "./shared-tech/errors.js";
+} from "./shared-tech/index.js";
 export {
   runInTransaction,
   setSchedulerPoke,
   setThreadTouch,
   type OperationContext,
-} from "./shared-tech/context.js";
+} from "./shared-tech/index.js";
 
 export {
   createDeterministicInferenceCallbacks,
@@ -85,7 +85,7 @@ export {
   deterministicReceiptsSuffix,
   deterministicText,
   type DeterministicOpName,
-} from "./shared-tech/deterministic.js";
+} from "./shared-tech/index.js";
 export type {
   CompletionTx,
   DependencyGap,
@@ -105,8 +105,8 @@ export type {
   ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
-} from "./shared-tech/derivation.js";
-export type { DrainReport, Scheduler, SchedulerMode } from "./shared-tech/scheduler.js";
+} from "./shared-tech/index.js";
+export type { DrainReport, Scheduler, SchedulerMode } from "./shared-tech/index.js";
 
 // Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
 // ModelCall boundary and the per-kind assignment config — type-only; the
@@ -118,8 +118,8 @@ export type {
   ModelCallFailureKind,
   ModelCallInput,
   ModelCallResult,
-} from "./shared-tech/inference-types.js";
-export { type ProviderProvenance } from "./shared-tech/derivation.js";
+} from "./shared-tech/index.js";
+export { type ProviderProvenance } from "./shared-tech/index.js";
 
 // The config-selectable prompt-name catalog (E05-NB-2): the full set of names
 // a per-kind assignment may select, and the default name per kind. Exposed so
@@ -152,7 +152,7 @@ export type {
   ViewProfileOverride,
   ViewStatus,
   VisibilityBudgets,
-} from "./shared-tech/view.js";
+} from "./shared-tech/index.js";
 export {
   countLiveItems,
   enqueue,
@@ -179,7 +179,7 @@ export type {
   HealthReport,
   InspectOverview,
   ViewContentsReport,
-} from "./shared-tech/inspect.js";
+} from "./shared-tech/index.js";
 
 export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
 export type {

@@ -5,7 +5,7 @@
 // to turn-end batches since Epic 05 — and compact's reset, which lands
 // inside compact's own transaction (snapshot.ts, Story 2).
 import type { DatabaseSync } from "node:sqlite";
-import type { VisibilityBudgets } from "../../shared-tech/view.js";
+import type { VisibilityBudgets } from "../../shared-tech/index.js";
 
 // The singleton row exists from migration v6 on (seeded at position 0,
 // everything full). A missing row is a damaged thread file, surfaced as a

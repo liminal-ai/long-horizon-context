@@ -15,7 +15,7 @@
 // must be a block array, so both roles use the one block encoding.
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ViewMessage } from "../../shared-tech/view.js";
+import type { ViewMessage } from "../../shared-tech/index.js";
 
 // CURRENT_SESSION_VERSION at the pin (PI coding agent 0.79.1) — see
 // test/fixtures/pi-session-structure.provenance.md.

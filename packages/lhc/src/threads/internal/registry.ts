@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { openDatabase, runMigrations, type Migration } from "../../shared-tech/storage.js";
+import { openDatabase, runMigrations, type Migration } from "../../shared-tech/index.js";
 
 export const DEFAULT_REGISTRY_PATH = join(homedir(), ".lhc", "registry.sqlite");
 

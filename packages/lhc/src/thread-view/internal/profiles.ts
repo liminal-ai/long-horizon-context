@@ -10,7 +10,7 @@ import type {
   ViewProfile,
   ViewProfileOverride,
   VisibilityBudgets,
-} from "../../shared-tech/view.js";
+} from "../../shared-tech/index.js";
 
 // Built-in profiles (tech design §Interface Definitions): defaults, knobs
 // not architecture.

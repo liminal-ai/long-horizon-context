@@ -10,8 +10,8 @@ import {
   resolveInstancePoke,
   resolveInstanceToolResultConfig,
   type OperationContext,
-} from "../../shared-tech/context.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/errors.js";
+} from "../../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 import { createFromEvent, queueMessageWork } from "../../messages/index.js";
 // The sanctioned intake→thread-view surface import (Epic 03 Flow 4, named in

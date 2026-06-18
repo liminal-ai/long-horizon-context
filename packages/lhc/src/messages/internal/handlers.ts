@@ -13,10 +13,10 @@ import type {
   HandlerRunContext,
   ProviderResult,
   WorkHandler,
-} from "../../shared-tech/derivation.js";
+} from "../../shared-tech/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
-import { truncateForFallback } from "../../shared-tech/tool-result-rendering.js";
+import { truncateForFallback } from "../../shared-tech/index.js";
 import { deriveToolOutcome } from "./outcome.js";
 import { cleanPrompt } from "./smoothing.js";
 import {

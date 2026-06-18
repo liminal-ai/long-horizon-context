@@ -6,9 +6,9 @@
 // (AC-2.3), and AC-2.2's boundary-aware tail shortening is inherited from
 // pull, never re-implemented. Nothing here recomputes selection, rendering,
 // form choice, or boundary state.
-import { storageFailure, type OpResult } from "../../shared-tech/errors.js";
-import type { ViewContentsReport } from "../../shared-tech/inspect.js";
-import type { Band, ViewMessage } from "../../shared-tech/view.js";
+import { storageFailure, type OpResult } from "../../shared-tech/index.js";
+import type { ViewContentsReport } from "../../shared-tech/index.js";
+import type { Band, ViewMessage } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import * as threadView from "../../thread-view/index.js";
 import type { ThreadRef } from "../../threads/index.js";

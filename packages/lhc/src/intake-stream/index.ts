@@ -1,4 +1,4 @@
-import type { OpResult } from "../shared-tech/errors.js";
+import type { OpResult } from "../shared-tech/index.js";
 import type {
   WorkKind,
   WorkOwner,

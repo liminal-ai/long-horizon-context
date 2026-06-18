@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { runWithThreadTouchSuppressed } from "../shared-tech/context.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/errors.js";
+import { runWithThreadTouchSuppressed } from "../shared-tech/index.js";
+import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
 import {
   createThreadFile,
   deleteThreadFile,

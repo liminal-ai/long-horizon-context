@@ -9,6 +9,8 @@
 //   3. A domain may import another domain's surface (its index.ts / public
 //      files) only along an edge pinned in ALLOWED_SURFACE_IMPORTS below — a
 //      new cross-domain edge is a conscious decision, never a silent pass.
+//   4. Domains consume shared-tech through its public entrypoint or explicit
+//      sub-capability public entrypoints, not arbitrary shared-tech files.
 // Domains may freely import src/shared-tech/** (the shared technical area is a
 // dependency of every domain, never the reverse). The test fixtures directory
 // (test/fixtures/) is exempt by design — it is the one sanctioned below-SDK
@@ -32,6 +34,13 @@ const DOMAINS = new Set([
   "inspect",
 ]);
 const SHARED_TECH = "shared-tech";
+const SHARED_TECH_PUBLIC_ENTRIES = new Set([
+  "index",
+  "logging/index",
+  "prompts/index",
+  "token-counting/index",
+  "work-queue/index",
+]);
 
 function collectTsFiles(dir, out = []) {
   let entries;
@@ -81,6 +90,14 @@ function domainOf(filePath) {
 function isSharedTech(filePath) {
   const rel = path.relative(srcRoot, filePath);
   return !rel.startsWith("..") && rel.split(path.sep)[0] === SHARED_TECH;
+}
+
+function sharedTechEntryKey(parts) {
+  if (parts[0] !== SHARED_TECH || parts.length < 2) return null;
+  const last = parts.at(-1);
+  if (last === undefined) return null;
+  const withoutExt = last.replace(/\.(?:js|ts)$/, "");
+  return [...parts.slice(1, -1), withoutExt].join("/");
 }
 
 // The pinned domain-surface dependency edges (rule 3). Epic 03 adds two:
@@ -149,7 +166,16 @@ export function checkSource(filePath, source) {
     if (relToSrc.startsWith("..")) continue; // outside src/
     const parts = relToSrc.split(path.sep);
     const targetDomain = parts.length > 0 && DOMAINS.has(parts[0]) ? parts[0] : null;
-    if (targetDomain === null) continue; // imports into shared-tech/ (or elsewhere) are not a domain edge
+    const sharedTechEntry = sharedTechEntryKey(parts);
+    if (sharedTechEntry !== null) {
+      if (fileDomain !== null && !SHARED_TECH_PUBLIC_ENTRIES.has(sharedTechEntry)) {
+        violations.push(
+          `${path.relative(pkgRoot, filePath)} imports ${spec} — domains must use shared-tech public entrypoint(s)`,
+        );
+      }
+      continue;
+    }
+    if (targetDomain === null) continue; // imports elsewhere under src/ are not a domain edge
 
     // Rule 1: shared-tech may not import any domain (AC-0.6).
     if (fileSharedTech) {
