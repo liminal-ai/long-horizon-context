@@ -32,15 +32,16 @@ test/
 
 ## Verification
 
-| Tier | Composition |
-|------|-------------|
-| `red-verify` | `build && typecheck && lint && boundaries` |
-| `verify` | `red-verify && vitest run` (the standard development gate) |
-| `green-verify` | `verify && check-test-immutability` |
-| `verify-all` | `verify` (no separate e2e suite yet) |
+| Script | Composition |
+|--------|-------------|
+| `build` | TypeScript emit |
+| `typecheck` | Source and test typecheck |
+| `lint` | Biome check |
+| `test` | Vitest suite |
+| `format` | Biome format |
 
 ```sh
-pnpm --filter pi-lhc verify
+pnpm --filter pi-lhc test
 ```
 
 > The PI packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`)

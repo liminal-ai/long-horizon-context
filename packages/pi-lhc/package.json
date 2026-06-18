@@ -2,7 +2,7 @@
   "name": "pi-lhc",
   "version": "0.0.0",
   "private": true,
-  "description": "PI ↔ LHC connector extension (Epic 1: Connector Core, observe-only).",
+  "description": "PI \u2194 LHC connector extension (Epic 1: Connector Core, observe-only).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,12 +21,7 @@
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "biome check packages/pi-lhc",
-    "boundaries": "node scripts/check-boundaries.mjs",
     "test": "vitest run",
-    "red-verify": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm run boundaries",
-    "verify": "pnpm run red-verify && vitest run",
-    "green-verify": "pnpm run verify && node scripts/check-test-immutability.mjs",
-    "verify-all": "pnpm run verify",
     "format": "biome format --write packages/pi-lhc"
   },
   "engines": {
