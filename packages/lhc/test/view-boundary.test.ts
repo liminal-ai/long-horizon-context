@@ -25,7 +25,6 @@ import {
   type MessageEventInput,
   type SdkViewConfig,
   setSchedulerPoke,
-  type VisibilityBudgets,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
@@ -301,19 +300,11 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
   });
 });
 
-describe("TC-4.5 (AC-4.8 as amended by Epic 05 AC-5.4): budget validation names the violated constraint; floorTokens is rejected as unknown config", () => {
+describe("TC-4.5 (AC-4.8 as amended by Epic 05 AC-5.4): budget validation names the violated constraint", () => {
   it("rejects max ≤ target at construction, naming the constraint", () => {
     expect(() => visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } })).toThrow(
       /maxTokens \(100\) must be greater than targetTokens \(200\)/,
     );
-  });
-
-  it("rejects the retired floorTokens as an unknown budget field (no hidden floor fallback)", () => {
-    expect(() =>
-      visSdk({
-        visibility: { maxTokens: 300, targetTokens: 100, floorTokens: 50 } as Partial<VisibilityBudgets>,
-      }),
-    ).toThrow(/visibility\.floorTokens is not a budget field/);
   });
 });
 

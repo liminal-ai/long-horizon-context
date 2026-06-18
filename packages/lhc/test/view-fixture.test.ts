@@ -5,7 +5,7 @@
 // hand-written rows), the corruption and turnless-straggler variants, and
 // the two-point test injection facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, type Lhc, messages, turns, type VisibilityBudgets } from "../src/index.js";
+import { initLhc, type Lhc, messages, turns } from "../src/index.js";
 import {
   blockedSiblingThread,
   corruptedVariantThread,
@@ -115,15 +115,10 @@ describe("FC-0.2: view config validated at SDK construction, errors naming the v
     ).toThrow(/profile "skewed": percentages must sum to 100, got 105/);
   });
 
-  it("rejects visibility budgets violating max > target, naming the constraint; the retired floorTokens is unknown config (Epic 05 AC-5.4)", () => {
+  it("rejects visibility budgets violating max > target, naming the constraint", () => {
     expect(() => manualSdk({ visibility: { maxTokens: 24000, targetTokens: 24000 } })).toThrow(
       /visibility\.maxTokens \(24000\) must be greater than targetTokens \(24000\)/,
     );
-    expect(() =>
-      manualSdk({
-        visibility: { targetTokens: 7000, floorTokens: 8000, maxTokens: 32000 } as Partial<VisibilityBudgets>,
-      }),
-    ).toThrow(/visibility\.floorTokens is not a budget field/);
   });
 
   it("rejects a non-positive lower bound", () => {

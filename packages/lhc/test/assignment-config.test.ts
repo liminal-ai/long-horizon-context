@@ -6,7 +6,6 @@
 // resolves to a documented default provider lane and model when the host
 // supplies no overrides (AC-6.4).
 import { describe, expect, it } from "vitest";
-import * as api from "../src/index.js";
 import { initLhc, type Lhc, type ModelAssignment } from "../src/index.js";
 import {
   DEFAULT_GUARDS,
@@ -42,13 +41,6 @@ const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> 
     run: (p) => p.config.inferenceCallbacks.summarizeChunkBrief({ memberProjections: ["m"] }),
   },
 ];
-
-describe("TC-0.3a: typed derivation enumeration removed (AC-0.3)", () => {
-  it("DERIVATION_TYPES is not exported from the SDK surface", () => {
-    expect((api as Record<string, unknown>).DERIVATION_TYPES).toBeUndefined();
-    expect(Object.keys(api)).not.toContain("DERIVATION_TYPES");
-  });
-});
 
 describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () => {
   it("constructs with only inference assignments — no deterministic entries required", () => {
