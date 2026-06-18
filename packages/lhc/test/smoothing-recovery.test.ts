@@ -179,7 +179,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
       },
       summarizeToolResult: (i) => double.summarizeToolResult(i),
       composeTurnRendering: (i) => double.composeTurnRendering(i),
-      projectLowerBand: (i) => double.projectLowerBand(i),
+      compressSmoothTurn: (i) => double.compressSmoothTurn(i),
       summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };

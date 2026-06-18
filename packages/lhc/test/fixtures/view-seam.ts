@@ -11,7 +11,7 @@ export {
   setViewInjectionHook,
   type ViewInjectionHook,
   type ViewInjectionPoint,
-} from "../../src/domains/thread-view/internal/seam.js";
+} from "../../src/thread-view/internal/seam.js";
 
 import { DatabaseSync } from "node:sqlite";
 

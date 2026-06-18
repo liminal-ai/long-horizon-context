@@ -6,7 +6,7 @@
 // Below-SDK writer, sanctioned for the same reason corrupt.ts is: the state
 // is unreachable through the current SDK.
 import { DatabaseSync } from "node:sqlite";
-import { MIGRATION_V5_STATEMENTS } from "../../src/shared/storage.js";
+import { MIGRATION_V5_STATEMENTS } from "../../src/shared-tech/storage.js";
 
 export interface LegacyRecordedEvent {
   eventOrder: number;

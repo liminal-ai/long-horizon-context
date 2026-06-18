@@ -9,7 +9,7 @@ import {
   type Lhc,
   type MessageEventInput,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared/tool-result-rendering.js";
+import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createProviderDouble,
   openRaw,

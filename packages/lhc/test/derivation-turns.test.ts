@@ -141,7 +141,7 @@ function withScriptedProjections(
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
-    projectLowerBand: (): Promise<ProviderResult> =>
+    compressSmoothTurn: (): Promise<ProviderResult> =>
       Promise.resolve({ ok: true, text: next() }),
     summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
     summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
@@ -177,7 +177,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
       `${smoothed} | ${answer}`,
     );
     const rendering = formOf(filePath, "t1", "turn_rendering");
-    const projection = formOf(filePath, "t1", "lower_band_projection");
+    const projection = formOf(filePath, "t1", "smooth_turn_compression");
     expect(rendering).toMatchObject({
       subjectKind: "turn",
       state: "ready",
@@ -188,7 +188,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
     expect(projection).toMatchObject({
       subjectKind: "turn",
       state: "ready",
-      content: deterministicText("projectLowerBand", { rendering: renderingText }, renderingText),
+      content: deterministicText("compressSmoothTurn", { rendering: renderingText }, renderingText),
       sourceVersion: 1,
     });
     expect(liveCount(filePath)).toBe(0);
@@ -222,7 +222,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([
       ["smoothed_prompt", "m1"],
     ]);
-    expect(formOf(filePath, "t1", "lower_band_projection")?.state).toBe("ready");
+    expect(formOf(filePath, "t1", "smooth_turn_compression")?.state).toBe("ready");
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
   });
 });
@@ -269,7 +269,7 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
       sourceVersion: 2,
       derivations: [
         { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering" },
-        { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection" },
+        { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression" },
       ],
     });
     const rebuildReport = await drain(sdk, filePath);
@@ -512,7 +512,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // Double-marked content distinguishes the two kinds: each went through
     // its own provider operation, detailed over projections + receipts,
     // brief over projections + outcomes (empty here — no tool activity).
-    const memberProjections = [formOf(filePath, "t1", "lower_band_projection")?.content ?? ""];
+    const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
     expect(detailed?.content).toBe(
       deterministicText(
         "summarizeChunkDetailed",
@@ -583,7 +583,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
     expect((detailedInput as { memberReceipts: unknown }).memberReceipts).toEqual([receipts]);
     expect(briefInput).toEqual({
-      memberProjections: [formOf(filePath, "t1", "lower_band_projection")?.content],
+      memberProjections: [formOf(filePath, "t1", "smooth_turn_compression")?.content],
       memberOutcomes: [["failed"]],
     });
     for (const summary of [callA, resultA, callB, resultB]) {

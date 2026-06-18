@@ -287,7 +287,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     execSql(
       filePath,
       `UPDATE derivation SET state = 'pending', content = NULL
-       WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'lower_band_projection'`,
+       WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'smooth_turn_compression'`,
     );
     enqueueChunkSummaryWork(filePath, "w-c1-chunk_summary_detailed-v99", "c1", "chunk_summary_detailed");
 

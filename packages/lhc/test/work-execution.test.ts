@@ -170,7 +170,7 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     };
     expect(at("m1", "smoothed_prompt")).toBeLessThan(at("m3", "tool_result_summary"));
     expect(at("m3", "tool_result_summary")).toBeLessThan(at("t1", "turn_rendering"));
-    expect(at("t1", "turn_rendering")).toBe(at("t1", "lower_band_projection"));
+    expect(at("t1", "turn_rendering")).toBe(at("t1", "smooth_turn_compression"));
   });
 });
 
@@ -224,7 +224,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     const forms = readDerivedForms(filePath);
     expect(forms.map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`).sort()).toEqual([
       "m1/smoothed_prompt/ready",
-      "t1/lower_band_projection/ready",
+      "t1/smooth_turn_compression/ready",
       "t1/turn_rendering/ready",
     ]);
     expect(liveCount(filePath)).toBe(0);

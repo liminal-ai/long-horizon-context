@@ -5,12 +5,12 @@
 // and in any future runner identically.
 import assert from "node:assert/strict";
 import { createSdk, type Derivation, type Lhc } from "../../src/index.js";
-import { DERIVATION_TYPES, type DerivationType } from "../../src/shared/derivation.js";
+import { DERIVATION_TYPES, type DerivationType } from "./model-call.js";
 import type {
   ModelAssignment,
   ModelCall,
   ModelCallInput,
-} from "../../src/inference/types.js";
+} from "../../src/shared-tech/inference-types.js";
 import { readDerivedForms } from "./threads.js";
 import { validEvent, type TempStore } from "./index.js";
 

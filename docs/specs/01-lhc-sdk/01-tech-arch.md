@@ -52,9 +52,11 @@ flowchart TD
     TV[thread-view]
     IN[inspect]
   end
-  subgraph Utils[Tech utils]
+  subgraph SharedTech[shared-tech]
     DW[durable work queue]
     TC[token counting]
+    IA[inference adapter + prompt registry]
+    DV[derivation vocabulary + storage]
   end
   subgraph Storage[SQLite storage]
     RG[(thread registry db)]
@@ -69,13 +71,13 @@ flowchart TD
 | `threads` | SDK | Thread creation, registry, id→file resolution, thread metadata | SQLite storage | Thread file is authoritative for identity; registry is a refreshable convenience index; id stored once in file metadata |
 | `intake-stream` | SDK | Ordered event intake, stream contract, synchronous turn-boundary coordination | `threads`, `messages`, `turns` | All-or-nothing batches; idempotency keys; hot path is deterministic-only; intake coordinates but does not own message/turn mechanics |
 | `messages` | SDK | Message/block records, token stamping, reads (search deferred post-v1), edit and delete operations, message-level derivations (tool-result summaries, tool-call summaries, prompt smoothing) | `threads`, work queue, token counting | Full record never destroyed; delete is projection-level (source events remain); mutations target closed turns only and clear-and-regenerate dependents; deleting a turn-initiating prompt is refused toward `turns` delete; tool-result summary is a derivation with state, truncation is the deterministic fallback; message-level derivations queue when the message lands, not at turn close |
-| `turns` | SDK | Turn lifecycle and state machine, turn delete, turn-level derivations (smoothed turn composition, lower-band projection), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn delete removes the exchange unit, closed turns only, bounded cascade (one chunk re-derives, boundaries never move); turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
+| `turns` | SDK | Turn lifecycle and state machine, turn delete, turn-level derivations (turn rendering, smooth turn compression), chunks as an internal subdomain (formation, close, detailed/brief summaries) | `threads`, `messages`, work queue | Membership is stamped synchronously and frozen at close; turn delete removes the exchange unit, closed turns only, bounded cascade (one chunk re-derives, boundaries never move); turn renderings compose message-level forms rather than re-deriving them; chunk internals are not a public surface; band materials are served to thread-view on request |
 | `thread-view` | SDK | View assembly, smart compact, band locking, tool-result visibility policy (source-event-order boundary, whole-message protection floor), readiness sweep, rendering (message array + provider file) | `threads`, `messages`, `turns` | Views are derived and disposable; assembly is read-and-assemble only; missing derivations degrade, never block; source corruption blocks; thread-view drives repair through owning domains' surfaces and derives nothing itself |
 | `inspect` | SDK | Read-only reports: composition, sizes, derivation health, view contents and cost | all domain surfaces | Never writes, repairs, or derives; reads only through domain surfaces |
 
-### Tech Utils
+### Shared Tech
 
-Beneath the domains sit two pieces of shared technical machinery. A tech util has no surface, no CLI grouping, and no vocabulary in the product; it is internal plumbing. The dependency runs one way: domains use tech utils, and a tech util never calls a domain or carries domain logic. The working test is the name — if a function inside a util mentions a turn, a chunk, or a summary, it belongs in a domain instead.
+Beneath the domains sits one shared technical area, `src/shared-tech/`: the durable work queue, token counting, logging, the inference adapter and prompt registry, the derivation vocabulary, and the SQLite storage helpers (a consolidation of the former `shared/`, `tech-utils/`, `inference/`, and `providers/` folders). It is internal plumbing — no surface, no CLI grouping, and no vocabulary in the product. The dependency runs one way: domains and the SDK use `shared-tech/`, and a `shared-tech/` file never imports a domain or carries domain logic (AC-0.6, enforced by the boundary checker). The working test is the name — if a function inside `shared-tech/` mentions a turn, a chunk, or a summary, it belongs in a domain instead.
 
 **Durable work queue.** Work that cannot run in the hot path — smoothing a closed turn, summarizing a chunk, rebuilding derivations after an edit — is recorded as a durable work item in the thread's own file and drained by a worker later. Two guarantees carry it: pending work survives restart, and a thread's items run in order, so work queued by an edit lands after work already in flight on the old content. Each work kind has one owning domain that queues it and handles it. The queue owns an item's mechanics — recorded, claimed, retried, finished — and none of its meaning; semantic artifact states belong to the owning domain.
 
@@ -89,7 +91,7 @@ New functionality lands inside an owning domain or as a new adapter over the SDK
 
 ### Package Layout and Boundary Enforcement
 
-**Choice:** One package. Each domain is a directory with a public surface (`index.ts`) and an `internal/` directory. Tech utils live apart from domains. Cross-domain imports may target only another domain's surface; importing another domain's `internal/` fails lint. Path aliases (`@lhc/<domain>`) make the surface the ergonomic import.
+**Choice:** One package. Each domain is a top-level directory under `src/` with a public surface (`index.ts`) and an `internal/` directory — there is no `domains/` wrapper. All non-domain technical infrastructure lives under one `src/shared-tech/` area. Cross-domain imports may target only another domain's pinned public surface; importing another domain's `internal/` fails the boundary check, as does any `shared-tech/` file importing a domain (AC-0.6).
 **Rationale:** The failure mode this prevents is peer-to-peer reach-around: everything in one process, agents importing whatever is nearby until boundaries are labels. Make the right thing the easy thing and the wrong thing a CI failure.
 **Consequence:** Every file belongs unambiguously to one domain or tech util. Tech designs specify which surface operations an epic adds; stories never add cross-internal imports. An import-boundary check runs in CI from the first epic.
 

@@ -1,8 +1,8 @@
 // Epic 05 Story 5 — TC-4.1, TC-4.2, TC-4.3: the opt-in real-inference suite
 // and the real-adapter lifecycle capstone (AC-4.1, AC-4.2, AC-1.2).
 //
-// The suite keys on LHC_OPENROUTER_KEY, resolved ONCE at module load by the
-// suite-level guard: exactly one ran/not-ran line lands in run output, and
+// The suite keys on OPENROUTER_API_KEY, resolved ONCE at module load by the
+// suite-level guard from process.env plus ~/.lhc/.env: exactly one ran/not-ran line lands in run output, and
 // the accounting tests below always run, so absence of the key can never
 // produce a silent pass — unkeyed runs show one NOT-RAN line, a green
 // accounting leg that asserted the not-ran record, and the keyed legs
@@ -30,6 +30,7 @@ import {
   EDITED_MESSAGE_TEXT,
   emitRealSuiteAccounting,
   DERIVATION_TYPES,
+  loadLocalLhcEnv,
   probeInput,
   readDerivedForms,
   realSuiteAccountingEmissions,
@@ -44,7 +45,7 @@ import {
 } from "./fixtures/index.js";
 
 // ── the suite-level guard: one resolution, one visible line ───────
-const suiteEnv = resolveRealSuiteEnv(process.env);
+const suiteEnv = resolveRealSuiteEnv({ ...loadLocalLhcEnv(), ...process.env });
 const keyed = !("notRan" in suiteEnv);
 const realKey = "notRan" in suiteEnv ? undefined : suiteEnv.key;
 const realModel = "notRan" in suiteEnv ? DEFAULT_OPENROUTER_MODEL : suiteEnv.model;
@@ -82,7 +83,7 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
     const record = resolveRealSuiteEnv({});
     expect("notRan" in record).toBe(true);
     if (!("notRan" in record)) throw new Error("unreachable");
-    expect(record.notRan).toContain("LHC_OPENROUTER_KEY");
+    expect(record.notRan).toContain("OPENROUTER_API_KEY");
     // Distinguishable from a pass: the not-ran shape carries no key/model —
     // nothing downstream can construct a keyed run from it.
     expect("key" in record).toBe(false);
@@ -90,16 +91,16 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
   });
 
   it("a whitespace-only key is unset, not a silent keyed run", () => {
-    const record = resolveRealSuiteEnv({ LHC_OPENROUTER_KEY: "   " });
+    const record = resolveRealSuiteEnv({ OPENROUTER_API_KEY: "   " });
     expect("notRan" in record).toBe(true);
   });
 
   it("a keyed env resolves key and model, defaulting the model when unset", () => {
-    const defaulted = resolveRealSuiteEnv({ LHC_OPENROUTER_KEY: "test-key" });
+    const defaulted = resolveRealSuiteEnv({ OPENROUTER_API_KEY: "test-key" });
     expect(defaulted).toEqual({ key: "test-key", model: DEFAULT_OPENROUTER_MODEL });
     const explicit = resolveRealSuiteEnv({
-      LHC_OPENROUTER_KEY: "test-key",
-      LHC_OPENROUTER_MODEL: "vendor/cheap-model",
+      OPENROUTER_API_KEY: "test-key",
+      OPENROUTER_MODEL: "vendor/cheap-model",
     });
     expect(explicit).toEqual({ key: "test-key", model: "vendor/cheap-model" });
   });
@@ -110,7 +111,7 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
     expect(emissions[0]).toBe(
       keyed
         ? `RAN: real-inference (model ${realModel})`
-        : "NOT-RAN: real-inference (LHC_OPENROUTER_KEY unset)",
+        : "NOT-RAN: real-inference (OPENROUTER_API_KEY unset)",
     );
   });
 });
@@ -165,7 +166,7 @@ describe.runIf(keyed)(
           expect(form.metadata?.provenance).toEqual({
             provider: "openrouter",
             model: realModel,
-            prompt: assignments[form.derivationType].prompt,
+            prompt: assignments[form.derivationType as DerivationType].prompt,
           });
         }
       }

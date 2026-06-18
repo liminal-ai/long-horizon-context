@@ -4,16 +4,45 @@
 // ends (tech design §Testing Strategy). All builders return
 // contract-conformant shapes (AC-1.2); seam-conformance.ts asserts that of
 // recordingCall in its own test so fixture drift is caught by the suite.
-import { DERIVATION_TYPES, type DerivationType } from "../../src/shared/derivation.js";
-import { DEFAULT_PROMPT_NAMES } from "../../src/inference/prompts/index.js";
+import { DEFAULT_PROMPT_NAMES } from "../../src/shared-tech/prompts/index.js";
 import type {
   ModelAssignment,
   ModelCall,
   ModelCallInput,
   ModelCallResult,
-} from "../../src/inference/types.js";
+} from "../../src/shared-tech/inference-types.js";
 
-export { DERIVATION_TYPES, type DerivationType };
+// The derivation-type vocabulary for fixtures. AC-0.3 removed the typed
+// enumeration (DERIVATION_TYPES / DerivationType) from src — derivation types
+// are plain string discriminators now — so fixtures keep a local list so
+// per-kind routing stays observable. The four inference types take their
+// default prompt from DEFAULT_PROMPT_NAMES; the two deterministic types take
+// their prompt templates directly (they have no DEFAULT_PROMPT_NAMES entry).
+export const DERIVATION_TYPES = [
+  "smoothed_prompt",
+  "tool_result_summary",
+  "turn_rendering",
+  "smooth_turn_compression",
+  "chunk_summary_detailed",
+  "chunk_summary_brief",
+] as const;
+export type DerivationType = (typeof DERIVATION_TYPES)[number];
+
+const DETERMINISTIC_PROMPTS: Record<"turn_rendering" | "chunk_summary_detailed", string> = {
+  turn_rendering: "turn-compose-v1",
+  chunk_summary_detailed: "chunk-detailed-v1",
+};
+
+// The prompt template a fixture assignment selects for a kind: the inference
+// default when one exists, else the deterministic type's own template.
+function fixturePrompt(kind: DerivationType): string {
+  const inferenceDefault = DEFAULT_PROMPT_NAMES[kind];
+  if (inferenceDefault !== undefined) return inferenceDefault;
+  if (kind === "turn_rendering" || kind === "chunk_summary_detailed") {
+    return DETERMINISTIC_PROMPTS[kind];
+  }
+  return "unknown-prompt";
+}
 
 // validAssignments gives every kind a distinct fake provider/model lane;
 // recordingCall infers the kind back from the model string, so per-kind
@@ -29,7 +58,7 @@ export function validAssignments(
     map[kind] = {
       provider: `${FAKE_PROVIDER_PREFIX}${kind}`,
       model: `${FAKE_MODEL_PREFIX}${kind}`,
-      prompt: DEFAULT_PROMPT_NAMES[kind],
+      prompt: fixturePrompt(kind),
       ...(overrides[kind] ?? {}),
     };
   }

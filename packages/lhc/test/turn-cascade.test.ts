@@ -11,7 +11,7 @@ import {
   type MessageEventInput,
   type SdkConfig,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared/tool-result-rendering.js";
+import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createProviderDouble,
   openRaw,
@@ -68,6 +68,16 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
   );
 }
 
+// turn_rendering is deterministic (AC-6.3): the rendering is the joined part
+// texts, stored as the turn_rendering derivation. The composition tests read
+// it back here instead of capturing a provider call.
+function renderingContent(filePath: string): string {
+  return (
+    readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ??
+    ""
+  );
+}
+
 function execSql(filePath: string, sql: string, ...params: SQLInputValue[]): void {
   const db = openRaw(filePath);
   try {
@@ -96,10 +106,8 @@ describe("Story 3: turn construction recovery cascade", () => {
     await drain(sdk, filePath);
 
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const firstPart = (rendering?.input as { parts?: Array<{ text: string; fallback: boolean }> })
-      .parts?.[0];
-    expect(firstPart).toMatchObject({ text: smoothed, fallback: false });
+    // turn_rendering is deterministic; its first segment is the ready smoothed prompt.
+    expect(renderingContent(filePath).split(" | ")[0]).toBe(smoothed);
 
     const logs = await sdk.logging.query({ filePath }, { reason: "not_ready" });
     expect(logs.ok).toBe(true);
@@ -123,10 +131,9 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const parts = (rendering?.input as { parts?: Array<{ text: string; fallback: boolean }> })
-      .parts ?? [];
-    expect(parts[0]).toMatchObject({ text: "pending prompt because I asked", fallback: true });
+    // The rendering falls back to the prompt floor (smoothed not ready), so its
+    // first segment is the deterministic floor text.
+    expect(renderingContent(filePath).split(" | ")[0]).toBe("pending prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "pending prompt because I asked",
@@ -157,10 +164,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const first = (rendering?.input as { parts?: Array<{ text: string; fallback: boolean }> })
-      .parts?.[0];
-    expect(first).toMatchObject({ text: original, fallback: true });
+    expect(renderingContent(filePath).split(" | ")[0]).toBe(original);
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: original,
@@ -189,10 +193,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const first = (rendering?.input as { parts?: Array<{ text: string; fallback: boolean }> })
-      .parts?.[0];
-    expect(first).toMatchObject({ text: "failed prompt because I asked", fallback: true });
+    expect(renderingContent(filePath).split(" | ")[0]).toBe("failed prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "failed prompt because I asked",
@@ -217,7 +218,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       },
       summarizeToolResult: (input) => double.summarizeToolResult(input),
       composeTurnRendering: (input) => double.composeTurnRendering(input),
-      projectLowerBand: (input) => double.projectLowerBand(input),
+      compressSmoothTurn: (input) => double.compressSmoothTurn(input),
       summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
@@ -272,7 +273,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       },
       summarizeToolResult: (input) => double.summarizeToolResult(input),
       composeTurnRendering: (input) => double.composeTurnRendering(input),
-      projectLowerBand: (input) => double.projectLowerBand(input),
+      compressSmoothTurn: (input) => double.compressSmoothTurn(input),
       summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
@@ -289,12 +290,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     await drain(sdk, filePath);
 
     expect(workerCompleted).toBe(true);
-    const first = (
-      captured.find((entry) => entry.op === "composeTurnRendering")?.input as {
-        parts?: Array<{ text: string; fallback: boolean }>;
-      }
-    ).parts?.[0];
-    expect(first).toMatchObject({ text: "race prompt because I asked", fallback: true });
+    expect(renderingContent(filePath).split(" | ")[0]).toBe("race prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "real worker output",
@@ -318,19 +314,14 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const parts = (
-      captured.find((entry) => entry.op === "composeTurnRendering")?.input as {
-        parts?: Array<{ kind: string; text: string; fallback: boolean }>;
-      }
-    ).parts ?? [];
+    // turn_rendering is the parts' text joined in record order; thinking and
+    // runtime notes render verbatim, in position, between the answer texts.
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
-    expect(parts.map((part) => [part.kind, part.text, part.fallback])).toEqual([
-      ["user_prompt", smoothed, false],
-      ["assistant_text", "first answer", false],
-      ["assistant_thinking", "thinking exactly", false],
-      ["runtime_note", "runtime changed exactly", false],
-      ["assistant_text", "second answer", false],
-    ]);
+    expect(renderingContent(filePath)).toEqual(
+      [smoothed, "first answer", "thinking exactly", "runtime changed exactly", "second answer"].join(
+        " | ",
+      ),
+    );
   });
 
   it("uses and writes tool-result truncation floors, never raw full results", async () => {
@@ -354,10 +345,9 @@ describe("Story 3: turn construction recovery cascade", () => {
     await drain(sdk, filePath);
 
     const floor = truncateForFallback(content);
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const rendered = JSON.stringify(rendering?.input);
-    expect(rendered).toContain(floor);
-    expect(rendered).not.toContain(content);
+    // The rendering carries the truncated tool-result floor, never the full result.
+    expect(renderingContent(filePath)).toContain(floor);
+    expect(renderingContent(filePath)).not.toContain(content);
     expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
       state: "ready",
       content: floor,
@@ -530,25 +520,14 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const parts = (
-      captured.find((entry) => entry.op === "composeTurnRendering")?.input as {
-        parts?: Array<{ kind: string; text: string; fallback: boolean }>;
-      }
-    ).parts ?? [];
-    expect(parts).toHaveLength(3);
-    expect(parts[0]).toMatchObject({
-      kind: "user_prompt",
-      text: "multi fallback because I asked",
-      fallback: true,
-    });
-    expect(parts[1]?.text).toContain("read_file({\"path\":\"multi.txt\"})");
-    expect(parts[1]?.text).toContain("tool-output");
-    expect(parts[1]).toMatchObject({ kind: "tool_call", fallback: true });
-    expect(parts[2]).toMatchObject({
-      kind: "assistant_text",
-      text: "answer after tool",
-      fallback: false,
-    });
+    // The rendering carries the prompt floor, the tool run (call args + result
+    // floor), and the assistant text — verifying the composed content without
+    // a provider capture (turn_rendering is deterministic, AC-6.3).
+    const rendering = renderingContent(filePath);
+    expect(rendering).toContain("multi fallback because I asked");
+    expect(rendering).toContain('read_file({"path":"multi.txt"})');
+    expect(rendering).toContain("tool-output");
+    expect(rendering).toContain("answer after tool");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "multi fallback because I asked",
@@ -588,10 +567,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath, { maxItems: 1 });
 
-    const rendering = captured.find((entry) => entry.op === "composeTurnRendering");
-    const firstPart = (rendering?.input as { parts?: Array<{ text: string; fallback: boolean }> })
-      .parts?.[0];
-    expect(firstPart).toMatchObject({ text: "live work because I asked", fallback: true });
+    expect(renderingContent(filePath).split(" | ")[0]).toBe("live work because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({ state: "pending" });
 
     const db = openRaw(filePath);

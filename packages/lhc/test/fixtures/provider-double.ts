@@ -22,7 +22,7 @@ export type ProviderOpName =
   | "smoothPrompt"
   | "summarizeToolResult"
   | "composeTurnRendering"
-  | "projectLowerBand"
+  | "compressSmoothTurn"
   | "summarizeChunkDetailed"
   | "summarizeChunkBrief";
 
@@ -33,14 +33,14 @@ const KIND_ALIASES: Record<string, ProviderOpName> = {
   smoothPrompt: "smoothPrompt",
   summarizeToolResult: "summarizeToolResult",
   composeTurnRendering: "composeTurnRendering",
-  projectLowerBand: "projectLowerBand",
+  compressSmoothTurn: "compressSmoothTurn",
   summarizeChunkDetailed: "summarizeChunkDetailed",
   summarizeChunkBrief: "summarizeChunkBrief",
   prompt_smoothing: "smoothPrompt",
   smoothed_prompt: "smoothPrompt",
   tool_result_summary: "summarizeToolResult",
   turn_rendering: "composeTurnRendering",
-  lower_band_projection: "projectLowerBand",
+  smooth_turn_compression: "compressSmoothTurn",
   chunk_summary_detailed: "summarizeChunkDetailed",
   chunk_summary_brief: "summarizeChunkBrief",
 };
@@ -117,7 +117,7 @@ export class ProviderDouble implements DerivationProvider {
         return { ok: false, retryable: script.retryable, reason: script.reason };
       }
     }
-    // Output format shared with src/providers/deterministic.ts so the double
+    // Output format shared with src/shared-tech/deterministic.ts so the double
     // and the registry's "deterministic" provider produce byte-identical
     // artifacts across in-process and spawned runs; the chunk-summary
     // receipt/outcome suffixes (AC-3.8) come from the same shared helpers.
@@ -142,8 +142,8 @@ export class ProviderDouble implements DerivationProvider {
     return this.run("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | "));
   }
 
-  projectLowerBand(i: { rendering: string }): Promise<ProviderResult> {
-    return this.run("projectLowerBand", i, i.rendering);
+  compressSmoothTurn(i: { rendering: string }): Promise<ProviderResult> {
+    return this.run("compressSmoothTurn", i, i.rendering);
   }
 
   summarizeChunkDetailed(i: {

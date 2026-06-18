@@ -60,7 +60,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
     expect(result.value.events[0]!.messageId).toBe("m2");
 
-    expect(schemaVersionOf(filePath)).toBe(8);
+    expect(schemaVersionOf(filePath)).toBe(9);
 
     // The legacy event survives the upgrade byte-for-byte at the SDK level.
     const events = await intakeStream.listEvents({ filePath });
@@ -101,7 +101,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     if (!projected.ok) return;
     expect(projected.value).toEqual([]);
 
-    expect(schemaVersionOf(filePath)).toBe(8);
+    expect(schemaVersionOf(filePath)).toBe(9);
 
     // The read-path upgrade changed no record content.
     const events = await intakeStream.listEvents({ filePath });
@@ -235,7 +235,7 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     const projected = await messages.listMessages({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    expect(schemaVersionOf(filePath)).toBe(8);
+    expect(schemaVersionOf(filePath)).toBe(9);
 
     // Existing records intact through the production read surfaces.
     expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
@@ -257,7 +257,7 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "lower_band_projection",
+            derivationType: "smooth_turn_compression",
             state: "pending",
             sourceVersion: 1,
           },
@@ -322,7 +322,7 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     ).toEqual([
       { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt", state: "pending", sourceVersion: 1 },
       { subjectKind: "message", subjectId: "m3", derivationType: "tool_result_summary", state: "pending", sourceVersion: 1 },
-      { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection", state: "pending", sourceVersion: 1 },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression", state: "pending", sourceVersion: 1 },
       { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "pending", sourceVersion: 1 },
     ]);
 
@@ -356,7 +356,7 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
     const projected = await messages.listMessages({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    expect(schemaVersionOf(filePath)).toBe(8);
+    expect(schemaVersionOf(filePath)).toBe(9);
 
     // The Epic 02 record is intact through the production read surface.
     expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
@@ -417,7 +417,7 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
     // re-runs the seed (the boundary row is byte-identical, still singular).
     const reread = await messages.listMessages({ filePath });
     expect(reread.ok).toBe(true);
-    expect(schemaVersionOf(filePath)).toBe(8);
+    expect(schemaVersionOf(filePath)).toBe(9);
     const again = openRaw(filePath);
     try {
       const rows = again

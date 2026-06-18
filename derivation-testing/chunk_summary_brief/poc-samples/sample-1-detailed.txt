@@ -1,0 +1,23 @@
+The session began with the user asking to update the codebase, then clarifying they specifically wanted Pi updated after seeing: “New version 0.75.3 is available. Run `pi update`” when starting via `npm run agent`. The user was concerned the assistant was experimenting too much and might break the local install.
+
+The assistant acknowledged it had over-run and should have done only a minimal safe update. It explained that `pi update` could not self-update because Pi was being run from the project-local npm install (`node_modules/.bin/pi`). It then updated the local Pi npm packages to `0.75.3`:
+
+- `@earendil-works/pi-ai`
+- `@earendil-works/pi-agent-core`
+- `@earendil-works/pi-coding-agent`
+
+This changed `package.json`, `package-lock.json`, and `node_modules`. The assistant ran `npm run -s typecheck`, which passed, and admitted that starting a later `npm test -- --help` command was unnecessary. It promised not to run further commands without explicit permission.
+
+When asked whether a new npm install had been run, the assistant confirmed it had run:
+
+```bash
+npm install @earendil-works/pi-ai@0.75.3 @earendil-works/pi-agent-core@0.75.3 @earendil-works/pi-coding-agent@0.75.3
+```
+
+It also noted it manually changed dependency ranges back from `^0.75.3` to exact `0.75.3` to preserve the repo’s prior pinning style.
+
+When the user asked whether it still wasn’t working, the assistant clarified it had not verified startup by rerunning `npm run agent`. Verified facts were only: the packages were installed at `0.75.3` and typecheck passed. The user later reported running Smart Compact successfully, and the assistant concluded the update likely succeeded: Pi deps moved from `0.74.0` to `0.75.3`, package files and `node_modules` were updated, typecheck passed, and there was no evidence of breakage. It cautioned that transitive churn from npm install was normal for a dependency bump and suggested `npm run verify` later if desired.
+
+The conversation then shifted to process. The user wants to build the assistant into a long-horizon engineering agent by having it read files in ~200-line chunks, summarize each chunk, and accumulate an evolving understanding of the system for Smart Compact / long-context use. The assistant agreed, but honestly stated it did not retain reliable detailed memory of the PRD or technical architecture in current visible context and should not pretend otherwise. It only retained a high-level sense that the project is `pi-long-horizon`, involving Pi long-horizon / Smart Compact behavior, model/provider integration, and verification harnesses.
+
+The assistant endorsed the proposed workflow and suggested a per-chunk summary structure: what the chunk says, key domain concepts, implementation/architecture observations, how it updates the emerging model, and questions/follow-ups.

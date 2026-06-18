@@ -1,0 +1,155 @@
+[turn 0730]
+We’re still pre-draft on Epic 2; no Epic 2 file exists yet.
+
+What’s settled: scope is clear. Epic 2 owns PRD Feature 2, and the tech lead’s “should not own” list matches: Feature 3 surfaces, packaging, inference, and extras are out. The degrade-vs-block space is also grounded in a durable capability-loss table covering seven derivation kinds, where each is consumed, what is lost without it, and the fallback topology. The key conclusion is that cost is non-uniform: the boundary has a single-rung fallback (head-truncation, then nothing), while bands have multi-rung ladders, so a uniform degrade policy would be wrong.
+
+What’s not settled: the flow structure is still open. Three outlines remain on the table—my 6, the tech lead’s 8, and my reconciled 7—and none is agreed. Also unresolved are the first smart-compact options, the runtime-state restoration inventory (cwd/model/thinking/branch/name handoff once the session file goes vestigial), A7 auto-compaction starvation, the visibility off-switch mechanism (`visibility: off` vs. config sentinel), and the cause dimension (queued vs. failed vs. blocked), which is separate from the capability-loss table and where the rug-sweeping risk sits.
+
+The next decision is yours: write an Epic 2 brief now, keep working the open problems conversationally, or go straight to draft on one of the outlines.
+
+[turn 0731]
+You’re right. I had been attributing issues to Fable in the meta doc, but that framing was wrong for this request. I read the whole file at:
+
+`/Users/leemoore/code/pi-long-horizon/liminal-context/docs/key-insights/meta-thinking-and-tensions-braindump.md`
+
+and then revised the framing so it no longer treats the problem as model-specific. The goal here is general reasoning hygiene, not a Fable-vs-opus distinction unless you explicitly ask for one.
+
+The doc currently contains a lot of “Fable” language, but the key corrections are:
+
+- remove all references that attribute the issues to Fable
+- do not replace them with “Opus 4.8,” “GPT-5.5,” or any other model name unless you explicitly gave that guidance
+- keep the focus on the general patterns: derivation errors, premature closure, binary collapse, manufactured affect, and related reasoning failures
+- don’t inject extra framing, priorities, or decision pressure
+
+So the useful output should be a cleaner list of derivation errors with the attributes you want to discuss, without the extra model-specific claims that push toward a strong decision too early. That lets us look at the patterns, see the abstractions, and then map each pattern to general principles and systems.
+
+The concrete outcome from the read was that the document has several places where “Fable” is used as the actor for the failure modes, and those should be stripped from the meta discussion. The correct stance for the next pass is: present the derivation errors neutrally, keep them open for discussion, and let the general principles emerge before any conclusion is forced.
+
+[turn 0732]
+I’m going to answer the “which epic” part from the docs decision and then trace the actual generation/error-handling paths in the code so we can walk the types one by one.
+
+The “which epic” answer is split, not a single epic. The actual tuning/editing point for the derivation model, prompt, and behavior instructions is in the post-Epic-4 work note, `docs/specs/02-pi-lhc/notes/post-epic-4-work.md`, while Epic 5 is the derivation-inference/spec work under `docs/specs/01-lhc-sdk/05-derivation-inference/...`. So: Epic 5 is where the derivation system is specified, but the fine-tuning/dial-in decision lives in the post-Epic-4 note.
+
+I also traced where the live generation path is in the built LHC code. The main places are `packages/lhc/src/domains/turns/internal/derive.ts`, `compose.ts`, `chunks.ts`, and `state-machine.ts`, plus supporting message/intake code in `packages/lhc/src/domains/messages/internal/{handlers.ts, cascade.ts, project.ts, forms.ts, store.ts}` and `packages/lhc/src/domains/intake-stream/internal/{pipeline.ts, validate.ts}`.
+
+Useful conclusion from that lookup: if we want to go through “types 1 by 1” and discuss generation plus error handling, the code entrypoint is the turns domain, especially `derive.ts` and the state machine, not the Epic 5 docs themselves. The docs tell us what behavior was intended; the code tells us how each derivation type is actually generated and where failures are handled.
+
+So the practical plan is:
+1. Start with the derivation types in `packages/lhc/src/domains/turns/internal/derive.ts`.
+2. Follow the prompt/composition path in `compose.ts` and `chunks.ts`.
+3. Then inspect the state transitions and failure handling in `state-machine.ts`.
+4. Cross-check intended behavior against `docs/specs/02-pi-lhc/notes/post-epic-4-work.md` and the Epic 5 spec files under `docs/specs/01-lhc-sdk/05-derivation-inference/...`.
+
+If you want, I can now go type-by-type in the turns derivation flow and explain for each one: how it’s generated, what prompt/input it uses, and what error handling kicks in when generation fails.
+
+[turn 0733]
+Mostly I think this is pretty good. I’m not convinced that picking conditions under which to not do a smoothed version are the best choices, but I’m not sure we’ll have materially better ones; it’s worth discussing the options. What are the conditions under which smoothing doesn’t happen to the user prompt?
+
+The code suggests there are two layers: either smoothing is never enqueued, or it is enqueued but produces no usable output. I checked where `smoothed_prompt` / `prompt_smoothing` are wired up.
+
+The queue mapping in `tech-utils/work-queue/index.ts` shows `prompt_smoothing` is a work kind owned by `messages`, with `subjectKind: "message"` and form `smoothed_prompt`. In `domains/messages/index.ts`, there’s even a comment: “The kind gate, exact by design: a prompt queues prompt_smoothing, a tool …”, which implies the enqueue decision is intentional and narrow.
+
+I also found the message-domain source around `domains/messages/internal/handlers.ts` and `domains/messages/internal/project.ts`, where `loadSource(run, item, "user_prompt")` and a `case "user_prompt"` appear, so the user prompt is indeed the source being considered for this path.
+
+There’s also a `shared/storage.ts` query that reads queued `prompt_smoothing` items, and `inference/adapter.ts` maps `smoothPrompt` to `callKind("smoothed_prompt", i)`, confirming the smoothing run is a distinct inference step rather than an automatic inline transform.
+
+So the unresolved question is: what exact gate prevents `prompt_smoothing` from being queued for a user prompt, versus what conditions later make the smoothing output unusable? That’s the part worth discussing, since the current code seems to make the enqueue path exact by design.
+
+[turn 0734]
+You were right to challenge it. I had answered from the enqueue gate and treated it as unconditional, but that only covers queue admission. There can still be a later handler-level bypass that returns a ready outcome without calling the provider, so I checked the wrong layer.
+
+I then read `packages/lhc/src/domains/messages/internal/handlers.ts`, which shows the actual message-level derivation handlers for `prompt_smoothing`, `tool_call_summary`, and `tool_result_summary`. The file makes the important part explicit: each handler loads the source message, validates its kind and blocks, and then calls exactly one provider operation through `run.provider.*`. There is no fence/length skip logic in this handler file for smoothing.
+
+What the file does show:
+
+- `smoothPromptHandler` loads a `user_prompt`, extracts `blocks[0]?.content["text"]`, and if it is a string calls `run.provider.smoothPrompt({ text })`.
+- `toolCallSummaryHandler` loads a `tool_call`, extracts `toolCallId` and `toolName`, optionally pairs a tool result via `findPairedToolResult`, computes outcome from that pairing, and then calls `run.provider.summarizeToolCall(input)`.
+- `toolResultSummaryHandler` loads a `tool_result`, extracts `content`, optionally finds the paired call, derives outcome from `isError`, and then calls `run.provider.summarizeToolResult({ toolName, content })`.
+
+So the concrete conclusion from this read is: in this file, smoothing is not skipped because of fences or length; it always proceeds to a provider call once the source message passes validation. If there is a “skip inference, pass through” case, it would have to live somewhere else in the pipeline, not here. I haven’t checked that other layer yet.
+
+[turn 0735]
+You’re right that if the input contains code, smoothing should not rewrite the code itself. Since smoothing is supposed to be light-touch — typo fixes, capitalization, whitespace normalization — the value is in the prose, not the code. So the real design choice is: do we bypass smoothing entirely when code is present, or do we split the input into chunks and smooth only the non-code parts?
+
+The strongest argument for chunking is that it strictly dominates bypassing. If the prompt is all code, chunking naturally degenerates to “do nothing” because there’s no prose to smooth. If the prompt mixes prose and code, chunking lets us smooth the prose while leaving fenced code verbatim. That preserves the benefit where it exists, instead of throwing it away with a blanket bypass. It also gives a structural guarantee: the code never goes to the model at all, so we’re not relying on the model to obey “don’t touch fenced code.”
+
+That said, chunking introduces fence-detection and reassembly edge cases: unclosed fences, inline backticks, indented code blocks, etc. But the failure modes are acceptable and bounded. A mis-segment might slightly over-smooth a bit of code, or leave a bit of prose raw. That’s much better than a brittle system that can silently mangle fenced content or get stuck.
+
+On the deterministic transform layer: yes, there’s likely an upfront non-model pass that can normalize whitespace and maybe handle some trivial capitalization before summarization. That matters because it changes the architecture of smoothing. The deterministic layer can raise the fallback floor: if the model smoothing fails or is skipped, we can still serve a deterministic-smoothed version instead of raw text. That’s strictly better than today’s “raw fallback.” But it also has to be fence-aware for the same reason as the model layer: it should not normalize whitespace inside code.
+
+On prompt length, I agree there’s a real threshold where smoothing stops being worth it. Something like 5k or 10k tokens may be too expensive to run through the model just for typo cleanup. The key point is that the length cap should apply only to the model smoothing step, not the deterministic transform. If we chunk first, the cap should measure model-bound prose only, not the entire prompt. So a 10k-token prompt that is mostly code with a small prose introduction shouldn’t be penalized as a 10k smoothing job.
+
+That choice also changes the error model. With unconditional smoothing, the states are basically success, provider failure, or source-blocked. With chunking plus a cap plus a deterministic floor, we get a new intentional outcome: “skipped because too long” or “skipped because there was nothing to smooth.” That is not an error. It should land in `ready`, not `pending`, and should not retry. It also should not be treated as degraded if deterministic-only output is the intended result. In other words, skip and fail can look similar in output quality, but they have different semantics.
+
+So the open decisions are:
+
+1. **Chunk vs bypass for code-containing input**  
+   I lean chunk, because it preserves prose smoothing and guarantees code safety.
+
+2. **Where the deterministic transform lives**  
+   Either at intake as a cheap floor-raising step, or inside the handler. Intake gives a better fallback result; handler-local keeps the hot path simpler.
+
+3. **Whether “skip” becomes a first-class ready outcome**  
+   If we adopt the richer behavior, skipped smoothing is an intentional terminal state, not an error.
+
+This is all SDK smoothing-handler behavior, i.e. Epic 5 / dial-in territory, not the pi-lhc Epic 2 work. The only place it affects serving is in how we interpret a `smoothed_prompt` that is deterministic-only, failed, pending, or intentionally skipped.
+
+[turn 0736]
+You’re right: I used “chunk” wrong and it collided with your actual meaning. In your system, a **chunk** is an aggregation of an array of turns, and **chunking** is the process that assigns turns to chunks, closes them, and derives `chunk_summary_detailed` / `chunk_summary_brief`. That’s the term I should have preserved.
+
+What I was trying to describe was **segmenting** the prompt text: splitting one user prompt into fenced-code segments and prose segments, then smoothing only the prose and leaving code verbatim. That has nothing to do with chunks.
+
+Restated cleanly: **prompt segmenting contains bypass**. If the prompt is all code, there’s no prose to smooth, so the output is just the raw text; if there’s prose, it gets smoothed. I should have said “segment” throughout, not “chunk.”
+
+I’ll use **segment** for prompt splitting and reserve **chunk** for turn aggregation from here on. Want me to rewrite the smoothing points with the correct terminology and keep it much shorter?
+
+[turn 0737]
+You’re right: there’s no segmenting within a single user prompt here. I checked `packages/lhc/src/domains/messages/internal/handlers.ts`, and `smoothPromptHandler` just loads `user_prompt`, pulls `loaded.source.blocks[0]?.content["text"]`, and sends that whole `text` to `run.provider.smoothPrompt({ text })`. There’s no split/fence logic in the handler.
+
+I also grepped `packages/lhc/src/inference/adapter.ts`; the only relevant line is `smoothPrompt: (i) => callKind("smoothed_prompt", i)`, which confirms the adapter just forwards the call kind and doesn’t segment anything either.
+
+So the earlier “segments” framing was wrong for this path. The current behavior is: one user prompt, one text payload, passed through as-is for smoothing.
+
+[turn 0738]
+Short answer: **no — not segmentation plus classification**. It’s too much mechanism for this derivation, and it’s the brittle extreme your nonlinear-cost principle warns against.
+
+Why:
+
+1. **Smoothing is low-value.** It mainly fixes typos, caps, and whitespace. The fallback is the **raw prompt**, which is lossless, and models already tolerate noise well. So the payoff is mostly cosmetic. Building a segmentation/classification engine to protect a thin prize is effort-inverted.
+
+2. **What matters is narrow safety:** don’t let the smoother corrupt code in the bands. But segmentation is the expensive way to solve that. A prompt instruction like **“fix typos/capitalization/whitespace; leave fenced code and literal strings verbatim”** gives most of the protection at near-zero cost, with no brittle routing logic. It’s trust-based and may slip sometimes, but the downside is small.
+
+3. **Classification adds complexity out of proportion to the stakes.** Per-segment decisions, reassembly, fence edge cases — you’d be importing the brittle-regex problem into a derivation whose fallback is simply “serve the raw prompt,” which is acceptable.
+
+The one counterpoint: **deterministic whitespace normalization is free and can corrupt code**, so if you want that free deterministic floor, you’d need fence awareness. But that argues for cheap fence detection, not full segment-classify-and-route.
+
+So my lean: **use prompt instructions for code/literal safety, skip the segmentation engine**. I’d reconsider only if code-embedded-in-prose prompts are common in real usage and smoothing proves meaningfully valuable in dogfooding.
+
+[turn 0739]
+From the reader-vantage I asked about, smoothing feels thin-value to me as the agent. Typos in a historical user prompt cost me nothing—I can read through them. What would hurt is corrupting code, commands, paths, or literals in the bands, because then I might trust or repeat them wrong, or changing a prompt’s meaning in a subtle way. So the downside is heavier than the upside. That suggests a conservative setup: smoothing is mostly for the human inspecting the bands, not for me, so it should be light.
+
+My recommendation is **one gate, not two**.
+
+- **Inference smoothing:** run it by default, with only a length cap. The code safety should come from the instruction itself: fix typos/case/whitespace in prose, but leave fenced code and literal strings verbatim. If it can’t run, fall back to raw text, which is lossless. The cap is mostly economics: spending tokens to fix typos in a huge prompt is usually not worth it, and long prompts are often pasted code/logs where smoothing value is low.
+
+I’d push back on a deterministic transform layer for v1. A deterministic whitespace-collapse would corrupt code every time, while inference only risks it and can be told not to. So the deterministic layer is not a safer floor for code. Its only unique benefit is giving you something when inference is skipped, but inference would be skipped exactly on the big code/log pastes, which are the worst place to normalize whitespace and the least valuable place to smooth. That makes the floor land in the wrong spot.
+
+So the symmetric two-gate idea isn’t the right shape. They’d gate on different things—**inference on cost** (length), **deterministic on safety** (code presence). Once you restrict deterministic work to code-safe transforms like control-char/zero-width/junk stripping, those can be applied everywhere and don’t need a gate. The transforms that would need a safety gate are the ones you probably shouldn’t run at all. Net: one real gate in the system, the length cap on inference, which is the simple always-on rule you were aiming for.
+
+The main things to dial in later are the cap number, the exact instruction wording, and whether any code-safe deterministic junk-strips are worth keeping, based on real corpora. If code-heavy prompts turn out to be common and smoothing is valuable enough, a cheap next step is a fence-presence boolean to skip inference on code-dominant prompts, but I wouldn’t make that v1.
+
+[turn 0740]
+You’re right, and I had argued against the band’s whole reason for existing.
+
+The smoothed layer is meant to give high detail, high volume, and coherence at once. Coherence is the thing it buys. Typos, casing, broken whitespace, and grammar issues are attentional leaks: each one is small, but across thousands of messages they become a systemic drain on reader coherence, including mine. “I read through it fine” is the wrong frame because it judges one typo in isolation instead of the aggregate cost. If smoothing fixes that once, the leak is plugged for the whole layer and every future read. That’s not cosmetic; that’s the band doing its job.
+
+So I had the value backwards. Smoothing isn’t thin-value with a lossless fallback; raw-as-fallback is itself the leak because it reintroduces the noise the smoothed layer exists to remove. “Lossless in fact” may be true at the information level, but it misses the coherence level, which is what matters here.
+
+That changes the earlier stance:
+
+- Smoothing is broadly worth running; it’s high-value to the band.
+- The length cap still matters, but as economics: don’t spend 20k tokens on a paste.
+- If smoothing is skipped, that region keeps a real coherence cost.
+- The deterministic-corrupts-code point still matters, but now only as a mechanism question about how to smooth safely, not whether to smooth at all.
+
+The underlying correction is that I kept reaching for “the fallback is lossless, so the stakes are low,” which collapses the coherence dimension into an information-only answer. The coherence-leak framing is the right one.

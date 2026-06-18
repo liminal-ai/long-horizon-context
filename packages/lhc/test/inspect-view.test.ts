@@ -393,7 +393,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
       smoothPrompt: refuse,
       summarizeToolResult: refuse,
       composeTurnRendering: refuse,
-      projectLowerBand: refuse,
+      compressSmoothTurn: refuse,
       summarizeChunkDetailed: refuse,
       summarizeChunkBrief: refuse,
     };

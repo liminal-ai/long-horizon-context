@@ -12,10 +12,10 @@ import type {
   Lhc,
   ProviderResult,
   SubjectKind,
-  DerivationType,
   WorkHandler,
   WorkKind,
 } from "../../src/index.js";
+import type { DerivationType } from "./model-call.js";
 
 interface FormSpec {
   subjectKind: SubjectKind;
@@ -49,8 +49,8 @@ const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
     },
     {
       subjectKind: "turn",
-      derivationType: "lower_band_projection",
-      call: (p, id) => p.projectLowerBand({ rendering: `turn:${id}` }),
+      derivationType: "smooth_turn_compression",
+      call: (p, id) => p.compressSmoothTurn({ rendering: `turn:${id}` }),
     },
   ],
   chunk_summary_detailed: [

@@ -1,0 +1,67 @@
+[
+  {
+    "sample": 1,
+    "path": ".context-steward/threads/thread_aef8150c-ecab-4d4b-832e-5b996a9b164c/chunks.json",
+    "chunkId": "chunk-001",
+    "inputChars": 7389,
+    "inputEstTokens": 2112,
+    "detailedChars": 2827,
+    "detailedEstTokens": 808,
+    "detailedPct": 38.3,
+    "briefChars": 848,
+    "briefEstTokens": 243,
+    "briefPct": 11.5
+  },
+  {
+    "sample": 2,
+    "path": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/chunks.json",
+    "chunkId": "chunk-003",
+    "inputChars": 5880,
+    "inputEstTokens": 1680,
+    "detailedChars": 1805,
+    "detailedEstTokens": 516,
+    "detailedPct": 30.7,
+    "briefChars": 779,
+    "briefEstTokens": 223,
+    "briefPct": 13.3
+  },
+  {
+    "sample": 3,
+    "path": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/chunks.json",
+    "chunkId": "chunk-008",
+    "inputChars": 10235,
+    "inputEstTokens": 2925,
+    "detailedChars": 5054,
+    "detailedEstTokens": 1444,
+    "detailedPct": 49.4,
+    "briefChars": 1816,
+    "briefEstTokens": 519,
+    "briefPct": 17.7
+  },
+  {
+    "sample": 4,
+    "path": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/chunks.json",
+    "chunkId": "chunk-010",
+    "inputChars": 14350,
+    "inputEstTokens": 4100,
+    "detailedChars": 2600,
+    "detailedEstTokens": 743,
+    "detailedPct": 18.1,
+    "briefChars": 865,
+    "briefEstTokens": 248,
+    "briefPct": 6.0
+  },
+  {
+    "sample": 5,
+    "path": ".context-steward/threads/thread_df67cbe0-2c0d-4c6e-90fa-570b04cd9bcc/chunks.json",
+    "chunkId": "chunk-017",
+    "inputChars": 9766,
+    "inputEstTokens": 2791,
+    "detailedChars": 4588,
+    "detailedEstTokens": 1311,
+    "detailedPct": 47.0,
+    "briefChars": 2421,
+    "briefEstTokens": 692,
+    "briefPct": 24.8
+  }
+]

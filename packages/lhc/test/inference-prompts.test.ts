@@ -9,17 +9,16 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { createInferenceProvider } from "../src/inference/adapter.js";
+import { createInferenceProvider } from "../src/shared-tech/inference-adapter.js";
 import {
   DEFAULT_PROMPT_NAMES,
   PROMPT_REGISTRY,
   type PromptTemplate,
-} from "../src/inference/prompts/index.js";
-import type { ModelCallInput, ResolvedInferenceConfig } from "../src/inference/types.js";
+} from "../src/shared-tech/prompts/index.js";
+import type { ModelCallInput, ResolvedInferenceConfig } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
-  DERIVATION_TYPES,
   recordingCall,
   validAssignments,
 } from "./fixtures/index.js";
@@ -107,6 +106,7 @@ function resolvedConfig(
 ): ResolvedInferenceConfig {
   return {
     assignments: validAssignments(),
+    guards: {},
     timeoutMs: 60_000,
     maxInputChars: 200_000,
     ...overrides,
@@ -120,8 +120,7 @@ function userContent(input: ModelCallInput): string {
 }
 
 describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
-  for (const kind of DERIVATION_TYPES) {
-    const name = DEFAULT_PROMPT_NAMES[kind];
+  for (const name of Object.keys(PROMPT_FIXTURES)) {
     it(`${name} renders its fixture input to the committed golden`, () => {
       const fixture = PROMPT_FIXTURES[name];
       expect(fixture).toBeDefined();
@@ -158,16 +157,19 @@ describe("TC-2.2: registry completeness (AC-2.3)", () => {
     }
   });
 
-  it("default names cover all derivation kinds and each resolves in the registry", () => {
+  it("default names cover all inference kinds and each resolves in the registry", () => {
+    const inferenceKinds = Object.keys(DEFAULT_PROMPT_NAMES);
     const defaultNames = new Set<string>();
-    for (const kind of DERIVATION_TYPES) {
+    for (const kind of inferenceKinds) {
       const name = DEFAULT_PROMPT_NAMES[kind];
       expect(typeof name).toBe("string");
-      expect(PROMPT_REGISTRY[name]).toBeDefined();
-      defaultNames.add(name);
+      if (name !== undefined) {
+        expect(PROMPT_REGISTRY[name]).toBeDefined();
+        defaultNames.add(name);
+      }
     }
-    // One distinct template per derivation kind — no kind shares another's prompt.
-    expect(defaultNames.size).toBe(DERIVATION_TYPES.length);
+    // One distinct template per inference kind — no kind shares another's prompt.
+    expect(defaultNames.size).toBe(inferenceKinds.length);
   });
 });
 

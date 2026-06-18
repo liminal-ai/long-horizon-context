@@ -8,4 +8,4 @@ export {
   setIntakeClock,
   setIntakeWalkHook,
   type IntakeWalkHook,
-} from "../../src/domains/intake-stream/internal/pipeline.js";
+} from "../../src/intake-stream/internal/pipeline.js";

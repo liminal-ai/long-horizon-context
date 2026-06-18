@@ -113,7 +113,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "lower_band_projection",
+            derivationType: "smooth_turn_compression",
             state: "pending",
             sourceVersion: 1,
           },
@@ -159,7 +159,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "lower_band_projection",
+            derivationType: "smooth_turn_compression",
             state: "pending",
             sourceVersion: 1,
           },
@@ -298,7 +298,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "lower_band_projection",
+            derivationType: "smooth_turn_compression",
             state: "pending",
             sourceVersion: 1,
           },
@@ -321,7 +321,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t2",
-            derivationType: "lower_band_projection",
+            derivationType: "smooth_turn_compression",
             state: "pending",
             sourceVersion: 1,
           },

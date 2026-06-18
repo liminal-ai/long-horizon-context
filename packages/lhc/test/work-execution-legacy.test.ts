@@ -86,7 +86,7 @@ describe("01F-001: terminal failure on pre-v5 queued rows lands the backfilled f
     expect(forms.map((form) => `${form.subjectId}/${form.derivationType}/${form.state}`).sort()).toEqual([
       "m1/smoothed_prompt/failed",
       "m3/tool_result_summary/ready",
-      "t1/lower_band_projection/ready",
+      "t1/smooth_turn_compression/ready",
       "t1/turn_rendering/ready",
     ]);
   });

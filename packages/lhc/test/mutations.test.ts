@@ -157,7 +157,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
-        "turn/t1/lower_band_projection",
+        "turn/t1/smooth_turn_compression",
         "turn/t1/turn_rendering",
       ].sort(),
     );
@@ -250,9 +250,9 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
       [
         "message/m1/smoothed_prompt",
         "message/m4/smoothed_prompt",
-        "turn/t1/lower_band_projection",
+        "turn/t1/smooth_turn_compression",
         "turn/t1/turn_rendering",
-        "turn/t2/lower_band_projection",
+        "turn/t2/smooth_turn_compression",
         "turn/t2/turn_rendering",
         "chunk/c1/chunk_summary_brief",
         "chunk/c1/chunk_summary_detailed",
@@ -273,7 +273,7 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
-        "turn/t1/lower_band_projection",
+        "turn/t1/smooth_turn_compression",
         "turn/t1/turn_rendering",
         "chunk/c1/chunk_summary_brief",
         "chunk/c1/chunk_summary_detailed",

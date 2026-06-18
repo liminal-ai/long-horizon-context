@@ -348,7 +348,7 @@ import {
   WORK_KIND_REGISTRY,
   type WorkHandler,
 } from "../src/index.js";
-import { enqueue } from "../src/tech-utils/work-queue/index.js";
+import { enqueue } from "../src/shared-tech/work-queue/index.js";
 import {
   createProviderDouble,
   readDerivedForms,
@@ -451,7 +451,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     // prompt's form, two for the turn's rendering + projection.
     expect(rawFormRows(filePath)).toEqual([
       { key: "message/m1/smoothed_prompt", state: "pending" },
-      { key: "turn/t1/lower_band_projection", state: "pending" },
+      { key: "turn/t1/smooth_turn_compression", state: "pending" },
       { key: "turn/t1/turn_rendering", state: "pending" },
     ]);
   });

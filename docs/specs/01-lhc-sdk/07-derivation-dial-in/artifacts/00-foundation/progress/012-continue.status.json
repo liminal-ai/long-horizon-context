@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "command": "story-continue",
+  "status": "running",
+  "phase": "initial-implement",
+  "startedAt": "2026-06-18T17:29:06.928Z",
+  "updatedAt": "2026-06-18T18:21:10.448Z",
+  "lastOutputAt": "2026-06-18T18:21:10.448Z",
+  "providerLiveness": "active-with-output",
+  "provider": "claude-code",
+  "pid": 7635,
+  "cwd": "/Users/leemoore/code/pi-long-horizon/liminal-context",
+  "timeoutMs": 7200000,
+  "configuredStartupTimeoutMs": 300000,
+  "configuredSilenceTimeoutMs": 600000,
+  "artifactPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/07-derivation-dial-in/artifacts/00-foundation/012-continue.json",
+  "streamPaths": {
+    "stdoutPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/07-derivation-dial-in/artifacts/00-foundation/streams/012-continue.stdout.log",
+    "stderrPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/07-derivation-dial-in/artifacts/00-foundation/streams/012-continue.stderr.log"
+  },
+  "progressPaths": {
+    "statusPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/07-derivation-dial-in/artifacts/00-foundation/progress/012-continue.status.json",
+    "progressPath": "/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/07-derivation-dial-in/artifacts/00-foundation/progress/012-continue.progress.jsonl"
+  },
+  "lastEvent": "provider-output",
+  "lastEventSummary": "Provider stdout output continues.",
+  "selfReviewPassesCompleted": 0,
+  "selfReviewPassesPlanned": 0
+}

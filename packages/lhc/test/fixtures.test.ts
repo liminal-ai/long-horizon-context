@@ -146,7 +146,7 @@ function callAllOperations(double: DerivationProvider): Array<Promise<ProviderRe
         { messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false },
       ],
     }),
-    double.projectLowerBand({ rendering: "the rendering text" }),
+    double.compressSmoothTurn({ rendering: "the rendering text" }),
     double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
     double.summarizeChunkBrief({ memberProjections: ["projection one", "projection two"] }),
   ];
@@ -231,8 +231,8 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
     expect(cleanResult.ok).toBe(true);
     expect(capturedScripted).toHaveLength(0);
     const capturedClean = clean.captureInputs();
-    await clean.projectLowerBand({ rendering: "r" });
-    expect(capturedClean).toEqual([{ op: "projectLowerBand", input: { rendering: "r" } }]);
+    await clean.compressSmoothTurn({ rendering: "r" });
+    expect(capturedClean).toEqual([{ op: "compressSmoothTurn", input: { rendering: "r" } }]);
     expect(capturedScripted).toHaveLength(0);
     const scriptedResult = await scripted.smoothPrompt({ text: "untouched" });
     expect(scriptedResult.ok).toBe(false);

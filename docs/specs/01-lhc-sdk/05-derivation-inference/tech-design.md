@@ -29,7 +29,7 @@ One thing this design deliberately does not do: chase output quality. The prompt
 - **DD-10: Whole-turn eviction via `turn_id` grouping; turnless results degrade to singleton groups.** The zone walk groups tool results by `turn_id` (the message column), oldest group first by the group's lowest `source_event_order`. A `turn_id IS NULL` tool result (turnless intake is legal) is its own group — whole-turn semantics degenerate to whole-message for messages that belong to no turn, which preserves the epic's "no turn is ever partially flipped" without inventing membership.
 - **DD-11: Floor retirement is a config-surface change, not a migration.** `VisibilityBudgets` becomes `{ maxTokens, targetTokens }` (64 000 / 32 000 defaults); `floorTokens` is deleted from the type, resolution, and validation. No schema change — `view_boundary` is untouched; the decision function changes shape, the storage doesn't. The protected floor's *job* survives structurally: the newest closed turn group is never evicted, and the open turn is invisible to a check that only runs at turn close.
 - **DD-12: CLI deletion removes the registry, keeps the deterministic provider.** `src/providers/registry.ts` (named resolution, `LHC_PROVIDER`) dies with its only consumer. `src/providers/deterministic.ts` stays — it is the CI-default test provider and the byte-stable fixture substrate. The twelve `cli-process-*.test.ts` suites delete; `verify-all` drops the `LHC_PROCESS_SUITE` gate and gains the opt-in inference suite (which self-reports ran/not-ran).
-- **DD-13: The real-inference suite is a second host of the same contract.** The OpenRouter-backed `ModelCall` lives in `test/fixtures/openrouter-call.ts`, implements the AC-1.2 contract over plain `fetch`, and runs Flow 1's construction/routing assertions parameterized (question 5, resolved: shared assertion helpers parameterized over the function, not duplicated tests). Key arrives via `LHC_OPENROUTER_KEY`; absence produces an explicit not-ran record, never a silent pass.
+- **DD-13: The real-inference suite is a second host of the same contract.** The OpenRouter-backed `ModelCall` lives in `test/fixtures/openrouter-call.ts`, implements the AC-1.2 contract over plain `fetch`, and runs Flow 1's construction/routing assertions parameterized (question 5, resolved: shared assertion helpers parameterized over the function, not duplicated tests). Key arrives via `OPENROUTER_API_KEY`; absence produces an explicit not-ran record, never a silent pass.
 
 ## Top-Tier Surfaces
 
@@ -168,7 +168,7 @@ And `safeCall(call, input, timeoutMs)`: wraps the host function in try/catch (th
 
 ### Flow 4: Real-Inference Verification (AC-4.1–4.2)
 
-The suite (`test/inference-real.test.ts`) keys on `LHC_OPENROUTER_KEY`. Present: build the OpenRouter `ModelCall` fixture, construct an SDK with all seven kinds assigned to the configured cheap model (`LHC_OPENROUTER_MODEL`, defaulted in the fixture), and run the legs. Absent: emit one structured not-ran record (a test that asserts-and-reports the skip reason loudly — visible in output as `NOT-RAN: real-inference (LHC_OPENROUTER_KEY unset)`, never a green checkmark indistinguishable from a pass). The accounting rule is implemented as a suite-level guard, not per-test `skip`s, so the run/not-run state is one fact reported once.
+The suite (`test/inference-real.test.ts`) keys on `OPENROUTER_API_KEY`. Present: build the OpenRouter `ModelCall` fixture, construct an SDK with all seven kinds assigned to the configured cheap model (`OPENROUTER_MODEL`, defaulted in the fixture), and run the legs. Absent: emit one structured not-ran record (a test that asserts-and-reports the skip reason loudly — visible in output as `NOT-RAN: real-inference (OPENROUTER_API_KEY unset)`, never a green checkmark indistinguishable from a pass). The accounting rule is implemented as a suite-level guard, not per-test `skip`s, so the run/not-run state is one fact reported once.
 
 The capstone reuses Epic 04's lifecycle sequence with the assertion set swapped: where the deterministic leg asserted byte-exact replay and marker content, this leg asserts structure — every `FormKind` reaches `ready` at least once with non-empty text containing no deterministic marker pattern (`/^(smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/`), provenance naming the real model, and the checkpoint-coherence ladder (mutation clears → pending; drain → ready with *different* content; second compact's view reflects post-edit content).
 
@@ -302,8 +302,8 @@ Construction errors are `TypeError`s naming the violated rule (existing contract
 | Prerequisite | Where | How to Verify |
 |---|---|---|
 | Node ≥ 22 (`node:sqlite`, native `fetch`) | Local + CI | `node --version` (existing) |
-| `LHC_OPENROUTER_KEY` | Opt-in suite only | Suite self-reports ran/not-ran; never required by CI default |
-| `LHC_OPENROUTER_MODEL` | Opt-in suite, optional | Fixture default (cheap model) used when unset |
+| `OPENROUTER_API_KEY` | Opt-in suite only | Suite self-reports ran/not-ran; never required by CI default |
+| `OPENROUTER_MODEL` | Opt-in suite, optional | Fixture default (cheap model) used when unset |
 
 No new dependencies. The OpenRouter fixture uses plain `fetch` in test code (epic NFR).
 

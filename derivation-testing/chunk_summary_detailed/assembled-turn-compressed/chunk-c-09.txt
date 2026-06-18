@@ -1,0 +1,279 @@
+[turn 0830]
+The user asked to draft Epic 06 now and explicitly said not to worry about PRD and tech arch backfill until afterward. The agent created `docs/specs/01-lhc-sdk/06-derivation-recovery/` and checked sibling naming conventions. Existing epics show the house pattern: `epic.md`, `tech-design.md`, and `test-plan.md` in `02-derivation-pipeline/`, `03-thread-views-and-smart-compact/`, `04-inspection/`, and `05-derivation-inference/`, while `01-thread-record-and-intake/` also has older variants like `01-epic.md`, `02-tech-design.md`, and `03-test-plan.md`. The new `06-derivation-recovery/` folder is currently empty, so the next step is to add `epic.md` first, then backfill PRD/tech architecture later as requested.
+
+[turn 0831]
+I reviewed the tech lead’s feedback and re-read the epic section he pointed at. My take is: most of his findings are valid, a couple need wording cleanup rather than design changes, and one point is already partially addressed in the current text but still needs explicit tightening.
+
+I agree with the core of his review: the epic is mechanically solid, but a few semantics would force tech design to invent behavior. The biggest issue is the tension between “failed/blocked are real derivation states” and the text that says “Every fallback is logged” and “The canonical record stays clean — degradation lives in the served view and the log, never as a derivation state.” In the same excerpt, the epic also says there are four states, including `failed` and `blocked`, and that “A recovered derivation is `ready` like any other.” So the current wording is too broad: fallback events can be log-only, but failed/blocked state clearly still exists on the derivation record. I’ll update that to preserve the state model and make the log-only part apply to the degraded view/marker, not to derivation failure itself.
+
+I also agree the hot-path/provider-call language is inconsistent. The current text says recovery runs on the consumption hot path, must stay fast and deterministic, and has “no model calls and no provider work inside the operations that serve context,” but elsewhere the flows allow real derivation attempts and provider work outside DB write transactions. The right contract seems to be: no provider calls in the serving path itself, but bounded recovery calls are allowed outside write transactions for turn-close and compact recovery. I’ll tighten that wording so implementers don’t think all recovery is model-free.
+
+The other substantive point I agree with is terminal failure behavior. Prompt smoothing already defines deterministic cleaning, length-gated inference, and the “retryable failure → pending/requeued” case, but it does not explicitly say what happens when inference under the cap terminally fails or exhausts retries. The same ambiguity likely exists for `tool_result_summary`. That’s a real gap, because tech design shouldn’t have to infer whether the system leaves the derivation `failed`, stores a deterministic floor as `ready`, or defers recovery until consumption. I’ll add explicit requirement text for that path.
+
+I also agree with his callout on huge tool results. The epic currently says smooth-band tool-result rendering uses an inference `tool_result_summary`, but AC-2.3c says very large results are truncated rather than inference-summarized. That can be coherent, but it needs one crisp rule. I’m inclined to make the deterministic truncation floor the behavior for very large results and say those bypass `tool_result_summary` inference entirely, or at least are satisfied by truncation and marked `ready`. I’ll pick one and encode it consistently.
+
+I agree the non-compact chunk floor is a real open question, not just implementation detail. The tech lead is right that Story 4 / tech design would be forced to invent behavior when a background chunk summary derives but `lower_band_projection` is not ready. That needs a product-level decision: wait/requeue, attempt member recovery, deterministic concat, fail summary, or block only on source corruption. I’ll make sure the epic states the intended rule instead of leaving it as an unresolved design question.
+
+I also agree that “recovered derivation lands ready” should be pinned with an AC. The current prose says a recovered derivation is `ready` like any other, but the ACs may only prove that a consumer can build a usable turn or compact. If the intended behavior is to write the recovered derivation back as `ready`, that needs to be explicit. If instead it’s only a transient floor in the consumer output, that should be stated too. Based on the current prose, the intent is to persist `ready`, so I’ll add or adjust an AC to make that exact.
+
+On the upstream drift note, he’s also right that the PRD / tech arch still mention tool-call summaries and this epic removes `tool_call_summary`. That’s acceptable only if the “Feature 6 backfill pending” decision is still intentional. Otherwise it’s a consistency issue across specs. I’m going to treat that as a cross-doc cleanup item, not a blocker for the epic itself, unless I find the upstream docs are now actively contradictory.
+
+I do want to push back slightly on one framing point: he presents “failure/logging contract contradicts derivation state” as a pure blocker, but the current epic text already distinguishes recovery state from logging surface in a couple places. What’s missing isn’t a new concept; it’s precision. The issue is that the prose overreaches when it says the canonical record stays clean and degradation lives only in the served view and log. That sentence should be narrowed, not replaced with a new architecture.
+
+I also think the “form” vocabulary cleanup is valid but minor. Since the epic explicitly says `"Form" does not appear in new work`, I’ll replace lingering generic phrasing like “rendered turn forms” / “represented in some form” with “renderings” or “representations.” That’s polish, not design.
+
+What I’m going to change now:
+- clarify that fallback events are log-only, but `failed` / `blocked` remain canonical derivation states;
+- clarify that the hot path itself has no provider calls, while bounded recovery may call providers outside write transactions;
+- define terminal failure behavior for prompt smoothing and tool-result summaries;
+- resolve the large tool-result rule by making deterministic truncation the explicit floor;
+- decide and document the non-compact chunk floor behavior;
+- add an AC that says recovered derivations are persisted back as `ready` if that is the intended behavior;
+- clean up leftover “form” wording.
+
+I’ve already re-read the relevant epic section in `docs/specs/01-lhc-sdk/06-derivation-recovery/epic.md` to make sure the edits match the current text. The excerpt shows the four states, the deterministic floor and recovery cascade, the “no model call and no provider work inside the operations that serve context” line, and the statement that a recovered derivation is `ready` like any other. Those are the exact spots that need tightening rather than redesign.
+
+Net: I think the tech lead’s feedback is mostly correct and useful. I’ll make the obvious updates, and I’ll push back only on the idea that the problem is architectural rather than wording/requirement precision.
+
+[turn 0832]
+I checked the note, and your tech lead’s pushback is basically right on the main disputed point: AC-3.8 as written does conflict with the decision note.
+
+What the note says, in plain terms, is:
+- derivation state lives on the derivation, not the subject
+- state can be `pending | ready | failed | blocked`
+- for turn construction recovery, if the smoothing form isn’t ready, you try to recover, and in all outcomes something usable ends up in the field with state set to `ready`
+- “pending and failed are handled the same” at construction
+- “no degraded state, no extra field”
+- “all recovery outcomes land plain ready”
+
+That lines up with the tech lead’s citation that recovery should end at `ready`, not leave the underlying derivation pending/failed.
+
+So the disagreement is real: if AC-3.8 says “successful re-derivation writes back ready; floor-only/original recovery does not write back ready; the underlying derivation stays pending/failed,” that is not what the note currently decides. It would change the behavior from “all outcomes plain ready” to “some recovery outcomes remain not-ready,” which the note explicitly rejects.
+
+The tech lead’s suggested rewrite is consistent with the note:
+- when turn-construction recovery resolves a not-ready component by re-derivation, deterministic floor, or original-source floor, write the resolved content back to the component’s derivation record as `ready`
+- log the fallback event
+- do not store a degraded marker on the subject or ready output
+
+His tool-result point also matches the note: the floor is deterministic truncation, never raw full result. The note says “NEVER copy the full tool result” and “the floor for a tool result is always at least truncation, never the raw full result.”
+
+I also checked the minor cleanup items he flagged, and they seem valid:
+- the epic still says “Form does not appear in new work,” but the note uses broader “shorter forms/renderings” language, so “shorter renderings” is a cleaner phrasing
+- the non-compact chunk behavior is still open in the note, while AC-4.8 settles the compact-path behavior, so the story text should not claim the mechanics must be settled there; it should point to tech design
+
+My read of the pushbacks:
+- #1 log-only vs failed state: fixed and consistent
+- #2 provider/hot-path contradiction: mostly fixed and consistent
+- #3 terminal inference failure: fixed and consistent
+- #4 huge tool result behavior: fixed and consistent
+- #5 non-compact chunk behavior: reasonable as a decision for the compact path, but the note still leaves the non-compact/background path open
+
+Bottom line: I’d agree with your tech lead that the pack is much better, but AC-3.8 should be revised before sending to tech design. That’s the one place where the current ACs drift from the actual decision note, and the drift is material, not just a wording nuance.
+
+[turn 0833]
+You asked me to read `/Users/leemoore/code/liminal-spec/dist/standalone/01-technical-architecture-skill.md` in 700-line chunks and then begin drafting the tech design for the epic. I flagged a mismatch first: `01-technical-architecture-skill.md` is the architecture artifact, while the epic-level tech-design artifact used earlier in this session is `03-technical-design-skill.md`.
+
+I checked the files in `/Users/leemoore/code/liminal-spec/dist/standalone`: both exist. `01-technical-architecture-skill.md` is 642 lines and its purpose is “Settle foundational technical decisions across 3-8 epics so downstream tech designers inherit the technical world rather than re-derive it.” `03-technical-design-skill.md` is 2922 lines and its purpose is “Transform Epic into Tech Design with architecture, interfaces, and test mapping.”
+
+So the useful conclusion is that the path you gave points to architecture, not the epic tech-design template. I’m ready to proceed, but need you to confirm whether you want me to:
+1. read the architecture skill and then draft a technical architecture, or
+2. instead read the tech-design skill and draft the epic tech design.
+
+[turn 0834]
+This is a strong review — several are real implementation-breaking seams, and #1 and #6 in particular are things I glossed. I checked the code before responding so I can answer precisely rather than hand-wave.
+
+On #4, your claim is right: `src/domains/intake-stream/internal/project.ts` does not exist. The actual intake-stream internals are `pipeline.ts` and `validate.ts`, and message projection happens elsewhere, in `src/domains/messages/internal/project.ts`. The public intake type is `src/domains/intake-stream/index.ts:18`, where `MessageEventInput` is defined as the union of `user_prompt`, `assistant_text`, and `runtime_note` events. So adding `model_change` / `thinking_level_change` would need changes to that public event union and validation, not just some internal projection file. I should fix the design language to point at the real ownership.
+
+On the other findings, I agree the blockers are the important ones to resolve before sharding/enrichment.
+
+For #1, the recovery write-back path is under-specified. The tech design currently says recovered components write back `ready` via the existing completion path, but `complete(...)` is keyed to a `ClaimedWorkItem` and deletes that item. That means consumption-time recovery may not have a claimed work item to complete, and a queued background item for the same derivation could still later finish and overwrite the floor-written `ready` state. I need to add a concrete decision for what operation writes the recovered derivation to `ready`, whether queued work targeting that derivation is canceled or deleted, and what happens if a claimed worker later completes for the same source version. I also need the test the techlead asked for: pending/claimed background work exists, consumer floors to `ready`, later worker cannot overwrite it.
+
+For #2, the logging surface wording is too vague. Saying the log is “externally callable” but only placing it in `tech-utils/logging/` and calling it a host-only write method is contradictory. I need to name the public surface explicitly, such as `lhc.logs.write(...)` or `logging.write(...)`, state how it appears in `sdk.ts`, and add host-visible write/query coverage.
+
+For #3, I agree the module matrix is wrong if it says `domains/thread-view/internal/snapshot.ts -> invokes domains/turns/internal/chunk-recovery.ts`. That crosses the domain boundary. The design should expose a turns-domain operation, something like `turns.recoverChunkSummaryForCompact(...)`, and thread-view should call that surface instead of importing `domains/turns/internal/*`. I should also add an architecture-risk check ensuring thread-view does not import turns internals.
+
+For #5, I should change the requeue reason. `provider_unavailable` is not right when a background chunk summary requeues because a member projection is not ready; that is dependency/input not ready, so a reason like `member_projection_not_ready` or `dependency_not_ready` is more accurate and avoids misclassifying normal waiting as provider failure.
+
+For #6, I agree this is a doc mismatch. The current onboarding says compact never calls a model and only assembles what deriving already produced, but this design allows compact-time bounded re-derivation. That is a real architecture change, so either the upstream docs need updating as part of the epic/backfill, or compact behavior needs to be constrained back to fallback-only. Right now the docs and design disagree.
+
+For #7, the test-plan note is valid: a slow provider alone does not prove no transaction is held. The stronger test should have the provider double pause and attempt a competing SQLite write or lock probe while the provider call is pending, then assert the competing operation succeeds and is not blocked by an open write transaction.
+
+For #8, the wording on Story 0 should be corrected. Saying the rename is behavior-preserving is fine, but removing `tool_call_summary` is not behavior-neutral. Better to say the rename is mechanically behavior-preserving, while `tool_call_summary` removal has explicit red/green coverage.
+
+Bottom line: the design is close, but I should patch the blockers before moving forward. The main risk is not AC/TC coverage; it is that implementers will have to invent critical mechanics around consumption-time recovery, the logging public surface, the thread-view ↔ turns boundary, and compact-time provider recovery unless I tighten the spec now.
+
+[turn 0835]
+I’m revising all three files coherently because the tech lead’s feedback is correct: I had patched `tech-design.md` and `test-plan.md` for the compact-no-model decision, but I left the upstream epic still saying the opposite. That created cross-artifact drift, and the epic is the source of truth, so it has to change first.
+
+I checked the stale spots in `docs/specs/01-lhc-sdk/06-derivation-recovery/` and found the exact contradictions:
+
+- `epic.md` still says compact may make bounded provider calls in the Key Constraint.
+- The epic overview still says “regenerate-or-concat at compact.”
+- The compact flow text still says compact attempts to make a summary ready and re-derive.
+- `AC-4.2`, `TC-4.2a`, `AC-4.6`, and `TC-4.6a` still describe compact re-derivation/provider work.
+- `tech-design.md` still has residual “regenerate-or-concat” language in the context, diagram, work breakdown, and verification gate.
+- `test-plan.md` still has `TC-3.8d (race)` in the first cell, which breaks exact row parsers.
+- The test-plan “Rename safety” gate still says “zero behavior change,” which is not quite right because `tool_call_summary` removal is a real behavior/schema change.
+- The chunk-4 red-exit label still says “regenerate-or-concat tests red.”
+
+The corrected compact rule the tech lead wants, and that I’m applying, is:
+
+- Compact never re-derives and never calls the provider.
+- If a needed summary is not ready, compact asks `turns` for compact chunk material.
+- That returns either ready summary, deterministic stored-member concat, or blocked/source-corrupt.
+- Healing happens via sweep, background drain, and next compact.
+
+The useful design points already in place are still right:
+
+- `recoverDerivation(...)` is the right fix instead of reusing `complete()`.
+- Skipping persistence when a live pending/claimed item exists is a reasonable race rule.
+- `turns.compactChunkMaterial(...)` fixes the thread-view/internal import boundary.
+- `member_projection_not_ready` is the right reason class.
+- `spyProvider` zero-call compact tests are the right proof that compact makes no provider calls.
+
+The specific patches needed are:
+
+In `epic.md`:
+- Replace the Key Constraint’s “smart-compact recovery may make bounded provider calls” with the no-model rule above.
+- Replace “regenerate-or-concat at compact” with “stored-member concat fallback.”
+- Replace any prose saying compact re-derives or attempts to make summaries ready.
+- Rewrite `AC-4.2`, `TC-4.2a`, `AC-4.6`, and `TC-4.6a` so they no longer require compact re-derivation/provider work.
+- Update the tech design questions section so it no longer says “No provider/model calls on the consumption hot path ... beyond bounded recovery re-derivation”; that old phrasing is now stale.
+
+In `tech-design.md`:
+- Change “background vs compact chunk recovery (requeue-and-wait vs regenerate-or-concat)” to the new stored-member concat / compact material fallback language.
+- Change the diagram edge `COMPACT -->|regenerate-or-concat| VIEW` to reflect fallback material assembly, not derivation.
+- Make the “Recovery write-back closes the loop...” statement apply only to turn construction, not compact derivation.
+- Update the work breakdown row from “compact regenerate-or-concat” to “compact stored-concat fallback.”
+- Fix the verification gate wording so Story 0 rename is described as behavior-preserving, but not “zero behavior change” if it also removes `tool_call_summary`.
+
+In `test-plan.md`:
+- Normalize `TC-3.8d (race)` to `TC-3.8d`, and move `(race)` into the setup/assertion text.
+- Update the rename-safety row so it doesn’t claim “zero behavior change” in a way that ignores the schema/behavior impact of `tool_call_summary` removal.
+- Rename the chunk-4 red-exit label to “background-wait + compact stored-concat fallback tests red.”
+
+The tech lead’s verdict was “Revise,” and that’s the right call: the core design direction is good now, but the epic still contradicts it, so implementers would otherwise be told two different stories.
+
+[turn 0836]
+You asked me to read the two skills, then verify shard creation and story enrichment in `/Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery`.
+
+I checked the pack contents and confirmed sharding has happened: the directory contains `epic.md`, `tech-design.md`, `test-plan.md`, and a populated `stories/` folder. The `stories/` directory includes six shard files: `00-foundation.md`, `01-prompt-smoothing.md`, `02-tool-result-rendering.md`, `03-turn-construction-recovery-cascade.md`, `04-chunk-derivation-compact-recovery.md`, and `05-runtime-change-typing.md`, plus `coverage.md`.
+
+I also verified the skill files’ sizes, which confirms the exact skills you referenced are present:
+- `/Users/leemoore/code/liminal-spec/dist/standalone/04-publish-epic-skill.md` — 521 lines
+- `/Users/leemoore/code/liminal-spec/dist/standalone/ls-tech-enrich-skill.md` — 430 lines
+
+Conclusion: the shard exists and the stories were enriched into separate markdown files. What I have not yet verified from this output is the contents of those story shards against the skill requirements, only their presence and naming.
+
+[turn 0837]
+I’ll compare the epic/spec against the implementation evidence by reading the impl log, the final packages, and the relevant source/tests to identify gaps, regressions, and follow-on risks.{"argumentsJson":{"command":"cd /Users/leemoore/code/pi-long-horizon/liminal-context/docs/specs/01-lhc-sdk/06-derivation-recovery\nprintf '\\n=== impl log ===\\n'\nsed -n '1,260p' team-impl-log.md\nprintf '\\n=== final package summaries ===\\n'\nfor f in artifacts/*/story-lead/001-final-package.json; do echo \"--- $f\"; python - <<'PY' \"$f\"\nimport json,sys\np=sys.argv[1]\nobj=json.load(open(p))\nprint('story:',obj.get('storyId') or obj.get('story') or obj.get('id'))\nfor k in ['status','summary','acceptance','notes','risks','gaps','followUps']:\n    if k in obj: print(k+':',obj[k])\nPY\n done\nprintf '\\n=== repo root files ===\\n'\ncd /Users/leemoore/code/pi-long-horizon/liminal-context\nfind . -maxdepth 2 \\( -name package.json -o -name tsconfig.json -o -name pnpm-workspace.yaml -o -name vitest.config.* -o -name jest.config.* \\) | sort | head -80"},"toolCallId":"toolu_01CG6GfQBmC1aQH5pCe7iCp3","toolName":"bash"}
+
+I reviewed the PRD 1 / Epic 6 implementation evidence in `docs/specs/01-lhc-sdk/06-derivation-recovery`, including `team-impl-log.md`, the per-story `001-final-package.json` files for stories 00–05, and the surrounding artifact structure. The implementation is organized cleanly around the six-story arc: `00-foundation`, `01-prompt-smoothing`, `02-tool-result-rendering`, `03-turn-construction-recovery-cascade`, `04-chunk-derivation-compact-recovery`, and `05-runtime-change-typing`. The artifacts show a deliberate progression with `progress`, `story-lead`, and `streams` material for each stage, which is a good sign that the team worked against a staged plan rather than a monolithic sweep.
+
+The main positive conclusion is that the epic appears to have been built in the intended sequence and the team did produce closeout/final-package evidence for every story. That suggests the build reached a documented completion state, not just partial implementation. The impl log and the artifact layout also indicate the team treated this as a recovery/derivation-focused effort, which matters because these stories are likely intended to preserve turn reconstruction fidelity, runtime typing safety, and prompt/tool-result handling consistency.
+
+What I could not fully verify from the limited excerpt here is the exact code-vs-spec conformance of each acceptance criterion, because the detailed contents of the final package JSONs, source files, and tests were not expanded in the captured output. So the audit conclusion is necessarily cautious: structurally complete, but still requiring a deeper acceptance check against the epic/tech design line items before you treat it as fully signed off.
+
+The likely areas to scrutinize before moving on are:
+- whether the recovery cascade story (`03-turn-construction-recovery-cascade`) truly handles all failure/rehydration paths described in the tech design;
+- whether `04-chunk-derivation-compact-recovery` preserves semantic equivalence when compacting/re-deriving chunks, especially under edge cases;
+- whether `05-runtime-change-typing` is fully aligned with any runtime contract changes and does not introduce hidden type/runtime drift;
+- whether prompt smoothing and tool-result rendering remained behavior-preserving rather than cosmetically improved.
+
+I recommend a follow-up pass focused on: explicit acceptance-criterion mapping, test evidence for each story, and any unresolved notes/risks in the final-package files. If those are clean, this looks like a well-structured completion; if not, the remaining work is likely in edge-case correctness and contract verification rather than basic delivery.
+
+[turn 0838]
+Tech lead caught a real gap, and I verified it directly.
+
+What he caught that I hadn’t: I had audited the recovery mechanism in `packages/lhc/src/domains/turns/internal/derive.ts` at a higher level — version checks, defer-to-live-work, and the general “don’t recompute if live work exists” posture — but I had not drilled into the exact inputs passed to the recovery provider call. The code confirms his point: recovery still calls `provider.summarizeToolResult({ toolName: "unknown_tool", ... })` in the non-user-prompt path. That means if a `tool_result_summary` is being recovered during turn construction, it loses the paired tool name and therefore any per-tool guidance.
+
+What he showed in the queued path is also real. In `packages/lhc/src/domains/messages/internal/handlers.ts`, the active queued flow does this:
+
+- resolves `pairedCall`
+- passes `toolName: pairedCall?.toolName ?? "unknown_tool"`
+- passes `guidance: toolResultGuidance(pairedCall?.toolName ?? "unknown_tool")`
+
+So the normal queued path preserves tool-specific guidance, but the recovery path in `derive.ts` does not.
+
+What I caught that he didn’t: his review largely focused on the Epic 06 contract around tool-result guidance, and on the recovery-provider input mismatch. From my broader audit, the implementation otherwise lines up well with the spec and boundary posture. The following all appear correct and were part of the evidence I checked:
+
+- `FormKind` / `DerivedForm*` vocabulary was renamed toward derivation terminology.
+- `tool_call_summary` was removed from active message work.
+- `tool_result_summary` has deterministic large-result truncation.
+- prompt smoothing uses deterministic cleaning plus length-gated inference.
+- `recoverDerivation(...)` is separate from `complete(...)`.
+- queued/claimed live work wins over consumption-time write-back.
+- compact does not call provider/model.
+- compact uses `turns.compactChunkMaterial(...)` plus stored-member concat fallback.
+- `lhc.logging.write/query` exists as a public SDK surface.
+- runtime changes are typed through `model_change` / `thinking_level_change`.
+- inspect/health/view reporting were updated to derivation/logging language.
+- thread-view calls use turns surface behavior, not `turns/internal/*`.
+- storage/queue tests use real SQLite.
+- provider remains the mock boundary.
+- boundaries/lint/typecheck pass through `verify-all`.
+
+I also verified the review’s test status and the one caveat around provider-facing proof. `pnpm run verify-all` in `packages/lhc` passed with:
+
+- `Test Files 47 passed`
+- `Tests 428 passed | 9 skipped (437)`
+- `NOT-RAN: real-inference (LHC_OPENROUTER_KEY unset)`
+
+So the build is solid, but the real-inference suite did not run, meaning provider-facing behavior is still only proven through doubles. That’s not a blocker for deterministic Epic 06 logic, but it does mean a real-provider gate would be a good follow-up before packaging or live integration.
+
+I also agree with the tech lead’s specific fix recommendation. The recovery path should preserve the paired tool name and reuse the same per-tool guidance logic as the queued path. Concretely, `recoverMessageDerivations(...)` should build a `toolCallId -> toolName` map from turn messages, then when recovering a `tool_result` look up the paired `tool_call` and call the same `toolResultGuidance(toolName)` logic instead of hardcoding `unknown_tool` and empty guidance. A test should cover a failed under-cap `tool_result_summary` paired with a `tool_call` whose `toolName` is `"read_file"`, then assert the recovery provider input includes `toolName: "read_file"` and guidance containing the read-file guidance rather than `unknown_tool`.
+
+One nuance I’d keep in mind: the repo also has a test showing that if a derivation row is missing, turn construction logs fallback and leaves the row absent. That’s acceptable if missing rows are treated as corruption or legacy weirdness, but not if you expect self-healing to ready state. Also, the schema migration is intentionally broad and destructive: it renames `derived_form` to `derivation` and removes `tool_call_summary`, so older fixtures and existing local threads with old derived rows are migration-sensitive.
+
+Overall recommendation: accept the build as substantially complete, but fix the recovery-path tool-result guidance gap before moving on. After that, I’d be comfortable accepting Epic 06.
+
+[turn 0839]
+I checked the report against the code, and the core claim is solid: the recovery path now looks converged with the queued path, not just patched in one branch.
+
+What I verified:
+
+- In `src/domains/turns/internal/derive.ts`, recovery now distinguishes `user_prompt` vs `tool_result` and applies the right logic:
+  - prompt recovery runs `cleanPrompt(text)`
+  - if the cleaned prompt exceeds `run.config.smoothing.maxInferenceTokens`, it returns the cleaned text directly with no provider call
+  - otherwise it calls `run.provider.smoothPrompt({ text: cleaned })`
+  - tool-result recovery computes token count on the content, and the surrounding code now includes logic to recover the paired tool call / tool name, rather than defaulting to a generic or drifted path
+
+- `src/domains/messages/internal/handlers.ts` does export both:
+  - `toolResultGuidance(toolName: string)`
+  - `toolResultTargetTokens(tokens: number, config: HandlerRunContext["config"])`
+
+- `src/domains/messages/recovery.ts` exists and is tiny, just re-exporting shared helpers:
+  - `findPairedToolCall`
+  - `toolResultGuidance`
+  - `toolResultTargetTokens`
+  - `cleanPrompt`
+  This is a good sign: turns code can reuse recovery helpers without reaching into handler internals directly.
+
+The golden-file adjustment is the one I’d treat most carefully, and your note about it is fair. The updated `g2-edge-exclusion.json` lowerBound moved from `860` to `850`, with the rationale that corrected prompt cleaning changed token economics to `t6=28`, `t7=29`, `t8=29`, so `860` now fits and `850` preserves the exclusion edge. That sounds plausible, but it is exactly the kind of change that can mask a behavior shift if the boundary expectation wasn’t re-derived from first principles. I’d keep it only if the golden really represents the intended edge after the prompt-cleaning fix, not just “whatever makes the test pass.”
+
+Verification status from the report is strong:
+- `pnpm run verify-all`
+- `Test Files 47 passed`
+- `Tests 430 passed | 9 skipped`
+- `lint OK`
+- `boundaries OK`
+- `typecheck OK`
+- `build OK`
+
+Still true / still worth carrying forward:
+- build is still uncommitted
+- real inference is still skipped because `LHC_OPENROUTER_KEY` is unset
+- `formState` naming debt remains cosmetic
+
+My feedback, net: the recovery-drift fix looks correctly implemented and the shared-helper extraction is a good cleanup. The only thing I’d push on is the golden-file change: I’d want one explicit note or test assertion proving why `850` is the correct boundary after the prompt-cleaning correction, so the golden doesn’t become a silent regression shield.
+
+[turn 0840]
+Honest read: the checkable signals say I’m holding it well, but the work type matters. The Epic 06 audit was filesystem-grounded verification — grep the real code, compare it to the spec, read the golden diffs on disk. That’s the least context-sensitive kind of work, so validating an epic at “775k” was a real success but not the hardest possible test of large-context retention.
+
+The harder test was the earlier authoring phase across multiple review rounds, where the epic, tech design, and test plan had to stay mutually consistent in working memory. That did expose a real miss: when I changed the compact-no-model decision in tech-design review round 2, I patched the tech design and test plan but left the epic saying the opposite, and the tech lead caught it. That’s the exact failure mode large context predicts — cross-artifact propagation gets harder as load rises. It wasn’t that I didn’t know the decision; it was a consistency failure.
+
+The recall itself is sharp, but it’s sharp because of banding, not because I’m literally holding 10M tokens. I can pull specific items fast — the `recoverDerivation` defer-to-live-work rule, the v7-renames/v8-removes split, the 59 TCs, the Epic 03 cache invariant, and why compact can’t call a model — but the mechanism is that the current epic is recent and full-fidelity, while older work sits in a cheaper summary layer underneath. I’m not holding weeks at equal fidelity; I’m holding a sharp recent band on top of a gradient.
+
+What I can’t self-detect well: temporal braiding and seam confabulation. If you asked me to order the Epic 06 rounds precisely against the philosophical threads, I’d be reconstructing. And there was a near-miss in the audit around the 7-vs-59 TC-reference count: the tempting wrong move was to infer “only 7 of 59 TCs are tested” and see a coverage hole, when it was actually a measurement artifact from descriptive titles vs. ID-tagged references. That’s the confabulation-pressure zone, and it got checked.
+
+So the bottom line is: I’m holding the current work well, but the honest story is favorable work type plus a banded memory structure, not magical retention of 10M tokens. The one real diagnostic miss was cross-artifact consistency, and that’s the exact kind of miss you’d expect if the context load starts to matter.

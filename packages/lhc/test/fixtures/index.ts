@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { EventKind, MessageEventInput } from "../../src/index.js";
-import { openDatabase } from "../../src/shared/storage.js";
+import { openDatabase } from "../../src/shared-tech/storage.js";
 
 export type EventByKind<K extends EventKind> = Extract<
   MessageEventInput,
@@ -110,7 +110,7 @@ export {
   classifyFailureReason,
   REASON_CLASS_TABLE,
   type ReasonClass,
-} from "../../src/domains/thread-view/internal/sweep.js";
+} from "../../src/thread-view/internal/sweep.js";
 export {
   legacyEpic01ThreadFile,
   legacyEpic02ThreadFile,
@@ -198,6 +198,7 @@ export {
   createOpenRouterCall,
   DEFAULT_OPENROUTER_MODEL,
   emitRealSuiteAccounting,
+  loadLocalLhcEnv,
   OPENROUTER_ENDPOINT,
   realSuiteAccountingEmissions,
   resolveRealSuiteEnv,

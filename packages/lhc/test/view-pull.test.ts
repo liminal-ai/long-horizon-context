@@ -425,7 +425,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     // The sibling's damaged turn landed both turn forms blocked through the
-    // production terminal path (turn_rendering + lower_band_projection).
+    // production terminal path (turn_rendering + smooth_turn_compression).
     expect(status.value.derivation.blocked).toBe(2);
     expect(status.value.view).toBeNull();
   });

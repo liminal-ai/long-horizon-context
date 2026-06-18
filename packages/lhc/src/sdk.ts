@@ -1,20 +1,20 @@
 import { existsSync } from "node:fs";
-export * as threads from "./domains/threads/index.js";
-export * as intakeStream from "./domains/intake-stream/index.js";
-export * as messages from "./domains/messages/index.js";
-export * as turns from "./domains/turns/index.js";
-export * as threadView from "./domains/thread-view/index.js";
-export * as inspect from "./domains/inspect/index.js";
-export * as logging from "./tech-utils/logging/index.js";
+export * as threads from "./threads/index.js";
+export * as intakeStream from "./intake-stream/index.js";
+export * as messages from "./messages/index.js";
+export * as turns from "./turns/index.js";
+export * as threadView from "./thread-view/index.js";
+export * as inspect from "./inspect/index.js";
+export * as logging from "./shared-tech/logging/index.js";
 
-import * as inspectDomain from "./domains/inspect/index.js";
-import * as intakeStreamDomain from "./domains/intake-stream/index.js";
-import * as threadViewDomain from "./domains/thread-view/index.js";
-import { resolveViewConfig } from "./domains/thread-view/index.js";
-import * as messagesDomain from "./domains/messages/index.js";
-import * as threadsDomain from "./domains/threads/index.js";
-import * as turnsDomain from "./domains/turns/index.js";
-import * as loggingDomain from "./tech-utils/logging/index.js";
+import * as inspectDomain from "./inspect/index.js";
+import * as intakeStreamDomain from "./intake-stream/index.js";
+import * as threadViewDomain from "./thread-view/index.js";
+import { resolveViewConfig } from "./thread-view/index.js";
+import * as messagesDomain from "./messages/index.js";
+import * as threadsDomain from "./threads/index.js";
+import * as turnsDomain from "./turns/index.js";
+import * as loggingDomain from "./shared-tech/logging/index.js";
 import {
   createScheduler,
   peekThreadId,
@@ -22,27 +22,25 @@ import {
   type DrainDeps,
   type DrainReport,
   type Scheduler,
-} from "./scheduler.js";
+} from "./shared-tech/scheduler.js";
 import {
   runWithInstanceSeam,
   setSchedulerPoke as installSchedulerPoke,
   setThreadTouch,
   type InstanceSeam,
-} from "./shared/context.js";
-import { createInferenceProvider } from "./inference/adapter.js";
-import { PROMPT_REGISTRY } from "./inference/prompts/index.js";
-import type { InferenceConfig, ModelAssignment } from "./inference/types.js";
+} from "./shared-tech/context.js";
+import { createInferenceProvider } from "./shared-tech/inference-adapter.js";
+import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
+import { resolveGuards, type InferenceConfig, type ModelAssignment } from "./shared-tech/inference-types.js";
 import {
-  DERIVATION_TYPES,
   PROVIDER_OPERATIONS,
   type DerivationProvider,
-  type DerivationType,
   type ResolvedSdkConfig,
   type SdkConfig,
   type WorkHandler,
-} from "./shared/derivation.js";
-import type { ErrorResult, OpResult } from "./shared/errors.js";
-import { storageFailure } from "./shared/errors.js";
+} from "./shared-tech/derivation.js";
+import type { ErrorResult, OpResult } from "./shared-tech/errors.js";
+import { storageFailure } from "./shared-tech/errors.js";
 import type {
   CompactReceipt,
   PullResult,
@@ -51,13 +49,13 @@ import type {
   ViewCompactParams,
   ViewProfile,
   ViewStatus,
-} from "./shared/view.js";
-import type { WorkKind } from "./tech-utils/work-queue/index.js";
+} from "./shared-tech/view.js";
+import type { WorkKind } from "./shared-tech/work-queue/index.js";
 
 export {
   estimateTokens,
   TOKEN_ESTIMATOR_ID,
-} from "./tech-utils/token-counting/index.js";
+} from "./shared-tech/token-counting/index.js";
 
 export {
   WORK_KIND_REGISTRY,
@@ -65,20 +63,20 @@ export {
   type WorkKind,
   type WorkOwner,
   type WorkSourceRef,
-} from "./tech-utils/work-queue/index.js";
+} from "./shared-tech/work-queue/index.js";
 
 export type {
   ErrorClass,
   ErrorCode,
   ErrorResult,
   OpResult,
-} from "./shared/errors.js";
+} from "./shared-tech/errors.js";
 export {
   runInTransaction,
   setSchedulerPoke,
   setThreadTouch,
   type OperationContext,
-} from "./shared/context.js";
+} from "./shared-tech/context.js";
 
 export {
   createDeterministicProvider,
@@ -86,7 +84,7 @@ export {
   deterministicReceiptsSuffix,
   deterministicText,
   type DeterministicOpName,
-} from "./providers/deterministic.js";
+} from "./shared-tech/deterministic.js";
 export type {
   CompletionTx,
   DependencyGap,
@@ -94,7 +92,6 @@ export type {
   Derivation,
   DerivationMetadata,
   DerivationState,
-  DerivationType,
   DerivationReportEntry,
   HandlerDerivationWrite,
   HandlerOutcome,
@@ -107,10 +104,10 @@ export type {
   ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
-} from "./shared/derivation.js";
-export type { DrainReport, Scheduler, SchedulerMode } from "./scheduler.js";
+} from "./shared-tech/derivation.js";
+export type { DrainReport, Scheduler, SchedulerMode } from "./shared-tech/scheduler.js";
 
-// Epic 05 inference vocabulary (inference/types.ts): the host-supplied
+// Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
 // ModelCall boundary and the per-kind assignment config — type-only; the
 // adapter and registry are construction internals behind createSdk.
 export type {
@@ -120,8 +117,8 @@ export type {
   ModelCallFailureKind,
   ModelCallInput,
   ModelCallResult,
-} from "./inference/types.js";
-export { DERIVATION_TYPES, type ProviderProvenance } from "./shared/derivation.js";
+} from "./shared-tech/inference-types.js";
+export { type ProviderProvenance } from "./shared-tech/derivation.js";
 
 // The config-selectable prompt-name catalog (E05-NB-2): the full set of names
 // a per-kind assignment may select, and the default name per kind. Exposed so
@@ -130,15 +127,15 @@ export { DERIVATION_TYPES, type ProviderProvenance } from "./shared/derivation.j
 export {
   DEFAULT_PROMPT_NAMES,
   PROMPT_NAMES,
-} from "./inference/prompts/index.js";
+} from "./shared-tech/prompts/index.js";
 
-// Epic 03 view vocabulary (shared/view.ts): config shapes live on SdkConfig
+// Epic 03 view vocabulary (shared-tech/view.ts): config shapes live on SdkConfig
 // from Story 0; the operation shapes land with Stories 1–5.
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,
   DEFAULT_VISIBILITY,
-} from "./domains/thread-view/index.js";
+} from "./thread-view/index.js";
 export type {
   Band,
   CompactReceipt,
@@ -154,7 +151,7 @@ export type {
   ViewProfileOverride,
   ViewStatus,
   VisibilityBudgets,
-} from "./shared/view.js";
+} from "./shared-tech/view.js";
 export {
   countLiveItems,
   enqueue,
@@ -164,7 +161,7 @@ export {
   type EnqueueDerivationTarget,
   type EnqueueInput,
   type QueueDetailRow,
-} from "./tech-utils/work-queue/index.js";
+} from "./shared-tech/work-queue/index.js";
 
 export {
   queryLog,
@@ -173,17 +170,17 @@ export {
   type LogQuery,
   type LogLevel,
   type StoredLogEntry,
-} from "./tech-utils/logging/index.js";
+} from "./shared-tech/logging/index.js";
 
-// Epic 04 inspect vocabulary (shared/inspect.ts): the report shapes the
+// Epic 04 inspect vocabulary (shared-tech/inspect.ts): the report shapes the
 // inspect surface serves.
 export type {
   HealthReport,
   InspectOverview,
   ViewContentsReport,
-} from "./shared/inspect.js";
+} from "./shared-tech/inspect.js";
 
-export type { ThreadFileInfo, ThreadRef } from "./domains/threads/index.js";
+export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
 export type {
   Block,
   BlockType,
@@ -191,14 +188,14 @@ export type {
   MessageListOptions,
   MessageRecord,
   MutationResult,
-} from "./domains/messages/index.js";
-export type { ChunkRecord, TurnRecord } from "./domains/turns/index.js";
+} from "./messages/index.js";
+export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 export type {
   BatchResult,
   EventKind,
   EventRecord,
   MessageEventInput,
-} from "./domains/intake-stream/index.js";
+} from "./intake-stream/index.js";
 
 // ── SDK assembly (DD-6/DD-7) ─────────────────────────────────────
 
@@ -337,36 +334,87 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   return scoped as T;
 }
 
-// Resolve the `inference` construction path (Epic 05 Flow 1, DD-5): validate
-// the host function and the complete assignment map loudly — all seven kinds
-// present (iterating the exported DERIVATION_TYPES set, never a second literal
-// list), no unknown kind keys, every prompt name in the registry, non-empty
-// provider/model routing keys — then build the adapter into the same
-// DerivationProvider slot direct injection uses. No partial construction:
-// every mistake throws before anything is assembled (AC-1.1, AC-1.3).
+// The default provider lane and model for inference derivation types (AC-6.4),
+// used when the host omits an inference type from inference.assignments
+// (AC-6.2). The provider key is an opaque routing key the host's ModelCall
+// interprets — LHC never resolves it.
+const DEFAULT_INFERENCE_LANE = { provider: "codex", model: "gpt-5.4-mini" } as const;
+
+// Default assignment per inference derivation type (AC-6.2, AC-6.4): the
+// documented default lane and model, the registry's default prompt template,
+// and the tested target ratios for the compression/brief types. Deterministic
+// types (turn_rendering, chunk_summary_detailed) have no default — they are
+// optional (AC-6.3). Construction-internal: the defaults are observable
+// through routed calls (TC-6.4a), not part of the public export surface.
+const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> = {
+  smoothed_prompt: {
+    provider: DEFAULT_INFERENCE_LANE.provider,
+    model: DEFAULT_INFERENCE_LANE.model,
+    prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
+  },
+  tool_result_summary: {
+    provider: DEFAULT_INFERENCE_LANE.provider,
+    model: DEFAULT_INFERENCE_LANE.model,
+    prompt: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v1",
+  },
+  smooth_turn_compression: {
+    provider: DEFAULT_INFERENCE_LANE.provider,
+    model: DEFAULT_INFERENCE_LANE.model,
+    prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "lower-band-v1",
+    targetMinRatio: 0.35,
+    targetMaxRatio: 0.65,
+    targetAimRatio: 0.5,
+  },
+  chunk_summary_brief: {
+    provider: DEFAULT_INFERENCE_LANE.provider,
+    model: DEFAULT_INFERENCE_LANE.model,
+    prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v1",
+    targetMinRatio: 0.08,
+    targetMaxRatio: 0.2,
+    targetAimRatio: 0.12,
+  },
+};
+
+// Resolve the `inference` construction path (Epic 05 Flow 1, DD-5; Epic 07
+// Story 0 AC-0.3/6.1–6.4): validate the host function and the assignment map,
+// then fill defaults. Provided inference assignments must carry non-empty
+// provider/model and a registry-known prompt (AC-6.1). Inference types the host
+// omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS (AC-6.2, AC-6.4).
+// Deterministic types are optional (AC-6.3). Unknown keys are rejected — never
+// silently ignored. Then the adapter is built into the same DerivationProvider
+// slot direct injection uses. No partial construction: every mistake throws
+// before anything is assembled (AC-1.1, AC-1.3).
 function resolveInferenceProvider(inference: InferenceConfig): DerivationProvider {
   if (typeof inference.call !== "function") {
     throw new TypeError("createSdk config: inference.call must be a function");
   }
-  const assignments = inference.assignments as unknown;
-  if (assignments === null || typeof assignments !== "object") {
+  const provided = inference.assignments ?? {};
+  if (provided === null || typeof provided !== "object") {
     throw new TypeError("createSdk config: inference.assignments must be an object");
   }
-  const knownKinds = new Set<string>(DERIVATION_TYPES);
-  for (const key of Object.keys(assignments)) {
+
+  const inferenceKeys = new Set<string>(Object.keys(DEFAULT_INFERENCE_ASSIGNMENTS));
+  const deterministicKeys = new Set(["turn_rendering", "chunk_summary_detailed"]);
+  const knownKinds = new Set<string>([...inferenceKeys, ...deterministicKeys]);
+
+  // Unknown keys are rejected (anti-shim: never silently ignore) — TC-0.3a.
+  for (const key of Object.keys(provided)) {
     if (!knownKinds.has(key)) {
       throw new TypeError(
-        `createSdk config: inference.assignments has unknown kind key "${key}"`,
+        `createSdk config: inference.assignments has unknown derivation type "${key}"`,
       );
     }
   }
-  const map = assignments as Partial<Record<DerivationType, ModelAssignment>>;
-  for (const kind of DERIVATION_TYPES) {
-    const assignment = map[kind];
-    if (assignment === undefined || assignment === null || typeof assignment !== "object") {
-      throw new TypeError(`createSdk config: inference.assignments missing kind ${kind}`);
+
+  // Validate every provided INFERENCE assignment (AC-6.1): non-empty
+  // provider/model/prompt, and the prompt must name a registry template.
+  for (const kind of inferenceKeys) {
+    const assignment = provided[kind];
+    if (assignment === undefined) continue; // filled from defaults below
+    if (assignment === null || typeof assignment !== "object") {
+      throw new TypeError(`createSdk config: inference.assignments.${kind} must be an object`);
     }
-    for (const field of ["provider", "model"] as const) {
+    for (const field of ["provider", "model", "prompt"] as const) {
       const value = assignment[field];
       if (typeof value !== "string" || value.trim() === "") {
         throw new TypeError(
@@ -374,19 +422,48 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
         );
       }
     }
-    if (typeof assignment.prompt !== "string" || PROMPT_REGISTRY[assignment.prompt] === undefined) {
+    if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
       throw new TypeError(
-        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${String(assignment.prompt)}"`,
+        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
       );
     }
   }
+
+  // Deterministic assignments are optional (AC-6.3); when present, a prompt —
+  // if supplied — must still name a registry template.
+  for (const kind of deterministicKeys) {
+    const assignment = provided[kind];
+    if (assignment === undefined || assignment.prompt === undefined) continue;
+    if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
+      throw new TypeError(
+        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
+      );
+    }
+  }
+
+  // Merge: inference types default-filled (AC-6.2, AC-6.4); deterministic types
+  // pass through only when the host supplied them.
+  const merged: Record<string, ModelAssignment> = {};
+  for (const kind of inferenceKeys) {
+    const assignment = provided[kind];
+    merged[kind] = assignment ?? DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
+  }
+  for (const kind of deterministicKeys) {
+    const assignment = provided[kind];
+    if (assignment !== undefined) merged[kind] = assignment;
+  }
+
+  // Guard defaults (AC-6.2, TC-6.2a).
+  const resolvedGuards = resolveGuards(inference.guards);
+
   const timeoutMs = inference.timeoutMs ?? 60_000;
   const maxInputChars = inference.maxInputChars ?? 200_000;
   requirePositive(timeoutMs, "inference.timeoutMs");
   requirePositive(maxInputChars, "inference.maxInputChars");
   return createInferenceProvider({
     call: inference.call,
-    assignments: map as Record<DerivationType, ModelAssignment>,
+    assignments: merged,
+    guards: resolvedGuards,
     timeoutMs,
     maxInputChars,
   });
@@ -482,6 +559,7 @@ export function createSdk(config: SdkConfig): Lhc {
     lookupHandler: (kind) => lookupWorkHandler(workHandlers, kind),
     hasAnyHandler: () => Object.keys(workHandlers).length > 0,
     config: resolved,
+    openThreadDatabase: threadsDomain.openThreadDatabase,
   };
   const scheduler = createScheduler(resolved.mode, drainDeps);
 

@@ -47,7 +47,7 @@ function manualSdk(view?: Parameters<typeof createSdk>[0]["view"]): Lhc {
 
 describe("FC-0.1: migration v6 storage on a current thread file", () => {
   it("creates the three view tables with their CHECK constraints and seeds the boundary at 0", () => {
-    expect(schemaVersionOf(fixture.filePath)).toBe(8);
+    expect(schemaVersionOf(fixture.filePath)).toBe(9);
     const db = openRaw(fixture.filePath);
     try {
       const tables = (
@@ -238,7 +238,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
       (entry) => entry.subjectId === sibling.blockedTurnId && entry.state === "blocked",
     );
     expect(blocked.map((entry) => entry.derivationType).sort()).toEqual([
-      "lower_band_projection",
+      "smooth_turn_compression",
       "turn_rendering",
     ]);
     for (const entry of blocked) {

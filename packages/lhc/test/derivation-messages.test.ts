@@ -18,7 +18,7 @@ import {
   type Lhc,
   type MessageEventInput,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared/tool-result-rendering.js";
+import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createProviderDouble,
   openRaw,
@@ -177,7 +177,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
       smoothPrompt: (i) => double.smoothPrompt(i),
       summarizeToolResult: () => Promise.resolve({ ok: true, text: constantText }),
       composeTurnRendering: (i) => double.composeTurnRendering(i),
-      projectLowerBand: (i) => double.projectLowerBand(i),
+      compressSmoothTurn: (i) => double.compressSmoothTurn(i),
       summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };

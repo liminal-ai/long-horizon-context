@@ -1,0 +1,121 @@
+[turn 0100]
+Generalizing about public interfaces, naming, and coherence:
+
+1. Let the outer surface carry part of the meaning. If the surface is `intake`, don’t repeat intake-like verbs inside it; prefer `intake message-events` over `intake record-activity`.
+
+2. Use specific-enough compound names. A generic word can work if paired with a clarifier: `events` alone is vague, `message-events` is more legible.
+
+3. Name from the caller’s mental model, not storage behavior. Avoid `append` if the caller thinks “I’m sending message events.”
+
+4. Prefer short, concrete phrases over mushy abstraction words. `activity` is broad and low-imprint; `message-events` is easier to remember.
+
+5. Specificity is contextual. `new-thread --file-path` works because the operation says what is created and the flag says what kind of value is needed; you don’t need `--thread-db`.
+
+6. Coherence comes from phrase composition: action frame + object, not verb + verb or implementation + object.
+
+7. A public interface should reduce hidden questions.
+
+8. Operation names should imprint: short, concrete terms are easier for tired humans and agents to carry.
+
+[turn 0101]
+From the current code, the storage layer is not a formal repository-per-entity setup. It’s a set of small, direct persistence modules under `packages/lhc/src/thread-events/persistence/` that do explicit SQL against one SQLite handle.
+
+The SQLite side is split into:
+- `packages/lhc/src/thread-events/sqlite/open.ts` — opens the DB via `openLhcSqlite(filename)`.
+- `packages/lhc/src/thread-events/sqlite/schema.ts` — creates the tables with `ensureLhcThreadEventsSchema(handle)`.
+- `packages/lhc/src/thread-events/sqlite/transaction.ts` — provides `withImmediateTransaction(...)`.
+- `packages/lhc/src/thread-events/sqlite/rows.ts` — typed row shapes for `thread`, `event`, `message`, `message_block`, `turn_trigger`, `turn`, and `chunk`.
+
+The schema is one SQLite database with tables:
+- `thread`
+- `event`
+- `message`
+- `message_block`
+- `turn_trigger`
+- `turn`
+- `chunk`
+
+The persistence modules are task-oriented rather than entity-oriented:
+- `threads.ts`
+- `events.ts`
+- `messages.ts`
+- `turns.ts`
+- `triggers.ts`
+- `chunks.ts`
+
+They use direct `runtime.db.db.prepare(...)` calls, with transactions only where needed. For example, `triggers.ts`, `events.ts`, `threads.ts`, and `turns.ts` all use `withImmediateTransaction(runtime.db, ...)` around multi-step writes or state changes. Reads are usually plain selects. So the current style is closer to “simple SQL helpers / CRUD-ish persistence functions” than a repository abstraction.
+
+The useful conclusion here is: if your top-level module becomes something like `intake` or `intake-events`, the existing code suggests it would likely front a thin store/persistence layer built on one SQLite file, with direct read/write functions and explicit transactions, not a heavy repository pattern.
+
+I can also summarize the exact public methods currently exposed by the thread-events store if you want the “top-level module surface” mapped next.
+
+[turn 0102]
+I think the current simplified repository pattern is mostly good. It avoids the bad repository pattern—interface/class per entity, DI ceremony, and CRUD-only pass-throughs. What we have is lighter: `threads.ts`, `events.ts`, `messages.ts`, `triggers.ts`, `turns.ts`, `chunks.ts`. Each module owns real SQL and some domain-specific behavior, which is acceptable.
+
+The strengths are clear: simple functions, no fake abstraction over SQLite, explicit transaction helper, SQL close to behavior, real DB tests, and no over-generalized CRUD layer. Weaknesses: `persistence/` feels generic/enterprise-ish, entity-grouped modules can drift into shallow CRUD buckets, some workflows are split awkwardly across store + persistence modules, and JSON row mapping is scattered.
+
+So: fine as an implementation substrate, but not the main architecture lens. Rename `persistence` to `storage/`, keep function-based modules, and avoid `Repository` classes or generic CRUD frameworks unless a real seam appears.
+
+[turn 0103]
+I don’t mind enterprisey names; the real issue is heavy, stilted GOF-style patterns. `persistence/` isn’t the problem unless it becomes `IThreadRepository`, `SqliteThreadRepository`, `ThreadRepositoryFactory`, `BaseRepository<T>`, or `GenericCrudRepository<T>` with no leverage.
+
+Your current pattern is pragmatic: `persistence/events.ts` exports plain functions like `appendEventRecords(...)`, with real SQL and no ceremony. So the simplified repository-ish approach seems fine: grouped by persisted concept, direct SQLite, explicit transactions, no abstract interfaces, no generic CRUD layer, no DI theater. Watch for shallow wrappers, not the `persistence` name.
+
+[turn 0104]
+No, I don’t think the current design there would offend you too much. It isn’t GOF-repository theater; it’s simple SQL modules. What might bother you is the top-level folder coherence, the entity-bucketed `persistence/`, and workflow logic split between `store.ts` and persistence modules. But the persistence style itself looks fine: plain functions, direct SQL, explicit transactions, no fake interfaces or abstract repository classes. I’d keep that style and maybe rename/reposition later.
+
+[turn 0105]
+`packages/lhc/src/thread-events/store.ts` is the core persistence layer for thread events. It exports `ThreadEventStore`, which owns a SQLite handle plus `now` and `idGenerator` dependencies, and provides the main operations: `createThread`, `append`, `list`, `listThreads`, `readThread`, `readTurns`, `readChunks`, `listTurnProcessingTriggers`, `processNextTurnEndTrigger`, and `processTurnEndTrigger`. It also has `close()` for shutting the DB down.
+
+The file also contains the internal helpers that make append/read work: `mergeAppendResults`, `appendSkippedEvent`, `skippedEventMetadata`, `rawStringField`, and `rawEventKind`. So it’s not just a “store”; it also validates/normalizes event input and tracks skipped events.
+
+There are also convenience top-level wrappers at the bottom—`createThread`, `appendThreadEvents`, `listThreadEvents`, `listThreads`, `readThread`—which just call into a store instance using provided options.
+
+So the practical answer is: `store.ts` is the module that writes, reads, and projects thread-event data from SQLite, plus trigger-processing for turn-end handling. If you’re asking “what owns the actual thread event data flow,” it’s this file.
+
+[turn 0106]
+So `store.ts` does **not** contain the real CRUD/SQL. It exposes the public methods, but mostly delegates:
+
+- `createThread(...)` → `createThreadRecord(...)`
+- `list()` → `listEventRecords(...)`
+- `readThread(...)` → `findThreadByClientThreadId(...)` → `listEventRecordsForThread(...)` → `readProjectedMessagesForThread(...)`
+- `processNextTurnEndTrigger()` → `processNextTurnTrigger(...)`
+
+The actual SQLite reads/writes live in `persistence/*`:
+
+- `threads.ts` — thread rows, `thread_created` event
+- `events.ts` — append/list events, idempotency
+- `messages.ts` — projected message rows
+- `triggers.ts` — trigger rows
+- `turns.ts` — turn rows
+- `chunks.ts` — chunk rows
+
+So the split is:
+
+- `store.ts`: public facade + orchestration
+- `persistence/*.ts`: row-level DB operations
+
+The name `store.ts` is misleading; it acts more like an `IntakeService`/`IntakeSession` that owns the DB handle and coordinates use cases.
+
+[turn 0107]
+Yes: we split the 3000-line `store.ts` into focused internals without fundamentally shuffling the public methods. The old giant store combined DB open/schema, validation, append orchestration, SQL reads/writes, projection, triggers, worker, and chunks. Now `store.ts` mainly holds the public methods, DB lifecycle, append batch orchestration, and delegation, while `persistence/*` handles SQL reads/writes, `projection/*` handles event→message projection, `worker/*` handles trigger/turn/chunk processing, and `sqlite/*` handles DB open/schema/transactions/rows. The public facade is still store-shaped, not yet redesigned as the cleaner `intake` surface, so it’s mechanically improved but not conceptually settled.
+
+[turn 0108]
+Mixed. It should stay legible for a while because SQL is separated from worker/projection logic, each persisted concept has a home, `store.ts` is not huge, and tests cover full paths. But as the model grows, the current shape will likely blur.
+
+Main risks: `store.ts` becoming a junk drawer for append/read/worker calls plus future edits/deletes/clones and compact hooks; `persistence/` turning into an entity bucket (`threads.ts`, `events.ts`, `turns.ts`, `chunks.ts`, `views.ts`, `files.ts`) with unclear cross-entity ownership; and workflow logic getting split awkwardly across append, worker, compact, and later edit/delete paths.
+
+So it’s fine for the current port, but I wouldn’t bet on it scaling cleanly without a domain reorg. Next improvement: make `store.ts` an intake facade/session, keep `persistence/*` as simple SQL substrate, and let workflow modules own cross-entity use cases.
+
+[turn 0109]
+Not all of it. Cross-entity work is split across several places.
+
+- `store.ts`: cross-event batch orchestration: per-event loop, skip mode, merge results
+- `persistence/events.ts`: cross-entity append work: insert event, materialize message rows, maybe create turn trigger
+- `worker/turns.ts`: cross-entity worker work: claim trigger, derive turn, place/update chunk, mark trigger completed
+- `persistence/chunks.ts`: chunk placement, close, artifacts
+
+So the pattern is inconsistent: some orchestration is in `store.ts`, some in `persistence/events.ts`, some in `worker/turns.ts`, some in `persistence/chunks.ts`. That’s an architectural smell and will get harder as the model grows.
+
+[turn 0110]
+I remember rolling my own VB.NET data access layer in 2004 for a 3-tier app, dumping results into arrays of hashtables. It mostly worked, but one giant class handled all CRUD and cross-entity construction, maybe 10k lines—some GoF pattern would’ve helped.

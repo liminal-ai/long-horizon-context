@@ -10,13 +10,11 @@ import { createSdk, type ModelAssignment, type SdkConfig } from "../src/index.js
 import {
   cannedResponses,
   createProviderDouble,
-  DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   tempStore,
   validAssignments,
   validEvent,
-  type DerivationType,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -60,25 +58,7 @@ describe("TC-1.1: provider XOR inference (AC-1.1)", () => {
   });
 });
 
-describe("TC-1.1: assignment validation (AC-1.3)", () => {
-  it.each([...DERIVATION_TYPES])("missing kind %s is a TypeError naming the kind", (kind) => {
-    const assignments: Partial<Record<DerivationType, ModelAssignment>> = validAssignments();
-    delete assignments[kind];
-    const make = buildSdk(assignments);
-    expect(make).toThrow(TypeError);
-    expect(make).toThrow(new RegExp(`missing kind ${kind}`));
-  });
-
-  it("an unknown prompt name is a TypeError naming kind and prompt", () => {
-    const assignments = validAssignments({
-      tool_result_summary: { prompt: "tool-result-v99" },
-    });
-    const make = buildSdk(assignments);
-    expect(make).toThrow(TypeError);
-    expect(make).toThrow(/tool_result_summary/);
-    expect(make).toThrow(/unknown template "tool-result-v99"/);
-  });
-
+describe("TC-1.1: assignment validation (AC-1.3, AC-6.1)", () => {
   it("an unknown kind key in assignments is a TypeError naming it", () => {
     const assignments: Record<string, ModelAssignment> = { ...validAssignments() };
     assignments["smoothed_promptz"] = {
@@ -88,17 +68,27 @@ describe("TC-1.1: assignment validation (AC-1.3)", () => {
     };
     const make = buildSdk(assignments);
     expect(make).toThrow(TypeError);
-    expect(make).toThrow(/unknown kind key "smoothed_promptz"/);
+    expect(make).toThrow(/unknown derivation type "smoothed_promptz"/);
   });
 
-  it("an empty provider string in one assignment is a TypeError naming field and kind", () => {
-    const assignments = validAssignments({ turn_rendering: { provider: "" } });
+  it("an unknown prompt name on an inference assignment is a TypeError naming kind and prompt", () => {
+    const assignments = validAssignments({
+      tool_result_summary: { prompt: "tool-result-v99" },
+    });
     const make = buildSdk(assignments);
     expect(make).toThrow(TypeError);
-    expect(make).toThrow(/turn_rendering\.provider must be a non-empty string/);
+    expect(make).toThrow(/tool_result_summary/);
+    expect(make).toThrow(/unknown template "tool-result-v99"/);
   });
 
-  it("an empty model string in one assignment is a TypeError naming field and kind", () => {
+  it("an empty provider string on an inference assignment is a TypeError naming field and kind", () => {
+    const assignments = validAssignments({ smoothed_prompt: { provider: "" } });
+    const make = buildSdk(assignments);
+    expect(make).toThrow(TypeError);
+    expect(make).toThrow(/smoothed_prompt\.provider must be a non-empty string/);
+  });
+
+  it("an empty model string on an inference assignment is a TypeError naming field and kind", () => {
     const assignments = validAssignments({ chunk_summary_brief: { model: "  " } });
     const make = buildSdk(assignments);
     expect(make).toThrow(TypeError);

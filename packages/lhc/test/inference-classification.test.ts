@@ -10,8 +10,8 @@
 // retryable → `provider_failure: <kind>: <message>`, terminal → kind-led.
 import { afterEach, describe, expect, it } from "vitest";
 import { createSdk, type Derivation, type DrainReport, type Lhc } from "../src/index.js";
-import { FAILURE_CLASSIFICATION, safeCall } from "../src/inference/classify.js";
-import type { ModelCall, ModelCallInput } from "../src/inference/types.js";
+import { FAILURE_CLASSIFICATION, safeCall } from "../src/shared-tech/classify.js";
+import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
@@ -252,7 +252,7 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     expect(smoothed?.state).toBe("ready");
     // The drain continued past the hanging lane: the turn's forms landed.
     expect(forms.find((form) => form.derivationType === "turn_rendering")?.state).toBe("ready");
-    expect(forms.find((form) => form.derivationType === "lower_band_projection")?.state).toBe("ready");
+    expect(forms.find((form) => form.derivationType === "smooth_turn_compression")?.state).toBe("ready");
   });
 
   it("timeout is retryable: a host that hangs once then answers lands the form ready", async () => {

@@ -43,7 +43,7 @@ function throwingProvider(): DerivationProvider {
     smoothPrompt: refuse,
     summarizeToolResult: refuse,
     composeTurnRendering: refuse,
-    projectLowerBand: refuse,
+    compressSmoothTurn: refuse,
     summarizeChunkDetailed: refuse,
     summarizeChunkBrief: refuse,
   };

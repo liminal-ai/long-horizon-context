@@ -258,7 +258,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     // The damaged turn landed both turn forms blocked through the production
     // terminal path; the sweep reports each with its reason and asks the
     // owners for nothing.
-    for (const kind of ["turn_rendering", "lower_band_projection"]) {
+    for (const kind of ["turn_rendering", "smooth_turn_compression"]) {
       const line = ownerLine(swept.value, "turns", kind);
       expect(line.blocked).toHaveLength(1);
       expect(line.blocked[0]?.subjectId).toBe(sibling.blockedTurnId);
@@ -305,7 +305,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
 
     // One requeue, one noop-counted-as-in-flight, exactly one work row.
     const rendering = ownerLine(swept.value, "turns", "turn_rendering");
-    const projection = ownerLine(swept.value, "turns", "lower_band_projection");
+    const projection = ownerLine(swept.value, "turns", "smooth_turn_compression");
     const requeued = [...rendering.requeued, ...projection.requeued];
     expect(requeued).toEqual(["t1"]);
     expect(rendering.inFlight + projection.inFlight).toBe(1);

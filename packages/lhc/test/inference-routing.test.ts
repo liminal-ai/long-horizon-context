@@ -75,7 +75,7 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
       smoothed_prompt: "lane-alpha",
       tool_result_summary: "lane-beta",
       turn_rendering: "lane-beta",
-      lower_band_projection: "lane-beta",
+      smooth_turn_compression: "lane-beta",
       chunk_summary_detailed: "lane-gamma",
       chunk_summary_brief: "lane-gamma",
     } as const;
@@ -83,7 +83,7 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
       smoothed_prompt: { provider: lanes.smoothed_prompt },
       tool_result_summary: { provider: lanes.tool_result_summary },
       turn_rendering: { provider: lanes.turn_rendering },
-      lower_band_projection: { provider: lanes.lower_band_projection },
+      smooth_turn_compression: { provider: lanes.smooth_turn_compression },
       chunk_summary_detailed: { provider: lanes.chunk_summary_detailed },
       chunk_summary_brief: { provider: lanes.chunk_summary_brief },
     });

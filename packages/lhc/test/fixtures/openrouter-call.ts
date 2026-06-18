@@ -9,17 +9,20 @@
 // in inference-real.test.ts calls resolveRealSuiteEnv exactly once at module
 // load and emits exactly one visible line — absence of the key can never look
 // like a pass.
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   ModelCall,
   ModelCallFailureKind,
   ModelCallResult,
-} from "../../src/inference/types.js";
+} from "../../src/shared-tech/inference-types.js";
 
 export const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 
-// The suite's cheap default lane; LHC_OPENROUTER_MODEL overrides it for
-// dial-in experiments without touching test code.
-export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+// The suite's cheap default lane; OPENROUTER_MODEL overrides it for dial-in
+// experiments without touching test code.
+export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.4-mini";
 
 // The guard's one fact: ran (with the key and the model lane the run will
 // use) or not-ran (with reason). The shapes share no fields, so a not-ran
@@ -27,14 +30,33 @@ export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 // check (AC-4.1's "absence of the key can never produce a silent pass").
 export type RealSuiteEnv = { key: string; model: string } | { notRan: string };
 
+export function loadLocalLhcEnv(): Record<string, string> {
+  const path = join(homedir(), ".lhc", ".env");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return {};
+  }
+  const env: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    env[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  return env;
+}
+
 export function resolveRealSuiteEnv(
   env: Record<string, string | undefined>,
 ): RealSuiteEnv {
-  const key = env["LHC_OPENROUTER_KEY"];
+  const key = env["OPENROUTER_API_KEY"];
   if (key === undefined || key.trim() === "") {
-    return { notRan: "LHC_OPENROUTER_KEY unset" };
+    return { notRan: "OPENROUTER_API_KEY unset" };
   }
-  const model = env["LHC_OPENROUTER_MODEL"];
+  const model = env["OPENROUTER_MODEL"];
   return {
     key,
     model: model !== undefined && model.trim() !== "" ? model : DEFAULT_OPENROUTER_MODEL,

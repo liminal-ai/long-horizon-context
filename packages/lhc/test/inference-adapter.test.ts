@@ -9,8 +9,7 @@
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeterministicProvider, createSdk, type Derivation, type Lhc } from "../src/index.js";
-import { DEFAULT_PROMPT_NAMES } from "../src/inference/prompts/index.js";
-import type { ModelCall } from "../src/inference/types.js";
+import type { ModelCall } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   DERIVATION_TYPES,
@@ -132,7 +131,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
         expect(form.metadata?.provenance).toEqual({
           provider: assignments[kind].provider,
           model: assignments[kind].model,
-          prompt: DEFAULT_PROMPT_NAMES[kind],
+          prompt: assignments[kind].prompt,
         });
       }
     }

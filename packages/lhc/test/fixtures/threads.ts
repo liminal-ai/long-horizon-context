@@ -11,12 +11,12 @@ import {
   type Derivation,
   type DerivationState,
   type DependencyGap,
-  type DerivationType,
   type Lhc,
   type MessageEventInput,
   type SubjectKind,
   type ToolOutcome,
 } from "../../src/index.js";
+import type { DerivationType } from "./model-call.js";
 import { setIntakeClock } from "./intake-seam.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
 import type { ProviderDouble } from "./provider-double.js";
@@ -291,9 +291,9 @@ export async function multiStateThread(
       { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary", state: "ready" },
       { subjectKind: "message", subjectId: "m6", derivationType: "smoothed_prompt", state: "pending" },
       { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "failed" },
-      { subjectKind: "turn", subjectId: "t1", derivationType: "lower_band_projection", state: "pending" },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression", state: "pending" },
       { subjectKind: "turn", subjectId: "t2", derivationType: "turn_rendering", state: "blocked" },
-      { subjectKind: "turn", subjectId: "t2", derivationType: "lower_band_projection", state: "pending" },
+      { subjectKind: "turn", subjectId: "t2", derivationType: "smooth_turn_compression", state: "pending" },
     ],
   };
 }

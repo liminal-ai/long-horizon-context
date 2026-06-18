@@ -1,0 +1,4 @@
+- Pi local install was updated successfully to `0.75.3` via `npm install` of `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, and `@earendil-works/pi-coding-agent`; `package.json`, `package-lock.json`, and `node_modules` changed. Typecheck passed, and `smart compact` later worked, so no obvious breakage.
+- User was concerned about over-churning and asked for minimal, safe behavior; assistant acknowledged and agreed to avoid further commands unless explicitly asked.
+- New workflow: user wants the assistant to act as a long-horizon agent by reading files in ~200-line chunks and summarizing each with observations.
+- I should not claim detailed retained memory of the PRD/tech arch; only general context is available: `pi-long-horizon`, smart compact/long-horizon agent behavior, model/provider integration, and verification harnesses.

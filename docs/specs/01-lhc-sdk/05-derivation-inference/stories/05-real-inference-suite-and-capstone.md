@@ -27,7 +27,7 @@ Add the opt-in OpenRouter-backed suite with visible ran/not-ran accounting and t
 **Test Conditions**
 
 - **TC-4.1** (AC-4.1): `inference-real.test.ts`
-  - with `LHC_OPENROUTER_KEY`, each of the seven kinds round-trips real inference once
+  - with `OPENROUTER_API_KEY`, each of the seven kinds round-trips real inference once
   - each result lands `ready`, has non-empty content, and contains no deterministic marker pattern
   - with the key absent in a controlled leg, the suite emits a not-ran record with reason
   - the not-ran record is distinguishable from a pass
@@ -124,8 +124,8 @@ Runtime prerequisites:
 
 | Prerequisite | Where | Verification |
 |---|---|---|
-| `LHC_OPENROUTER_KEY` | opt-in suite only | suite reports ran or not-ran |
-| `LHC_OPENROUTER_MODEL` | opt-in suite optional | fixture default used when unset |
+| `OPENROUTER_API_KEY` | opt-in suite only | suite reports ran or not-ran |
+| `OPENROUTER_MODEL` | opt-in suite optional | fixture default used when unset |
 | native `fetch` | test fixture | Node runtime already provides it |
 
 Real-suite fixtures:
@@ -150,8 +150,8 @@ The CI-default suite makes zero network calls. The keyed run is recorded in stor
 
 #### Runtime Contract Assumptions
 
-- `LHC_OPENROUTER_KEY` controls keyed execution.
-- `LHC_OPENROUTER_MODEL` may select the cheap model; fixture default applies when unset.
+- `OPENROUTER_API_KEY` controls keyed execution.
+- `OPENROUTER_MODEL` may select the cheap model; fixture default applies when unset.
 - OpenRouter provider/model interpretation is host-side and still returns the AC-1.2 `ModelCallResult` shape.
 
 #### Anti-Shim Requirements

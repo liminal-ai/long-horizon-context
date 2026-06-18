@@ -13,7 +13,7 @@
 | `test/inference-adapter.test.ts` | default | TC-2.1, TC-2.3 |
 | `test/inference-prompts.test.ts` | default | TC-2.2 |
 | `test/inference-classification.test.ts` | default | TC-3.1, TC-3.2 |
-| `test/inference-real.test.ts` | opt-in (`LHC_OPENROUTER_KEY`) | TC-4.1, TC-4.2, TC-4.3 |
+| `test/inference-real.test.ts` | opt-in (`OPENROUTER_API_KEY`) | TC-4.1, TC-4.2, TC-4.3 |
 | `test/view-boundary.test.ts` (amended) + `test/view-boundary-turn-end.test.ts` (new) | default | TC-5.1, TC-5.2, TC-5.3 |
 | `test/retirement.test.ts` | default | TC-6.1, TC-6.2 |
 

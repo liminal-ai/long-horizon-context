@@ -1,0 +1,39 @@
+Review of Epic 1 stories exposed two main improvement tracks:
+
+1. `ls-publish-epic`: improve story sharding and story-shape review.
+2. `ls-enrich`: improve technical preparation so risky implementation paths are made explicit.
+
+For publish/sharding, the key weaknesses were around overly broad stories and implicit judgment. Suggested additions:
+- Add a pre-publish story-shape review.
+- Require each story to have a single governing idea stated in one sentence; weak conceptual centers are a split signal.
+- Formalize story archetypes such as foundation/invariant, adapter/mapping, semantic rule, orchestration, metadata/additive, packaging/fixture, and repair/recovery.
+- Flag overload conditions like multiple authority decisions, multiple subsystem seams, onboarding/import mixed with steady-state, happy path mixed with repair/recovery, multiple failure models, or source-truth plus derived-state ownership in one story.
+- Add explicit review for authority boundaries: what is canonical before and after the story, and whether the story changes authority.
+- Warn when onboarding/import/migration/recovery is mixed with normal runtime behavior unless justified.
+- Preserve future-feature boundaries more deliberately, with explicit checklisting.
+- Expand integration-path tracing beyond user flow into runtime entrypoints, persistence/reopen paths, source-to-derived transitions, generated outputs, and operator-command paths.
+- Clarify that each TC should have one primary story owner even though later integration/E2E tests may cover many story behaviors.
+
+For enrichment, the main weakness was that implementation risk was often understood informally rather than encoded into the story package. Proposed improvements:
+- Promote Build Strategy into a standard enrichment section, with strategy levels such as simple, tdd-lite, or full-staged-risk.
+- Require story-specific risk reminders rather than generic ones.
+- Add a first-class Production Path Proof section covering entrypoint, registration, default dependencies, and runtime/E2E evidence; this was motivated by Story 02 where lower-level tests passed but production extension registration was initially missing.
+- Add explicit boundary-reconciliation prompts for common mismatch risks: service path vs production path, fixture vs real runtime, workspace state vs committed files, source truth vs derived projection, etc.
+- More systematically derive important non-TC tests from architecture/design risk, e.g. atomic writes, index rebuilds, concurrency ordering, fixture realism, and production registration.
+- Strengthen anti-shim requirements with concrete examples: no helper-only proof for runtime stories, no fake registration, no in-memory-only proof for file-backed persistence, no placeholder artifacts, and no silent skips when integration prerequisites are missing.
+- Add a durable place for runtime contract assumptions, including assumption, validation status, fallback, and risk.
+- Make fixture realism explicit for persistence/runtime stories: real files, real schema/contracts, reopen/restart behavior, installed dependency contracts.
+- Extend line-reference practice so enrichment can also point to coverage/test ownership artifacts.
+- Distinguish verification commands by targeted checks, configured story gate, configured epic gate, and optional runtime/E2E checks.
+
+Cross-cutting process issues affecting both streams:
+- Artifact vs git truth drift: verified workspace state may not match committed runtime truth; this likely needs CLI enforcement but should also be called out in stories.
+- Zero-test integration gates: tooling should warn if “verify all” executes no integration tests for stories that depend on them.
+- Team log/final artifact drift and gate-labeling ambiguity should be tightened.
+- Quick-fix vs continue-story routing should consider build strategy; high-risk stories should avoid casual verifier-driven fixes unless tightly bounded.
+
+Highest-priority next-pass changes:
+- In `ls-publish-epic`, add a story-shape review table with fields like Story, Type, Governing Idea, Overload Flags, and Split Decision.
+- In `ls-enrich`, add standard sections for Build Strategy, Risk Reminders, Production Path Proof, and Runtime Contract Assumptions, while strengthening Non-TC Tests, Anti-Shim Requirements, and Verification labeling.
+
+Overall conclusion: the current skills are solid, but the next improvement pass should make expert judgment explicit—why a story is one story, what makes it risky to implement incorrectly, and whether verified work actually became committed production truth.

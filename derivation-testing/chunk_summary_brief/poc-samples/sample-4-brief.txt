@@ -1,0 +1,5 @@
+- Began cursory review of `~/code/liminal-spec`, starting with README and skill list. Core skills identified as `ls-prd`, `ls-arch`, `ls-epic`, `ls-tech-design`; skills live under `dist/` (notably generated standalone docs).
+- Scope narrowed to `ls-prd` and `ls-arch` first; explicitly deferred `ls-epic` and `ls-tech-design`.
+- Agreed to self-drive reading in fixed chunks with verbose reflections, continuing without waiting for “continue” unless blocked by practical response/tool limits.
+- Then switched to deeper evaluation passes: reread PRD in 400-line chunks against `ls-prd`, and tech arch in 400-line chunks against `ls-arch`.
+- Next task: read Epic 1 (`01-session-context-store/epic.md`) in 200-line chunks with extensive commentary, then inspect git history to find the implementation commits and review them while preserving important findings in-chat.

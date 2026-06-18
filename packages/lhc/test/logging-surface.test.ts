@@ -266,7 +266,7 @@ describe("Flow 5: Derivation Logging", () => {
         db.prepare(
           `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content)
            VALUES (?, ?, ?, ?, ?)`,
-        ).run("turn", "t1", "lower_band_projection", "ready", "projection content");
+        ).run("turn", "t1", "smooth_turn_compression", "ready", "projection content");
         db.exec("COMMIT;");
       } catch (cause) {
         db.exec("ROLLBACK;");
@@ -277,7 +277,7 @@ describe("Flow 5: Derivation Logging", () => {
         .prepare(`SELECT derivation_type FROM derivation WHERE subject_id = ? ORDER BY derivation_type`)
         .all("t1") as unknown as Array<{ derivation_type: string }>;
       expect(rows.map((row) => row.derivation_type)).toEqual([
-        "lower_band_projection",
+        "smooth_turn_compression",
         "turn_rendering",
       ]);
     } finally {
