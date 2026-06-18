@@ -11,7 +11,11 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "format": "biome format --write .",
-    "lint": "biome check ."
+    "lint": "biome check .",
+    "test:all": "pnpm -r --if-present test:all",
+    "format:check": "biome format .",
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
+    "verify:all": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:all"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

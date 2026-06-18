@@ -41,7 +41,10 @@ import {
 } from "./fixtures/index.js";
 
 // ── the suite-level guard: one resolution, one visible line ───────
-const suiteEnv = resolveRealSuiteEnv({ ...loadLocalLhcEnv(), ...process.env });
+const integrationEnabled = process.env.LHC_RUN_INTEGRATION === "1";
+const suiteEnv = integrationEnabled
+  ? resolveRealSuiteEnv({ ...loadLocalLhcEnv(), ...process.env })
+  : { notRan: "LHC_RUN_INTEGRATION unset" };
 const keyed = !("notRan" in suiteEnv);
 const realKey = "notRan" in suiteEnv ? undefined : suiteEnv.key;
 const realModel = "notRan" in suiteEnv ? DEFAULT_OPENROUTER_MODEL : suiteEnv.model;
@@ -103,7 +106,11 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
     const emissions = realSuiteAccountingEmissions();
     expect(emissions).toHaveLength(1);
     expect(emissions[0]).toBe(
-      keyed ? `RAN: real-inference (model ${realModel})` : "NOT-RAN: real-inference (OPENROUTER_API_KEY unset)",
+      keyed
+        ? `RAN: real-inference (model ${realModel})`
+        : integrationEnabled
+          ? "NOT-RAN: real-inference (OPENROUTER_API_KEY unset)"
+          : "NOT-RAN: real-inference (LHC_RUN_INTEGRATION unset)",
     );
   });
 });

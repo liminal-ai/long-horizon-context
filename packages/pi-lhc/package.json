@@ -2,7 +2,7 @@
   "name": "pi-lhc",
   "version": "0.0.0",
   "private": true,
-  "description": "PI \u2194 LHC connector extension (Epic 1: Connector Core, observe-only).",
+  "description": "PI ↔ LHC connector extension (Epic 1: Connector Core, observe-only).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -22,7 +22,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "lint": "biome check packages/pi-lhc",
     "test": "vitest run",
-    "format": "biome format --write packages/pi-lhc"
+    "format": "biome format --write packages/pi-lhc",
+    "test:all": "pnpm run test",
+    "format:check": "biome format packages/pi-lhc",
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
+    "verify:all": "pnpm run verify"
   },
   "engines": {
     "node": ">=24"

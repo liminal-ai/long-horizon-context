@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "format": "biome format --write packages/codex-lhc",
-    "lint": "biome check packages/codex-lhc"
+    "lint": "biome check packages/codex-lhc",
+    "format:check": "biome format packages/codex-lhc",
+    "test": "echo \"No tests yet\"",
+    "test:all": "pnpm run test",
+    "verify": "pnpm run format:check && pnpm run lint && pnpm run test",
+    "verify:all": "pnpm run verify"
   }
 }
