@@ -4,8 +4,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { threads, TOKEN_ESTIMATOR_ID } from "../src/index.js";
-import { openRaw, tempStore, type TempStore } from "./fixtures/index.js";
+import { TOKEN_ESTIMATOR_ID, threads } from "../src/index.js";
+import { openRaw, type TempStore, tempStore } from "./fixtures/index.js";
 
 interface MetadataRow {
   thread_id: string;
@@ -35,9 +35,7 @@ function registryRows(registryPath: string): RegistryRow[] {
   const db = openRaw(registryPath);
   try {
     return db
-      .prepare(
-        "SELECT thread_id, file_path, title, created_at FROM threads ORDER BY created_at, thread_id",
-      )
+      .prepare("SELECT thread_id, file_path, title, created_at FROM threads ORDER BY created_at, thread_id")
       .all() as unknown as RegistryRow[];
   } finally {
     db.close();
@@ -188,9 +186,7 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
 
     expect(existsSync(threadPath)).toBe(false);
     expect(existsSync(badRegistry)).toBe(false);
-    expect(readFileSync(blocker, "utf8")).toBe(
-      "a regular file where a directory must be",
-    );
+    expect(readFileSync(blocker, "utf8")).toBe("a regular file where a directory must be");
   });
 
   it("lazy-init supplemental: resolve against an absent registry returns thread_not_found and creates nothing", async () => {

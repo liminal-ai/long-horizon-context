@@ -3,21 +3,8 @@
 // (an induced message materialization failure rejects the whole batch). Everything enters
 // through the intake-stream surface.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  messages,
-  threads,
-  type EventRecord,
-  type MessageRecord,
-} from "../src/index.js";
-import {
-  eventBatch,
-  openRaw,
-  setIntakeWalkHook,
-  tempStore,
-  validEvent,
-  type TempStore,
-} from "./fixtures/index.js";
+import { type EventRecord, intakeStream, type MessageRecord, messages, threads } from "../src/index.js";
+import { eventBatch, openRaw, setIntakeWalkHook, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -74,9 +61,7 @@ describe("Flow 2 (SDK): message materialization", () => {
 
     // messageId appears on every recorded message-producing entry, in walk
     // order; the turn_end entry is recorded but carries no messageId.
-    expect(result.value.events.map((entry) => entry.outcome)).toEqual(
-      Array.from({ length: 7 }, () => "recorded"),
-    );
+    expect(result.value.events.map((entry) => entry.outcome)).toEqual(Array.from({ length: 7 }, () => "recorded"));
     expect(result.value.events.map((entry) => entry.messageId)).toEqual([
       "m1",
       "m2",
@@ -99,14 +84,7 @@ describe("Flow 2 (SDK): message materialization", () => {
     ]);
 
     const materialized = await readMessages(filePath);
-    expect(materialized.map((message) => message.messageId)).toEqual([
-      "m1",
-      "m2",
-      "m3",
-      "m4",
-      "m5",
-      "m6",
-    ]);
+    expect(materialized.map((message) => message.messageId)).toEqual(["m1", "m2", "m3", "m4", "m5", "m6"]);
     expect(materialized.map((message) => message.sourceEventOrder)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(materialized.map((message) => message.kind)).toEqual([
       "user_prompt",
@@ -118,18 +96,14 @@ describe("Flow 2 (SDK): message materialization", () => {
     ]);
 
     // Full block structure per kind, content verbatim — not just block count.
-    expect(materialized[0]!.blocks).toEqual([
-      { blockType: "text", content: { text: "please summarize the file" } },
-    ]);
+    expect(materialized[0]!.blocks).toEqual([{ blockType: "text", content: { text: "please summarize the file" } }]);
     expect(materialized[1]!.blocks).toEqual([
       { blockType: "text", content: { text: "the file describes turn handling" } },
     ]);
     expect(materialized[2]!.blocks).toEqual([
       { blockType: "text", content: { text: "the request needs the file first" } },
     ]);
-    expect(materialized[3]!.blocks).toEqual([
-      { blockType: "text", content: { text: "harness reconnected" } },
-    ]);
+    expect(materialized[3]!.blocks).toEqual([{ blockType: "text", content: { text: "harness reconnected" } }]);
     expect(materialized[4]!.blocks).toEqual([
       {
         blockType: "tool_call",
@@ -281,10 +255,7 @@ describe("Flow 2 (SDK): message materialization", () => {
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.exec("DROP TABLE message_block");
     });
-    const result = await intakeStream.messageEvents(
-      { filePath },
-      eventBatch(["assistant_text", "assistant_thinking"]),
-    );
+    const result = await intakeStream.messageEvents({ filePath }, eventBatch(["assistant_text", "assistant_thinking"]));
     setIntakeWalkHook(null);
     expect(result.ok).toBe(false);
     if (result.ok) return;

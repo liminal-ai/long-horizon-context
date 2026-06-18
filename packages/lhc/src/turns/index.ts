@@ -1,43 +1,40 @@
 import { existsSync } from "node:fs";
-import { runInTransaction, type OperationContext } from "../shared-tech/index.js";
-import type {
-  DerivationReportEntry,
-  WorkHandler,
-} from "../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
+import type { EventKind } from "../intake-stream/index.js";
+import type { DerivationReportEntry, WorkHandler } from "../shared-tech/index.js";
 import {
+  type ErrorResult,
+  type OperationContext,
+  type OpResult,
+  runInTransaction,
+  storageFailure,
+} from "../shared-tech/index.js";
+import {
+  type EnqueueDerivationTarget,
   enqueue,
   hasLiveItem,
   listItems,
-  type EnqueueDerivationTarget,
   type WorkItemRecord,
   type WorkKind,
   type WorkSourceRef,
 } from "../shared-tech/work-queue/index.js";
-import type { EventKind } from "../intake-stream/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { transition } from "./internal/state-machine.js";
 
 // The pure rule table, re-exported for the golden supplemental suite (the
 // test plan's one sanctioned direct entry besides the tokenizer); production
 // callers go through applyEvent.
-export { transition, type TurnEffect, type TurnState } from "./internal/state-machine.js";
+export { type TurnEffect, type TurnState, transition } from "./internal/state-machine.js";
+
+import { applyTurnDeleteCascade, type MutationResult } from "../messages/index.js";
 import type { Derivation } from "../shared-tech/index.js";
-import {
-  compactChunkMaterialFromStoredMembers,
-  type CompactChunkMaterial,
-} from "./internal/chunk-recovery.js";
-import { turnWorkHandlers } from "./internal/derive.js";
+import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
 import {
   readChunkRows,
   readOwnedDerivations,
   readTurnDerivationRow,
   reportTurnDerivations,
 } from "./internal/derivations.js";
-import {
-  applyTurnDeleteCascade,
-  type MutationResult,
-} from "../messages/index.js";
+import { turnWorkHandlers } from "./internal/derive.js";
 import {
   closeTurn,
   insertOpenTurn,
@@ -101,11 +98,7 @@ export function listOpenTurnIds(ctx: OperationContext): string[] {
 // Closing a turn — by either close path — durably queues that turn's
 // derivation work in the same transaction (AC-3.6): the close update and the
 // work item commit or roll back together.
-function closeTurnAndQueueWork(
-  ctx: OperationContext,
-  turnId: string,
-  eventOrder: number,
-): WorkItemRecord {
+function closeTurnAndQueueWork(ctx: OperationContext, turnId: string, eventOrder: number): WorkItemRecord {
   closeTurn(ctx.db, turnId, eventOrder);
   // One work item, two derived derivations: the turn_derivation handler (Story 3)
   // lands the rendering and the lower-band projection as independent rows;
@@ -123,17 +116,12 @@ function closeTurnAndQueueWork(
 
 // Turn-owned work handlers, merged into the SDK's dispatch map at
 // construction (DD-6): turn derivation and the two chunk summaries.
-export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> =
-  turnWorkHandlers;
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = turnWorkHandlers;
 
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like
 // messages.createFromEvent: a turn-storage failure rejects the whole batch.
-export function applyEvent(
-  ctx: OperationContext,
-  eventKind: EventKind,
-  eventOrder: number,
-): TurnTransitionOutcome {
+export function applyEvent(ctx: OperationContext, eventKind: EventKind, eventOrder: number): TurnTransitionOutcome {
   const openTurnId = selectOpenTurnIds(ctx.db)[0] ?? null;
   const effect = transition({ openTurnId }, eventKind);
   switch (effect.kind) {
@@ -236,9 +224,7 @@ export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecor
   }
 }
 
-export async function listQueuedWork(
-  thread: ThreadRef,
-): Promise<OpResult<WorkItemRecord[]>> {
+export async function listQueuedWork(thread: ThreadRef): Promise<OpResult<WorkItemRecord[]>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -360,48 +346,53 @@ export async function requeue(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const meta = db
-      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string } | undefined;
+    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
     const threadId = meta?.thread_id ?? "";
-    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<RequeueOutcome> => {
-      const row = readTurnDerivationRow(ctx.db, target.subjectKind, target.subjectId, target.derivationType);
-      if (row === undefined) {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "turn_not_found",
-            reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
-          },
-        };
-      }
-      if (row.state === "blocked") {
-        // The refusal carries the derivation's stored reason — the damage named at
-        // blocking time, not a generic string (AC-4.6).
-        return {
-          ok: false,
-          error: {
-            errorClass: "state_corruption",
-            code: "source_damaged",
-            reason:
-              row.reason ??
-              `derivation ${target.derivationType} for ${target.subjectKind} ${target.subjectId} is blocked`,
-          },
-        };
-      }
-      if (hasLiveItem(ctx.db, mapped.kind, mapped.sourceRef, row.sourceVersion)) {
-        return { ok: true, value: { noop: "already_queued" } };
-      }
-      const item = enqueue(ctx, {
-        owner: "turns",
-        kind: mapped.kind,
-        sourceRef: mapped.sourceRef,
-        sourceVersion: row.sourceVersion + 1,
-        derivations: mapped.derivations,
-      });
-      return { ok: true, value: { workItemId: item.workItemId } };
-    });
+    return runInTransaction(
+      db,
+      () => new Date(),
+      threadId,
+      (ctx): OpResult<RequeueOutcome> => {
+        const row = readTurnDerivationRow(ctx.db, target.subjectKind, target.subjectId, target.derivationType);
+        if (row === undefined) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "turn_not_found",
+              reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
+            },
+          };
+        }
+        if (row.state === "blocked") {
+          // The refusal carries the derivation's stored reason — the damage named at
+          // blocking time, not a generic string (AC-4.6).
+          return {
+            ok: false,
+            error: {
+              errorClass: "state_corruption",
+              code: "source_damaged",
+              reason:
+                row.reason ??
+                `derivation ${target.derivationType} for ${target.subjectKind} ${target.subjectId} is blocked`,
+            },
+          };
+        }
+        if (hasLiveItem(ctx.db, mapped.kind, mapped.sourceRef, row.sourceVersion)) {
+          return { ok: true, value: { noop: "already_queued" } };
+        }
+        const item = enqueue(ctx, {
+          owner: "turns",
+          kind: mapped.kind,
+          sourceRef: mapped.sourceRef,
+          sourceVersion: row.sourceVersion + 1,
+          derivations: mapped.derivations,
+        });
+        return { ok: true, value: { workItemId: item.workItemId } };
+      },
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`requeue failed: ${reason}`);
@@ -424,10 +415,7 @@ export async function requeue(
 // the deleted turn out, shrinking the chunk in place. Refusals read the
 // filtered view: a missing, deleted, or double-deleted turn is
 // turn_not_found; an open turn is turn_open; a refusal changes nothing.
-export async function deleteTurn(
-  thread: ThreadRef,
-  input: { turnId: string },
-): Promise<OpResult<MutationResult>> {
+export async function deleteTurn(thread: ThreadRef, input: { turnId: string }): Promise<OpResult<MutationResult>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -437,45 +425,50 @@ export async function deleteTurn(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const meta = db
-      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string } | undefined;
+    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
     const threadId = meta?.thread_id ?? "";
-    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
-      const target = readMutableTurn(ctx.db, input.turnId);
-      if (target === undefined) {
+    return runInTransaction(
+      db,
+      () => new Date(),
+      threadId,
+      (ctx): OpResult<MutationResult> => {
+        const target = readMutableTurn(ctx.db, input.turnId);
+        if (target === undefined) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "turn_not_found",
+              reason: `no turn ${input.turnId} exists in this thread`,
+            },
+          };
+        }
+        if (target.status !== "closed") {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "turn_open",
+              reason: `turn ${input.turnId} is open; open turns cannot be deleted (v1 boundary)`,
+            },
+          };
+        }
+        markTurnDeleted(ctx.db, input.turnId, ctx.clock().toISOString());
+        const cascade = applyTurnDeleteCascade(ctx, input.turnId);
         return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "turn_not_found",
-            reason: `no turn ${input.turnId} exists in this thread`,
+          ok: true,
+          value: {
+            changed: { messageIds: cascade.memberMessageIds, turnIds: [input.turnId] },
+            cleared: cascade.cleared,
+            dropped: cascade.dropped,
+            queued: cascade.queued,
+            superseded: cascade.superseded,
           },
         };
-      }
-      if (target.status !== "closed") {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "turn_open",
-            reason: `turn ${input.turnId} is open; open turns cannot be deleted (v1 boundary)`,
-          },
-        };
-      }
-      markTurnDeleted(ctx.db, input.turnId, ctx.clock().toISOString());
-      const cascade = applyTurnDeleteCascade(ctx, input.turnId);
-      return {
-        ok: true,
-        value: {
-          changed: { messageIds: cascade.memberMessageIds, turnIds: [input.turnId] },
-          cleared: cascade.cleared,
-          dropped: cascade.dropped,
-          queued: cascade.queued,
-          superseded: cascade.superseded,
-        },
-      };
-    });
+      },
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`delete failed: ${reason}`);

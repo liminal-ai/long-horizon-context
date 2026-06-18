@@ -12,12 +12,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as api from "../src/index.js";
 import { initLhc, type SdkConfig } from "../src/index.js";
 import {
-  INFERENCE_CALLBACK_OPERATIONS,
-  PROVIDER_OPERATIONS,
   type DerivationProvider,
+  INFERENCE_CALLBACK_OPERATIONS,
   type InferenceCallbackName,
   type InferenceCallbacks,
   type InferenceResult,
+  PROVIDER_OPERATIONS,
   type ProviderOperationName,
   type ProviderResult,
 } from "../src/shared-tech/index.js";
@@ -90,9 +90,9 @@ describe("TC-6.1: deletion proof — SDK-only public API, no binary (AC-6.1, AC-
     const sdk = initLhc({ provider: inferenceCallbacks, mode: "manual" });
     expect(sdk.config.inferenceCallbacks).toBe(inferenceCallbacks);
     expect(sdk.config.provider).toBe(inferenceCallbacks);
-    expect(() =>
-      initLhc({ inferenceCallbacks, provider: inferenceCallbacks, mode: "manual" }),
-    ).toThrow(/inferenceCallbacks and provider are aliases/);
+    expect(() => initLhc({ inferenceCallbacks, provider: inferenceCallbacks, mode: "manual" })).toThrow(
+      /inferenceCallbacks and provider are aliases/,
+    );
   });
 
   it("shared-tech provider vocabulary remains compatibility aliases for inference vocabulary", () => {
@@ -131,9 +131,7 @@ describe("TC-6.1: deletion proof — SDK-only public API, no binary (AC-6.1, AC-
     expect(existsSync(path.join(pkgRoot, "src", "cli"))).toBe(false);
     expect(existsSync(path.join(pkgRoot, "src", "cli.ts"))).toBe(false);
     expect(existsSync(path.join(pkgRoot, "src", "providers", "registry.ts"))).toBe(false);
-    const processSuites = readdirSync(path.join(pkgRoot, "test")).filter((name) =>
-      name.startsWith("cli-process"),
-    );
+    const processSuites = readdirSync(path.join(pkgRoot, "test")).filter((name) => name.startsWith("cli-process"));
     expect(processSuites).toEqual([]);
   });
 });

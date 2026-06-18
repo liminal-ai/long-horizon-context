@@ -6,19 +6,19 @@
 // tech design fixes them — the PI hook surface is fed synthetic events, and the
 // SDK runs real against a temp SQLite thread with deterministic model-call text.
 import {
+  type EventKind,
   inspect,
   intakeStream,
-  type EventKind,
   type MessageEventInput,
   type OpResult,
   type SdkConfig,
   type ThreadRef,
 } from "lhc";
-import { createConnector, type Connector } from "../../src/index.js";
-import type { LaunchFlags } from "../../src/lifecycle/thread-resolution.js";
-import { fakeModelCallText } from "../fixtures/model-call.js";
+import { type Connector, createConnector } from "../../src/index.js";
 import { defaultAssignments } from "../../src/inference/model-call.js";
+import type { LaunchFlags } from "../../src/lifecycle/thread-resolution.js";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionStartReason } from "../../src/pi/types.js";
+import { fakeModelCallText } from "../fixtures/model-call.js";
 import { makeSessionStart } from "../fixtures/synthetic.js";
 import type { TempStore } from "../fixtures/thread.js";
 
@@ -136,9 +136,7 @@ export function kindsOf(events: readonly MessageEventInput[]): EventKind[] {
 
 /** Counts open/closed turns and total recorded events from the inspect
  *  overview (the real read-back surface, not a private query). */
-export async function turnCounts(
-  threadRef: ThreadRef,
-): Promise<{ open: number; closed: number; events: number }> {
+export async function turnCounts(threadRef: ThreadRef): Promise<{ open: number; closed: number; events: number }> {
   const overview = await inspect.overview(threadRef);
   if (!overview.ok) throw new Error(`overview failed: ${overview.error.reason}`);
   return {

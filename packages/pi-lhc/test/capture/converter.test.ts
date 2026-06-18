@@ -5,15 +5,8 @@
 // capture() directly because the two failure shapes (writable→gap vs
 // store-unavailable→health) are the architecture-risk contract.
 import { rmSync } from "node:fs";
+import { createDeterministicProvider, inspect, intakeStream, type MessageEventInput, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicProvider,
-  inspect,
-  intakeStream,
-  threads,
-  type MessageEventInput,
-  type ThreadRef,
-} from "lhc";
 import { capture } from "../../src/capture/converter.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
 import type { LhcInstance } from "../../src/shared/instance.js";
@@ -25,7 +18,7 @@ import {
   makeUserMessage,
   validEvent,
 } from "../fixtures/synthetic.js";
-import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
+import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
 import { eventsAfterShutdown, kindsOf, startCapture } from "./support.js";
 
 let store: TempStore;
@@ -56,10 +49,7 @@ describe("Story 2: converter — capture and fan-out (TC-2.1)", () => {
         }),
       ),
     );
-    await connector.handlers.message_end(
-      ctx,
-      makeMessageEnd(makeToolResult({ id: "call_x", content: "file body" })),
-    );
+    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_x", content: "file body" })));
     await connector.handlers.agent_end(ctx, makeAgentEnd([]));
 
     // No silent capture failure on the happy path.
@@ -103,13 +93,7 @@ describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
 
     const events = await eventsAfterShutdown(started);
     // Ordering relative to the surrounding messages is preserved.
-    expect(kindsOf(events)).toEqual([
-      "user_prompt",
-      "runtime_note",
-      "runtime_note",
-      "assistant_text",
-      "turn_end",
-    ]);
+    expect(kindsOf(events)).toEqual(["user_prompt", "runtime_note", "runtime_note", "assistant_text", "turn_end"]);
 
     const modelNote = textOf(events[1]!);
     expect(modelNote).toContain("anthropic/claude-3");
@@ -200,8 +184,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     if (!read.ok) return;
     const gaps = read.value.filter(
       (event) =>
-        event.eventKind === "runtime_note" &&
-        (event.payload as { text: string }).text.toLowerCase().includes("gap"),
+        event.eventKind === "runtime_note" && (event.payload as { text: string }).text.toLowerCase().includes("gap"),
     );
     expect(gaps).toHaveLength(1);
 
@@ -280,9 +263,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     expect(read.ok).toBe(true);
     if (!read.ok) return;
     const gaps = read.value.filter(
-      (event) =>
-        event.eventKind === "runtime_note" &&
-        (event.payload as { text: string }).text.includes("capture gap"),
+      (event) => event.eventKind === "runtime_note" && (event.payload as { text: string }).text.includes("capture gap"),
     );
     expect(gaps).toHaveLength(1);
     expect((gaps[0]!.payload as { text: string }).text).toContain("unmappable PI hook input");

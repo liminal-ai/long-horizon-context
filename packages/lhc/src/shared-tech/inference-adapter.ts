@@ -9,13 +9,11 @@
 // for outcomes, receipts, or any mechanical fact — those stay
 // handler-authored from the record. Host containment (thrown exceptions,
 // the adapter-owned timeout) lives in safeCall (AC-3.3, DD-6).
-import type {
-  InferenceCallbacks,
-  InferenceResult,
-} from "./derivation.js";
+
 import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
-import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
+import type { InferenceCallbacks, InferenceResult } from "./derivation.js";
 import type { ModelAssignment, ModelCallFailureKind, ResolvedInferenceConfig } from "./inference-types.js";
+import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
 
 // DD-7: a pathological tool result must not blow a small-context model.
 // Content over the bound keeps its head and tail around a marker, and the
@@ -83,19 +81,13 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
   const callKind = async (kind: string, input: unknown): Promise<InferenceResult> => {
     const assignment = config.assignments[kind];
     if (assignment === undefined) {
-      return classifiedFailure(
-        "invalid_request",
-        `no assignment for derivation type "${kind}"`,
-      );
+      return classifiedFailure("invalid_request", `no assignment for derivation type "${kind}"`);
     }
     // Construction validated the name (AC-1.3); a miss here is registry
     // drift after construction and is terminal, never retried into.
     const template = PROMPT_REGISTRY[assignment.prompt] as PromptTemplate<unknown> | undefined;
     if (template === undefined) {
-      return classifiedFailure(
-        "invalid_request",
-        `prompt template "${assignment.prompt}" not in registry`,
-      );
+      return classifiedFailure("invalid_request", `prompt template "${assignment.prompt}" not in registry`);
     }
     const messages = template.render(withTargetRatios(input, assignment));
     // safeCall contains the host (AC-3.3, DD-6): thrown exceptions arrive as

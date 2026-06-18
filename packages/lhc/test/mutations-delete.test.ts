@@ -16,31 +16,31 @@
 // cli-process-mutations-delete.test.ts (process suite). New file by the
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  initLhc,
+  type DrainReport,
   estimateTokens,
+  type InferenceCallbacks,
+  type InferenceResult,
+  initLhc,
   intakeStream,
+  type Lhc,
+  type MessageEventInput,
   messages,
+  type OpResult,
   queueDetail,
+  type SdkConfig,
   setSchedulerPoke,
   setThreadTouch,
   threads,
   turns,
-  type InferenceCallbacks,
-  type DrainReport,
-  type Lhc,
-  type MessageEventInput,
-  type InferenceResult,
-  type SdkConfig,
-  type OpResult,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readChunks,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -77,11 +77,7 @@ function manualSdk(
   return initLhc(config);
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
 }
@@ -147,8 +143,7 @@ function withScriptedProjections(base: InferenceCallbacks): InferenceCallbacks {
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
-    compressSmoothTurn: (): Promise<InferenceResult> =>
-      Promise.resolve({ ok: true, text: PROJ }),
+    compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: PROJ }),
     summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
     summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
   };
@@ -259,9 +254,7 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     // Everything else — m1's message form, t2's forms, chunk 2's summaries —
     // deep-equals its pre-delete row, source version included.
     expect(after.filter((form) => !clearedSet.has(clearKey(form)))).toEqual(
-      before.filter(
-        (form) => !clearedSet.has(clearKey(form)) && form.subjectId !== "m3",
-      ),
+      before.filter((form) => !clearedSet.has(clearKey(form)) && form.subjectId !== "m3"),
     );
 
     // The rebuild re-derives the affected turn: turn_rendering is deterministic
@@ -321,11 +314,7 @@ describe("TC-6.4 / AC-6.4: turn delete removes the turn and its messages from re
     // The drop-set walk goes down as well as up: the turn's two forms and
     // every member's own forms are rows-removed.
     expect(result.value.dropped.map(clearKey).sort()).toEqual(
-      [
-        "message/m1/smoothed_prompt",
-        "turn/t1/smooth_turn_compression",
-        "turn/t1/turn_rendering",
-      ].sort(),
+      ["message/m1/smoothed_prompt", "turn/t1/smooth_turn_compression", "turn/t1/turn_rendering"].sort(),
     );
 
     expect(unwrap(await messages.listMessages({ filePath }))).toEqual([]);
@@ -380,14 +369,11 @@ describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaini
     // deterministic material assembly; brief still exposes its inference-callback input.
     const brief = captured.filter((call) => call.op === "summarizeChunkBrief");
     expect(brief).toHaveLength(1);
-    expect((brief[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([
-      PROJ,
-    ]);
+    expect((brief[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([PROJ]);
 
     const after = readDerivedForms(filePath);
     expect(
-      after.find((form) => form.subjectId === "c1" && form.derivationType === "chunk_summary_detailed")
-        ?.content,
+      after.find((form) => form.subjectId === "c1" && form.derivationType === "chunk_summary_detailed")?.content,
     ).toBe(PROJ);
     // Chunk 1's summaries are ready again at the next source version.
     for (const form of after.filter((candidate) => candidate.subjectId === "c1")) {
@@ -417,9 +403,7 @@ describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summar
     const filePath = await newThread();
     for (let n = 1; n <= 3; n += 1) await sendPromptTurn(sdk, filePath, n);
     await drain(sdk, filePath);
-    expect(readChunks(filePath).members.filter((member) => member.chunkId === "c1")).toHaveLength(
-      2,
-    );
+    expect(readChunks(filePath).members.filter((member) => member.chunkId === "c1")).toHaveLength(2);
 
     const first = await turns.deleteTurn({ filePath }, { turnId: "t1" });
     expect(first.ok).toBe(true);
@@ -438,7 +422,10 @@ describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summar
     expect(second.value.cleared).toEqual([]);
     expect(second.value.queued).toEqual([]);
     expect(
-      second.value.dropped.filter((entry) => entry.subjectKind === "chunk").map(clearKey).sort(),
+      second.value.dropped
+        .filter((entry) => entry.subjectKind === "chunk")
+        .map(clearKey)
+        .sort(),
     ).toEqual(["chunk/c1/chunk_summary_brief", "chunk/c1/chunk_summary_detailed"]);
     expect([...second.value.superseded].sort()).toEqual([
       "w-c1-chunk_summary_brief-v2",
@@ -458,9 +445,7 @@ describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summar
     const emptied = chunks.find((chunk) => chunk.chunkId === "c1");
     expect(emptied?.memberTurnIds).toEqual([]);
     expect(emptied?.derivations).toBeUndefined();
-    expect(unwrap(await turns.listTurns({ filePath })).map((turn) => turn.turnId)).toEqual([
-      "t3",
-    ]);
+    expect(unwrap(await turns.listTurns({ filePath })).map((turn) => turn.turnId)).toEqual(["t3"]);
     const report = await drain(sdk, filePath);
     expect(report.ran).toEqual([]);
   });
@@ -589,9 +574,7 @@ describe("background mode: delete-and-walk-away (production path)", () => {
 
     const turnForms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
     expect(turnForms).toHaveLength(2);
-    expect(turnForms.every((form) => form.state === "ready" && form.sourceVersion === 2)).toBe(
-      true,
-    );
+    expect(turnForms.every((form) => form.state === "ready" && form.sourceVersion === 2)).toBe(true);
     expect(rawDetail(filePath)).toEqual([]);
   });
 });

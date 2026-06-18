@@ -3,8 +3,9 @@
 // first two run the production path and read the thread back; TC-2.7 drives
 // capture() directly so it can assert the per-event skip outcomes the SDK
 // returns on re-delivery.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import { createDeterministicProvider, intakeStream } from "lhc";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { mapMessage } from "../../src/capture/map-message.js";
 import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
@@ -16,7 +17,7 @@ import {
   makeToolResult,
   makeUserMessage,
 } from "../fixtures/synthetic.js";
-import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
+import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
 import { eventsAfterShutdown, kindsOf, startCapture } from "./support.js";
 
 let store: TempStore;
@@ -85,7 +86,9 @@ describe("Story 2: error tool result (TC-2.5)", () => {
     await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("read missing.txt")));
     await connector.handlers.message_end(
       ctx,
-      makeMessageEnd(makeAssistantMessage({ toolCalls: [{ id: "call_a", name: "read_file", arguments: { path: "missing.txt" } }] })),
+      makeMessageEnd(
+        makeAssistantMessage({ toolCalls: [{ id: "call_a", name: "read_file", arguments: { path: "missing.txt" } }] }),
+      ),
     );
     await connector.handlers.message_end(
       ctx,
@@ -177,9 +180,7 @@ describe("Story 2: idempotent re-delivery (TC-2.7, idempotency risk)", () => {
     expect(second.ok).toBe(true);
     if (second.ok) {
       expect(second.value.events.every((entry) => entry.outcome === "skipped")).toBe(true);
-      expect(
-        second.value.events.every((entry) => entry.skipReason === "duplicate_idempotency_key"),
-      ).toBe(true);
+      expect(second.value.events.every((entry) => entry.skipReason === "duplicate_idempotency_key")).toBe(true);
     }
 
     // No duplicate records landed on the thread.

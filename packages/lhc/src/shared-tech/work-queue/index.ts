@@ -9,15 +9,8 @@
 // public SDK surface: read-back reaches here only through the owning
 // domains' listQueuedWork.
 import type { DatabaseSync } from "node:sqlite";
-import {
-  createCommitHooks,
-  type OperationContext,
-} from "../context.js";
-import type {
-  CompletionTx,
-  HandlerDerivationWrite,
-  SubjectKind,
-} from "../derivation.js";
+import { createCommitHooks, type OperationContext } from "../context.js";
+import type { CompletionTx, HandlerDerivationWrite, SubjectKind } from "../derivation.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
@@ -79,11 +72,7 @@ function sourceIdOf(sourceRef: WorkSourceRef): string {
 // natural idempotency for the repair path — while a post-mutation
 // replacement (next version) never collides with an in-flight pre-mutation
 // item.
-export function recordItem(
-  db: DatabaseSync,
-  input: WorkItemInput,
-  queuedAt: string,
-): WorkItemRecord {
+export function recordItem(db: DatabaseSync, input: WorkItemInput, queuedAt: string): WorkItemRecord {
   const sourceVersion = input.sourceVersion ?? 1;
   const workItemId = `w-${sourceIdOf(input.sourceRef)}-${input.kind}-v${sourceVersion}`;
   db.prepare(
@@ -262,9 +251,7 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
          FROM work_item WHERE status IN ('queued', 'claimed')
          ORDER BY rowid LIMIT 1`,
       )
-      .get() as unknown as
-      | { status: string; eligible_at: string | null; claim_expires_at: string | null }
-      | undefined;
+      .get() as unknown as { status: string; eligible_at: string | null; claim_expires_at: string | null } | undefined;
     db.exec("COMMIT;");
     if (head === undefined) return { outcome: "empty" };
     if (head.status === "claimed") {
@@ -388,10 +375,7 @@ export function failAttempt(
 ): FailAttemptResult {
   const attempts = item.attempts + 1;
   if (opts.retryable && attempts < opts.retry.budget) {
-    const backoffMs = Math.min(
-      opts.retry.backoffBaseMs * 2 ** attempts,
-      opts.retry.backoffCapMs,
-    );
+    const backoffMs = Math.min(opts.retry.backoffBaseMs * 2 ** attempts, opts.retry.backoffCapMs);
     const eligibleAt = new Date(Date.parse(opts.now) + backoffMs).toISOString();
     db.exec("BEGIN IMMEDIATE;");
     try {

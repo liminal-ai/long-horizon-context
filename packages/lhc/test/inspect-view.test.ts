@@ -10,9 +10,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  initLhc,
   estimateTokens,
   type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
   type StoredView,
@@ -20,12 +20,12 @@ import {
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   expectReadOnly,
+  type TempStore,
   tempStore,
   validEvent,
-  type DerivedThreadFixture,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -36,7 +36,7 @@ afterEach(() => {
   store.cleanup();
 });
 
-function valueOf<T>(result: { ok: boolean }): T {
+function resultValue<T>(result: { ok: boolean }): T {
   if (!result.ok) throw new Error(`expected ok result: ${JSON.stringify(result)}`);
   return (result as { ok: true; value: T }).value;
 }
@@ -132,9 +132,7 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
   const listed = await sdk.messages.listMessages({ filePath });
   if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
   for (const turn of ["t4", "t5", "t6", "t8"]) {
-    const target = listed.value.find(
-      (record) => record.kind === "user_prompt" && record.turnId === turn,
-    );
+    const target = listed.value.find((record) => record.kind === "user_prompt" && record.turnId === turn);
     if (target === undefined) throw new Error(`fixture invariant: no prompt in ${turn}`);
     const edited = await sdk.messages.edit(
       { filePath },
@@ -142,10 +140,7 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
     );
     if (!edited.ok) throw new Error(`fixture edit failed: ${edited.error.reason}`);
   }
-  const compacted = await sdk.threadView.compact(
-    { filePath },
-    { params: DEGRADED_COMPACT_PARAMS },
-  );
+  const compacted = await sdk.threadView.compact({ filePath }, { params: DEGRADED_COMPACT_PARAMS });
   if (!compacted.ok) throw new Error(`fixture compact failed: ${compacted.error.reason}`);
   return fixture;
 }
@@ -198,10 +193,10 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     if (raw === null) return;
 
     // describe leg: the stored row verbatim through the surface.
-    const described = valueOf<StoredView | null>(await sdk.threadView.describe({ filePath }));
+    const described = resultValue<StoredView | null>(await sdk.threadView.describe({ filePath }));
     expect(described).toEqual(raw);
 
-    const report = valueOf<ViewContentsReport>(await sdk.inspect.view({ filePath }));
+    const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
     // Meta: identity, profile (null — explicit params), resolved config,
     // window — the row's fields, never re-resolved.
     expect(report.meta).toEqual({
@@ -228,23 +223,17 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     const entries = report.bands.flatMap((band) => band.entries);
     expect(entries.some((entry) => entry.subjectId === "t8" && entry.degraded)).toBe(true);
     expect(report.gaps).toHaveLength(0);
-    expect(entries.some((entry) => entry.subjectId === "c2" && entry.degraded)).toBe(
-      true,
-    );
+    expect(entries.some((entry) => entry.subjectId === "c2" && entry.degraded)).toBe(true);
 
     // Load-cost parity on the compacted shape too (bands + tail): an
     // independent pull re-measured with the same estimator.
-    const pulled = valueOf<{ messages: Array<{ content: string; band?: string }> }>(
+    const pulled = resultValue<{ messages: Array<{ content: string; band?: string }> }>(
       await sdk.threadView.pull({ filePath }),
     );
     expect(report.loadCost.total).toBe(measured(pulled.messages));
-    expect(report.loadCost.bandTokens).toBe(
-      measured(pulled.messages.filter((message) => message.band !== undefined)),
-    );
+    expect(report.loadCost.bandTokens).toBe(measured(pulled.messages.filter((message) => message.band !== undefined)));
     expect(report.loadCost.total).toBe(report.loadCost.bandTokens + report.loadCost.tailTokens);
-    expect(report.tail.messageCount).toBe(
-      pulled.messages.filter((message) => message.band === undefined).length,
-    );
+    expect(report.tail.messageCount).toBe(pulled.messages.filter((message) => message.band === undefined).length);
   });
 
   it("describe returns ok/null on a never-compacted thread and thread_not_found on a missing one", async () => {
@@ -313,7 +302,7 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
       if (!sent.ok) throw new Error(`intake failed: ${sent.error.reason}`);
     }
 
-    const pulled = valueOf<{
+    const pulled = resultValue<{
       messages: Array<{ content: string; band?: string }>;
       meta: { boundaryPosition: number; compactPoint: number | null };
     }>(await sdk.threadView.pull({ filePath }));
@@ -321,18 +310,15 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
     const tailServed = pulled.messages.filter((message) => message.band === undefined);
     const abridged = tailServed.filter((message) => message.content.includes(" · abridged]"));
     const fullResults = tailServed.filter(
-      (message) =>
-        message.content.startsWith("[tool result · ") && !message.content.includes(" · abridged]"),
+      (message) => message.content.startsWith("[tool result · ") && !message.content.includes(" · abridged]"),
     );
     expect(abridged.length).toBe(1);
     expect(fullResults.length).toBe(1);
     // Short forms cost short: the abridged result is cheaper as served than
     // its full sibling of identical record size.
-    expect(estimateTokens(abridged[0]?.content ?? "")).toBeLessThan(
-      estimateTokens(fullResults[0]?.content ?? ""),
-    );
+    expect(estimateTokens(abridged[0]?.content ?? "")).toBeLessThan(estimateTokens(fullResults[0]?.content ?? ""));
 
-    const report = valueOf<ViewContentsReport>(await sdk.inspect.view({ filePath }));
+    const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
     // Tail as served: count and tokens measured over the served tail —
     // boundary-aware shortening inherited from pull, never re-implemented.
     expect(report.tail.messageCount).toBe(tailServed.length);
@@ -348,14 +334,14 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
 describe("TC-2.3 / AC-2.4: never-compacted thread reports tail-only under the same parity contract", () => {
   it("meta null, bands empty, tail spans the record, cost parity holds", async () => {
     const { filePath, sdk } = await neverCompactedThread();
-    const report = valueOf<ViewContentsReport>(await sdk.inspect.view({ filePath }));
+    const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
     expect(report.meta).toBeNull();
     expect(report.bands).toEqual([]);
     expect(report.gaps).toEqual([]);
     expect(report.sourceState).toBeNull();
     expect(report.loadCost.bandTokens).toBe(0);
 
-    const pulled = valueOf<{ messages: Array<{ content: string; band?: string }> }>(
+    const pulled = resultValue<{ messages: Array<{ content: string; band?: string }> }>(
       await sdk.threadView.pull({ filePath }),
     );
     // The whole record serves as tail: every pulled message is band-absent
@@ -377,9 +363,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
 
     const first = await expectReadOnly(filePath, () => sdk.inspect.view({ filePath }));
     const second = await expectReadOnly(filePath, () => sdk.inspect.view({ filePath }));
-    const describedOnce = await expectReadOnly(filePath, () =>
-      sdk.threadView.describe({ filePath }),
-    );
+    const describedOnce = await expectReadOnly(filePath, () => sdk.threadView.describe({ filePath }));
     expect(first.ok && second.ok && describedOnce.ok).toBe(true);
     expect(second).toEqual(first);
     expect(captured).toHaveLength(0);
@@ -399,9 +383,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     };
     const reader = initLhc({ inferenceCallbacks: throwing, mode: "manual" });
     const viewed = await expectReadOnly(filePath, () => reader.inspect.view({ filePath }));
-    const described = await expectReadOnly(filePath, () =>
-      reader.threadView.describe({ filePath }),
-    );
+    const described = await expectReadOnly(filePath, () => reader.threadView.describe({ filePath }));
     expect(viewed.ok && described.ok).toBe(true);
   });
 

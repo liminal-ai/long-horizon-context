@@ -3,15 +3,11 @@
 // carried through (the mapper carries stopReason — research §5b — onto the only
 // durable vehicle, a runtime_note), and the turn closes complete-but-aborted at
 // agent_end. The interrupted content is never discarded.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import type { MessageEventInput } from "lhc";
-import {
-  makeAgentEnd,
-  makeAssistantMessage,
-  makeMessageEnd,
-  makeUserMessage,
-} from "../fixtures/synthetic.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { makeAgentEnd, makeAssistantMessage, makeMessageEnd, makeUserMessage } from "../fixtures/synthetic.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;

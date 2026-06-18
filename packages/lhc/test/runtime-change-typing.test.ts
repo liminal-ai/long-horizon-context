@@ -1,18 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  initLhc,
-  messages,
-  threads,
-  type InferenceCallbacks,
-  type Lhc,
-  type MessageEventInput,
-} from "../src/index.js";
-import {
-  createInferenceCallbacksDouble,
-  tempStore,
-  validEvent,
-  type TempStore,
-} from "./fixtures/index.js";
+import { type InferenceCallbacks, initLhc, type Lhc, type MessageEventInput, messages, threads } from "../src/index.js";
+import { createInferenceCallbacksDouble, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -119,14 +107,11 @@ describe("Story 5: runtime-change typing", () => {
     // stream order (their typed blocks are still stamped for the view renderer,
     // verified via the messages read above).
     const compression = captured.find((entry) => entry.op === "compressSmoothTurn");
-    const renderingText =
-      (compression?.input as { rendering?: string } | undefined)?.rendering ?? "";
+    const renderingText = (compression?.input as { rendering?: string } | undefined)?.rendering ?? "";
     const segments = renderingText.split(" | ");
     expect(segments).toHaveLength(4);
     expect(segments[1]).toBe(`model_change ${modelBlock.previousModel} -> ${modelBlock.newModel}`);
-    expect(segments[2]).toBe(
-      `thinking_level_change ${thinkingBlock.previousLevel} -> ${thinkingBlock.newLevel}`,
-    );
+    expect(segments[2]).toBe(`thinking_level_change ${thinkingBlock.previousLevel} -> ${thinkingBlock.newLevel}`);
     expect(segments[3]).toBe("answer");
   });
 });

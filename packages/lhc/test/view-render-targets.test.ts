@@ -16,12 +16,12 @@ import { initLhc, type Lhc, type ViewMessage } from "../src/index.js";
 import {
   assertPiSessionConformance,
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   eventBatch,
   openRaw,
-  tempStore,
-  type DerivedThreadFixture,
   type TempStore,
+  tempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -55,17 +55,11 @@ function fullStateHash(filePath: string): string {
       JSON.stringify({
         events: db.prepare(`SELECT * FROM event ORDER BY event_order`).all(),
         messages: db.prepare(`SELECT * FROM message ORDER BY source_event_order`).all(),
-        blocks: db
-          .prepare(`SELECT * FROM message_block ORDER BY message_id, block_index`)
-          .all(),
+        blocks: db.prepare(`SELECT * FROM message_block ORDER BY message_id, block_index`).all(),
         turns: db.prepare(`SELECT * FROM turns ORDER BY turn_order`).all(),
         chunks: db.prepare(`SELECT * FROM chunk ORDER BY chunk_order`).all(),
-        members: db
-          .prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`)
-          .all(),
-        derivations: db
-          .prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`)
-          .all(),
+        members: db.prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`).all(),
+        derivations: db.prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`).all(),
         views: db.prepare(`SELECT * FROM thread_view`).all(),
         bands: db.prepare(`SELECT * FROM thread_view_band ORDER BY band`).all(),
         boundary: db.prepare(`SELECT * FROM view_boundary`).all(),
@@ -124,9 +118,7 @@ describe("TC-5.1 (AC-5.1): pull opens with band context messages in gradient ord
     const tail = messages.slice(bands.length);
     expect(tail.every((m) => m.band === undefined)).toBe(true);
     expect(tail[0]).toEqual({ role: "user", content: "turn 9: please investigate area 9" });
-    const prompts = tail
-      .filter((m) => m.content.startsWith("turn "))
-      .map((m) => m.content.split(":")[0]);
+    const prompts = tail.filter((m) => m.content.startsWith("turn ")).map((m) => m.content.split(":")[0]);
     expect(prompts).toEqual(["turn 9", "turn 10", "turn 11", "turn 12"]);
     // Roles per the pinned mapping: prompts/tool-results user, the
     // assistant kinds assistant.
@@ -231,18 +223,17 @@ describe("TC-5.3 (AC-5.4): a never-compacted thread materializes its tail-only v
     expect(pulled.value.meta.viewId).toBeNull();
     // Four record messages (turn_end projects no message), zero band entries.
     expect(file.entries).toHaveLength(4);
-    expect(file.entries.every((e) => !e.message.content[0]?.text.startsWith("[context ·"))).toBe(
-      true,
-    );
+    expect(file.entries.every((e) => !e.message.content[0]?.text.startsWith("[context ·"))).toBe(true);
     file.entries.forEach((entry, i) => {
       expect(entry.message.content[0]?.text).toBe(pulled.value.messages[i]?.content);
     });
 
     // viewId null ⇒ the header derives from the thread's created-at.
     const db = openRaw(filePath);
-    const meta = db
-      .prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string; created_at: string };
+    const meta = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as {
+      thread_id: string;
+      created_at: string;
+    };
     db.close();
     expect(file.header["timestamp"]).toBe(meta.created_at);
     expect(file.header["id"]).toBe(`${meta.thread_id}:${meta.created_at}`);

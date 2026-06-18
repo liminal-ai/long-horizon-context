@@ -11,9 +11,9 @@ import type { VisibilityBudgets } from "../../shared-tech/index.js";
 // everything full). A missing row is a damaged thread file, surfaced as a
 // throw for the operation boundary's storage_failure wrap.
 export function readBoundaryPosition(db: DatabaseSync): number {
-  const row = db
-    .prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`)
-    .get() as { position: number | bigint } | undefined;
+  const row = db.prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`).get() as
+    | { position: number | bigint }
+    | undefined;
   if (row === undefined) {
     throw new Error("view_boundary singleton row missing (migration v6 seeds it)");
   }
@@ -27,11 +27,7 @@ export function readBoundaryPosition(db: DatabaseSync): number {
 // "the advance's sum equals what status reports" is structural — the design
 // requires the two sums equal, and sharing the query makes that a fact of
 // the code rather than a discipline.
-export function visibilityZoneTokens(
-  db: DatabaseSync,
-  position: number,
-  compactPoint: number,
-): number {
+export function visibilityZoneTokens(db: DatabaseSync, position: number, compactPoint: number): number {
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(token_estimate), 0) AS zone FROM message
@@ -48,9 +44,9 @@ export function visibilityZoneTokens(
 // the zero origin when the thread has never compacted — the same default the
 // pull uses, read without dragging band bytes along.
 function readCompactPoint(db: DatabaseSync): number {
-  const row = db
-    .prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`)
-    .get() as { compact_point: number | bigint } | undefined;
+  const row = db.prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`).get() as
+    | { compact_point: number | bigint }
+    | undefined;
   return row === undefined ? 0 : Number(row.compact_point);
 }
 
@@ -67,11 +63,7 @@ export interface ZoneToolResult {
 // identical WHERE clause on purpose, so the decision's arithmetic and the
 // status read's sum can never diverge (story Technical Notes; the amended
 // boundary suite's status assertions are the canary).
-function readZoneToolResults(
-  db: DatabaseSync,
-  position: number,
-  compactPoint: number,
-): ZoneToolResult[] {
+function readZoneToolResults(db: DatabaseSync, position: number, compactPoint: number): ZoneToolResult[] {
   const rows = db
     .prepare(
       `SELECT source_event_order, token_estimate, turn_id FROM message
@@ -99,9 +91,9 @@ function readZoneToolResults(
 // committing, and that open turn must not be eaten (Epic 05 AC-5.3's
 // open-turn untouchability, made explicit rather than assumed).
 function readOpenTurnId(db: DatabaseSync): string | null {
-  const row = db
-    .prepare(`SELECT turn_id FROM turns WHERE status = 'open' AND deleted_at IS NULL LIMIT 1`)
-    .get() as { turn_id: string } | undefined;
+  const row = db.prepare(`SELECT turn_id FROM turns WHERE status = 'open' AND deleted_at IS NULL LIMIT 1`).get() as
+    | { turn_id: string }
+    | undefined;
   return row?.turn_id ?? null;
 }
 
@@ -164,9 +156,7 @@ export function advanceDecision(
   if (total <= budgets.maxTokens) return null;
 
   // The open turn's group is never evictable; its tokens still count in the sum.
-  const candidates = groups.filter(
-    (group) => group.turnId === null || group.turnId !== openTurnId,
-  );
+  const candidates = groups.filter((group) => group.turnId === null || group.turnId !== openTurnId);
 
   // Stop the walk before the newest closed turn — the last candidate carrying a
   // turn_id. It and everything after it (the turn itself plus any trailing
@@ -199,11 +189,7 @@ export function advanceDecision(
 // isolation; this runs at flush, strictly after intake's COMMIT). The
 // position-forward guard in the UPDATE makes never-backward (AC-4.6) a
 // property of the write, not just of the decision's inputs.
-export function executeBoundaryAdvance(
-  db: DatabaseSync,
-  budgets: VisibilityBudgets,
-  clock: () => Date,
-): void {
+export function executeBoundaryAdvance(db: DatabaseSync, budgets: VisibilityBudgets, clock: () => Date): void {
   const position = readBoundaryPosition(db);
   const compactPoint = readCompactPoint(db);
   if (visibilityZoneTokens(db, position, compactPoint) <= budgets.maxTokens) return;

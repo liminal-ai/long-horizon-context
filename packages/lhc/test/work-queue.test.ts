@@ -8,21 +8,8 @@
 // result alone. The work-queue util has no public SDK surface; everything
 // here enters through the SDK or the in-process CLI.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  messages,
-  threads,
-  turns,
-  type MessageEventInput,
-  type WorkItemRecord,
-} from "../src/index.js";
-import {
-  openRaw,
-  setIntakeClock,
-  tempStore,
-  validEvent,
-  type TempStore,
-} from "./fixtures/index.js";
+import { intakeStream, type MessageEventInput, messages, threads, turns, type WorkItemRecord } from "../src/index.js";
+import { openRaw, setIntakeClock, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -46,14 +33,9 @@ async function send(filePath: string, batch: MessageEventInput[]) {
   return result.value;
 }
 
-async function queuedFor(
-  filePath: string,
-  owner: "messages" | "turns",
-): Promise<WorkItemRecord[]> {
+async function queuedFor(filePath: string, owner: "messages" | "turns"): Promise<WorkItemRecord[]> {
   const result =
-    owner === "messages"
-      ? await messages.listQueuedWork({ filePath })
-      : await turns.listQueuedWork({ filePath });
+    owner === "messages" ? await messages.listQueuedWork({ filePath }) : await turns.listQueuedWork({ filePath });
   if (!result.ok) throw new Error(`queued-work read-back failed: ${result.error.reason}`);
   return result.value;
 }
@@ -231,8 +213,7 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     const implicitItems = await queuedFor(implicitPath, "turns");
     expect(explicitItems).toHaveLength(1);
     // Same item contract modulo queuedAt (wall clock differs between runs).
-    const contract = (items: WorkItemRecord[]) =>
-      items.map(({ queuedAt: _queuedAt, ...rest }) => rest);
+    const contract = (items: WorkItemRecord[]) => items.map(({ queuedAt: _queuedAt, ...rest }) => rest);
     expect(contract(implicitItems)).toEqual(contract(explicitItems));
     expect(contract(explicitItems)).toEqual([
       {
@@ -256,10 +237,7 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     ]);
 
     const turnWork = await queuedFor(filePath, "turns");
-    expect(turnWork.map((item) => item.workItemId)).toEqual([
-      "w-t1-turn_derivation-v1",
-      "w-t2-turn_derivation-v1",
-    ]);
+    expect(turnWork.map((item) => item.workItemId)).toEqual(["w-t1-turn_derivation-v1", "w-t2-turn_derivation-v1"]);
     expect(turnWork.every((item) => item.kind === "turn_derivation")).toBe(true);
     expect(turnWork.every((item) => item.status === "queued")).toBe(true);
   });
@@ -349,11 +327,7 @@ import {
   type WorkHandler,
 } from "../src/index.js";
 import { enqueue } from "../src/shared-tech/work-queue/index.js";
-import {
-  createInferenceCallbacksDouble,
-  readDerivedForms,
-  setIntakeWalkHook,
-} from "./fixtures/index.js";
+import { createInferenceCallbacksDouble, readDerivedForms, setIntakeWalkHook } from "./fixtures/index.js";
 
 // Below-SDK read of derivation rows — enqueue's pending rows are asserted
 // durably, not through the batch result.
@@ -406,10 +380,7 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
 
   it("assembly merges per-domain tables, dispatch finds a registered handler, and a doubly-claimed kind is refused", () => {
     const handler: WorkHandler = async () => ({ ok: true });
-    const map = assembleWorkHandlerMap([
-      { prompt_smoothing: handler },
-      { turn_derivation: handler },
-    ]);
+    const map = assembleWorkHandlerMap([{ prompt_smoothing: handler }, { turn_derivation: handler }]);
     const found = lookupWorkHandler(map, "prompt_smoothing");
     expect(found.ok).toBe(true);
     if (!found.ok) return;
@@ -418,9 +389,9 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
     expect(missed.ok).toBe(false);
     // One owner per kind: a second table claiming the same kind is a wiring
     // bug surfaced at construction.
-    expect(() =>
-      assembleWorkHandlerMap([{ prompt_smoothing: handler }, { prompt_smoothing: handler }]),
-    ).toThrow(/prompt_smoothing/);
+    expect(() => assembleWorkHandlerMap([{ prompt_smoothing: handler }, { prompt_smoothing: handler }])).toThrow(
+      /prompt_smoothing/,
+    );
   });
 });
 
@@ -519,9 +490,7 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
       });
       expect(item.workItemId).toBe("w-c1-chunk_summary_brief-v1");
       expect(pokes).toEqual(["th_direct"]);
-      expect(rawFormRows(filePath)).toEqual([
-        { key: "chunk/c1/chunk_summary_brief", state: "pending" },
-      ]);
+      expect(rawFormRows(filePath)).toEqual([{ key: "chunk/c1/chunk_summary_brief", state: "pending" }]);
     } finally {
       db.close();
     }

@@ -11,31 +11,31 @@
 // surface is Story 4's).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  type BatchResult,
   countLiveItems,
-  initLhc,
+  type DrainReport,
   deterministicText,
+  type EnqueueInput,
   enqueue,
   estimateTokens,
-  runInTransaction,
-  threads,
-  type BatchResult,
   type InferenceCallbacks,
-  type DrainReport,
-  type EnqueueInput,
+  type InferenceResult,
+  initLhc,
   type Lhc,
   type MessageEventInput,
-  type InferenceResult,
   type RenderingPart,
+  runInTransaction,
   type SdkConfig,
+  threads,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readChunks,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -55,10 +55,7 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function manualSdk(
-  inferenceCallbacks: InferenceCallbacks,
-  chunkPolicy?: SdkConfig["chunkPolicy"],
-): Lhc {
+function manualSdk(inferenceCallbacks: InferenceCallbacks, chunkPolicy?: SdkConfig["chunkPolicy"]): Lhc {
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: "manual",
@@ -69,11 +66,7 @@ function manualSdk(
   return initLhc(config);
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<BatchResult> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
   return result.value;
@@ -86,12 +79,7 @@ async function drain(sdk: Lhc, filePath: string): Promise<DrainReport> {
 }
 
 // One closed prompt+answer turn through real intake.
-async function sendTurn(
-  sdk: Lhc,
-  filePath: string,
-  prompt: string,
-  answer: string,
-): Promise<void> {
+async function sendTurn(sdk: Lhc, filePath: string, prompt: string, answer: string): Promise<void> {
   await send(sdk, filePath, [
     validEvent("user_prompt", { payload: { text: prompt } }),
     validEvent("assistant_text", { payload: { text: answer } }),
@@ -100,9 +88,7 @@ async function sendTurn(
 }
 
 function formOf(filePath: string, subjectId: string, derivationType: string) {
-  return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
-  );
+  return readDerivedForms(filePath).find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
 }
 
 function liveCount(filePath: string): number {
@@ -123,7 +109,12 @@ function requeueDirect(filePath: string, input: EnqueueInput): void {
     const row = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get() as {
       thread_id: string;
     };
-    runInTransaction(db, () => new Date(), row.thread_id, (ctx) => enqueue(ctx, input));
+    runInTransaction(
+      db,
+      () => new Date(),
+      row.thread_id,
+      (ctx) => enqueue(ctx, input),
+    );
   } finally {
     db.close();
   }
@@ -133,16 +124,12 @@ function requeueDirect(filePath: string, input: EnqueueInput): void {
 // smooth-turn compressions — the seam tests use to pin projected token counts
 // for the placement golden cases (the compression content is what placement
 // arithmetic measures, exactly once, at landing).
-function withScriptedProjections(
-  base: InferenceCallbacks,
-  next: () => string,
-): InferenceCallbacks {
+function withScriptedProjections(base: InferenceCallbacks, next: () => string): InferenceCallbacks {
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
     composeTurnRendering: (i) => base.composeTurnRendering(i),
-    compressSmoothTurn: (): Promise<InferenceResult> =>
-      Promise.resolve({ ok: true, text: next() }),
+    compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: next() }),
     summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
     summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
   };
@@ -215,9 +202,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     const log = await sdk.logging.query({ filePath }, { derivationType: "smoothed_prompt" });
     expect(log.ok).toBe(true);
     if (!log.ok) return;
-    expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([
-      ["smoothed_prompt", "m1"],
-    ]);
+    expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([["smoothed_prompt", "m1"]]);
     expect(formOf(filePath, "t1", "smooth_turn_compression")?.state).toBe("ready");
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
   });
@@ -286,7 +271,6 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
 describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a state-changing call's outcome survives", () => {
   it("a three-call edit run with one isError carries per-call outcomes into the composition input, from the forms", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     const call = (id: string, path: string) =>
@@ -335,8 +319,7 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
       { id: "m7", kind: "tool_result", outcome: "succeeded" },
     ] as const;
     for (const m of toolMessages) {
-      const summary =
-        m.kind === "tool_call" ? m.text : formOf(filePath, m.id, "tool_result_summary")?.content;
+      const summary = m.kind === "tool_call" ? m.text : formOf(filePath, m.id, "tool_result_summary")?.content;
       expect(summary).toBeDefined();
       expect(account).toContain(`${summary} ⇒ ${m.outcome}`);
     }
@@ -434,9 +417,7 @@ describe("TC-3.7 / AC-3.7: a single compression at or above the max forms its ow
 
     await drain(sdk, filePath);
     expect(readChunks(filePath)).toEqual({
-      chunks: [
-        { chunkId: "c1", chunkOrder: 1, status: "closed", accumulatedProjectedTokens: big },
-      ],
+      chunks: [{ chunkId: "c1", chunkOrder: 1, status: "closed", accumulatedProjectedTokens: big }],
       members: [{ chunkId: "c1", turnId: "t1", memberIdx: 0 }],
     });
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("ready");
@@ -621,9 +602,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
       derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
     });
     const requeued = await drain(sdk, filePath);
-    expect(requeued.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([
-      ["chunk_summary_brief", "done"],
-    ]);
+    expect(requeued.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([["chunk_summary_brief", "done"]]);
     expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("ready");
     expect(formOf(filePath, "c1", "chunk_summary_detailed")).toEqual(detailedBefore);
   });

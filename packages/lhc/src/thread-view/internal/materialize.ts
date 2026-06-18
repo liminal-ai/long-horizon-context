@@ -70,10 +70,7 @@ export function renderPiSessionLines(input: MaterializeInput): string[] {
   return lines;
 }
 
-export function writePiSessionFile(
-  input: MaterializeInput,
-  path: string,
-): { writtenPath: string } {
+export function writePiSessionFile(input: MaterializeInput, path: string): { writtenPath: string } {
   const writtenPath = resolve(path);
   writeFileSync(writtenPath, `${renderPiSessionLines(input).join("\n")}\n`);
   return { writtenPath };

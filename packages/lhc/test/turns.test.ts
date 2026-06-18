@@ -7,20 +7,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  messages,
-  threads,
-  turns,
-  type MessageEventInput,
-  type TurnRecord,
-} from "../src/index.js";
-import {
-  corruptTwoOpenTurns,
-  tempStore,
-  validEvent,
-  type TempStore,
-} from "./fixtures/index.js";
+import { intakeStream, type MessageEventInput, messages, type TurnRecord, threads, turns } from "../src/index.js";
+import { corruptTwoOpenTurns, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -198,11 +186,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
 
   it("TC-3.5: gap messages stay membershipless forever; the closed turn reads back unchanged (AC-3.7, AC-3.8)", async () => {
     const filePath = await createThread();
-    await send(filePath, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text"),
-      validEvent("turn_end"),
-    ]);
+    await send(filePath, [validEvent("user_prompt"), validEvent("assistant_text"), validEvent("turn_end")]);
     const closedBefore = (await readTurns(filePath))[0]!;
 
     // Post-close, pre-prompt: a gap message with no membership.
@@ -370,9 +354,7 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
     const corruptPath = await createThread();
     await send(corruptPath, [validEvent("user_prompt")]);
     corruptTwoOpenTurns(corruptPath);
-    const corruptionLeg = await intakeStream.messageEvents({ filePath: corruptPath }, [
-      validEvent("assistant_text"),
-    ]);
+    const corruptionLeg = await intakeStream.messageEvents({ filePath: corruptPath }, [validEvent("assistant_text")]);
     expect(corruptionLeg.ok).toBe(false);
     if (corruptionLeg.ok) return;
     expect(corruptionLeg.error.errorClass).toBe("state_corruption");
@@ -392,11 +374,7 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
 
     // The three classes compared against each other, not pattern-matched
     // individually.
-    const classes = new Set([
-      callerLeg.error.errorClass,
-      corruptionLeg.error.errorClass,
-      systemLeg.error.errorClass,
-    ]);
+    const classes = new Set([callerLeg.error.errorClass, corruptionLeg.error.errorClass, systemLeg.error.errorClass]);
     expect(classes.size).toBe(3);
   });
 });

@@ -16,9 +16,9 @@ import {
   openRaw,
   readDerivedForms,
   schemaVersionOf,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -51,10 +51,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     ]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.events.map((entry) => entry.outcome)).toEqual([
-      "recorded",
-      "recorded",
-    ]);
+    expect(result.value.events.map((entry) => entry.outcome)).toEqual(["recorded", "recorded"]);
     // The order counter continues from the legacy record; the new message id
     // derives from the continued order.
     expect(result.value.threadPosition.lastEventOrder).toBe(3);
@@ -85,9 +82,7 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     expect(materialized.value).toHaveLength(1);
     expect(materialized.value[0]!.messageId).toBe("m2");
     expect(materialized.value[0]!.sourceEventOrder).toBe(2);
-    expect(materialized.value[0]!.blocks).toEqual([
-      { blockType: "text", content: { text: "answered after upgrade" } },
-    ]);
+    expect(materialized.value[0]!.blocks).toEqual([{ blockType: "text", content: { text: "answered after upgrade" } }]);
     expect(materialized.value[0]!.tokenEstimate).toBeGreaterThan(0);
   });
 
@@ -301,9 +296,9 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
       // tables empty, deleted_at stamps present and null.
       const chunkCount = db.prepare("SELECT COUNT(*) AS n FROM chunk").get() as { n: number | bigint };
       expect(Number(chunkCount.n)).toBe(0);
-      const deleted = db
-        .prepare("SELECT COUNT(*) AS n FROM message WHERE deleted_at IS NOT NULL")
-        .get() as { n: number | bigint };
+      const deleted = db.prepare("SELECT COUNT(*) AS n FROM message WHERE deleted_at IS NOT NULL").get() as {
+        n: number | bigint;
+      };
       expect(Number(deleted.n)).toBe(0);
     } finally {
       db.close();
@@ -320,9 +315,27 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
         sourceVersion,
       })),
     ).toEqual([
-      { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt", state: "pending", sourceVersion: 1 },
-      { subjectKind: "message", subjectId: "m3", derivationType: "tool_result_summary", state: "pending", sourceVersion: 1 },
-      { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression", state: "pending", sourceVersion: 1 },
+      {
+        subjectKind: "message",
+        subjectId: "m1",
+        derivationType: "smoothed_prompt",
+        state: "pending",
+        sourceVersion: 1,
+      },
+      {
+        subjectKind: "message",
+        subjectId: "m3",
+        derivationType: "tool_result_summary",
+        state: "pending",
+        sourceVersion: 1,
+      },
+      {
+        subjectKind: "turn",
+        subjectId: "t1",
+        derivationType: "smooth_turn_compression",
+        state: "pending",
+        sourceVersion: 1,
+      },
       { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "pending", sourceVersion: 1 },
     ]);
 
@@ -405,9 +418,7 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
       expect(Number(rows[0]!.position)).toBe(0);
       boundaryBefore = { position: Number(rows[0]!.position), updatedAt: rows[0]!.updated_at };
       expect(() =>
-        db
-          .prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`)
-          .run(),
+        db.prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`).run(),
       ).toThrow(/CHECK/);
     } finally {
       db.close();

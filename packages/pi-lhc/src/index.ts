@@ -3,48 +3,34 @@
 // handler. The connector owns only plain-data `SessionState` plus the live
 // `LhcInstance` it constructs per session — never a PI `ctx`/session object,
 // which PI replaces on new/resume/fork (tech design Flow 1, plain-data rule).
+
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import type {
-  BatchResult,
-  MessageEventInput,
-  OpResult,
-  SdkConfig,
-  ThreadRef,
-} from "lhc";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  PiHookHandler,
-  PiHookName,
-} from "./pi/types.js";
+import type { BatchResult, MessageEventInput, OpResult, SdkConfig, ThreadRef } from "lhc";
+import { threads } from "lhc";
+import { capture, captureGap } from "./capture/converter.js";
+import { type MapCtx, mapMessage } from "./capture/map-message.js";
+import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
+import { TurnAccumulator } from "./capture/turn-accumulator.js";
+import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
+import { createModelCall } from "./inference/model-call.js";
+import { report, validateReachable } from "./inference/startup-validation.js";
+import { detectForkFromSessionTree, forkInfoFromHook, seedFork } from "./lifecycle/fork.js";
+import { disposeInstance, initInstance } from "./lifecycle/instance.js";
+import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
 import type { CaptureFailureDiagnostic, SessionState } from "./lifecycle/state.js";
 import { createSessionState } from "./lifecycle/state.js";
-import { disposeInstance, initInstance } from "./lifecycle/instance.js";
-import { createModelCall, defaultAssignments } from "./inference/model-call.js";
-import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
-import { report, validateReachable } from "./inference/startup-validation.js";
 import {
-  detectForkFromSessionTree,
-  forkInfoFromHook,
-  seedFork,
-} from "./lifecycle/fork.js";
-import {
+  type LaunchFlags,
   parseLaunchFlags,
+  type ResolveDeps,
   resolveReloadThread,
   resolveThread,
   threadRefById,
-  type LaunchFlags,
-  type ResolveDeps,
 } from "./lifecycle/thread-resolution.js";
-import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
-import { threads } from "lhc";
-import { capture, captureGap } from "./capture/converter.js";
-import { mapMessage, type MapCtx } from "./capture/map-message.js";
-import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
-import { TurnAccumulator } from "./capture/turn-accumulator.js";
+import type { ExtensionAPI, ExtensionContext, PiHookHandler, PiHookName } from "./pi/types.js";
 import type { LhcInstance } from "./shared/instance.js";
 
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
@@ -80,10 +66,7 @@ export interface ConnectorDeps {
   registryPath?: string;
   newThreadFilePath?: () => string;
   parseLaunch?: () => LaunchFlags;
-  selectThread?: (
-    choices: readonly ThreadChoice[],
-    ctx: ExtensionContext,
-  ) => Promise<string | null>;
+  selectThread?: (choices: readonly ThreadChoice[], ctx: ExtensionContext) => Promise<string | null>;
   /** Assignment config for Story 6: operator overrides for provider/model/prompt
    *  per derivation kind. Uses loadAssignments to merge over shipped defaults. */
   assignmentConfig?: unknown;
@@ -158,9 +141,8 @@ function readDurableThreadId(ctx: ExtensionContext): string | null {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
     if (entry === undefined || entry.type !== THREAD_ENTRY_TYPE) continue;
-    const data = typeof entry.data === "object" && entry.data !== null
-      ? (entry.data as Record<string, unknown>)
-      : entry;
+    const data =
+      typeof entry.data === "object" && entry.data !== null ? (entry.data as Record<string, unknown>) : entry;
     const threadId = data.threadId;
     if (typeof threadId === "string" && threadId !== "") return threadId;
   }
@@ -173,10 +155,7 @@ const DEFAULT_LHC_DIR = join(homedir(), ".lhc");
  *  that resolves provider/model through PI's registry and completes through
  *  pi-ai when available. Story 6 loads assignments from config with shipped
  *  defaults. */
-function defaultBuildSdkConfig(
-  ctx: ExtensionContext,
-  assignmentConfig: unknown = undefined,
-): OpResult<SdkConfig> {
+function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown = undefined): OpResult<SdkConfig> {
   // Load assignments from config (Story 6: AC-5.4, AC-5.5)
   const assignments = loadAssignmentsImpl(assignmentConfig);
 
@@ -213,10 +192,7 @@ function renderResumeCandidates(choices: readonly ThreadChoice[]): string {
  *  selector in interactive/RPC modes, so multiple candidates are resolved by
  *  operator choice. Headless mode has no input surface, so ambiguous resume
  *  fails closed and the operator can use `--session <id>` for explicit attach. */
-async function defaultSelectThread(
-  choices: readonly ThreadChoice[],
-  ctx: ExtensionContext,
-): Promise<string | null> {
+async function defaultSelectThread(choices: readonly ThreadChoice[], ctx: ExtensionContext): Promise<string | null> {
   if (choices.length === 0) return null;
   if (choices.length === 1) {
     if (ctx.hasUI) ctx.ui.notify(renderResumeCandidates(choices), { level: "info" });
@@ -235,7 +211,7 @@ async function defaultSelectThread(
   const selected = await ctx.ui.select("pi-lhc --resume: select a thread", labels);
   if (selected === undefined) return null;
   const index = labels.indexOf(selected);
-  return index >= 0 ? choices[index]?.threadId ?? null : null;
+  return index >= 0 ? (choices[index]?.threadId ?? null) : null;
 }
 
 /** Default new-thread file location: `~/.lhc/threads/<uuid>.sqlite`. The id is
@@ -267,8 +243,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let appendThreadEntry: ((entry: DurableThreadEntry) => void) | null = null;
 
   // Build SDK config with assignment config if provided (Story 6)
-  const buildSdkConfig = deps.buildSdkConfig ??
-    ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
+  const buildSdkConfig =
+    deps.buildSdkConfig ?? ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
   const newThreadFilePath = deps.newThreadFilePath ?? defaultNewThreadFilePath;
   const parseLaunch = deps.parseLaunch ?? (() => parseLaunchFlags(process.argv));
   const selectThread = deps.selectThread ?? defaultSelectThread;
@@ -289,10 +265,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Normal launch resolution: `--resume` runs the cwd-scoped operator picker;
   // `--session` / `--continue` / no-flag go through the registry resolver (only
   // no-flag creates).
-  async function resolveForLaunch(
-    launch: LaunchFlags,
-    ctx: ExtensionContext,
-  ): Promise<OpResult<ThreadRef | null>> {
+  async function resolveForLaunch(launch: LaunchFlags, ctx: ExtensionContext): Promise<OpResult<ThreadRef | null>> {
     if (launch.resume === true) {
       const pickerDeps: {
         registryPath?: string;
@@ -323,7 +296,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       return;
     }
 
-    let resolved: OpResult<ThreadRef | null> | undefined = undefined;
+    let resolved: OpResult<ThreadRef | null> | undefined;
     let forkAttempted = false;
 
     // Fork path (Story 4): create a new thread and seed it from the source.
@@ -442,9 +415,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     if (resolved === undefined) {
       const launch = parseLaunch();
       const isReload = event.reason === "reload";
-      resolved = isReload
-        ? await resolveReloadFor(ctx)
-        : await resolveForLaunch(launch, ctx);
+      resolved = isReload ? await resolveReloadFor(ctx) : await resolveForLaunch(launch, ctx);
     }
 
     if (!resolved.ok) {
@@ -506,10 +477,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // converter already recorded a durable gap for a writable-thread malformed
   // event (`invalid_event`); a store-unavailable failure could not, so it
   // surfaces as an extension health signal with no gap. Neither path throws.
-  function recordCaptureOutcome(
-    result: OpResult<BatchResult>,
-    events: readonly MessageEventInput[],
-  ): void {
+  function recordCaptureOutcome(result: OpResult<BatchResult>, events: readonly MessageEventInput[]): void {
     if (result.ok) return;
     const recordedGap = result.error.code === "invalid_event";
     const failure: CaptureFailureDiagnostic = {
@@ -544,11 +512,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   ): Promise<void> {
     if (instance === null) return;
     const message = cause instanceof Error ? cause.message : String(cause);
-    const result = await captureGap(
-      fallbackIdFor(hook, position, sourceSeq),
-      `${hook}: ${message}`,
-      instance,
-    );
+    const result = await captureGap(fallbackIdFor(hook, position, sourceSeq), `${hook}: ${message}`, instance);
     if (!result.ok) {
       recordCaptureOutcome(result, []);
       return;
@@ -622,10 +586,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
-  const guard = (
-    name: Epic1Hook,
-    body: PiHookHandler<Epic1Hook>,
-  ): PiHookHandler<Epic1Hook> => {
+  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): PiHookHandler<Epic1Hook> => {
     return async (ctx, event): Promise<void> => {
       try {
         await body(ctx, event);

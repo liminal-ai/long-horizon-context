@@ -5,11 +5,12 @@
 // hand-written rows), the corruption and turnless-straggler variants, and
 // the two-point test injection facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, messages, turns, type Lhc, type VisibilityBudgets } from "../src/index.js";
+import { initLhc, type Lhc, messages, turns, type VisibilityBudgets } from "../src/index.js";
 import {
   blockedSiblingThread,
   corruptedVariantThread,
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   fireViewInjection,
   openRaw,
@@ -17,11 +18,10 @@ import {
   schemaVersionOf,
   setViewInjectionHook,
   stragglerVariantThread,
-  tempStore,
-  TRANSIENT_EXHAUST_REASON,
-  validEvent,
-  type DerivedThreadFixture,
   type TempStore,
+  TRANSIENT_EXHAUST_REASON,
+  tempStore,
+  validEvent,
 } from "./fixtures/index.js";
 
 // The main fixture is the suite's load-bearing asset and is expensive to
@@ -85,16 +85,12 @@ describe("FC-0.1: migration v6 storage on a current thread file", () => {
           .run(),
       ).toThrow(/CHECK/);
       expect(() =>
-        db
-          .prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`)
-          .run(),
+        db.prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`).run(),
       ).toThrow(/CHECK/);
 
       // The band table pins its band vocabulary and cascade in the DDL.
       const bandDdl = (
-        db
-          .prepare(`SELECT sql FROM sqlite_master WHERE name = 'thread_view_band'`)
-          .get() as { sql: string }
+        db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'thread_view_band'`).get() as { sql: string }
       ).sql;
       expect(bandDdl).toContain("CHECK (band IN ('brief','detailed','smooth'))");
       expect(bandDdl).toContain("ON DELETE CASCADE");
@@ -184,9 +180,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     expect(report.ok).toBe(true);
     if (!report.ok) return;
     const renderings = report.value.filter((entry) => entry.derivationType === "turn_rendering");
-    expect(renderings.map((entry) => entry.subjectId).sort()).toEqual(
-      [...fixture.turnIds].sort(),
-    );
+    expect(renderings.map((entry) => entry.subjectId).sort()).toEqual([...fixture.turnIds].sort());
     for (const rendering of renderings) {
       expect(rendering.state).toBe("ready");
       expect(rendering.content).toBeDefined();
@@ -201,9 +195,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     ]);
     for (const chunkId of ["c1", "c2", "c3"]) {
       for (const form of ["chunk_summary_detailed", "chunk_summary_brief"]) {
-        const summary = report.value.find(
-          (entry) => entry.subjectId === chunkId && entry.derivationType === form,
-        );
+        const summary = report.value.find((entry) => entry.subjectId === chunkId && entry.derivationType === form);
         expect(summary?.state).toBe("ready");
       }
     }
@@ -213,14 +205,10 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const report = await messages.report({ filePath: fixture.filePath }, { notReady: true });
     expect(report.ok).toBe(true);
     if (!report.ok) return;
-    const transient = report.value.find(
-      (entry) => entry.subjectId === fixture.failedTransientMessageId,
-    );
+    const transient = report.value.find((entry) => entry.subjectId === fixture.failedTransientMessageId);
     expect(transient?.derivationType).toBe("tool_result_summary");
     expect(transient?.state).toBe("failed");
-    const permanent = report.value.find(
-      (entry) => entry.subjectId === fixture.failedPermanentMessageId,
-    );
+    const permanent = report.value.find((entry) => entry.subjectId === fixture.failedPermanentMessageId);
     expect(permanent?.derivationType).toBe("tool_result_summary");
     expect(permanent?.state).toBe("failed");
     // Terminal failures left no live queue rows behind (DD-1): neither entry
@@ -237,10 +225,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const blocked = report.value.filter(
       (entry) => entry.subjectId === sibling.blockedTurnId && entry.state === "blocked",
     );
-    expect(blocked.map((entry) => entry.derivationType).sort()).toEqual([
-      "smooth_turn_compression",
-      "turn_rendering",
-    ]);
+    expect(blocked.map((entry) => entry.derivationType).sort()).toEqual(["smooth_turn_compression", "turn_rendering"]);
     for (const entry of blocked) {
       expect(entry.reason).toMatch(/^source_damaged: turn state corrupt/);
     }
@@ -252,12 +237,8 @@ describe("FC-0.4: the two failed forms carry distinguishable reason classes (Sto
     const report = await messages.report({ filePath: fixture.filePath }, { notReady: true });
     expect(report.ok).toBe(true);
     if (!report.ok) return;
-    const transient = report.value.find(
-      (entry) => entry.subjectId === fixture.failedTransientMessageId,
-    );
-    const permanent = report.value.find(
-      (entry) => entry.subjectId === fixture.failedPermanentMessageId,
-    );
+    const transient = report.value.find((entry) => entry.subjectId === fixture.failedTransientMessageId);
+    const permanent = report.value.find((entry) => entry.subjectId === fixture.failedPermanentMessageId);
 
     // Not a bare retry-exhausted marker: the persisted reason is the final
     // inference callback failure's, classifiable by the sweep's reason-code table.
@@ -296,12 +277,8 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
     expect(listed.ok && turnList.ok).toBe(true);
     if (!listed.ok || !turnList.ok) return;
 
-    const between = listed.value.find(
-      (message) => message.messageId === variant.stragglerBetweenMessageId,
-    );
-    const trailing = listed.value.find(
-      (message) => message.messageId === variant.stragglerTrailingMessageId,
-    );
+    const between = listed.value.find((message) => message.messageId === variant.stragglerBetweenMessageId);
+    const trailing = listed.value.find((message) => message.messageId === variant.stragglerTrailingMessageId);
     expect(between?.kind).toBe("runtime_note");
     expect(between?.turnId).toBeUndefined();
     expect(trailing?.kind).toBe("runtime_note");
@@ -317,9 +294,7 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
     // After the last turn: beyond t12's close, with no turn following.
     const t12 = turnList.value.find((turn) => turn.turnId === "t12");
     expect(trailing!.sourceEventOrder).toBeGreaterThan(t12!.closedAtEventOrder!);
-    expect(Math.max(...listed.value.map((message) => message.sourceEventOrder))).toBe(
-      trailing!.sourceEventOrder,
-    );
+    expect(Math.max(...listed.value.map((message) => message.sourceEventOrder))).toBe(trailing!.sourceEventOrder);
   });
 });
 

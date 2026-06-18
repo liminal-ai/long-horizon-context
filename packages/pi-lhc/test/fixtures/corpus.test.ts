@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CORPUS_LOADERS,
-  loadAllCorpora,
-  makeTruncatedCorpus,
-  validateCorpus,
-} from "./corpus.js";
+import { CORPUS_LOADERS, loadAllCorpora, makeTruncatedCorpus, validateCorpus } from "./corpus.js";
 
 // Architecture-risk test (tech design §Architecture-Risk Tests — Fixture
 // Validity): Story 0 owns no AC, but every later capture/verification test

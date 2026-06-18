@@ -1,11 +1,4 @@
-import {
-  createSdk,
-  threads,
-  type Lhc,
-  type OpResult,
-  type SdkConfig,
-  type ThreadRef,
-} from "lhc";
+import { createSdk, type Lhc, type OpResult, type SdkConfig, type ThreadRef, threads } from "lhc";
 import type { LhcInstance } from "../shared/instance.js";
 
 // AC-1.1, AC-1.4, AC-1.5.
@@ -49,10 +42,7 @@ async function disposeSdk(sdk: Lhc, threadRef: ThreadRef): Promise<OpResult<void
  *  the queue. A malformed inference/provider config is a programmer error and
  *  throws here per LHC's construction contract — the hook guard in `index.ts`
  *  contains it so nothing reaches the PI session. */
-export async function initInstance(
-  threadRef: ThreadRef,
-  config: SdkConfig,
-): Promise<OpResult<LhcInstance>> {
+export async function initInstance(threadRef: ThreadRef, config: SdkConfig): Promise<OpResult<LhcInstance>> {
   const info = await threads.info(threadRef);
   if (!info.ok) return info;
 

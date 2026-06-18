@@ -8,25 +8,21 @@
 // advisory only: cross-process safety comes from the durable lease alone, so
 // a fresh handle sees identical drain behavior — the queue is the rows.
 import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import {
   clearTimeout as cancelTimer,
   setImmediate as scheduleMacrotask,
   setTimeout as scheduleTimer,
 } from "node:timers";
-import { DatabaseSync } from "node:sqlite";
-import type {
-  HandlerOutcome,
-  ResolvedSdkConfig,
-  WorkHandler,
-} from "./derivation.js";
-import { storageFailure, type ErrorResult, type OpResult } from "./errors.js";
+import type { HandlerOutcome, ResolvedSdkConfig, WorkHandler } from "./derivation.js";
+import { type ErrorResult, type OpResult, storageFailure } from "./errors.js";
 import {
+  type ClaimedWorkItem,
   claimNext,
   complete,
   countLiveItems,
   failAttempt,
   failTerminal,
-  type ClaimedWorkItem,
   type WorkKind,
   type WorkSourceRef,
 } from "./work-queue/index.js";
@@ -155,13 +151,7 @@ export async function drainOpenDb(
     }
 
     if (outcome.ok) {
-      const disposition = complete(
-        db,
-        item,
-        outcome.derivations ?? [],
-        clock().toISOString(),
-        outcome.onApplied,
-      );
+      const disposition = complete(db, item, outcome.derivations ?? [], clock().toISOString(), outcome.onApplied);
       ran.push(ranEntry(item, disposition, item.attempts));
       continue;
     }
@@ -359,9 +349,9 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
         lastReport.waitingUntil !== undefined
       ) {
         armWake(st, lastReport.waitingUntil);
-        return; // waiters resolve when the wake's drain settles, not here
+      } else {
+        for (const waiter of st.waiters.splice(0)) waiter();
       }
-      for (const waiter of st.waiters.splice(0)) waiter();
     }
   }
 
@@ -403,10 +393,7 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
       const st = states.get(threadId);
       // A pending backoff wake counts as unsettled (Fix 1): the retry it will
       // fire is part of this drain cycle, so the awaitable must span it.
-      if (
-        st === undefined ||
-        (!st.running && !st.pending && st.wakeTimer === undefined)
-      ) {
+      if (st === undefined || (!st.running && !st.pending && st.wakeTimer === undefined)) {
         return Promise.resolve();
       }
       return new Promise((resolve) => st.waiters.push(resolve));

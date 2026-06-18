@@ -15,21 +15,21 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
   initLhc,
+  type Lhc,
   queueDetail,
+  type SdkConfig,
   setSchedulerPoke,
   setThreadTouch,
   threads,
-  type Lhc,
-  type SdkConfig,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  type InferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type InferenceCallbacksDouble,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -111,16 +111,12 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
     const threadM = await newThread("man");
 
     // Manual SDK queues smoothing work on its own thread.
-    const queued = await sdkMan.intakeStream.messageEvents({ filePath: threadM }, [
-      validEvent("user_prompt"),
-    ]);
+    const queued = await sdkMan.intakeStream.messageEvents({ filePath: threadM }, [validEvent("user_prompt")]);
     expect(queued.ok).toBe(true);
 
     // Positive control: the background SDK does drive its own thread — proving
     // its scheduler is live, not merely inert.
-    const bgBatch = await sdkBg.intakeStream.messageEvents({ filePath: threadB }, [
-      validEvent("user_prompt"),
-    ]);
+    const bgBatch = await sdkBg.intakeStream.messageEvents({ filePath: threadB }, [validEvent("user_prompt")]);
     expect(bgBatch.ok).toBe(true);
     await sdkBg.drainSettled({ filePath: threadB });
 
@@ -155,9 +151,7 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
     expect(sdkBg.scheduler.mode).toBe("background");
 
     const threadM = await newThread("man");
-    const queued = await sdkMan.intakeStream.messageEvents({ filePath: threadM }, [
-      validEvent("user_prompt"),
-    ]);
+    const queued = await sdkMan.intakeStream.messageEvents({ filePath: threadM }, [validEvent("user_prompt")]);
     expect(queued.ok).toBe(true);
 
     await sleep(50);
@@ -194,9 +188,7 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
       (form) => form.subjectId === "m3" && form.derivationType === "tool_result_summary",
     );
     expect(resultBefore?.state).toBe("ready");
-    const promptBefore = before.find(
-      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
-    );
+    const promptBefore = before.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
 
     // Delete the tool_result (m3). Tool calls no longer have summaries, so no
     // paired call summary is cleared or re-queued.
@@ -212,9 +204,7 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     const after = readDerivedForms(filePath);
 
     // Control: the unrelated prompt smoothing is byte-stable.
-    const promptAfter = after.find(
-      (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
-    );
+    const promptAfter = after.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
     expect(promptAfter).toEqual(promptBefore);
     expect(liveCount(filePath)).toBe(0);
   });

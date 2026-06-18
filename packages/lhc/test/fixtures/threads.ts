@@ -6,21 +6,20 @@
 // (coverage.md cross-story debt).
 import { DatabaseSync } from "node:sqlite";
 import {
-  intakeStream,
-  threads,
+  type DependencyGap,
   type Derivation,
   type DerivationState,
-  type DependencyGap,
+  intakeStream,
   type Lhc,
   type MessageEventInput,
   type SubjectKind,
   type ToolOutcome,
+  threads,
 } from "../../src/index.js";
-import type { DerivationType } from "./model-call.js";
-import { setIntakeClock } from "./intake-seam.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
+import { type TempStore, validEvent } from "./index.js";
 import type { InferenceCallbacksDouble } from "./inference-callbacks-double.js";
-import { validEvent, type TempStore } from "./index.js";
+import type { DerivationType } from "./model-call.js";
 
 async function newThreadFile(store: TempStore): Promise<string> {
   const filePath = store.threadPath();
@@ -237,9 +236,7 @@ export interface MultiStateClaim {
   state: DerivationState;
 }
 
-export async function multiStateThread(
-  store: TempStore,
-): Promise<{ filePath: string; expected: MultiStateClaim[] }> {
+export async function multiStateThread(store: TempStore): Promise<{ filePath: string; expected: MultiStateClaim[] }> {
   const filePath = await newThreadFile(store);
   // Turn 1: prompt + tool run; turn 2: prompt. Intake's enqueue leaves every
   // form pending; the writes below move a subset into the other three states.
@@ -303,9 +300,7 @@ export async function multiStateThread(
 // A closed turn with its turn_derivation work queued, then the Epic 01
 // two-open-turns corruption — the damage a turn handler must find and the
 // intake pipeline refuses (turn_state_corrupt).
-export async function damagedSourceThread(
-  store: TempStore,
-): Promise<{ filePath: string; turnId: string }> {
+export async function damagedSourceThread(store: TempStore): Promise<{ filePath: string; turnId: string }> {
   const { filePath, turnIds } = await threadWithClosedTurns(store, 1);
   // Open a second turn through real intake; the corruption writer then adds
   // another open row — two open turns, the Epic 01 invariant violation.
@@ -351,14 +346,8 @@ export async function gappedRenderingThread(
   const forms = readDerivedForms(filePath);
   const smoothing = forms.find((f) => f.subjectId === "m1" && f.derivationType === "smoothed_prompt");
   const rendering = forms.find((f) => f.subjectId === "t1" && f.derivationType === "turn_rendering");
-  if (
-    smoothing?.state !== "failed" ||
-    rendering?.state !== "ready" ||
-    rendering.gaps !== undefined
-  ) {
-    throw new Error(
-      "fixture invariant: failed smoothing under a ready fallback rendering expected",
-    );
+  if (smoothing?.state !== "failed" || rendering?.state !== "ready" || rendering.gaps !== undefined) {
+    throw new Error("fixture invariant: failed smoothing under a ready fallback rendering expected");
   }
   return { filePath, messageId: "m1", turnId: "t1" };
 }

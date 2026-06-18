@@ -10,9 +10,9 @@ import * as api from "../src/index.js";
 import { initLhc, type Lhc, type ModelAssignment } from "../src/index.js";
 import {
   DEFAULT_GUARDS,
-  resolveGuards,
   type ModelCall,
   type ModelCallInput,
+  resolveGuards,
 } from "../src/shared-tech/inference-types.js";
 
 // A ModelCall that records every input and resolves to a minimal success, so
@@ -58,9 +58,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
       smooth_turn_compression: { provider: "p", model: "m", prompt: "lower-band-v1" },
       chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v1" },
     };
-    expect(() =>
-      initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
-    ).not.toThrow();
+    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
   });
 
   it("constructs when deterministic types (turn_rendering, chunk_summary_detailed) are absent", () => {
@@ -102,9 +100,7 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
         targetMaxRatio: 0.2,
       },
     };
-    expect(() =>
-      initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
-    ).not.toThrow();
+    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
   });
 });
 

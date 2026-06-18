@@ -7,8 +7,8 @@
 import type {
   DependencyGap,
   DerivationMetadata,
-  DerivationState,
   DerivationReportEntry,
+  DerivationState,
   SubjectKind,
 } from "./derivation.js";
 
@@ -28,10 +28,7 @@ export interface RawReportRow {
   queue_eligible_at: string | null;
 }
 
-export function reportEntryFromRow(
-  subjectKind: SubjectKind,
-  row: RawReportRow,
-): DerivationReportEntry {
+export function reportEntryFromRow(subjectKind: SubjectKind, row: RawReportRow): DerivationReportEntry {
   const entry: DerivationReportEntry = {
     subjectKind,
     subjectId: row.subject_id,

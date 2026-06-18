@@ -20,12 +20,7 @@ export const EVENT_KINDS = [
 
 // Denied by name with their own reason string: the old MVP's
 // silent-root-field-drop bug class gets named when it appears.
-const SERVER_GENERATED_FIELDS = [
-  "eventOrder",
-  "recordedAt",
-  "threadEventId",
-  "schemaVersion",
-] as const;
+const SERVER_GENERATED_FIELDS = ["eventOrder", "recordedAt", "threadEventId", "schemaVersion"] as const;
 
 const DECODE_OPTIONS = { onExcessProperty: "error", errors: "first" } as const;
 
@@ -135,10 +130,7 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
 
   for (const field of SERVER_GENERATED_FIELDS) {
     if (field in record) {
-      return callerError(
-        `event: server-generated field "${field}" must not be supplied by the caller`,
-        index,
-      );
+      return callerError(`event: server-generated field "${field}" must not be supplied by the caller`, index);
     }
   }
 
@@ -160,10 +152,7 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
   if (envelope.right.eventKind === "turn_end") {
     const extraKeys = Object.keys(payload);
     if (extraKeys.length > 0) {
-      return callerError(
-        `payload: turn_end events carry an empty payload; found field "${extraKeys[0]}"`,
-        index,
-      );
+      return callerError(`payload: turn_end events carry an empty payload; found field "${extraKeys[0]}"`, index);
     }
     return undefined;
   }

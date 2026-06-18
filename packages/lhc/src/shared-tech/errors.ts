@@ -46,9 +46,7 @@ export interface ErrorResult {
 // failures — are always returned as OpResult errors, never thrown.
 // Programmer bugs inside lhc may still throw; callers are not expected
 // to handle throws as contract outcomes.
-export type OpResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: ErrorResult };
+export type OpResult<T> = { ok: true; value: T } | { ok: false; error: ErrorResult };
 
 // Infrastructure failures (SQLite, fs) are expected operational outcomes,
 // caught at the operation boundary and wrapped with the underlying detail.

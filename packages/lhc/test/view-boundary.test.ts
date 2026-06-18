@@ -21,18 +21,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   initLhc,
   intakeStream,
-  setSchedulerPoke,
   type Lhc,
   type MessageEventInput,
   type SdkViewConfig,
+  setSchedulerPoke,
   type VisibilityBudgets,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   setViewInjectionHook,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 // "tok" tokenizes to exactly one o200k token, joined or leading-space alike,
@@ -84,9 +84,7 @@ function toolRun(resultTokens: number): MessageEventInput[] {
 
 // One scripted turn: prompt, a tool run per entry, optional turn_end.
 function toolTurn(resultTokens: readonly number[], opts: { turnEnd?: boolean } = {}): MessageEventInput[] {
-  const events: MessageEventInput[] = [
-    validEvent("user_prompt", { payload: { text: "scripted boundary turn" } }),
-  ];
+  const events: MessageEventInput[] = [validEvent("user_prompt", { payload: { text: "scripted boundary turn" } })];
   for (const n of resultTokens) events.push(...toolRun(n));
   if (opts.turnEnd !== false) events.push(validEvent("turn_end"));
   return events;
@@ -119,8 +117,7 @@ async function toolResults(
 }
 
 function abridgedCount(messages: ReadonlyArray<{ content: string }>): number {
-  return messages.filter((m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]"))
-    .length;
+  return messages.filter((m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]")).length;
 }
 
 describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move the boundary; the crossing close evicts whole oldest turns", () => {
@@ -142,9 +139,7 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
     expect(afterSecond.value.meta.boundaryPosition).toBe(0);
     // Rendered bytes do not change below max: the earlier pull's messages are
     // a byte-identical prefix of the later one (AC-4.3's no-churn half).
-    expect(afterSecond.value.messages.slice(0, afterFirst.value.messages.length)).toEqual(
-      afterFirst.value.messages,
-    );
+    expect(afterSecond.value.messages.slice(0, afterFirst.value.messages.length)).toEqual(afterFirst.value.messages);
     expect(abridgedCount(afterSecond.value.messages)).toBe(0);
 
     // The crossing close (zone 120 > 100): one advance, whole-turn — turns
@@ -162,9 +157,7 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
     expect(abridgedCount(crossed.value.messages)).toBe(2);
 
     // Oldest-first: precisely the first turn's two results render abridged.
-    const abridgedIds = results
-      .filter((r) => r.sourceEventOrder <= (expectedPosition ?? 0))
-      .map((r) => r.messageId);
+    const abridgedIds = results.filter((r) => r.sourceEventOrder <= (expectedPosition ?? 0)).map((r) => r.messageId);
     expect(abridgedIds).toEqual(results.slice(0, 2).map((r) => r.messageId));
 
     // DoD: status's zone sum equals the advance's decision sum on the same
@@ -216,9 +209,7 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
     const [r1, r2] = results;
     expect(r1 && r2).toBeTruthy();
     if (r1 === undefined || r2 === undefined) return;
-    expect(
-      r1.derivations?.find((f) => f.derivationType === "tool_result_summary")?.state,
-    ).toBe("ready");
+    expect(r1.derivations?.find((f) => f.derivationType === "tool_result_summary")?.state).toBe("ready");
     const r2Summary = r2.derivations?.find(
       (f) => f.derivationType === "tool_result_summary" && f.state === "ready",
     )?.content;
@@ -290,10 +281,7 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
     // Compact: the boundary resets to the compact point (AC-4.7 — the reset
     // transaction landed in Story 2; this proves it end-to-end against a
     // boundary the production advance moved).
-    const receipt = await sdk.threadView.compact(
-      { filePath },
-      { params: { lowerBound: 40 }, sweep: false },
-    );
+    const receipt = await sdk.threadView.compact({ filePath }, { params: { lowerBound: 40 }, sweep: false });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
     const afterCompact = await sdk.threadView.pull({ filePath });
@@ -315,9 +303,9 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
 
 describe("TC-4.5 (AC-4.8 as amended by Epic 05 AC-5.4): budget validation names the violated constraint; floorTokens is rejected as unknown config", () => {
   it("rejects max ≤ target at construction, naming the constraint", () => {
-    expect(() =>
-      visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } }),
-    ).toThrow(/maxTokens \(100\) must be greater than targetTokens \(200\)/);
+    expect(() => visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } })).toThrow(
+      /maxTokens \(100\) must be greater than targetTokens \(200\)/,
+    );
   });
 
   it("rejects the retired floorTokens as an unknown budget field (no hidden floor fallback)", () => {
@@ -426,10 +414,7 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     // Delete the older result: the live zone drops to 40 — status computes
     // the deleted-filtered sum, the same query the advance reads.
     const results = await toolResults(sdk, filePath);
-    const deleted = await sdk.messages.deleteMessage(
-      { filePath },
-      { messageId: results[0]?.messageId ?? "" },
-    );
+    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: results[0]?.messageId ?? "" });
     expect(deleted.ok).toBe(true);
     const status = await sdk.threadView.status({ filePath });
     expect(status.ok).toBe(true);

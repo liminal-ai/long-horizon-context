@@ -14,9 +14,7 @@ export interface ModelCallInput {
   messages: { role: "system" | "user"; content: string }[];
 }
 
-export type ModelCallResult =
-  | { ok: true; text: string }
-  | { ok: false; kind: ModelCallFailureKind; message: string };
+export type ModelCallResult = { ok: true; text: string } | { ok: false; kind: ModelCallFailureKind; message: string };
 
 /** `empty_output` is adapter-generated (AC-2.4); hosts never return it.
  *  Thrown exceptions classify as `other` (AC-3.3). */
@@ -92,8 +90,7 @@ export function resolveGuards(guards?: DerivationGuards): DerivationGuards {
   const g = guards ?? {};
   return {
     smoothedPrompt: {
-      maxInferenceTokens:
-        g.smoothedPrompt?.maxInferenceTokens ?? DEFAULT_GUARDS.smoothedPrompt!.maxInferenceTokens!,
+      maxInferenceTokens: g.smoothedPrompt?.maxInferenceTokens ?? DEFAULT_GUARDS.smoothedPrompt!.maxInferenceTokens!,
       suspiciousOutputRatio:
         g.smoothedPrompt?.suspiciousOutputRatio ?? DEFAULT_GUARDS.smoothedPrompt!.suspiciousOutputRatio!,
     },
@@ -101,8 +98,7 @@ export function resolveGuards(guards?: DerivationGuards): DerivationGuards {
       timeoutMs: g.toolResultSummary?.timeoutMs ?? DEFAULT_GUARDS.toolResultSummary!.timeoutMs!,
     },
     smoothTurnCompression: {
-      tinyTurnTokens:
-        g.smoothTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.smoothTurnCompression!.tinyTurnTokens!,
+      tinyTurnTokens: g.smoothTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.smoothTurnCompression!.tinyTurnTokens!,
     },
   };
 }

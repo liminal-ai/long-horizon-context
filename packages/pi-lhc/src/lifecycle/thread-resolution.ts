@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { threads, type OpResult, type ThreadRef } from "lhc";
+import { type OpResult, type ThreadRef, threads } from "lhc";
 
 // AC-1.2, AC-1.5, AC-1.6. Launch flags name the thread; the registry resolves
 // it (tech design Flow 1). PI's own session file still exists in this
@@ -63,10 +63,7 @@ export function registryArg(registryPath?: string): { registryPath?: string } {
  *  - no flag: a new thread, registered with its cwd (AC-1.1).
  *  Reload reuses this via `{ session: <resolved id> }`, reconstructing from the
  *  durable id rather than a retained object (AC-1.5). */
-export async function resolveThread(
-  launch: LaunchFlags,
-  deps: ResolveDeps,
-): Promise<OpResult<ThreadRef>> {
+export async function resolveThread(launch: LaunchFlags, deps: ResolveDeps): Promise<OpResult<ThreadRef>> {
   if (launch.session !== undefined) {
     const resolved = await threads.resolve({
       threadId: launch.session,

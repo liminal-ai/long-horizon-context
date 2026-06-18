@@ -1,18 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { fireThreadTouch } from "../../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/index.js";
 import {
+  type ErrorResult,
+  fireThreadTouch,
   getSchemaVersion,
   MIGRATION_V5_STATEMENTS,
   MIGRATION_V6_STATEMENTS,
   MIGRATION_V7_STATEMENTS,
   MIGRATION_V8_STATEMENTS,
   MIGRATION_V9_STATEMENTS,
+  type Migration,
+  type OpResult,
   openDatabase,
   runMigrations,
-  type Migration,
+  storageFailure,
 } from "../../shared-tech/index.js";
 import { TOKEN_ESTIMATOR_ID } from "../../shared-tech/token-counting/index.js";
 
@@ -31,9 +33,7 @@ export function generateThreadId(): string {
 // Creation-time metadata values are interpolated through buildThreadMigrations
 // for new files only; existing files already hold their metadata row and the
 // upgrade path never touches it.
-function buildThreadMigrations(
-  metadata?: { threadId: string; createdAt: string },
-): Migration[] {
+function buildThreadMigrations(metadata?: { threadId: string; createdAt: string }): Migration[] {
   const metadataInsert =
     metadata === undefined
       ? []
@@ -173,9 +173,7 @@ function validateThreadFile(filePath: string): { ok: true } | { ok: false; error
     if (getSchemaVersion(db) < 1) {
       return notAThreadFile(filePath, "no lhc schema version");
     }
-    const table = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_metadata'")
-      .get();
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_metadata'").get();
     if (table === undefined) {
       return notAThreadFile(filePath, "no thread_metadata table");
     }
@@ -228,11 +226,7 @@ export function openThreadDatabase(filePath: string): OpResult<DatabaseSync> {
 
 // Schema v1 plus the metadata row land in one migration transaction, so the
 // file either has its full schema and metadata row or creation fails whole.
-export function createThreadFile(
-  filePath: string,
-  threadId: string,
-  createdAt: string,
-): void {
+export function createThreadFile(filePath: string, threadId: string, createdAt: string): void {
   const db = openDatabase(filePath);
   try {
     runMigrations(db, buildThreadMigrations({ threadId, createdAt }));

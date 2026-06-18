@@ -7,21 +7,21 @@
 // zero model calls, including under a throwing inference callback.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  initLhc,
-  threadView,
   type InferenceCallbacks,
   type InspectOverview,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  threadView,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   derivedThreadFixture,
   expectReadOnly,
   mutationInFlightVariant,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -102,7 +102,7 @@ async function twoTurnThread(): Promise<SmallThread> {
   return { filePath, threadId: created.value.threadId, sdk, double };
 }
 
-function valueOf(result: { ok: boolean }): InspectOverview {
+function overviewValue(result: { ok: boolean }): InspectOverview {
   if (!result.ok) {
     throw new Error(`expected ok overview: ${JSON.stringify(result)}`);
   }
@@ -120,7 +120,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const overview = valueOf(await sdk.inspect.overview({ filePath }));
+    const overview = overviewValue(await sdk.inspect.overview({ filePath }));
     expect(overview.thread.id).toBe(created.value.threadId);
     expect(typeof overview.thread.createdAt).toBe("string");
     expect(overview.events).toEqual({ count: 0, span: null });
@@ -149,7 +149,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     ]);
     expect(sent.ok).toBe(true);
 
-    const overview = valueOf(await sdk.inspect.overview({ filePath }));
+    const overview = overviewValue(await sdk.inspect.overview({ filePath }));
     expect(overview.events).toEqual({ count: 2, span: { first: 1, last: 2 } });
     expect(overview.messages.visible).toBe(2);
     expect(overview.messages.byKind).toEqual({ user_prompt: 1, assistant_thinking: 1 });
@@ -165,7 +165,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
 
   it("never-compacted-with-record: real counts, view null", async () => {
     const { filePath, threadId, sdk } = await twoTurnThread();
-    const overview = valueOf(await sdk.inspect.overview({ filePath }));
+    const overview = overviewValue(await sdk.inspect.overview({ filePath }));
     expect(overview.thread.id).toBe(threadId);
     expect(overview.events).toEqual({ count: 8, span: { first: 1, last: 8 } });
     expect(overview.messages.visible).toBe(6);
@@ -193,7 +193,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 
-    const overview = valueOf(await sdk.inspect.overview({ filePath }));
+    const overview = overviewValue(await sdk.inspect.overview({ filePath }));
     // 8 plain turns × 4 events + 4 tool-heavy turns × 8 events.
     expect(overview.events).toEqual({ count: 64, span: { first: 1, last: 64 } });
     // Messages: events minus the 12 turn_ends.
@@ -233,7 +233,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
 
   it("mid-rebuild: cleared cascade pending, view summary intact — full shape", async () => {
     const fixture = await mutationInFlightVariant(store);
-    const overview = valueOf(await fixture.sdk.inspect.overview({ filePath: fixture.filePath }));
+    const overview = overviewValue(await fixture.sdk.inspect.overview({ filePath: fixture.filePath }));
     // The edit cleared exactly the cascade set — its own smoothing, t2's two
     // turn forms, c1's two chunk summaries — all pending, drain not settled.
     expect(fixture.mutation.cleared).toHaveLength(5);
@@ -255,7 +255,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
 describe("TC-1.2 / AC-1.2: deleted accounting", () => {
   it("deleting one message drops visible/kind/token counts, raises deleted, leaves events alone", async () => {
     const { filePath, sdk } = await twoTurnThread();
-    const before = valueOf(await sdk.inspect.overview({ filePath }));
+    const before = overviewValue(await sdk.inspect.overview({ filePath }));
 
     const listed = await sdk.messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
@@ -267,16 +267,14 @@ describe("TC-1.2 / AC-1.2: deleted accounting", () => {
     const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: "m2" });
     expect(deleted.ok).toBe(true);
 
-    const after = valueOf(await sdk.inspect.overview({ filePath }));
+    const after = overviewValue(await sdk.inspect.overview({ filePath }));
     expect(after.messages.visible).toBe(before.messages.visible - 1);
     expect(after.messages.deleted).toBe(1);
     expect(after.messages.byKind).toEqual({
       ...before.messages.byKind,
       assistant_text: (before.messages.byKind["assistant_text"] ?? 0) - 1,
     });
-    expect(after.messages.visibleTokens).toBe(
-      before.messages.visibleTokens - target.tokenEstimate,
-    );
+    expect(after.messages.visibleTokens).toBe(before.messages.visibleTokens - target.tokenEstimate);
     // The record retains everything: event count and span are unaffected.
     expect(after.events).toEqual(before.events);
   });
@@ -305,9 +303,7 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
     // inference-callback-free structurally, in both the new and the Story 1 surfaces.
     const reader = initLhc({ inferenceCallbacks: throwingProvider(), mode: "manual" });
 
-    const overview = await expectReadOnly(filePath, () =>
-      reader.inspect.overview({ filePath }),
-    );
+    const overview = await expectReadOnly(filePath, () => reader.inspect.overview({ filePath }));
     expect(overview.ok).toBe(true);
     // Retroactive wrap (test plan, Chunk 2): the Chunk 1 read surface runs
     // under the same shared delta helper.

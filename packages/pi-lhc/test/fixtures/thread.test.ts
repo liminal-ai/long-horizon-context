@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
 import { threads } from "lhc";
-import { makeTempThread, tempStore, type TempStore } from "./thread.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { makeTempThread, type TempStore, tempStore } from "./thread.js";
 
 // The temp-thread factory drives REAL lhc threads against a real temp SQLite
 // file — the persistence/reattach substrate every lifecycle and verification

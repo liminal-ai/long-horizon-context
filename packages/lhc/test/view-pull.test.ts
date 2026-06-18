@@ -10,13 +10,13 @@ import { initLhc, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/
 import {
   blockedSiblingThread,
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   openRaw,
   seedViewBoundary,
+  type TempStore,
   tempStore,
   validEvent,
-  type DerivedThreadFixture,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -45,7 +45,11 @@ async function newThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
-async function intake(sdk: Lhc, filePath: string, batch: Parameters<Lhc["intakeStream"]["messageEvents"]>[1]): Promise<void> {
+async function intake(
+  sdk: Lhc,
+  filePath: string,
+  batch: Parameters<Lhc["intakeStream"]["messageEvents"]>[1],
+): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`intake failed: ${result.error.reason}`);
 }
@@ -79,16 +83,11 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
           .all() as unknown as Array<{ work_item_id: string; status: string; attempts: number | bigint }>
       ).map((row) => ({ id: row.work_item_id, status: row.status, attempts: Number(row.attempts) })),
       derivations: db
-        .prepare(
-          `SELECT subject_id, derivation_type, state FROM derivation ORDER BY subject_id, derivation_type`,
-        )
+        .prepare(`SELECT subject_id, derivation_type, state FROM derivation ORDER BY subject_id, derivation_type`)
         .all(),
-      viewRows: Number(
-        (db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number | bigint }).n,
-      ),
+      viewRows: Number((db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number | bigint }).n),
       boundary: Number(
-        (db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint })
-          .position,
+        (db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint }).position,
       ),
     };
   } finally {

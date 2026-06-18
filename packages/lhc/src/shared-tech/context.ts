@@ -108,9 +108,7 @@ export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
   return seamStore.getStore()?.view;
 }
 
-export function resolveInstanceToolResultConfig():
-  | ResolvedSdkConfig["toolResult"]
-  | undefined {
+export function resolveInstanceToolResultConfig(): ResolvedSdkConfig["toolResult"] | undefined {
   return seamStore.getStore()?.toolResult;
 }
 
@@ -124,16 +122,14 @@ export function resolveInstanceToolResultConfig():
 // the below-SDK defaults, minus the touch. Write paths never use this.
 export function runWithThreadTouchSuppressed<T>(fn: () => T): T {
   const seam = seamStore.getStore();
-  const base: InstanceSeam =
-    seam ??
-    {
-      poke: (threadId) => {
-        schedulerPoke?.(threadId);
-      },
-      touch: (filePath, db) => {
-        threadTouch?.(filePath, db);
-      },
-    };
+  const base: InstanceSeam = seam ?? {
+    poke: (threadId) => {
+      schedulerPoke?.(threadId);
+    },
+    touch: (filePath, db) => {
+      threadTouch?.(filePath, db);
+    },
+  };
   return seamStore.run({ ...base, touch: () => {} }, fn);
 }
 

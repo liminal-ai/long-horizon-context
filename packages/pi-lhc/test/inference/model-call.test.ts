@@ -8,13 +8,14 @@
 // These tests use synthetic PI contexts (mock-free at the boundary) and assert
 // on the ModelCallResult shapes, exercising classification and routing without
 // a live provider.
+
+import { createSdk, type ModelCallInput, threads } from "lhc";
 import { describe, expect, it, vi } from "vitest";
-import { createSdk, threads, type ModelCallFailureKind, type ModelCallInput } from "lhc";
 import { classifyFailure, createModelCall, defaultAssignments } from "../../src/inference/model-call.js";
-import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
 import type { PiAiComplete } from "../../src/inference/pi-ai.js";
-import { tempStore } from "../fixtures/thread.js";
+import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
 import { validEvent } from "../fixtures/synthetic.js";
+import { tempStore } from "../fixtures/thread.js";
 
 const INPUT: ModelCallInput = {
   provider: "openai",
@@ -61,8 +62,8 @@ describe("Story 5: Inference Host Routing", () => {
         { provider: "openai", id: "gpt-4o" },
       ];
 
-      const findMock = vi.fn(
-        (provider: string, model: string) => handles.find((h) => h.provider === provider && h.id === model),
+      const findMock = vi.fn((provider: string, model: string) =>
+        handles.find((h) => h.provider === provider && h.id === model),
       ) as (provider: string, model: string) => ModelHandle | undefined;
 
       const ctx: ExtensionContext = {

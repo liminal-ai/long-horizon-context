@@ -8,8 +8,7 @@
 // derivation directly is the status's derivation counting, which goes
 // through the owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
-import type { Band, StoredView } from "../../shared-tech/index.js";
-import type { RenderingPartKind } from "../../shared-tech/index.js";
+import type { Band, RenderingPartKind, StoredView } from "../../shared-tech/index.js";
 
 // ── view snapshot (header + bands) ────────────────────────────────
 
@@ -51,9 +50,7 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   const arrangement = JSON.parse(header.arrangement_json) as Array<{ degraded?: boolean }>;
   const gaps = JSON.parse(header.gaps_json) as unknown[];
   const bandRows = db
-    .prepare(
-      `SELECT band, rendered_text, token_count FROM thread_view_band WHERE view_id = ?`,
-    )
+    .prepare(`SELECT band, rendered_text, token_count FROM thread_view_band WHERE view_id = ?`)
     .all(header.view_id) as unknown as Array<{
     band: string;
     rendered_text: string;
@@ -70,9 +67,7 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
     degradedCount: arrangement.filter((entry) => entry.degraded === true).length,
     bands: BAND_GRADIENT_ORDER.flatMap((band) => {
       const row = byBand.get(band);
-      return row === undefined
-        ? []
-        : [{ band, renderedText: row.rendered_text, tokenCount: Number(row.token_count) }];
+      return row === undefined ? [] : [{ band, renderedText: row.rendered_text, tokenCount: Number(row.token_count) }];
     }),
   };
 }
@@ -189,9 +184,9 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
 // header id derives from thread id + view created-at; a never-compacted
 // thread's header uses the thread's created-at).
 export function readThreadMetadata(db: DatabaseSync): { threadId: string; createdAt: string } {
-  const row = db
-    .prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`)
-    .get() as { thread_id: string; created_at: string } | undefined;
+  const row = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
+    | { thread_id: string; created_at: string }
+    | undefined;
   if (row === undefined) {
     throw new Error("thread_metadata singleton row missing (creation writes it)");
   }
@@ -257,9 +252,10 @@ export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): 
     for (const band of input.bands) {
       insertBand.run(input.viewId, band.band, band.renderedText, band.tokenCount);
     }
-    db.prepare(
-      `UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`,
-    ).run(input.compactPoint, input.createdAt);
+    db.prepare(`UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`).run(
+      input.compactPoint,
+      input.createdAt,
+    );
     db.exec("COMMIT;");
   } catch (cause) {
     db.exec("ROLLBACK;");

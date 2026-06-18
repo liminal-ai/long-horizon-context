@@ -7,9 +7,9 @@
 // test. Registered by assigning into the SDK's assembled map, the same map
 // production domain tables merge into (DD-6).
 import type {
+  HandlerDerivationWrite,
   InferenceCallbacks,
   InferenceResult,
-  HandlerDerivationWrite,
   Lhc,
   SubjectKind,
   WorkHandler,
@@ -84,8 +84,7 @@ export function testWorkHandlers(
   for (const [kind, specs] of Object.entries(KIND_SPECS) as Array<[WorkKind, FormSpec[]]>) {
     map[kind] = async (_run, item) => {
       await hooks.onHandlerStart?.(item);
-      const sourceId =
-        item.sourceRef["messageId"] ?? item.sourceRef["turnId"] ?? item.sourceRef["chunkId"];
+      const sourceId = item.sourceRef["messageId"] ?? item.sourceRef["turnId"] ?? item.sourceRef["chunkId"];
       if (sourceId === undefined) {
         return { ok: false, retryable: false, reason: "test handler: unrecognized sourceRef" };
       }

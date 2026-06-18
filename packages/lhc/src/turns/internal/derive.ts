@@ -7,7 +7,13 @@
 // accumulated close policy, and any close's summary enqueues all ride the
 // one commit (anti-shim: a crash leaves either a placed turn with queued
 // summaries or an open chunk — nothing between).
-import { resolveInstancePoke } from "../../shared-tech/index.js";
+
+import {
+  cleanPrompt,
+  findPairedToolCall,
+  toolResultGuidance,
+  toolResultTargetTokens,
+} from "../../messages/recovery.js";
 import type {
   DerivationMetadata,
   HandlerOutcome,
@@ -17,23 +23,17 @@ import type {
   ToolRunReceipt,
   WorkHandler,
 } from "../../shared-tech/index.js";
+import { resolveInstancePoke, truncateForFallback } from "../../shared-tech/index.js";
 import { writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
-import { truncateForFallback } from "../../shared-tech/index.js";
+import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
 import {
-  cleanPrompt,
-  findPairedToolCall,
-  toolResultGuidance,
-  toolResultTargetTokens,
-} from "../../messages/recovery.js";
-import {
-  composeDerivationKey,
-  composeRenderingInput,
   type ComposeDerivationRow,
   type ComposeMessage,
+  composeDerivationKey,
+  composeRenderingInput,
 } from "./compose.js";
-import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
 import {
   chunkExists,
   readMemberMessages,
@@ -114,11 +114,7 @@ function toolOutcomeFromMessage(message: ComposeMessage): ToolOutcome {
   return block["isError"] === true ? "failed" : "succeeded";
 }
 
-function pairedToolName(
-  run: HandlerRunContext,
-  messages: readonly ComposeMessage[],
-  toolCallId: unknown,
-): string {
+function pairedToolName(run: HandlerRunContext, messages: readonly ComposeMessage[], toolCallId: unknown): string {
   if (typeof toolCallId !== "string") return "unknown_tool";
   const sameTurnCall = messages.find((message) => {
     if (message.kind !== "tool_call") return false;
@@ -237,9 +233,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   // until the source reads clean (Story 4).
   const openTurnIds = selectOpenTurnIds(db);
   if (openTurnIds.length > 1) {
-    return sourceDamaged(
-      `turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`,
-    );
+    return sourceDamaged(`turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`);
   }
 
   // Compose from current message-derivation states: ready derivations verbatim,
@@ -300,9 +294,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectId: turnId,
         derivationType: "smooth_turn_compression",
         content: projection.text,
-        ...(projection.provenance === undefined
-          ? {}
-          : { metadata: { provenance: projection.provenance } }),
+        ...(projection.provenance === undefined ? {} : { metadata: { provenance: projection.provenance } }),
       },
     ],
     onApplied: (tx) => {
@@ -331,9 +323,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
 // states. A member whose projection is not ready waits: chunk summary
 // derivation is background work, so it requeues until the member lower-band
 // input lands.
-function chunkSummaryHandler(
-  kind: "chunk_summary_detailed" | "chunk_summary_brief",
-): WorkHandler {
+function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_brief"): WorkHandler {
   return async (run, item) => {
     const chunkId = item.sourceRef["chunkId"];
     if (chunkId === undefined) return sourceDamaged("work item carries no chunkId");
@@ -351,9 +341,7 @@ function chunkSummaryHandler(
         continue;
       }
       if (member.state === "blocked") {
-        return sourceDamaged(
-          `member ${member.turnId} smooth_turn_compression blocked while deriving ${kind}`,
-        );
+        return sourceDamaged(`member ${member.turnId} smooth_turn_compression blocked while deriving ${kind}`);
       }
       return dependencyNotReady(
         `member_projection_not_ready: member ${member.turnId} smooth_turn_compression is ${member.state ?? "missing"}`,
@@ -371,9 +359,7 @@ function chunkSummaryHandler(
           }
         : await run.inferenceCallbacks.summarizeChunkBrief({
             memberProjections,
-            memberOutcomes: members.map((member) =>
-              member.receipts.map((receipt) => receipt.outcome),
-            ),
+            memberOutcomes: members.map((member) => member.receipts.map((receipt) => receipt.outcome)),
           });
     if (!result.ok) return inferenceFailed(result);
 
@@ -385,9 +371,7 @@ function chunkSummaryHandler(
           subjectId: chunkId,
           derivationType: kind,
           content: result.text,
-          ...(result.provenance === undefined
-            ? {}
-            : { metadata: { provenance: result.provenance } }),
+          ...(result.provenance === undefined ? {} : { metadata: { provenance: result.provenance } }),
         },
       ],
     };

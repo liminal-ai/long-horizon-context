@@ -18,13 +18,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   openRaw,
   stragglerVariantThread,
+  type TempStore,
   tempStore,
   validEvent,
-  type DerivedThreadFixture,
-  type TempStore,
 } from "./fixtures/index.js";
 
 interface Golden {
@@ -47,9 +47,7 @@ interface Golden {
 }
 
 function loadGolden(name: string): Golden {
-  return JSON.parse(
-    readFileSync(join(import.meta.dirname, "goldens", name), "utf8"),
-  ) as Golden;
+  return JSON.parse(readFileSync(join(import.meta.dirname, "goldens", name), "utf8")) as Golden;
 }
 
 interface StoredView {
@@ -102,10 +100,7 @@ afterAll(() => {
 
 async function runGolden(golden: Golden): Promise<StoredView> {
   const target = golden.fixture === "straggler-variant" ? straggler : fixture;
-  const receipt = await target.sdk.threadView.compact(
-    { filePath: target.filePath },
-    { params: golden.params },
-  );
+  const receipt = await target.sdk.threadView.compact({ filePath: target.filePath }, { params: golden.params });
   expect(receipt.ok).toBe(true);
   if (!receipt.ok) throw new Error(receipt.error.reason);
   const stored = readStoredView(target.filePath);
@@ -170,15 +165,11 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     const tail = pulled.value.messages.filter((message) => message.band === undefined);
     expect(
       tail.some(
-        (message) =>
-          message.content ===
-          "[runtime note] session closing note after the last turn (fixture straggler)",
+        (message) => message.content === "[runtime note] session closing note after the last turn (fixture straggler)",
       ),
     ).toBe(true);
     // The note appears once: banded with c2, not duplicated into the tail.
-    expect(
-      tail.some((message) => message.content.includes("harness restarted between turns")),
-    ).toBe(false);
+    expect(tail.some((message) => message.content.includes("harness restarted between turns"))).toBe(false);
   });
 });
 
@@ -212,9 +203,7 @@ function trajectoryTokens(n: number): string {
 let trajectoryCallCounter = 0;
 
 function trajectoryBatch(batch: BoundaryGolden["batches"][number]): MessageEventInput[] {
-  const events: MessageEventInput[] = [
-    validEvent("user_prompt", { payload: { text: "trajectory prompt" } }),
-  ];
+  const events: MessageEventInput[] = [validEvent("user_prompt", { payload: { text: "trajectory prompt" } })];
   for (const n of batch.resultTokens) {
     trajectoryCallCounter += 1;
     const toolCallId = `call-g1b-${trajectoryCallCounter}`;
@@ -233,9 +222,7 @@ function trajectoryBatch(batch: BoundaryGolden["batches"][number]): MessageEvent
 
 // One full replay of the golden's script against a fresh thread: the
 // committed positions and zone sums after each batch.
-async function replayTrajectory(
-  golden: BoundaryGolden,
-): Promise<Array<{ position: number; zoneTokens: number }>> {
+async function replayTrajectory(golden: BoundaryGolden): Promise<Array<{ position: number; zoneTokens: number }>> {
   const sdk = initLhc({
     inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",

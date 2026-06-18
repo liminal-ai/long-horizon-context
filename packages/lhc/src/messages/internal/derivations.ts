@@ -13,10 +13,10 @@ import type {
   DependencyGap,
   Derivation,
   DerivationMetadata,
-  DerivationState,
   DerivationReportEntry,
+  DerivationState,
 } from "../../shared-tech/index.js";
-import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/index.js";
+import { type RawReportRow, reportEntryFromRow } from "../../shared-tech/index.js";
 
 export interface MessageSource {
   messageId: string;
@@ -24,13 +24,10 @@ export interface MessageSource {
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
-export function readMessageSource(
-  db: DatabaseSync,
-  messageId: string,
-): MessageSource | undefined {
-  const row = db
-    .prepare(`SELECT kind FROM message WHERE message_id = ?`)
-    .get(messageId) as unknown as { kind: string } | undefined;
+export function readMessageSource(db: DatabaseSync, messageId: string): MessageSource | undefined {
+  const row = db.prepare(`SELECT kind FROM message WHERE message_id = ?`).get(messageId) as unknown as
+    | { kind: string }
+    | undefined;
   if (row === undefined) return undefined;
   const blocks = db
     .prepare(
@@ -70,16 +67,10 @@ interface RawDerivationRow {
 // no-load-everything clause), never every message-owned derivation in the thread.
 // Omitted — the report-surface path that already reads its own scope — reads
 // all message-owned derivation rows as before.
-export function readMessageDerivations(
-  db: DatabaseSync,
-  messageIds?: readonly string[],
-): Map<string, Derivation[]> {
+export function readMessageDerivations(db: DatabaseSync, messageIds?: readonly string[]): Map<string, Derivation[]> {
   const byMessage = new Map<string, Derivation[]>();
   if (messageIds !== undefined && messageIds.length === 0) return byMessage;
-  const idFilter =
-    messageIds === undefined
-      ? ""
-      : ` AND subject_id IN (${messageIds.map(() => "?").join(", ")})`;
+  const idFilter = messageIds === undefined ? "" : ` AND subject_id IN (${messageIds.map(() => "?").join(", ")})`;
   const rows = db
     .prepare(
       `SELECT subject_id, derivation_type, state, content, reason, metadata,
@@ -206,10 +197,7 @@ export function findPairedToolResult(
   };
 }
 
-export function findPairedToolCall(
-  db: DatabaseSync,
-  toolCallId: string,
-): { toolName: string } | undefined {
+export function findPairedToolCall(db: DatabaseSync, toolCallId: string): { toolName: string } | undefined {
   const block = findPairedBlock(db, "tool_call", toolCallId);
   if (block === undefined) return undefined;
   return { toolName: typeof block["toolName"] === "string" ? block["toolName"] : "" };

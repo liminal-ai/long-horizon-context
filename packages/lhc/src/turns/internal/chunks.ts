@@ -34,9 +34,9 @@ interface OpenChunkRow {
 }
 
 function memberCount(db: DatabaseSync, chunkId: string): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS n FROM chunk_member WHERE chunk_id = ?`)
-    .get(chunkId) as unknown as { n: number | bigint };
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM chunk_member WHERE chunk_id = ?`).get(chunkId) as unknown as {
+    n: number | bigint;
+  };
   return Number(row.n);
 }
 
@@ -127,10 +127,7 @@ export function placeTurn(
 // Closing queues the two summary kinds as two work items with independent
 // retry, states, and re-queue (AC-3.8); both enqueues ride the caller's
 // ambient transaction — the completion commit — per DD-5.
-export function enqueueChunkSummaries(
-  ctx: OperationContext,
-  chunkId: string,
-): WorkItemRecord[] {
+export function enqueueChunkSummaries(ctx: OperationContext, chunkId: string): WorkItemRecord[] {
   return (["chunk_summary_detailed", "chunk_summary_brief"] as const).map((kind) =>
     enqueue(ctx, {
       owner: "turns",
@@ -143,12 +140,8 @@ export function enqueueChunkSummaries(
 
 // Placement read-back for the turns surface (AC-3.5): chunkId + memberIdx by
 // turn, one query, stored values only.
-export function readPlacements(
-  db: DatabaseSync,
-): Map<string, { chunkId: string; memberIdx: number }> {
-  const rows = db
-    .prepare(`SELECT turn_id, chunk_id, member_idx FROM chunk_member`)
-    .all() as unknown as Array<{
+export function readPlacements(db: DatabaseSync): Map<string, { chunkId: string; memberIdx: number }> {
+  const rows = db.prepare(`SELECT turn_id, chunk_id, member_idx FROM chunk_member`).all() as unknown as Array<{
     turn_id: string;
     chunk_id: string;
     member_idx: number | bigint;

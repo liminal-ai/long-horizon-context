@@ -9,23 +9,23 @@
 // behavior can crash a drain. Reason format per the Story 3 ruling:
 // retryable → `provider_failure: <kind>: <message>`, terminal → kind-led.
 import { afterEach, describe, expect, it } from "vitest";
-import { initLhc, type Derivation, type DrainReport, type Lhc } from "../src/index.js";
+import { type Derivation, type DrainReport, initLhc, type Lhc } from "../src/index.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "../src/shared-tech/classify.js";
 import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
-  FAKE_MODEL_PREFIX,
   DERIVATION_TYPES,
-  INFERENCE_DERIVATION_TYPES,
+  FAKE_MODEL_PREFIX,
   hangingCall,
+  INFERENCE_DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   scriptedCall,
+  type TempStore,
   tempStore,
   throwingCall,
   validAssignments,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 const stores: TempStore[] = [];
@@ -103,10 +103,7 @@ async function seedSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
 
 // Drains to empty — the "drain returns normally" assertion every leg shares —
 // and hands back both the report (dispositions, attempts) and the forms.
-async function drainNormally(
-  sdk: Lhc,
-  filePath: string,
-): Promise<{ report: DrainReport; derivations: Derivation[] }> {
+async function drainNormally(sdk: Lhc, filePath: string): Promise<{ report: DrainReport; derivations: Derivation[] }> {
   const drained = await sdk.work.drain({ filePath });
   expect(drained.ok).toBe(true);
   if (!drained.ok) throw new Error("drain failed");
@@ -161,9 +158,7 @@ describe("TC-3.1: the classification table drives retry and terminal paths (AC-3
   });
 
   it("auth is terminal: failed on the first attempt, exactly one call, stable kind-led reason", async () => {
-    const { call, calls } = countingCall(
-      scriptedCall([{ ok: false, kind: "auth", message: "invalid api key" }]),
-    );
+    const { call, calls } = countingCall(scriptedCall([{ ok: false, kind: "auth", message: "invalid api key" }]));
     const sdk = inferenceSdk(call);
     const { report, derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
 
@@ -207,9 +202,7 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     const { call: canned } = recordingCall(responses);
     const smoothingLane = `${FAKE_MODEL_PREFIX}smoothed_prompt`;
     const call: ModelCall = (input) =>
-      input.model === smoothingLane
-        ? Promise.reject(new Error("scripted host explosion"))
-        : canned(input);
+      input.model === smoothingLane ? Promise.reject(new Error("scripted host explosion")) : canned(input);
     const sdk = inferenceSdk(call);
     const { report, derivations: forms } = await drainNormally(sdk, await seedSevenKinds(sdk, freshStore()));
 
@@ -277,11 +270,7 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
 
   describe("safeCall is the containment wrapper (AC-3.3, DD-6)", () => {
     it("passes a structured success through untouched", async () => {
-      const result = await safeCall(
-        scriptedCall([{ ok: true, text: "plain success" }]),
-        PROBE_INPUT,
-        1000,
-      );
+      const result = await safeCall(scriptedCall([{ ok: true, text: "plain success" }]), PROBE_INPUT, 1000);
       expect(result).toEqual({ ok: true, text: "plain success" });
     });
 

@@ -4,24 +4,15 @@
 // keys continue past the prior session's instead of restarting at 0 and
 // skipping new events as false duplicates — while the converter's same-key
 // dedup (the reload/replay safety net) stays intact.
+
+import { createDeterministicProvider, intakeStream, type MessageEventInput, type ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicProvider,
-  intakeStream,
-  type MessageEventInput,
-  type ThreadRef,
-} from "lhc";
 import { capture } from "../../src/capture/converter.js";
 import { mapMessage } from "../../src/capture/map-message.js";
 import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
-import {
-  makeAgentEnd,
-  makeAssistantMessage,
-  makeMessageEnd,
-  makeUserMessage,
-} from "../fixtures/synthetic.js";
-import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
+import { makeAgentEnd, makeAssistantMessage, makeMessageEnd, makeUserMessage } from "../fixtures/synthetic.js";
+import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
 import { attachCapture, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;
@@ -274,9 +265,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["same text", "same text"]);
-    const promptKeys = events
-      .filter((event) => event.eventKind === "user_prompt")
-      .map((event) => event.idempotencyKey);
+    const promptKeys = events.filter((event) => event.eventKind === "user_prompt").map((event) => event.idempotencyKey);
     expect(promptKeys).toHaveLength(2);
     expect(promptKeys[0]).toContain("message_end:40");
     expect(promptKeys[1]).toContain("message_end:41");
@@ -297,9 +286,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const events = await eventsAfterShutdown(b);
     expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);
     expect(userTexts(events)).toEqual(["source-order replay"]);
-    const promptKeys = events
-      .filter((event) => event.eventKind === "user_prompt")
-      .map((event) => event.idempotencyKey);
+    const promptKeys = events.filter((event) => event.eventKind === "user_prompt").map((event) => event.idempotencyKey);
     expect(promptKeys).toEqual([expect.stringContaining("message_end:sourceSeq:0")]);
     const counts = await turnCounts(b.threadRef);
     expect(counts.closed).toBe(1);

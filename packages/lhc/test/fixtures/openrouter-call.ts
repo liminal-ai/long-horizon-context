@@ -12,11 +12,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-  ModelCall,
-  ModelCallFailureKind,
-  ModelCallResult,
-} from "../../src/shared-tech/inference-types.js";
+import type { ModelCall, ModelCallFailureKind, ModelCallResult } from "../../src/shared-tech/inference-types.js";
 
 export const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -49,9 +45,7 @@ export function loadLocalLhcEnv(): Record<string, string> {
   return env;
 }
 
-export function resolveRealSuiteEnv(
-  env: Record<string, string | undefined>,
-): RealSuiteEnv {
+export function resolveRealSuiteEnv(env: Record<string, string | undefined>): RealSuiteEnv {
   const key = env["OPENROUTER_API_KEY"];
   if (key === undefined || key.trim() === "") {
     return { notRan: "OPENROUTER_API_KEY unset" };
@@ -71,10 +65,7 @@ export function resolveRealSuiteEnv(
 const emissions: string[] = [];
 
 export function emitRealSuiteAccounting(env: RealSuiteEnv): string {
-  const line =
-    "notRan" in env
-      ? `NOT-RAN: real-inference (${env.notRan})`
-      : `RAN: real-inference (model ${env.model})`;
+  const line = "notRan" in env ? `NOT-RAN: real-inference (${env.notRan})` : `RAN: real-inference (model ${env.model})`;
   emissions.push(line);
   process.stdout.write(`${line}\n`);
   return line;
@@ -138,10 +129,7 @@ export function createOpenRouterCall(key: string, defaultModel: string): ModelCa
     }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      return failure(
-        failureKindForStatus(response.status),
-        `HTTP ${String(response.status)}: ${body.slice(0, 200)}`,
-      );
+      return failure(failureKindForStatus(response.status), `HTTP ${String(response.status)}: ${body.slice(0, 200)}`);
     }
     let payload: unknown;
     try {

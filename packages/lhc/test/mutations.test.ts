@@ -16,29 +16,29 @@
 // cli-process-mutations.test.ts (process suite).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  initLhc,
+  type DrainReport,
   deterministicText,
   estimateTokens,
-  messages,
-  queueDetail,
-  setSchedulerPoke,
-  setThreadTouch,
-  threads,
   type InferenceCallbacks,
-  type DrainReport,
+  initLhc,
   type Lhc,
   type MessageEventInput,
   type MutationResult,
+  messages,
   type OpResult,
+  queueDetail,
   type SdkConfig,
+  setSchedulerPoke,
+  setThreadTouch,
+  threads,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -75,11 +75,7 @@ function manualSdk(
   return initLhc(config);
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
 }
@@ -144,10 +140,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     const sdk = manualSdk(double);
     const filePath = await readyTurnThread(sdk);
 
-    const result = await messages.edit(
-      { filePath },
-      { messageId: "m1", content: "edited prompt" },
-    );
+    const result = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.changed).toEqual({ messageIds: ["m1"], turnIds: [] });
@@ -155,24 +148,17 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     // The chain above m1: its own smoothing and t1's two forms. t1's chunk is
     // still open — no summary rows exist, so none are named.
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
-      [
-        "message/m1/smoothed_prompt",
-        "turn/t1/smooth_turn_compression",
-        "turn/t1/turn_rendering",
-      ].sort(),
+      ["message/m1/smoothed_prompt", "turn/t1/smooth_turn_compression", "turn/t1/turn_rendering"].sort(),
     );
-    expect([...result.value.queued].sort((a, b) => a.workItemId.localeCompare(b.workItemId)))
-      .toEqual([
-        { workItemId: "w-m1-prompt_smoothing-v2", kind: "prompt_smoothing" },
-        { workItemId: "w-t1-turn_derivation-v2", kind: "turn_derivation" },
-      ]);
+    expect([...result.value.queued].sort((a, b) => a.workItemId.localeCompare(b.workItemId))).toEqual([
+      { workItemId: "w-m1-prompt_smoothing-v2", kind: "prompt_smoothing" },
+      { workItemId: "w-t1-turn_derivation-v2", kind: "turn_derivation" },
+    ]);
     expect(result.value.superseded).toEqual([]);
 
     // Synchronous, before any drain: content, blocks, and the re-stamped
     // estimate read back changed.
-    const m1 = unwrap(await messages.listMessages({ filePath })).find(
-      (record) => record.messageId === "m1",
-    );
+    const m1 = unwrap(await messages.listMessages({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.blocks).toEqual([{ blockType: "text", content: { text: "edited prompt" } }]);
     expect(m1?.tokenEstimate).toBe(estimateTokens("edited prompt"));
 
@@ -183,9 +169,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing?.state).toBe("ready");
-    expect(smoothing?.content).toBe(
-      deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"),
-    );
+    expect(smoothing?.content).toBe(deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"));
   });
 
   it("induced cascade failure rolls back the content change too (atomicity, architecture risk)", async () => {
@@ -210,10 +194,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     db.close();
 
     const before = await snapshot(filePath);
-    const result = await messages.edit(
-      { filePath },
-      { messageId: "m1", content: "edited prompt" },
-    );
+    const result = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("storage_failure");
@@ -262,10 +243,7 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     );
     expect(before.every((form) => form.state === "ready")).toBe(true);
 
-    const result = await messages.edit(
-      { filePath },
-      { messageId: "m1", content: "rewritten first prompt" },
-    );
+    const result = await messages.edit({ filePath }, { messageId: "m1", content: "rewritten first prompt" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -332,9 +310,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     expect(formsAfterFirst.every((form) => form.sourceVersion === 2)).toBe(true);
     const queueAfterFirst = rawDetail(filePath);
     expect(queueAfterFirst.map((row) => row.workItemId).sort()).toEqual(firstWaveIds);
-    expect(queueAfterFirst.every((row) => row.status === "queued" && row.sourceVersion === 2)).toBe(
-      true,
-    );
+    expect(queueAfterFirst.every((row) => row.status === "queued" && row.sourceVersion === 2)).toBe(true);
 
     // Second edit before any drain: the still-queued first wave is
     // supersede-deleted in the cascade transaction and reported; the queue
@@ -350,11 +326,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
       "w-m1-prompt_smoothing-v3",
       "w-t1-turn_derivation-v3",
     ]);
-    expect(
-      readDerivedForms(filePath).every(
-        (form) => form.state === "pending" && form.sourceVersion === 3,
-      ),
-    ).toBe(true);
+    expect(readDerivedForms(filePath).every((form) => form.state === "pending" && form.sourceVersion === 3)).toBe(true);
 
     // And the drain rebuilds the whole chain from the second edit's content.
     await drain(sdk, filePath);
@@ -362,9 +334,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing?.state).toBe("ready");
-    expect(smoothing?.content).toBe(
-      deterministicText("smoothPrompt", { text: "second edit" }, "second edit"),
-    );
+    expect(smoothing?.content).toBe(deterministicText("smoothPrompt", { text: "second edit" }, "second edit"));
   });
 });
 
@@ -390,10 +360,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       "the old-content smoothing to be claimed and in-handler",
     );
 
-    const edited = await messages.edit(
-      { filePath },
-      { messageId: "m1", content: "edited prompt" },
-    );
+    const edited = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
     expect(edited.ok).toBe(true);
     if (!edited.ok) return;
     // The still-queued turn derivation behind the claimed head was
@@ -428,9 +395,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ state: "ready", sourceVersion: 2 });
-    expect(rows[0]?.content).toBe(
-      deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"),
-    );
+    expect(rows[0]?.content).toBe(deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"));
     expect(rawDetail(filePath)).toEqual([]);
   }, 15000);
 });
@@ -466,9 +431,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     // — never a distinct error. (deleted_at stamped below the SDK: the
     // delete operation itself is Story 6.)
     const db = openRaw(filePath);
-    db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = 'm1'`).run(
-      "2026-06-11T00:00:00.000Z",
-    );
+    db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = 'm1'`).run("2026-06-11T00:00:00.000Z");
     db.close();
     const afterStamp = await snapshot(filePath);
     const deleted = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });
@@ -486,12 +449,8 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     // membership (turnId null). It exists and isn't deleted, so neither the
     // open-turn nor the message_not_found refusal would catch it — the
     // closed-turn boundary is the only gate that does.
-    await send(sdk, filePath, [
-      validEvent("runtime_note", { payload: { text: "a note before any turn" } }),
-    ]);
-    const m1 = unwrap(await messages.listMessages({ filePath })).find(
-      (record) => record.messageId === "m1",
-    );
+    await send(sdk, filePath, [validEvent("runtime_note", { payload: { text: "a note before any turn" } })]);
+    const m1 = unwrap(await messages.listMessages({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.turnId).toBeUndefined();
 
     const before = await snapshot(filePath);
@@ -528,9 +487,7 @@ describe("background mode: edit-and-walk-away (production path)", () => {
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
     expect(smoothing).toMatchObject({ state: "ready", sourceVersion: 2 });
-    expect(smoothing?.content).toBe(
-      deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"),
-    );
+    expect(smoothing?.content).toBe(deterministicText("smoothPrompt", { text: "edited prompt" }, "edited prompt"));
     expect(rawDetail(filePath)).toEqual([]);
   });
 });

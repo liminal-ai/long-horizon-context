@@ -10,19 +10,19 @@
 // non-ready state present at once (TC-4.7, architecture risk).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  type BatchResult,
   countLiveItems,
+  type DerivationReportEntry,
+  type DrainReport,
+  type InferenceCallbacks,
   initLhc,
+  type Lhc,
+  type MessageEventInput,
   queueDetail,
+  type SdkConfig,
   setSchedulerPoke,
   setThreadTouch,
   threads,
-  type BatchResult,
-  type InferenceCallbacks,
-  type DrainReport,
-  type DerivationReportEntry,
-  type Lhc,
-  type MessageEventInput,
-  type SdkConfig,
 } from "../src/index.js";
 import {
   corruptTwoOpenTurns,
@@ -30,12 +30,12 @@ import {
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,
   gappedRenderingThread,
+  type InferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type InferenceCallbacksDouble,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -72,30 +72,20 @@ function manualSdk(
   return initLhc(config);
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<BatchResult> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
   return result.value;
 }
 
-async function drain(
-  sdk: Lhc,
-  filePath: string,
-  opts?: { maxItems?: number },
-): Promise<DrainReport> {
+async function drain(sdk: Lhc, filePath: string, opts?: { maxItems?: number }): Promise<DrainReport> {
   const result = await sdk.work.drain({ filePath }, opts);
   if (!result.ok) throw new Error(`drain failed: ${result.error.reason}`);
   return result.value;
 }
 
 function formOf(filePath: string, subjectId: string, derivationType: string) {
-  return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
-  );
+  return readDerivedForms(filePath).find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
 }
 
 function liveCount(filePath: string): number {
@@ -121,9 +111,7 @@ function entryOf(
   subjectId: string,
   derivationType: string,
 ): DerivationReportEntry | undefined {
-  return entries.find(
-    (entry) => entry.subjectId === subjectId && entry.derivationType === derivationType,
-  );
+  return entries.find((entry) => entry.subjectId === subjectId && entry.derivationType === derivationType);
 }
 
 async function reportOf(
@@ -133,9 +121,7 @@ async function reportOf(
   opts?: { notReady?: boolean },
 ): Promise<DerivationReportEntry[]> {
   const result =
-    owner === "messages"
-      ? await sdk.messages.report({ filePath }, opts)
-      : await sdk.turns.report({ filePath }, opts);
+    owner === "messages" ? await sdk.messages.report({ filePath }, opts) : await sdk.turns.report({ filePath }, opts);
   if (!result.ok) throw new Error(`${owner} report failed: ${result.error.reason}`);
   return result.value;
 }
@@ -161,17 +147,12 @@ async function mixedStateThread(): Promise<{
     retryable: true,
     reason: MIXED_FAILED_REASON,
   });
-  await send(sdk, filePath, [
-    validEvent("user_prompt", { payload: { text: "first prompt" } }),
-    validEvent("turn_end"),
-  ]);
+  await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "first prompt" } }), validEvent("turn_end")]);
   await send(sdk, filePath, [
     validEvent("user_prompt", { payload: { text: "second prompt" } }),
     validEvent("turn_end"),
   ]);
-  await send(sdk, filePath, [
-    validEvent("user_prompt", { payload: { text: "third prompt, left open" } }),
-  ]);
+  await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "third prompt, left open" } })]);
   corruptTwoOpenTurns(filePath);
   const drainReport = await drain(sdk, filePath, { maxItems: 4 });
   return { sdk, double, filePath, drainReport };
@@ -225,10 +206,7 @@ describe("TC-4.2 / AC-4.2 (architecture risk): retrying reads from pending + que
     });
     const filePath = await newThread();
     double.failNext(1, { retryable: true, reason: "transient inference callback blip" });
-    await send(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "retry me" } }),
-      validEvent("turn_end"),
-    ]);
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "retry me" } }), validEvent("turn_end")]);
 
     const report = await drain(sdk, filePath);
     expect(report.stoppedBecause).toBe("waiting");
@@ -268,9 +246,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
     ]);
 
     const turnEntries = await reportOf(sdk, filePath, "turns");
-    expect(
-      turnEntries.every((entry) => entry.subjectKind === "turn" || entry.subjectKind === "chunk"),
-    ).toBe(true);
+    expect(turnEntries.every((entry) => entry.subjectKind === "turn" || entry.subjectKind === "chunk")).toBe(true);
     expect(turnEntries.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["t1", "smooth_turn_compression", "blocked"],
       ["t1", "turn_rendering", "blocked"],
@@ -369,10 +345,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
-    const requeued = await background.messages.requeue(
-      { filePath },
-      { messageId, derivationType: "smoothed_prompt" },
-    );
+    const requeued = await background.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
     expect(requeued.ok).toBe(true);
     if (!requeued.ok) return;
     expect(requeued.value).toEqual({ workItemId: "w-m1-prompt_smoothing-v2" });
@@ -402,10 +375,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     const beforeRepair = formOf(filePath, turnId, "turn_rendering");
 
     // Repair the dependency first (now healthy), then rebuild the composition.
-    const repairSmoothing = await sdk.messages.requeue(
-      { filePath },
-      { messageId, derivationType: "smoothed_prompt" },
-    );
+    const repairSmoothing = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
     expect(repairSmoothing.ok).toBe(true);
     await drain(sdk, filePath);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
@@ -442,27 +412,19 @@ describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
-    const first = await sdk.messages.requeue(
-      { filePath },
-      { messageId, derivationType: "smoothed_prompt" },
-    );
+    const first = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value).toEqual({ workItemId: "w-m1-prompt_smoothing-v2" });
 
-    const second = await sdk.messages.requeue(
-      { filePath },
-      { messageId, derivationType: "smoothed_prompt" },
-    );
+    const second = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.value).toEqual({ noop: "already_queued" });
 
     // Queue read-back: exactly one live item for the form.
     const detail = rawDetail(filePath);
-    expect(detail.map((row) => [row.workItemId, row.status])).toEqual([
-      ["w-m1-prompt_smoothing-v2", "queued"],
-    ]);
+    expect(detail.map((row) => [row.workItemId, row.status])).toEqual([["w-m1-prompt_smoothing-v2", "queued"]]);
 
     const report = await drain(sdk, filePath);
     expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
@@ -533,10 +495,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     if (!messagesRead.ok) return;
     expect(messagesRead.value.map((record) => record.messageId)).toEqual(["m1", "m3", "m5"]);
     const formStates = new Map(
-      messagesRead.value.map((record) => [
-        record.messageId,
-        record.derivations?.map((form) => form.state),
-      ]),
+      messagesRead.value.map((record) => [record.messageId, record.derivations?.map((form) => form.state)]),
     );
     expect(formStates.get("m1")).toEqual(["failed"]);
     expect(formStates.get("m3")).toEqual(["ready"]);
@@ -622,9 +581,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     ]);
     // The failed summary's read carries its stored reason — degraded, not
     // blocking, and never an error.
-    const failedBrief = chunksRead.value[1]?.derivations?.find(
-      (form) => form.derivationType === "chunk_summary_brief",
-    );
+    const failedBrief = chunksRead.value[1]?.derivations?.find((form) => form.derivationType === "chunk_summary_brief");
     expect(failedBrief?.reason).toBe("provider_failure: scripted brief exhaustion");
   });
 });

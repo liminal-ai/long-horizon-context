@@ -3,13 +3,7 @@
 // functions of the input. The test double reuses these helpers so in-process
 // and spawned runs produce byte-identical artifacts. It is selectable only by
 // explicit construction — never a production default.
-import type {
-  InferenceCallbacks,
-  InferenceResult,
-  RenderingPart,
-  ToolOutcome,
-  ToolRunReceipt,
-} from "./derivation.js";
+import type { InferenceCallbacks, InferenceResult, RenderingPart, ToolOutcome, ToolRunReceipt } from "./derivation.js";
 
 export type DeterministicOpName =
   | "smoothPrompt"
@@ -40,11 +34,7 @@ export function deterministicDigest(input: unknown): string {
   return hash.toString(16).padStart(8, "0");
 }
 
-export function deterministicText(
-  op: DeterministicOpName,
-  input: unknown,
-  text: string,
-): string {
+export function deterministicText(op: DeterministicOpName, input: unknown, text: string): string {
   return `${DETERMINISTIC_MARKERS[op]}(${deterministicDigest(input)}:${text.slice(0, 40)})`;
 }
 
@@ -79,23 +69,16 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       outcome?: ToolOutcome;
       targetTokens?: number;
       guidance?: string;
-    }) =>
-      ok("summarizeToolResult", i, i.content),
+    }) => ok("summarizeToolResult", i, i.content),
     composeTurnRendering: (i: { parts: RenderingPart[] }) =>
       ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),
     compressSmoothTurn: (i: { rendering: string }) => ok("compressSmoothTurn", i, i.rendering),
-    summarizeChunkDetailed: async (i: {
-      memberProjections: string[];
-      memberReceipts?: ToolRunReceipt[][];
-    }) => {
+    summarizeChunkDetailed: async (i: { memberProjections: string[]; memberReceipts?: ToolRunReceipt[][] }) => {
       const base = await ok("summarizeChunkDetailed", i, i.memberProjections.join(" | "));
       if (!base.ok) return base;
       return { ok: true, text: base.text + deterministicReceiptsSuffix(i.memberReceipts) };
     },
-    summarizeChunkBrief: async (i: {
-      memberProjections: string[];
-      memberOutcomes?: ToolOutcome[][];
-    }) => {
+    summarizeChunkBrief: async (i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }) => {
       const base = await ok("summarizeChunkBrief", i, i.memberProjections.join(" | "));
       if (!base.ok) return base;
       return { ok: true, text: base.text + deterministicOutcomesSuffix(i.memberOutcomes) };

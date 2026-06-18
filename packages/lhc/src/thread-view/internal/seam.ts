@@ -19,10 +19,7 @@ const hooks: Record<ViewInjectionPoint, ViewInjectionHook | null> = {
   "compact-write": null,
 };
 
-export function setViewInjectionHook(
-  point: ViewInjectionPoint,
-  hook: ViewInjectionHook | null,
-): void {
+export function setViewInjectionHook(point: ViewInjectionPoint, hook: ViewInjectionHook | null): void {
   hooks[point] = hook;
 }
 

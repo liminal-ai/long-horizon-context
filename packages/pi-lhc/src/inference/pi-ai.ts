@@ -14,9 +14,7 @@ export interface CompleteContext {
 }
 
 /** The pi-ai complete() signature. */
-export interface PiAiComplete {
-  (model: ModelHandle, context: CompleteContext): Promise<AssistantMessage>;
-}
+export type PiAiComplete = (model: ModelHandle, context: CompleteContext) => Promise<AssistantMessage>;
 
 /** Error shapes pi-ai's complete() may throw or return. */
 export interface PiAiError {

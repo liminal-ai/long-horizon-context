@@ -8,23 +8,18 @@
 // derivation directly.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  initLhc,
-  type Lhc,
-  type MessageEventInput,
-  type ViewMessage,
-} from "../src/index.js";
+import { initLhc, type Lhc, type MessageEventInput, type ViewMessage } from "../src/index.js";
 import {
   corruptTwoOpenTurns,
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
+  type InferenceCallbacksDouble,
   openRaw,
   setViewInjectionHook,
+  type TempStore,
   tempStore,
   validEvent,
-  type DerivedThreadFixture,
-  type InferenceCallbacksDouble,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -73,15 +68,11 @@ function recordSnapshot(filePath: string): string {
     return sha256({
       events: db.prepare(`SELECT * FROM event ORDER BY event_order`).all(),
       messages: db.prepare(`SELECT * FROM message ORDER BY source_event_order`).all(),
-      blocks: db
-        .prepare(`SELECT * FROM message_block ORDER BY message_id, block_index`)
-        .all(),
+      blocks: db.prepare(`SELECT * FROM message_block ORDER BY message_id, block_index`).all(),
       turns: db.prepare(`SELECT * FROM turns ORDER BY turn_order`).all(),
       chunks: db.prepare(`SELECT * FROM chunk ORDER BY chunk_order`).all(),
       members: db.prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`).all(),
-      derivations: db
-        .prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`)
-        .all(),
+      derivations: db.prepare(`SELECT * FROM derivation ORDER BY subject_kind, subject_id, derivation_type`).all(),
     });
   } finally {
     db.close();
@@ -162,10 +153,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
     expect(badBound.error.code).toBe("invalid_view_config");
     expect(badBound.error.reason).toContain("lowerBound");
 
-    const unknown = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { profile: "nonesuch" },
-    );
+    const unknown = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { profile: "nonesuch" });
     expect(unknown.ok).toBe(false);
     if (unknown.ok) return;
     expect(unknown.error.errorClass).toBe("caller_error");
@@ -179,10 +167,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
   });
 
   it("compacts with a built-in profile: the profile's bound and mix land in the receipt", async () => {
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { profile: "coding" },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { profile: "coding" });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
     expect(receipt.value.profile).toBe("coding");
@@ -239,10 +224,7 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     const capturedBefore = captured.length;
     const recordBefore = recordSnapshot(fixture.filePath);
 
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: TARGET_PARAMS },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: TARGET_PARAMS });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
     const shares = {
@@ -291,10 +273,7 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
 
 describe("TC-2.6 (AC-2.10): band entries carry their subject keys visibly", () => {
   it("chunk keys in brief/detailed text, turn keys in smooth text", async () => {
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: GRADIENT_PARAMS },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
 
     const messages = await pullMessages(fixture.sdk, fixture.filePath);
@@ -309,10 +288,7 @@ describe("TC-2.6 (AC-2.10): band entries carry their subject keys visibly", () =
 
 describe("architecture-risk: coverage edge accounting", () => {
   it("excluded old chunks set covered_from, the receipt reports the window, and no phantom gaps appear", async () => {
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: EDGE_PARAMS },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: EDGE_PARAMS });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
 
@@ -341,10 +317,7 @@ describe("architecture-risk: coverage edge accounting", () => {
 
 describe("architecture-risk: restart serves the snapshot (real-file durability)", () => {
   it("a fresh SDK on the same file pulls byte-identical band content", async () => {
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: GRADIENT_PARAMS },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
     const before = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
     expect(before.ok).toBe(true);
@@ -361,10 +334,7 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
 
 describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
   it("an injected crash leaves the previous view serving; the rerun lands clean with no partial state", async () => {
-    const first = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: GRADIENT_PARAMS },
-    );
+    const first = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(first.ok).toBe(true);
     const priorPull = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
     expect(priorPull.ok).toBe(true);
@@ -375,10 +345,7 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
       throw new Error("injected crash between sweep and view write");
     });
     try {
-      const crashed = await fixture.sdk.threadView.compact(
-        { filePath: fixture.filePath },
-        { params: EDGE_PARAMS },
-      );
+      const crashed = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: EDGE_PARAMS });
       expect(crashed.ok).toBe(false);
       if (crashed.ok) return;
       expect(crashed.error.errorClass).toBe("system_error");
@@ -398,10 +365,7 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
 
     // Rerun: the new view lands whole and the boundary resets to ITS compact
     // point (56) in the same transaction.
-    const rerun = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: EDGE_PARAMS },
-    );
+    const rerun = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: EDGE_PARAMS });
     expect(rerun.ok).toBe(true);
     if (!rerun.ok) return;
     expect(rerun.value.coveredFrom).toBe(13);
@@ -448,10 +412,7 @@ function degradedTurnEvents(turn: number): MessageEventInput[] {
       );
     }
   }
-  events.push(
-    validEvent("assistant_text", { payload: { text: `findings for area ${turn}` } }),
-    validEvent("turn_end"),
-  );
+  events.push(validEvent("assistant_text", { payload: { text: `findings for area ${turn}` } }), validEvent("turn_end"));
   return events;
 }
 
@@ -661,10 +622,7 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
     // zero usable forms on c2 — and the compact above completed with a gap
     // rather than refusing. Re-assert the contrast directly on the main
     // fixture: derived failures present, compact succeeds, no state_corruption.
-    const receipt = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: GRADIENT_PARAMS },
-    );
+    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
   });
 });
@@ -676,10 +634,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
   beforeAll(async () => {
     mutStore = tempStore();
     mut = await derivedThreadFixture(mutStore, { failures: false });
-    const receipt = await mut.sdk.threadView.compact(
-      { filePath: mut.filePath },
-      { params: GRADIENT_PARAMS },
-    );
+    const receipt = await mut.sdk.threadView.compact({ filePath: mut.filePath }, { params: GRADIENT_PARAMS });
     if (!receipt.ok) throw new Error(`setup compact failed: ${receipt.error.reason}`);
   });
   afterAll(() => {
@@ -750,9 +705,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     );
     expect(tailDelete.ok).toBe(true);
     const afterTailDelete = await pullMessages(mut.sdk, mut.filePath);
-    expect(
-      afterTailDelete.some((m) => m.content === "findings for area 10"),
-    ).toBe(false);
+    expect(afterTailDelete.some((m) => m.content === "findings for area 10")).toBe(false);
 
     // The record change is visible to the status read (tail sum shrank).
     const statusAfter = await mut.sdk.threadView.status({ filePath: mut.filePath });

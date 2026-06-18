@@ -1,31 +1,25 @@
 import { existsSync } from "node:fs";
-import { runWithThreadTouchSuppressed } from "../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
-import {
-  createThreadFile,
-  deleteThreadFile,
-  generateThreadId,
-  openThreadDatabase,
-} from "./internal/create.js";
+import type { DatabaseSync } from "node:sqlite";
+import { type ErrorResult, type OpResult, runWithThreadTouchSuppressed, storageFailure } from "../shared-tech/index.js";
+import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
 // Re-exported for the other domain surfaces: opening a thread file through
 // the threads domain is what guarantees its schema is current (a pre-Story-3
 // file gains the message tables here before any write or read touches them).
 export { openThreadDatabase };
+
 import {
   insertThreadRow,
   openRegistryForRead,
   openRegistryForWrite,
+  type RegistryRow,
   resolveRegistryPath,
   selectAllThreadRows,
   selectThreadRow,
   selectThreadRowsByPrefix,
-  type RegistryRow,
 } from "./internal/registry.js";
 
-export type ThreadRef =
-  | { threadId: string; registryPath?: string }
-  | { filePath: string };
+export type ThreadRef = { threadId: string; registryPath?: string } | { filePath: string };
 
 export interface NewThreadInput {
   filePath: string;
@@ -67,10 +61,7 @@ function threadNotFound(threadId: string): { ok: false; error: ErrorResult } {
 // A partial id that matches more than one thread is a caller error, not a
 // silent pick: resolution names the collision and the caller must disambiguate
 // (AC-1.6 — an ambiguous id fails loud, never resolves arbitrarily).
-function ambiguousThreadId(
-  prefix: string,
-  matchIds: readonly string[],
-): { ok: false; error: ErrorResult } {
+function ambiguousThreadId(prefix: string, matchIds: readonly string[]): { ok: false; error: ErrorResult } {
   return {
     ok: false,
     error: {
@@ -104,9 +95,7 @@ function detail(cause: unknown): string {
 // file-then-row with compensation: the invariant "no registry row without
 // its file" is absolute; an orphan file from a crash between the writes is
 // documented harmless (design decision 2).
-export async function newThread(
-  input: NewThreadInput,
-): Promise<OpResult<{ threadId: string; filePath: string }>> {
+export async function newThread(input: NewThreadInput): Promise<OpResult<{ threadId: string; filePath: string }>> {
   // Guard before any storage touch: an empty/blank path would otherwise open
   // a temp database and register a thread with no durable file (the no-row-
   // without-file invariant below depends on the path naming a real file).
@@ -134,7 +123,7 @@ export async function newThread(
     return storageFailure(`thread file creation failed: ${detail(cause)}`);
   }
 
-  let registry;
+  let registry: DatabaseSync | undefined;
   try {
     registry = openRegistryForWrite(resolveRegistryPath(input.registryPath));
     const row: RegistryRow = { threadId, filePath: input.filePath, createdAt };
@@ -156,11 +145,8 @@ export async function newThread(
 // prefix of a longer id — so only a genuinely partial id ever consults the
 // prefix path; that path resolves a unique prefix, fails ambiguous on more than
 // one match, and fails not-found on none. No path ever creates a thread.
-export async function resolve(input: {
-  threadId: string;
-  registryPath?: string;
-}): Promise<OpResult<ThreadInfo>> {
-  let registry;
+export async function resolve(input: { threadId: string; registryPath?: string }): Promise<OpResult<ThreadInfo>> {
+  let registry: DatabaseSync | null | undefined;
   try {
     registry = openRegistryForRead(resolveRegistryPath(input.registryPath));
     if (registry === null) return threadNotFound(input.threadId);
@@ -182,11 +168,8 @@ export async function resolve(input: {
   }
 }
 
-export async function listThreads(input?: {
-  cwd?: string;
-  registryPath?: string;
-}): Promise<OpResult<ThreadInfo[]>> {
-  let registry;
+export async function listThreads(input?: { cwd?: string; registryPath?: string }): Promise<OpResult<ThreadInfo[]>> {
+  let registry: DatabaseSync | null | undefined;
   try {
     registry = openRegistryForRead(resolveRegistryPath(input?.registryPath));
     if (registry === null) return { ok: true, value: [] };
@@ -233,9 +216,9 @@ async function infoInner(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const row = db
-      .prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string; created_at: string } | undefined;
+    const row = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string; created_at: string }
+      | undefined;
     if (row === undefined) {
       // openThreadDatabase validated the row exists; its absence here is
       // external interference between the probe and this read.
@@ -252,9 +235,7 @@ async function infoInner(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
 // The single interpreter of thread references: { threadId } resolves to a
 // path through the registry, { filePath } passes through untouched. No other
 // code ever reads a thread reference.
-export async function resolveThreadRef(
-  ref: ThreadRef,
-): Promise<OpResult<{ filePath: string }>> {
+export async function resolveThreadRef(ref: ThreadRef): Promise<OpResult<{ filePath: string }>> {
   if ("threadId" in ref) {
     const resolved = await resolve(ref);
     if (!resolved.ok) return resolved;

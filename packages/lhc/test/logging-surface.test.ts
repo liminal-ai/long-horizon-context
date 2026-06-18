@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDeterministicInferenceCallbacks,
-  initLhc,
-  writeLog,
-  type InferenceCallbacks,
   type DrainReport,
+  type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type LogEntry,
   type LogLevel,
   type MessageEventInput,
+  writeLog,
 } from "../src/index.js";
 import { createInferenceCallbacksDouble, openRaw, tempStore, validEvent } from "./fixtures/index.js";
 
@@ -45,11 +45,7 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   });
 }
 
-async function send(
-  target: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(target: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await target.intakeStream.messageEvents({ filePath }, batch);
   expect(result.ok).toBe(true);
 }
@@ -80,11 +76,7 @@ describe("Flow 5: Derivation Logging", () => {
     const queried = await sdk.logging.query({ filePath }, {});
     expect(queried.ok).toBe(true);
     if (!queried.ok) return;
-    expect(queried.value.map((entry) => entry.level).sort()).toEqual([
-      "error",
-      "info",
-      "warning",
-    ]);
+    expect(queried.value.map((entry) => entry.level).sort()).toEqual(["error", "info", "warning"]);
   });
 
   it("TC-5.2a writes internal and external callers through the same store", async () => {
@@ -120,10 +112,7 @@ describe("Flow 5: Derivation Logging", () => {
     const queried = await sdk.logging.query({ filePath }, {});
     expect(queried.ok).toBe(true);
     if (!queried.ok) return;
-    expect(queried.value.map((entry) => entry.message).sort()).toEqual([
-      "external caller",
-      "internal caller",
-    ]);
+    expect(queried.value.map((entry) => entry.message).sort()).toEqual(["external caller", "internal caller"]);
   });
 
   it("TC-5.3a keeps fallback events in the log, not on ready derivations", async () => {
@@ -193,9 +182,9 @@ describe("Flow 5: Derivation Logging", () => {
 
     const read = openRaw(filePath);
     try {
-      const row = read
-        .prepare(`SELECT state, reason FROM derivation WHERE subject_id = ?`)
-        .get("m2") as { state: string; reason: string } | undefined;
+      const row = read.prepare(`SELECT state, reason FROM derivation WHERE subject_id = ?`).get("m2") as
+        | { state: string; reason: string }
+        | undefined;
       expect(row).toEqual({ state: "failed", reason: "provider_unavailable" });
     } finally {
       read.close();
@@ -276,10 +265,7 @@ describe("Flow 5: Derivation Logging", () => {
       const rows = db
         .prepare(`SELECT derivation_type FROM derivation WHERE subject_id = ? ORDER BY derivation_type`)
         .all("t1") as unknown as Array<{ derivation_type: string }>;
-      expect(rows.map((row) => row.derivation_type)).toEqual([
-        "smooth_turn_compression",
-        "turn_rendering",
-      ]);
+      expect(rows.map((row) => row.derivation_type)).toEqual(["smooth_turn_compression", "turn_rendering"]);
     } finally {
       db.close();
     }

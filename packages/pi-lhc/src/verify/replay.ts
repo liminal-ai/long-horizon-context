@@ -1,24 +1,24 @@
 import {
-  initLhc,
-  inspect,
-  intakeStream,
-  messages,
-  turns,
   type EventRecord,
   type InferenceCallbacks,
   type InferenceResult,
   type InspectOverview,
+  initLhc,
+  inspect,
+  intakeStream,
   type MessageEventInput,
   type MessageRecord,
+  messages,
   type OpResult,
   type ThreadRef,
   type TurnRecord,
+  turns,
 } from "lhc";
+import { capture, captureGap } from "../capture/converter.js";
+import { type MapCtx, mapMessage } from "../capture/map-message.js";
+import { TurnAccumulator } from "../capture/turn-accumulator.js";
 import type { AgentMessage } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
-import { capture, captureGap } from "../capture/converter.js";
-import { mapMessage, type MapCtx } from "../capture/map-message.js";
-import { TurnAccumulator } from "../capture/turn-accumulator.js";
 
 // AC-6.1, AC-6.2 (Flow 6, Story 3). Capture correctness is proven WITHOUT
 // serving anything to a model: a recorded PI corpus replays through the REAL
@@ -129,7 +129,11 @@ async function driveCorpus(corpus: Corpus, instance: LhcInstance): Promise<void>
     try {
       events = mapMessage(record.message, mapCtx);
     } catch (cause) {
-      await captureGap(record.entryId || `${piSessionId}:entry:${index}`, `replay map failed: ${detail(cause)}`, instance);
+      await captureGap(
+        record.entryId || `${piSessionId}:entry:${index}`,
+        `replay map failed: ${detail(cause)}`,
+        instance,
+      );
       continue;
     }
     accumulator.onMessage(events);
@@ -392,9 +396,7 @@ function compareReadback(
   const expectedMessageRows = expectedMessageRecords(expected);
   const actualMessageRows = comparableMessageRecords(actualMessages);
   if (canonical(actualMessageRows) !== canonical(expectedMessageRows)) {
-    problems.push(
-      `messages.records: expected ${canonical(expectedMessageRows)}, got ${canonical(actualMessageRows)}`,
-    );
+    problems.push(`messages.records: expected ${canonical(expectedMessageRows)}, got ${canonical(actualMessageRows)}`);
   }
 
   // Turns — full read-back records implied by fixture event boundaries.

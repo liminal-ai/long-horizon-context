@@ -1,24 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SQLInputValue } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  initLhc,
   estimateTokens,
-  queueDetail,
-  threads,
   type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  queueDetail,
   type SdkConfig,
+  threads,
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -48,11 +48,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   });
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(result.error.reason);
 }
@@ -72,10 +68,7 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
 // texts, stored as the turn_rendering derivation. The composition tests read
 // it back here instead of capturing a model call.
 function renderingContent(filePath: string): string {
-  return (
-    readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ??
-    ""
-  );
+  return readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ?? "";
 }
 
 function execSql(filePath: string, sql: string, ...params: SQLInputValue[]): void {
@@ -94,7 +87,6 @@ function deleteWorkItem(filePath: string, workItemId: string): void {
 describe("Story 3: turn construction recovery cascade", () => {
   it("uses ready derivations directly and writes no fallback log", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -118,7 +110,6 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("falls pending derivations to deterministic floors when re-derivation does not complete", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -150,7 +141,6 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("falls back to original prompt source when the deterministic floor is unavailable", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const original = " \t\n  ";
@@ -174,7 +164,6 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("falls failed derivations through the same floor path when re-derivation does not complete", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -256,7 +245,6 @@ describe("Story 3: turn construction recovery cascade", () => {
     let filePath = "";
     let workerCompleted = false;
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const callbacks: InferenceCallbacks = {
       smoothPrompt: async () => {
         execSql(
@@ -299,7 +287,6 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("renders assistant text, thinking, and runtime notes verbatim in record order", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -318,16 +305,13 @@ describe("Story 3: turn construction recovery cascade", () => {
     // runtime notes render verbatim, in position, between the answer texts.
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
     expect(renderingContent(filePath)).toEqual(
-      [smoothed, "first answer", "thinking exactly", "runtime changed exactly", "second answer"].join(
-        " | ",
-      ),
+      [smoothed, "first answer", "thinking exactly", "runtime changed exactly", "second answer"].join(" | "),
     );
   });
 
   it("uses and writes tool-result truncation floors, never raw full results", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 1, { retryable: true, reason: "recovery unavailable" });
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const content = "tool-output ".repeat(100);
@@ -474,10 +458,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const queried = await sdk.logging.query(
-      { filePath },
-      { derivationType: "tool_result_summary" },
-    );
+    const queried = await sdk.logging.query({ filePath }, { derivationType: "tool_result_summary" });
     expect(queried.ok).toBe(true);
     if (!queried.ok) return;
     expect(queried.value).toEqual([
@@ -500,7 +481,6 @@ describe("Story 3: turn construction recovery cascade", () => {
       retryable: true,
       reason: "recovery unavailable",
     });
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -540,7 +520,6 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("leaves derivation rows untouched when live work exists but still renders a floor", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -559,9 +538,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       "2026-01-01T00:00:00.000Z",
       JSON.stringify({
         sourceVersion: 1,
-        derivations: [
-          { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
-        ],
+        derivations: [{ subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" }],
       }),
     );
 

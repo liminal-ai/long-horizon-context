@@ -8,25 +8,25 @@
 // production handlers registered by the messages domain at initLhc.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  countLiveItems,
-  initLhc,
-  deterministicText,
-  threads,
   type BatchResult,
-  type InferenceCallbacks,
+  countLiveItems,
   type DrainReport,
+  deterministicText,
+  type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  threads,
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   threadWithToolRun,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -55,11 +55,7 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   });
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<BatchResult> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
   return result.value;
@@ -81,9 +77,7 @@ function liveCount(filePath: string): number {
 }
 
 function formOf(filePath: string, subjectId: string, derivationType: string) {
-  return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
-  );
+  return readDerivedForms(filePath).find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
 }
 
 describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongside the message", () => {
@@ -187,9 +181,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
     const errored = await threadWithToolRun(store, { isError: true });
     for (const { filePath } of [ok, errored]) await drain(sdk, filePath);
 
-    const summaries = [ok, errored].map(({ filePath }) =>
-      formOf(filePath, "m3", "tool_result_summary"),
-    );
+    const summaries = [ok, errored].map(({ filePath }) => formOf(filePath, "m3", "tool_result_summary"));
     expect(summaries.map((f) => f?.state)).toEqual(["ready", "ready"]);
     expect(summaries.map((f) => f?.content)).toEqual([constantText, constantText]);
     expect(summaries.map((f) => f?.metadata?.outcome)).toEqual(["succeeded", "failed"]);
@@ -281,16 +273,11 @@ describe("TC-2.5 / AC-2.5: tool calls render as recorded and queue no summary", 
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
-    const batch = await send(sdk, filePath, [
-      validEvent("tool_call"),
-      validEvent("tool_result"),
-    ]);
+    const batch = await send(sdk, filePath, [validEvent("tool_call"), validEvent("tool_result")]);
     expect(batch.queuedWork.map((item) => item.kind)).toEqual(["tool_result_summary"]);
 
     await drain(sdk, filePath);
-    expect(readDerivedForms(filePath).map((f) => f.derivationType)).toEqual([
-      "tool_result_summary",
-    ]);
+    expect(readDerivedForms(filePath).map((f) => f.derivationType)).toEqual(["tool_result_summary"]);
     expect(liveCount(filePath)).toBe(0);
   });
 });

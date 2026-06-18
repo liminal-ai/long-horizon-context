@@ -1,24 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  initLhc,
   deterministicText,
   estimateTokens,
-  messages,
-  queueDetail,
-  threads,
   type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  messages,
+  queueDetail,
   type SdkConfig,
+  threads,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -52,11 +52,7 @@ function sdkFor(
   return initLhc(config);
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(result.error.reason);
 }
@@ -149,10 +145,9 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
-    const result = await sdk.intakeStream.messageEvents(
-      { filePath },
-      [validEvent("user_prompt", { payload: { text: "please smooth later" } })],
-    );
+    const result = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "please smooth later" } }),
+    ]);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -194,9 +189,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     await drain(sdk, filePath);
 
     expect(inferenceCallbackInput).toBe(`plz fix this\n${fenced}\nthx`);
-    expect(formOf(filePath, "m1", "smoothed_prompt")?.content).toBe(
-      `Please fix this.\n${fenced}\nThanks.`,
-    );
+    expect(formOf(filePath, "m1", "smoothed_prompt")?.content).toBe(`Please fix this.\n${fenced}\nThanks.`);
   });
 });
 
@@ -304,9 +297,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
     const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
     const filePath = await newThread();
 
-    await send(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "hello world ".repeat(50) } }),
-    ]);
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "hello world ".repeat(50) } })]);
     await drain(sdk, filePath);
 
     const db = openRaw(filePath);

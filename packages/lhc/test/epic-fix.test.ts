@@ -3,14 +3,8 @@
 // suite — the Red-committed files stay byte-identical.
 import { existsSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  messages,
-  threads,
-  turns,
-  type ThreadRef,
-} from "../src/index.js";
-import { tempStore, type TempStore } from "./fixtures/index.js";
+import { intakeStream, messages, type ThreadRef, threads, turns } from "../src/index.js";
+import { type TempStore, tempStore } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {

@@ -10,13 +10,13 @@ import type {
   DependencyGap,
   Derivation,
   DerivationMetadata,
-  DerivationState,
   DerivationReportEntry,
+  DerivationState,
   RenderingPartKind,
-  ToolRunReceipt,
   SubjectKind,
+  ToolRunReceipt,
 } from "../../shared-tech/index.js";
-import { reportEntryFromRow, type RawReportRow } from "../../shared-tech/index.js";
+import { type RawReportRow, reportEntryFromRow } from "../../shared-tech/index.js";
 import type { ComposeDerivationRow, ComposeMessage } from "./compose.js";
 import { composeDerivationKey } from "./compose.js";
 
@@ -27,9 +27,9 @@ export interface TurnSource {
 }
 
 export function readTurnSource(db: DatabaseSync, turnId: string): TurnSource | undefined {
-  const row = db
-    .prepare(`SELECT status, deleted_at FROM turns WHERE turn_id = ?`)
-    .get(turnId) as unknown as { status: string; deleted_at: string | null } | undefined;
+  const row = db.prepare(`SELECT status, deleted_at FROM turns WHERE turn_id = ?`).get(turnId) as unknown as
+    | { status: string; deleted_at: string | null }
+    | undefined;
   if (row === undefined) return undefined;
   return {
     turnId,
@@ -181,10 +181,7 @@ interface RawOwnedDerivationRow {
 // id — the derivation read-back joined onto turn and chunk reads (AC-4.7's
 // "record with derivation states", mirroring messages.readMessageDerivations). Rows come
 // back exactly as the pipeline landed them; nothing is derived at read time.
-export function readOwnedDerivations(
-  db: DatabaseSync,
-  subjectKind: "turn" | "chunk",
-): Map<string, Derivation[]> {
+export function readOwnedDerivations(db: DatabaseSync, subjectKind: "turn" | "chunk"): Map<string, Derivation[]> {
   const rows = db
     .prepare(
       `SELECT subject_id, derivation_type, state, content, reason, metadata,
@@ -325,7 +322,5 @@ export function reportTurnDerivations(
 }
 
 export function chunkExists(db: DatabaseSync, chunkId: string): boolean {
-  return (
-    db.prepare(`SELECT 1 FROM chunk WHERE chunk_id = ?`).get(chunkId) !== undefined
-  );
+  return db.prepare(`SELECT 1 FROM chunk WHERE chunk_id = ?`).get(chunkId) !== undefined;
 }

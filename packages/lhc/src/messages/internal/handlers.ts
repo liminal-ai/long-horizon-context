@@ -14,16 +14,12 @@ import type {
   InferenceResult,
   WorkHandler,
 } from "../../shared-tech/index.js";
-import type { WorkKind } from "../../shared-tech/work-queue/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
+import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import type { WorkKind } from "../../shared-tech/work-queue/index.js";
+import { findPairedToolCall, type MessageSource, readMessageSource } from "./derivations.js";
 import { deriveToolOutcome } from "./outcome.js";
 import { cleanPrompt } from "./smoothing.js";
-import {
-  findPairedToolCall,
-  readMessageSource,
-  type MessageSource,
-} from "./derivations.js";
 
 // A handler that cannot read its source coherently has found source damage:
 // terminal, derivation blocked with the reason (never a retry loop against a
@@ -38,9 +34,7 @@ function loadSource(
   run: HandlerRunContext,
   item: { sourceRef: Record<string, string> },
   expectedKind: string,
-):
-  | { ok: true; messageId: string; source: MessageSource }
-  | { ok: false; outcome: HandlerOutcome } {
+): { ok: true; messageId: string; source: MessageSource } | { ok: false; outcome: HandlerOutcome } {
   const messageId = item.sourceRef["messageId"];
   if (messageId === undefined) {
     return { ok: false, outcome: sourceDamaged("work item carries no messageId") };
@@ -52,9 +46,7 @@ function loadSource(
   if (source.kind !== expectedKind) {
     return {
       ok: false,
-      outcome: sourceDamaged(
-        `message ${messageId} is kind ${source.kind}, expected ${expectedKind}`,
-      ),
+      outcome: sourceDamaged(`message ${messageId} is kind ${source.kind}, expected ${expectedKind}`),
     };
   }
   return { ok: true, messageId, source };
@@ -121,8 +113,7 @@ export function toolResultGuidance(toolName: string): string {
 
 export function toolResultTargetTokens(tokens: number, config: HandlerRunContext["config"]): number {
   const tier = config.toolResult;
-  const ratio =
-    tokens <= tier.smallTierTokens ? tier.smallTargetRatio : tier.midTargetRatio;
+  const ratio = tokens <= tier.smallTierTokens ? tier.smallTargetRatio : tier.midTargetRatio;
   return Math.max(1, Math.ceil(tokens * ratio));
 }
 
@@ -135,10 +126,7 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
     return sourceDamaged(`tool result ${loaded.messageId} has no tool_result block`);
   }
   const toolCallId = block["toolCallId"];
-  const pairedCall =
-    typeof toolCallId === "string"
-      ? findPairedToolCall(run.openDb(), toolCallId)
-      : undefined;
+  const pairedCall = typeof toolCallId === "string" ? findPairedToolCall(run.openDb(), toolCallId) : undefined;
   // The summary abbreviates; the full result content stays untouched in the
   // record (AC-2.3) — nothing here writes back to message_block. The result
   // is tool activity, so its outcome is stamped from its own isError flag.

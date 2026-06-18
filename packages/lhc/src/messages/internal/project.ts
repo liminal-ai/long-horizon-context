@@ -33,9 +33,7 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
             },
           },
         ],
-        tokenEstimate: estimateTokens(
-          `${event.payload.previousModel} ${event.payload.newModel}`,
-        ),
+        tokenEstimate: estimateTokens(`${event.payload.previousModel} ${event.payload.newModel}`),
       };
     case "thinking_level_change":
       return {
@@ -48,9 +46,7 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
             },
           },
         ],
-        tokenEstimate: estimateTokens(
-          `${event.payload.previousLevel} ${event.payload.newLevel}`,
-        ),
+        tokenEstimate: estimateTokens(`${event.payload.previousLevel} ${event.payload.newLevel}`),
       };
     case "tool_call":
       return {

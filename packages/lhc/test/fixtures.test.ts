@@ -1,13 +1,7 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { EventKind } from "../src/index.js";
-import {
-  conversationTurn,
-  eventBatch,
-  openRaw,
-  tempStore,
-  validEvent,
-} from "./fixtures/index.js";
+import { conversationTurn, eventBatch, openRaw, tempStore, validEvent } from "./fixtures/index.js";
 
 const ALL_KINDS: readonly EventKind[] = [
   "user_prompt",
@@ -41,12 +35,8 @@ describe("FC-0.4: fixture builders", () => {
       expect(event.idempotencyKey.length).toBeGreaterThan(0);
       expect(event.actor.length).toBeGreaterThan(0);
       expect(event.harness.length).toBeGreaterThan(0);
-      expect(Object.keys(event.payload).sort()).toEqual(
-        [...GOLDEN_PAYLOAD_KEYS[kind]].sort(),
-      );
-      expect(Object.keys(event).sort()).toEqual(
-        ["actor", "eventKind", "harness", "idempotencyKey", "payload"].sort(),
-      );
+      expect(Object.keys(event.payload).sort()).toEqual([...GOLDEN_PAYLOAD_KEYS[kind]].sort());
+      expect(Object.keys(event).sort()).toEqual(["actor", "eventKind", "harness", "idempotencyKey", "payload"].sort());
     }
   });
 
@@ -104,9 +94,7 @@ describe("FC-0.4: fixture builders", () => {
     writer.exec("INSERT INTO probe (note) VALUES ('hello')");
     writer.close();
     const reader = openRaw(path);
-    const row = reader.prepare("SELECT note FROM probe WHERE id = 1").get() as
-      | { note: string }
-      | undefined;
+    const row = reader.prepare("SELECT note FROM probe WHERE id = 1").get() as { note: string } | undefined;
     expect(row?.note).toBe("hello");
     reader.close();
     store.cleanup();
@@ -117,22 +105,22 @@ describe("FC-0.4: fixture builders", () => {
 
 import { afterEach, beforeEach } from "vitest";
 import {
+  type Derivation,
+  type InferenceCallbacks,
+  type InferenceResult,
   initLhc,
   intakeStream,
   messages,
   turns,
-  type InferenceCallbacks,
-  type Derivation,
-  type InferenceResult,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   damagedSourceThread,
   multiStateThread,
   readDerivedForms,
+  type TempStore,
   threadWithClosedTurns,
   threadWithToolRun,
-  type TempStore,
 } from "./fixtures/index.js";
 
 // One call per operation with a fixed, distinct input — the operation sweep
@@ -142,9 +130,7 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
     double.smoothPrompt({ text: "please smooth this prompt text" }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
     double.composeTurnRendering({
-      parts: [
-        { messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false },
-      ],
+      parts: [{ messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false }],
     }),
     double.compressSmoothTurn({ rendering: "the rendering text" }),
     double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
@@ -152,14 +138,7 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
   ];
 }
 
-const OPERATION_MARKERS = [
-  "smoothed",
-  "toolresult",
-  "rendering",
-  "projection",
-  "detailed",
-  "brief",
-] as const;
+const OPERATION_MARKERS = ["smoothed", "toolresult", "rendering", "projection", "detailed", "brief"] as const;
 
 describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
   it("FC-0.1: implements all operations with marked, input-derived output", async () => {
@@ -267,13 +246,11 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
 
   it("rejects malformed config at construction: bad mode, incomplete callbacks, bad policy values", () => {
     const double = createInferenceCallbacksDouble();
-    expect(() =>
-      initLhc({ inferenceCallbacks: double, mode: "later" as unknown as "manual" }),
-    ).toThrow(/mode/);
+    expect(() => initLhc({ inferenceCallbacks: double, mode: "later" as unknown as "manual" })).toThrow(/mode/);
     const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
-    expect(() =>
-      initLhc({ inferenceCallbacks: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
-    ).toThrow(/missing operation/);
+    expect(() => initLhc({ inferenceCallbacks: incomplete as unknown as InferenceCallbacks, mode: "manual" })).toThrow(
+      /missing operation/,
+    );
     expect(() =>
       initLhc({
         inferenceCallbacks: double,
@@ -289,7 +266,6 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
       }),
     ).toThrow(/retry.budget/);
   });
-
 });
 
 describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified by read-back", () => {
@@ -319,11 +295,7 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     const pairedMessages = await messages.listMessages({ filePath: paired.filePath });
     expect(pairedMessages.ok).toBe(true);
     if (!pairedMessages.ok) return;
-    expect(pairedMessages.value.map((m) => m.kind)).toEqual([
-      "user_prompt",
-      "tool_call",
-      "tool_result",
-    ]);
+    expect(pairedMessages.value.map((m) => m.kind)).toEqual(["user_prompt", "tool_call", "tool_result"]);
 
     const errored = await threadWithToolRun(store, { isError: true });
     const erroredMessages = await messages.listMessages({ filePath: errored.filePath });
@@ -386,9 +358,7 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     expect(turnId).toBe("t1");
     const db = openRaw(filePath);
     try {
-      const open = db
-        .prepare("SELECT COUNT(*) AS n FROM turns WHERE status = 'open'")
-        .get() as { n: number | bigint };
+      const open = db.prepare("SELECT COUNT(*) AS n FROM turns WHERE status = 'open'").get() as { n: number | bigint };
       expect(Number(open.n)).toBe(2);
     } finally {
       db.close();

@@ -26,15 +26,7 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   db.prepare(
     `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    row.messageId,
-    row.sourceEventOrder,
-    row.kind,
-    row.tokenEstimate,
-    row.actor,
-    row.harness,
-    row.turnId,
-  );
+  ).run(row.messageId, row.sourceEventOrder, row.kind, row.tokenEstimate, row.actor, row.harness, row.turnId);
 
   const insertBlock = db.prepare(
     `INSERT INTO message_block (message_id, block_index, block_type, content)
@@ -62,10 +54,7 @@ export interface MutableMessageView {
   initiatesTurn: boolean;
 }
 
-export function readMutableMessage(
-  db: DatabaseSync,
-  messageId: string,
-): MutableMessageView | undefined {
+export function readMutableMessage(db: DatabaseSync, messageId: string): MutableMessageView | undefined {
   const row = db
     .prepare(
       `SELECT m.message_id, m.kind, m.turn_id, m.source_event_order,
@@ -90,8 +79,7 @@ export function readMutableMessage(
     turnId: row.turn_id,
     turnStatus: row.turn_status as MutableMessageView["turnStatus"],
     initiatesTurn:
-      row.opened_at_event_order !== null &&
-      Number(row.source_event_order) === Number(row.opened_at_event_order),
+      row.opened_at_event_order !== null && Number(row.source_event_order) === Number(row.opened_at_event_order),
   };
 }
 
@@ -102,22 +90,11 @@ export function readMutableMessage(
 // rows so a turn whose messages were individually deleted first still
 // deletes cleanly (membership walk on live rows); it returns the stamped
 // ids in record order for the mutation result and the cascade's drop set.
-export function markMessageDeleted(
-  db: DatabaseSync,
-  messageId: string,
-  deletedAt: string,
-): void {
-  db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(
-    deletedAt,
-    messageId,
-  );
+export function markMessageDeleted(db: DatabaseSync, messageId: string, deletedAt: string): void {
+  db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(deletedAt, messageId);
 }
 
-export function markTurnMessagesDeleted(
-  db: DatabaseSync,
-  turnId: string,
-  deletedAt: string,
-): string[] {
+export function markTurnMessagesDeleted(db: DatabaseSync, turnId: string, deletedAt: string): string[] {
   const rows = db
     .prepare(
       `UPDATE message SET deleted_at = ?
@@ -128,9 +105,7 @@ export function markTurnMessagesDeleted(
     message_id: string;
     source_event_order: number | bigint;
   }>;
-  return rows
-    .sort((a, b) => Number(a.source_event_order) - Number(b.source_event_order))
-    .map((row) => row.message_id);
+  return rows.sort((a, b) => Number(a.source_event_order) - Number(b.source_event_order)).map((row) => row.message_id);
 }
 
 // The edit's record apply (AC-5.1): the new content lands in each block's
@@ -150,9 +125,7 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
     block_type: string;
     content: string;
   }>;
-  const update = db.prepare(
-    `UPDATE message_block SET content = ? WHERE message_id = ? AND block_index = ?`,
-  );
+  const update = db.prepare(`UPDATE message_block SET content = ? WHERE message_id = ? AND block_index = ?`);
   let tokenEstimate = estimateTokens(content);
   for (const block of blocks) {
     const parsed = JSON.parse(block.content) as Record<string, unknown>;
@@ -181,10 +154,7 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
     }
     update.run(JSON.stringify(parsed), messageId, Number(block.block_index));
   }
-  db.prepare(`UPDATE message SET token_estimate = ? WHERE message_id = ?`).run(
-    tokenEstimate,
-    messageId,
-  );
+  db.prepare(`UPDATE message SET token_estimate = ? WHERE message_id = ?`).run(tokenEstimate, messageId);
 }
 
 interface RawMessageRow {
@@ -232,10 +202,7 @@ export interface MessageReadOptions {
   includeDeleted?: boolean;
 }
 
-export function readMessages(
-  db: DatabaseSync,
-  opts: MessageReadOptions = {},
-): MessageRecord[] {
+export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): MessageRecord[] {
   // Bounds before content (AC-3.1 no-load-everything): the message query
   // carries the deleted filter, the source-order window, and the limit, so a
   // bounded list resolves its window from the message table first — never
@@ -286,9 +253,7 @@ export function readMessages(
     });
     blocksByMessage.set(row.message_id, blocks);
   }
-  return messageRows.map((row) =>
-    recordFromRow(row, blocksByMessage.get(row.message_id) ?? []),
-  );
+  return messageRows.map((row) => recordFromRow(row, blocksByMessage.get(row.message_id) ?? []));
 }
 
 // The show operation's by-id read (Epic 04 Flow 3): the canonical record —

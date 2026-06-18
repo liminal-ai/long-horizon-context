@@ -1,18 +1,13 @@
 // TC-4.5: closed-loop proof through the PI connector hooks.
+
+import type { ModelAssignment, ModelCall, ModelCallResult, SdkConfig, ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  type ModelAssignment,
-  type ModelCall,
-  type ModelCallResult,
-  type SdkConfig,
-  type ThreadRef,
-} from "lhc";
-import { createConnector, type Connector } from "../../src/index.js";
-import { defaultAssignments, type AssignmentKind } from "../../src/inference/model-call.js";
+import { type Connector, createConnector } from "../../src/index.js";
+import { type AssignmentKind, defaultAssignments } from "../../src/inference/model-call.js";
 import type { ExtensionContext } from "../../src/pi/types.js";
-import { makeAssistantMessage, makeUserMessage } from "../fixtures/synthetic.js";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "../fixtures/model-call.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { makeAssistantMessage, makeUserMessage } from "../fixtures/synthetic.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
 
@@ -24,7 +19,9 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-function assignments(overrides: Partial<Record<AssignmentKind, Partial<ModelAssignment>>> = {}): Record<AssignmentKind, ModelAssignment> {
+function assignments(
+  overrides: Partial<Record<AssignmentKind, Partial<ModelAssignment>>> = {},
+): Record<AssignmentKind, ModelAssignment> {
   const base = defaultAssignments({ provider: "openai", id: "good" });
   return {
     smoothed_prompt: { ...base.smoothed_prompt, ...(overrides.smoothed_prompt ?? {}) },
@@ -66,8 +63,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       cwd: "/test/closed-loop",
       hasUI: false,
       modelRegistry: {
-        find: (provider: string, model: string) =>
-          provider === "openai" ? { provider, id: model } : undefined,
+        find: (provider: string, model: string) => (provider === "openai" ? { provider, id: model } : undefined),
         hasConfiguredAuth: () => true,
         getAvailable: () => [{ provider: "openai", id: "good" }],
       },

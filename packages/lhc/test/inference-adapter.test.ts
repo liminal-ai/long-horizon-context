@@ -8,20 +8,20 @@
 // Empty or whitespace-only success text is a classified retryable failure,
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
-import { createDeterministicInferenceCallbacks, initLhc, type Derivation, type Lhc } from "../src/index.js";
+import { createDeterministicInferenceCallbacks, type Derivation, initLhc, type Lhc } from "../src/index.js";
 import type { ModelCall } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   DERIVATION_TYPES,
+  type DerivationType,
   INFERENCE_DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   scriptedCall,
+  type TempStore,
   tempStore,
   validAssignments,
   validEvent,
-  type DerivationType,
-  type TempStore,
 } from "./fixtures/index.js";
 
 const stores: TempStore[] = [];
@@ -149,9 +149,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
 
     // The record's tool result has isError: false, so the tool-result summary
     // must stamp "succeeded" even though its landed content claims failure.
-    const form = forms.find(
-      (row) => row.derivationType === "tool_result_summary" && row.state === "ready",
-    );
+    const form = forms.find((row) => row.derivationType === "tool_result_summary" && row.state === "ready");
     expect(form?.metadata?.outcome).toBe("succeeded");
     expect(form?.content).toContain("failed");
     const rendering = forms.find(
@@ -174,10 +172,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
       retry: RETRY,
       chunkPolicy: CHUNK_POLICY,
     });
-    const deterministicForms = await drainAll(
-      deterministicSdk,
-      await seedSevenKinds(deterministicSdk, freshStore()),
-    );
+    const deterministicForms = await drainAll(deterministicSdk, await seedSevenKinds(deterministicSdk, freshStore()));
 
     // Same handler code, same record: the same form rows, subjects, and
     // states land through both inference paths (message/turn/chunk ids are

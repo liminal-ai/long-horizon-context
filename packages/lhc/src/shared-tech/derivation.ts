@@ -142,10 +142,7 @@ export interface InferenceCallbacks {
     memberProjections: string[];
     memberReceipts?: ToolRunReceipt[][];
   }): Promise<InferenceResult>;
-  summarizeChunkBrief(i: {
-    memberProjections: string[];
-    memberOutcomes?: ToolOutcome[][];
-  }): Promise<InferenceResult>;
+  summarizeChunkBrief(i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }): Promise<InferenceResult>;
 }
 
 /** @deprecated Use InferenceCallbacks. */

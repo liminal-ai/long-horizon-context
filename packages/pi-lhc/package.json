@@ -20,13 +20,14 @@
     "clean": "rm -rf dist",
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "lint": "node scripts/lint.mjs",
+    "lint": "biome check packages/pi-lhc",
     "boundaries": "node scripts/check-boundaries.mjs",
     "test": "vitest run",
     "red-verify": "pnpm run build && pnpm run typecheck && pnpm run lint && pnpm run boundaries",
     "verify": "pnpm run red-verify && vitest run",
     "green-verify": "pnpm run verify && node scripts/check-test-immutability.mjs",
-    "verify-all": "pnpm run verify"
+    "verify-all": "pnpm run verify",
+    "format": "biome format --write packages/pi-lhc"
   },
   "engines": {
     "node": ">=24"

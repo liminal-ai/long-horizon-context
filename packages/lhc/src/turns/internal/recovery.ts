@@ -1,8 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  DerivationMetadata,
-  SubjectKind,
-} from "../../shared-tech/index.js";
+import type { DerivationMetadata, SubjectKind } from "../../shared-tech/index.js";
 import { hasLiveItem, type WorkKind, type WorkSourceRef } from "../../shared-tech/work-queue/index.js";
 
 function workTargetFor(

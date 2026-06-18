@@ -17,13 +17,12 @@
 // with no live members drops its summary derivations too — dropped, never failed,
 // and no rebuild queued (AC-6.6).
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext } from "../../shared-tech/index.js";
-import type { SubjectKind } from "../../shared-tech/index.js";
+import type { OperationContext, SubjectKind } from "../../shared-tech/index.js";
 import {
+  type EnqueueDerivationTarget,
   enqueue,
   supersedeQueued,
   WORK_KIND_REGISTRY,
-  type EnqueueDerivationTarget,
   type WorkKind,
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
@@ -79,15 +78,15 @@ function sourceRefFor(subject: ChainSubject): WorkSourceRef {
 // just-deleted record is exactly what must still cascade.
 function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
   const subjects: ChainSubject[] = [{ subjectKind: "message", subjectId: messageId }];
-  const turnRow = db
-    .prepare(`SELECT turn_id FROM message WHERE message_id = ?`)
-    .get(messageId) as unknown as { turn_id: string | null } | undefined;
+  const turnRow = db.prepare(`SELECT turn_id FROM message WHERE message_id = ?`).get(messageId) as unknown as
+    | { turn_id: string | null }
+    | undefined;
   const turnId = turnRow?.turn_id ?? null;
   if (turnId === null) return subjects;
   subjects.push({ subjectKind: "turn", subjectId: turnId });
-  const chunkRow = db
-    .prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`)
-    .get(turnId) as unknown as { chunk_id: string } | undefined;
+  const chunkRow = db.prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`).get(turnId) as unknown as
+    | { chunk_id: string }
+    | undefined;
   if (chunkRow !== undefined) {
     subjects.push({ subjectKind: "chunk", subjectId: chunkRow.chunk_id });
   }
@@ -107,10 +106,7 @@ function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
 // changes" still bounds the cascade across other turns and chunks — only the
 // counterpart message itself, inside the dependency graph, is in scope, so its
 // own turn and chunk are deliberately not walked.
-function pairedCounterpartSubject(
-  db: DatabaseSync,
-  messageId: string,
-): ChainSubject | undefined {
+function pairedCounterpartSubject(db: DatabaseSync, messageId: string): ChainSubject | undefined {
   const own = db
     .prepare(
       `SELECT block_type, json_extract(content, '$.toolCallId') AS tool_call_id
@@ -118,9 +114,7 @@ function pairedCounterpartSubject(
        WHERE message_id = ? AND block_type IN ('tool_call', 'tool_result')
        LIMIT 1`,
     )
-    .get(messageId) as unknown as
-    | { block_type: string; tool_call_id: string | null }
-    | undefined;
+    .get(messageId) as unknown as { block_type: string; tool_call_id: string | null } | undefined;
   if (own === undefined || own.tool_call_id === null) return undefined;
   const counterpartType = own.block_type === "tool_call" ? "tool_result" : "tool_call";
   const row = db
@@ -131,9 +125,7 @@ function pairedCounterpartSubject(
          AND m.message_id <> ?
        ORDER BY m.source_event_order LIMIT 1`,
     )
-    .get(counterpartType, own.tool_call_id, messageId) as unknown as
-    | { message_id: string }
-    | undefined;
+    .get(counterpartType, own.tool_call_id, messageId) as unknown as { message_id: string } | undefined;
   if (row === undefined) return undefined;
   return { subjectKind: "message", subjectId: row.message_id };
 }
@@ -172,9 +164,7 @@ function runCascade(
 
   const dropped: CascadeClear[] = [];
   const supersedeTargets: Array<{ kind: WorkKind; sourceRef: WorkSourceRef }> = [];
-  const dropRows = ctx.db.prepare(
-    `DELETE FROM derivation WHERE subject_kind = ? AND subject_id = ?`,
-  );
+  const dropRows = ctx.db.prepare(`DELETE FROM derivation WHERE subject_kind = ? AND subject_id = ?`);
   for (const subject of dropSubjects) {
     const rows = readDerivations.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
       derivation_type: string;
@@ -240,10 +230,7 @@ function runCascade(
 // including) the edited message, inside the mutation's ambient transaction.
 // A call/result pair counterpart (epic-fix-001) joins the clear set: editing
 // one half is a source change for the other's summary.
-export function cascadeFromMessage(
-  ctx: OperationContext,
-  messageId: string,
-): CascadeOutcome {
+export function cascadeFromMessage(ctx: OperationContext, messageId: string): CascadeOutcome {
   const clear = chainSubjects(ctx.db, messageId);
   const counterpart = pairedCounterpartSubject(ctx.db, messageId);
   if (counterpart !== undefined) clear.push(counterpart);
@@ -254,10 +241,7 @@ export function cascadeFromMessage(
 // drop; its turn and chunk clear and re-queue for minus-one composition.
 // The message-delete validation refuses turn-initiating prompts, so the turn
 // always keeps members and never empties through this path.
-export function cascadeMessageDelete(
-  ctx: OperationContext,
-  messageId: string,
-): CascadeOutcome {
+export function cascadeMessageDelete(ctx: OperationContext, messageId: string): CascadeOutcome {
   const [own, ...upward] = chainSubjects(ctx.db, messageId);
   // The deleted half's live pair counterpart re-derives from the live record
   // (epic-fix-001): its summary clears and re-queues, reverting outcome to
@@ -294,10 +278,12 @@ export function cascadeTurnDelete(
   memberMessageIds: readonly string[],
 ): CascadeOutcome {
   const drop: ChainSubject[] = [
-    ...memberMessageIds.map((messageId): ChainSubject => ({
-      subjectKind: "message",
-      subjectId: messageId,
-    })),
+    ...memberMessageIds.map(
+      (messageId): ChainSubject => ({
+        subjectKind: "message",
+        subjectId: messageId,
+      }),
+    ),
     { subjectKind: "turn", subjectId: turnId },
   ];
   const memberSet = new Set(memberMessageIds);
@@ -309,9 +295,9 @@ export function cascadeTurnDelete(
     }
   }
   const counterpartClears = [...counterparts.values()];
-  const chunkRow = ctx.db
-    .prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`)
-    .get(turnId) as unknown as { chunk_id: string } | undefined;
+  const chunkRow = ctx.db.prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`).get(turnId) as unknown as
+    | { chunk_id: string }
+    | undefined;
   if (chunkRow === undefined) return runCascade(ctx, drop, counterpartClears);
   const chunk: ChainSubject = { subjectKind: "chunk", subjectId: chunkRow.chunk_id };
   const remaining = ctx.db

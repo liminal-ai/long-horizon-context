@@ -5,7 +5,7 @@
 // is deliberately absent: it lives in the pipeline's state-load check, not in
 // the function (test/turns.test.ts TC-3.7).
 import { describe, expect, it } from "vitest";
-import { turns, type EventKind } from "../src/index.js";
+import { type EventKind, turns } from "../src/index.js";
 
 const NO_TURN = { openTurnId: null };
 const TURN_OPEN = { openTurnId: "t1" };
@@ -58,9 +58,7 @@ describe("golden: turn state machine rule table", () => {
     for (const kind of ALL_KINDS) {
       for (const state of [NO_TURN, TURN_OPEN]) {
         expect(
-          GOLDEN.find(
-            (row) => row.kind === kind && row.state.openTurnId === state.openTurnId,
-          ),
+          GOLDEN.find((row) => row.kind === kind && row.state.openTurnId === state.openTurnId),
           `missing golden row: ${kind} with openTurnId=${String(state.openTurnId)}`,
         ).toBeDefined();
       }

@@ -24,8 +24,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  estimateTokens,
   type DerivationReportEntry,
+  estimateTokens,
   type HealthReport,
   type MutationResult,
   type OpResult,
@@ -37,10 +37,10 @@ import {
   DELETED_MESSAGE_TEXT,
   EDITED_MESSAGE_TEXT,
   LIFECYCLE_PROFILE,
-  runLifecycle,
-  tempStore,
   type LifecycleRun,
+  runLifecycle,
   type TempStore,
+  tempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -89,18 +89,13 @@ function pendingKeys(...reports: Array<readonly DerivationReportEntry[]>): strin
 
 type SweepLine = SweepReceipt["owners"][number];
 function byOwnerKind(rows: readonly SweepLine[]): SweepLine[] {
-  return [...rows].sort((a, b) =>
-    `${a.owner}/${a.kind}`.localeCompare(`${b.owner}/${b.kind}`),
-  );
+  return [...rows].sort((a, b) => `${a.owner}/${a.kind}`.localeCompare(`${b.owner}/${b.kind}`));
 }
 
 // The materialized file with the run's own thread id substituted — the one
 // sanctioned normalization (see header).
 function comparableSessionFile(lifecycleRun: LifecycleRun): string {
-  return readFileSync(lifecycleRun.outPath, "utf8").replaceAll(
-    lifecycleRun.threadId,
-    "<thread-id>",
-  );
+  return readFileSync(lifecycleRun.outPath, "utf8").replaceAll(lifecycleRun.threadId, "<thread-id>");
 }
 
 describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK configuration", () => {
@@ -190,10 +185,7 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     // with the queued replacement work live and unclaimed (the background
     // drain has not started — the snapshot precedes its first pass).
     const health = ok(mutate.healthAfterMutate);
-    const pendingTotal = health.owners.reduce(
-      (sum, row) => sum + row.counts.pending + row.counts.retrying,
-      0,
-    );
+    const pendingTotal = health.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
     expect(pendingTotal).toBe(cleared.length);
     // Queue visibility is counted per report entry (AC-4.5's by-construction
     // consistency), so queued equals the pending entries — all unclaimed.
@@ -223,22 +215,16 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
 
     // Before the mutations: the original prompt and the to-be-deleted text
     // are served verbatim in the tail (full fidelity).
-    expect(
-      pull1.messages.some((m) => m.content === "turn 12: please investigate area 12"),
-    ).toBe(true);
+    expect(pull1.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(true);
     expect(pull1.messages.some((m) => m.content === DELETED_MESSAGE_TEXT)).toBe(true);
 
     // After mutate + rebuild + compact2: the edited prompt serves verbatim,
     // the deleted message is gone from the served view entirely.
     expect(
-      pull2.messages.some(
-        (m) => m.band === undefined && m.role === "user" && m.content === EDITED_MESSAGE_TEXT,
-      ),
+      pull2.messages.some((m) => m.band === undefined && m.role === "user" && m.content === EDITED_MESSAGE_TEXT),
     ).toBe(true);
     expect(pull2.messages.some((m) => m.content.includes(DELETED_MESSAGE_TEXT))).toBe(false);
-    expect(
-      pull2.messages.some((m) => m.content === "turn 12: please investigate area 12"),
-    ).toBe(false);
+    expect(pull2.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(false);
   });
 
   it("the second compact receipt's sweep section agrees with the health report taken immediately before it", () => {
@@ -251,10 +237,7 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     // health reported — same ready counts, in-flight = pending + retrying,
     // and the failed/requeued/blocked sets empty on both sides.
     const expectedFromHealth = health.owners
-      .filter(
-        (row): row is (typeof health.owners)[number] & { owner: "messages" | "turns" } =>
-          row.owner !== "capture",
-      )
+      .filter((row): row is (typeof health.owners)[number] & { owner: "messages" | "turns" } => row.owner !== "capture")
       .map((row) => ({
         owner: row.owner,
         kind: row.kind,
@@ -300,9 +283,7 @@ describe("TC-5.3 / AC-5.4: teardown continuity — fresh initLhc between phase g
 
     // No in-memory dependency: the end state lives in the thread file, so a
     // fresh instance continuing each phase group lands byte-identical.
-    expect(JSON.stringify(ok(teardown.phases.pull2))).toBe(
-      JSON.stringify(ok(run.phases.pull2)),
-    );
+    expect(JSON.stringify(ok(teardown.phases.pull2))).toBe(JSON.stringify(ok(run.phases.pull2)));
     expect(ok(teardown.phases.health2)).toEqual(ok(run.phases.health2));
     expect(sha256(comparableSessionFile(teardown))).toBe(sha256(comparableSessionFile(run)));
   }, 60000);

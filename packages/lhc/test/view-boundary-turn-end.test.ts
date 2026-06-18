@@ -12,10 +12,10 @@ import {
   createInferenceCallbacksDouble,
   seedTurnedToolResults,
   setViewInjectionHook,
+  type TempStore,
   tempStore,
   turnedToolResultEvents,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 // The story's small test budgets: max 100 > target 60 (AC-5.4 ordering); the
@@ -74,9 +74,7 @@ async function toolResults(sdk: Lhc, filePath: string): Promise<ResultRow[]> {
 }
 
 function abridgedCount(messages: ReadonlyArray<{ content: string }>): number {
-  return messages.filter(
-    (m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]"),
-  ).length;
+  return messages.filter((m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]")).length;
 }
 
 // Per-turn all-or-nothing (AC-5.2): with the boundary at `position`, every
@@ -109,7 +107,11 @@ function countAdvances(): { count: () => number } {
   return { count: () => fired };
 }
 
-async function intakeRaw(sdk: Lhc, filePath: string, events: Parameters<Lhc["intakeStream"]["messageEvents"]>[1]): Promise<void> {
+async function intakeRaw(
+  sdk: Lhc,
+  filePath: string,
+  events: Parameters<Lhc["intakeStream"]["messageEvents"]>[1],
+): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, events);
   if (!result.ok) throw new Error(`intake failed: ${result.error.reason}`);
 }
@@ -164,9 +166,7 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     expect(pulled.ok).toBe(true);
     if (!pulled.ok) return;
     expect(abridgedCount(pulled.value.messages)).toBe(2);
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
-      `[tool result · read_file]\n${boundaryTokens(40)}`,
-    );
+    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(40)}`);
 
     // A small next turn closes under max (zone 90 ≤ 100): the check runs, no
     // movement.
@@ -200,9 +200,7 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     expect(pulled.ok).toBe(true);
     if (!pulled.ok) return;
     expect(abridgedCount(pulled.value.messages)).toBe(2); // t1's result + the singleton
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
-      `[tool result · read_file]\n${boundaryTokens(70)}`,
-    );
+    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(70)}`);
   });
 });
 
@@ -244,11 +242,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     // Turns 40/40/60: total 140 > 100. Evict t1 → 100 ≥ 60 ✓; evict t2 →
     // 60 ≥ 60 ✓ (the exact-target boundary condition); the newest closed
     // turn (60) is never a candidate. Zone lands exactly at target.
-    await seedTurnedToolResults(sdk, filePath, [
-      { results: [40] },
-      { results: [40] },
-      { results: [60] },
-    ]);
+    await seedTurnedToolResults(sdk, filePath, [{ results: [40] }, { results: [40] }, { results: [60] }]);
     const results = await toolResults(sdk, filePath);
     expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(60);
@@ -268,9 +262,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     const pulled = await sdk.threadView.pull({ filePath });
     expect(pulled.ok).toBe(true);
     if (!pulled.ok) return;
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
-      `[tool result · read_file]\n${boundaryTokens(120)}`,
-    );
+    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(120)}`);
   });
 
   it("never evicts the newest closed turn when a legal trailing turnless singleton sits after it", async () => {
@@ -323,9 +315,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
   });
 
   it("rejects maxTokens ≤ targetTokens at construction with a TypeError naming the constraint", () => {
-    expect(() => visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } })).toThrow(
-      TypeError,
-    );
+    expect(() => visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } })).toThrow(TypeError);
     expect(() => visSdk({ visibility: { maxTokens: 100, targetTokens: 200 } })).toThrow(
       /visibility\.maxTokens \(100\) must be greater than targetTokens \(200\)/,
     );
@@ -345,12 +335,7 @@ describe("TC-5.3 (AC-5.5): remaining Epic 03 contracts under the new trigger", (
     // Determinism (golden G1 lives in view-select-golden.test.ts, re-cut for
     // turn grouping); this leg replays a small script twice end-to-end and
     // demands identical boundary trajectories.
-    const script = [
-      [{ results: [30, 30] }],
-      [{ results: [40] }],
-      [{ results: [40] }],
-      [{ results: [10] }],
-    ] as const;
+    const script = [[{ results: [30, 30] }], [{ results: [40] }], [{ results: [40] }], [{ results: [10] }]] as const;
 
     const trajectories: number[][] = [];
     for (let run = 0; run < 2; run += 1) {

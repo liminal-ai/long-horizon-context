@@ -7,10 +7,9 @@
 // the queue row is written; background mode's drain heals it later. Any
 // drainSettled/polling in this module is a contract violation (anti-shim;
 // TC-3.1's elapsed bound is the tripwire).
-import type { DerivationReportEntry } from "../../shared-tech/index.js";
-import type { OpResult } from "../../shared-tech/index.js";
-import type { SweepReceipt } from "../../shared-tech/index.js";
+
 import * as messagesDomain from "../../messages/index.js";
+import type { DerivationReportEntry, OpResult, SweepReceipt } from "../../shared-tech/index.js";
 import * as turnsDomain from "../../turns/index.js";
 
 export type ReasonClass = "transient" | "permanent";

@@ -6,24 +6,16 @@
 // Plus the architecture-risk legs: every read leaves observable state
 // unchanged (read-only delta, DD-6) and calls no model.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  initLhc,
-  intakeStream,
-  messages,
-  threadView,
-  turns,
-  type Lhc,
-  type MessageEventInput,
-} from "../src/index.js";
+import { initLhc, intakeStream, type Lhc, type MessageEventInput, messages, threadView, turns } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   poisonMessageBlockJson,
   poisonMessageFormJson,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 // Long enough that any view-form shortening would be visible: show must
@@ -91,9 +83,7 @@ async function readFixture(store: TempStore): Promise<ReadFixture> {
 
 function idsOf(result: { ok: boolean }): string[] {
   if (!result.ok) throw new Error("expected an ok list result");
-  return (result as { ok: true; value: Array<{ messageId: string }> }).value.map(
-    (record) => record.messageId,
-  );
+  return (result as { ok: true; value: Array<{ messageId: string }> }).value.map((record) => record.messageId);
 }
 
 // The DD-6 observable-state snapshot: queued work through both owners, view
@@ -123,14 +113,7 @@ describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
     const listed = await messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.value.map((m) => m.messageId)).toEqual([
-      "m1",
-      "m2",
-      "m3",
-      "m4",
-      "m6",
-      "m7",
-    ]);
+    expect(listed.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3", "m4", "m6", "m7"]);
     expect(listed.value.map((m) => m.sourceEventOrder)).toEqual([1, 2, 3, 4, 6, 7]);
     expect(listed.value.map((m) => m.kind)).toEqual([
       "user_prompt",
@@ -232,14 +215,7 @@ describe("TC-3.3 / AC-3.3: deleted messages are audit-visible, never silently mi
     const audited = await messages.listMessages({ filePath }, { includeDeleted: true });
     expect(audited.ok).toBe(true);
     if (!audited.ok) return;
-    expect(audited.value.map((m) => m.messageId)).toEqual([
-      "m1",
-      "m2",
-      "m3",
-      "m4",
-      "m6",
-      "m7",
-    ]);
+    expect(audited.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3", "m4", "m6", "m7"]);
     for (const record of audited.value) {
       if (record.messageId === "m2") expect(record.deleted).toBe(true);
       else expect(record.deleted).toBeUndefined();
@@ -318,9 +294,7 @@ function rawWorkAndForms(filePath: string): Record<string, unknown> {
   const db = openRaw(filePath);
   try {
     return {
-      workItems: db
-        .prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`)
-        .all(),
+      workItems: db.prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`).all(),
       derivations: db
         .prepare(
           `SELECT subject_id, derivation_type, state, source_version FROM derivation

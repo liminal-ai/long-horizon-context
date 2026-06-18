@@ -19,7 +19,7 @@ import {
   type ModelCallFailureKind,
   type ModelCallResult,
 } from "lhc";
-import type { ExtensionContext, ModelHandle } from "../pi/types.js";
+import type { ExtensionContext } from "../pi/types.js";
 import type { PiAiComplete } from "./pi-ai.js";
 
 interface ModelCallDeps {
@@ -129,7 +129,7 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
     // host package at runtime so pi-lhc does not publish fabricated text when
     // the host dependency is absent.
     try {
-      const complete = deps.complete ?? await importPiAiComplete();
+      const complete = deps.complete ?? (await importPiAiComplete());
       const response = await complete(resolved, { messages });
 
       // Extract text from the response

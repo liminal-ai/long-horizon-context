@@ -1,9 +1,5 @@
 import type { OpResult } from "../shared-tech/index.js";
-import type {
-  WorkKind,
-  WorkOwner,
-  WorkSourceRef,
-} from "../shared-tech/work-queue/index.js";
+import type { WorkKind, WorkOwner, WorkSourceRef } from "../shared-tech/work-queue/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { runListEvents, runMessageEvents } from "./internal/pipeline.js";
 
@@ -22,10 +18,7 @@ export type MessageEventInput =
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
-  | BaseEvent<
-      "tool_call",
-      { toolCallId: string; toolName: string; arguments: Record<string, unknown> }
-    >
+  | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> }>
   | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean }>
   | BaseEvent<"turn_end", Record<string, never>>;
 
@@ -64,8 +57,6 @@ export async function messageEvents(
   return runMessageEvents(thread, events);
 }
 
-export async function listEvents(
-  thread: ThreadRef,
-): Promise<OpResult<EventRecord[]>> {
+export async function listEvents(thread: ThreadRef): Promise<OpResult<EventRecord[]>> {
   return runListEvents(thread);
 }

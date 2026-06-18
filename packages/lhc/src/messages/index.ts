@@ -1,11 +1,16 @@
 import { existsSync } from "node:fs";
+import type { EventKind, EventRecord } from "../intake-stream/index.js";
+import type { Derivation, DerivationReportEntry, ResolvedSdkConfig, WorkHandler } from "../shared-tech/index.js";
 import {
+  type ErrorResult,
+  type OperationContext,
+  type OpResult,
   runInTransaction,
   runWithThreadTouchSuppressed,
-  type OperationContext,
+  storageFailure,
+  truncateForFallback,
 } from "../shared-tech/index.js";
-import type { DerivationReportEntry, WorkHandler } from "../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
+import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import {
   enqueue,
   hasLiveItem,
@@ -13,26 +18,20 @@ import {
   type WorkItemRecord,
   type WorkKind,
 } from "../shared-tech/work-queue/index.js";
-import type { EventKind, EventRecord } from "../intake-stream/index.js";
-import {
-  openThreadDatabase,
-  resolveThreadRef,
-  type ThreadRef,
-} from "../threads/index.js";
-import type { Derivation, ResolvedSdkConfig } from "../shared-tech/index.js";
-import { truncateForFallback } from "../shared-tech/index.js";
-import { estimateTokens } from "../shared-tech/token-counting/index.js";
+import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
 import { messageWorkHandlers } from "./internal/handlers.js";
+
 export { cleanPrompt } from "./internal/smoothing.js";
-import { projectEvent } from "./internal/project.js";
+
 import {
+  type CascadeClear,
+  type CascadeOutcome,
   cascadeFromMessage,
   cascadeMessageDelete,
   cascadeTurnDelete,
-  type CascadeClear,
-  type CascadeOutcome,
 } from "./internal/cascade.js";
+import { projectEvent } from "./internal/project.js";
 import {
   applyMessageEdit,
   insertMessage,
@@ -43,12 +42,7 @@ import {
   readMutableMessage,
 } from "./internal/store.js";
 
-export type BlockType =
-  | "text"
-  | "tool_call"
-  | "tool_result"
-  | "model_change"
-  | "thinking_level_change";
+export type BlockType = "text" | "tool_call" | "tool_result" | "model_change" | "thinking_level_change";
 
 export interface Block {
   blockType: BlockType;
@@ -96,11 +90,7 @@ export type MessageCreated = {
 // turnId is the membership stamp, settled by the pipeline before this call:
 // the turn open *after* this event's transition (so a prompt belongs to the
 // turn it just opened), or null in a gap — written once, never updated.
-export function createFromEvent(
-  ctx: OperationContext,
-  event: RecordedEvent,
-  turnId: string | null,
-): MessageCreated {
+export function createFromEvent(ctx: OperationContext, event: RecordedEvent, turnId: string | null): MessageCreated {
   const projected = projectEvent(event);
   if (projected === null) return null;
   const kind = event.eventKind as Exclude<EventKind, "turn_end">;
@@ -177,8 +167,7 @@ function writeLargeToolResultSummaryReady(
 
 // Message-owned work handlers, merged into the SDK's dispatch map at
 // construction (DD-6): prompt smoothing and tool-result summaries.
-export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> =
-  messageWorkHandlers;
+export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = messageWorkHandlers;
 
 export function queueMessageWork(
   ctx: OperationContext,
@@ -189,10 +178,7 @@ export function queueMessageWork(
   const items: WorkItemRecord[] = [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
   if (kind !== undefined) {
-    if (
-      message.kind === "tool_result" &&
-      writeLargeToolResultSummaryReady(ctx, message.messageId, toolResultConfig)
-    ) {
+    if (message.kind === "tool_result" && writeLargeToolResultSummaryReady(ctx, message.messageId, toolResultConfig)) {
       return items;
     }
     const derivation = MESSAGE_WORK_DERIVATIONS[kind];
@@ -267,17 +253,11 @@ function validateListOptions(opts: MessageListOptions): ErrorResult | undefined 
 // never let a background SDK's scheduler hang a first-touch catch-up drain —
 // and the inference call that drain would make — off this read. A list calls
 // no inference and schedules no work in either host mode.
-export function listMessages(
-  thread: ThreadRef,
-  opts?: MessageListOptions,
-): Promise<OpResult<MessageRecord[]>> {
+export function listMessages(thread: ThreadRef, opts?: MessageListOptions): Promise<OpResult<MessageRecord[]>> {
   return runWithThreadTouchSuppressed(() => listMessagesInner(thread, opts));
 }
 
-async function listMessagesInner(
-  thread: ThreadRef,
-  opts?: MessageListOptions,
-): Promise<OpResult<MessageRecord[]>> {
+async function listMessagesInner(thread: ThreadRef, opts?: MessageListOptions): Promise<OpResult<MessageRecord[]>> {
   if (opts !== undefined) {
     const badBounds = validateListOptions(opts);
     if (badBounds !== undefined) return { ok: false, error: badBounds };
@@ -335,17 +315,11 @@ export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
 // catch-up drain (and its inference call) off this show is suppressed for the
 // whole operation. show on a deleted message stays the audit read; neither
 // path touches the queue or inference callbacks.
-export function show(
-  thread: ThreadRef,
-  messageId: string,
-): Promise<OpResult<MessageDetail>> {
+export function show(thread: ThreadRef, messageId: string): Promise<OpResult<MessageDetail>> {
   return runWithThreadTouchSuppressed(() => showInner(thread, messageId));
 }
 
-async function showInner(
-  thread: ThreadRef,
-  messageId: string,
-): Promise<OpResult<MessageDetail>> {
+async function showInner(thread: ThreadRef, messageId: string): Promise<OpResult<MessageDetail>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -376,9 +350,7 @@ async function showInner(
   }
 }
 
-export async function listQueuedWork(
-  thread: ThreadRef,
-): Promise<OpResult<WorkItemRecord[]>> {
+export async function listQueuedWork(thread: ThreadRef): Promise<OpResult<WorkItemRecord[]>> {
   const resolved = await resolveThreadRef(thread);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -467,47 +439,52 @@ export async function requeue(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const meta = db
-      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string } | undefined;
+    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
     const threadId = meta?.thread_id ?? "";
-    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<RequeueOutcome> => {
-      const row = readMessageDerivationRow(ctx.db, target.messageId, target.derivationType);
-      if (row === undefined) {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "message_not_found",
-            reason: `no derived derivation ${target.derivationType} exists for message ${target.messageId}`,
-          },
-        };
-      }
-      if (row.state === "blocked") {
-        // The refusal carries the derivation's stored reason — the damage named at
-        // blocking time, not a generic string (AC-4.6).
-        return {
-          ok: false,
-          error: {
-            errorClass: "state_corruption",
-            code: "source_damaged",
-            reason: row.reason ?? `derivation ${target.derivationType} for message ${target.messageId} is blocked`,
-          },
-        };
-      }
-      const sourceRef = { messageId: target.messageId };
-      if (hasLiveItem(ctx.db, kind, sourceRef, row.sourceVersion)) {
-        return { ok: true, value: { noop: "already_queued" } };
-      }
-      const item = enqueue(ctx, {
-        owner: "messages",
-        kind,
-        sourceRef,
-        sourceVersion: row.sourceVersion + 1,
-        derivations: [{ subjectKind: "message", subjectId: target.messageId, derivationType: target.derivationType }],
-      });
-      return { ok: true, value: { workItemId: item.workItemId } };
-    });
+    return runInTransaction(
+      db,
+      () => new Date(),
+      threadId,
+      (ctx): OpResult<RequeueOutcome> => {
+        const row = readMessageDerivationRow(ctx.db, target.messageId, target.derivationType);
+        if (row === undefined) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "message_not_found",
+              reason: `no derived derivation ${target.derivationType} exists for message ${target.messageId}`,
+            },
+          };
+        }
+        if (row.state === "blocked") {
+          // The refusal carries the derivation's stored reason — the damage named at
+          // blocking time, not a generic string (AC-4.6).
+          return {
+            ok: false,
+            error: {
+              errorClass: "state_corruption",
+              code: "source_damaged",
+              reason: row.reason ?? `derivation ${target.derivationType} for message ${target.messageId} is blocked`,
+            },
+          };
+        }
+        const sourceRef = { messageId: target.messageId };
+        if (hasLiveItem(ctx.db, kind, sourceRef, row.sourceVersion)) {
+          return { ok: true, value: { noop: "already_queued" } };
+        }
+        const item = enqueue(ctx, {
+          owner: "messages",
+          kind,
+          sourceRef,
+          sourceVersion: row.sourceVersion + 1,
+          derivations: [{ subjectKind: "message", subjectId: target.messageId, derivationType: target.derivationType }],
+        });
+        return { ok: true, value: { workItemId: item.workItemId } };
+      },
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`requeue failed: ${reason}`);
@@ -557,54 +534,59 @@ export async function edit(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const meta = db
-      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string } | undefined;
+    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
     const threadId = meta?.thread_id ?? "";
-    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
-      const target = readMutableMessage(ctx.db, input.messageId);
-      if (target === undefined) {
+    return runInTransaction(
+      db,
+      () => new Date(),
+      threadId,
+      (ctx): OpResult<MutationResult> => {
+        const target = readMutableMessage(ctx.db, input.messageId);
+        if (target === undefined) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "message_not_found",
+              reason: `no message ${input.messageId} exists in this thread`,
+            },
+          };
+        }
+        // The closed-turn target boundary (story scope; AC-5.1): the edit's
+        // editable class is a message in a *closed* turn. Both failing cases —
+        // an open turn and a turnless gap message (no membership) — refuse under
+        // the one stable code; the reason distinguishes them so the open-turn
+        // message reads exactly as before. A deleted/missing target never gets
+        // here (it misses the filtered read above as message_not_found).
+        if (target.turnStatus !== "closed") {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "turn_open",
+              reason:
+                target.turnStatus === "open"
+                  ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
+                  : `message ${input.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
+            },
+          };
+        }
+        applyMessageEdit(ctx.db, input.messageId, input.content);
+        const cascade = cascadeFromMessage(ctx, input.messageId);
         return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "message_not_found",
-            reason: `no message ${input.messageId} exists in this thread`,
+          ok: true,
+          value: {
+            changed: { messageIds: [input.messageId], turnIds: [] },
+            cleared: cascade.cleared,
+            dropped: cascade.dropped,
+            queued: cascade.queued,
+            superseded: cascade.superseded,
           },
         };
-      }
-      // The closed-turn target boundary (story scope; AC-5.1): the edit's
-      // editable class is a message in a *closed* turn. Both failing cases —
-      // an open turn and a turnless gap message (no membership) — refuse under
-      // the one stable code; the reason distinguishes them so the open-turn
-      // message reads exactly as before. A deleted/missing target never gets
-      // here (it misses the filtered read above as message_not_found).
-      if (target.turnStatus !== "closed") {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "turn_open",
-            reason:
-              target.turnStatus === "open"
-                ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
-                : `message ${input.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
-          },
-        };
-      }
-      applyMessageEdit(ctx.db, input.messageId, input.content);
-      const cascade = cascadeFromMessage(ctx, input.messageId);
-      return {
-        ok: true,
-        value: {
-          changed: { messageIds: [input.messageId], turnIds: [] },
-          cleared: cascade.cleared,
-          dropped: cascade.dropped,
-          queued: cascade.queued,
-          superseded: cascade.superseded,
-        },
-      };
-    });
+      },
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`edit failed: ${reason}`);
@@ -639,58 +621,63 @@ export async function deleteMessage(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const meta = db
-      .prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`)
-      .get() as { thread_id: string } | undefined;
+    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
     const threadId = meta?.thread_id ?? "";
-    return runInTransaction(db, () => new Date(), threadId, (ctx): OpResult<MutationResult> => {
-      const target = readMutableMessage(ctx.db, input.messageId);
-      if (target === undefined) {
+    return runInTransaction(
+      db,
+      () => new Date(),
+      threadId,
+      (ctx): OpResult<MutationResult> => {
+        const target = readMutableMessage(ctx.db, input.messageId);
+        if (target === undefined) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "message_not_found",
+              reason: `no message ${input.messageId} exists in this thread`,
+            },
+          };
+        }
+        if (target.turnStatus !== "closed") {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "turn_open",
+              reason:
+                target.turnStatus === "open"
+                  ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
+                  : `message ${input.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
+            },
+          };
+        }
+        if (target.initiatesTurn) {
+          return {
+            ok: false,
+            error: {
+              errorClass: "caller_error",
+              code: "message_initiates_turn",
+              reason: `message ${input.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; a turn is a prompt and what came back for it — delete the whole exchange with turns.deleteTurn (lhc turns delete --turn-id ${target.turnId ?? ""})`,
+            },
+          };
+        }
+        markMessageDeleted(ctx.db, input.messageId, ctx.clock().toISOString());
+        const cascade = cascadeMessageDelete(ctx, input.messageId);
         return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "message_not_found",
-            reason: `no message ${input.messageId} exists in this thread`,
+          ok: true,
+          value: {
+            changed: { messageIds: [input.messageId], turnIds: [] },
+            cleared: cascade.cleared,
+            dropped: cascade.dropped,
+            queued: cascade.queued,
+            superseded: cascade.superseded,
           },
         };
-      }
-      if (target.turnStatus !== "closed") {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "turn_open",
-            reason:
-              target.turnStatus === "open"
-                ? `message ${input.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
-                : `message ${input.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
-          },
-        };
-      }
-      if (target.initiatesTurn) {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "message_initiates_turn",
-            reason: `message ${input.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; a turn is a prompt and what came back for it — delete the whole exchange with turns.deleteTurn (lhc turns delete --turn-id ${target.turnId ?? ""})`,
-          },
-        };
-      }
-      markMessageDeleted(ctx.db, input.messageId, ctx.clock().toISOString());
-      const cascade = cascadeMessageDelete(ctx, input.messageId);
-      return {
-        ok: true,
-        value: {
-          changed: { messageIds: [input.messageId], turnIds: [] },
-          cleared: cascade.cleared,
-          dropped: cascade.dropped,
-          queued: cascade.queued,
-          superseded: cascade.superseded,
-        },
-      };
-    });
+      },
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`delete failed: ${reason}`);
@@ -710,10 +697,6 @@ export function applyTurnDeleteCascade(
   ctx: OperationContext,
   turnId: string,
 ): CascadeOutcome & { memberMessageIds: string[] } {
-  const memberMessageIds = markTurnMessagesDeleted(
-    ctx.db,
-    turnId,
-    ctx.clock().toISOString(),
-  );
+  const memberMessageIds = markTurnMessagesDeleted(ctx.db, turnId, ctx.clock().toISOString());
   return { ...cascadeTurnDelete(ctx, turnId, memberMessageIds), memberMessageIds };
 }

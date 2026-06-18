@@ -15,34 +15,29 @@
 // provenance, mutation regeneration, coherent checkpoints.
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type {
-  Derivation,
-  HealthReport,
-  MutationResult,
-  OpResult,
-} from "../src/index.js";
+import type { Derivation, HealthReport, MutationResult, OpResult } from "../src/index.js";
 import {
   assertModelCallContract,
   assertRoutingThroughSdk,
   createOpenRouterCall,
   DEFAULT_OPENROUTER_MODEL,
   DELETED_MESSAGE_TEXT,
+  DERIVATION_TYPES,
   EDITED_MESSAGE_TEXT,
   emitRealSuiteAccounting,
-  DERIVATION_TYPES,
   INFERENCE_DERIVATION_TYPES,
+  type InferenceDerivationType,
+  type LifecycleRun,
   loadLocalLhcEnv,
   probeInput,
+  type RoutingRunResult,
   readDerivedForms,
   realSuiteAccountingEmissions,
   resolveRealSuiteEnv,
   runLifecycle,
+  type TempStore,
   tempStore,
   validAssignments,
-  type InferenceDerivationType,
-  type LifecycleRun,
-  type RoutingRunResult,
-  type TempStore,
 } from "./fixtures/index.js";
 
 // ── the suite-level guard: one resolution, one visible line ───────
@@ -55,10 +50,8 @@ emitRealSuiteAccounting(suiteEnv);
 // Deterministic inference callback markers, two grains: the design's anchored
 // derivation-content pattern, and a digest-bearing scan pattern for "appears
 // anywhere" sweeps over served views and materialized files.
-const MARKER_AT_START =
-  /^(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;
-const MARKER_ANYWHERE =
-  /(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\([0-9a-f]{8}:/;
+const MARKER_AT_START = /^(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;
+const MARKER_ANYWHERE = /(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\([0-9a-f]{8}:/;
 
 function ok<T>(result: OpResult<T>): T {
   if (!result.ok) {
@@ -110,75 +103,61 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
     const emissions = realSuiteAccountingEmissions();
     expect(emissions).toHaveLength(1);
     expect(emissions[0]).toBe(
-      keyed
-        ? `RAN: real-inference (model ${realModel})`
-        : "NOT-RAN: real-inference (OPENROUTER_API_KEY unset)",
+      keyed ? `RAN: real-inference (model ${realModel})` : "NOT-RAN: real-inference (OPENROUTER_API_KEY unset)",
     );
   });
 });
 
 // ── TC-4.1 / TC-4.3: keyed seven-kind round-trips + conformance ───
 
-describe.runIf(keyed)(
-  "TC-4.1 / TC-4.3 (keyed): seven real round-trips through the shared seam helpers",
-  () => {
-    const call = realKey === undefined ? undefined : createOpenRouterCall(realKey, realModel);
-    const assignments = realAssignments(realModel);
-    let store: TempStore;
-    let routing: RoutingRunResult;
+describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): seven real round-trips through the shared seam helpers", () => {
+  const call = realKey === undefined ? undefined : createOpenRouterCall(realKey, realModel);
+  const assignments = realAssignments(realModel);
+  let store: TempStore;
+  let routing: RoutingRunResult;
 
-    beforeAll(async () => {
-      store = tempStore();
-      if (call === undefined) throw new Error("keyed leg started without a key");
-      // TC-4.3: the SAME routing helper Story 2's fake-host seam test runs,
-      // unchanged, against the real host — it drives a real intake → drain
-      // exercising all seven kinds and asserts routing, lane coverage, and
-      // single-turn message shape internally.
-      routing = await assertRoutingThroughSdk(call, assignments, store);
-    }, 300_000);
-    afterAll(() => {
-      store.cleanup();
-    });
+  beforeAll(async () => {
+    store = tempStore();
+    if (call === undefined) throw new Error("keyed leg started without a key");
+    // TC-4.3: the SAME routing helper Story 2's fake-host seam test runs,
+    // unchanged, against the real host — it drives a real intake → drain
+    // exercising all seven kinds and asserts routing, lane coverage, and
+    // single-turn message shape internally.
+    routing = await assertRoutingThroughSdk(call, assignments, store);
+  }, 300_000);
+  afterAll(() => {
+    store.cleanup();
+  });
 
-    it(
-      "TC-4.3: the real host function passes the ModelCall contract on a real probe",
-      async () => {
-        if (call === undefined) throw new Error("keyed leg started without a key");
-        await assertModelCallContract(
-          call,
-          probeInput({ provider: "openrouter", model: realModel }),
-        );
-      },
-      120_000,
-    );
+  it("TC-4.3: the real host function passes the ModelCall contract on a real probe", async () => {
+    if (call === undefined) throw new Error("keyed leg started without a key");
+    await assertModelCallContract(call, probeInput({ provider: "openrouter", model: realModel }));
+  }, 120_000);
 
-    it("TC-4.1: each of the seven kinds round-tripped real inference to a ready form", () => {
-      for (const kind of DERIVATION_TYPES) {
-        const ready = routing.derivations.filter(
-          (form) => form.derivationType === kind && form.state === "ready",
-        );
-        expect(ready.length).toBeGreaterThan(0);
-        for (const form of ready) {
-          expect(form.content).toBeDefined();
-          expect((form.content ?? "").trim()).not.toBe("");
-          expect(form.content).not.toMatch(MARKER_AT_START);
-          expect(form.content).not.toMatch(MARKER_ANYWHERE);
-          if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
-            const kind = form.derivationType as InferenceDerivationType;
-            // Provenance names the real lane from config, never model output.
-            expect(form.metadata?.provenance).toEqual({
-              provider: "openrouter",
-              model: realModel,
-              prompt: assignments[kind].prompt,
-            });
-          } else {
-            expect(form.metadata?.provenance).toBeUndefined();
-          }
+  it("TC-4.1: each of the seven kinds round-tripped real inference to a ready form", () => {
+    for (const kind of DERIVATION_TYPES) {
+      const ready = routing.derivations.filter((form) => form.derivationType === kind && form.state === "ready");
+      expect(ready.length).toBeGreaterThan(0);
+      for (const form of ready) {
+        expect(form.content).toBeDefined();
+        expect((form.content ?? "").trim()).not.toBe("");
+        expect(form.content).not.toMatch(MARKER_AT_START);
+        expect(form.content).not.toMatch(MARKER_ANYWHERE);
+        if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
+          const kind = form.derivationType as InferenceDerivationType;
+          // Provenance names the real lane from config, never model output.
+          expect(form.metadata?.provenance).toEqual({
+            provider: "openrouter",
+            model: realModel,
+            prompt: assignments[kind].prompt,
+          });
+        } else {
+          expect(form.metadata?.provenance).toBeUndefined();
         }
       }
-    });
-  },
-);
+    }
+  });
+});
 
 // ── TC-4.2: the real-adapter lifecycle capstone ───────────────────
 
@@ -248,10 +227,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   });
 
   it("mutation-cleared forms went cleared-then-ready and regenerated with different content", () => {
-    const cleared = [
-      ...ok(run.phases.mutate.edit).cleared,
-      ...ok(run.phases.mutate.delete).cleared,
-    ];
+    const cleared = [...ok(run.phases.mutate.edit).cleared, ...ok(run.phases.mutate.delete).cleared];
     expect(cleared.length).toBeGreaterThan(0);
     const find = (derivations: Derivation[], target: (typeof cleared)[number]): Derivation | undefined =>
       derivations.find(
@@ -281,13 +257,9 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     // Checkpoint 2 — immediately after the mutations: exactly the cleared
     // set is in flight, queued and unclaimed (cleared → pending around
     // mutations).
-    const clearedCount =
-      ok(run.phases.mutate.edit).cleared.length + ok(run.phases.mutate.delete).cleared.length;
+    const clearedCount = ok(run.phases.mutate.edit).cleared.length + ok(run.phases.mutate.delete).cleared.length;
     const healthAfterMutate = ok(run.phases.mutate.healthAfterMutate);
-    const inFlight = healthAfterMutate.owners.reduce(
-      (sum, row) => sum + row.counts.pending + row.counts.retrying,
-      0,
-    );
+    const inFlight = healthAfterMutate.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
     expect(inFlight).toBe(clearedCount);
     expect(healthAfterMutate.queue).toEqual({ queued: clearedCount, claimed: 0 });
     expect(healthAfterMutate.failures).toEqual([]);
@@ -310,16 +282,11 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     const pull2 = ok(run.phases.pull2);
     expect(
       pull2.messages.some(
-        (message) =>
-          message.band === undefined &&
-          message.role === "user" &&
-          message.content === EDITED_MESSAGE_TEXT,
+        (message) => message.band === undefined && message.role === "user" && message.content === EDITED_MESSAGE_TEXT,
       ),
     ).toBe(true);
     expect(pull2.messages.some((m) => m.content.includes(DELETED_MESSAGE_TEXT))).toBe(false);
-    expect(
-      pull2.messages.some((m) => m.content === "turn 12: please investigate area 12"),
-    ).toBe(false);
+    expect(pull2.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(false);
   });
 
   it("mutation results carried queued replacement work (the cleared set was re-derived, not left stale)", () => {

@@ -7,25 +7,25 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
+  type DrainReport,
   initLhc,
   intakeStream,
+  type Lhc,
+  type MessageEventInput,
   queueDetail,
   setSchedulerPoke,
   setThreadTouch,
   threads,
-  type DrainReport,
-  type Lhc,
-  type MessageEventInput,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  type InferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   registerTestWorkHandlers,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
-  type InferenceCallbacksDouble,
 } from "./fixtures/index.js";
 
 function sleep(ms: number): Promise<void> {
@@ -53,11 +53,7 @@ async function newThread(): Promise<{ threadId: string; filePath: string }> {
   return created.value;
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
 }
@@ -80,11 +76,7 @@ function manualSdk(
   return sdk;
 }
 
-async function drain(
-  sdk: Lhc,
-  filePath: string,
-  opts?: { maxItems?: number },
-): Promise<DrainReport> {
+async function drain(sdk: Lhc, filePath: string, opts?: { maxItems?: number }): Promise<DrainReport> {
   const result = await sdk.work.drain({ filePath }, opts);
   if (!result.ok) throw new Error(`drain failed: ${result.error.reason}`);
   return result.value;
@@ -131,11 +123,7 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       "w-m3-tool_result_summary-v1",
       "w-t1-turn_derivation-v1",
     ]);
-    expect(report.ran.map((entry) => entry.disposition)).toEqual([
-      "done",
-      "done",
-      "done",
-    ]);
+    expect(report.ran.map((entry) => entry.disposition)).toEqual(["done", "done", "done"]);
     expect(report.stoppedBecause).toBe("empty");
     expect(report.remaining).toBe(0);
 
@@ -155,12 +143,7 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     // Artifacts landed in run order: derivedAt strictly monotone with the
     // injected clock from m1 to m3 to the turn's forms.
     const forms = readDerivedForms(filePath);
-    expect(forms.map((form) => form.state)).toEqual([
-      "ready",
-      "ready",
-      "ready",
-      "ready",
-    ]);
+    expect(forms.map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready"]);
     const at = (subjectId: string, derivationType: string): number => {
       const row = forms.find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
       if (row?.derivedAt === undefined) {
@@ -234,10 +217,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     // Build the leftover state with no background scheduler installed: rows
     // accumulate exactly as a dead process would have left them.
     const { filePath } = await newThread();
-    const seeded = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("turn_end"),
-    ]);
+    const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]);
     expect(seeded.ok).toBe(true);
     expect(liveCount(filePath)).toBe(2);
 

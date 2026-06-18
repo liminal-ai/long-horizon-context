@@ -4,26 +4,21 @@
 // PRODUCTION connector path through createConnector with real defaults (no
 // injected SDK config or selector) for AC-1.2/1.5/1.7. Real temp registry
 // throughout; reload identity is carried by durable PI session entries.
+
+import { createDeterministicProvider, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicProvider,
-  inspect,
-  threads,
-  type SdkConfig,
-  type ThreadRef,
-} from "lhc";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
+import { pickThread, type ThreadChoice } from "../../src/lifecycle/picker.js";
 import {
   defaultThreadTitle,
   parseLaunchFlags,
-  resolveThread,
   type ResolveDeps,
+  resolveThread,
 } from "../../src/lifecycle/thread-resolution.js";
-import { pickThread, type ThreadChoice } from "../../src/lifecycle/picker.js";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "../../src/pi/types.js";
 import { eventBatch, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -91,10 +86,7 @@ function productionConnector(launch: () => { resume?: boolean; continue?: boolea
   });
 }
 
-function registerConnector(
-  connector: ReturnType<typeof createConnector>,
-  entries: SessionEntry[],
-): void {
+function registerConnector(connector: ReturnType<typeof createConnector>, entries: SessionEntry[]): void {
   const pi: ExtensionAPI = {
     registerHook: () => {},
     registerCommand: () => {},
@@ -376,10 +368,7 @@ describe("Story 1: plain-data state across hooks", () => {
 
     // A later hook receives a DIFFERENT ctx object; capture is not broken and the
     // holder still references no prior ctx.
-    await connector.handlers.message_end(
-      syntheticCtx("/work/a"),
-      makeMessageEnd(makeUserMessage("hi")),
-    );
+    await connector.handlers.message_end(syntheticCtx("/work/a"), makeMessageEnd(makeUserMessage("hi")));
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
     expect(connector.getState()?.threadRef).toEqual(threadRefBefore); // same plain-data thread ref
   });

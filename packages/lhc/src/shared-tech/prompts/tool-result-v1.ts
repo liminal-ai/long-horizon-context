@@ -15,8 +15,7 @@ export const toolResultV1: PromptTemplate<{
   render: (i) => [
     {
       role: "system",
-      content:
-        `You summarize tool output for an engineering record. Preserve the outcome/status exactly as "${i.outcome}". Target about ${i.targetTokens} tokens. ${i.guidance} No commentary, no speculation.`,
+      content: `You summarize tool output for an engineering record. Preserve the outcome/status exactly as "${i.outcome}". Target about ${i.targetTokens} tokens. ${i.guidance} No commentary, no speculation.`,
     },
     { role: "user", content: `Tool: ${i.toolName}\nOutcome: ${i.outcome}\n\nOutput:\n${i.content}` },
   ],

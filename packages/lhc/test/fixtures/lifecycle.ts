@@ -21,14 +21,14 @@
 // and the drain runs to empty.
 import { join } from "node:path";
 import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
   type BatchResult,
-  type InferenceConfig,
   type CompactReceipt,
+  createDeterministicInferenceCallbacks,
   type DerivationReportEntry,
   type HealthReport,
+  type InferenceConfig,
   type InspectOverview,
+  initLhc,
   type Lhc,
   type MessageEventInput,
   type MutationResult,
@@ -37,7 +37,7 @@ import {
   type ViewContentsReport,
   type ViewStatus,
 } from "../../src/index.js";
-import { validEvent, type TempStore } from "./index.js";
+import { type TempStore, validEvent } from "./index.js";
 
 // ── the one SDK configuration (AC-5.1) ────────────────────────────
 //
@@ -60,9 +60,7 @@ export const LIFECYCLE_PROFILE = {
 // so the deterministic leg and the real leg run THE SAME lifecycle.
 export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
   return initLhc({
-    ...(inference !== undefined
-      ? { inference }
-      : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
+    ...(inference !== undefined ? { inference } : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
@@ -90,8 +88,7 @@ const TURNS_PER_BATCH = 3; // multi-turn batches (story scope)
 // start under the lifecycle profile), so the second compact's pull shows the
 // edit verbatim and the deletion's absence — the tail is full fidelity.
 export const EDIT_TARGET = { turnId: "t12", kind: "user_prompt" } as const;
-export const EDITED_MESSAGE_TEXT =
-  "turn 12 revised: drop area 12 and re-check area 5 instead";
+export const EDITED_MESSAGE_TEXT = "turn 12 revised: drop area 12 and re-check area 5 instead";
 export const DELETE_TARGET = { turnId: "t10", kind: "assistant_text" } as const;
 export const DELETED_MESSAGE_TEXT = "findings for area 10";
 
@@ -200,10 +197,7 @@ export interface LifecycleOptions {
   // after its group ends.
   freshSdkBetweenGroups?: boolean;
   // TC-5.4: spawned-CLI parity probes at the three read checkpoints.
-  onCheckpoint?: (
-    checkpoint: LifecycleCheckpoint,
-    ctx: { sdk: Lhc; filePath: string },
-  ) => Promise<void>;
+  onCheckpoint?: (checkpoint: LifecycleCheckpoint, ctx: { sdk: Lhc; filePath: string }) => Promise<void>;
   // Epic 05 TC-4.2: run the sequence on the model-call inference path instead
   // of deterministic inference callbacks. Same configuration otherwise (see
   // createLifecycleSdk).
@@ -226,10 +220,7 @@ function expectOk<T>(result: OpResult<T>, phase: string): T {
 
 // ── the sequence ──────────────────────────────────────────────────
 
-export async function runLifecycle(
-  store: TempStore,
-  opts: LifecycleOptions = {},
-): Promise<LifecycleRun> {
+export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}): Promise<LifecycleRun> {
   const name = opts.name ?? "lifecycle";
   const filePath = store.threadPath(name);
   const outPath = join(store.dir, `${name}-session.jsonl`);
@@ -287,9 +278,7 @@ export async function runLifecycle(
   // ── group 3: mutate → rebuild → health2 ──
   nextGroup();
   const listed = expectOk(await sdk.messages.listMessages(ref), "mutate.list");
-  const editTarget = listed.find(
-    (record) => record.kind === EDIT_TARGET.kind && record.turnId === EDIT_TARGET.turnId,
-  );
+  const editTarget = listed.find((record) => record.kind === EDIT_TARGET.kind && record.turnId === EDIT_TARGET.turnId);
   const deleteTarget = listed.find(
     (record) => record.kind === DELETE_TARGET.kind && record.turnId === DELETE_TARGET.turnId,
   );

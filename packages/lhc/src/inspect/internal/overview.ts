@@ -4,23 +4,19 @@
 // reads (Spec Validation #2). Every thread shape falls out of this one
 // composition path: absent pieces normalize to zeros/nulls, no
 // shape-specific branch.
-import type { DerivationReportEntry } from "../../shared-tech/index.js";
-import type { OpResult } from "../../shared-tech/index.js";
-import type { InspectOverview } from "../../shared-tech/index.js";
+
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
-import * as threads from "../../threads/index.js";
+import type { DerivationReportEntry, InspectOverview, OpResult } from "../../shared-tech/index.js";
 import * as threadView from "../../thread-view/index.js";
-import * as turns from "../../turns/index.js";
 import type { ThreadRef } from "../../threads/index.js";
+import * as threads from "../../threads/index.js";
+import * as turns from "../../turns/index.js";
 
 // One report entry's operational bucket, matching the vocabulary status
 // reads (shared/derivation.ts): pending with attempts spent is retrying.
 // Unlike ViewStatus, overview counts ready too (AC-1.1).
-export function bucketEntries(
-  entries: readonly DerivationReportEntry[],
-  counts: InspectOverview["derivation"],
-): void {
+export function bucketEntries(entries: readonly DerivationReportEntry[], counts: InspectOverview["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
       case "ready":
@@ -62,10 +58,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   const last = events.value[events.value.length - 1];
   const eventSection: InspectOverview["events"] = {
     count: events.value.length,
-    span:
-      first === undefined || last === undefined
-        ? null
-        : { first: first.eventOrder, last: last.eventOrder },
+    span: first === undefined || last === undefined ? null : { first: first.eventOrder, last: last.eventOrder },
   };
 
   // Deleted contract (AC-1.2): the audit listing carries everything; deleted
@@ -98,9 +91,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   if (!chunkList.ok) return chunkList;
   // Closed-but-unchunked: closed turns whose derivation has not placed them
   // yet — stored placement read back, never recomputed.
-  const unchunkedTurns = turnList.value.filter(
-    (turn) => turn.status === "closed" && turn.chunkId === undefined,
-  ).length;
+  const unchunkedTurns = turnList.value.filter((turn) => turn.status === "closed" && turn.chunkId === undefined).length;
 
   // Derivation counts across both owners' report surfaces (never a
   // derivation read), ready included.

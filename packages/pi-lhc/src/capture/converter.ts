@@ -67,10 +67,7 @@ function syntheticGapNote(discriminator: string, reason: string): MessageEventIn
   };
 }
 
-export async function capture(
-  events: MessageEventInput[],
-  instance: LhcInstance,
-): Promise<OpResult<BatchResult>> {
+export async function capture(events: MessageEventInput[], instance: LhcInstance): Promise<OpResult<BatchResult>> {
   const primary = await flushIsolated(instance, events);
   if (primary.ok) return primary;
 

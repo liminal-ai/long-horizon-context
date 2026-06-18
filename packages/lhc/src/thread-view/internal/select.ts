@@ -17,16 +17,16 @@
 // (render.ts's renderArrangementEntry, including attached inter-turn notes),
 // so the budgeted tokens are the stored tokens — no second estimate.
 import type { DatabaseSync } from "node:sqlite";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { Band } from "../../shared-tech/index.js";
+import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import {
+  type CompactChunkMaterialSnapshot,
+  type DerivationSnapshot,
   excerptLine,
   renderArrangementEntry,
   resolveBriefRepresentation,
   resolveDetailedRepresentation,
   resolveSmoothRepresentation,
-  type DerivationSnapshot,
-  type CompactChunkMaterialSnapshot,
 } from "./render.js";
 
 // Canonical source state needed to identify or read the compacted span is
@@ -167,10 +167,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
        ORDER BY m.source_event_order, mb.block_index`,
     )
     .all() as unknown as Array<{ message_id: string; block_type: string; content: string }>;
-  const blocksByMessage = new Map<
-    string,
-    Array<{ blockType: string; content: Record<string, unknown> }>
-  >();
+  const blocksByMessage = new Map<string, Array<{ blockType: string; content: Record<string, unknown> }>>();
   for (const row of blockRows) {
     const blocks = blocksByMessage.get(row.message_id) ?? [];
     blocks.push({
@@ -249,9 +246,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     m: number | bigint;
   };
   const countRows = db
-    .prepare(
-      `SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state`,
-    )
+    .prepare(`SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state`)
     .all() as unknown as Array<{ derivation_type: string; state: string; n: number | bigint }>;
   const derivationCounts: Record<string, Record<string, number>> = {};
   for (const row of countRows) {
@@ -271,18 +266,14 @@ export interface SelectionConfig {
   percentages: { full: number; smooth: number; detailed: number; brief: number };
 }
 
-export function selectArrangement(
-  inputs: SelectionInputs,
-  config: SelectionConfig,
-): SelectionResult {
+export function selectArrangement(inputs: SelectionInputs, config: SelectionConfig): SelectionResult {
   const { messages, turns, chunks, derivations } = inputs;
   const lookup = (subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
     derivations.get(`${subjectId}/${derivationType}`);
   const chunkMaterial = (
     chunkId: string,
     derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
-  ): CompactChunkMaterialSnapshot | undefined =>
-    inputs.compactChunkMaterials?.get(`${chunkId}/${derivationType}`);
+  ): CompactChunkMaterialSnapshot | undefined => inputs.compactChunkMaterials?.get(`${chunkId}/${derivationType}`);
   const budget = (share: number): number => (config.lowerBound * share) / 100;
 
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
@@ -374,15 +365,12 @@ export function selectArrangement(
   // Band candidates: closed turns wholly behind the compact point. Rule 5 is
   // structural here — chunked or not, a banded turn is a smooth candidate
   // (bands are defined by representation, not strict time strata).
-  const bandedTurns = closedTurns.filter(
-    (turn) => turn.closedAt !== null && turn.closedAt <= compactPoint,
-  );
+  const bandedTurns = closedTurns.filter((turn) => turn.closedAt !== null && turn.closedAt <= compactPoint);
   const bandedTurnIds = new Set(bandedTurns.map((turn) => turn.turnId));
 
   function buildTurnEntry(turn: SelectionTurn): ArrangementEntry {
     const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
-    const excerpt =
-      turnMessages.length === 0 ? null : turnMessages.map((message) => message.text).join("\n");
+    const excerpt = turnMessages.length === 0 ? null : turnMessages.map((message) => message.text).join("\n");
     const rep = resolveSmoothRepresentation(turn.turnId, lookup, excerpt);
     const noteTexts = (notesByTurn.get(turn.turnId) ?? []).map((note) => note.text);
     const text = renderArrangementEntry("turn", turn.turnId, rep, noteTexts);
@@ -404,19 +392,9 @@ export function selectArrangement(
   function buildChunkEntry(chunk: SelectionChunk, band: "detailed" | "brief"): ArrangementEntry {
     const rep =
       band === "detailed"
-        ? resolveDetailedRepresentation(
-            chunk.chunkId,
-            lookup,
-            chunkMaterial(chunk.chunkId, "chunk_summary_detailed"),
-          )
-        : resolveBriefRepresentation(
-            chunk.chunkId,
-            lookup,
-            chunkMaterial(chunk.chunkId, "chunk_summary_brief"),
-          );
-    const noteTexts = chunk.memberTurnIds.flatMap((turnId) =>
-      (notesByTurn.get(turnId) ?? []).map((note) => note.text),
-    );
+        ? resolveDetailedRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_detailed"))
+        : resolveBriefRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_brief"));
+    const noteTexts = chunk.memberTurnIds.flatMap((turnId) => (notesByTurn.get(turnId) ?? []).map((note) => note.text));
     const text = renderArrangementEntry("chunk", chunk.chunkId, rep, noteTexts);
     const memberStarts = chunk.memberTurnIds
       .map((turnId) => turnsById.get(turnId))
@@ -468,14 +446,9 @@ export function selectArrangement(
   // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
   // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
   // the smooth representation, and consumes this budget).
-  const smooth = fillBand(
-    [...bandedTurns].reverse(),
-    budget(config.percentages.smooth),
-    buildTurnEntry,
-  );
+  const smooth = fillBand([...bandedTurns].reverse(), budget(config.percentages.smooth), buildTurnEntry);
   const oldestSmoothOrder = smooth.included.reduce(
-    (oldest, entry) =>
-      Math.min(oldest, turnsById.get(entry.subjectId)?.turnOrder ?? Number.POSITIVE_INFINITY),
+    (oldest, entry) => Math.min(oldest, turnsById.get(entry.subjectId)?.turnOrder ?? Number.POSITIVE_INFINITY),
     Number.POSITIVE_INFINITY,
   );
 
@@ -490,12 +463,8 @@ export function selectArrangement(
         .map((turnId) => turnsById.get(turnId))
         .filter((turn): turn is SelectionTurn => turn !== undefined);
       if (liveMembers.length === 0) return false; // fully tombstoned membership
-      const newestMember = liveMembers.reduce((newest, turn) =>
-        turn.turnOrder > newest.turnOrder ? turn : newest,
-      );
-      return (
-        bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder
-      );
+      const newestMember = liveMembers.reduce((newest, turn) => (turn.turnOrder > newest.turnOrder ? turn : newest));
+      return bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder;
     })
     .reverse(); // newest-first
 
@@ -506,22 +475,16 @@ export function selectArrangement(
   // Rule 4 — brief: the remaining chunks, same fill rule against its share.
   // Chunks remaining after the budget are the coverage edge — outside the
   // view, reported via covered_from, never phantom gap entries.
-  const brief = fillBand(detailed.rest, budget(config.percentages.brief), (chunk) =>
-    buildChunkEntry(chunk, "brief"),
-  );
+  const brief = fillBand(detailed.rest, budget(config.percentages.brief), (chunk) => buildChunkEntry(chunk, "brief"));
 
-  const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number =>
-    a.startOrder - b.startOrder;
+  const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number => a.startOrder - b.startOrder;
   const entries: ArrangementEntry[] = [
     ...brief.included.sort(byRecordOrder),
     ...detailed.included.sort(byRecordOrder),
     ...smooth.included.sort(byRecordOrder),
   ];
 
-  const coveredFrom =
-    entries.length === 0
-      ? compactPoint
-      : Math.min(...entries.map((entry) => entry.startOrder));
+  const coveredFrom = entries.length === 0 ? compactPoint : Math.min(...entries.map((entry) => entry.startOrder));
 
   return { compactPoint, coveredFrom, entries };
 }

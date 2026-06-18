@@ -2,13 +2,10 @@
 // replay seeding, source immutability, and derived form requeue behavior.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createDeterministicProvider, inspect, intakeStream } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicProvider,
-  inspect,
-  intakeStream,
-} from "lhc";
 import { createConnector } from "../../src/index.js";
+import { eventsAfterShutdown, kindsOf, startCapture } from "../capture/support.js";
 import {
   makeAgentEnd,
   makeAssistantMessage,
@@ -16,8 +13,7 @@ import {
   makeToolResult,
   makeUserMessage,
 } from "../fixtures/synthetic.js";
-import { eventsAfterShutdown, kindsOf, startCapture } from "../capture/support.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -45,7 +41,10 @@ describe("Story 4: fork as new thread", () => {
         forkEntryId,
       ),
     );
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call-1", content: "file content" })));
+    await connector.handlers.message_end(
+      ctx,
+      makeMessageEnd(makeToolResult({ id: "call-1", content: "file content" })),
+    );
     await connector.handlers.agent_end(ctx, makeAgentEnd([]));
 
     // Record the source thread's event count for comparison.
@@ -113,9 +112,7 @@ describe("Story 4: fork as new thread", () => {
     const state = connector.getState();
     expect(state).not.toBeNull();
     if (state === null) return;
-    expect((state.threadRef as { threadId?: string }).threadId).not.toBe(
-      (sourceRef as { threadId?: string }).threadId,
-    );
+    expect((state.threadRef as { threadId?: string }).threadId).not.toBe((sourceRef as { threadId?: string }).threadId);
 
     const forkedEvents = await intakeStream.listEvents(state.threadRef);
     expect(forkedEvents.ok).toBe(true);

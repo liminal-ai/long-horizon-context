@@ -6,9 +6,7 @@
 import type { SweepReceipt } from "../../src/index.js";
 
 function fail(path: string, expected: string, actual: unknown): never {
-  throw new Error(
-    `SweepReceipt schema violation at ${path}: expected ${expected}, got ${JSON.stringify(actual)}`,
-  );
+  throw new Error(`SweepReceipt schema violation at ${path}: expected ${expected}, got ${JSON.stringify(actual)}`);
 }
 
 function assertCount(value: unknown, path: string): void {
@@ -47,10 +45,7 @@ export function assertSweepReceiptShape(value: unknown): asserts value is SweepR
     }
     assertCount(entry.ready, `${path}.ready`);
     assertCount(entry.inFlight, `${path}.inFlight`);
-    if (
-      !Array.isArray(entry.requeued) ||
-      entry.requeued.some((id) => typeof id !== "string" || id === "")
-    ) {
+    if (!Array.isArray(entry.requeued) || entry.requeued.some((id) => typeof id !== "string" || id === "")) {
       fail(`${path}.requeued`, "an array of non-empty subject-id strings", entry.requeued);
     }
     assertSubjectReasonList(entry.blocked, `${path}.blocked`);

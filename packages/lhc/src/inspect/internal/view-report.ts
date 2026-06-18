@@ -6,9 +6,9 @@
 // (AC-2.3), and AC-2.2's boundary-aware tail shortening is inherited from
 // pull, never re-implemented. Nothing here recomputes selection, rendering,
 // form choice, or boundary state.
-import { storageFailure, type OpResult } from "../../shared-tech/index.js";
-import type { ViewContentsReport } from "../../shared-tech/index.js";
-import type { Band, ViewMessage } from "../../shared-tech/index.js";
+
+import type { Band, ViewContentsReport, ViewMessage } from "../../shared-tech/index.js";
+import { type OpResult, storageFailure } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import * as threadView from "../../thread-view/index.js";
 import type { ThreadRef } from "../../threads/index.js";
@@ -19,9 +19,7 @@ function measuredTokens(messages: readonly ViewMessage[]): number {
   return messages.reduce((sum, message) => sum + estimateTokens(message.content), 0);
 }
 
-export async function composeViewReport(
-  ref: ThreadRef,
-): Promise<OpResult<ViewContentsReport>> {
+export async function composeViewReport(ref: ThreadRef): Promise<OpResult<ViewContentsReport>> {
   const described = await threadView.describe(ref);
   if (!described.ok) return described;
   const pulled = await threadView.pull(ref);

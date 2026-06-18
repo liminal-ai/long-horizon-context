@@ -12,7 +12,7 @@
 
 import type { ModelAssignment } from "lhc";
 import { DEFAULT_PROMPT_NAMES } from "lhc";
-import { ASSIGNMENT_KINDS, defaultAssignments, type AssignmentKind } from "./model-call.js";
+import { ASSIGNMENT_KINDS, type AssignmentKind, defaultAssignments } from "./model-call.js";
 
 /** Operator config shape for derivation assignments.
  *
@@ -59,11 +59,7 @@ export class AssignmentValidationError extends Error {
 
 /** Check if an assignment is complete (has provider, model, and prompt). */
 function isComplete(assignment: Partial<ModelAssignment>): assignment is ModelAssignment {
-  return (
-    assignment.provider !== undefined &&
-    assignment.model !== undefined &&
-    assignment.prompt !== undefined
-  );
+  return assignment.provider !== undefined && assignment.model !== undefined && assignment.prompt !== undefined;
 }
 
 /** Check if an assignment contains placeholder values that would mask misconfiguration. */
@@ -80,9 +76,7 @@ function hasPlaceholder(assignment: ModelAssignment): boolean {
   const providerLower = assignment.provider.toLowerCase();
   const modelLower = assignment.model.toLowerCase();
 
-  return placeholderPatterns.some((pattern) =>
-    providerLower.includes(pattern) || modelLower.includes(pattern)
-  );
+  return placeholderPatterns.some((pattern) => providerLower.includes(pattern) || modelLower.includes(pattern));
 }
 
 /** Check if a prompt name is registered in LHC's prompt registry. */

@@ -5,12 +5,7 @@
 // exception classifies `other` (AC-3.3) and the adapter-owned timeout race
 // classifies `timeout` (DD-6) — both structured failures, so no host
 // function behavior can crash a drain.
-import type {
-  ModelCall,
-  ModelCallFailureKind,
-  ModelCallInput,
-  ModelCallResult,
-} from "./inference-types.js";
+import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult } from "./inference-types.js";
 
 export const FAILURE_CLASSIFICATION: Record<ModelCallFailureKind, { retryable: boolean }> = {
   rate_limit: { retryable: true },
@@ -23,11 +18,7 @@ export const FAILURE_CLASSIFICATION: Record<ModelCallFailureKind, { retryable: b
 };
 
 /** try/catch + timeout race around the host function (AC-3.3, DD-6). */
-export async function safeCall(
-  call: ModelCall,
-  input: ModelCallInput,
-  timeoutMs: number,
-): Promise<ModelCallResult> {
+export async function safeCall(call: ModelCall, input: ModelCallInput, timeoutMs: number): Promise<ModelCallResult> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<ModelCallResult>((resolve) => {
     timer = setTimeout(() => {

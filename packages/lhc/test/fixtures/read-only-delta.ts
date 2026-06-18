@@ -41,16 +41,9 @@ export async function observableState(filePath: string): Promise<ObservableState
 // Run one operation under the before/after snapshot and return its result so
 // call sites can keep asserting on it. Throws (deepStrictEqual) when the
 // operation moved anything observable.
-export async function expectReadOnly<T>(
-  filePath: string,
-  operation: () => Promise<T>,
-): Promise<T> {
+export async function expectReadOnly<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const before = await observableState(filePath);
   const result = await operation();
-  deepStrictEqual(
-    await observableState(filePath),
-    before,
-    "read-only delta: operation changed observable state",
-  );
+  deepStrictEqual(await observableState(filePath), before, "read-only delta: operation changed observable state");
   return result;
 }

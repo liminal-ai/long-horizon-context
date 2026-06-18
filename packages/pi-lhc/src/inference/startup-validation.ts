@@ -12,8 +12,8 @@
 
 import { writeSync } from "node:fs";
 import type { ModelAssignment } from "lhc";
-import type { ExtensionContext } from "../pi/types.js";
 import type { SessionState } from "../lifecycle/state.js";
+import type { ExtensionContext } from "../pi/types.js";
 import type { ValidationReport } from "../shared/diagnostics.js";
 import { ASSIGNMENT_KINDS } from "./model-call.js";
 
@@ -93,12 +93,7 @@ export function validateReachable(
  *  This function never throws; validation failures are diagnostic, not fatal.
  *  The affected lane's derivations will fail classified and queryable through
  *  health (AC-5.3), but the session itself remains functional for capture. */
-export function report(
-  r: ValidationReport,
-  ctx: ExtensionContext,
-  state: SessionState,
-  deps: ReportDeps = {},
-): void {
+export function report(r: ValidationReport, ctx: ExtensionContext, state: SessionState, deps: ReportDeps = {}): void {
   // Mark that we've reported startup validation (avoids duplicate reporting)
   state.flags.startupValidationReported = true;
 
@@ -108,8 +103,7 @@ export function report(
       "pi-lhc startup validation: unreachable derivation lanes",
       "",
       ...r.unreachable.map(
-        (u) =>
-          `  • ${u.kind}: ${u.provider}/${u.model}\n    Reason: ${u.reason}\n    Fix: ${u.fix}`,
+        (u) => `  • ${u.kind}: ${u.provider}/${u.model}\n    Reason: ${u.reason}\n    Fix: ${u.fix}`,
       ),
       "",
       `Capture will continue, but derivations on these lanes will fail. Update your PI settings or assignment config to resolve.`,

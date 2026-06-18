@@ -5,14 +5,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  threads,
-  type EventRecord,
-  type MessageEventInput,
-  type ThreadRef,
-} from "../src/index.js";
-import { conversationTurn, eventBatch, tempStore, validEvent, type TempStore } from "./fixtures/index.js";
+import { type EventRecord, intakeStream, type MessageEventInput, type ThreadRef, threads } from "../src/index.js";
+import { conversationTurn, eventBatch, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -163,10 +157,9 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("strictness supplemental: unknown fields rejected at envelope, event, and payload levels", async () => {
     const filePath = await createThread();
 
-    const envelopeProbe = await intakeStream.messageEvents(
-      { filePath, surprise: true } as unknown as ThreadRef,
-      [validEvent("user_prompt")],
-    );
+    const envelopeProbe = await intakeStream.messageEvents({ filePath, surprise: true } as unknown as ThreadRef, [
+      validEvent("user_prompt"),
+    ]);
     expect(envelopeProbe.ok).toBe(false);
     if (envelopeProbe.ok) return;
     expect(envelopeProbe.error.code).toBe("invalid_event");
@@ -199,17 +192,13 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("strictness supplemental: empty actor and empty harness are rejected", async () => {
     const filePath = await createThread();
 
-    const emptyActor = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { actor: "" }),
-    ]);
+    const emptyActor = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { actor: "" })]);
     expect(emptyActor.ok).toBe(false);
     if (emptyActor.ok) return;
     expect(emptyActor.error.code).toBe("invalid_event");
     expect(emptyActor.error.reason).toContain("actor");
 
-    const emptyHarness = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { harness: "" }),
-    ]);
+    const emptyHarness = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { harness: "" })]);
     expect(emptyHarness.ok).toBe(false);
     if (emptyHarness.ok) return;
     expect(emptyHarness.error.code).toBe("invalid_event");

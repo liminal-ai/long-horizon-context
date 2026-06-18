@@ -54,14 +54,10 @@ function storedMemberConcat(db: DatabaseSync, chunkId: string): CompactChunkMate
     `SELECT message_id, kind FROM message
      WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order`,
   );
-  const blockStmt = db.prepare(
-    `SELECT content FROM message_block WHERE message_id = ? ORDER BY block_index`,
-  );
+  const blockStmt = db.prepare(`SELECT content FROM message_block WHERE message_id = ? ORDER BY block_index`);
   const sections: string[] = [];
   for (const member of members) {
-    const turn = db
-      .prepare(`SELECT status, closed_at_event_order FROM turns WHERE turn_id = ?`)
-      .get(member.turn_id) as
+    const turn = db.prepare(`SELECT status, closed_at_event_order FROM turns WHERE turn_id = ?`).get(member.turn_id) as
       | { status: string; closed_at_event_order: number | bigint | null }
       | undefined;
     if (turn === undefined || turn.status !== "closed" || turn.closed_at_event_order === null) {
@@ -102,9 +98,7 @@ export function compactChunkMaterialFromStoredMembers(
       `SELECT state, content, reason FROM derivation
        WHERE subject_kind = 'chunk' AND subject_id = ? AND derivation_type = ?`,
     )
-    .get(chunkId, derivationType) as
-    | { state: string; content: string | null; reason: string | null }
-    | undefined;
+    .get(chunkId, derivationType) as { state: string; content: string | null; reason: string | null } | undefined;
   if (row?.state === "ready" && row.content !== null) {
     return { kind: "ready", content: row.content };
   }
@@ -118,11 +112,6 @@ export function compactChunkMaterialFromStoredMembers(
   if (fallback.kind !== "concat") return fallback;
   return {
     ...fallback,
-    reason:
-      row === undefined
-        ? "missing_derivation"
-        : row.state === "failed"
-          ? "failed_floor"
-          : "not_ready",
+    reason: row === undefined ? "missing_derivation" : row.state === "failed" ? "failed_floor" : "not_ready",
   };
 }

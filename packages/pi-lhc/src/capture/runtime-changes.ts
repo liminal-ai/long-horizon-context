@@ -1,6 +1,6 @@
 import type { MessageEventInput } from "lhc";
-import type { MapCtx } from "./map-message.js";
 import { eventKey } from "./idempotency.js";
+import type { MapCtx } from "./map-message.js";
 
 // AC-2.8: model_select / thinking_level_select hooks → runtime_note events, in
 // order relative to surrounding messages. PI fires these only in-stream and no
@@ -21,10 +21,7 @@ function describeModel(model: ModelDescriptor): string {
 }
 
 /** Note text for a model change — carries the new and previous model. */
-export function formatModelChange(ev: {
-  model: ModelDescriptor;
-  previousModel?: ModelDescriptor;
-}): string {
+export function formatModelChange(ev: { model: ModelDescriptor; previousModel?: ModelDescriptor }): string {
   const to = describeModel(ev.model);
   const from = ev.previousModel !== undefined ? describeModel(ev.previousModel) : "(none)";
   return `model changed: ${from} → ${to}`;
@@ -62,9 +59,6 @@ export function mapModelSelect(
 }
 
 /** One `runtime_note` recording the new + previous thinking level. */
-export function mapThinkingLevelSelect(
-  ev: { level: string; previousLevel: string },
-  ctx: MapCtx,
-): MessageEventInput {
+export function mapThinkingLevelSelect(ev: { level: string; previousLevel: string }, ctx: MapCtx): MessageEventInput {
   return runtimeNote(formatThinkingLevelChange(ev), ctx);
 }

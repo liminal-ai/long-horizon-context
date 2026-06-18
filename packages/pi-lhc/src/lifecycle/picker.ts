@@ -1,4 +1,4 @@
-import { threads, type OpResult, type ThreadRef } from "lhc";
+import { type OpResult, type ThreadRef, threads } from "lhc";
 import { registryArg, threadRefById } from "./thread-resolution.js";
 
 // AC-1.7.
@@ -26,10 +26,7 @@ export interface PickerDeps {
  *  filter over an unscoped list (anti-shim). With no threads for the cwd the
  *  picker reports an empty list (`null`) rather than failing; a cancelled
  *  selection is likewise `null`. */
-export async function pickThread(
-  cwd: string,
-  deps: PickerDeps,
-): Promise<OpResult<ThreadRef | null>> {
+export async function pickThread(cwd: string, deps: PickerDeps): Promise<OpResult<ThreadRef | null>> {
   const listed = await threads.listThreads({ cwd, ...registryArg(deps.registryPath) });
   if (!listed.ok) return listed;
   if (listed.value.length === 0) return { ok: true, value: null };

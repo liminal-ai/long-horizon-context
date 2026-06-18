@@ -25,9 +25,7 @@ export function seedViewBoundary(filePath: string, position: number): void {
   const db = new DatabaseSync(filePath);
   try {
     const changed = db
-      .prepare(
-        `UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`,
-      )
+      .prepare(`UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`)
       .run(position, new Date().toISOString());
     if (Number(changed.changes) !== 1) {
       throw new Error(

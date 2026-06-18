@@ -5,8 +5,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { EventKind, MessageEventInput } from "lhc";
-import type { Corpus, RecordedPiHookEvent } from "../../src/verify/replay.js";
 import type { AgentMessage } from "../../src/pi/types.js";
+import type { Corpus, RecordedPiHookEvent } from "../../src/verify/replay.js";
 import { validEvent } from "./synthetic.js";
 
 const CORPUS_DIR = fileURLToPath(new URL("./pi-corpora/", import.meta.url));
@@ -80,7 +80,14 @@ export function loadAllCorpora(): Corpus[] {
 export function makeTruncatedCorpus(): Corpus {
   return {
     name: "truncated",
-    source: [{ recordType: "pi_hook", hook: "message_end", entryId: "truncated-entry-0", message: { role: "user", content: [{ type: "text", text: "" }] } }],
+    source: [
+      {
+        recordType: "pi_hook",
+        hook: "message_end",
+        entryId: "truncated-entry-0",
+        message: { role: "user", content: [{ type: "text", text: "" }] },
+      },
+    ],
     expected: [
       validEvent("user_prompt", { payload: { text: "" } }),
       validEvent("tool_result", { payload: { toolCallId: "dangling-call", content: "orphan result", isError: false } }),
@@ -119,7 +126,11 @@ export function validateCorpus(corpus: Corpus): CorpusValidation {
     if (source.hook === "message_end") {
       if (source.recordType !== "pi_hook") problems.push(`${at}: message_end must be a pi_hook record`);
       if (source.entryId.trim() === "") problems.push(`${at}: empty entryId`);
-      if (source.message.role !== "user" && source.message.role !== "assistant" && source.message.role !== "toolResult") {
+      if (
+        source.message.role !== "user" &&
+        source.message.role !== "assistant" &&
+        source.message.role !== "toolResult"
+      ) {
         problems.push(`${at}: unsupported message role`);
       }
     } else if (source.hook === "agent_end") {

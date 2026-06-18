@@ -43,9 +43,7 @@ export interface TurnedToolResultsSpec {
   turnless?: boolean;
 }
 
-export function turnedToolResultEvents(
-  turns: readonly TurnedToolResultsSpec[],
-): MessageEventInput[] {
+export function turnedToolResultEvents(turns: readonly TurnedToolResultsSpec[]): MessageEventInput[] {
   const events: MessageEventInput[] = [];
   for (const turn of turns) {
     if (turn.turnless === true) {
@@ -67,9 +65,6 @@ export async function seedTurnedToolResults(
   filePath: string,
   turns: readonly TurnedToolResultsSpec[],
 ): Promise<void> {
-  const result = await sdk.intakeStream.messageEvents(
-    { filePath },
-    turnedToolResultEvents(turns),
-  );
+  const result = await sdk.intakeStream.messageEvents({ filePath }, turnedToolResultEvents(turns));
   if (!result.ok) throw new Error(`boundary seed intake failed: ${result.error.reason}`);
 }

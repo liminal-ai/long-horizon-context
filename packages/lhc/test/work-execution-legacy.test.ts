@@ -10,13 +10,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { countLiveItems, initLhc, type Lhc } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  type InferenceCallbacksDouble,
   legacyEpic01ThreadFile,
   openRaw,
   readDerivedForms,
   registerTestWorkHandlers,
-  tempStore,
-  type InferenceCallbacksDouble,
   type TempStore,
+  tempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;

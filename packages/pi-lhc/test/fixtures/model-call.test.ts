@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import type { ModelCallFailureKind, ModelCallInput } from "lhc";
+import { describe, expect, it } from "vitest";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "./model-call.js";
 
 const INPUT: ModelCallInput = {
@@ -15,14 +15,7 @@ describe("model-call fakes", () => {
   });
 
   it("fakeModelCallFailure resolves to each classified failure kind", async () => {
-    const kinds: ModelCallFailureKind[] = [
-      "auth",
-      "invalid_request",
-      "rate_limit",
-      "timeout",
-      "network",
-      "other",
-    ];
+    const kinds: ModelCallFailureKind[] = ["auth", "invalid_request", "rate_limit", "timeout", "network", "other"];
     for (const kind of kinds) {
       const result = await fakeModelCallFailure(kind)(INPUT);
       expect(result.ok).toBe(false);

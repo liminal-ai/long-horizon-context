@@ -4,29 +4,13 @@
 // Framework-agnostic on purpose: plain node:assert throws surface in vitest
 // and in any future runner identically.
 import assert from "node:assert/strict";
-import { initLhc, type Derivation, type Lhc } from "../../src/index.js";
-import {
-  DERIVATION_TYPES,
-  INFERENCE_DERIVATION_TYPES,
-  type InferenceDerivationType,
-} from "./model-call.js";
-import type {
-  ModelAssignment,
-  ModelCall,
-  ModelCallInput,
-} from "../../src/shared-tech/inference-types.js";
+import { type Derivation, initLhc, type Lhc } from "../../src/index.js";
+import type { ModelAssignment, ModelCall, ModelCallInput } from "../../src/shared-tech/inference-types.js";
+import { type TempStore, validEvent } from "./index.js";
+import { DERIVATION_TYPES, INFERENCE_DERIVATION_TYPES, type InferenceDerivationType } from "./model-call.js";
 import { readDerivedForms } from "./threads.js";
-import { validEvent, type TempStore } from "./index.js";
 
-const FAILURE_KINDS = new Set([
-  "rate_limit",
-  "timeout",
-  "network",
-  "empty_output",
-  "other",
-  "auth",
-  "invalid_request",
-]);
+const FAILURE_KINDS = new Set(["rate_limit", "timeout", "network", "empty_output", "other", "auth", "invalid_request"]);
 
 export function probeInput(overrides: Partial<ModelCallInput> = {}): ModelCallInput {
   return {
@@ -44,22 +28,13 @@ export function probeInput(overrides: Partial<ModelCallInput> = {}): ModelCallIn
 // `{ ok: true, text }` or `{ ok: false, kind, message }` with `kind` from the
 // failure vocabulary. Catches fixture (and real-host) drift from the
 // boundary contract.
-export async function assertModelCallContract(
-  call: ModelCall,
-  probe: ModelCallInput = probeInput(),
-): Promise<void> {
+export async function assertModelCallContract(call: ModelCall, probe: ModelCallInput = probeInput()): Promise<void> {
   const result = await call(probe);
-  assert.ok(
-    typeof result === "object" && result !== null,
-    "ModelCall must resolve to a result object",
-  );
+  assert.ok(typeof result === "object" && result !== null, "ModelCall must resolve to a result object");
   if (result.ok === true) {
     assert.equal(typeof result.text, "string", "success result must carry string text");
   } else if (result.ok === false) {
-    assert.ok(
-      FAILURE_KINDS.has(result.kind),
-      `failure kind "${String(result.kind)}" is not in the failure vocabulary`,
-    );
+    assert.ok(FAILURE_KINDS.has(result.kind), `failure kind "${String(result.kind)}" is not in the failure vocabulary`);
     assert.equal(typeof result.message, "string", "failure result must carry a string message");
   } else {
     assert.fail("ModelCall result must discriminate on a boolean ok");
@@ -145,8 +120,7 @@ export async function assertRoutingThroughSdk(
   assert.ok(log.length > 0, "no calls crossed the ModelCall boundary");
   for (const input of log) {
     const matched = INFERENCE_DERIVATION_TYPES.filter(
-      (kind) =>
-        assignments[kind].provider === input.provider && assignments[kind].model === input.model,
+      (kind) => assignments[kind].provider === input.provider && assignments[kind].model === input.model,
     );
     assert.ok(
       matched.length > 0,
@@ -167,10 +141,7 @@ export async function assertRoutingThroughSdk(
   }
   for (const kind of INFERENCE_DERIVATION_TYPES) {
     assert.ok(
-      log.some(
-        (input) =>
-          input.provider === assignments[kind].provider && input.model === assignments[kind].model,
-      ),
+      log.some((input) => input.provider === assignments[kind].provider && input.model === assignments[kind].model),
       `no boundary call carried ${kind}'s assigned provider/model lane`,
     );
   }

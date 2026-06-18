@@ -5,17 +5,17 @@
 // a drain (AC-4.4), and live queue visibility consistent with the state
 // counts in the same report (AC-4.5).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initLhc, intakeStream, threads, type HealthReport } from "../src/index.js";
+import { type HealthReport, initLhc, intakeStream, threads } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   expectReadOnly,
   mixedStateVariantThread,
   mutationInFlightVariant,
   PERMANENT_FAILURE_REASON,
-  tempStore,
-  TRANSIENT_EXHAUST_REASON,
-  validEvent,
   type TempStore,
+  TRANSIENT_EXHAUST_REASON,
+  tempStore,
+  validEvent,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -26,7 +26,7 @@ afterEach(() => {
   store.cleanup();
 });
 
-function valueOf(result: { ok: boolean }): HealthReport {
+function healthValue(result: { ok: boolean }): HealthReport {
   if (!result.ok) {
     throw new Error(`expected ok health report: ${JSON.stringify(result)}`);
   }
@@ -55,7 +55,7 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
     // Every owner/kind/state count, exact, in deterministic order: 13 turns'
     // smoothings ready + t14's pending; the tool-heavy middle's summaries
     // with the two scripted failures; t13's turn forms blocked on the real
-      // source damage; the three closed chunks' summaries ready.
+    // source damage; the three closed chunks' summaries ready.
     expect(report.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 13, pending: 1 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 6, failed: 2 } },
@@ -68,10 +68,7 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
     // Queue visibility from the same report's live joins: exactly the one
     // still-queued smoothing item, consistent with the pending count.
     expect(report.queue).toEqual({ queued: 1, claimed: 0 });
-    const pendingTotal = report.owners.reduce(
-      (sum, row) => sum + row.counts.pending + row.counts.retrying,
-      0,
-    );
+    const pendingTotal = report.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
     expect(report.queue.queued + report.queue.claimed).toBe(pendingTotal);
   });
 });
@@ -80,11 +77,13 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
   it("failed entries carry exact detail; the preview is exactly the failed-not-blocked set", async () => {
     const fixture = await mixedStateVariantThread(store);
     const { filePath, sdk } = fixture;
-    const report = valueOf(await sdk.inspect.health({ filePath }));
+    const report = healthValue(await sdk.inspect.health({ filePath }));
 
     // Actionable failure detail: subject, form, reason, attempts, last error
     // — enough to target a requeue without raw SQL.
-    const failed = report.failures.filter((entry) => entry.reason.startsWith("rate_limit") || entry.reason.startsWith("content_refusal"));
+    const failed = report.failures.filter(
+      (entry) => entry.reason.startsWith("rate_limit") || entry.reason.startsWith("content_refusal"),
+    );
     expect(failed).toEqual([
       {
         owner: "messages",
@@ -137,7 +136,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
 
     // Never executed: the failed forms are still failed on a second read —
     // health did not requeue what it previewed.
-    const again = valueOf(await sdk.inspect.health({ filePath }));
+    const again = healthValue(await sdk.inspect.health({ filePath }));
     expect(again).toEqual(report);
   });
 });
@@ -155,7 +154,7 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
     expect(recorded.ok).toBe(true);
 
     const reader = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
-    const report = valueOf(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
+    const report = healthValue(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
     expect(report.owners).toContainEqual({
       owner: "capture",
       kind: "capture_gap",
@@ -193,7 +192,7 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       ].sort(),
     );
 
-    const before = valueOf(await expectReadOnly(filePath, () => sdk.inspect.health({ filePath })));
+    const before = healthValue(await expectReadOnly(filePath, () => sdk.inspect.health({ filePath })));
     // The cleared set reads pending — one per owner/kind — with its queued
     // replacement work visible, and every form outside the cascade still
     // ready (failures-free fixture: full counts minus the cascade).
@@ -231,7 +230,7 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
 
     // The same set reads ready; counts return to the full fixture totals;
     // queue empty — two reads bracket the rebuild.
-    const after = valueOf(await sdk.inspect.health({ filePath }));
+    const after = healthValue(await sdk.inspect.health({ filePath }));
     expect(after.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 12 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
@@ -264,9 +263,7 @@ describe("architecture risk: health is inference-callback-free and surface-compo
       },
       mode: "manual",
     });
-    const health = await expectReadOnly(fixture.filePath, () =>
-      reader.inspect.health({ filePath: fixture.filePath }),
-    );
+    const health = await expectReadOnly(fixture.filePath, () => reader.inspect.health({ filePath: fixture.filePath }));
     expect(health.ok).toBe(true);
     expect(captured).toHaveLength(0);
   });

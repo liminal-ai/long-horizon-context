@@ -77,12 +77,7 @@ export interface AssistantToolCall {
 /** Fans out to content parts in PI's confirmed order: thinking → text →
  *  toolCall×N (research §5a). */
 export function makeAssistantMessage(
-  opts: {
-    thinking?: string;
-    text?: string;
-    toolCalls?: AssistantToolCall[];
-    stopReason?: PiStopReason;
-  } = {},
+  opts: { thinking?: string; text?: string; toolCalls?: AssistantToolCall[]; stopReason?: PiStopReason } = {},
 ): AssistantMessage {
   const content: ContentPart[] = [];
   if (opts.thinking !== undefined) content.push({ type: "thinking", thinking: opts.thinking });
@@ -95,11 +90,7 @@ export function makeAssistantMessage(
   return msg;
 }
 
-export function makeToolResult(opts: {
-  id: string;
-  isError?: boolean;
-  content?: string;
-}): ToolResultMessage {
+export function makeToolResult(opts: { id: string; isError?: boolean; content?: string }): ToolResultMessage {
   const msg: ToolResultMessage = {
     role: "toolResult",
     toolCallId: opts.id,
@@ -120,11 +111,7 @@ export function makeSessionStart(
   return ev;
 }
 
-export function makeMessageEnd(
-  message: AgentMessage,
-  entryId?: string,
-  position?: number,
-): MessageEndEvent {
+export function makeMessageEnd(message: AgentMessage, entryId?: string, position?: number): MessageEndEvent {
   const ev: MessageEndEvent = { message };
   if (entryId !== undefined) ev.entryId = entryId;
   if (position !== undefined) ev.position = position;

@@ -99,12 +99,7 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     return this.captured;
   }
 
-  private async run(
-    op: InferenceCallbackOpName,
-    input: unknown,
-    text: string,
-    suffix = "",
-  ): Promise<InferenceResult> {
+  private async run(op: InferenceCallbackOpName, input: unknown, text: string, suffix = ""): Promise<InferenceResult> {
     if (this.capturing) this.captured.push({ op, input: structuredClone(input) });
     const delay = this.delayByOp.get(op);
     if (delay !== undefined && delay > 0) {
@@ -158,10 +153,7 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     );
   }
 
-  summarizeChunkBrief(i: {
-    memberProjections: string[];
-    memberOutcomes?: ToolOutcome[][];
-  }): Promise<InferenceResult> {
+  summarizeChunkBrief(i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }): Promise<InferenceResult> {
     return this.run(
       "summarizeChunkBrief",
       i,

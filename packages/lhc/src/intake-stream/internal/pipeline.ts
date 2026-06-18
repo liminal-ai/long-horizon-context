@@ -5,15 +5,17 @@
 // transitions, and work queueing.
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { createFromEvent, queueMessageWork } from "../../messages/index.js";
 import {
   createCommitHooks,
+  type ErrorResult,
+  type OperationContext,
+  type OpResult,
   resolveInstancePoke,
   resolveInstanceToolResultConfig,
-  type OperationContext,
+  storageFailure,
 } from "../../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
-import { createFromEvent, queueMessageWork } from "../../messages/index.js";
 // The sanctioned intake→thread-view surface import (Epic 03 Flow 4, named in
 // the boundary-advance registration below, nothing else.
 // This is the domain graph's first surface-level cycle (intake → thread-view

@@ -10,24 +10,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createInferenceCallbacks } from "../src/shared-tech/inference-adapter.js";
-import {
-  DEFAULT_PROMPT_NAMES,
-  PROMPT_REGISTRY,
-  type PromptTemplate,
-} from "../src/shared-tech/prompts/index.js";
 import type { ModelCallInput, ResolvedInferenceConfig } from "../src/shared-tech/inference-types.js";
-import {
-  cannedResponses,
-  FAKE_MODEL_PREFIX,
-  recordingCall,
-  validAssignments,
-} from "./fixtures/index.js";
+import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY, type PromptTemplate } from "../src/shared-tech/prompts/index.js";
+import { cannedResponses, FAKE_MODEL_PREFIX, recordingCall, validAssignments } from "./fixtures/index.js";
 
-const goldensDir = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "goldens",
-  "prompts",
-);
+const goldensDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "goldens", "prompts");
 
 // One fixture input per template, keyed by template name. Each carries
 // distinctive strings the golden embeds, so a template that drops an input
@@ -186,9 +173,7 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
     });
     expect(brief.ok).toBe(true);
 
-    const briefCall = log.find(
-      (input) => input.model === `${FAKE_MODEL_PREFIX}chunk_summary_brief`,
-    );
+    const briefCall = log.find((input) => input.model === `${FAKE_MODEL_PREFIX}chunk_summary_brief`);
     expect(briefCall).toBeDefined();
     if (briefCall === undefined) return;
 
@@ -203,9 +188,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("oversized summarizeToolResult input renders head + tail + marker under maxInputChars", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const inferenceCallbacks = createInferenceCallbacks(
-      resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
-    );
+    const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }));
     const content = "H".repeat(150) + "M".repeat(700) + "T".repeat(150);
     const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);
@@ -230,9 +213,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     // head+tail+marker bound: with no room for the marker, that bound returns
     // the marker alone and overshoots the cap it was meant to hold.
     const tinyMax = 40;
-    const inferenceCallbacks = createInferenceCallbacks(
-      resolvedConfig({ call, maxInputChars: tinyMax }),
-    );
+    const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call, maxInputChars: tinyMax }));
     const content = "H".repeat(40) + "M".repeat(700) + "T".repeat(40);
     const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);
@@ -253,9 +234,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("under-limit input renders whole, no marker", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const inferenceCallbacks = createInferenceCallbacks(
-      resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
-    );
+    const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }));
     const content = "W".repeat(MAX_INPUT_CHARS);
     const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);

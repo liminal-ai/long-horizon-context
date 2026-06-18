@@ -1,21 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SQLInputValue } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  initLhc,
-  queueDetail,
-  threads,
   type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  queueDetail,
   type SdkConfig,
+  threads,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -46,11 +46,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   });
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<void> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(result.error.reason);
 }

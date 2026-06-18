@@ -201,13 +201,7 @@ export function legacyEpic01ThreadFile(filePath: string, threadId: string): void
       JSON.stringify({ messageId: "m3" }),
       recordedAt,
     );
-    insertItem.run(
-      "w-t1-turn_derivation",
-      "turns",
-      "turn_derivation",
-      JSON.stringify({ turnId: "t1" }),
-      recordedAt,
-    );
+    insertItem.run("w-t1-turn_derivation", "turns", "turn_derivation", JSON.stringify({ turnId: "t1" }), recordedAt);
 
     db.exec("PRAGMA user_version = 4;");
     db.exec("COMMIT;");
@@ -241,9 +235,7 @@ export function legacyEpic02ThreadFile(filePath: string, threadId: string): void
 export function schemaVersionOf(filePath: string): number {
   const db = new DatabaseSync(filePath);
   try {
-    const row = db.prepare("PRAGMA user_version").get() as
-      | { user_version: number | bigint }
-      | undefined;
+    const row = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
     return Number(row?.user_version ?? 0);
   } finally {
     db.close();

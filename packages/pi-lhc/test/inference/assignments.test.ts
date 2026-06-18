@@ -5,12 +5,12 @@
 // TC-5.6: Incomplete/unknown assignment fails loud at init (missing kind, unknown prompt, incomplete, placeholder).
 
 import { describe, expect, it } from "vitest";
+import { AssignmentValidationError, loadAssignments } from "../../src/inference/assignments.js";
 import {
   ASSIGNMENT_KINDS,
+  DEFAULT_PI_MODEL,
   DEFAULT_ASSIGNMENT_PROMPTS as DEFAULT_PROMPT_NAMES,
 } from "../../src/inference/model-call.js";
-import { loadAssignments, AssignmentValidationError } from "../../src/inference/assignments.js";
-import { DEFAULT_PI_MODEL } from "../../src/inference/model-call.js";
 
 describe("Story 6: Startup Validation and Assignment Config", () => {
   describe("TC-5.4: Inference-backed kinds load with shipped defaults", () => {
@@ -99,9 +99,21 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
     it("applies multiple overrides in a single config", () => {
       const config = {
-        smoothed_prompt: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        smooth_turn_compression: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
-        chunk_summary_brief: { provider: "google", model: "gemini-pro", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
+        smoothed_prompt: {
+          provider: "anthropic",
+          model: "claude-3-opus",
+          prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
+        },
+        smooth_turn_compression: {
+          provider: "openai",
+          model: "gpt-4o",
+          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+        },
+        chunk_summary_brief: {
+          provider: "google",
+          model: "gemini-pro",
+          prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief,
+        },
       };
 
       const assignments = loadAssignments(config);

@@ -3,21 +3,16 @@
 // survival, no-lock-on-rejection, system_error rollback parity). The CLI
 // in-process stdin legs retired with the CLI surface (Epic 05 Story 1).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  intakeStream,
-  threads,
-  type EventRecord,
-  type MessageEventInput,
-} from "../src/index.js";
+import { type EventRecord, intakeStream, type MessageEventInput, threads } from "../src/index.js";
 import {
   conversationTurn,
   eventBatch,
   openRaw,
   setIntakeClock,
   setIntakeWalkHook,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -52,11 +47,7 @@ describe("Flow 2 (SDK): event recording", () => {
     const first = await intakeStream.messageEvents({ filePath }, batchOne);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    expect(first.value.events.map((e) => e.outcome)).toEqual([
-      "recorded",
-      "recorded",
-      "recorded",
-    ]);
+    expect(first.value.events.map((e) => e.outcome)).toEqual(["recorded", "recorded", "recorded"]);
     expect(first.value.threadPosition.lastEventOrder).toBe(3);
 
     const second = await intakeStream.messageEvents({ filePath }, batchTwo);
@@ -74,9 +65,7 @@ describe("Flow 2 (SDK): event recording", () => {
       "runtime_note",
       "turn_end",
     ]);
-    expect(events.map((e) => e.idempotencyKey)).toEqual(
-      [...batchOne, ...batchTwo].map((e) => e.idempotencyKey),
-    );
+    expect(events.map((e) => e.idempotencyKey)).toEqual([...batchOne, ...batchTwo].map((e) => e.idempotencyKey));
   });
 
   it("TC-2.8: an empty batch is a caller error and records nothing", async () => {
@@ -151,10 +140,7 @@ describe("Flow 2 (SDK): event recording", () => {
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.close();
     });
-    const result = await intakeStream.messageEvents(
-      { filePath },
-      eventBatch(["tool_call", "tool_result", "turn_end"]),
-    );
+    const result = await intakeStream.messageEvents({ filePath }, eventBatch(["tool_call", "tool_result", "turn_end"]));
     setIntakeWalkHook(null);
     expect(result.ok).toBe(false);
     if (result.ok) return;

@@ -1,15 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  activate,
-  createConnector,
-  disposeInstance,
-  EPIC_1_HOOKS,
-  initInstance,
-} from "../../src/index.js";
+import { activate, createConnector, disposeInstance, EPIC_1_HOOKS, initInstance } from "../../src/index.js";
 import { createSessionState } from "../../src/lifecycle/state.js";
 import type { ExtensionAPI, ExtensionContext, PiHookName } from "../../src/pi/types.js";
 import { makeAgentEnd, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {

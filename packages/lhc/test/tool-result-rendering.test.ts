@@ -1,22 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  countLiveItems,
-  initLhc,
-  threads,
   type BatchResult,
-  type InferenceCallbacks,
+  countLiveItems,
   type DrainReport,
+  type InferenceCallbacks,
+  initLhc,
   type Lhc,
   type MessageEventInput,
+  threads,
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
+  type TempStore,
   tempStore,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -45,11 +45,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
   });
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<BatchResult> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`batch failed: ${result.error.reason}`);
   return result.value;
@@ -62,9 +58,7 @@ async function drain(sdk: Lhc, filePath: string): Promise<DrainReport> {
 }
 
 function formOf(filePath: string, subjectId: string, derivationType: string) {
-  return readDerivedForms(filePath).find(
-    (f) => f.subjectId === subjectId && f.derivationType === derivationType,
-  );
+  return readDerivedForms(filePath).find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
 }
 
 function liveCount(filePath: string): number {
@@ -106,9 +100,7 @@ describe("Story 2: tool-result rendering", () => {
     const listed = await sdk.messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(
-      content,
-    );
+    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(content);
   });
 
   it("in-threshold tool-result summaries run through queued inference with tier target and guidance", async () => {
@@ -241,8 +233,6 @@ describe("Story 2: tool-result rendering", () => {
     const listed = await sdk.messages.listMessages({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(
-      "short failure target",
-    );
+    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe("short failure target");
   });
 });

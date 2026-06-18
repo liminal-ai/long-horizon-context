@@ -12,11 +12,7 @@ export interface TurnState {
   openTurnId: string | null;
 }
 
-export type TurnEffect =
-  | { kind: "none" }
-  | { kind: "open" }
-  | { kind: "close" }
-  | { kind: "close_then_open" };
+export type TurnEffect = { kind: "none" } | { kind: "open" } | { kind: "close" } | { kind: "close_then_open" };
 
 export function transition(state: TurnState, eventKind: EventKind): TurnEffect {
   switch (eventKind) {

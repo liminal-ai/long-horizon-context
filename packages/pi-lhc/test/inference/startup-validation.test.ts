@@ -4,21 +4,20 @@
 // TC-5.2: Unreachable lane reported with kind+pair+fix; appears headless.
 // TC-5.3: Validation failure leaves capture running; affected derivations fail classified + queryable.
 
+import type { ModelAssignment, SdkConfig } from "lhc";
 import { describe, expect, it, vi } from "vitest";
-import { type SdkConfig } from "lhc";
-import type { ModelAssignment } from "lhc";
 import {
   ASSIGNMENT_KINDS,
+  type AssignmentKind,
+  DEFAULT_PI_MODEL,
   DEFAULT_ASSIGNMENT_PROMPTS as DEFAULT_PROMPT_NAMES,
   defaultAssignments,
-  type AssignmentKind,
 } from "../../src/inference/model-call.js";
-import { validateReachable, report } from "../../src/inference/startup-validation.js";
-import { DEFAULT_PI_MODEL } from "../../src/inference/model-call.js";
-import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
+import { report, validateReachable } from "../../src/inference/startup-validation.js";
 import type { SessionState } from "../../src/lifecycle/state.js";
-import { tempStore } from "../fixtures/thread.js";
+import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "../fixtures/model-call.js";
+import { tempStore } from "../fixtures/thread.js";
 
 /** Create a minimal ExtensionContext for testing. */
 function createMockContext(
@@ -26,18 +25,17 @@ function createMockContext(
   findResult?: ModelHandle | undefined,
   hasAuthResult: boolean = true,
 ): ExtensionContext {
-  const models = availableModels.length > 0
-    ? availableModels
-    : [{ provider: DEFAULT_PI_MODEL.provider, id: DEFAULT_PI_MODEL.id }];
+  const models =
+    availableModels.length > 0 ? availableModels : [{ provider: DEFAULT_PI_MODEL.provider, id: DEFAULT_PI_MODEL.id }];
 
   return {
     cwd: "/test",
     hasUI: false,
     modelRegistry: {
-      find: findResult !== undefined
-        ? (() => findResult)
-        : ((provider: string, model: string) =>
-            models.find((m) => m.provider === provider && m.id === model)),
+      find:
+        findResult !== undefined
+          ? () => findResult
+          : (provider: string, model: string) => models.find((m) => m.provider === provider && m.id === model),
       hasConfiguredAuth: () => hasAuthResult,
       getAvailable: () => models,
     },
@@ -47,7 +45,9 @@ function createMockContext(
 }
 
 /** Create minimal assignments for testing. */
-function createAssignments(overrides: Partial<Record<AssignmentKind, ModelAssignment>> = {}): Record<AssignmentKind, ModelAssignment> {
+function createAssignments(
+  overrides: Partial<Record<AssignmentKind, ModelAssignment>> = {},
+): Record<AssignmentKind, ModelAssignment> {
   const base = defaultAssignments();
   return { ...base, ...overrides };
 }
@@ -63,7 +63,11 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const ctx = createMockContext(models, models[0], true);
       const assignments = createAssignments({
         smoothed_prompt: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        smooth_turn_compression: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
+        smooth_turn_compression: {
+          provider: "anthropic",
+          model: "claude-3-opus",
+          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+        },
       });
 
       const report = validateReachable(assignments, ctx);
@@ -91,9 +95,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
     it("shipped defaults validate through a real PI modelRegistry lane", () => {
       const defaultHandle: ModelHandle = { provider: DEFAULT_PI_MODEL.provider, id: DEFAULT_PI_MODEL.id };
       const findMock = vi.fn((provider: string, model: string) =>
-        provider === DEFAULT_PI_MODEL.provider && model === DEFAULT_PI_MODEL.id
-          ? defaultHandle
-          : undefined,
+        provider === DEFAULT_PI_MODEL.provider && model === DEFAULT_PI_MODEL.id ? defaultHandle : undefined,
       );
       const ctx = createMockContext([defaultHandle], undefined, true);
       ctx.modelRegistry.find = findMock;
@@ -102,10 +104,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       expect(validationReport.unreachable).toHaveLength(0);
       for (const kind of ASSIGNMENT_KINDS) {
-        expect(findMock).toHaveBeenCalledWith(
-          createAssignments()[kind].provider,
-          createAssignments()[kind].model,
-        );
+        expect(findMock).toHaveBeenCalledWith(createAssignments()[kind].provider, createAssignments()[kind].model);
       }
     });
 
@@ -127,7 +126,11 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
     it("reports unknown model with kind, provider/model, and fix", () => {
       const ctx = createMockContext(); // No models available
       const assignments = createAssignments({
-        smoothed_prompt: { provider: "unknown-provider", model: "unknown-model", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
+        smoothed_prompt: {
+          provider: "unknown-provider",
+          model: "unknown-model",
+          prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
+        },
       });
 
       const report = validateReachable(assignments, ctx);
@@ -145,7 +148,11 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const ctx = createMockContext(models, models[0], false); // Model exists but no auth
 
       const assignments = createAssignments({
-        smooth_turn_compression: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
+        smooth_turn_compression: {
+          provider: "openai",
+          model: "gpt-4o",
+          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+        },
       });
 
       const report = validateReachable(assignments, ctx);
@@ -165,10 +172,18 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const ctxWithoutModel = createMockContext(models, undefined); // No model at all
 
       const assignmentsWithModel = createAssignments({
-        smoothed_prompt: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
+        smoothed_prompt: {
+          provider: "anthropic",
+          model: "claude-3-opus",
+          prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
+        },
       });
       const assignmentsWithoutModel = createAssignments({
-        smooth_turn_compression: { provider: "unknown", model: "unknown", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
+        smooth_turn_compression: {
+          provider: "unknown",
+          model: "unknown",
+          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+        },
       });
 
       const reportWithModel = validateReachable(assignmentsWithModel, ctxWithAuth);
@@ -256,7 +271,11 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       const assignments = createAssignments({
         smoothed_prompt: { provider: "unknown1", model: "model1", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        smooth_turn_compression: { provider: "unknown2", model: "model2", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
+        smooth_turn_compression: {
+          provider: "unknown2",
+          model: "model2",
+          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+        },
       });
 
       const validationReport = validateReachable(assignments, ctx);
@@ -322,14 +341,26 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         // Create assignments with one reachable and one unreachable lane
         const assignments = createAssignments({
           smoothed_prompt: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-          smooth_turn_compression: { provider: "unknown", model: "unknown", prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression },
-          tool_result_summary: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.tool_result_summary },
-          chunk_summary_brief: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief },
+          smooth_turn_compression: {
+            provider: "unknown",
+            model: "unknown",
+            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          },
+          tool_result_summary: {
+            provider: "openai",
+            model: "gpt-4o",
+            prompt: DEFAULT_PROMPT_NAMES.tool_result_summary,
+          },
+          chunk_summary_brief: {
+            provider: "openai",
+            model: "gpt-4o",
+            prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief,
+          },
         });
 
         // Build SDK config with these assignments
         const { createConnector: createConn } = await import("../../src/index.js");
-        const { makeUserMessage, makeAssistantMessage, makeAgentEnd } = await import("../fixtures/synthetic.js");
+        const { makeUserMessage, makeAssistantMessage } = await import("../fixtures/synthetic.js");
 
         const sdkConfig: SdkConfig = {
           inference: {
@@ -360,7 +391,9 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         // Verify validation reported the unreachable lane (smooth_turn_compression)
         expect(state.health.startupValidation).toBeDefined();
         expect(state.health.startupValidation?.unreachable.length).toBeGreaterThan(0);
-        const smoothEntry = state.health.startupValidation?.unreachable.find((e) => e.kind === "smooth_turn_compression");
+        const smoothEntry = state.health.startupValidation?.unreachable.find(
+          (e) => e.kind === "smooth_turn_compression",
+        );
         expect(smoothEntry?.reason).toBe("unknown_model");
 
         // Capture continues despite validation failure
@@ -386,8 +419,8 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         if (!health.ok) return;
 
         // Verify that smooth_turn_compression derivations failed classified (unreachable lane)
-        const compressionFailed = health.value.owners.some((o) =>
-          o.kind === "smooth_turn_compression" && o.counts.failed > 0
+        const compressionFailed = health.value.owners.some(
+          (o) => o.kind === "smooth_turn_compression" && o.counts.failed > 0,
         );
         expect(compressionFailed).toBe(true);
 

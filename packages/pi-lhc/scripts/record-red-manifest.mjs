@@ -15,9 +15,7 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const manifest = existsSync(manifestPath)
-  ? JSON.parse(readFileSync(manifestPath, "utf8"))
-  : { files: {} };
+const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { files: {} };
 manifest.files ??= {};
 
 for (const file of files) {

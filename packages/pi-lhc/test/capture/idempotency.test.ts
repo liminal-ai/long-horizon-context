@@ -4,8 +4,9 @@
 // must add nothing the second time. The key goldens pin construction precedence:
 // PI entry id → provider response / tool-call id → content fingerprint, with
 // blockIndex and kind disambiguating one message's fan-out.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import { createDeterministicProvider, intakeStream, type MessageEventInput } from "lhc";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { eventKey } from "../../src/capture/idempotency.js";
 import { mapMessage } from "../../src/capture/map-message.js";
@@ -14,7 +15,7 @@ import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
 import type { RecordedPiHookEvent } from "../../src/verify/replay.js";
 import { loadToolHeavyCorpus } from "../fixtures/corpus.js";
-import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
+import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -55,15 +56,42 @@ describe("Story 2: idempotency key construction (deterministic goldens)", () => 
   });
 
   it("falls to content plus a stable discriminator as last resort", () => {
-    const a = eventKey({ piSessionId: "s", fallbackId: "entry-a", blockIndex: 0, kind: "user_prompt", role: "user", content: "hello" });
-    const aAgain = eventKey({ piSessionId: "s", fallbackId: "entry-a", blockIndex: 0, kind: "user_prompt", role: "user", content: "hello" });
-    const b = eventKey({ piSessionId: "s", fallbackId: "entry-b", blockIndex: 0, kind: "user_prompt", role: "user", content: "hello" });
+    const a = eventKey({
+      piSessionId: "s",
+      fallbackId: "entry-a",
+      blockIndex: 0,
+      kind: "user_prompt",
+      role: "user",
+      content: "hello",
+    });
+    const aAgain = eventKey({
+      piSessionId: "s",
+      fallbackId: "entry-a",
+      blockIndex: 0,
+      kind: "user_prompt",
+      role: "user",
+      content: "hello",
+    });
+    const b = eventKey({
+      piSessionId: "s",
+      fallbackId: "entry-b",
+      blockIndex: 0,
+      kind: "user_prompt",
+      role: "user",
+      content: "hello",
+    });
     expect(aAgain).toBe(a);
     expect(b).not.toBe(a);
   });
 
   it("honors precedence: a present entry id wins over a present tool-call id", () => {
-    const withBoth = eventKey({ piSessionId: "s", entryId: "e9", toolCallId: "call_z", blockIndex: 0, kind: "tool_call" });
+    const withBoth = eventKey({
+      piSessionId: "s",
+      entryId: "e9",
+      toolCallId: "call_z",
+      blockIndex: 0,
+      kind: "tool_call",
+    });
     const entryOnly = eventKey({ piSessionId: "s", entryId: "e9", blockIndex: 0, kind: "tool_call" });
     expect(withBoth).toBe(entryOnly);
   });

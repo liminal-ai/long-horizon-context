@@ -5,7 +5,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { threads, type ThreadRef } from "lhc";
+import { type ThreadRef, threads } from "lhc";
 
 export interface TempStore {
   dir: string;
@@ -36,10 +36,7 @@ export interface TempThread {
 
 /** Create a real thread file + registry row and return its ref/ids. Throws on
  *  failure so a setup error never masquerades as a test assertion. */
-export async function makeTempThread(
-  store: TempStore,
-  opts: { title?: string } = {},
-): Promise<TempThread> {
+export async function makeTempThread(store: TempStore, opts: { title?: string } = {}): Promise<TempThread> {
   const filePath = store.threadPath();
   const input: { filePath: string; registryPath: string; title?: string } = {
     filePath,

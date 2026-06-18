@@ -10,20 +10,14 @@ export function fakeModelCallText(text: string): ModelCall {
 }
 
 /** Always resolves to a classified transport failure. */
-export function fakeModelCallFailure(
-  kind: ModelCallFailureKind,
-  message = `injected ${kind}`,
-): ModelCall {
+export function fakeModelCallFailure(kind: ModelCallFailureKind, message = `injected ${kind}`): ModelCall {
   return () => Promise.resolve<ModelCallResult>({ ok: false, kind, message });
 }
 
 /** Routes each call by its `provider/model` key to a per-lane fake — the
  *  multi-lane substrate for AC-4.2. An unrouted key resolves to an
  *  `invalid_request` failure (never a silent success). */
-export function fakeModelCallRouter(
-  routes: Record<string, ModelCall>,
-  fallback?: ModelCall,
-): ModelCall {
+export function fakeModelCallRouter(routes: Record<string, ModelCall>, fallback?: ModelCall): ModelCall {
   return (input) => {
     const key = `${input.provider}/${input.model}`;
     const route = routes[key] ?? fallback;

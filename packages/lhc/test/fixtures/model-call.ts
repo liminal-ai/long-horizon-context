@@ -4,13 +4,14 @@
 // ends (tech design §Testing Strategy). All builders return
 // contract-conformant shapes (AC-1.2); seam-conformance.ts asserts that of
 // recordingCall in its own test so fixture drift is caught by the suite.
-import { DEFAULT_PROMPT_NAMES } from "../../src/shared-tech/prompts/index.js";
+
 import type {
   ModelAssignment,
   ModelCall,
   ModelCallInput,
   ModelCallResult,
 } from "../../src/shared-tech/inference-types.js";
+import { DEFAULT_PROMPT_NAMES } from "../../src/shared-tech/prompts/index.js";
 
 // The derivation-type vocabulary for fixtures. AC-0.3 removed the typed
 // enumeration (DERIVATION_TYPES / DerivationType) from src — derivation types
@@ -87,9 +88,7 @@ export function recordingCall(responses: Record<DerivationType, string>): {
   const known = new Set<string>(INFERENCE_DERIVATION_TYPES);
   const call: ModelCall = (input) => {
     log.push(structuredClone(input));
-    const kind = input.model.startsWith(FAKE_MODEL_PREFIX)
-      ? input.model.slice(FAKE_MODEL_PREFIX.length)
-      : input.model;
+    const kind = input.model.startsWith(FAKE_MODEL_PREFIX) ? input.model.slice(FAKE_MODEL_PREFIX.length) : input.model;
     if (!known.has(kind)) {
       throw new Error(`recordingCall: no canned response for model "${input.model}"`);
     }
@@ -106,9 +105,7 @@ export function scriptedCall(script: ModelCallResult[]): ModelCall {
     const entry = script[next];
     next += 1;
     if (entry === undefined) {
-      throw new Error(
-        `scriptedCall: script exhausted after ${String(script.length)} calls (model "${input.model}")`,
-      );
+      throw new Error(`scriptedCall: script exhausted after ${String(script.length)} calls (model "${input.model}")`);
     }
     return Promise.resolve(entry);
   };

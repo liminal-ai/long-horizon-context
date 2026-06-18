@@ -7,20 +7,14 @@
 // yet, so events are written directly through the instance). Real temp
 // registry/thread throughout (the store is never mocked).
 import { existsSync } from "node:fs";
+import { createDeterministicProvider, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicProvider,
-  inspect,
-  threads,
-  type SdkConfig,
-  type ThreadRef,
-} from "lhc";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
 import { defaultThreadTitle, resolveThread } from "../../src/lifecycle/thread-resolution.js";
 import type { ExtensionContext } from "../../src/pi/types.js";
 import { eventBatch, makeSessionStart } from "../fixtures/synthetic.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {

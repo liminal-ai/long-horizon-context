@@ -1,188 +1,62 @@
 import { existsSync } from "node:fs";
-export * as threads from "./threads/index.js";
+
+export * as inspect from "./inspect/index.js";
 export * as intakeStream from "./intake-stream/index.js";
 export * as messages from "./messages/index.js";
-export * as turns from "./turns/index.js";
-export * as threadView from "./thread-view/index.js";
-export * as inspect from "./inspect/index.js";
 export * as logging from "./shared-tech/logging/index.js";
+export * as threadView from "./thread-view/index.js";
+export * as threads from "./threads/index.js";
+export * as turns from "./turns/index.js";
 
 import * as inspectDomain from "./inspect/index.js";
 import * as intakeStreamDomain from "./intake-stream/index.js";
-import * as threadViewDomain from "./thread-view/index.js";
-import { resolveViewConfig } from "./thread-view/index.js";
 import * as messagesDomain from "./messages/index.js";
-import * as threadsDomain from "./threads/index.js";
-import * as turnsDomain from "./turns/index.js";
-import * as loggingDomain from "./shared-tech/logging/index.js";
-import {
-  createScheduler,
-  peekThreadId,
-  runDrain,
-  type DrainDeps,
-  type DrainReport,
-  type Scheduler,
-} from "./shared-tech/index.js";
-import {
-  runWithInstanceSeam,
-  setSchedulerPoke as installSchedulerPoke,
-  setThreadTouch,
-  type InstanceSeam,
-} from "./shared-tech/index.js";
-import { createInferenceCallbacks } from "./shared-tech/index.js";
-import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
-import { resolveGuards, type InferenceConfig, type ModelAssignment } from "./shared-tech/index.js";
-import {
-  INFERENCE_CALLBACK_OPERATIONS,
-  type InferenceCallbacks,
-  type ResolvedSdkConfig,
-  type SdkConfig,
-  type WorkHandler,
-} from "./shared-tech/index.js";
-import type { ErrorResult, OpResult } from "./shared-tech/index.js";
-import { storageFailure } from "./shared-tech/index.js";
 import type {
   CompactReceipt,
-  PullResult,
-  StoredView,
-  SweepReceipt,
-  ViewCompactParams,
-  ViewProfile,
-  ViewStatus,
-} from "./shared-tech/index.js";
-import type { WorkKind } from "./shared-tech/work-queue/index.js";
-
-export {
-  estimateTokens,
-  TOKEN_ESTIMATOR_ID,
-} from "./shared-tech/token-counting/index.js";
-
-export {
-  WORK_KIND_REGISTRY,
-  type WorkItemRecord,
-  type WorkKind,
-  type WorkOwner,
-  type WorkSourceRef,
-} from "./shared-tech/work-queue/index.js";
-
-export type {
-  ErrorClass,
-  ErrorCode,
   ErrorResult,
   OpResult,
-} from "./shared-tech/index.js";
-export {
-  runInTransaction,
-  setSchedulerPoke,
-  setThreadTouch,
-  type OperationContext,
-} from "./shared-tech/index.js";
-
-export {
-  createDeterministicInferenceCallbacks,
-  createDeterministicProvider,
-  deterministicOutcomesSuffix,
-  deterministicReceiptsSuffix,
-  deterministicText,
-  type DeterministicOpName,
-} from "./shared-tech/index.js";
-export type {
-  CompletionTx,
-  DependencyGap,
-  InferenceCallbacks,
-  Derivation,
-  DerivationMetadata,
-  DerivationState,
-  DerivationReportEntry,
-  HandlerDerivationWrite,
-  HandlerOutcome,
-  HandlerRunContext,
-  InferenceResult,
-  ProviderResult,
-  RenderingPart,
-  ResolvedSdkConfig,
-  SdkConfig,
-  SubjectKind,
-  ToolOutcome,
-  ToolRunReceipt,
-  WorkHandler,
-} from "./shared-tech/index.js";
-export type { DrainReport, Scheduler, SchedulerMode } from "./shared-tech/index.js";
-
-// Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
-// ModelCall boundary and the per-kind assignment config — type-only; the
-// adapter and registry are construction internals behind initLhc.
-export type {
-  InferenceConfig,
-  ModelAssignment,
-  ModelCall,
-  ModelCallFailureKind,
-  ModelCallInput,
-  ModelCallResult,
-} from "./shared-tech/index.js";
-export { type ProviderProvenance } from "./shared-tech/index.js";
-
-// The config-selectable prompt-name catalog (E05-NB-2): the full set of names
-// a per-kind assignment may select, and the default name per kind. Exposed so
-// operators discover valid prompt names from the SDK surface without reading
-// source. The registry itself stays a construction internal behind initLhc.
-export {
-  DEFAULT_PROMPT_NAMES,
-  PROMPT_NAMES,
-} from "./shared-tech/prompts/index.js";
-
-// Epic 03 view vocabulary (shared-tech/view.ts): config shapes live on SdkConfig
-// from Story 0; the operation shapes land with Stories 1–5.
-export {
-  BUILT_IN_PROFILES,
-  DEFAULT_COMPACT_THRESHOLD,
-  DEFAULT_VISIBILITY,
-} from "./thread-view/index.js";
-export type {
-  Band,
-  CompactReceipt,
   PullResult,
-  ResolvedViewConfig,
-  SdkViewConfig,
   StoredView,
   SweepReceipt,
   ViewCompactParams,
-  ViewMessage,
-  ViewMeta,
-  ViewProfile,
-  ViewProfileOverride,
   ViewStatus,
-  VisibilityBudgets,
 } from "./shared-tech/index.js";
-export {
-  countLiveItems,
-  enqueue,
-  queueDetail,
-  supersedeQueued,
-  type ClaimedWorkItem,
-  type EnqueueDerivationTarget,
-  type EnqueueInput,
-  type QueueDetailRow,
-} from "./shared-tech/work-queue/index.js";
+import {
+  createInferenceCallbacks,
+  createScheduler,
+  type DrainDeps,
+  type DrainReport,
+  INFERENCE_CALLBACK_OPERATIONS,
+  type InferenceCallbacks,
+  type InferenceConfig,
+  type InstanceSeam,
+  setSchedulerPoke as installSchedulerPoke,
+  type ModelAssignment,
+  peekThreadId,
+  type ResolvedSdkConfig,
+  resolveGuards,
+  runDrain,
+  runWithInstanceSeam,
+  type Scheduler,
+  type SdkConfig,
+  setThreadTouch,
+  storageFailure,
+  type WorkHandler,
+} from "./shared-tech/index.js";
+import * as loggingDomain from "./shared-tech/logging/index.js";
+import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
+import type { WorkKind } from "./shared-tech/work-queue/index.js";
+import * as threadViewDomain from "./thread-view/index.js";
+import { resolveViewConfig } from "./thread-view/index.js";
+import * as threadsDomain from "./threads/index.js";
+import * as turnsDomain from "./turns/index.js";
 
-export {
-  queryLog,
-  writeLog,
-  type LogEntry,
-  type LogQuery,
-  type LogLevel,
-  type StoredLogEntry,
-} from "./shared-tech/logging/index.js";
-
-// Epic 04 inspect vocabulary (shared-tech/inspect.ts): the report shapes the
-// inspect surface serves.
 export type {
-  HealthReport,
-  InspectOverview,
-  ViewContentsReport,
-} from "./shared-tech/index.js";
-
-export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
+  BatchResult,
+  EventKind,
+  EventRecord,
+  MessageEventInput,
+} from "./intake-stream/index.js";
 export type {
   Block,
   BlockType,
@@ -191,13 +65,119 @@ export type {
   MessageRecord,
   MutationResult,
 } from "./messages/index.js";
-export type { ChunkRecord, TurnRecord } from "./turns/index.js";
+// Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
+// ModelCall boundary and the per-kind assignment config — type-only; the
+// adapter and registry are construction internals behind initLhc.
+// Epic 04 inspect vocabulary (shared-tech/inspect.ts): the report shapes the
+// inspect surface serves.
 export type {
-  BatchResult,
-  EventKind,
-  EventRecord,
-  MessageEventInput,
-} from "./intake-stream/index.js";
+  Band,
+  CompactReceipt,
+  CompletionTx,
+  DependencyGap,
+  Derivation,
+  DerivationMetadata,
+  DerivationReportEntry,
+  DerivationState,
+  DrainReport,
+  ErrorClass,
+  ErrorCode,
+  ErrorResult,
+  HandlerDerivationWrite,
+  HandlerOutcome,
+  HandlerRunContext,
+  HealthReport,
+  InferenceCallbacks,
+  InferenceConfig,
+  InferenceResult,
+  InspectOverview,
+  ModelAssignment,
+  ModelCall,
+  ModelCallFailureKind,
+  ModelCallInput,
+  ModelCallResult,
+  OpResult,
+  ProviderResult,
+  PullResult,
+  RenderingPart,
+  ResolvedSdkConfig,
+  ResolvedViewConfig,
+  Scheduler,
+  SchedulerMode,
+  SdkConfig,
+  SdkViewConfig,
+  StoredView,
+  SubjectKind,
+  SweepReceipt,
+  ToolOutcome,
+  ToolRunReceipt,
+  ViewCompactParams,
+  ViewContentsReport,
+  ViewMessage,
+  ViewMeta,
+  ViewProfile,
+  ViewProfileOverride,
+  ViewStatus,
+  VisibilityBudgets,
+  WorkHandler,
+} from "./shared-tech/index.js";
+export {
+  createDeterministicInferenceCallbacks,
+  createDeterministicProvider,
+  type DeterministicOpName,
+  deterministicOutcomesSuffix,
+  deterministicReceiptsSuffix,
+  deterministicText,
+  type OperationContext,
+  type ProviderProvenance,
+  runInTransaction,
+  setSchedulerPoke,
+  setThreadTouch,
+} from "./shared-tech/index.js";
+export {
+  type LogEntry,
+  type LogLevel,
+  type LogQuery,
+  queryLog,
+  type StoredLogEntry,
+  writeLog,
+} from "./shared-tech/logging/index.js";
+// The config-selectable prompt-name catalog (E05-NB-2): the full set of names
+// a per-kind assignment may select, and the default name per kind. Exposed so
+// operators discover valid prompt names from the SDK surface without reading
+// source. The registry itself stays a construction internal behind initLhc.
+export {
+  DEFAULT_PROMPT_NAMES,
+  PROMPT_NAMES,
+} from "./shared-tech/prompts/index.js";
+export {
+  estimateTokens,
+  TOKEN_ESTIMATOR_ID,
+} from "./shared-tech/token-counting/index.js";
+export {
+  type ClaimedWorkItem,
+  countLiveItems,
+  type EnqueueDerivationTarget,
+  type EnqueueInput,
+  enqueue,
+  type QueueDetailRow,
+  queueDetail,
+  supersedeQueued,
+  WORK_KIND_REGISTRY,
+  type WorkItemRecord,
+  type WorkKind,
+  type WorkOwner,
+  type WorkSourceRef,
+} from "./shared-tech/work-queue/index.js";
+// Epic 03 view vocabulary (shared-tech/view.ts): config shapes live on SdkConfig
+// from Story 0; the operation shapes land with Stories 1–5.
+export {
+  BUILT_IN_PROFILES,
+  DEFAULT_COMPACT_THRESHOLD,
+  DEFAULT_VISIBILITY,
+} from "./thread-view/index.js";
+export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
+export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 
 // ── LHC initialization (DD-6/DD-7) ────────────────────────────────
 
@@ -206,9 +186,7 @@ export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
 // Merge per-domain handler tables into the one join between the queue's
 // opaque kinds and domain code. A kind claimed by two tables is a wiring bug
 // (each kind has exactly one owner) and throws at construction.
-export function assembleWorkHandlerMap(
-  tables: ReadonlyArray<WorkHandlerMap>,
-): WorkHandlerMap {
+export function assembleWorkHandlerMap(tables: ReadonlyArray<WorkHandlerMap>): WorkHandlerMap {
   const map: WorkHandlerMap = {};
   for (const table of tables) {
     for (const [kind, handler] of Object.entries(table)) {
@@ -234,10 +212,7 @@ function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
 
 // Dispatch-time lookup: an unregistered kind is reported explicitly — never
 // a throw, never a silent undefined (DD-6, AC-1.8's foundation).
-export function lookupWorkHandler(
-  map: WorkHandlerMap,
-  kind: string,
-): OpResult<WorkHandler> {
+export function lookupWorkHandler(map: WorkHandlerMap, kind: string): OpResult<WorkHandler> {
   const handler = map[kind as WorkKind];
   if (handler === undefined) return unknownWorkKind(kind);
   return { ok: true, value: handler };
@@ -246,10 +221,7 @@ export function lookupWorkHandler(
 // The work surface (CLI: lhc work …). Story 1 carries drain; report and
 // requeue land in Story 4.
 export interface WorkSurface {
-  drain(
-    ref: threadsDomain.ThreadRef,
-    opts?: { maxItems?: number },
-  ): Promise<OpResult<DrainReport>>;
+  drain(ref: threadsDomain.ThreadRef, opts?: { maxItems?: number }): Promise<OpResult<DrainReport>>;
 }
 
 // The thread-view surface as the SDK exposes it (Epic 03, tech design
@@ -273,14 +245,8 @@ export interface ThreadViewSurface {
 }
 
 export interface LoggingSurface {
-  write(
-    ref: threadsDomain.ThreadRef,
-    entry: loggingDomain.LogEntry,
-  ): Promise<OpResult<void>>;
-  query(
-    ref: threadsDomain.ThreadRef,
-    q: loggingDomain.LogQuery,
-  ): Promise<OpResult<loggingDomain.StoredLogEntry[]>>;
+  write(ref: threadsDomain.ThreadRef, entry: loggingDomain.LogEntry): Promise<OpResult<void>>;
+  query(ref: threadsDomain.ThreadRef, q: loggingDomain.LogQuery): Promise<OpResult<loggingDomain.StoredLogEntry[]>>;
 }
 
 export type IntakeStreamSurface = typeof intakeStreamDomain & {
@@ -392,7 +358,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 // before anything is assembled (AC-1.1, AC-1.3).
 function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbacks {
   if (typeof inference.call !== "function") {
-      throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.call must be a function`);
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.call must be a function`);
   }
   const provided = inference.assignments ?? {};
   if (provided === null || typeof provided !== "object") {
@@ -404,9 +370,7 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
   // Unknown keys are rejected (anti-shim: never silently ignore) — TC-0.3a.
   for (const key of Object.keys(provided)) {
     if (!inferenceKeys.has(key)) {
-      throw new TypeError(
-        `${INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type "${key}"`,
-      );
+      throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type "${key}"`);
     }
   }
 
@@ -421,9 +385,7 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
     for (const field of ["provider", "model", "prompt"] as const) {
       const value = assignment[field];
       if (typeof value !== "string" || value.trim() === "") {
-        throw new TypeError(
-          `${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.${field} must be a non-empty string`,
-        );
+        throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.${field} must be a non-empty string`);
       }
     }
     if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
@@ -510,8 +472,7 @@ export function initLhc(config: SdkConfig): Lhc {
       midTargetRatio: 0.04,
     },
     lease: config.lease ?? { durationMs: 120000 },
-    chunkPolicy:
-      config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
+    chunkPolicy: config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
     // Epic 03 (FC-0.2): built-ins merged with user profiles by name, band
     // sums and visibility budgets validated — throws naming the violation.
     view: resolveViewConfig(config.view),
@@ -526,27 +487,20 @@ export function initLhc(config: SdkConfig): Lhc {
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
   requirePositive(resolved.toolResult.largeTierTokens, "toolResult.largeTierTokens");
   if (resolved.toolResult.largeTierTokens < resolved.toolResult.smallTierTokens) {
-    throw new TypeError(
-      `${INIT_CONFIG_PREFIX}: toolResult.largeTierTokens must be >= smallTierTokens`,
-    );
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: toolResult.largeTierTokens must be >= smallTierTokens`);
   }
   requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");
   requirePositive(resolved.toolResult.midTargetRatio, "toolResult.midTargetRatio");
   requirePositive(resolved.lease.durationMs, "lease.durationMs");
   requirePositive(resolved.chunkPolicy.targetProjectedTokens, "chunkPolicy.targetProjectedTokens");
   if (resolved.chunkPolicy.maxProjectedTokens < resolved.chunkPolicy.targetProjectedTokens) {
-    throw new TypeError(
-      `${INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens`,
-    );
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens`);
   }
 
   // Handler maps merge from per-domain contributions at construction (DD-6).
   // The tables are empty until Stories 2–3 land the real handlers; the
   // assembly mechanics are production code from day one.
-  const workHandlers = assembleWorkHandlerMap([
-    messagesDomain.workHandlers,
-    turnsDomain.workHandlers,
-  ]);
+  const workHandlers = assembleWorkHandlerMap([messagesDomain.workHandlers, turnsDomain.workHandlers]);
 
   const drainDeps: DrainDeps = {
     lookupHandler: (kind) => lookupWorkHandler(workHandlers, kind),

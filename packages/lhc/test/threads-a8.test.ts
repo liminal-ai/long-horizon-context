@@ -7,7 +7,7 @@
 // over an unscoped list).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { threads } from "../src/index.js";
-import { openRaw, tempStore, type TempStore } from "./fixtures/index.js";
+import { openRaw, type TempStore, tempStore } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -162,9 +162,12 @@ describe("A-8: lazy upgrade of a pre-cwd registry (migrate-on-read)", () => {
       );`,
     );
     db.exec(`PRAGMA user_version = 1;`);
-    db.prepare(
-      "INSERT INTO threads (thread_id, file_path, title, created_at) VALUES (?, ?, ?, ?)",
-    ).run("th_legacy0000", "/tmp/legacy.sqlite", "legacy", "2026-01-01T00:00:00.000Z");
+    db.prepare("INSERT INTO threads (thread_id, file_path, title, created_at) VALUES (?, ?, ?, ?)").run(
+      "th_legacy0000",
+      "/tmp/legacy.sqlite",
+      "legacy",
+      "2026-01-01T00:00:00.000Z",
+    );
     db.close();
 
     // A read through the domain upgrades the schema and succeeds; the legacy
@@ -178,9 +181,9 @@ describe("A-8: lazy upgrade of a pre-cwd registry (migrate-on-read)", () => {
 
     // The registry now carries the cwd column at the current version.
     const after = openRaw(store.registryPath);
-    const columns = (
-      after.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>
-    ).map((c) => c.name);
+    const columns = (after.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
     const version = after.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
     after.close();
     expect(columns).toContain("cwd");

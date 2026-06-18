@@ -204,16 +204,11 @@ export const MIGRATION_V9_STATEMENTS: readonly string[] = [
 ];
 
 export function getSchemaVersion(db: DatabaseSync): number {
-  const row = db.prepare("PRAGMA user_version").get() as
-    | { user_version: number | bigint }
-    | undefined;
+  const row = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
   return Number(row?.user_version ?? 0);
 }
 
-export function runMigrations(
-  db: DatabaseSync,
-  migrations: readonly Migration[],
-): void {
+export function runMigrations(db: DatabaseSync, migrations: readonly Migration[]): void {
   let current = getSchemaVersion(db);
   const ordered = [...migrations].sort((a, b) => a.version - b.version);
   for (const migration of ordered) {

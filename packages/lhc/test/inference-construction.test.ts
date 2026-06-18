@@ -12,10 +12,10 @@ import {
   createInferenceCallbacksDouble,
   readDerivedForms,
   recordingCall,
+  type TempStore,
   tempStore,
   validAssignments,
   validEvent,
-  type TempStore,
 } from "./fixtures/index.js";
 
 const stores: TempStore[] = [];

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { openDatabase, runMigrations, type Migration } from "../../shared-tech/index.js";
+import { type Migration, openDatabase, runMigrations } from "../../shared-tech/index.js";
 
 export const DEFAULT_REGISTRY_PATH = join(homedir(), ".lhc", "registry.sqlite");
 
@@ -99,18 +99,19 @@ function toRegistryRow(raw: RawRow): RegistryRow {
 }
 
 export function insertThreadRow(db: DatabaseSync, row: RegistryRow): void {
-  db.prepare(
-    "INSERT INTO threads (thread_id, file_path, title, cwd, created_at) VALUES (?, ?, ?, ?, ?)",
-  ).run(row.threadId, row.filePath, row.title ?? null, row.cwd ?? null, row.createdAt);
+  db.prepare("INSERT INTO threads (thread_id, file_path, title, cwd, created_at) VALUES (?, ?, ?, ?, ?)").run(
+    row.threadId,
+    row.filePath,
+    row.title ?? null,
+    row.cwd ?? null,
+    row.createdAt,
+  );
 }
 
-export function selectThreadRow(
-  db: DatabaseSync,
-  threadId: string,
-): RegistryRow | undefined {
-  const raw = db
-    .prepare(`SELECT ${ROW_COLUMNS} FROM threads WHERE thread_id = ?`)
-    .get(threadId) as unknown as RawRow | undefined;
+export function selectThreadRow(db: DatabaseSync, threadId: string): RegistryRow | undefined {
+  const raw = db.prepare(`SELECT ${ROW_COLUMNS} FROM threads WHERE thread_id = ?`).get(threadId) as unknown as
+    | RawRow
+    | undefined;
   return raw === undefined ? undefined : toRegistryRow(raw);
 }
 
@@ -128,10 +129,7 @@ export function selectThreadRowsByPrefix(db: DatabaseSync, prefix: string): Regi
 
 // cwd, when given, filters at the registry (A-8): the picker must not scope by
 // filtering an unscoped list after the fact (anti-shim) — the scope is the query.
-export function selectAllThreadRows(
-  db: DatabaseSync,
-  opts: { cwd?: string } = {},
-): RegistryRow[] {
+export function selectAllThreadRows(db: DatabaseSync, opts: { cwd?: string } = {}): RegistryRow[] {
   const raws =
     opts.cwd === undefined
       ? (db.prepare(`SELECT ${ROW_COLUMNS} FROM threads ${ROW_ORDER}`).all() as unknown as RawRow[])

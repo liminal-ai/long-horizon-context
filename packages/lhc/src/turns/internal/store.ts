@@ -20,11 +20,7 @@ export function nextTurnOrder(db: DatabaseSync): number {
   return Number(row?.max_order ?? 0) + 1;
 }
 
-export function insertOpenTurn(
-  db: DatabaseSync,
-  turnOrder: number,
-  openedAtEventOrder: number,
-): string {
+export function insertOpenTurn(db: DatabaseSync, turnOrder: number, openedAtEventOrder: number): string {
   const turnId = `t${turnOrder}`;
   db.prepare(
     `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
@@ -34,9 +30,10 @@ export function insertOpenTurn(
 }
 
 export function closeTurn(db: DatabaseSync, turnId: string, closedAtEventOrder: number): void {
-  db.prepare(
-    "UPDATE turns SET status = 'closed', closed_at_event_order = ? WHERE turn_id = ? AND status = 'open'",
-  ).run(closedAtEventOrder, turnId);
+  db.prepare("UPDATE turns SET status = 'closed', closed_at_event_order = ? WHERE turn_id = ? AND status = 'open'").run(
+    closedAtEventOrder,
+    turnId,
+  );
 }
 
 // The turn delete's validation read (Flow 6): the live (deleted-filtered)
@@ -47,9 +44,9 @@ export function readMutableTurn(
   db: DatabaseSync,
   turnId: string,
 ): { turnId: string; status: "open" | "closed" } | undefined {
-  const row = db
-    .prepare(`SELECT status FROM turns WHERE turn_id = ? AND deleted_at IS NULL`)
-    .get(turnId) as unknown as { status: string } | undefined;
+  const row = db.prepare(`SELECT status FROM turns WHERE turn_id = ? AND deleted_at IS NULL`).get(turnId) as unknown as
+    | { status: string }
+    | undefined;
   if (row === undefined) return undefined;
   return { turnId, status: row.status as "open" | "closed" };
 }

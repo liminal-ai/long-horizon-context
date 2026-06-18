@@ -9,10 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const fixturePath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "pi-session-structure.jsonl",
-);
+const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "pi-session-structure.jsonl");
 
 interface ParsedSession {
   header: Record<string, unknown>;
@@ -43,9 +40,7 @@ function keySet(value: Record<string, unknown>): string {
 }
 
 function fail(where: string, expected: string, actual: unknown): never {
-  throw new Error(
-    `pi-session conformance violation at ${where}: expected ${expected}, got ${JSON.stringify(actual)}`,
-  );
+  throw new Error(`pi-session conformance violation at ${where}: expected ${expected}, got ${JSON.stringify(actual)}`);
 }
 
 // Validates a materialized file's structure against the real-PI fixture:

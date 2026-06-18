@@ -5,8 +5,9 @@
 // per-run `turnIndex` (TC-2.3). The accumulator goldens pin the state machine
 // directly, including the hard-kill tolerance (a dangling open turn, and an
 // agent_end with no open turn as a no-op).
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import type { MessageEventInput } from "lhc";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
 import {
   makeAgentEnd,
@@ -16,7 +17,7 @@ import {
   makeUserMessage,
   validEvent,
 } from "../fixtures/synthetic.js";
-import { tempStore, type TempStore } from "../fixtures/thread.js";
+import { type TempStore, tempStore } from "../fixtures/thread.js";
 import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;

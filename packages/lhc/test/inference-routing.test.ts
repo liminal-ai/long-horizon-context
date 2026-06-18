@@ -10,15 +10,15 @@ import {
   assertModelCallContract,
   assertRoutingThroughSdk,
   cannedResponses,
+  DERIVATION_TYPES,
   FAKE_MODEL_PREFIX,
   FAKE_PROVIDER_PREFIX,
-  DERIVATION_TYPES,
   INFERENCE_DERIVATION_TYPES,
   probeInput,
   recordingCall,
+  type TempStore,
   tempStore,
   validAssignments,
-  type TempStore,
 } from "./fixtures/index.js";
 
 const stores: TempStore[] = [];

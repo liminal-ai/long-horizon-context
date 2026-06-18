@@ -9,16 +9,11 @@
 // initLhc) re-exports at the bottom.
 import { existsSync } from "node:fs";
 import * as path from "node:path";
-import {
-  resolveInstanceViewConfig,
-  resolveInstancePoke,
-  runWithThreadTouchSuppressed,
-  type OperationContext,
-} from "../shared-tech/index.js";
-import type { DerivationReportEntry } from "../shared-tech/index.js";
-import { storageFailure, type ErrorResult, type OpResult } from "../shared-tech/index.js";
+import * as messagesDomain from "../messages/index.js";
 import type {
+  Band,
   CompactReceipt,
+  DerivationReportEntry,
   PullResult,
   ResolvedViewConfig,
   StoredView,
@@ -28,34 +23,31 @@ import type {
   ViewProfile,
   ViewStatus,
 } from "../shared-tech/index.js";
-import * as messagesDomain from "../messages/index.js";
-import * as turnsDomain from "../turns/index.js";
+import {
+  type ErrorResult,
+  type OperationContext,
+  type OpResult,
+  resolveInstancePoke,
+  resolveInstanceViewConfig,
+  runWithThreadTouchSuppressed,
+  storageFailure,
+} from "../shared-tech/index.js";
 import { writeLog } from "../shared-tech/logging/index.js";
-import {
-  openThreadDatabase,
-  resolveThreadRef,
-  type ThreadRef,
-} from "../threads/index.js";
-import {
-  executeBoundaryAdvance,
-  readBoundaryPosition,
-  visibilityZoneTokens,
-} from "./internal/boundary.js";
+import { estimateTokens } from "../shared-tech/token-counting/index.js";
+import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
+import * as turnsDomain from "../turns/index.js";
+import { executeBoundaryAdvance, readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
+import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
-import {
-  assembleBandText,
-  renderBandMessage,
-  renderTailMessage,
-  toolNamesByCallId,
-} from "./internal/render.js";
+import { assembleBandText, renderBandMessage, renderTailMessage, toolNamesByCallId } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
 import {
+  type ArrangementEntry,
   CanonicalCorruptionError,
   readSelectionInputs,
+  type SelectionInputs,
   selectArrangement,
-  type ArrangementEntry,
 } from "./internal/select.js";
-import { writePiSessionFile, type MaterializeInput } from "./internal/materialize.js";
 import {
   readReadyToolResultSummaries,
   readStoredView,
@@ -66,8 +58,6 @@ import {
   tailTokenSum,
 } from "./internal/snapshot.js";
 import { runSweep } from "./internal/sweep.js";
-import { estimateTokens } from "../shared-tech/token-counting/index.js";
-import type { Band } from "../shared-tech/index.js";
 
 // Config resolution for the operation in hand: the SDK instance's resolved
 // view config rides the per-instance seam (epic-fix-001 pattern, tech design
@@ -200,10 +190,7 @@ async function pullInner(ref: ThreadRef): Promise<OpResult<PullResult>> {
 // vocabulary reads (shared/derivation.ts): never-attempted or first-flight
 // pending, retrying (pending with attempts spent), failed, blocked. Ready
 // forms are healthy and not an operational situation.
-function bucketDerivation(
-  entries: readonly DerivationReportEntry[],
-  counts: ViewStatus["derivation"],
-): void {
+function bucketDerivation(entries: readonly DerivationReportEntry[], counts: ViewStatus["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
       case "pending":
@@ -415,7 +402,7 @@ export async function compact(
     if (compactStopped(opts.signal)) {
       return callerError("compact_stopped", "compact stopped before assembly");
     }
-    let inputs;
+    let inputs: SelectionInputs;
     try {
       inputs = readSelectionInputs(db);
     } catch (cause) {
@@ -472,8 +459,7 @@ export async function compact(
       .map((entry) => ({
         band: entry.band,
         subjectId: entry.subjectId,
-        derivationType:
-          entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
+        derivationType: entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
         reason: entry.reason ?? "not_ready",
       }));
     for (const warning of warnings) {
@@ -487,8 +473,7 @@ export async function compact(
       });
     }
 
-    const entriesByBand = (band: Band): ArrangementEntry[] =>
-      selection.entries.filter((entry) => entry.band === band);
+    const entriesByBand = (band: Band): ArrangementEntry[] => selection.entries.filter((entry) => entry.band === band);
     const bands = BAND_ORDER.flatMap((band) => {
       const entries = entriesByBand(band);
       if (entries.length === 0) return [];
@@ -560,11 +545,7 @@ export async function compact(
         bands: bandReport,
         tailTokens,
         // Actual assembled total vs the bound (target, not cap — AC-2.4).
-        totalTokens:
-          bandReport.brief.tokens +
-          bandReport.detailed.tokens +
-          bandReport.smooth.tokens +
-          tailTokens,
+        totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
         coveredFrom: selection.coveredFrom,
         compactPoint: selection.compactPoint,
         degraded: selection.entries
@@ -699,9 +680,7 @@ async function materializeInner(
   try {
     return { ok: true, value: writePiSessionFile(input, opts.path) };
   } catch (cause) {
-    return storageFailure(
-      `view materialize could not write ${opts.path}: ${detail(cause)}`,
-    );
+    return storageFailure(`view materialize could not write ${opts.path}: ${detail(cause)}`);
   }
 }
 

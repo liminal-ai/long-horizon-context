@@ -14,6 +14,8 @@
 // run account inline, edge ones stand alone) — a story-deviation decision.
 // Runs are never reordered to make accounts tidier; the outcome rides the
 // part, not the prose.
+
+import { cleanPrompt } from "../../messages/index.js";
 import type {
   DependencyGap,
   DerivationMetadata,
@@ -24,7 +26,6 @@ import type {
   ToolRunReceipt,
 } from "../../shared-tech/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
-import { cleanPrompt } from "../../messages/index.js";
 
 // The member message as the composer sees it: kind plus projected blocks,
 // verbatim from the record (already deleted-filtered by the caller's read).
@@ -112,10 +113,7 @@ function recordOutcomes(messages: readonly ComposeMessage[]): Map<string, boolea
   return byCallId;
 }
 
-function outcomeFromRecord(
-  resultByCallId: Map<string, boolean>,
-  callId: unknown,
-): ToolOutcome {
+function outcomeFromRecord(resultByCallId: Map<string, boolean>, callId: unknown): ToolOutcome {
   if (typeof callId !== "string") return "unknown";
   const isError = resultByCallId.get(callId);
   if (isError === undefined) return "unknown";
@@ -250,18 +248,13 @@ function tallyRun(members: readonly ComposeAtom[]): {
   toolNames: string[];
 } {
   const calls = members.filter((m) => m.part.kind === "tool_call");
-  const callIds = new Set(
-    calls.map((m) => m.toolCallId).filter((id): id is string => id !== undefined),
-  );
+  const callIds = new Set(calls.map((m) => m.toolCallId).filter((id): id is string => id !== undefined));
   const orphanResults = members.filter(
-    (m) =>
-      m.part.kind === "tool_result" &&
-      (m.toolCallId === undefined || !callIds.has(m.toolCallId)),
+    (m) => m.part.kind === "tool_result" && (m.toolCallId === undefined || !callIds.has(m.toolCallId)),
   );
   const counts: Record<ToolOutcome, number> = { succeeded: 0, failed: 0, unknown: 0 };
   for (const m of [...calls, ...orphanResults]) counts[m.part.outcome ?? "unknown"] += 1;
-  const outcome: ToolOutcome =
-    counts.failed > 0 ? "failed" : counts.unknown > 0 ? "unknown" : "succeeded";
+  const outcome: ToolOutcome = counts.failed > 0 ? "failed" : counts.unknown > 0 ? "unknown" : "succeeded";
   const toolNames: string[] = [];
   for (const call of calls) {
     if (call.toolName !== undefined && !toolNames.includes(call.toolName)) {

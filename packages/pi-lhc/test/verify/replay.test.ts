@@ -5,26 +5,22 @@
 // state through `replayCorpus` and the live inspect surfaces — never on a
 // mocked intake, and never by writing the fixture's expected events directly
 // (story §Anti-Shim Requirements).
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import {
   createDeterministicProvider,
   createSdk,
+  type EventRecord,
   inspect,
   intakeStream,
-  type EventRecord,
   type MessageEventInput,
   type ThreadRef,
 } from "lhc";
-import { replayCorpus } from "../../src/verify/replay.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import type { LhcInstance } from "../../src/shared/instance.js";
-import {
-  CORPUS_LOADERS,
-  loadChattyCorpus,
-  loadToolHeavyCorpus,
-  type CorpusName,
-} from "../fixtures/corpus.js";
-import { makeTempThread, tempStore, type TempStore } from "../fixtures/thread.js";
+import { replayCorpus } from "../../src/verify/replay.js";
+import { CORPUS_LOADERS, type CorpusName, loadChattyCorpus, loadToolHeavyCorpus } from "../fixtures/corpus.js";
+import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -86,9 +82,7 @@ describe.each(CORPUS_NAMES)("Story 3: corpus replay read-back (TC-6.1) — %s", 
     // The recorded events are the corpus's expected kinds, in order — proven
     // against the durable thread, not the in-memory return value.
     const recorded = await readBack(thread.threadRef);
-    expect(recorded.map((event) => event.eventKind)).toEqual(
-      corpus.expected.map((event) => event.eventKind),
-    );
+    expect(recorded.map((event) => event.eventKind)).toEqual(corpus.expected.map((event) => event.eventKind));
   });
 });
 
@@ -185,9 +179,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     const health2 = await inspect.health(thread.threadRef);
     expect(health2.ok).toBe(true);
     if (!health2.ok) return;
-    expect(
-      health2.value.owners.some((owner) => owner.kind === "capture_gap" && owner.counts.failed > 0),
-    ).toBe(true);
+    expect(health2.value.owners.some((owner) => owner.kind === "capture_gap" && owner.counts.failed > 0)).toBe(true);
     expect(health2.value.failures.some((failure) => failure.derivationType === "capture_gap")).toBe(true);
 
     // The gap note is itself a recorded event — the last recorded position

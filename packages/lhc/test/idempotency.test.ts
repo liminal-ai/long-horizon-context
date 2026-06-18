@@ -2,8 +2,8 @@
 // level — the no-message / no-transition / no-work-item clauses re-assert in
 // Stories 3-5 as those records exist).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { intakeStream, threads, type EventRecord } from "../src/index.js";
-import { conversationTurn, eventBatch, openRaw, tempStore, validEvent, type TempStore } from "./fixtures/index.js";
+import { type EventRecord, intakeStream, threads } from "../src/index.js";
+import { conversationTurn, eventBatch, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -30,9 +30,9 @@ async function readBack(filePath: string): Promise<EventRecord[]> {
 function rawDump(filePath: string): string {
   const db = openRaw(filePath);
   try {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-      .all() as unknown as Array<{ name: string }>;
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as Array<{
+      name: string;
+    }>;
     let dump = "";
     for (const table of tables) {
       dump += JSON.stringify(db.prepare(`SELECT * FROM "${table.name}"`).all());

@@ -2,13 +2,12 @@
 // counts, actionable failure detail, a repair preview, and live queue
 // visibility. Message/turn derivation health comes from DerivationReportEntry rows;
 // capture gaps come from durable source-event markers recorded by capture.
-import type { DerivationReportEntry } from "../../shared-tech/index.js";
-import type { OpResult } from "../../shared-tech/index.js";
-import type { HealthReport } from "../../shared-tech/index.js";
+
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
-import * as turns from "../../turns/index.js";
+import type { DerivationReportEntry, HealthReport, OpResult } from "../../shared-tech/index.js";
 import type { ThreadRef } from "../../threads/index.js";
+import * as turns from "../../turns/index.js";
 
 type Owner = "capture" | "messages" | "turns";
 
@@ -25,10 +24,7 @@ function captureGapText(event: intakeStream.EventRecord): string | null {
 // mechanics durably put them — retry exhaustion copies them onto the form's
 // metadata before the queue row is deleted; a still-live item carries them
 // on the queue join. Never synthesized.
-function failureOf(
-  owner: Owner,
-  entry: DerivationReportEntry,
-): HealthReport["failures"][number] {
+function failureOf(owner: Owner, entry: DerivationReportEntry): HealthReport["failures"][number] {
   const failure: HealthReport["failures"][number] = {
     owner,
     subjectKind: entry.subjectKind,

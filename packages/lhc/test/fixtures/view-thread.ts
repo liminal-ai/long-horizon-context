@@ -7,31 +7,27 @@
 // consumed by the real retry/exhaustion mechanics, and blocked comes from
 // real source damage on a sacrificial sibling thread. Every later Epic 03
 // story compacts against what this builder returns.
+import { DatabaseSync } from "node:sqlite";
 import {
-  DatabaseSync,
-} from "node:sqlite";
-import {
-  initLhc,
   type CompactReceipt,
   type DerivationReportEntry,
+  initLhc,
   type Lhc,
   type MessageEventInput,
   type MutationResult,
 } from "../../src/index.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
+import { type TempStore, validEvent } from "./index.js";
 import { createInferenceCallbacksDouble, type InferenceCallbacksDouble } from "./inference-callbacks-double.js";
-import { readChunks, type ChunkSnapshot } from "./threads.js";
-import { validEvent, type TempStore } from "./index.js";
+import { type ChunkSnapshot, readChunks } from "./threads.js";
 
 // Reason classes the scripted failures stamp, chosen from the sweep
 // classification table's vocabulary (tech design §Spec Validation): a
 // rate-limit class reads transient, a content-refusal class reads permanent —
 // FC-0.4's distinguishable-on-read-back guarantee, proven here before
 // Story 3 depends on it.
-export const TRANSIENT_EXHAUST_REASON =
-  "rate_limit: scripted transient exhaustion (fixture)";
-export const PERMANENT_FAILURE_REASON =
-  "content_refusal: scripted permanent failure (fixture)";
+export const TRANSIENT_EXHAUST_REASON = "rate_limit: scripted transient exhaustion (fixture)";
+export const PERMANENT_FAILURE_REASON = "content_refusal: scripted permanent failure (fixture)";
 
 // Chunk policy pinned so the 12 fixed-shape turns cut into exactly 4 chunks
 // (3 members each; c1–c3 closed, c4 still open). Projections from the
@@ -75,10 +71,7 @@ function turnEvents(turn: number): MessageEventInput[] {
       );
     }
   }
-  events.push(
-    validEvent("assistant_text", { payload: { text: `findings for area ${turn}` } }),
-    validEvent("turn_end"),
-  );
+  events.push(validEvent("assistant_text", { payload: { text: `findings for area ${turn}` } }), validEvent("turn_end"));
   return events;
 }
 
@@ -104,11 +97,7 @@ export interface DerivedThreadOptions {
   stragglers?: boolean; // default false: insert the turnless runtime notes
 }
 
-async function send(
-  sdk: Lhc,
-  filePath: string,
-  batch: readonly MessageEventInput[],
-): Promise<string[]> {
+async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<string[]> {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
   return result.value.events.map((entry) => entry.messageId ?? "");
@@ -259,18 +248,10 @@ export async function derivedThreadFixture(
 
   if (failures) {
     if (fixture.failedTransientMessageId !== undefined) {
-      setMessageDerivationFailed(
-        filePath,
-        fixture.failedTransientMessageId,
-        TRANSIENT_EXHAUST_REASON,
-      );
+      setMessageDerivationFailed(filePath, fixture.failedTransientMessageId, TRANSIENT_EXHAUST_REASON);
     }
     if (fixture.failedPermanentMessageId !== undefined) {
-      setMessageDerivationFailed(
-        filePath,
-        fixture.failedPermanentMessageId,
-        PERMANENT_FAILURE_REASON,
-      );
+      setMessageDerivationFailed(filePath, fixture.failedPermanentMessageId, PERMANENT_FAILURE_REASON);
     }
     // Verify the manufactured states by read-back through the owning report
     // surface before handing the fixture to any test (FC-0.3's enforcement
@@ -305,9 +286,7 @@ export async function stragglerVariantThread(store: TempStore): Promise<DerivedT
 // short real conversation, drained clean, then damaged below the SDK into
 // the two-open-turns state no public operation can produce. Canonical
 // consumers refuse it with state_corruption.
-export async function corruptedVariantThread(
-  store: TempStore,
-): Promise<{ filePath: string; sdk: Lhc }> {
+export async function corruptedVariantThread(store: TempStore): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
@@ -319,9 +298,7 @@ export async function corruptedVariantThread(
   await drain(sdk, filePath);
   // Open a turn through real intake, then add a second open row: two open
   // turns, the Epic 01 invariant violation.
-  await send(sdk, filePath, [
-    validEvent("user_prompt", { payload: { text: "left open before the damage" } }),
-  ]);
+  await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "left open before the damage" } })]);
   corruptTwoOpenTurns(filePath);
   return { filePath, sdk };
 }
@@ -343,9 +320,7 @@ export interface MutationInFlightFixture extends DerivedThreadFixture {
   mutation: MutationResult;
 }
 
-export async function mutationInFlightVariant(
-  store: TempStore,
-): Promise<MutationInFlightFixture> {
+export async function mutationInFlightVariant(store: TempStore): Promise<MutationInFlightFixture> {
   // No manufactured failures: the bracket's "nothing outside the cascade
   // changed state" assertion wants a clean baseline.
   const fixture = await derivedThreadFixture(store, { failures: false });
@@ -361,9 +336,7 @@ export async function mutationInFlightVariant(
   // and c1's two chunk summaries.
   const listed = await sdk.messages.listMessages({ filePath });
   if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
-  const target = listed.value.find(
-    (record) => record.kind === "user_prompt" && record.turnId === "t2",
-  );
+  const target = listed.value.find((record) => record.kind === "user_prompt" && record.turnId === "t2");
   if (target === undefined) {
     throw new Error("fixture invariant: turn 2 carries no prompt message");
   }
@@ -430,9 +403,7 @@ export async function mixedStateVariantThread(store: TempStore): Promise<MixedSt
     throw new Error("fixture invariant: turn 13 derivation expected to land terminal on damage");
   }
   if (report.value.remaining !== 1) {
-    throw new Error(
-      `fixture invariant: expected exactly one queued item left, got ${report.value.remaining}`,
-    );
+    throw new Error(`fixture invariant: expected exactly one queued item left, got ${report.value.remaining}`);
   }
 
   return { ...fixture, blockedTurnId: "t13", pendingPromptMessageId };
@@ -454,9 +425,7 @@ export async function blockedSiblingThread(
   // real intake; the corruption writer adds another open row. The drain then
   // claims t1's derivation against a record with two open turns.
   await send(sdk, filePath, turnEvents(1));
-  await send(sdk, filePath, [
-    validEvent("user_prompt", { payload: { text: "left open before the damage" } }),
-  ]);
+  await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "left open before the damage" } })]);
   corruptTwoOpenTurns(filePath);
   const report = await sdk.work.drain({ filePath });
   if (!report.ok) throw new Error(`fixture drain failed: ${report.error.reason}`);

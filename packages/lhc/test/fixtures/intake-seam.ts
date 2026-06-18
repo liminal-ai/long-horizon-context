@@ -5,7 +5,7 @@
 // pins recordedAt to a fixed instant so the SDK contract proof (TC-1.4) can
 // read back every field — recordedAt included — for an exact match.
 export {
+  type IntakeWalkHook,
   setIntakeClock,
   setIntakeWalkHook,
-  type IntakeWalkHook,
 } from "../../src/intake-stream/internal/pipeline.js";

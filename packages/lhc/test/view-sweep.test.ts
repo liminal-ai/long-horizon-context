@@ -14,24 +14,20 @@ import {
   blockedSiblingThread,
   classifyFailureReason,
   createInferenceCallbacksDouble,
+  type DerivedThreadFixture,
   derivedThreadFixture,
   openRaw,
   PERMANENT_FAILURE_REASON,
   REASON_CLASS_TABLE,
   seedViewBoundary,
+  type TempStore,
   tempStore,
   validEvent,
-  type DerivedThreadFixture,
-  type TempStore,
 } from "./fixtures/index.js";
 
 type OwnerLine = SweepReceipt["owners"][number];
 
-function ownerLine(
-  receipt: SweepReceipt,
-  owner: OwnerLine["owner"],
-  kind: string,
-): OwnerLine {
+function ownerLine(receipt: SweepReceipt, owner: OwnerLine["owner"], kind: string): OwnerLine {
   const line = receipt.owners.find((entry) => entry.owner === owner && entry.kind === kind);
   if (line === undefined) throw new Error(`no receipt line for ${owner}/${kind}`);
   return line;
@@ -133,9 +129,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.ready).toBe(6);
     expect(results.requeued).toEqual([transientId]);
-    expect(results.permanentFailed).toEqual([
-      { subjectId: permanentId, reason: PERMANENT_FAILURE_REASON },
-    ]);
+    expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
     expect(results.blocked).toEqual([]);
 
     // Pending forms are left alone and reported as in-flight: the undrained
@@ -153,22 +147,12 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     // key, form cleared to pending with its queue row visible (AC-3.1's
     // owners-only write path read back through the owner's report).
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
-    const transient = await reportEntry(
-      fixture.sdk,
-      fixture.filePath,
-      transientId,
-      "tool_result_summary",
-    );
+    const transient = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
     expect(transient.state).toBe("pending");
     expect(transient.queueStatus).toBe("queued");
 
     // The permanent failure is untouched: still failed, no work row.
-    const permanent = await reportEntry(
-      fixture.sdk,
-      fixture.filePath,
-      permanentId,
-      "tool_result_summary",
-    );
+    const permanent = await reportEntry(fixture.sdk, fixture.filePath, permanentId, "tool_result_summary");
     expect(permanent.state).toBe("failed");
     expect(permanent.reason).toBe(PERMANENT_FAILURE_REASON);
     expect(workRowsFor(fixture.filePath, "tool_result_summary", permanentId)).toBe(0);
@@ -189,9 +173,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(results.requeued).toEqual([]);
     expect(results.inFlight).toBe(1);
     expect(results.ready).toBe(6);
-    expect(results.permanentFailed).toEqual([
-      { subjectId: permanentId, reason: PERMANENT_FAILURE_REASON },
-    ]);
+    expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
 
     // Exactly one work row exists for the requeued form (count by key).
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
@@ -413,12 +395,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // Zero requeues occurred: no work row landed, the transient failure is
     // still failed.
     expect(workItemCount(fixture.filePath)).toBe(rowsBefore);
-    const transient = await reportEntry(
-      fixture.sdk,
-      fixture.filePath,
-      transientId,
-      "tool_result_summary",
-    );
+    const transient = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
     expect(transient.state).toBe("failed");
   });
 
@@ -428,41 +405,28 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // vocabulary), and the embedded requeue's poke-on-commit lands on the
     // background scheduler — the production repair path needs no drain call.
     const bg = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "background" });
-    const receipt = await bg.threadView.compact(
-      { filePath: fixture.filePath },
-      { profile: "coding" },
-    );
+    const receipt = await bg.threadView.compact({ filePath: fixture.filePath }, { profile: "coding" });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
     const embedded = receipt.value.sweep;
     expect(embedded).not.toEqual({ skipped: true });
     if (!("owners" in embedded)) return;
     expect(() => assertSweepReceiptShape(embedded)).not.toThrow();
-    expect(ownerLine(embedded, "messages", "tool_result_summary").requeued).toEqual([
-      transientId,
-    ]);
+    expect(ownerLine(embedded, "messages", "tool_result_summary").requeued).toEqual([transientId]);
 
     // The heal leg — the one sanctioned test-setup use of inference
     // machinery: drainSettled awaits the poked background drain over the
     // requeued row. No Epic 03 operation below touches inference callbacks.
     await bg.drainSettled({ filePath: fixture.filePath });
 
-    const healed = await reportEntry(
-      fixture.sdk,
-      fixture.filePath,
-      transientId,
-      "tool_result_summary",
-    );
+    const healed = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
     expect(healed.state).toBe("ready");
     expect(healed.content).toBeDefined();
 
     // The next default compact sees the heal: its embedded sweep reports the
     // form ready (7 now), nothing to requeue, only the permanent failure
     // still on the books.
-    const next = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { profile: "coding" },
-    );
+    const next = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { profile: "coding" });
     expect(next.ok).toBe(true);
     if (!next.ok) return;
     const nextSweep = next.value.sweep;
@@ -470,9 +434,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     const results = ownerLine(nextSweep, "messages", "tool_result_summary");
     expect(results.ready).toBe(7);
     expect(results.requeued).toEqual([]);
-    expect(results.permanentFailed).toEqual([
-      { subjectId: permanentId, reason: PERMANENT_FAILURE_REASON },
-    ]);
+    expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
 
     // And the healed form feeds sweep accounting while the served view still
     // uses the deterministic boundary floor: with the coding bound this small

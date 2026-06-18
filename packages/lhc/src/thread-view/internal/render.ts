@@ -12,10 +12,7 @@
 // same entry renderer to price entries during the fill walk, so the tokens
 // the walk budgets are the tokens the band stores — one renderer, no drift.
 import type { Band, ViewMessage } from "../../shared-tech/index.js";
-import {
-  FALLBACK_TRUNCATION_LIMIT,
-  truncateForFallback,
-} from "../../shared-tech/index.js";
+import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 import type { TailMessageRow } from "./snapshot.js";
 
 // Epic 01's deterministic abbreviation rule: a fixed prefix plus an exact
@@ -51,9 +48,7 @@ export interface TailRenderContext {
 // The call-id → tool-name map from the messages in hand. Pairing within the
 // tail is structurally sufficient: the compact point snaps to a turn start,
 // so a tail result's call is never behind it.
-export function toolNamesByCallId(
-  messages: readonly TailMessageRow[],
-): Map<string, string> {
+export function toolNamesByCallId(messages: readonly TailMessageRow[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const message of messages) {
     if (message.kind !== "tool_call") continue;
@@ -77,9 +72,7 @@ function renderToolCall(message: TailMessageRow): ViewMessage {
 function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): ViewMessage {
   const block = blockContent(message);
   const callId = block["toolCallId"];
-  const name =
-    (typeof callId === "string" ? ctx.toolNameByCallId.get(callId) : undefined) ??
-    "unknown_tool";
+  const name = (typeof callId === "string" ? ctx.toolNameByCallId.get(callId) : undefined) ?? "unknown_tool";
   const content = typeof block["content"] === "string" ? block["content"] : "";
   if (message.sourceEventOrder > ctx.boundaryPosition) {
     return { role: "user", content: `[tool result · ${name}]\n${content}` };
@@ -95,10 +88,7 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): View
 
 // One tail message → one ViewMessage per the mapping table. Each kind is its
 // own arm so a single kind's drift fails its own named test leg.
-export function renderTailMessage(
-  message: TailMessageRow,
-  ctx: TailRenderContext,
-): ViewMessage {
+export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContext): ViewMessage {
   switch (message.kind) {
     case "user_prompt":
       return { role: "user", content: textOf(message) };
@@ -152,10 +142,7 @@ export type CompactChunkMaterialSnapshot =
   | { kind: "ready"; content: string }
   | { kind: "concat"; content: string; reason: string };
 
-export type DerivationLookup = (
-  subjectId: string,
-  derivationType: string,
-) => DerivationSnapshot | undefined;
+export type DerivationLookup = (subjectId: string, derivationType: string) => DerivationSnapshot | undefined;
 
 // A subject's resolved representation: which rung of its ladder renders.
 // `derivationUsed` is the arrangement/receipt vocabulary; `degradedMarker` is the

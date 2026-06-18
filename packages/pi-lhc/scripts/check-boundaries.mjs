@@ -64,8 +64,11 @@ function importSpecifiers(source) {
     /import\(\s*["']([^"']+)["']\s*\)/g,
   ];
   for (const re of patterns) {
-    let m;
-    while ((m = re.exec(source)) !== null) specs.push(m[1]);
+    let m = re.exec(source);
+    while (m !== null) {
+      specs.push(m[1]);
+      m = re.exec(source);
+    }
   }
   return specs;
 }
