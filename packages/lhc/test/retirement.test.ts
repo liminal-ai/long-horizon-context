@@ -4,13 +4,13 @@
 // an export-name snapshot of the package entry (catches both leftover
 // CLI-only exports and accidental removals), a manifest check, and a
 // source-level scan for the retired resolution vocabulary. Provider arrival
-// is injection at createSdk only.
+// is injection at initLhc only.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import * as api from "../src/index.js";
-import { createSdk, type SdkConfig } from "../src/index.js";
+import { initLhc, type SdkConfig } from "../src/index.js";
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -35,6 +35,7 @@ const SDK_ONLY_EXPORTS = [
   "deterministicText",
   "enqueue",
   "estimateTokens",
+  "initLhc",
   "inspect",
   "intakeStream",
   "logging",
@@ -64,6 +65,10 @@ function collectSourceFiles(dir: string, out: string[] = []): string[] {
 describe("TC-6.1: deletion proof — SDK-only public API, no binary (AC-6.1, AC-6.2)", () => {
   it("the package entry's export-name set equals the checked-in SDK-only list", () => {
     expect(Object.keys(api).sort()).toEqual(SDK_ONLY_EXPORTS);
+  });
+
+  it("createSdk remains a compatibility alias for initLhc", () => {
+    expect(api.createSdk).toBe(api.initLhc);
   });
 
   it("the CLI-only entries are gone from the surface", () => {
@@ -119,10 +124,10 @@ describe("TC-6.2: the env/flag provider-resolution path is gone (AC-6.3)", () =>
 
   it("neither provider nor inference is the XOR TypeError; no fallback resolution catches it", () => {
     // Even with the retired env variable set, construction must throw: the
-    // only provider-arrival path is injection at createSdk.
+    // only provider-arrival path is injection at initLhc.
     process.env[envKey] = "deterministic";
-    expect(() => createSdk({ mode: "manual" } as unknown as SdkConfig)).toThrow(TypeError);
-    expect(() => createSdk({ mode: "manual" } as unknown as SdkConfig)).toThrow(
+    expect(() => initLhc({ mode: "manual" } as unknown as SdkConfig)).toThrow(TypeError);
+    expect(() => initLhc({ mode: "manual" } as unknown as SdkConfig)).toThrow(
       /exactly one of provider or inference/,
     );
   });

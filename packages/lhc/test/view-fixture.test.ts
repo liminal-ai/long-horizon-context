@@ -1,11 +1,11 @@
 // Epic 03 Story 0 foundation checks (FC-0.1–FC-0.6): migration v6 storage,
-// profile config validation through real createSdk construction, the
+// profile config validation through real initLhc construction, the
 // derived-thread fixture's state fidelity proven by read-back through the
 // owning report surfaces (states reached through production drains, never
 // hand-written rows), the corruption and turnless-straggler variants, and
 // the two-point test injection facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, messages, turns, type Lhc, type VisibilityBudgets } from "../src/index.js";
+import { initLhc, messages, turns, type Lhc, type VisibilityBudgets } from "../src/index.js";
 import {
   blockedSiblingThread,
   corruptedVariantThread,
@@ -37,8 +37,8 @@ afterAll(() => {
   store.cleanup();
 });
 
-function manualSdk(view?: Parameters<typeof createSdk>[0]["view"]): Lhc {
-  return createSdk({
+function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
+  return initLhc({
     provider: createProviderDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),

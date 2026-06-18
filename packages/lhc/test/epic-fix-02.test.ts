@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   queueDetail,
   setSchedulerPoke,
   setThreadTouch,
@@ -75,7 +75,7 @@ async function newThread(name: string): Promise<string> {
 }
 
 function sdkFor(provider: ProviderDouble, mode: SdkConfig["mode"]): Lhc {
-  return createSdk({
+  return initLhc({
     provider,
     mode,
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -226,7 +226,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     const double = createProviderDouble();
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 25, backoffCapMs: 60000 },
@@ -259,7 +259,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     const double = createProviderDouble();
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "background",
       // A long backoff parks the head far past the window we observe.

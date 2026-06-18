@@ -191,7 +191,7 @@ export interface SdkConfig {
   view?: SdkViewConfig; // Epic 03: profiles, visibility budgets, compact threshold
 }
 
-// Every optional filled by createSdk's central defaults.
+// Every optional filled by initLhc's central defaults.
 export interface ResolvedSdkConfig {
   provider: InferenceCallbacks;
   mode: "background" | "manual";

@@ -1,14 +1,14 @@
 // Epic 03 Story 3: the readiness sweep (TC-3.1–3.4, the classification-edge
 // architecture-risk legs, and the suite-wide zero-provider assertion's
 // completion across all five thread-view ops). Every TC goes through the
-// real SDK surface (createSdk().threadView.sweep / .compact) against real
+// real SDK surface (initLhc().threadView.sweep / .compact) against real
 // temp thread files; the provider double appears only in fixture setup and
 // in TC-3.4's sanctioned heal drain — no Epic 03 operation may touch it.
 // Failed and blocked states are reached through production paths (scripted
 // provider failures consumed by real retry/exhaustion mechanics, real source
 // damage on the sacrificial sibling), never by writing derivation rows.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, type Lhc, type SweepReceipt } from "../src/index.js";
+import { initLhc, type Lhc, type SweepReceipt } from "../src/index.js";
 import {
   assertSweepReceiptShape,
   blockedSiblingThread,
@@ -276,7 +276,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     // already_queued noop is what keeps the second ask from double-queuing,
     // and this test is what notices if Epic 02's requeue ever stops nooping.
     const double = createProviderDouble();
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -314,7 +314,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
 
   it("an unclassified reason code lands in permanentFailed with its literal reason and is never requeued", async () => {
     const double = createProviderDouble();
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -427,7 +427,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // full receipt embeds (Story 2's "absent" placeholder is gone from the
     // vocabulary), and the embedded requeue's poke-on-commit lands on the
     // background scheduler — the production repair path needs no drain call.
-    const bg = createSdk({ provider: createProviderDouble(), mode: "background" });
+    const bg = initLhc({ provider: createProviderDouble(), mode: "background" });
     const receipt = await bg.threadView.compact(
       { filePath: fixture.filePath },
       { profile: "coding" },

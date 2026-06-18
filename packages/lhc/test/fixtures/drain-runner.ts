@@ -10,7 +10,7 @@
 //     kills this process (TC-1.3) or drains from a second process (TC-1.4);
 //   - prints `DRAIN_DONE <report JSON>` if it survives to the end.
 import process from "node:process";
-import { createSdk } from "../../src/index.js";
+import { initLhc } from "../../src/index.js";
 import { createProviderDouble } from "./provider-double.js";
 import { registerTestWorkHandlers } from "./work-handlers.js";
 
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const config = JSON.parse(raw) as RunnerConfig;
 
   const double = createProviderDouble();
-  const sdk = createSdk({
+  const sdk = initLhc({
     provider: double,
     mode: "manual",
     lease: { durationMs: config.leaseMs },

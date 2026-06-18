@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   messages,
   threads,
   type InferenceCallbacks,
@@ -32,7 +32,7 @@ async function newThread(): Promise<string> {
 }
 
 function sdkFor(provider: InferenceCallbacks): Lhc {
-  return createSdk({
+  return initLhc({
     provider,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

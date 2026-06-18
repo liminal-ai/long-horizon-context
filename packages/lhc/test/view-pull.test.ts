@@ -1,12 +1,12 @@
 // Epic 03 Story 1: pull and status on the record (TC-1.1, TC-1.2, TC-1.4,
 // TC-2.5 pre-compact legs, the per-kind tail-mapping legs, and the pull/status
 // legs of the suite-wide zero-provider assertion). Every TC goes through the
-// real SDK surface (createSdk().threadView.pull/status) against real temp
+// real SDK surface (initLhc().threadView.pull/status) against real temp
 // thread files; the provider double appears only in construction/fixture
 // setup — no Epic 03 operation may touch it.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/index.js";
+import { initLhc, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/index.js";
 import {
   blockedSiblingThread,
   createProviderDouble,
@@ -31,7 +31,7 @@ afterAll(() => {
 });
 
 function manualSdk(view?: SdkViewConfig): Lhc {
-  return createSdk({
+  return initLhc({
     provider: createProviderDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
@@ -474,7 +474,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     // (openThreadDatabase → fireThreadTouch → scheduler.touch) if pull or
     // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
     const bgDouble = createProviderDouble();
-    const bg = createSdk({
+    const bg = initLhc({
       provider: bgDouble,
       mode: "background",
       view: { compactThreshold: 100 },

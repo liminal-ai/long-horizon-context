@@ -1,6 +1,6 @@
 // Epic 05 boundary vocabulary (tech design §Interface Definitions): the one
 // function a host supplies, its structured result shapes, and the config that
-// arrives at createSdk as the alternative to direct provider injection
+// arrives at initLhc as the alternative to direct provider injection
 // (DD-1, DD-5). LHC treats provider/model strings as opaque routing keys —
 // the host's ModelCall implementation is the only code that interprets them.
 
@@ -67,7 +67,7 @@ export interface InferenceConfig {
   maxInputChars?: number; // default 200_000 (DD-7)
 }
 
-/** InferenceConfig after createSdk validation: every optional filled. */
+/** InferenceConfig after initLhc validation: every optional filled. */
 export interface ResolvedInferenceConfig {
   call: ModelCall;
   assignments: Record<string, ModelAssignment>;

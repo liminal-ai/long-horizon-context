@@ -1,7 +1,7 @@
 // Epic 03 Story 2: smart compact (TC-2.1–2.4, TC-2.6, TC-2.7, TC-1.3,
 // TC-1.5, the TC-2.5 view-health completion legs, and the architecture-risk
 // rows: restart-serves-snapshot and coverage-edge accounting). Every TC goes
-// through the real SDK surface (createSdk().threadView.compact) against real
+// through the real SDK surface (initLhc().threadView.compact) against real
 // temp thread files; the provider double appears only in fixture setup —
 // degraded states are reached through production paths (scripted provider
 // exhaustion at build, edit-cascade pending clears), never by writing
@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   type Lhc,
   type MessageEventInput,
   type ViewMessage,
@@ -351,7 +351,7 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
-    const fresh = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    const fresh = initLhc({ provider: createProviderDouble(), mode: "manual" });
     const after = await fresh.threadView.pull({ filePath: fixture.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -464,7 +464,7 @@ interface DegradedThread {
 
 async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread> {
   const double = createProviderDouble();
-  const sdk = createSdk({
+  const sdk = initLhc({
     provider: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -595,7 +595,7 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
     const corruptStore = tempStore();
     try {
       const double = createProviderDouble();
-      const sdk = createSdk({ provider: double, mode: "manual" });
+      const sdk = initLhc({ provider: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({
         filePath,

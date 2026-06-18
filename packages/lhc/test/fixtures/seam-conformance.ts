@@ -4,7 +4,7 @@
 // Framework-agnostic on purpose: plain node:assert throws surface in vitest
 // and in any future runner identically.
 import assert from "node:assert/strict";
-import { createSdk, type Derivation, type Lhc } from "../../src/index.js";
+import { initLhc, type Derivation, type Lhc } from "../../src/index.js";
 import {
   DERIVATION_TYPES,
   INFERENCE_DERIVATION_TYPES,
@@ -119,7 +119,7 @@ export async function assertRoutingThroughSdk(
     log.push(structuredClone(input));
     return call(input);
   };
-  const sdk = createSdk({
+  const sdk = initLhc({
     inference: { call: logged, assignments },
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

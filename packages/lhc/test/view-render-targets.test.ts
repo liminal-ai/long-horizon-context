@@ -1,7 +1,7 @@
 // Epic 03 Story 5: render targets (TC-5.1, TC-5.2, TC-5.3, TC-5.5). One
 // view, two shapes: the pull's message array and the materialized PI session
 // file must carry the same content because they come from the same assembly.
-// Every TC goes through the real SDK surface (createSdk().threadView.*)
+// Every TC goes through the real SDK surface (initLhc().threadView.*)
 // against real temp thread files; the provider double appears only in
 // fixture setup. The format fixture is a structure-trimmed REAL PI session
 // file (test/fixtures/pi-session-structure.jsonl, provenance note beside it)
@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, type Lhc, type ViewMessage } from "../src/index.js";
+import { initLhc, type Lhc, type ViewMessage } from "../src/index.js";
 import {
   assertPiSessionConformance,
   createProviderDouble,
@@ -206,7 +206,7 @@ describe("TC-5.2 (AC-5.2, AC-5.3): materialize/pull parity, byte-identical repea
 
 describe("TC-5.3 (AC-5.4): a never-compacted thread materializes its tail-only view", () => {
   it("valid file, tail-only content, loadable against the format fixture, header from the thread's created-at", async () => {
-    const sdk: Lhc = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    const sdk: Lhc = initLhc({ provider: createProviderDouble(), mode: "manual" });
     const filePath = store.threadPath("never-compacted");
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);

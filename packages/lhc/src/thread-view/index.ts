@@ -6,7 +6,7 @@
 // Story 3 landed `sweep` (standalone and embedded default-on in compact);
 // Story 5 lands `materialize` (the PI session-file render target over the
 // same pull assembly). Story 0's substrate (profile resolution, consumed by
-// createSdk) re-exports at the bottom.
+// initLhc) re-exports at the bottom.
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -72,7 +72,7 @@ import type { Band } from "../shared-tech/view.js";
 // Config resolution for the operation in hand: the SDK instance's resolved
 // view config rides the per-instance seam (epic-fix-001 pattern, tech design
 // Flow 4); below-SDK direct domain calls fall back to the built-in defaults
-// through the same one resolution path createSdk uses.
+// through the same one resolution path initLhc uses.
 const DEFAULT_VIEW_CONFIG: ResolvedViewConfig = resolveViewConfig();
 
 function viewConfig(): ResolvedViewConfig {
@@ -705,7 +705,7 @@ async function materializeInner(
   }
 }
 
-// ── Story 0 substrate (consumed by createSdk at construction) ─────
+// ── Story 0 substrate (consumed by initLhc at construction) ─────
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,

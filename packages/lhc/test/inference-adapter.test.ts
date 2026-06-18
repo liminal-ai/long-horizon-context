@@ -8,7 +8,7 @@
 // Empty or whitespace-only success text is a classified retryable failure,
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
-import { createDeterministicProvider, createSdk, type Derivation, type Lhc } from "../src/index.js";
+import { createDeterministicProvider, initLhc, type Derivation, type Lhc } from "../src/index.js";
 import type { ModelCall } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
@@ -106,7 +106,7 @@ async function seedSmoothingOnly(sdk: Lhc, store: TempStore): Promise<string> {
 
 function inferenceSdk(call: ModelCall): { sdk: Lhc; assignments: ReturnType<typeof validAssignments> } {
   const assignments = validAssignments();
-  const sdk = createSdk({
+  const sdk = initLhc({
     inference: { call, assignments },
     mode: "manual",
     retry: RETRY,
@@ -168,7 +168,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const { sdk: adapterSdk } = inferenceSdk(call);
     const adapterForms = await drainAll(adapterSdk, await seedSevenKinds(adapterSdk, freshStore()));
 
-    const deterministicSdk = createSdk({
+    const deterministicSdk = initLhc({
       provider: createDeterministicProvider(),
       mode: "manual",
       retry: RETRY,

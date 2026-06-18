@@ -109,7 +109,7 @@ export function testWorkHandlers(
 }
 
 // Registration is plain assignment into the assembled per-SDK map — the same
-// map createSdk merged the (empty until Stories 2–3) domain tables into.
+// map initLhc merged the (empty until Stories 2–3) domain tables into.
 export function registerTestWorkHandlers(
   sdk: Lhc,
   provider: InferenceCallbacks,

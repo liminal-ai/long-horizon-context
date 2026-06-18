@@ -10,7 +10,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   estimateTokens,
   type InferenceCallbacks,
   type Lhc,
@@ -153,7 +153,7 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
 // A small never-compacted thread: two closed turns, fully drained.
 async function neverCompactedThread(): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createProviderDouble();
-  const sdk = createSdk({ provider: double, mode: "manual" });
+  const sdk = initLhc({ provider: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
@@ -267,7 +267,7 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
   it("tail costs short forms short and total equals an independent pull re-measured", async () => {
     // Small budgets so a real intake post-commit advance moves the boundary
     // into the tail (Epic 03 Story 4 mechanics — never a hand-set position).
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: createProviderDouble(),
       mode: "manual",
       view: { visibility: { maxTokens: 100, targetTokens: 60 } },
@@ -397,7 +397,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
       summarizeChunkDetailed: refuse,
       summarizeChunkBrief: refuse,
     };
-    const reader = createSdk({ provider: throwing, mode: "manual" });
+    const reader = initLhc({ provider: throwing, mode: "manual" });
     const viewed = await expectReadOnly(filePath, () => reader.inspect.view({ filePath }));
     const described = await expectReadOnly(filePath, () =>
       reader.threadView.describe({ filePath }),
@@ -406,7 +406,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
   });
 
   it("inspect.view on a missing thread is thread_not_found, not a shape error", async () => {
-    const sdk = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    const sdk = initLhc({ provider: createProviderDouble(), mode: "manual" });
     const missing = await sdk.inspect.view({ filePath: store.threadPath("missing") });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;

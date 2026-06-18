@@ -6,7 +6,7 @@
 // naming the violated rule, with no partial construction. A complete valid
 // config does not merely construct: a seeded drain lands a form ready.
 import { afterEach, describe, expect, it } from "vitest";
-import { createSdk, type ModelAssignment, type SdkConfig } from "../src/index.js";
+import { initLhc, type ModelAssignment, type SdkConfig } from "../src/index.js";
 import {
   cannedResponses,
   createProviderDouble,
@@ -32,7 +32,7 @@ function freshStore(): TempStore {
 function buildSdk(assignments: unknown): () => unknown {
   const { call } = recordingCall(cannedResponses());
   return () =>
-    createSdk({
+    initLhc({
       mode: "manual",
       inference: { call, assignments },
     } as unknown as SdkConfig);
@@ -42,7 +42,7 @@ describe("TC-1.1: provider XOR inference (AC-1.1)", () => {
   it("both provider and inference is a TypeError naming the XOR rule", () => {
     const { call } = recordingCall(cannedResponses());
     const make = (): unknown =>
-      createSdk({
+      initLhc({
         mode: "manual",
         provider: createProviderDouble(),
         inference: { call, assignments: validAssignments() },
@@ -52,7 +52,7 @@ describe("TC-1.1: provider XOR inference (AC-1.1)", () => {
   });
 
   it("neither provider nor inference is a TypeError naming the XOR rule", () => {
-    const make = (): unknown => createSdk({ mode: "manual" } as unknown as SdkConfig);
+    const make = (): unknown => initLhc({ mode: "manual" } as unknown as SdkConfig);
     expect(make).toThrow(TypeError);
     expect(make).toThrow(/exactly one of provider or inference/);
   });
@@ -101,7 +101,7 @@ describe("TC-1.1: a complete valid config operates (AC-1.1, AC-1.3)", () => {
     const store = freshStore();
     const responses = cannedResponses();
     const { call, log } = recordingCall(responses);
-    const sdk = createSdk({
+    const sdk = initLhc({
       mode: "manual",
       inference: { call, assignments: validAssignments() },
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

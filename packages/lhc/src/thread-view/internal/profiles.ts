@@ -40,7 +40,7 @@ export const DEFAULT_VISIBILITY: VisibilityBudgets = {
 export const DEFAULT_COMPACT_THRESHOLD = 160000;
 
 function fail(detail: string): never {
-  throw new TypeError(`createSdk config: view: ${detail}`);
+  throw new TypeError(`initLhc config: view: ${detail}`);
 }
 
 const BAND_KEYS = ["full", "smooth", "detailed", "brief"] as const;
@@ -148,7 +148,7 @@ function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): Vis
 
 // The one resolution path: built-ins, user profiles merged by name, every
 // resolved profile validated, visibility and threshold defaulted and checked.
-// Called from createSdk so validation runs through real construction, never a
+// Called from initLhc so validation runs through real construction, never a
 // standalone validator (Story 0 production-path proof).
 export function resolveViewConfig(config?: SdkViewConfig): ResolvedViewConfig {
   const profiles: Record<string, ViewProfile> = {};

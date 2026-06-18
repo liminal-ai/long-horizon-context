@@ -7,7 +7,7 @@
 // unchanged (read-only delta, DD-6) and calls no provider.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   intakeStream,
   messages,
   threadView,
@@ -48,7 +48,7 @@ interface ReadFixture {
 // m6 prompt, m7 text (turn 2). Source event orders 1,2,3,4,6,7.
 async function readFixture(store: TempStore): Promise<ReadFixture> {
   const double = createProviderDouble();
-  const sdk = createSdk({ provider: double, mode: "manual" });
+  const sdk = initLhc({ provider: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({
     filePath,
@@ -288,7 +288,7 @@ describe("architecture risk: reads are read-only and provider-free (DD-6)", () =
 // rows. The background read-only proof needs the pending state the manual
 // read-only proof above cannot manufacture.
 async function pendingWorkThread(): Promise<string> {
-  const seeder = createSdk({ provider: createProviderDouble(), mode: "manual" });
+  const seeder = initLhc({ provider: createProviderDouble(), mode: "manual" });
   const filePath = store.threadPath();
   const created = await seeder.threads.newThread({
     filePath,
@@ -343,7 +343,7 @@ describe("architecture risk: background reads schedule no catch-up drain (DD-6, 
     // list or show fired it. The touch-suppressed read scope is what stops it;
     // this is the production-path proof a manual-mode no-op seam cannot give.
     const bgDouble = createProviderDouble();
-    const bg = createSdk({ provider: bgDouble, mode: "background" });
+    const bg = initLhc({ provider: bgDouble, mode: "background" });
     const captured = bgDouble.captureInputs();
     const before = rawWorkAndForms(filePath);
 

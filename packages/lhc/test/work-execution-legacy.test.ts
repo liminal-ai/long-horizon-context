@@ -7,7 +7,7 @@
 // for upgraded rows: terminal failure lands the form `failed` with the final
 // reason and attempts before the row is deleted.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { countLiveItems, createSdk, type Lhc } from "../src/index.js";
+import { countLiveItems, initLhc, type Lhc } from "../src/index.js";
 import {
   createProviderDouble,
   legacyEpic01ThreadFile,
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 function manualSdk(double: ProviderDouble): Lhc {
-  const sdk = createSdk({
+  const sdk = initLhc({
     provider: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

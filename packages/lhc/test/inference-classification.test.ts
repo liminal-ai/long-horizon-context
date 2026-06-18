@@ -9,7 +9,7 @@
 // behavior can crash a drain. Reason format per the Story 3 ruling:
 // retryable → `provider_failure: <kind>: <message>`, terminal → kind-led.
 import { afterEach, describe, expect, it } from "vitest";
-import { createSdk, type Derivation, type DrainReport, type Lhc } from "../src/index.js";
+import { initLhc, type Derivation, type DrainReport, type Lhc } from "../src/index.js";
 import { FAILURE_CLASSIFICATION, safeCall } from "../src/shared-tech/classify.js";
 import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
 import {
@@ -52,7 +52,7 @@ const PROBE_INPUT: ModelCallInput = {
 };
 
 function inferenceSdk(call: ModelCall, timeoutMs?: number): Lhc {
-  return createSdk({
+  return initLhc({
     inference: { call, assignments: validAssignments(), ...(timeoutMs === undefined ? {} : { timeoutMs }) },
     mode: "manual",
     retry: RETRY,

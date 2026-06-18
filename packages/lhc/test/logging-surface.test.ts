@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDeterministicProvider,
-  createSdk,
+  initLhc,
   writeLog,
   type InferenceCallbacks,
   type DrainReport,
@@ -17,7 +17,7 @@ let sdk: Lhc;
 
 beforeEach(() => {
   store = tempStore();
-  sdk = createSdk({ provider: createDeterministicProvider(), mode: "manual" });
+  sdk = initLhc({ provider: createDeterministicProvider(), mode: "manual" });
 });
 
 afterEach(() => {
@@ -37,7 +37,7 @@ async function write(filePath: string, entry: LogEntry): Promise<void> {
 }
 
 function manualSdk(provider: InferenceCallbacks): Lhc {
-  return createSdk({
+  return initLhc({
     provider,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

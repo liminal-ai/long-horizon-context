@@ -17,7 +17,7 @@
 // red-manifest rule: mutations.test.ts is hash-locked by Story 5.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   estimateTokens,
   intakeStream,
   messages,
@@ -75,7 +75,7 @@ function manualSdk(
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
   if (overrides.clock !== undefined) config.clock = overrides.clock;
-  return createSdk(config);
+  return initLhc(config);
 }
 
 async function send(

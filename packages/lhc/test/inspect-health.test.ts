@@ -5,7 +5,7 @@
 // a drain (AC-4.4), and live queue visibility consistent with the state
 // counts in the same report (AC-4.5).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSdk, intakeStream, threads, type HealthReport } from "../src/index.js";
+import { initLhc, intakeStream, threads, type HealthReport } from "../src/index.js";
 import {
   createProviderDouble,
   expectReadOnly,
@@ -154,7 +154,7 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
     const recorded = await intakeStream.messageEvents({ filePath }, [gap]);
     expect(recorded.ok).toBe(true);
 
-    const reader = createSdk({ provider: createProviderDouble(), mode: "manual" });
+    const reader = initLhc({ provider: createProviderDouble(), mode: "manual" });
     const report = valueOf(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
     expect(report.owners).toContainEqual({
       owner: "capture",
@@ -253,7 +253,7 @@ describe("architecture risk: health is provider-free and surface-composed", () =
     const refuse = (): never => {
       throw new Error("provider must never be called by a read operation");
     };
-    const reader = createSdk({
+    const reader = initLhc({
       provider: {
         smoothPrompt: refuse,
         summarizeToolResult: refuse,

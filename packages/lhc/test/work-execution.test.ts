@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   intakeStream,
   queueDetail,
   setSchedulerPoke,
@@ -69,7 +69,7 @@ function manualSdk(
     retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number };
   } = {},
 ): Lhc {
-  const sdk = createSdk({
+  const sdk = initLhc({
     provider: double,
     mode: "manual",
     clock: overrides.clock ?? (() => new Date()),
@@ -178,7 +178,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
   it("a burst of two more batches during a slow in-flight drain yields exactly two passes and all artifacts", async () => {
     const double = createProviderDouble();
     double.delayKind("prompt_smoothing", 100);
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -209,7 +209,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
 describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; first touch catches up", () => {
   it("an intake batch is processed with no drain call; drainSettled is the completion signal", async () => {
     const double = createProviderDouble();
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
@@ -242,7 +242,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(liveCount(filePath)).toBe(2);
 
     const double = createProviderDouble();
-    const sdk = createSdk({
+    const sdk = initLhc({
       provider: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

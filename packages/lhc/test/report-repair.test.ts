@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   queueDetail,
   setSchedulerPoke,
   setThreadTouch,
@@ -69,7 +69,7 @@ function manualSdk(
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
   if (overrides.clock !== undefined) config.clock = overrides.clock;
-  return createSdk(config);
+  return initLhc(config);
 }
 
 async function send(
@@ -363,7 +363,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
 
     // Background SDK first, so the requeue's poke-on-commit has a scheduler
     // to land on; the repair must then run with no drain call at all.
-    const background = createSdk({
+    const background = initLhc({
       provider: double,
       mode: "background",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

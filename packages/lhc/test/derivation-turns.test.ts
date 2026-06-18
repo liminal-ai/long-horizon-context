@@ -6,13 +6,13 @@
 // cases (TC-3.6/3.7, architecture risk), the two summary kinds with
 // independent lifecycles (TC-3.8), and determinism under replay (TC-3.9,
 // architecture risk). Every drain dispatches the production handlers
-// registered by the turns domain at createSdk; the TC-3.3/TC-3.8 re-queues
+// registered by the turns domain at initLhc; the TC-3.3/TC-3.8 re-queues
 // drive the queue util directly per the story note (the public re-queue
 // surface is Story 4's).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   deterministicText,
   enqueue,
   estimateTokens,
@@ -66,7 +66,7 @@ function manualSdk(
     lease: { durationMs: 200 },
   };
   if (chunkPolicy !== undefined) config.chunkPolicy = chunkPolicy;
-  return createSdk(config);
+  return initLhc(config);
 }
 
 async function send(

@@ -1,5 +1,5 @@
 // The inference adapter (DD-2): createInferenceCallbacks returns the same
-// InferenceCallbacks interface direct injection implements, so createSdk and
+// InferenceCallbacks interface direct injection implements, so initLhc and
 // everything below it sees callback operations, full stop. Every
 // operation is the same five-step pipeline (Flow 2): bound the input where
 // DD-7 applies, render the kind's prompt template into single-turn messages,

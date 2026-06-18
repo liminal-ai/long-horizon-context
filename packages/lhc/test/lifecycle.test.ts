@@ -291,7 +291,7 @@ describe("TC-5.2 / AC-5.3: replay determinism on a fresh thread", () => {
   }, 60000);
 });
 
-describe("TC-5.3 / AC-5.4: teardown continuity — fresh createSdk between phase groups", () => {
+describe("TC-5.3 / AC-5.4: teardown continuity — fresh initLhc between phase groups", () => {
   it("yields final pull, health, and materialized file identical to the uninterrupted run's", async () => {
     const teardown = await runLifecycle(store, {
       name: "teardown",

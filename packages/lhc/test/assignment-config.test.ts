@@ -7,7 +7,7 @@
 // supplies no overrides (AC-6.4).
 import { describe, expect, it } from "vitest";
 import * as api from "../src/index.js";
-import { createSdk, type Lhc, type ModelAssignment } from "../src/index.js";
+import { initLhc, type Lhc, type ModelAssignment } from "../src/index.js";
 import {
   DEFAULT_GUARDS,
   resolveGuards,
@@ -59,7 +59,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
       chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v1" },
     };
     expect(() =>
-      createSdk({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
+      initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
     ).not.toThrow();
   });
 
@@ -67,7 +67,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
     // Same as above but explicit about the deterministic omission: a config
     // that carries only the four inference types is a valid production config.
     const { call } = recordingCall();
-    const sdk = createSdk({
+    const sdk = initLhc({
       mode: "manual",
       inference: {
         call,
@@ -103,7 +103,7 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
       },
     };
     expect(() =>
-      createSdk({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
+      initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } }),
     ).not.toThrow();
   });
 });
@@ -128,7 +128,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
   it("construction with no guards succeeds (defaults applied at construction)", () => {
     const { call } = recordingCall();
     expect(() =>
-      createSdk({
+      initLhc({
         mode: "manual",
         inference: {
           call,
@@ -144,7 +144,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
 describe("TC-6.4a: inference types resolve to a default provider lane and model (AC-6.4)", () => {
   it("with no explicit overrides, every inference op routes to the default codex / gpt-5.4-mini lane", async () => {
     const { call, log } = recordingCall();
-    const sdk = createSdk({ mode: "manual", inference: { call } });
+    const sdk = initLhc({ mode: "manual", inference: { call } });
     for (const op of INFERENCE_OPS) {
       await op.run(sdk);
     }

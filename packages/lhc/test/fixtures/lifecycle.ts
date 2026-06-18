@@ -22,7 +22,7 @@
 import { join } from "node:path";
 import {
   createDeterministicProvider,
-  createSdk,
+  initLhc,
   type BatchResult,
   type InferenceConfig,
   type CompactReceipt,
@@ -59,7 +59,7 @@ export const LIFECYCLE_PROFILE = {
 // sequence, phase names, and every other configuration value stay owned here
 // so the deterministic leg and the real leg run THE SAME lifecycle.
 export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
-  return createSdk({
+  return initLhc({
     ...(inference !== undefined
       ? { inference }
       : { provider: createDeterministicProvider() }),
@@ -194,7 +194,7 @@ export interface LifecycleOptions {
   // Distinguishes the thread file and materialize target so replay and
   // teardown legs run side by side in one store (same dir ⇒ same header cwd).
   name?: string;
-  // TC-5.3: a fresh createSdk between the intake / compact / mutation /
+  // TC-5.3: a fresh initLhc between the intake / compact / mutation /
   // render phase groups — every group boundary is a quiescent point (no
   // queued work, no running drain), so the abandoned instance can never act
   // after its group ends.

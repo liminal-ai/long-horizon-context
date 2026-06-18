@@ -50,7 +50,7 @@ export interface SdkViewConfig {
   compactThreshold?: number; // status trigger; default 160000
 }
 
-// Every optional filled by createSdk's central defaults; profiles resolved
+// Every optional filled by initLhc's central defaults; profiles resolved
 // to complete, validated entries keyed by name.
 export interface ResolvedViewConfig {
   profiles: Readonly<Record<string, ViewProfile>>;

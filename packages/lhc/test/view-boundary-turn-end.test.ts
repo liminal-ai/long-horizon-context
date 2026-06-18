@@ -6,7 +6,7 @@
 // commit — no host-called advance surface exists and no test invents one;
 // rendering is proven through real `pull` calls.
 import { afterEach, describe, expect, it } from "vitest";
-import { createSdk, type Lhc, type SdkViewConfig } from "../src/index.js";
+import { initLhc, type Lhc, type SdkViewConfig } from "../src/index.js";
 import {
   boundaryTokens,
   createProviderDouble,
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }): Lhc {
-  return createSdk({ provider: createProviderDouble(), mode: "manual", view });
+  return initLhc({ provider: createProviderDouble(), mode: "manual", view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

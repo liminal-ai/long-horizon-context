@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SQLInputValue } from "node:sqlite";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   estimateTokens,
   queueDetail,
   threads,
@@ -39,7 +39,7 @@ async function newThread(): Promise<string> {
 }
 
 function sdkFor(provider: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
-  return createSdk({
+  return initLhc({
     provider,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },

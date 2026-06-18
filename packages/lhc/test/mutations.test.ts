@@ -16,7 +16,7 @@
 // cli-process-mutations.test.ts (process suite).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  createSdk,
+  initLhc,
   deterministicText,
   estimateTokens,
   messages,
@@ -72,7 +72,7 @@ function manualSdk(
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
   if (overrides.clock !== undefined) config.clock = overrides.clock;
-  return createSdk(config);
+  return initLhc(config);
 }
 
 async function send(

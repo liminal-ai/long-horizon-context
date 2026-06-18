@@ -117,7 +117,7 @@ describe("FC-0.4: fixture builders", () => {
 
 import { afterEach, beforeEach } from "vitest";
 import {
-  createSdk,
+  initLhc,
   intakeStream,
   messages,
   turns,
@@ -240,10 +240,10 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 });
 
-describe("FC-0.1 (production seam): createSdk assembles with the double injected where production adapters go", () => {
+describe("FC-0.1 (production seam): initLhc assembles with the double injected where production adapters go", () => {
   it("resolves config defaults centrally and carries the injected provider and mode", () => {
     const double = createProviderDouble();
-    const sdk = createSdk({ provider: double, mode: "manual" });
+    const sdk = initLhc({ provider: double, mode: "manual" });
     expect(sdk.config.provider).toBe(double);
     expect(sdk.config.mode).toBe("manual");
     expect(sdk.config.retry).toEqual({ budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 });
@@ -256,10 +256,11 @@ describe("FC-0.1 (production seam): createSdk assembles with the double injected
     // The Epic 01 surfaces ride the assembled SDK.
     expect(sdk.threads.newThread).toBeTypeOf("function");
     expect(sdk.intakeStream.messageEvents).toBeTypeOf("function");
+    expect(sdk.intakeStream.initLhc).toBeTypeOf("function");
   });
 
   it("background mode is a validated construction option (behavior lands in Story 1)", () => {
-    const sdk = createSdk({ provider: createProviderDouble(), mode: "background" });
+    const sdk = initLhc({ provider: createProviderDouble(), mode: "background" });
     expect(sdk.scheduler.mode).toBe("background");
     expect(() => sdk.scheduler.poke("th_x")).not.toThrow();
   });
@@ -267,21 +268,21 @@ describe("FC-0.1 (production seam): createSdk assembles with the double injected
   it("rejects malformed config at construction: bad mode, incomplete provider, bad policy values", () => {
     const double = createProviderDouble();
     expect(() =>
-      createSdk({ provider: double, mode: "later" as unknown as "manual" }),
+      initLhc({ provider: double, mode: "later" as unknown as "manual" }),
     ).toThrow(/mode/);
     const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
     expect(() =>
-      createSdk({ provider: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
+      initLhc({ provider: incomplete as unknown as InferenceCallbacks, mode: "manual" }),
     ).toThrow(/missing operation/);
     expect(() =>
-      createSdk({
+      initLhc({
         provider: double,
         mode: "manual",
         chunkPolicy: { targetProjectedTokens: 4400, maxProjectedTokens: 2200 },
       }),
     ).toThrow(/chunkPolicy/);
     expect(() =>
-      createSdk({
+      initLhc({
         provider: double,
         mode: "manual",
         retry: { budget: 0, backoffBaseMs: 0, backoffCapMs: 0 },

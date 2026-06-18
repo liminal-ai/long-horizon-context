@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSdk, type Lhc, type MessageEventInput } from "../src/index.js";
+import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
 import {
   createProviderDouble,
   derivedThreadFixture,
@@ -236,7 +236,7 @@ function trajectoryBatch(batch: BoundaryGolden["batches"][number]): MessageEvent
 async function replayTrajectory(
   golden: BoundaryGolden,
 ): Promise<Array<{ position: number; zoneTokens: number }>> {
-  const sdk = createSdk({
+  const sdk = initLhc({
     provider: createProviderDouble(),
     mode: "manual",
     view: { visibility: golden.budgets },

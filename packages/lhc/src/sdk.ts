@@ -110,7 +110,7 @@ export type { DrainReport, Scheduler, SchedulerMode } from "./shared-tech/schedu
 
 // Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
 // ModelCall boundary and the per-kind assignment config — type-only; the
-// adapter and registry are construction internals behind createSdk.
+// adapter and registry are construction internals behind initLhc.
 export type {
   InferenceConfig,
   ModelAssignment,
@@ -124,7 +124,7 @@ export { type ProviderProvenance } from "./shared-tech/derivation.js";
 // The config-selectable prompt-name catalog (E05-NB-2): the full set of names
 // a per-kind assignment may select, and the default name per kind. Exposed so
 // operators discover valid prompt names from the SDK surface without reading
-// source. The registry itself stays a construction internal behind createSdk.
+// source. The registry itself stays a construction internal behind initLhc.
 export {
   DEFAULT_PROMPT_NAMES,
   PROMPT_NAMES,
@@ -198,7 +198,7 @@ export type {
   MessageEventInput,
 } from "./intake-stream/index.js";
 
-// ── SDK assembly (DD-6/DD-7) ─────────────────────────────────────
+// ── LHC initialization (DD-6/DD-7) ────────────────────────────────
 
 export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
 
@@ -282,9 +282,13 @@ export interface LoggingSurface {
   ): Promise<OpResult<loggingDomain.StoredLogEntry[]>>;
 }
 
+export type IntakeStreamSurface = typeof intakeStreamDomain & {
+  initLhc(config: SdkConfig): Lhc;
+};
+
 export interface Lhc {
   threads: typeof threadsDomain;
-  intakeStream: typeof intakeStreamDomain;
+  intakeStream: IntakeStreamSurface;
   messages: typeof messagesDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
@@ -304,15 +308,17 @@ export interface Lhc {
   drainSettled(ref: threadsDomain.ThreadRef): Promise<void>;
 }
 
+const INIT_CONFIG_PREFIX = "initLhc config";
+
 function requirePositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new TypeError(`createSdk config: ${name} must be a positive number, got ${value}`);
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: ${name} must be a positive number, got ${value}`);
   }
 }
 
 function requireNonNegative(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`createSdk config: ${name} must be a non-negative number, got ${value}`);
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: ${name} must be a non-negative number, got ${value}`);
   }
 }
 
@@ -385,11 +391,11 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 // before anything is assembled (AC-1.1, AC-1.3).
 function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbacks {
   if (typeof inference.call !== "function") {
-    throw new TypeError("createSdk config: inference.call must be a function");
+      throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.call must be a function`);
   }
   const provided = inference.assignments ?? {};
   if (provided === null || typeof provided !== "object") {
-    throw new TypeError("createSdk config: inference.assignments must be an object");
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments must be an object`);
   }
 
   const inferenceKeys = new Set<string>(Object.keys(DEFAULT_INFERENCE_ASSIGNMENTS));
@@ -398,7 +404,7 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
   for (const key of Object.keys(provided)) {
     if (!inferenceKeys.has(key)) {
       throw new TypeError(
-        `createSdk config: inference.assignments has unknown derivation type "${key}"`,
+        `${INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type "${key}"`,
       );
     }
   }
@@ -409,19 +415,19 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
     const assignment = provided[kind];
     if (assignment === undefined) continue; // filled from defaults below
     if (assignment === null || typeof assignment !== "object") {
-      throw new TypeError(`createSdk config: inference.assignments.${kind} must be an object`);
+      throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments.${kind} must be an object`);
     }
     for (const field of ["provider", "model", "prompt"] as const) {
       const value = assignment[field];
       if (typeof value !== "string" || value.trim() === "") {
         throw new TypeError(
-          `createSdk config: inference.assignments.${kind}.${field} must be a non-empty string`,
+          `${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.${field} must be a non-empty string`,
         );
       }
     }
     if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
       throw new TypeError(
-        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
+        `${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
       );
     }
   }
@@ -449,24 +455,24 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
   });
 }
 
-// The only assembly path: provider, mode, clock, and policy enter here.
+// The only initialization path: inference callbacks, mode, clock, and policy enter here.
 // Config mistakes are programmer errors at construction and throw; operating
 // failures after construction return OpResults per the error contract.
-export function createSdk(config: SdkConfig): Lhc {
+export function initLhc(config: SdkConfig): Lhc {
   // Inference callbacks arrive by direct injection or by the inference config
   // (Epic 05 DD-5); there is no named-provider registry and no
   // env/flag resolution path to fall back on. The XOR rule is validated
   // before anything downstream so the error names the caller's mistake, not
   // a symptom (AC-1.1).
   if (config.provider !== undefined && config.inference !== undefined) {
-    throw new TypeError("createSdk config: exactly one of provider or inference");
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of provider or inference`);
   }
   if (config.provider === undefined && config.inference === undefined) {
-    throw new TypeError("createSdk config: exactly one of provider or inference");
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of provider or inference`);
   }
   if (config.mode !== "background" && config.mode !== "manual") {
     throw new TypeError(
-      `createSdk config: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
+      `${INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
     );
   }
   let provider: InferenceCallbacks;
@@ -474,11 +480,11 @@ export function createSdk(config: SdkConfig): Lhc {
     provider = resolveInferenceCallbacks(config.inference);
   } else {
     if (config.provider === null || typeof config.provider !== "object") {
-      throw new TypeError("createSdk config: provider must implement InferenceCallbacks");
+      throw new TypeError(`${INIT_CONFIG_PREFIX}: provider must implement InferenceCallbacks`);
     }
     for (const operation of INFERENCE_CALLBACK_OPERATIONS) {
       if (typeof config.provider[operation] !== "function") {
-        throw new TypeError(`createSdk config: provider is missing operation ${operation}`);
+        throw new TypeError(`${INIT_CONFIG_PREFIX}: provider is missing operation ${operation}`);
       }
     }
     provider = config.provider;
@@ -507,14 +513,14 @@ export function createSdk(config: SdkConfig): Lhc {
   requireNonNegative(resolved.retry.backoffBaseMs, "retry.backoffBaseMs");
   requireNonNegative(resolved.retry.backoffCapMs, "retry.backoffCapMs");
   if (resolved.retry.backoffCapMs < resolved.retry.backoffBaseMs) {
-    throw new TypeError("createSdk config: retry.backoffCapMs must be >= retry.backoffBaseMs");
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: retry.backoffCapMs must be >= retry.backoffBaseMs`);
   }
   requirePositive(resolved.smoothing.maxInferenceTokens, "smoothing.maxInferenceTokens");
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
   requirePositive(resolved.toolResult.largeTierTokens, "toolResult.largeTierTokens");
   if (resolved.toolResult.largeTierTokens < resolved.toolResult.smallTierTokens) {
     throw new TypeError(
-      "createSdk config: toolResult.largeTierTokens must be >= smallTierTokens",
+      `${INIT_CONFIG_PREFIX}: toolResult.largeTierTokens must be >= smallTierTokens`,
     );
   }
   requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");
@@ -523,7 +529,7 @@ export function createSdk(config: SdkConfig): Lhc {
   requirePositive(resolved.chunkPolicy.targetProjectedTokens, "chunkPolicy.targetProjectedTokens");
   if (resolved.chunkPolicy.maxProjectedTokens < resolved.chunkPolicy.targetProjectedTokens) {
     throw new TypeError(
-      "createSdk config: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens",
+      `${INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens`,
     );
   }
 
@@ -651,9 +657,14 @@ export function createSdk(config: SdkConfig): Lhc {
       }),
   };
 
+  const intakeStreamSurface: IntakeStreamSurface = {
+    ...intakeStreamDomain,
+    initLhc,
+  };
+
   return {
     threads: threadsDomain,
-    intakeStream: scopeSurface(intakeStreamDomain, seam),
+    intakeStream: scopeSurface(intakeStreamSurface, seam),
     messages: scopeSurface(messagesDomain, seam),
     turns: scopeSurface(turnsDomain, seam),
     threadView: scopeSurface<ThreadViewSurface>(
@@ -683,3 +694,6 @@ export function createSdk(config: SdkConfig): Lhc {
     },
   };
 }
+
+/** @deprecated Use initLhc. */
+export const createSdk = initLhc;

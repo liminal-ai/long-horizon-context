@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  createSdk,
+  initLhc,
   deterministicText,
   estimateTokens,
   messages,
@@ -49,7 +49,7 @@ function sdkFor(
     lease: { durationMs: 200 },
   };
   if (overrides.smoothing !== undefined) config.smoothing = overrides.smoothing;
-  return createSdk(config);
+  return initLhc(config);
 }
 
 async function send(
