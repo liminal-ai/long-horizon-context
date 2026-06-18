@@ -1,11 +1,11 @@
 // Epic 03 Story 3: the readiness sweep (TC-3.1–3.4, the classification-edge
-// architecture-risk legs, and the suite-wide zero-provider assertion's
+// architecture-risk legs, and the suite-wide zero-model assertion's
 // completion across all five thread-view ops). Every TC goes through the
 // real SDK surface (initLhc().threadView.sweep / .compact) against real
-// temp thread files; the provider double appears only in fixture setup and
+// temp thread files; the inference callbacks double appears only in fixture setup and
 // in TC-3.4's sanctioned heal drain — no Epic 03 operation may touch it.
 // Failed and blocked states are reached through production paths (scripted
-// provider failures consumed by real retry/exhaustion mechanics, real source
+// inference callback failures consumed by real retry/exhaustion mechanics, real source
 // damage on the sacrificial sibling), never by writing derivation rows.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SweepReceipt } from "../src/index.js";
@@ -13,7 +13,7 @@ import {
   assertSweepReceiptShape,
   blockedSiblingThread,
   classifyFailureReason,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   openRaw,
   PERMANENT_FAILURE_REASON,
@@ -111,7 +111,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     store.cleanup();
   });
 
-  it("TC-3.1: buckets the five seeded states, requeues only the transient failure, returns without waiting, zero provider calls", async () => {
+  it("TC-3.1: buckets the five seeded states, requeues only the transient failure, returns without waiting, zero model calls", async () => {
     const captured = fixture.double.captureInputs();
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
 
@@ -174,7 +174,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(workRowsFor(fixture.filePath, "tool_result_summary", permanentId)).toBe(0);
 
     // Nothing requeued anywhere else, and the sweep itself called no
-    // provider (AC-3.1: no derivation, no model calls).
+    // inference callbacks (AC-3.1: no derivation, no model calls).
     const allRequeued = swept.value.owners.flatMap((line) => line.requeued);
     expect(allRequeued).toEqual([transientId]);
     expect(captured.length).toBe(0);
@@ -213,7 +213,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     ]);
   });
 
-  it("zero-provider assertion across all five ops (architecture-risk): pull, status, compact, sweep, materialize", async () => {
+  it("zero-model assertion across all five ops (architecture-risk): pull, status, compact, sweep, materialize", async () => {
     const captured = fixture.double.captureInputs();
     const before = captured.length;
 
@@ -231,7 +231,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
 
     expect(pulled.ok && status.ok && compacted.ok && swept.ok).toBe(true);
     // Epic 03 Story 5 (sanctioned amendment): materialize is real now — it
-    // succeeds, and like the other four it still calls no provider.
+    // succeeds, and like the other four it still calls no model.
     expect(materialized.ok).toBe(true);
     expect(captured.length).toBe(before);
   });
@@ -275,7 +275,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     // failed transient entries that share one queue site — the owner's
     // already_queued noop is what keeps the second ask from double-queuing,
     // and this test is what notices if Epic 02's requeue ever stops nooping.
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
       mode: "manual",
@@ -305,15 +305,15 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
 
     // The deterministic rendering side does not create a paired requeue here.
     const rendering = ownerLine(swept.value, "turns", "turn_rendering");
-    const projection = ownerLine(swept.value, "turns", "smooth_turn_compression");
-    const requeued = [...rendering.requeued, ...projection.requeued];
+    const compression = ownerLine(swept.value, "turns", "smooth_turn_compression");
+    const requeued = [...rendering.requeued, ...compression.requeued];
     expect(requeued).toEqual([]);
-    expect(rendering.inFlight + projection.inFlight).toBe(0);
+    expect(rendering.inFlight + compression.inFlight).toBe(0);
     expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(0);
   });
 
   it("an unclassified reason code lands in permanentFailed with its literal reason and is never requeued", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
       mode: "manual",
@@ -427,7 +427,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // full receipt embeds (Story 2's "absent" placeholder is gone from the
     // vocabulary), and the embedded requeue's poke-on-commit lands on the
     // background scheduler — the production repair path needs no drain call.
-    const bg = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "background" });
+    const bg = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "background" });
     const receipt = await bg.threadView.compact(
       { filePath: fixture.filePath },
       { profile: "coding" },
@@ -444,7 +444,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
 
     // The heal leg — the one sanctioned test-setup use of inference
     // machinery: drainSettled awaits the poked background drain over the
-    // requeued row. No Epic 03 operation below touches the provider.
+    // requeued row. No Epic 03 operation below touches inference callbacks.
     await bg.drainSettled({ filePath: fixture.filePath });
 
     const healed = await reportEntry(

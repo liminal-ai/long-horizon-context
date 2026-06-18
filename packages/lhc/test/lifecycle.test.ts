@@ -104,7 +104,7 @@ function comparableSessionFile(lifecycleRun: LifecycleRun): string {
 }
 
 describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK configuration", () => {
-  it("every phase operation returns ok with the deterministic provider only", () => {
+  it("every phase operation returns ok with deterministic inference callbacks", () => {
     const { phases } = run;
     expect(phases.create.ok).toBe(true);
     for (const batch of phases.intake) expect(batch.ok).toBe(true);

@@ -6,7 +6,7 @@
 // INDEPENDENT pull re-measured with the same estimator, on a compacted
 // fixture, a boundary-advanced fixture (short forms costed short, AC-2.2),
 // and a never-compacted thread (meta null, tail-only, AC-2.4). Reads are
-// pure (AC-1.4 contract): read-only delta assert, zero provider calls.
+// pure (AC-1.4 contract): read-only delta assert, zero model calls.
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -19,7 +19,7 @@ import {
   type ViewContentsReport,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   expectReadOnly,
   tempStore,
@@ -152,7 +152,7 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
 
 // A small never-compacted thread: two closed turns, fully drained.
 async function neverCompactedThread(): Promise<{ filePath: string; sdk: Lhc }> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -268,7 +268,7 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
     // Small budgets so a real intake post-commit advance moves the boundary
     // into the tail (Epic 03 Story 4 mechanics — never a hand-set position).
     const sdk = initLhc({
-      inferenceCallbacks: createProviderDouble(),
+      inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       view: { visibility: { maxTokens: 100, targetTokens: 60 } },
     });
@@ -370,7 +370,7 @@ describe("TC-2.3 / AC-2.4: never-compacted thread reports tail-only under the sa
 });
 
 describe("AC-1.4 contract: view and describe are pure reads", () => {
-  it("repeated calls are deep-equal, leave no delta, and call no provider — including under a throwing provider", async () => {
+  it("repeated calls are deep-equal, leave no delta, and call no model — including under a throwing inference callback", async () => {
     const fixture = await degradedCompactedThread();
     const { filePath, sdk, double } = fixture;
     const captured = double.captureInputs();
@@ -384,10 +384,10 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     expect(second).toEqual(first);
     expect(captured).toHaveLength(0);
 
-    // A provider that throws on contact: both reads stay provider-free
-    // structurally (the zero-provider assert extended to Story 3's ops).
+    // Inference callbacks that throw on contact: both reads stay inference-callback-free
+    // structurally (the zero-model assert extended to Story 3's ops).
     const refuse = (): never => {
-      throw new Error("provider must never be called by a read operation");
+      throw new Error("inference callbacks must never be called by a read operation");
     };
     const throwing: InferenceCallbacks = {
       smoothPrompt: refuse,
@@ -406,7 +406,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
   });
 
   it("inspect.view on a missing thread is thread_not_found, not a shape error", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const missing = await sdk.inspect.view({ filePath: store.threadPath("missing") });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;

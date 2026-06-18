@@ -9,7 +9,7 @@ import { initLhc, messages, turns, type Lhc, type VisibilityBudgets } from "../s
 import {
   blockedSiblingThread,
   corruptedVariantThread,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   fireViewInjection,
   openRaw,
@@ -39,7 +39,7 @@ afterAll(() => {
 
 function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
   return initLhc({
-    inferenceCallbacks: createProviderDouble(),
+    inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
   });
@@ -260,7 +260,7 @@ describe("FC-0.4: the two failed forms carry distinguishable reason classes (Sto
     );
 
     // Not a bare retry-exhausted marker: the persisted reason is the final
-    // provider failure's, classifiable by the sweep's reason-code table.
+    // inference callback failure's, classifiable by the sweep's reason-code table.
     expect(transient?.reason).toBe(TRANSIENT_EXHAUST_REASON);
     expect(transient?.reason).toMatch(/^rate_limit:/);
     expect(transient?.metadata?.attempts).toBe(3);

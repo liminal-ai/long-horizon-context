@@ -120,11 +120,11 @@ export {
 } from "./legacy.js";
 export { setIntakeClock, setIntakeWalkHook, type IntakeWalkHook } from "./intake-seam.js";
 export {
-  createProviderDouble,
-  ProviderDouble,
+  createInferenceCallbacksDouble,
+  InferenceCallbacksDouble,
   type CapturedInput,
-  type ProviderOpName,
-} from "./provider-double.js";
+  type InferenceCallbackOpName,
+} from "./inference-callbacks-double.js";
 export {
   registerTestWorkHandlers,
   testWorkHandlers,

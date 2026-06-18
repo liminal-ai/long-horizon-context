@@ -52,8 +52,8 @@ const realKey = "notRan" in suiteEnv ? undefined : suiteEnv.key;
 const realModel = "notRan" in suiteEnv ? DEFAULT_OPENROUTER_MODEL : suiteEnv.model;
 emitRealSuiteAccounting(suiteEnv);
 
-// The deterministic provider's signature, two grains: the design's anchored
-// form-content pattern, and a digest-bearing scan pattern for "appears
+// Deterministic inference callback markers, two grains: the design's anchored
+// derivation-content pattern, and a digest-bearing scan pattern for "appears
 // anywhere" sweeps over served views and materialized files.
 const MARKER_AT_START =
   /^(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;

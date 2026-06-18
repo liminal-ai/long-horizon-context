@@ -1,5 +1,5 @@
 // Story 6 (Epic 02): messages.deleteMessage and turns.deleteTurn — Flow 6.
-// Projection-level removal with the event log intact: a deleted message
+// Thread-view-level removal with the event log intact: a deleted message
 // leaves reads and its turn's membership while its source events stay in
 // the Epic 01 read-back (TC-6.1); its own forms drop while the turn and
 // chunk clear and re-queue for minus-one composition, the cascade stopping
@@ -35,7 +35,7 @@ import {
   type OpResult,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readChunks,
   readDerivedForms,
@@ -140,7 +140,7 @@ async function toolRunThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
-// Scripted lower-band projections of a fixed size, every other operation on
+// Scripted smooth-turn compressions of a fixed size, every other operation on
 // the deterministic double — the TC-3.6 pattern for exact chunk membership.
 const PROJ = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
 function withScriptedProjections(base: InferenceCallbacks): InferenceCallbacks {
@@ -175,7 +175,7 @@ async function sendPromptTurn(sdk: Lhc, filePath: string, n: number): Promise<vo
 
 describe("TC-6.1 / AC-6.1: a deleted message leaves reads and membership; its events remain", () => {
   it("deleting a tool-result message removes it from message reads and turn membership, not from event read-back", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await toolRunThread(sdk);
     const eventsBefore = unwrap(await intakeStream.listEvents({ filePath }));
@@ -204,7 +204,7 @@ describe("TC-6.1 / AC-6.1: a deleted message leaves reads and membership; its ev
 
 describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues upward, stops at the chunk", () => {
   it("the deleted message's forms are gone, its turn and chunk re-queue, chunk 2 is byte-stable", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     // max=1: every turn forms its own immediately closed chunk — two
     // chunks, both with summaries (the TC-5.2 reach fixture).
     const sdk = manualSdk(double, {
@@ -278,7 +278,7 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
 
 describe("TC-6.3 / AC-6.3 (architecture risk): prompt protection routes to the turn surface", () => {
   it("deleting a turn-initiating prompt is refused naming the turn and the turns-delete path; nothing changes", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await toolRunThread(sdk);
     const before = await snapshot(filePath);
@@ -299,7 +299,7 @@ describe("TC-6.3 / AC-6.3 (architecture risk): prompt protection routes to the t
 
 describe("TC-6.4 / AC-6.4: turn delete removes the turn and its messages from reads; events remain", () => {
   it("a three-message turn leaves turn reads, message reads, and chunk membership; event read-back is byte-stable", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     await send(sdk, filePath, [
@@ -344,14 +344,14 @@ describe("TC-6.4 / AC-6.4: turn delete removes the turn and its messages from re
 
 describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaining members; boundaries never move", () => {
   it("deleting one of chunk 1's two turns rebuilds its summaries from the survivor; chunk 2 and all boundaries are identical", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = twoTurnChunkSdk(double);
     const filePath = await newThread();
     for (let n = 1; n <= 5; n += 1) await sendPromptTurn(sdk, filePath, n);
     await drain(sdk, filePath);
 
     // Fixture sanity: c1{t1,t2} and c2{t3,t4} closed with summaries, c3{t5}
-    // still open — exact membership by the scripted projection size.
+    // still open — exact membership by the scripted compression size.
     const chunksBefore = readChunks(filePath);
     expect(chunksBefore.members).toEqual([
       { chunkId: "c1", turnId: "t1", memberIdx: 0 },
@@ -377,8 +377,8 @@ describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaini
     const captured = double.captureInputs();
     await drain(sdk, filePath);
 
-    // The rebuilt summaries read exactly one member projection. Detailed is
-    // deterministic material assembly; brief still exposes its provider input.
+    // The rebuilt summaries read exactly one member compression. Detailed is
+    // deterministic material assembly; brief still exposes its inference-callback input.
     const brief = captured.filter((call) => call.op === "summarizeChunkBrief");
     expect(brief).toHaveLength(1);
     expect((brief[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([
@@ -413,7 +413,7 @@ describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaini
 
 describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summaries — absent, never failed", () => {
   it("deleting every turn in a chunk leaves an empty chunk with no summary rows, no queued rebuild, and clean reads", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = twoTurnChunkSdk(double);
     const filePath = await newThread();
     for (let n = 1; n <= 3; n += 1) await sendPromptTurn(sdk, filePath, n);
@@ -469,7 +469,7 @@ describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summar
 
 describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double delete included", () => {
   it("open-turn target, bogus id, and a second delete of the same id refuse with stable codes; the record is identical after each", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     // t1 closed {m1 prompt, m2 answer}; t2 open {m4 prompt}.
@@ -512,7 +512,7 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
   });
 
   it("the turn surface refuses the same way: open turn, bogus id, double delete", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     await send(sdk, filePath, [
@@ -547,7 +547,7 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
   });
 
   it("deleting a turn whose messages were individually deleted first still works (live-row membership walk)", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     await send(sdk, filePath, [
@@ -572,7 +572,7 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
 
 describe("background mode: delete-and-walk-away (production path)", () => {
   it("the cascade's enqueue pokes ride the commit; the minus-one rebuild runs with no further call", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, { mode: "background" });
     const filePath = await newThread();
     await send(sdk, filePath, [

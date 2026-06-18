@@ -8,7 +8,7 @@ import {
   type MessageEventInput,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   tempStore,
   validEvent,
   type TempStore,
@@ -41,7 +41,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
 }
 
 async function send(filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
-  const sdk = sdkFor(createProviderDouble());
+  const sdk = sdkFor(createInferenceCallbacksDouble());
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(result.error.reason);
 }
@@ -92,7 +92,7 @@ describe("Story 5: runtime-change typing", () => {
   });
 
   it("places typed runtime-change blocks verbatim in constructed turns in stream order", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();

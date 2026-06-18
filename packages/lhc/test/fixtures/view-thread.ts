@@ -1,9 +1,9 @@
 // The Epic 03 derived-thread fixture (Story 0, FC-0.3/0.4/0.5): one recorded
 // conversation — 12 turns, 4 chunks, tool-heavy middle — drained through the
 // real Epic 02 machinery (intake → enqueue → drain → handlers) against the
-// deterministic provider double into known form states. States are reached
+// deterministic inference callbacks double into known form states. States are reached
 // through production paths, never hand-written rows (the anti-shim line
-// FC-0.3 enforces): the failed states come from scripted provider failures
+// FC-0.3 enforces): the failed states come from scripted inference callback failures
 // consumed by the real retry/exhaustion mechanics, and blocked comes from
 // real source damage on a sacrificial sibling thread. Every later Epic 03
 // story compacts against what this builder returns.
@@ -19,7 +19,7 @@ import {
   type MutationResult,
 } from "../../src/index.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
-import { createProviderDouble, type ProviderDouble } from "./provider-double.js";
+import { createInferenceCallbacksDouble, type InferenceCallbacksDouble } from "./inference-callbacks-double.js";
 import { readChunks, type ChunkSnapshot } from "./threads.js";
 import { validEvent, type TempStore } from "./index.js";
 
@@ -85,7 +85,7 @@ function turnEvents(turn: number): MessageEventInput[] {
 export interface DerivedThreadFixture {
   filePath: string;
   sdk: Lhc;
-  double: ProviderDouble;
+  double: InferenceCallbacksDouble;
   turnIds: string[]; // t1..t12
   chunks: ChunkSnapshot;
   // The two manufactured failed subjects (tool_result_summary forms), reached
@@ -157,7 +157,7 @@ export async function derivedThreadFixture(
   const failures = opts.failures ?? true;
   const stragglers = opts.stragglers ?? false;
 
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
@@ -243,7 +243,7 @@ export async function derivedThreadFixture(
 
   // Shape invariants the chunk policy is pinned for: 12 closed turns in 4
   // chunks, the first three closed. A failure here means the deterministic
-  // substrate moved (provider output or tokenizer), not a flaky test.
+  // substrate moved (inference callback output or tokenizer), not a flaky test.
   fixture.chunks = readChunks(filePath);
   if (fixture.chunks.chunks.length !== 4) {
     throw new Error(
@@ -308,7 +308,7 @@ export async function stragglerVariantThread(store: TempStore): Promise<DerivedT
 export async function corruptedVariantThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc }> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -445,7 +445,7 @@ export async function mixedStateVariantThread(store: TempStore): Promise<MixedSt
 export async function blockedSiblingThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc; blockedTurnId: string }> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });

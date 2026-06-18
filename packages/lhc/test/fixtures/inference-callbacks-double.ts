@@ -18,7 +18,7 @@ import {
   type ToolRunReceipt,
 } from "../../src/index.js";
 
-export type ProviderOpName =
+export type InferenceCallbackOpName =
   | "smoothPrompt"
   | "summarizeToolResult"
   | "composeTurnRendering"
@@ -29,7 +29,7 @@ export type ProviderOpName =
 // Tests script by work-kind / form-kind vocabulary (the test plan writes
 // `failKind(prompt_smoothing, …)`); the double accepts those aliases as well
 // as the operation names themselves.
-const KIND_ALIASES: Record<string, ProviderOpName> = {
+const KIND_ALIASES: Record<string, InferenceCallbackOpName> = {
   smoothPrompt: "smoothPrompt",
   summarizeToolResult: "summarizeToolResult",
   composeTurnRendering: "composeTurnRendering",
@@ -45,9 +45,9 @@ const KIND_ALIASES: Record<string, ProviderOpName> = {
   chunk_summary_brief: "summarizeChunkBrief",
 };
 
-function resolveOpName(kind: string): ProviderOpName {
+function resolveOpName(kind: string): InferenceCallbackOpName {
   const op = KIND_ALIASES[kind];
-  if (op === undefined) throw new Error(`provider double: unknown operation/kind "${kind}"`);
+  if (op === undefined) throw new Error(`inference callbacks double: unknown operation/kind "${kind}"`);
   return op;
 }
 
@@ -58,14 +58,14 @@ interface FailScript {
 }
 
 export interface CapturedInput {
-  op: ProviderOpName;
+  op: InferenceCallbackOpName;
   input: unknown;
 }
 
-export class ProviderDouble implements InferenceCallbacks {
+export class InferenceCallbacksDouble implements InferenceCallbacks {
   private failNextScript: FailScript | null = null;
-  private readonly failByOp = new Map<ProviderOpName, FailScript>();
-  private readonly delayByOp = new Map<ProviderOpName, number>();
+  private readonly failByOp = new Map<InferenceCallbackOpName, FailScript>();
+  private readonly delayByOp = new Map<InferenceCallbackOpName, number>();
   private capturing = false;
   private readonly captured: CapturedInput[] = [];
 
@@ -100,7 +100,7 @@ export class ProviderDouble implements InferenceCallbacks {
   }
 
   private async run(
-    op: ProviderOpName,
+    op: InferenceCallbackOpName,
     input: unknown,
     text: string,
     suffix = "",
@@ -117,9 +117,9 @@ export class ProviderDouble implements InferenceCallbacks {
         return { ok: false, retryable: script.retryable, reason: script.reason };
       }
     }
-    // Output format shared with src/shared-tech/deterministic.ts so the double
-    // and the registry's "deterministic" provider produce byte-identical
-    // artifacts across in-process and spawned runs; the chunk-summary
+    // Output format shared with src/shared-tech/deterministic.ts so this double
+    // and deterministic inference callbacks produce byte-identical artifacts;
+    // the chunk-summary
     // receipt/outcome suffixes (AC-3.8) come from the same shared helpers.
     return { ok: true, text: deterministicText(op, input, text) + suffix };
   }
@@ -171,6 +171,6 @@ export class ProviderDouble implements InferenceCallbacks {
   }
 }
 
-export function createProviderDouble(): ProviderDouble {
-  return new ProviderDouble();
+export function createInferenceCallbacksDouble(): InferenceCallbacksDouble {
+  return new InferenceCallbacksDouble();
 }

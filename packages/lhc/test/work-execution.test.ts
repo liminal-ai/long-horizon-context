@@ -18,14 +18,14 @@ import {
   type MessageEventInput,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   registerTestWorkHandlers,
   tempStore,
   validEvent,
   type TempStore,
-  type ProviderDouble,
+  type InferenceCallbacksDouble,
 } from "./fixtures/index.js";
 
 function sleep(ms: number): Promise<void> {
@@ -63,7 +63,7 @@ async function send(
 }
 
 function manualSdk(
-  double: ProviderDouble,
+  double: InferenceCallbacksDouble,
   overrides: {
     clock?: () => Date;
     retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number };
@@ -110,7 +110,7 @@ function liveDetail(filePath: string): ReturnType<typeof queueDetail> {
 
 describe("TC-1.1: a drain runs queued items one at a time, in queue order, and reports each disposition", () => {
   it("three items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     let tick = 0;
     const base = Date.parse("2026-06-10T12:00:00.000Z");
     const sdk = manualSdk(double, { clock: () => new Date(base + 1000 * tick++) });
@@ -176,7 +176,7 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
 
 describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further pass", () => {
   it("a burst of two more batches during a slow in-flight drain yields exactly two passes and all artifacts", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.delayKind("prompt_smoothing", 100);
     const sdk = initLhc({
       inferenceCallbacks: double,
@@ -208,7 +208,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
 
 describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; first touch catches up", () => {
   it("an intake batch is processed with no drain call; drainSettled is the completion signal", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
       mode: "background",
@@ -241,7 +241,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(seeded.ok).toBe(true);
     expect(liveCount(filePath)).toBe(2);
 
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
       mode: "background",
@@ -254,7 +254,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     // list/show are read-only (Epic 04 DD-6, SV-01-001): like thread-view's
     // pull/status before them, they suppress the open announcement, so the
     // read schedules no first-touch catch-up — the leftover rows stay exactly
-    // as the dead process left them, and no provider call fires off a read.
+    // as the dead process left them, and no model call fires off a read.
     const read = await sdk.messages.listMessages({ filePath });
     expect(read.ok).toBe(true);
     await sdk.drainSettled({ filePath });
@@ -275,7 +275,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
 describe("TC-1.6 / AC-1.7: manual mode — rows accumulate durably and run only when drain is invoked", () => {
   it("queued work sits until work.drain; artifacts land after", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
@@ -295,7 +295,7 @@ describe("TC-1.6 / AC-1.7: manual mode — rows accumulate durably and run only 
 
 describe("TC-1.7 / AC-1.8: an unregistered kind lands failed_terminal with a stable reason and the drain continues", () => {
   it("a bogus-kind row ahead of a valid item fails with unknown_work_kind; the valid item still runs", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
 
@@ -332,7 +332,7 @@ describe("TC-1.7 / AC-1.8: an unregistered kind lands failed_terminal with a sta
 
 describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backoff eligibility gate", () => {
   it("fails twice then succeeds: artifact ready, report shows attempts=2", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
@@ -349,8 +349,8 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     expect(liveCount(filePath)).toBe(0);
   });
 
-  it("exhausts the budget: form failed with the final provider reason; the next item still ran; row deleted", async () => {
-    const double = createProviderDouble();
+  it("exhausts the budget: form failed with the final inference callback reason; the next item still ran; row deleted", async () => {
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt"), validEvent("turn_end")]);
@@ -383,7 +383,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
   });
 
   it("backoff gates the head and the head gates the queue: waiting stop, waitingUntil, and no skip-ahead", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     let nowMs = Date.parse("2026-06-10T12:00:00.000Z");
     const sdk = manualSdk(double, {
       clock: () => new Date(nowMs),
@@ -431,8 +431,8 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     expect(liveCount(filePath)).toBe(0);
   });
 
-  it("a non-retryable provider failure is terminal immediately", async () => {
-    const double = createProviderDouble();
+  it("a non-retryable inference callback failure is terminal immediately", async () => {
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
@@ -449,7 +449,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
   });
 
   it("maxItems stops the drain with max_items and reports the remainder", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [

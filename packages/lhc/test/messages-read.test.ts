@@ -4,7 +4,7 @@
 // owner report's form entries (DD-2), and the deleted-audit contract
 // (excluded by default, listable flagged on request, show never not-found).
 // Plus the architecture-risk legs: every read leaves observable state
-// unchanged (read-only delta, DD-6) and calls no provider.
+// unchanged (read-only delta, DD-6) and calls no model.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   initLhc,
@@ -16,7 +16,7 @@ import {
   type MessageEventInput,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   poisonMessageBlockJson,
   poisonMessageFormJson,
@@ -38,7 +38,7 @@ const TOOL_RESULT_CONTENT = [
 interface ReadFixture {
   filePath: string;
   sdk: Lhc;
-  double: ReturnType<typeof createProviderDouble>;
+  double: ReturnType<typeof createInferenceCallbacksDouble>;
 }
 
 // Two closed turns through real intake, fully drained against the
@@ -47,7 +47,7 @@ interface ReadFixture {
 // m2 text, m3 call, m4 result (turn 1; turn_end is event 5, no message);
 // m6 prompt, m7 text (turn 2). Source event orders 1,2,3,4,6,7.
 async function readFixture(store: TempStore): Promise<ReadFixture> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({
@@ -264,8 +264,8 @@ describe("TC-3.3 / AC-3.3: deleted messages are audit-visible, never silently mi
   });
 });
 
-describe("architecture risk: reads are read-only and provider-free (DD-6)", () => {
-  it("list and show in every mode leave observable state unchanged and call no provider", async () => {
+describe("architecture risk: reads are read-only and inference-callback-free (DD-6)", () => {
+  it("list and show in every mode leave observable state unchanged and call no model", async () => {
     const { filePath, double } = await readFixture(store);
     const captured = double.captureInputs();
     const before = await observableState(filePath);
@@ -288,7 +288,7 @@ describe("architecture risk: reads are read-only and provider-free (DD-6)", () =
 // rows. The background read-only proof needs the pending state the manual
 // read-only proof above cannot manufacture.
 async function pendingWorkThread(): Promise<string> {
-  const seeder = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
+  const seeder = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
   const filePath = store.threadPath();
   const created = await seeder.threads.newThread({
     filePath,
@@ -334,15 +334,15 @@ function rawWorkAndForms(filePath: string): Record<string, unknown> {
 }
 
 describe("architecture risk: background reads schedule no catch-up drain (DD-6, SV-01-001)", () => {
-  it("list and show through a background SDK with pending work call no provider and advance no form", async () => {
+  it("list and show through a background SDK with pending work call no model and advance no form", async () => {
     const filePath = await pendingWorkThread();
 
     // A fresh background SDK whose scheduler WOULD hang a first-touch catch-up
-    // drain — and the provider call that drain makes — off the open
+    // drain — and the model call that drain makes — off the open
     // announcement (openThreadDatabase → fireThreadTouch → scheduler.touch) if
     // list or show fired it. The touch-suppressed read scope is what stops it;
     // this is the production-path proof a manual-mode no-op seam cannot give.
-    const bgDouble = createProviderDouble();
+    const bgDouble = createInferenceCallbacksDouble();
     const bg = initLhc({ inferenceCallbacks: bgDouble, mode: "background" });
     const captured = bgDouble.captureInputs();
     const before = rawWorkAndForms(filePath);
@@ -366,7 +366,7 @@ describe("architecture risk: background reads schedule no catch-up drain (DD-6, 
     await bg.drainSettled({ filePath });
 
     // Reads only: every work-item and form row is exactly as before, and the
-    // background provider observed zero calls — no first-touch drain fired.
+    // background inference callbacks observed zero calls — no first-touch drain fired.
     expect(rawWorkAndForms(filePath)).toEqual(before);
     expect(captured).toHaveLength(0);
   });

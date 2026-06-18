@@ -9,13 +9,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { countLiveItems, initLhc, type Lhc } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   legacyEpic01ThreadFile,
   openRaw,
   readDerivedForms,
   registerTestWorkHandlers,
   tempStore,
-  type ProviderDouble,
+  type InferenceCallbacksDouble,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -27,7 +27,7 @@ afterEach(() => {
   store.cleanup();
 });
 
-function manualSdk(double: ProviderDouble): Lhc {
+function manualSdk(double: InferenceCallbacksDouble): Lhc {
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
@@ -51,7 +51,7 @@ describe("01F-001: terminal failure on pre-v5 queued rows lands the backfilled f
   it("retry exhaustion on a legacy row marks its backfilled form failed with final reason and attempts, row deleted; the rest of the legacy queue still runs", async () => {
     const filePath = store.threadPath();
     legacyEpic01ThreadFile(filePath, "th_legacy_terminal");
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
 
     double.failKind("prompt_smoothing", 99, {
@@ -94,11 +94,11 @@ describe("01F-001: terminal failure on pre-v5 queued rows lands the backfilled f
   it("a non-retryable failure on a legacy two-form item (turn_derivation) marks both backfilled forms failed", async () => {
     const filePath = store.threadPath();
     legacyEpic01ThreadFile(filePath, "th_legacy_blocked");
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
 
-    // Scripted on the handler's first provider operation (the double keys by
-    // provider op / form-kind aliases, not the work kind).
+    // Scripted on the handler's first inference callback operation (the double keys by
+    // inference callback op / form-kind aliases, not the work kind).
     double.failKind("turn_rendering", 1, {
       retryable: false,
       reason: "scripted legacy refusal (composeTurnRendering)",

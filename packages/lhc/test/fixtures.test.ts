@@ -113,7 +113,7 @@ describe("FC-0.4: fixture builders", () => {
   });
 });
 
-// ── Story 0 (Epic 02): provider double, shared types, fixture builders ──
+// ── Story 0 (Epic 02): inference callbacks double, shared types, fixture builders ──
 
 import { afterEach, beforeEach } from "vitest";
 import {
@@ -126,7 +126,7 @@ import {
   type InferenceResult,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   damagedSourceThread,
   multiStateThread,
   readDerivedForms,
@@ -161,9 +161,9 @@ const OPERATION_MARKERS = [
   "brief",
 ] as const;
 
-describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
+describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
   it("FC-0.1: implements all operations with marked, input-derived output", async () => {
-    const results = await Promise.all(callAllOperations(createProviderDouble()));
+    const results = await Promise.all(callAllOperations(createInferenceCallbacksDouble()));
     for (const [index, result] of results.entries()) {
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
@@ -171,7 +171,7 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
     }
     // Input-derived, not canned: a different input to the same operation
     // yields different marked output.
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const a = await double.smoothPrompt({ text: "first input" });
     const b = await double.smoothPrompt({ text: "second input" });
     if (!a.ok || !b.ok) throw new Error("double failed unscripted");
@@ -180,8 +180,8 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 
   it("FC-0.2: identical input yields identical output across double instances; operations are distinguishable", async () => {
-    const first = await Promise.all(callAllOperations(createProviderDouble()));
-    const second = await Promise.all(callAllOperations(createProviderDouble()));
+    const first = await Promise.all(callAllOperations(createInferenceCallbacksDouble()));
+    const second = await Promise.all(callAllOperations(createInferenceCallbacksDouble()));
     expect(first).toEqual(second);
     const texts = first.map((r) => (r.ok ? r.text : ""));
     expect(new Set(texts).size).toBe(6);
@@ -189,7 +189,7 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 
   it("FC-0.2: failNext drives fail-N-then-succeed with the scripted retryability", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failNext(2, { retryable: true });
     const r1 = await double.smoothPrompt({ text: "x" });
     const r2 = await double.summarizeChunkBrief({ memberProjections: ["y"] });
@@ -199,12 +199,12 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
     expect(r3.ok).toBe(true);
     // ...and exactly N calls consumed the script: the recovered output is
     // the deterministic one a fresh double produces.
-    const fresh = await createProviderDouble().smoothPrompt({ text: "x" });
+    const fresh = await createInferenceCallbacksDouble().smoothPrompt({ text: "x" });
     expect(r3).toEqual(fresh);
   });
 
   it("FC-0.2: failKind scripts terminal failure per operation, by kind alias, without touching other kinds", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("prompt_smoothing", 99, { retryable: false, reason: "content refusal" });
     const failed = await double.smoothPrompt({ text: "x" });
     expect(failed).toEqual({ ok: false, retryable: false, reason: "content refusal" });
@@ -213,7 +213,7 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 
   it("FC-0.2: delayKind injects latency on the scripted operation", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.delayKind("chunk_summary_detailed", 40);
     const before = Date.now();
     const result = await double.summarizeChunkDetailed({ memberProjections: ["p"] });
@@ -223,8 +223,8 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
   });
 
   it("scripting and capture state are per-instance — nothing leaks across doubles", async () => {
-    const scripted = createProviderDouble();
-    const clean = createProviderDouble();
+    const scripted = createInferenceCallbacksDouble();
+    const clean = createInferenceCallbacksDouble();
     const capturedScripted = scripted.captureInputs();
     scripted.failNext(1);
     const cleanResult = await clean.smoothPrompt({ text: "untouched" });
@@ -242,10 +242,9 @@ describe("FC-0.1 / FC-0.2: deterministic provider double", () => {
 
 describe("FC-0.1 (production seam): initLhc assembles with the double injected where production adapters go", () => {
   it("resolves config defaults centrally and carries the injected inference callbacks and mode", () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
     expect(sdk.config.inferenceCallbacks).toBe(double);
-    expect(sdk.config.provider).toBe(double);
     expect(sdk.config.mode).toBe("manual");
     expect(sdk.config.retry).toEqual({ budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 });
     expect(sdk.config.lease).toEqual({ durationMs: 120000 });
@@ -261,13 +260,13 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
   });
 
   it("background mode is a validated construction option (behavior lands in Story 1)", () => {
-    const sdk = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "background" });
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "background" });
     expect(sdk.scheduler.mode).toBe("background");
     expect(() => sdk.scheduler.poke("th_x")).not.toThrow();
   });
 
   it("rejects malformed config at construction: bad mode, incomplete callbacks, bad policy values", () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     expect(() =>
       initLhc({ inferenceCallbacks: double, mode: "later" as unknown as "manual" }),
     ).toThrow(/mode/);

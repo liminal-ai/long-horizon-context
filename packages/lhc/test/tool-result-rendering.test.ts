@@ -11,7 +11,7 @@ import {
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -78,7 +78,7 @@ function liveCount(filePath: string): number {
 
 describe("Story 2: tool-result rendering", () => {
   it("large tool results satisfy tool_result_summary by deterministic truncation with no work item", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -112,7 +112,7 @@ describe("Story 2: tool-result rendering", () => {
   });
 
   it("in-threshold tool-result summaries run through queued inference with tier target and guidance", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -164,7 +164,7 @@ describe("Story 2: tool-result rendering", () => {
   });
 
   it("tool-call arguments render as recorded with no tool_call_summary derivation", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -187,7 +187,7 @@ describe("Story 2: tool-result rendering", () => {
   });
 
   it("tail tool-call rendering preserves long recorded arguments without truncation", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const cmd = "x".repeat(240);
@@ -209,7 +209,7 @@ describe("Story 2: tool-result rendering", () => {
   });
 
   it("terminal in-threshold summary failure lands failed with reason while the source result remains intact", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 99, {
       retryable: true,
       reason: "scripted tool summary failure",

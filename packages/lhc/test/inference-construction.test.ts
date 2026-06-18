@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type ModelAssignment, type SdkConfig } from "../src/index.js";
 import {
   cannedResponses,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   readDerivedForms,
   recordingCall,
   tempStore,
@@ -44,7 +44,7 @@ describe("TC-1.1: inferenceCallbacks XOR inference (AC-1.1)", () => {
     const make = (): unknown =>
       initLhc({
         mode: "manual",
-        inferenceCallbacks: createProviderDouble(),
+        inferenceCallbacks: createInferenceCallbacksDouble(),
         inference: { call, assignments: validAssignments() },
       });
     expect(make).toThrow(TypeError);

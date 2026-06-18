@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SdkViewConfig } from "../src/index.js";
 import {
   boundaryTokens,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   seedTurnedToolResults,
   setViewInjectionHook,
   tempStore,
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }): Lhc {
-  return initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual", view });
+  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual", view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

@@ -6,12 +6,12 @@
 //     by drain mechanics that means item n's claim committed and item n-1's
 //     completion landed (the reclaim window for a kill is open);
 //   - from item `holdFrom` on, sleeps `holdMs` inside the handler before the
-//     provider call, keeping that item claimed-and-running while the parent
+//     model call, keeping that item claimed-and-running while the parent
 //     kills this process (TC-1.3) or drains from a second process (TC-1.4);
 //   - prints `DRAIN_DONE <report JSON>` if it survives to the end.
 import process from "node:process";
 import { initLhc } from "../../src/index.js";
-import { createProviderDouble } from "./provider-double.js";
+import { createInferenceCallbacksDouble } from "./inference-callbacks-double.js";
 import { registerTestWorkHandlers } from "./work-handlers.js";
 
 interface RunnerConfig {
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   if (raw === undefined) throw new Error("drain-runner: missing JSON config argument");
   const config = JSON.parse(raw) as RunnerConfig;
 
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",

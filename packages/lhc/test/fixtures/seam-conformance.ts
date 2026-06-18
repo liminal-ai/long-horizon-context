@@ -78,7 +78,7 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   assert.ok(created.ok, "conformance fixture: thread creation failed");
   // Turn 1 carries a tool run (smoothing, tool-call/result summaries,
-  // rendering, projection); turn 2 exists so turn 1's chunk closes under the
+  // rendering, compression); turn 2 exists so turn 1's chunk closes under the
   // tiny target policy and the two chunk summaries enqueue.
   const result = await sdk.intakeStream.messageEvents({ filePath }, [
     validEvent("user_prompt", { payload: { text: "please inspect the fixture file" } }),

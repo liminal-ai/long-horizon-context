@@ -1,10 +1,10 @@
 // Epic 05 Story 3 — TC-2.1 (AC-2.1, AC-2.2, AC-2.5) and TC-2.3 (AC-2.4): the
 // real adapter behind the unchanged Epic 02 seam. A seeded thread drains all
 // seven kinds to ready with the fake host's canned content; the same seeding
-// drained under the deterministic provider proves the handlers unchanged
+// drained under deterministic inference callbacks proves the handlers unchanged
 // (equivalence, AC-2.1). The canned text for the tool lanes deliberately
 // claims the wrong outcome — the stamped outcome must come from the record,
-// never provider prose (architecture risk: adapter parses model output).
+// never model prose (architecture risk: adapter parses model output).
 // Empty or whitespace-only success text is a classified retryable failure,
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
@@ -53,7 +53,7 @@ function adversarialResponses(): Record<DerivationType, string> {
 }
 
 // Turn 1 carries a clean tool run (smoothing, both tool summaries, rendering,
-// projection); turn 2 exists so turn 1's chunk closes under the tiny target
+// compression); turn 2 exists so turn 1's chunk closes under the tiny target
 // policy and both chunk summaries enqueue.
 async function seedSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   const filePath = store.threadPath();
@@ -163,7 +163,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     }
   });
 
-  it("handler equivalence: the deterministic provider lands the same rows with marker content and no provenance", async () => {
+  it("handler equivalence: deterministic inference callbacks land the same rows with marker content and no provenance", async () => {
     const { call } = recordingCall(adversarialResponses());
     const { sdk: adapterSdk } = inferenceSdk(call);
     const adapterForms = await drainAll(adapterSdk, await seedSevenKinds(adapterSdk, freshStore()));
@@ -180,7 +180,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     );
 
     // Same handler code, same record: the same form rows, subjects, and
-    // states land under both providers (message/turn/chunk ids are
+    // states land through both inference paths (message/turn/chunk ids are
     // deterministic functions of the event order).
     const rowKey = (derivation: Derivation): string =>
       `${derivation.subjectKind}|${derivation.subjectId}|${derivation.derivationType}|${derivation.state}`;
@@ -189,7 +189,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     for (const form of deterministicForms) {
       expect(form.state).toBe("ready");
       expect(form.content).toMatch(MARKER_PATTERN);
-      // The deterministic provider never sets provenance (AC-2.5).
+      // Deterministic inference callbacks never set provenance (AC-2.5).
       expect(form.metadata?.provenance).toBeUndefined();
     }
     for (const form of adapterForms) {

@@ -77,18 +77,18 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
       recordedAt: "2026-06-01T00:00:01.000Z",
     });
 
-    // Projection is intake-time, not retroactive: the new assistant_text
-    // projects; the legacy pre-Story-3 event stays event-only.
-    const projected = await messages.listMessages({ filePath });
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
-    expect(projected.value).toHaveLength(1);
-    expect(projected.value[0]!.messageId).toBe("m2");
-    expect(projected.value[0]!.sourceEventOrder).toBe(2);
-    expect(projected.value[0]!.blocks).toEqual([
+    // Message materialization is intake-time, not retroactive: the new
+    // assistant_text materializes; the legacy pre-Story-3 event stays event-only.
+    const materialized = await messages.listMessages({ filePath });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
+    expect(materialized.value).toHaveLength(1);
+    expect(materialized.value[0]!.messageId).toBe("m2");
+    expect(materialized.value[0]!.sourceEventOrder).toBe(2);
+    expect(materialized.value[0]!.blocks).toEqual([
       { blockType: "text", content: { text: "answered after upgrade" } },
     ]);
-    expect(projected.value[0]!.tokenEstimate).toBeGreaterThan(0);
+    expect(materialized.value[0]!.tokenEstimate).toBeGreaterThan(0);
   });
 
   it("listMessages on an untouched Story 2 file migrates on read and returns an empty list", async () => {
@@ -96,10 +96,10 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     legacyStory2ThreadFile(filePath, "th_legacy02", [legacyEvent]);
     expect(schemaVersionOf(filePath)).toBe(1);
 
-    const projected = await messages.listMessages({ filePath });
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
-    expect(projected.value).toEqual([]);
+    const materialized = await messages.listMessages({ filePath });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
+    expect(materialized.value).toEqual([]);
 
     expect(schemaVersionOf(filePath)).toBe(9);
 
@@ -130,10 +130,10 @@ describe("F-03-001: Story 2 thread files migrate before message write/read", () 
     });
 
     // No message was created for the skipped resend of the legacy event.
-    const projected = await messages.listMessages({ filePath });
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
-    expect(projected.value).toEqual([]);
+    const materialized = await messages.listMessages({ filePath });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
+    expect(materialized.value).toEqual([]);
   });
 });
 
@@ -232,13 +232,13 @@ describe("FC-0.5: migration v5 over a populated Epic 01 thread file", () => {
     expect(schemaVersionOf(filePath)).toBe(4);
 
     // Any SDK read migrates lazily; the read itself must succeed post-v5.
-    const projected = await messages.listMessages({ filePath });
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
+    const materialized = await messages.listMessages({ filePath });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
     expect(schemaVersionOf(filePath)).toBe(9);
 
     // Existing records intact through the production read surfaces.
-    expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
+    expect(materialized.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
     const events = await intakeStream.listEvents({ filePath });
     expect(events.ok).toBe(true);
     if (!events.ok) return;
@@ -353,13 +353,13 @@ describe("FC-0.1 (Epic 03): migration v6 over a populated Epic 02 thread file", 
     expect(schemaVersionOf(filePath)).toBe(5);
 
     // Any SDK read migrates lazily; the read itself must succeed post-v6.
-    const projected = await messages.listMessages({ filePath });
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
+    const materialized = await messages.listMessages({ filePath });
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
     expect(schemaVersionOf(filePath)).toBe(9);
 
     // The Epic 02 record is intact through the production read surface.
-    expect(projected.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
+    expect(materialized.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3"]);
 
     const db = openRaw(filePath);
     let boundaryBefore: { position: number; updatedAt: string };

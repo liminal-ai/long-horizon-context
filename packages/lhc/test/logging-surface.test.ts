@@ -10,7 +10,7 @@ import {
   type LogLevel,
   type MessageEventInput,
 } from "../src/index.js";
-import { createProviderDouble, openRaw, tempStore, validEvent } from "./fixtures/index.js";
+import { createInferenceCallbacksDouble, openRaw, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: ReturnType<typeof tempStore>;
 let sdk: Lhc;
@@ -128,7 +128,7 @@ describe("Flow 5: Derivation Logging", () => {
 
   it("TC-5.3a keeps fallback events in the log, not on ready derivations", async () => {
     const filePath = await newThread();
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
     const target = manualSdk(double);
     await sendTurn(target, filePath);

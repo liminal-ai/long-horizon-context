@@ -1,5 +1,5 @@
 // Story 1's registered test handlers: one per work kind, each calling the
-// matching provider operation with deterministic input derived from the
+// matching inference callback operation with deterministic input derived from the
 // item's source id and handing the resulting form content back through the
 // HandlerOutcome contract. Real handlers (Stories 2–3) read records; these
 // exist so the drain's mechanics — claim, retry, terminal paths, report —

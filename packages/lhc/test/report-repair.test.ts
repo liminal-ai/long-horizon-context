@@ -26,7 +26,7 @@ import {
 } from "../src/index.js";
 import {
   corruptTwoOpenTurns,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   damagedSourceThread,
   GAPPED_SMOOTHING_REASON,
   gappedRenderingThread,
@@ -34,7 +34,7 @@ import {
   readDerivedForms,
   tempStore,
   validEvent,
-  type ProviderDouble,
+  type InferenceCallbacksDouble,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -150,11 +150,11 @@ const MIXED_FAILED_REASON = "provider_failure: scripted exhaustion";
 
 async function mixedStateThread(): Promise<{
   sdk: Lhc;
-  double: ProviderDouble;
+  double: InferenceCallbacksDouble;
   filePath: string;
   drainReport: DrainReport;
 }> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = manualSdk(double);
   const filePath = await newThread();
   double.failKind("prompt_smoothing", 3, {
@@ -213,7 +213,7 @@ describe("TC-4.1 / AC-4.1: every landed form reads back in exactly one of the fo
 
 describe("TC-4.2 / AC-4.2 (architecture risk): retrying reads from pending + queue detail in the report row itself", () => {
   it("a form mid-retry reports pending with attempts=1 and the last error joined in — no queue API, distinguishable from first-wait", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     // Frozen clock + non-zero backoff hold the retry window open
     // deterministically: the failed attempt re-queues with eligible_at past
     // the (never-advancing) clock, so the drain stops on "waiting" and the
@@ -224,7 +224,7 @@ describe("TC-4.2 / AC-4.2 (architecture risk): retrying reads from pending + que
       retry: { budget: 3, backoffBaseMs: 50, backoffCapMs: 60000 },
     });
     const filePath = await newThread();
-    double.failNext(1, { retryable: true, reason: "transient provider blip" });
+    double.failNext(1, { retryable: true, reason: "transient inference callback blip" });
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "retry me" } }),
       validEvent("turn_end"),
@@ -240,7 +240,7 @@ describe("TC-4.2 / AC-4.2 (architecture risk): retrying reads from pending + que
     expect(retrying?.queue).toMatchObject({
       status: "queued",
       attempts: 1,
-      lastError: "transient provider blip",
+      lastError: "transient inference callback blip",
     });
     expect(retrying?.queue?.eligibleAt).toBeDefined();
 
@@ -296,8 +296,8 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
   });
 
   it("chunk summaries report under the turns owner, never under messages", async () => {
-    const double = createProviderDouble();
-    // Policy 1/1: every turn's projection meets max, so each turn closes its
+    const double = createInferenceCallbacksDouble();
+    // Policy 1/1: every turn's compression meets max, so each turn closes its
     // own chunk immediately and both summary kinds queue and run.
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
@@ -350,7 +350,7 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
 
 describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form ready with the failure cleared", () => {
   it("messages.requeue returns a failed smoothing to the pipeline; the commit poke alone drives the repair in background mode", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
@@ -396,7 +396,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
   });
 
   it("turns.requeue rebuilds a fallback-composed rendering at the next source version", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId, turnId } = await gappedRenderingThread(store, sdk, double);
     const beforeRepair = formOf(filePath, turnId, "turn_rendering");
@@ -428,7 +428,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     expect(rebuilt?.state).toBe("ready");
     expect(rebuilt?.sourceVersion).toBe(2);
     expect(rebuilt?.gaps).toBeUndefined();
-    // Both turn forms ride the one derivation item: the projection rebuilt too.
+    // Both turn derivations ride the one work item: the compression rebuilt too.
     expect(formOf(filePath, turnId, "smooth_turn_compression")).toMatchObject({
       state: "ready",
       sourceVersion: 2,
@@ -438,7 +438,7 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
 
 describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
   it("the second requeue before draining is an explicit no-op; one live item, no duplicates", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
@@ -479,7 +479,7 @@ describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
 
 describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the drain continues, and requeue refuses with the stored reason", () => {
   it("a turn derivation over the two-open-turns corruption blocks naming the damage; blocked is not failed — requeue is refused", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, turnId } = await damagedSourceThread(store);
 
@@ -579,7 +579,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
   });
 
   it("chunk reads return records with summary-form states attached, including non-ready ones", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });

@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, intakeStream, threads, type HealthReport } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   expectReadOnly,
   mixedStateVariantThread,
   mutationInFlightVariant,
@@ -154,7 +154,7 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
     const recorded = await intakeStream.messageEvents({ filePath }, [gap]);
     expect(recorded.ok).toBe(true);
 
-    const reader = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
+    const reader = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const report = valueOf(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
     expect(report.owners).toContainEqual({
       owner: "capture",
@@ -245,13 +245,13 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
   });
 });
 
-describe("architecture risk: health is provider-free and surface-composed", () => {
-  it("health succeeds under a throwing provider and calls no provider on the fixture SDK", async () => {
+describe("architecture risk: health is inference-callback-free and surface-composed", () => {
+  it("health succeeds under a throwing inference callback and calls no model on the fixture SDK", async () => {
     const fixture = await mixedStateVariantThread(store);
     const captured = fixture.double.captureInputs();
 
     const refuse = (): never => {
-      throw new Error("provider must never be called by a read operation");
+      throw new Error("inference callbacks must never be called by a read operation");
     };
     const reader = initLhc({
       inferenceCallbacks: {

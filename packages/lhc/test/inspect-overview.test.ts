@@ -4,7 +4,7 @@
 // domains' surfaces. Every thread shape returns the FULL shape with absent
 // pieces as zeros/nulls (AC-1.3); counts honor the deleted contract
 // (AC-1.2); the read is pure (AC-1.4) — asserted as absence of delta and
-// zero provider calls, including under a throwing provider.
+// zero model calls, including under a throwing inference callback.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   initLhc,
@@ -15,7 +15,7 @@ import {
   type MessageEventInput,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   expectReadOnly,
   mutationInFlightVariant,
@@ -32,12 +32,12 @@ afterEach(() => {
   store.cleanup();
 });
 
-// A provider whose every operation throws: any inference reached through an
-// inspect read fails the test loudly (the suite-wide zero-provider assert
+// A inference callbacks whose every operation throws: any inference reached through an
+// inspect read fails the test loudly (the suite-wide zero-model assert
 // extended to the new operations).
 function throwingProvider(): InferenceCallbacks {
   const refuse = (): never => {
-    throw new Error("provider must never be called by a read operation");
+    throw new Error("inference callbacks must never be called by a read operation");
   };
   return {
     smoothPrompt: refuse,
@@ -53,14 +53,14 @@ interface SmallThread {
   filePath: string;
   threadId: string;
   sdk: Lhc;
-  double: ReturnType<typeof createProviderDouble>;
+  double: ReturnType<typeof createInferenceCallbacksDouble>;
 }
 
 // Two closed turns through real intake, fully drained: m1 prompt, m2 text,
 // m3 call, m4 result (t1; turn_end is event 5), m6 prompt, m7 text (t2;
 // turn_end is event 8). Never compacted.
 async function twoTurnThread(): Promise<SmallThread> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({
@@ -113,7 +113,7 @@ const ZERO_DERIVATION = { ready: 0, pending: 0, retrying: 0, failed: 0, blocked:
 
 describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", () => {
   it("fresh-empty: full shape with zeros and nulls, never omitted fields", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -138,7 +138,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
   });
 
   it("mid-first-turn: open turn, queued derivation, no view — full shape", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -283,7 +283,7 @@ describe("TC-1.2 / AC-1.2: deleted accounting", () => {
 });
 
 describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
-  it("repeated calls are deep-equal, leave no delta, create no work, call no provider", async () => {
+  it("repeated calls are deep-equal, leave no delta, create no work, call no model", async () => {
     const fixture = await mutationInFlightVariant(store);
     const { filePath, sdk, double } = fixture;
     const captured = double.captureInputs();
@@ -299,10 +299,10 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("overview succeeds under a throwing provider, and wraps Story 1's reads in the delta assert", async () => {
+  it("overview succeeds under a throwing inference callback, and wraps Story 1's reads in the delta assert", async () => {
     const { filePath } = await twoTurnThread();
-    // A separate SDK whose provider throws on contact: the read path is
-    // provider-free structurally, in both the new and the Story 1 surfaces.
+    // A separate SDK whose inference callbacks throw on contact: the read path is
+    // inference-callback-free structurally, in both the new and the Story 1 surfaces.
     const reader = initLhc({ inferenceCallbacks: throwingProvider(), mode: "manual" });
 
     const overview = await expectReadOnly(filePath, () =>
@@ -319,7 +319,7 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
   });
 
   it("overview on a missing thread is thread_not_found, not a shape error", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const missing = await sdk.inspect.overview({ filePath: store.threadPath("missing") });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;

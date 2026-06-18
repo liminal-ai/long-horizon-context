@@ -1,15 +1,15 @@
 // Epic 03 Story 1: pull and status on the record (TC-1.1, TC-1.2, TC-1.4,
 // TC-2.5 pre-compact legs, the per-kind tail-mapping legs, and the pull/status
-// legs of the suite-wide zero-provider assertion). Every TC goes through the
+// legs of the suite-wide zero-model assertion). Every TC goes through the
 // real SDK surface (initLhc().threadView.pull/status) against real temp
-// thread files; the provider double appears only in construction/fixture
+// thread files; the inference callbacks double appears only in construction/fixture
 // setup — no Epic 03 operation may touch it.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/index.js";
 import {
   blockedSiblingThread,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   openRaw,
   seedViewBoundary,
@@ -32,7 +32,7 @@ afterAll(() => {
 
 function manualSdk(view?: SdkViewConfig): Lhc {
   return initLhc({
-    inferenceCallbacks: createProviderDouble(),
+    inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
   });
@@ -149,10 +149,10 @@ describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread pulls the full convers
   });
 });
 
-describe("TC-1.2 (AC-1.1, AC-1.7): two pulls with nothing between are byte-identical and create no work or provider calls", () => {
-  it("hashes identical, zero work rows created, provider double observes zero calls", async () => {
+describe("TC-1.2 (AC-1.1, AC-1.7): two pulls with nothing between are byte-identical and create no work or model calls", () => {
+  it("hashes identical, zero work rows created, inference callbacks double observes zero calls", async () => {
     // The double's capture log starts recording here; any Epic 03 read that
-    // touched the provider would append to it (zero-provider assertion, pull
+    // touched inference callbacks would append to it (zero-model assertion, pull
     // leg of the suite-wide architecture-risk row).
     const captured = fixture.double.captureInputs();
     const before = stateSnapshot(fixture.filePath);
@@ -308,7 +308,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     const contents = pull.value.messages.map((m) => m.content);
 
     // Behind: deterministic short form, abridged marker, record pointer.
-    // Ready provider summaries remain stored derivations but are not rendered
+    // Ready model summaries remain stored derivations but are not rendered
     // on the at-or-behind-boundary full-band surface.
     expect(contents).toContain(
       `[tool result · read_file · abridged]\nboundary output 1 [full content in record §${behind.messageId}]`,
@@ -380,7 +380,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
   });
 
   it("reports tail tokens vs threshold, recommendation, derivation counts, null view health, and the zone sum — reads only", async () => {
-    // Status legs of the zero-provider assertion: the builder's double
+    // Status legs of the zero-model assertion: the builder's double
     // records every call from here on; status must add none.
     const captured = heavy.double.captureInputs();
     const before = stateSnapshot(heavy.filePath);
@@ -414,7 +414,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     expect(status.value.visibility).toEqual({ zoneTokens: expectedZone, maxTokens: 64000 });
 
     // Reads only: no work rows, no form-state change, no view row, boundary
-    // unmoved, zero provider calls — and no compact occurred uninvoked.
+    // unmoved, zero model calls — and no compact occurred uninvoked.
     expect(stateSnapshot(heavy.filePath)).toEqual(before);
     expect(captured.length).toBe(0);
   });
@@ -451,7 +451,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
 });
 
 describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and status are reads-only in a background SDK with pending work queued", () => {
-  it("schedules no catch-up drain: work rows, form states, provider count, and status all unchanged; repeated pulls byte-identical", async () => {
+  it("schedules no catch-up drain: work rows, form states, inference callback count, and status all unchanged; repeated pulls byte-identical", async () => {
     // Pending work manufactured through a manual SDK (its no-op seam never
     // drains): one tool-heavy turn leaves live queue rows and pending forms.
     const seeder = manualSdk();
@@ -473,7 +473,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     // WOULD hang a first-touch catch-up drain off the open announcement
     // (openThreadDatabase → fireThreadTouch → scheduler.touch) if pull or
     // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
-    const bgDouble = createProviderDouble();
+    const bgDouble = createInferenceCallbacksDouble();
     const bg = initLhc({
       inferenceCallbacks: bgDouble,
       mode: "background",
@@ -502,7 +502,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     expect(JSON.stringify(one.value)).toBe(JSON.stringify(two.value));
 
     // Reads only: queue rows, form states, view rows, and boundary all
-    // unchanged; the provider fake observed zero calls.
+    // unchanged; the inference callback double observed zero calls.
     expect(stateSnapshot(filePath)).toEqual(before);
     expect(captured.length).toBe(0);
 

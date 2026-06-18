@@ -23,12 +23,12 @@ import {
   type SdkConfig,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
   validEvent,
-  type ProviderDouble,
+  type InferenceCallbacksDouble,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -74,7 +74,7 @@ async function newThread(name: string): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(inferenceCallbacks: ProviderDouble, mode: SdkConfig["mode"]): Lhc {
+function sdkFor(inferenceCallbacks: InferenceCallbacksDouble, mode: SdkConfig["mode"]): Lhc {
   return initLhc({
     inferenceCallbacks,
     mode,
@@ -102,9 +102,9 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
     // Construction order is the regression: the background SDK installs the
     // below-SDK default seam first; the manual SDK must still isolate its own
     // operations to a no-op so its queued work never auto-drains.
-    const bgDouble = createProviderDouble();
+    const bgDouble = createInferenceCallbacksDouble();
     const sdkBg = sdkFor(bgDouble, "background");
-    const manDouble = createProviderDouble();
+    const manDouble = createInferenceCallbacksDouble();
     const sdkMan = sdkFor(manDouble, "manual");
 
     const threadB = await newThread("bg");
@@ -148,9 +148,9 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
     // The reverse order: the manual SDK exists first, the background SDK
     // installs the default seam afterward; the manual SDK's operations still
     // deliver to its own no-op seam, not the freshly installed default.
-    const manDouble = createProviderDouble();
+    const manDouble = createInferenceCallbacksDouble();
     const sdkMan = sdkFor(manDouble, "manual");
-    const bgDouble = createProviderDouble();
+    const bgDouble = createInferenceCallbacksDouble();
     const sdkBg = sdkFor(bgDouble, "background");
     expect(sdkBg.scheduler.mode).toBe("background");
 
@@ -184,7 +184,7 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
   }
 
   it("deleting a tool_result drops only its tool-result summary", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await toolRunThread(sdk);
 
@@ -223,7 +223,7 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
 // ── Fix 1 (P2): background backoff stall — the scheduler wakes for eligible_at ─
 describe("FIX-1: background mode honors the backoff eligibility gate", () => {
   it("a retryable failure backs off, the scheduler wakes on its own, and the retry completes", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
     const sdk = initLhc({
@@ -248,7 +248,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
     expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`)).toEqual([
       "m1/smoothed_prompt/ready",
     ]);
-    // Two provider calls = attempts 2 (fail, then succeed).
+    // Two model calls = attempts 2 (fail, then succeed).
     expect(captured.filter((c) => c.op === "smoothPrompt")).toHaveLength(2);
     // The wake honored eligibility: it fired no earlier than the backoff delay.
     expect(elapsed).toBeGreaterThanOrEqual(25);
@@ -256,7 +256,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
   });
 
   it("does not retry before eligible_at: the durable gate holds, no retry in the window", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     double.failNext(1, { retryable: true });
     const sdk = initLhc({
@@ -289,7 +289,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
 // ── Fix 2 (P2): tool activity composes into grouped run parts (AC-3.4) ────────
 describe("FIX-2: consecutive tool activity groups into run parts and run receipts", () => {
   it("prompt, call, result, call, result, text, call, result → exactly two run parts (sizes 2 and 1)", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("grouping");
     const call = (id: string) =>
@@ -327,7 +327,7 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
   });
 
   it("a mixed-outcome run stays explicit and names the failure", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("mixed");
     const batch = await sdk.intakeStream.messageEvents({ filePath }, [
@@ -368,7 +368,7 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
 // ── REVERIFY-02-001: cascadeTurnDelete cascades to a cross-turn pair ──────────
 describe("REVERIFY-02-001: cascadeTurnDelete ignores removed tool-call summaries", () => {
   it("deleting the turn holding a late result does not requeue the earlier tool call", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("crossturn");
 
@@ -405,7 +405,7 @@ describe("REVERIFY-02-001: cascadeTurnDelete ignores removed tool-call summaries
 // ── Fix 3.3 (P3): a stale claimed item for a deleted target discards ──────────
 describe("FIX-3.3: a claimed summary for a deleted message discards on completion", () => {
   it("completing the straggler after the delete discards as stale_discarded; tombstone and cascade stand", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("straggler");
     const batch = await sdk.intakeStream.messageEvents({ filePath }, [

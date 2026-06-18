@@ -33,7 +33,7 @@ import {
   type SdkConfig,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -140,7 +140,7 @@ async function until(cond: () => boolean, what: string, timeoutMs = 5000): Promi
 
 describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronously, reporting the cascade", () => {
   it("changes the record in the edit's transaction and names cleared forms and queued items", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await readyTurnThread(sdk);
 
@@ -189,7 +189,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
   });
 
   it("induced cascade failure rolls back the content change too (atomicity, architecture risk)", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await readyTurnThread(sdk);
 
@@ -225,8 +225,8 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
 
 describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both directions", () => {
   it("clears exactly the edited message's chain; the second chunk's forms are byte-stable", async () => {
-    const double = createProviderDouble();
-    // max=1: every turn's projection meets the maximum, so each turn forms
+    const double = createInferenceCallbacksDouble();
+    // max=1: every turn's compression meets the maximum, so each turn forms
     // its own immediately closed chunk — two chunks, both with summaries.
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
@@ -299,7 +299,7 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
 
 describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements queued at the new version; superseded reported", () => {
   it("clears to pending with version-scoped replacement ids, and a second edit supersedes the still-queued first wave", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });
@@ -370,7 +370,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
 
 describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the straggler", () => {
   it("a claimed pre-edit item completing after the edit discards as stale_discarded; the post-edit artifact wins", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     await send(sdk, filePath, [
@@ -437,7 +437,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
 
 describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
   it("refuses open-turn, missing, and deleted targets; read-back identical after each", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     // m1 in closed t1; m3 in open t2.
@@ -479,7 +479,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
   });
 
   it("refuses a turnless (no-membership) target under the closed-turn boundary; read-back unchanged", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     // A note before any prompt opens a turn lands in a gap: m1 with no turn
@@ -506,7 +506,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
 
 describe("background mode: edit-and-walk-away (production path)", () => {
   it("the cascade's enqueue pokes ride the commit; rebuilds run with no further call", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, { mode: "background" });
     const filePath = await newThread();
     await send(sdk, filePath, [

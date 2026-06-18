@@ -2,8 +2,8 @@
 // TC-1.5, the TC-2.5 view-health completion legs, and the architecture-risk
 // rows: restart-serves-snapshot and coverage-edge accounting). Every TC goes
 // through the real SDK surface (initLhc().threadView.compact) against real
-// temp thread files; the provider double appears only in fixture setup —
-// degraded states are reached through production paths (scripted provider
+// temp thread files; the inference callbacks double appears only in fixture setup —
+// degraded states are reached through production paths (scripted inference callback
 // exhaustion at build, edit-cascade pending clears), never by writing
 // derivation directly.
 import { createHash } from "node:crypto";
@@ -16,14 +16,14 @@ import {
 } from "../src/index.js";
 import {
   corruptTwoOpenTurns,
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   openRaw,
   setViewInjectionHook,
   tempStore,
   validEvent,
   type DerivedThreadFixture,
-  type ProviderDouble,
+  type InferenceCallbacksDouble,
   type TempStore,
 } from "./fixtures/index.js";
 
@@ -234,7 +234,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
 });
 
 describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored artifacts only", () => {
-  it("actuals near shares with whole-entry deviations, zero provider calls, record untouched", async () => {
+  it("actuals near shares with whole-entry deviations, zero model calls, record untouched", async () => {
     const captured = fixture.double.captureInputs();
     const capturedBefore = captured.length;
     const recordBefore = recordSnapshot(fixture.filePath);
@@ -282,7 +282,7 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     );
     expect(receipt.value.totalTokens).toBeGreaterThan(400);
 
-    // No provider call anywhere in the compact path; the record (events,
+    // No model call anywhere in the compact path; the record (events,
     // messages, turns, chunks, forms) is byte-identical after.
     expect(captured.length).toBe(capturedBefore);
     expect(recordSnapshot(fixture.filePath)).toBe(recordBefore);
@@ -351,7 +351,7 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
-    const fresh = initLhc({ inferenceCallbacks: createProviderDouble(), mode: "manual" });
+    const fresh = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const after = await fresh.threadView.pull({ filePath: fixture.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -418,7 +418,7 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
 
 // The fixture conversation rebuilt with manufactured derived damage, all
 // through production paths: c1's brief summary exhausts through scripted
-// retryable provider failures at build; post-build edits clear t8's turn
+// retryable inference callback failures at build; post-build edits clear t8's turn
 // forms and all of c2's dependent chain to pending (the Epic 02 cascade) —
 // a pending turn rendering for the smooth band, and a chunk with no usable
 // form at all (summaries pending, zero ready member projections) for the
@@ -458,12 +458,12 @@ function degradedTurnEvents(turn: number): MessageEventInput[] {
 interface DegradedThread {
   filePath: string;
   sdk: Lhc;
-  double: ProviderDouble;
+  double: InferenceCallbacksDouble;
   promptIdByTurn: Map<number, string>;
 }
 
 async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread> {
-  const double = createProviderDouble();
+  const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
@@ -572,7 +572,7 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
     expect(bandText).toContain("§c2 [degraded: detailed-from-stored-members]");
 
-    // Zero provider calls: missing material degrades, it is never re-derived
+    // Zero model calls: missing material degrades, it is never re-derived
     // inline (AC-2.4's no-inference rule with teeth).
     expect(captured.length).toBe(capturedBefore);
   });
@@ -594,7 +594,7 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
   it("refuses with state_corruption naming the damage; the prior view still serves; record unchanged", async () => {
     const corruptStore = tempStore();
     try {
-      const double = createProviderDouble();
+      const double = createInferenceCallbacksDouble();
       const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({

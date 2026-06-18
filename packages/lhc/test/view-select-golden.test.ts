@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   derivedThreadFixture,
   openRaw,
   stragglerVariantThread,
@@ -237,7 +237,7 @@ async function replayTrajectory(
   golden: BoundaryGolden,
 ): Promise<Array<{ position: number; zoneTokens: number }>> {
   const sdk = initLhc({
-    inferenceCallbacks: createProviderDouble(),
+    inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     view: { visibility: golden.budgets },
   });

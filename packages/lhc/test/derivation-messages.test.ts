@@ -1,9 +1,9 @@
 // Story 2 (Epic 02): message-level derivation — Flow 2. The three real
 // handlers (prompt smoothing, tool-call summary, tool-result summary) through
 // Story 1's drain, mechanical outcome stamping (TC-2.4's identical-text
-// fixture is the architecture-risk proof that provider text never drives the
+// fixture is the architecture-risk proof that model text never drives the
 // outcome), the hot-path locality assertion (TC-2.2: intake returns before
-// any provider call), and the AC-2.8 late-result repair with its
+// any model call), and the AC-2.8 late-result repair with its
 // control leg. No registerTestWorkHandlers here: every drain dispatches the
 // production handlers registered by the messages domain at initLhc.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ import {
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -88,7 +88,7 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
 
 describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongside the message", () => {
   it("intake a prompt, drain → smoothed form ready with the double's deterministic output", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     const text = "please smooth this prompt";
@@ -133,7 +133,7 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
 
 describe("TC-2.5 / AC-2.5: tool_call queues no summary", () => {
   it("the batch reports no queued item and no derivation row", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const filePath = await newThread();
@@ -151,7 +151,7 @@ describe("TC-2.5 / AC-2.5: tool_call queues no summary", () => {
 describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stays byte-identical in the record", () => {
   it("a 300KB result drains to a bounded summary and reads back whole through the Epic 01 surface", async () => {
     const big = "result-bytes ".repeat(24000); // ~300KB
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await threadWithToolRun(store, { resultContent: big });
 
@@ -169,9 +169,9 @@ describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stay
   });
 });
 
-describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the record, never from provider text", () => {
+describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the record, never from model text", () => {
   it("tool-result summaries preserve succeeded / failed outcome from metadata alone", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const constantText = "the tool output says nothing reliable about status";
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (i) => double.smoothPrompt(i),
@@ -198,7 +198,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
 
 describe("TC-2.5 / AC-2.5: message-level input discipline — the message and its call-id pair only", () => {
   it("the captured tool-result summary input carries tool guidance and outcome", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const { filePath } = await threadWithToolRun(store);
@@ -216,9 +216,9 @@ describe("TC-2.5 / AC-2.5: message-level input discipline — the message and it
   });
 });
 
-describe("TC-2.6 / AC-2.6: provider exhaustion lands the form failed; the message stays readable", () => {
-  it("smoothing exhausts the retry budget → form failed with the provider's reason; read-back unaffected", async () => {
-    const double = createProviderDouble();
+describe("TC-2.6 / AC-2.6: inference callback exhaustion lands the form failed; the message stays readable", () => {
+  it("smoothing exhausts the retry budget → form failed with the inference callback reason; read-back unaffected", async () => {
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     const text = "this prompt will never smooth";
@@ -253,7 +253,7 @@ describe("TC-2.6 / AC-2.6: provider exhaustion lands the form failed; the messag
 
 describe("TC-2.7 / AC-2.7: kinds with no derivable form queue no work and carry no state rows", () => {
   it("assistant text, a runtime note, and assistant thinking: no items, no derivation rows, an empty drain", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
@@ -277,7 +277,7 @@ describe("TC-2.7 / AC-2.7: kinds with no derivable form queue no work and carry 
 
 describe("TC-2.5 / AC-2.5: tool calls render as recorded and queue no summary", () => {
   it("tool calls create no work item or derivation row", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
 

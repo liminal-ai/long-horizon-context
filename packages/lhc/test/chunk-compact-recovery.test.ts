@@ -10,7 +10,7 @@ import {
   type SdkConfig,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -155,7 +155,7 @@ async function seedFourClosedTurns(sdk: Lhc, filePath: string): Promise<void> {
 
 describe("Story 4: chunk derivation and compact recovery", () => {
   it("queues detailed and brief chunk summaries as independent work items and states", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("chunk_summary_brief", 3, {
       retryable: true,
       reason: "timeout: scripted brief failure",
@@ -172,8 +172,8 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     });
   });
 
-  it("compacts not-ready chunk summaries through stored-member concat with zero provider calls", async () => {
-    const sdk = sdkFor(createProviderDouble());
+  it("compacts not-ready chunk summaries through stored-member concat with zero model calls", async () => {
+    const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "failed", {
@@ -181,7 +181,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     });
     deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
 
-    const spy = createProviderDouble();
+    const spy = createInferenceCallbacksDouble();
     const captured = spy.captureInputs();
     const compactSdk = sdkFor(spy);
     const compacted = await compactSdk.threadView.compact(
@@ -226,7 +226,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
   });
 
   it("halts compact before fallback assembly when stop is requested", async () => {
-    const sdk = sdkFor(createProviderDouble());
+    const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
@@ -254,7 +254,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
   });
 
   it("refuses compact when canonical member source is corrupt", async () => {
-    const sdk = sdkFor(createProviderDouble());
+    const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
@@ -278,7 +278,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
   });
 
   it("background chunk summary work requeues on not-ready member projection", async () => {
-    const sdk = sdkFor(createProviderDouble(), {
+    const sdk = sdkFor(createInferenceCallbacksDouble(), {
       retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
     });
     const filePath = await newThread();
@@ -303,7 +303,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
   });
 
   it("background chunk summaries block when a chunk member references a missing turn", async () => {
-    const sdk = sdkFor(createProviderDouble());
+    const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");

@@ -1,7 +1,7 @@
 // The Epic 04 lifecycle script (Story 4, Flow 5): every built v1 surface
 // driven once, in PI-extension call order, against one real SDK
-// configuration with the deterministic provider — zero network, zero real
-// provider, no mocks anywhere. The script owns the sequence and the phase
+// configuration with deterministic inference callbacks — zero network, zero
+// model calls, no mocks anywhere. The script owns the sequence and the phase
 // names (tech design Flow 5); assertions live in the driving tests, so the
 // replay, teardown, and process legs all run THIS sequence rather than a
 // re-described one (DD-8).
@@ -204,8 +204,8 @@ export interface LifecycleOptions {
     checkpoint: LifecycleCheckpoint,
     ctx: { sdk: Lhc; filePath: string },
   ) => Promise<void>;
-  // Epic 05 TC-4.2: run the sequence on the inference path instead of the
-  // deterministic provider. Same configuration otherwise (see
+  // Epic 05 TC-4.2: run the sequence on the model-call inference path instead
+  // of deterministic inference callbacks. Same configuration otherwise (see
   // createLifecycleSdk).
   inference?: InferenceConfig;
 }

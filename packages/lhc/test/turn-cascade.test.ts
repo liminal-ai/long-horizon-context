@@ -13,7 +13,7 @@ import {
 } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -70,7 +70,7 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
 
 // turn_rendering is deterministic (AC-6.3): the rendering is the joined part
 // texts, stored as the turn_rendering derivation. The composition tests read
-// it back here instead of capturing a provider call.
+// it back here instead of capturing a model call.
 function renderingContent(filePath: string): string {
   return (
     readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ??
@@ -93,7 +93,7 @@ function deleteWorkItem(filePath: string, workItemId: string): void {
 
 describe("Story 3: turn construction recovery cascade", () => {
   it("uses ready derivations directly and writes no fallback log", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -116,7 +116,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("falls pending derivations to deterministic floors when re-derivation does not complete", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -148,7 +148,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("falls back to original prompt source when the deterministic floor is unavailable", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -172,7 +172,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("falls failed derivations through the same floor path when re-derivation does not complete", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -203,7 +203,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("re-derives a failed component outside the completion write and persists plain ready", async () => {
     let probeAcquired = false;
     let filePath = "";
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const callbacks: InferenceCallbacks = {
       smoothPrompt: async (input) => {
         const probe = openRaw(filePath);
@@ -255,7 +255,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("does not overwrite a ready row written before floor recovery persists", async () => {
     let filePath = "";
     let workerCompleted = false;
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const callbacks: InferenceCallbacks = {
       smoothPrompt: async () => {
@@ -298,7 +298,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("renders assistant text, thinking, and runtime notes verbatim in record order", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -325,7 +325,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("uses and writes tool-result truncation floors, never raw full results", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 1, { retryable: true, reason: "recovery unavailable" });
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -354,8 +354,8 @@ describe("Story 3: turn construction recovery cascade", () => {
     });
   });
 
-  it("recovers over-large failed tool-result summaries with deterministic truncation and no provider call", async () => {
-    const double = createProviderDouble();
+  it("recovers over-large failed tool-result summaries with deterministic truncation and no model call", async () => {
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -390,7 +390,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("recovers in-threshold tool-result summaries with paired tool guidance and tier target", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -424,8 +424,8 @@ describe("Story 3: turn construction recovery cascade", () => {
     });
   });
 
-  it("recovers over-cap prompts with deterministic cleaned text and no smoothing provider call", async () => {
-    const double = createProviderDouble();
+  it("recovers over-cap prompts with deterministic cleaned text and no smoothing model call", async () => {
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
     const filePath = await newThread();
@@ -449,7 +449,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("logs fallback when a message derivation row is absent", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -494,7 +494,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("constructs a turn with every component present when multiple derivations are not ready", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
     double.failKind("tool_result_summary", 1, {
       retryable: true,
@@ -522,7 +522,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     // The rendering carries the prompt floor, the tool run (call args + result
     // floor), and the assistant text — verifying the composed content without
-    // a provider capture (turn_rendering is deterministic, AC-6.3).
+    // an inference-callback capture (turn_rendering is deterministic, AC-6.3).
     const rendering = renderingContent(filePath);
     expect(rendering).toContain("multi fallback because I asked");
     expect(rendering).toContain('read_file({"path":"multi.txt"})');
@@ -539,7 +539,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   });
 
   it("leaves derivation rows untouched when live work exists but still renders a floor", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();

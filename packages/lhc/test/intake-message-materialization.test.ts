@@ -1,8 +1,7 @@
-// Story 3 (Flow 2, projection half): TC-2.2 through TC-2.5, TC-5.4's
-// no-duplicate-message clause, and the projection rung of the rollback ladder
-// (an induced projection failure rejects the whole batch). Everything enters
-// through the SDK or the in-process CLI; the spawned-CLI leg of TC-2.4 lives
-// in cli-process-projection.test.ts.
+// Story 3 (Flow 2, message materialization half): TC-2.2 through TC-2.5, TC-5.4's
+// no-duplicate-message clause, and the message materialization rung of the rollback ladder
+// (an induced message materialization failure rejects the whole batch). Everything enters
+// through the intake-stream surface.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   intakeStream,
@@ -48,8 +47,8 @@ async function readMessages(filePath: string): Promise<MessageRecord[]> {
   return result.value;
 }
 
-describe("Flow 2 (SDK): message projection", () => {
-  it("TC-2.2: one of each kind projects six messages with kind-appropriate blocks; turn_end stays event-only (AC-2.2, AC-2.3)", async () => {
+describe("Flow 2 (SDK): message materialization", () => {
+  it("TC-2.2: one of each kind materializes six messages with kind-appropriate blocks; turn_end stays event-only (AC-2.2, AC-2.3)", async () => {
     const filePath = await createThread();
     const batch = [
       validEvent("user_prompt", { payload: { text: "please summarize the file" } }),
@@ -99,8 +98,8 @@ describe("Flow 2 (SDK): message projection", () => {
       "turn_end",
     ]);
 
-    const projected = await readMessages(filePath);
-    expect(projected.map((message) => message.messageId)).toEqual([
+    const materialized = await readMessages(filePath);
+    expect(materialized.map((message) => message.messageId)).toEqual([
       "m1",
       "m2",
       "m3",
@@ -108,8 +107,8 @@ describe("Flow 2 (SDK): message projection", () => {
       "m5",
       "m6",
     ]);
-    expect(projected.map((message) => message.sourceEventOrder)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(projected.map((message) => message.kind)).toEqual([
+    expect(materialized.map((message) => message.sourceEventOrder)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(materialized.map((message) => message.kind)).toEqual([
       "user_prompt",
       "assistant_text",
       "assistant_thinking",
@@ -119,19 +118,19 @@ describe("Flow 2 (SDK): message projection", () => {
     ]);
 
     // Full block structure per kind, content verbatim — not just block count.
-    expect(projected[0]!.blocks).toEqual([
+    expect(materialized[0]!.blocks).toEqual([
       { blockType: "text", content: { text: "please summarize the file" } },
     ]);
-    expect(projected[1]!.blocks).toEqual([
+    expect(materialized[1]!.blocks).toEqual([
       { blockType: "text", content: { text: "the file describes turn handling" } },
     ]);
-    expect(projected[2]!.blocks).toEqual([
+    expect(materialized[2]!.blocks).toEqual([
       { blockType: "text", content: { text: "the request needs the file first" } },
     ]);
-    expect(projected[3]!.blocks).toEqual([
+    expect(materialized[3]!.blocks).toEqual([
       { blockType: "text", content: { text: "harness reconnected" } },
     ]);
-    expect(projected[4]!.blocks).toEqual([
+    expect(materialized[4]!.blocks).toEqual([
       {
         blockType: "tool_call",
         content: {
@@ -141,7 +140,7 @@ describe("Flow 2 (SDK): message projection", () => {
         },
       },
     ]);
-    expect(projected[5]!.blocks).toEqual([
+    expect(materialized[5]!.blocks).toEqual([
       {
         blockType: "tool_result",
         content: { toolCallId: "call-42", content: "line one\nline two", isError: false },
@@ -150,7 +149,7 @@ describe("Flow 2 (SDK): message projection", () => {
 
     // Story 4 stamps membership at intake: the prompt opened t1 and every
     // message in the batch belongs to it (turn_end closed it, no message).
-    for (const message of projected) {
+    for (const message of materialized) {
       expect(message.turnId).toBe("t1");
     }
   });
@@ -207,10 +206,10 @@ describe("Flow 2 (SDK): message projection", () => {
     if (events[0]!.eventKind !== "tool_result") return;
     expect(events[0]!.payload.content === bigContent).toBe(true);
 
-    const projected = await readMessages(filePath);
-    expect(projected).toHaveLength(1);
-    expect(projected[0]!.blocks).toHaveLength(1);
-    const block = projected[0]!.blocks[0]!;
+    const materialized = await readMessages(filePath);
+    expect(materialized).toHaveLength(1);
+    expect(materialized[0]!.blocks).toHaveLength(1);
+    const block = materialized[0]!.blocks[0]!;
     expect(block.blockType).toBe("tool_result");
     expect(block.content["content"] === bigContent).toBe(true);
     expect(block.content["toolCallId"]).toBe("big-1");
@@ -231,8 +230,8 @@ describe("Flow 2 (SDK): message projection", () => {
       ["agent:claude", "claude-code/2.0"],
     ]);
 
-    const projected = await readMessages(filePath);
-    expect(projected.map((message) => [message.actor, message.harness])).toEqual([
+    const materialized = await readMessages(filePath);
+    expect(materialized.map((message) => [message.actor, message.harness])).toEqual([
       ["user:lee", "pi-extension/1.2"],
       ["agent:claude", "claude-code/2.0"],
     ]);
@@ -267,7 +266,7 @@ describe("Flow 2 (SDK): message projection", () => {
     }
   });
 
-  it("architecture-risk: an induced projection failure rejects the whole batch — no recorded events without messages", async () => {
+  it("architecture-risk: an induced message materialization failure rejects the whole batch — no recorded events without messages", async () => {
     const filePath = await createThread();
     const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
     expect(seeded.ok).toBe(true);
@@ -276,8 +275,8 @@ describe("Flow 2 (SDK): message projection", () => {
     expect(baselineEvents).toHaveLength(1);
     expect(baselineMessages).toHaveLength(1);
 
-    // Real mechanism: after the new batch's first event records and projects,
-    // the seam drops the block table, so the second event's projection insert
+    // Real mechanism: after the new batch's first event records and materializes,
+    // the seam drops the block table, so the second event's message materialization insert
     // fails inside the transaction.
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.exec("DROP TABLE message_block");
@@ -293,7 +292,7 @@ describe("Flow 2 (SDK): message projection", () => {
     expect(result.error.code).toBe("storage_failure");
 
     // Read-back state, not the error result alone: events and messages are
-    // both at baseline — projection failure stranded no event rows.
+    // both at baseline — message materialization failure stranded no event rows.
     expect(await readEvents(filePath)).toEqual(baselineEvents);
     expect(await readMessages(filePath)).toEqual(baselineMessages);
   });

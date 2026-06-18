@@ -1,6 +1,6 @@
 // Epic 05 Story 3 — TC-2.2 (AC-2.2, AC-2.3): the LHC-owned prompt
 // templates. Goldens pin each template's rendered messages for a fixture
-// input (prompt/fixture drift is an architecture risk: a provider call could
+// input (prompt/fixture drift is an architecture risk: a model call could
 // succeed while a prompt silently loses required input fields); registry
 // completeness proves every config-selectable name resolves; the brief/
 // detailed contrast and the input-bounding legs run through the adapter
@@ -178,9 +178,9 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
 
   it("the brief rendering carries outcome tokens but no receipt text from its input", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceCallbacks(resolvedConfig({ call }));
+    const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call }));
 
-    const brief = await provider.summarizeChunkBrief({
+    const brief = await inferenceCallbacks.summarizeChunkBrief({
       memberProjections: ["turn one: planning work"],
       memberOutcomes: [["succeeded"]],
     });
@@ -203,11 +203,11 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("oversized summarizeToolResult input renders head + tail + marker under maxInputChars", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceCallbacks(
+    const inferenceCallbacks = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
     );
     const content = "H".repeat(150) + "M".repeat(700) + "T".repeat(150);
-    const result = await provider.summarizeToolResult({ toolName: "read_file", content });
+    const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);
 
     const input = log[0];
@@ -230,11 +230,11 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     // head+tail+marker bound: with no room for the marker, that bound returns
     // the marker alone and overshoots the cap it was meant to hold.
     const tinyMax = 40;
-    const provider = createInferenceCallbacks(
+    const inferenceCallbacks = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: tinyMax }),
     );
     const content = "H".repeat(40) + "M".repeat(700) + "T".repeat(40);
-    const result = await provider.summarizeToolResult({ toolName: "read_file", content });
+    const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);
 
     const input = log[0];
@@ -253,11 +253,11 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
 
   it("under-limit input renders whole, no marker", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    const provider = createInferenceCallbacks(
+    const inferenceCallbacks = createInferenceCallbacks(
       resolvedConfig({ call, maxInputChars: MAX_INPUT_CHARS }),
     );
     const content = "W".repeat(MAX_INPUT_CHARS);
-    const result = await provider.summarizeToolResult({ toolName: "read_file", content });
+    const result = await inferenceCallbacks.summarizeToolResult({ toolName: "read_file", content });
     expect(result.ok).toBe(true);
 
     const input = log[0];

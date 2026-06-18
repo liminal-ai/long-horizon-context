@@ -28,7 +28,7 @@ import {
   type VisibilityBudgets,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   setViewInjectionHook,
   tempStore,
   validEvent,
@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }, mode: "manual" | "background" = "manual"): Lhc {
-  return initLhc({ inferenceCallbacks: createProviderDouble(), mode, view });
+  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode, view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {
@@ -186,7 +186,7 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
 
 describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses deterministic truncation; non-tool content untouched", () => {
   it("renders deterministic tool-result floors even when a ready summary exists", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = initLhc({ inferenceCallbacks: double, mode: "manual", view: { visibility: BUDGETS } });
     const filePath = await newThread(sdk);
 
@@ -241,7 +241,7 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
       `[tool result · read_file · abridged]\n${tokens(60).slice(0, 200)}… [truncated 39 chars] [full content in record §${r1.messageId}]`,
     );
     // r2: usable summary exists, but full-band boundary rendering still uses
-    // the deterministic raw-result floor, never provider summary content.
+    // the deterministic raw-result floor, never model summary content.
     expect(contents).toContain(
       `[tool result · read_file · abridged]\n${tokens(20)} [full content in record §${r2.messageId}]`,
     );

@@ -19,7 +19,7 @@ import {
 import type { DerivationType } from "./model-call.js";
 import { setIntakeClock } from "./intake-seam.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
-import type { ProviderDouble } from "./provider-double.js";
+import type { InferenceCallbacksDouble } from "./inference-callbacks-double.js";
 import { validEvent, type TempStore } from "./index.js";
 
 async function newThreadFile(store: TempStore): Promise<string> {
@@ -263,7 +263,7 @@ export async function multiStateThread(
     { state: "ready", content: "smoothed(fixture:first prompt)", derivedAt },
   );
   // Tool-activity outcome lives in machine-readable metadata, never inside
-  // provider-authored content (FC-0.3).
+  // model-authored content (FC-0.3).
   setFormState(
     filePath,
     { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary" },
@@ -329,7 +329,7 @@ export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing exh
 export async function gappedRenderingThread(
   store: TempStore,
   sdk: Lhc,
-  double: ProviderDouble,
+  double: InferenceCallbacksDouble,
 ): Promise<{ filePath: string; messageId: string; turnId: string }> {
   const filePath = await newThreadFile(store);
   double.failKind("prompt_smoothing", 3, {

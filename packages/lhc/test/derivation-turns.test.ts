@@ -29,7 +29,7 @@ import {
   type SdkConfig,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readChunks,
   readDerivedForms,
@@ -130,8 +130,8 @@ function requeueDirect(filePath: string, input: EnqueueInput): void {
 }
 
 // Callbacks that delegate to the deterministic double except for scripted
-// lower-band projections — the seam tests use to pin projected token counts
-// for the placement golden cases (the projection content is what placement
+// smooth-turn compressions — the seam tests use to pin projected token counts
+// for the placement golden cases (the compression content is what placement
 // arithmetic measures, exactly once, at landing).
 function withScriptedProjections(
   base: InferenceCallbacks,
@@ -148,9 +148,9 @@ function withScriptedProjections(
   };
 }
 
-describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band projection as independent rows", () => {
+describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compression as independent rows", () => {
   it("all message forms ready → both turn forms ready, composed from the forms, each its own state row", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     const prompt = "compose this turn";
@@ -173,7 +173,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
     ];
     const renderingText = parts.map((part) => part.text).join(" | ");
     const rendering = formOf(filePath, "t1", "turn_rendering");
-    const projection = formOf(filePath, "t1", "smooth_turn_compression");
+    const compression = formOf(filePath, "t1", "smooth_turn_compression");
     expect(rendering).toMatchObject({
       subjectKind: "turn",
       state: "ready",
@@ -181,7 +181,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
       sourceVersion: 1,
     });
     expect(rendering?.gaps).toBeUndefined();
-    expect(projection).toMatchObject({
+    expect(compression).toMatchObject({
       subjectKind: "turn",
       state: "ready",
       content: deterministicText("compressSmoothTurn", { rendering: renderingText }, renderingText),
@@ -193,7 +193,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
 
 describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap; the rendering still lands ready", () => {
   it("failed smoothing → rendering ready with the raw prompt text and a gap naming message and form", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
@@ -225,7 +225,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
 
 describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after dependency repair; only an explicit rebuild refreshes it", () => {
   it("repairing the smoothing changes nothing; re-queueing the rendering rebuilds it at the next source version", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
@@ -285,7 +285,7 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
 
 describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a state-changing call's outcome survives", () => {
   it("a three-call edit run with one isError carries per-call outcomes into the composition input, from the forms", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const filePath = await newThread();
@@ -345,7 +345,7 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
 
 describe("TC-3.5 / AC-3.5: placement is recorded with the turn and readable through turns", () => {
   it("draining a closed turn shows chunkId and memberIdx on the turn read-back", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
     await sendTurn(sdk, filePath, "place me", "placed");
@@ -365,7 +365,7 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
 
   it("three turns at ~equal size: the third's placement closes the chunk holding two, and the third opens chunk 2", async () => {
     const per = estimateTokens(PROJ);
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const callbacks = withScriptedProjections(double, () => PROJ);
     const sdk = manualSdk(callbacks, {
       targetProjectedTokens: 2 * per + 1,
@@ -395,7 +395,7 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
 
   it("threshold exactness: accumulated + incoming equal to the target closes (inclusive), holding only the prior member", async () => {
     const per = estimateTokens(PROJ);
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const callbacks = withScriptedProjections(double, () => PROJ);
     const sdk = manualSdk(callbacks, {
       targetProjectedTokens: 2 * per,
@@ -418,12 +418,12 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
   });
 });
 
-describe("TC-3.7 / AC-3.7: a single projection at or above the max forms its own chunk, closed immediately", () => {
+describe("TC-3.7 / AC-3.7: a single compression at or above the max forms its own chunk, closed immediately", () => {
   const BIG = "omega ".repeat(120).trim();
 
   it("one oversized turn → its own closed chunk with both summaries derived", async () => {
     const big = estimateTokens(BIG);
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const callbacks = withScriptedProjections(double, () => BIG);
     const sdk = manualSdk(callbacks, {
       targetProjectedTokens: big,
@@ -444,18 +444,18 @@ describe("TC-3.7 / AC-3.7: a single projection at or above the max forms its own
   });
 
   it("an oversized turn arriving behind an open chunk closes both: the open chunk without it, its own chunk with it", async () => {
-    const SMALL = "tiny projection text";
+    const SMALL = "tiny compression text";
     const big = estimateTokens(BIG);
-    const projections = [SMALL, BIG];
-    const double = createProviderDouble();
+    const compressions = [SMALL, BIG];
+    const double = createInferenceCallbacksDouble();
     const callbacks = withScriptedProjections(double, () => {
-      const next = projections.shift();
-      if (next === undefined) throw new Error("scripted projections exhausted");
+      const next = compressions.shift();
+      if (next === undefined) throw new Error("scripted compressions exhausted");
       return next;
     });
     // target = max = big: the small turn sits safely under both; the big
     // turn's arrival crosses the target (small + big ≥ big) and its own
-    // projection meets the max.
+    // compression meets the max.
     const sdk = manualSdk(callbacks, {
       targetProjectedTokens: big,
       maxProjectedTokens: big,
@@ -487,7 +487,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
   const SELF_CHUNK = { targetProjectedTokens: 1, maxProjectedTokens: 1 };
 
   it("both summaries land ready as distinct chunk-level forms", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
     await sendTurn(sdk, filePath, "summarize me", "summarized");
@@ -518,7 +518,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
   });
 
   it("detailed preserves the tool-run receipts; brief strips them to outcomes only (SV-3.8-001)", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
@@ -590,7 +590,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
   });
 
   it("the brief item fails past budget alone: detailed ready, brief failed, brief re-queueable by itself", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
     double.failKind("chunk_summary_brief", 3, {
@@ -641,7 +641,7 @@ describe("TC-3.9 / AC-3.9 (architecture risk): chunk boundaries are deterministi
     ];
 
     async function buildAndDrain(): Promise<string> {
-      const double = createProviderDouble();
+      const double = createInferenceCallbacksDouble();
       const sdk = manualSdk(double, policy);
       const filePath = await newThread();
       for (const [prompt, answer] of turnsContent) await sendTurn(sdk, filePath, prompt, answer);

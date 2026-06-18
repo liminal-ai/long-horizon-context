@@ -13,7 +13,7 @@ import {
   type SdkConfig,
 } from "../src/index.js";
 import {
-  createProviderDouble,
+  createInferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   tempStore,
@@ -84,7 +84,7 @@ function deleteWorkItem(filePath: string, workItemId: string): void {
 
 describe("Flow 1: deterministic prompt smoothing and length gate", () => {
   it("cleans every prompt before inference and invokes smoothPrompt only under the cap", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -102,7 +102,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
   });
 
   it("skips inference over the cap but still stores the deterministic floor as ready", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
     const filePath = await newThread();
@@ -122,9 +122,9 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
   });
 
   it("keeps the cap boundary strict: equal runs inference, above skips", async () => {
-    const equalDouble = createProviderDouble();
+    const equalDouble = createInferenceCallbacksDouble();
     const equalCaptured = equalDouble.captureInputs();
-    const overDouble = createProviderDouble();
+    const overDouble = createInferenceCallbacksDouble();
     const overCaptured = overDouble.captureInputs();
     const text = "one two three four five six seven eight nine ten";
     const tokenCount = estimateTokens(text);
@@ -143,8 +143,8 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     expect(overCaptured).toEqual([]);
   });
 
-  it("does not call the provider during intake; intake only queues smoothing work", async () => {
-    const double = createProviderDouble();
+  it("does not call inference callbacks during intake; intake only queues smoothing work", async () => {
+    const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -168,13 +168,13 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
   });
 
   it("preserves fenced code through the inference path while cleaning prose", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const fenced = "```ts\n\tconst  i = 1;\n\n\t\treturn  i;\n```";
     const promptText = `plz\t\t fix this\n${fenced}\nthx`;
-    let providerInput: string | undefined;
+    let inferenceCallbackInput: string | undefined;
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (i) => {
-        providerInput = i.text;
+        inferenceCallbackInput = i.text;
         return Promise.resolve({ ok: true, text: `Please fix this.\n${fenced}\nThanks.` });
       },
       summarizeToolResult: (i) => double.summarizeToolResult(i),
@@ -193,7 +193,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     ]);
     await drain(sdk, filePath);
 
-    expect(providerInput).toBe(`plz fix this\n${fenced}\nthx`);
+    expect(inferenceCallbackInput).toBe(`plz fix this\n${fenced}\nthx`);
     expect(formOf(filePath, "m1", "smoothed_prompt")?.content).toBe(
       `Please fix this.\n${fenced}\nThanks.`,
     );
@@ -202,10 +202,10 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
 
 describe("Flow 1: pending and failed smoothing recovery inputs", () => {
   it("retryable smoothing failure leaves the derivation pending and requeued", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("prompt_smoothing", 1, {
       retryable: true,
-      reason: "temporary provider failure",
+      reason: "temporary inference callback failure",
     });
     const sdk = sdkFor(double, {
       retry: { budget: 3, backoffBaseMs: 60_000, backoffCapMs: 60_000 },
@@ -225,7 +225,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
           kind: "prompt_smoothing",
           status: "queued",
           attempts: 1,
-          lastError: "temporary provider failure",
+          lastError: "temporary inference callback failure",
         }),
       ]);
     } finally {
@@ -234,7 +234,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
   });
 
   it("pending smoothing is consumed through turn recovery and persisted ready when no live work remains", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const text = "  raw     prompt because i asked  ";
@@ -258,7 +258,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
   });
 
   it("terminal smoothing failure lands failed with reason, then turn composition consumes the floor", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     double.failKind("prompt_smoothing", 99, {
       retryable: true,
       reason: "scripted exhaustion",
@@ -300,7 +300,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
   });
 
   it("over-cap deterministic smoothing leaves no live queue items", async () => {
-    const double = createProviderDouble();
+    const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
     const filePath = await newThread();
 

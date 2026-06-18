@@ -1,6 +1,6 @@
 // Epic 05 Story 4 — TC-3.1 (AC-3.1, AC-3.2) and TC-3.2 (AC-3.2, AC-3.3):
 // model-call failures classify through the fixed table into Epic 02's
-// provider-result machinery, unchanged. The table is asserted directly as
+// inference-result machinery, unchanged. The table is asserted directly as
 // data; retryable kinds back off and retry within budget, exhaustion lands
 // failed with the provider_failure-led reason and attempts/last-error in form
 // metadata, terminal kinds land failed after exactly one call. safeCall
