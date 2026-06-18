@@ -104,7 +104,7 @@ export { assertSweepReceiptShape } from "./receipt-schema.js";
 export { assertPiSessionConformance, loadPiSessionFixture } from "./pi-session-format.js";
 // The sweep's classification table, re-exported for the Story 3 unit legs:
 // fixtures are the one sanctioned bridge across the no-internal-imports
-// boundary (check-boundaries exempts test/fixtures/ by design), and the
+// boundary, and the
 // table is exported from sweep.ts for tests by story contract.
 export {
   classifyFailureReason,

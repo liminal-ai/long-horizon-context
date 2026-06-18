@@ -14,7 +14,6 @@
 // delete through the filtered view — are stable and change nothing
 // (TC-6.7). The CLI parity leg (TC-6.8) lives in
 // cli-process-mutations-delete.test.ts (process suite). New file by the
-// red-manifest rule: mutations.test.ts is hash-locked by Story 5.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   initLhc,

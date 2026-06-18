@@ -15,7 +15,7 @@ import { storageFailure, type ErrorResult, type OpResult } from "../../shared-te
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 import { createFromEvent, queueMessageWork } from "../../messages/index.js";
 // The sanctioned intake→thread-view surface import (Epic 03 Flow 4, named in
-// check-boundaries): the boundary-advance registration below, nothing else.
+// the boundary-advance registration below, nothing else.
 // This is the domain graph's first surface-level cycle (intake → thread-view
 // → messages ← intake) — runtime-safe because thread-view never imports
 // intake-stream at runtime and the registration executes only at flush.
