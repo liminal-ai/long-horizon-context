@@ -5,7 +5,11 @@
 // and in any future runner identically.
 import assert from "node:assert/strict";
 import { createSdk, type Derivation, type Lhc } from "../../src/index.js";
-import { DERIVATION_TYPES, type DerivationType } from "./model-call.js";
+import {
+  DERIVATION_TYPES,
+  INFERENCE_DERIVATION_TYPES,
+  type InferenceDerivationType,
+} from "./model-call.js";
 import type {
   ModelAssignment,
   ModelCall,
@@ -100,14 +104,14 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
 
 // TC-1.2's routing assertions, extracted so TC-4.3 runs them against the
 // real host unchanged: construct an SDK on the inference path, drive all
-// seven kinds through a real intake → drain, and assert (1) every kind lands
-// ready, (2) every call that crossed the boundary carried exactly one
-// kind's assigned provider/model routing keys, (3) each kind's lane was
-// exercised, and (4) every messages value is single-turn shape — system and
-// user roles only, string content (AC-1.2, AC-1.4).
+// derivation kinds through a real intake → drain, and assert (1) every kind
+// lands ready, (2) every call that crossed the boundary carried exactly one
+// inference kind's assigned provider/model routing keys, (3) each inference
+// kind's lane was exercised, and (4) every messages value is single-turn
+// shape — system and user roles only, string content (AC-1.2, AC-1.4).
 export async function assertRoutingThroughSdk(
   call: ModelCall,
-  assignments: Record<DerivationType, ModelAssignment>,
+  assignments: Record<InferenceDerivationType, ModelAssignment>,
   store: TempStore,
 ): Promise<RoutingRunResult> {
   const log: ModelCallInput[] = [];
@@ -140,7 +144,7 @@ export async function assertRoutingThroughSdk(
 
   assert.ok(log.length > 0, "no calls crossed the ModelCall boundary");
   for (const input of log) {
-    const matched = DERIVATION_TYPES.filter(
+    const matched = INFERENCE_DERIVATION_TYPES.filter(
       (kind) =>
         assignments[kind].provider === input.provider && assignments[kind].model === input.model,
     );
@@ -161,7 +165,7 @@ export async function assertRoutingThroughSdk(
       assert.equal(typeof message.content, "string", "message content must be a string");
     }
   }
-  for (const kind of DERIVATION_TYPES) {
+  for (const kind of INFERENCE_DERIVATION_TYPES) {
     assert.ok(
       log.some(
         (input) =>

@@ -1,7 +1,7 @@
 // The turns derivation handlers (Flow 3): turn_derivation — the epic's
 // biggest single handler — and the two chunk summaries. turn_derivation
-// composes the rendering from message-level derivations (compose.ts), sends it
-// through composeTurnRendering then compressSmoothTurn, hands both derivations back
+// composes the rendering from message-level derivations (compose.ts), sends the
+// deterministic rendering through compressSmoothTurn, hands both derivations back
 // for the version-checked completion write, and runs placement in that same
 // completion transaction via the onApplied hook: open-chunk append, the
 // accumulated close policy, and any close's summary enqueues all ride the
@@ -14,6 +14,7 @@ import type {
   HandlerRunContext,
   ProviderResult,
   ToolOutcome,
+  ToolRunReceipt,
   WorkHandler,
 } from "../../shared-tech/derivation.js";
 import { writeLog } from "../../shared-tech/logging/index.js";
@@ -53,6 +54,23 @@ function providerFailed(result: { retryable: boolean; reason: string }): Handler
 
 function dependencyNotReady(reason: string): HandlerOutcome {
   return { ok: false, retryable: true, reason };
+}
+
+function composeTurnRenderingText(parts: readonly { text: string }[]): string {
+  return parts.map((part) => part.text).join(" | ");
+}
+
+function detailedReceiptSuffix(memberReceipts: readonly (readonly ToolRunReceipt[])[]): string {
+  const receipts = memberReceipts.flat();
+  if (receipts.length === 0) return "";
+  return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
+}
+
+function composeDetailedChunkSummary(
+  memberProjections: readonly string[],
+  memberReceipts: readonly (readonly ToolRunReceipt[])[],
+): string {
+  return memberProjections.join(" | ") + detailedReceiptSuffix(memberReceipts);
 }
 
 function readThreadId(run: HandlerRunContext): string {
@@ -251,9 +269,8 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     });
   }
 
-  const rendering = await run.provider.composeTurnRendering({ parts });
-  if (!rendering.ok) return providerFailed(rendering);
-  const projection = await run.provider.compressSmoothTurn({ rendering: rendering.text });
+  const renderingText = composeTurnRenderingText(parts);
+  const projection = await run.provider.compressSmoothTurn({ rendering: renderingText });
   if (!projection.ok) return providerFailed(projection);
 
   // The projection's token count is estimated exactly once, here, as the
@@ -263,12 +280,9 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const threadId = readThreadId(run);
   // Tool-run receipts ride the rendering's metadata, mechanically restated
   // from the composition input (AC-3.8) — the chunk summaries read them from
-  // here, never from provider prose. Provenance is copied from the provider
-  // result, stamped there from config-known strings (Epic 05 DD-4); the
-  // deterministic provider sets none.
+  // here, never from provider prose.
   const renderingMetadata: DerivationMetadata = {
     ...(receipts.length > 0 ? { receipts } : {}),
-    ...(rendering.provenance === undefined ? {} : { provenance: rendering.provenance }),
   };
 
   return {
@@ -278,7 +292,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectKind: "turn",
         subjectId: turnId,
         derivationType: "turn_rendering",
-        content: rendering.text,
+        content: renderingText,
         ...(Object.keys(renderingMetadata).length > 0 ? { metadata: renderingMetadata } : {}),
       },
       {
@@ -309,14 +323,14 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   };
 };
 
-// One read for both summary kinds — member projections in turn order — but
-// two contracts at the provider seam (AC-3.8): detailed receives the
-// members' tool-run receipts (what changed, outcome) read from the
-// renderings' stamped metadata; brief receives outcomes only, the receipt
-// text stripped here so the brief provider call structurally cannot carry
-// it. Two work items, two handlers' runs, independent retry and states. A
-// member whose projection is not ready waits: chunk summary derivation is
-// background work, so it requeues until the member lower-band input lands.
+// One read for both summary kinds — member projections in turn order. Detailed
+// is deterministic material assembly from member projections plus full
+// tool-run receipts. Brief is still inference-backed and receives outcomes
+// only, the receipt text stripped here so the brief provider call structurally
+// cannot carry it. Two work items, two handlers' runs, independent retry and
+// states. A member whose projection is not ready waits: chunk summary
+// derivation is background work, so it requeues until the member lower-band
+// input lands.
 function chunkSummaryHandler(
   kind: "chunk_summary_detailed" | "chunk_summary_brief",
 ): WorkHandler {
@@ -348,10 +362,13 @@ function chunkSummaryHandler(
 
     const result =
       kind === "chunk_summary_detailed"
-        ? await run.provider.summarizeChunkDetailed({
-            memberProjections,
-            memberReceipts: members.map((member) => member.receipts),
-          })
+        ? {
+            ok: true as const,
+            text: composeDetailedChunkSummary(
+              memberProjections,
+              members.map((member) => member.receipts),
+            ),
+          }
         : await run.provider.summarizeChunkBrief({
             memberProjections,
             memberOutcomes: members.map((member) =>

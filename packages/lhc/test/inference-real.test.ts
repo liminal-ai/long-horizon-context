@@ -30,6 +30,7 @@ import {
   EDITED_MESSAGE_TEXT,
   emitRealSuiteAccounting,
   DERIVATION_TYPES,
+  INFERENCE_DERIVATION_TYPES,
   loadLocalLhcEnv,
   probeInput,
   readDerivedForms,
@@ -38,7 +39,7 @@ import {
   runLifecycle,
   tempStore,
   validAssignments,
-  type DerivationType,
+  type InferenceDerivationType,
   type LifecycleRun,
   type RoutingRunResult,
   type TempStore,
@@ -69,8 +70,8 @@ function ok<T>(result: OpResult<T>): T {
 // All seven kinds assigned to the one real lane; prompt names stay the
 // registry defaults validAssignments already wires.
 function realAssignments(model: string): ReturnType<typeof validAssignments> {
-  const overrides: Partial<Record<DerivationType, { provider: string; model: string }>> = {};
-  for (const kind of DERIVATION_TYPES) {
+  const overrides: Partial<Record<InferenceDerivationType, { provider: string; model: string }>> = {};
+  for (const kind of INFERENCE_DERIVATION_TYPES) {
     overrides[kind] = { provider: "openrouter", model };
   }
   return validAssignments(overrides);
@@ -162,12 +163,17 @@ describe.runIf(keyed)(
           expect((form.content ?? "").trim()).not.toBe("");
           expect(form.content).not.toMatch(MARKER_AT_START);
           expect(form.content).not.toMatch(MARKER_ANYWHERE);
-          // Provenance names the real lane from config, never model output.
-          expect(form.metadata?.provenance).toEqual({
-            provider: "openrouter",
-            model: realModel,
-            prompt: assignments[form.derivationType as DerivationType].prompt,
-          });
+          if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
+            const kind = form.derivationType as InferenceDerivationType;
+            // Provenance names the real lane from config, never model output.
+            expect(form.metadata?.provenance).toEqual({
+              provider: "openrouter",
+              model: realModel,
+              prompt: assignments[kind].prompt,
+            });
+          } else {
+            expect(form.metadata?.provenance).toBeUndefined();
+          }
         }
       }
     });
@@ -232,6 +238,10 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   it("provenance on every ready form names the real model", () => {
     for (const form of finalForms) {
       if (form.state !== "ready") continue;
+      if (!INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
+        expect(form.metadata?.provenance).toBeUndefined();
+        continue;
+      }
       expect(form.metadata?.provenance?.provider).toBe("openrouter");
       expect(form.metadata?.provenance?.model).toBe(realModel);
     }

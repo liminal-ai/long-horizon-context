@@ -15,9 +15,9 @@ import type {
 // The derivation-type vocabulary for fixtures. AC-0.3 removed the typed
 // enumeration (DERIVATION_TYPES / DerivationType) from src — derivation types
 // are plain string discriminators now — so fixtures keep a local list so
-// per-kind routing stays observable. The four inference types take their
-// default prompt from DEFAULT_PROMPT_NAMES; the two deterministic types take
-// their prompt templates directly (they have no DEFAULT_PROMPT_NAMES entry).
+// per-kind routing stays observable. Only INFERENCE_DERIVATION_TYPES cross the
+// host ModelCall boundary; DERIVATION_TYPES also names deterministic forms that
+// the turns domain assembles locally.
 export const DERIVATION_TYPES = [
   "smoothed_prompt",
   "tool_result_summary",
@@ -28,19 +28,19 @@ export const DERIVATION_TYPES = [
 ] as const;
 export type DerivationType = (typeof DERIVATION_TYPES)[number];
 
-const DETERMINISTIC_PROMPTS: Record<"turn_rendering" | "chunk_summary_detailed", string> = {
-  turn_rendering: "turn-compose-v1",
-  chunk_summary_detailed: "chunk-detailed-v1",
-};
+export const INFERENCE_DERIVATION_TYPES = [
+  "smoothed_prompt",
+  "tool_result_summary",
+  "smooth_turn_compression",
+  "chunk_summary_brief",
+] as const;
+export type InferenceDerivationType = (typeof INFERENCE_DERIVATION_TYPES)[number];
 
 // The prompt template a fixture assignment selects for a kind: the inference
 // default when one exists, else the deterministic type's own template.
-function fixturePrompt(kind: DerivationType): string {
+function fixturePrompt(kind: InferenceDerivationType): string {
   const inferenceDefault = DEFAULT_PROMPT_NAMES[kind];
   if (inferenceDefault !== undefined) return inferenceDefault;
-  if (kind === "turn_rendering" || kind === "chunk_summary_detailed") {
-    return DETERMINISTIC_PROMPTS[kind];
-  }
   return "unknown-prompt";
 }
 
@@ -51,10 +51,10 @@ export const FAKE_PROVIDER_PREFIX = "prov-";
 export const FAKE_MODEL_PREFIX = "model-";
 
 export function validAssignments(
-  overrides: Partial<Record<DerivationType, Partial<ModelAssignment>>> = {},
-): Record<DerivationType, ModelAssignment> {
-  const map = {} as Record<DerivationType, ModelAssignment>;
-  for (const kind of DERIVATION_TYPES) {
+  overrides: Partial<Record<InferenceDerivationType, Partial<ModelAssignment>>> = {},
+): Record<InferenceDerivationType, ModelAssignment> {
+  const map = {} as Record<InferenceDerivationType, ModelAssignment>;
+  for (const kind of INFERENCE_DERIVATION_TYPES) {
     map[kind] = {
       provider: `${FAKE_PROVIDER_PREFIX}${kind}`,
       model: `${FAKE_MODEL_PREFIX}${kind}`,
@@ -84,7 +84,7 @@ export function recordingCall(responses: Record<DerivationType, string>): {
   log: ModelCallInput[];
 } {
   const log: ModelCallInput[] = [];
-  const known = new Set<string>(DERIVATION_TYPES);
+  const known = new Set<string>(INFERENCE_DERIVATION_TYPES);
   const call: ModelCall = (input) => {
     log.push(structuredClone(input));
     const kind = input.model.startsWith(FAKE_MODEL_PREFIX)

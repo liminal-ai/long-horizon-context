@@ -16,6 +16,7 @@ import {
   cannedResponses,
   FAKE_MODEL_PREFIX,
   DERIVATION_TYPES,
+  INFERENCE_DERIVATION_TYPES,
   hangingCall,
   readDerivedForms,
   recordingCall,
@@ -224,6 +225,9 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     for (const kind of DERIVATION_TYPES.filter((k) => k !== "smoothed_prompt")) {
       const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
+    }
+    for (const kind of INFERENCE_DERIVATION_TYPES.filter((k) => k !== "smoothed_prompt")) {
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       for (const form of ready) expect(form.content).toBe(responses[kind]);
     }
     for (const entry of report.ran.filter((r) => r.workItemId.includes("prompt_smoothing"))) {

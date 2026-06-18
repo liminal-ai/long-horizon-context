@@ -13,6 +13,7 @@ import type { ModelCall } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   DERIVATION_TYPES,
+  INFERENCE_DERIVATION_TYPES,
   readDerivedForms,
   recordingCall,
   scriptedCall,
@@ -124,6 +125,9 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     for (const kind of DERIVATION_TYPES) {
       const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
+    }
+    for (const kind of INFERENCE_DERIVATION_TYPES) {
+      const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       for (const form of ready) {
         // Content is the canned response, shaped — and provenance is the
         // assignment's three config-known strings, never authored from text.

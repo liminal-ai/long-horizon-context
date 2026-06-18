@@ -343,8 +343,7 @@ const DEFAULT_INFERENCE_LANE = { provider: "codex", model: "gpt-5.4-mini" } as c
 // Default assignment per inference derivation type (AC-6.2, AC-6.4): the
 // documented default lane and model, the registry's default prompt template,
 // and the tested target ratios for the compression/brief types. Deterministic
-// types (turn_rendering, chunk_summary_detailed) have no default — they are
-// optional (AC-6.3). Construction-internal: the defaults are observable
+// derivations are not inference assignments. Construction-internal: the defaults are observable
 // through routed calls (TC-6.4a), not part of the public export surface.
 const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> = {
   smoothed_prompt: {
@@ -380,8 +379,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 // then fill defaults. Provided inference assignments must carry non-empty
 // provider/model and a registry-known prompt (AC-6.1). Inference types the host
 // omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS (AC-6.2, AC-6.4).
-// Deterministic types are optional (AC-6.3). Unknown keys are rejected — never
-// silently ignored. Then the adapter is built into the same DerivationProvider
+// Unknown keys are rejected — never silently ignored. Then the adapter is built into the same DerivationProvider
 // slot direct injection uses. No partial construction: every mistake throws
 // before anything is assembled (AC-1.1, AC-1.3).
 function resolveInferenceProvider(inference: InferenceConfig): DerivationProvider {
@@ -394,12 +392,10 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
   }
 
   const inferenceKeys = new Set<string>(Object.keys(DEFAULT_INFERENCE_ASSIGNMENTS));
-  const deterministicKeys = new Set(["turn_rendering", "chunk_summary_detailed"]);
-  const knownKinds = new Set<string>([...inferenceKeys, ...deterministicKeys]);
 
   // Unknown keys are rejected (anti-shim: never silently ignore) — TC-0.3a.
   for (const key of Object.keys(provided)) {
-    if (!knownKinds.has(key)) {
+    if (!inferenceKeys.has(key)) {
       throw new TypeError(
         `createSdk config: inference.assignments has unknown derivation type "${key}"`,
       );
@@ -429,28 +425,11 @@ function resolveInferenceProvider(inference: InferenceConfig): DerivationProvide
     }
   }
 
-  // Deterministic assignments are optional (AC-6.3); when present, a prompt —
-  // if supplied — must still name a registry template.
-  for (const kind of deterministicKeys) {
-    const assignment = provided[kind];
-    if (assignment === undefined || assignment.prompt === undefined) continue;
-    if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
-      throw new TypeError(
-        `createSdk config: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
-      );
-    }
-  }
-
-  // Merge: inference types default-filled (AC-6.2, AC-6.4); deterministic types
-  // pass through only when the host supplied them.
+  // Merge: inference types default-filled (AC-6.2, AC-6.4).
   const merged: Record<string, ModelAssignment> = {};
   for (const kind of inferenceKeys) {
     const assignment = provided[kind];
     merged[kind] = assignment ?? DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
-  }
-  for (const kind of deterministicKeys) {
-    const assignment = provided[kind];
-    if (assignment !== undefined) merged[kind] = assignment;
   }
 
   // Guard defaults (AC-6.2, TC-6.2a).

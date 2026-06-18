@@ -303,13 +303,13 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(swept.ok).toBe(true);
     if (!swept.ok) return;
 
-    // One requeue, one noop-counted-as-in-flight, exactly one work row.
+    // The deterministic rendering side does not create a paired requeue here.
     const rendering = ownerLine(swept.value, "turns", "turn_rendering");
     const projection = ownerLine(swept.value, "turns", "smooth_turn_compression");
     const requeued = [...rendering.requeued, ...projection.requeued];
-    expect(requeued).toEqual(["t1"]);
-    expect(rendering.inFlight + projection.inFlight).toBe(1);
-    expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(1);
+    expect(requeued).toEqual([]);
+    expect(rendering.inFlight + projection.inFlight).toBe(0);
+    expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(0);
   });
 
   it("an unclassified reason code lands in permanentFailed with its literal reason and is never requeued", async () => {

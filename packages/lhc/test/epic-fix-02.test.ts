@@ -290,7 +290,6 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
 describe("FIX-2: consecutive tool activity groups into run parts and run receipts", () => {
   it("prompt, call, result, call, result, text, call, result → exactly two run parts (sizes 2 and 1)", async () => {
     const double = createProviderDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double, "manual");
     const filePath = await newThread("grouping");
     const call = (id: string) =>
@@ -314,27 +313,17 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     expect(batch.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
 
-    const composed = captured.filter((c) => c.op === "composeTurnRendering");
-    expect(composed).toHaveLength(1);
-    const parts = (
-      composed[0]?.input as { parts: Array<{ messageId: string; text: string; outcome?: string }> }
-    ).parts;
-    // prompt | runA | assistant text | runB — two outcome-bearing run parts,
-    // anchored at the run's first tool message, not one part per tool message.
-    expect(parts.map((p) => p.messageId)).toEqual(["m1", "m2", "m6", "m7"]);
-    const runParts = parts.filter((p) => p.outcome !== undefined);
-    expect(runParts).toHaveLength(2);
-    // Sizes 2 and 1: run A groups two calls, run B one.
-    expect(runParts[0]?.text).toContain("2 calls");
-    expect(runParts[1]?.text).toContain("1 call");
-    // The summaries live inside the run accounts, not as standalone parts: the
-    // rendering carries no one-entry-per-tool-message segment.
+    // prompt | runA | assistant text | runB — two outcome-bearing run receipts,
+    // anchored at the run's first tool message, not one receipt per tool message.
     const rendering = readDerivedForms(filePath).find(
       (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     );
     const receipts = rendering?.metadata?.receipts;
     expect(receipts).toHaveLength(2);
+    expect(receipts?.map((r) => r.messageId)).toEqual(["m2", "m7"]);
     expect(receipts?.map((r) => r.outcome)).toEqual(["succeeded", "succeeded"]);
+    expect(receipts?.[0]?.account).toContain("2 calls");
+    expect(receipts?.[1]?.account).toContain("1 call");
   });
 
   it("a mixed-outcome run stays explicit and names the failure", async () => {

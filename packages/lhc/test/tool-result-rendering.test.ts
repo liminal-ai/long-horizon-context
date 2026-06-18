@@ -165,7 +165,6 @@ describe("Story 2: tool-result rendering", () => {
 
   it("tool-call arguments render as recorded with no tool_call_summary derivation", async () => {
     const double = createProviderDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -183,9 +182,8 @@ describe("Story 2: tool-result rendering", () => {
 
     const derivationTypes = readDerivedForms(filePath).map((f) => f.derivationType);
     expect(derivationTypes).not.toContain("tool_call_summary");
-    const compose = captured.find((entry) => entry.op === "composeTurnRendering");
-    const parts = (compose?.input as { parts?: Array<{ text: string }> } | undefined)?.parts ?? [];
-    expect(parts.map((part) => part.text).join("\n")).toContain('exec({"cmd":"pnpm test"})');
+    const rendering = readDerivedForms(filePath).find((f) => f.derivationType === "turn_rendering");
+    expect(rendering?.content).toContain('exec({"cmd":"pnpm test"})');
   });
 
   it("tail tool-call rendering preserves long recorded arguments without truncation", async () => {

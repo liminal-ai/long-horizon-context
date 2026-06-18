@@ -13,6 +13,7 @@ import {
   FAKE_MODEL_PREFIX,
   FAKE_PROVIDER_PREFIX,
   DERIVATION_TYPES,
+  INFERENCE_DERIVATION_TYPES,
   probeInput,
   recordingCall,
   tempStore,
@@ -38,7 +39,7 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     const assignments = validAssignments();
     const { derivations: forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
 
-    for (const kind of DERIVATION_TYPES) {
+    for (const kind of INFERENCE_DERIVATION_TYPES) {
       const lane = log.filter((input) => input.model === `${FAKE_MODEL_PREFIX}${kind}`);
       expect(lane.length).toBeGreaterThan(0);
       for (const input of lane) {
@@ -52,6 +53,9 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
       for (const form of ready) {
         expect(form.content).toBe(responses[kind]);
       }
+    }
+    for (const kind of DERIVATION_TYPES) {
+      expect(forms.some((form) => form.derivationType === kind && form.state === "ready")).toBe(true);
     }
   });
 
@@ -74,24 +78,20 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     const lanes = {
       smoothed_prompt: "lane-alpha",
       tool_result_summary: "lane-beta",
-      turn_rendering: "lane-beta",
       smooth_turn_compression: "lane-beta",
-      chunk_summary_detailed: "lane-gamma",
       chunk_summary_brief: "lane-gamma",
     } as const;
     const assignments = validAssignments({
       smoothed_prompt: { provider: lanes.smoothed_prompt },
       tool_result_summary: { provider: lanes.tool_result_summary },
-      turn_rendering: { provider: lanes.turn_rendering },
       smooth_turn_compression: { provider: lanes.smooth_turn_compression },
-      chunk_summary_detailed: { provider: lanes.chunk_summary_detailed },
       chunk_summary_brief: { provider: lanes.chunk_summary_brief },
     });
     const responses = cannedResponses();
     const { call, log } = recordingCall(responses);
     const { derivations: forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
 
-    for (const kind of DERIVATION_TYPES) {
+    for (const kind of INFERENCE_DERIVATION_TYPES) {
       // Models stay unique per kind, so the lane each item actually used is
       // readable from the log: every call for this kind's model must carry
       // this kind's lane provider — no bleed from the other lanes.

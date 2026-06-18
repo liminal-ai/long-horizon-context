@@ -171,11 +171,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and a lower-band proj
       { messageId: "m1", kind: "user_prompt", text: smoothed, fallback: false },
       { messageId: "m2", kind: "assistant_text", text: answer, fallback: false },
     ];
-    const renderingText = deterministicText(
-      "composeTurnRendering",
-      { parts },
-      `${smoothed} | ${answer}`,
-    );
+    const renderingText = parts.map((part) => part.text).join(" | ");
     const rendering = formOf(filePath, "t1", "turn_rendering");
     const projection = formOf(filePath, "t1", "smooth_turn_compression");
     expect(rendering).toMatchObject({
@@ -313,19 +309,18 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
     await drain(sdk, filePath);
     expect(formOf(filePath, "t1", "turn_rendering")?.state).toBe("ready");
 
-    const composed = captured.filter((entry) => entry.op === "composeTurnRendering");
-    expect(composed).toHaveLength(1);
-    const parts = (composed[0]?.input as { parts: RenderingPart[] }).parts;
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    const receipts = rendering?.metadata?.receipts ?? [];
+    expect(receipts).toHaveLength(1);
     // Fix 2 grouping (AC-3.4): the three-call edit run folds into ONE run part
     // after the prompt — outcome-explicit, not one part per tool message.
-    expect(parts.map((part) => part.messageId)).toEqual(["m1", "m2"]);
-    expect(parts[0]?.outcome).toBeUndefined();
-    const run = parts[1];
+    expect(receipts[0]?.messageId).toBe("m2");
+    const run = receipts[0];
     // A run with any failed call reads failed at run level — the state-changing
     // failure cannot be lost — and the mixed tally stays explicit, never a
     // vague success.
     expect(run?.outcome).toBe("failed");
-    const account = run?.text ?? "";
+    const account = run?.account ?? "";
     expect(account).toContain("2 succeeded, 1 failed");
     expect(account).not.toMatch(/\b3 succeeded\b/);
     // Composition consumed the ready forms, not the raw record: every tool
@@ -339,7 +334,6 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
       { id: "m6", kind: "tool_call", outcome: "succeeded", text: 'edit_file({"path":"c.txt"})' },
       { id: "m7", kind: "tool_result", outcome: "succeeded" },
     ] as const;
-    expect(run?.fallback).toBe(false);
     for (const m of toolMessages) {
       const summary =
         m.kind === "tool_call" ? m.text : formOf(filePath, m.id, "tool_result_summary")?.content;
@@ -509,17 +503,10 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
-    // Double-marked content distinguishes the two kinds: each went through
-    // its own provider operation, detailed over projections + receipts,
-    // brief over projections + outcomes (empty here — no tool activity).
+    // Detailed is deterministic material assembly; brief still goes through
+    // its own provider operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
-    expect(detailed?.content).toBe(
-      deterministicText(
-        "summarizeChunkDetailed",
-        { memberProjections, memberReceipts: [[]] },
-        memberProjections.join(" | "),
-      ),
-    );
+    expect(detailed?.content).toBe(memberProjections.join(" | "));
     expect(brief?.content).toBe(
       deterministicText(
         "summarizeChunkBrief",
@@ -576,12 +563,11 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(account).toContain(`${callB} ⇒ failed`);
     expect(account).toContain(`${resultB} ⇒ failed`);
 
-    // Seam evidence: the detailed call received the full run receipt; the
-    // brief call received the run outcome only — no receipt account text
-    // anywhere in its input, so brief structurally cannot preserve more.
-    const detailedInput = captured.find((entry) => entry.op === "summarizeChunkDetailed")?.input;
+    // Seam evidence: only the brief call crosses the provider boundary, and
+    // receives the run outcome only — no receipt account text anywhere in its
+    // input, so brief structurally cannot preserve more.
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
-    expect((detailedInput as { memberReceipts: unknown }).memberReceipts).toEqual([receipts]);
+    expect(captured.some((entry) => entry.op === "summarizeChunkDetailed")).toBe(false);
     expect(briefInput).toEqual({
       memberProjections: [formOf(filePath, "t1", "smooth_turn_compression")?.content],
       memberOutcomes: [["failed"]],

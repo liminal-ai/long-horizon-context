@@ -235,7 +235,6 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
 
   it("pending smoothing is consumed through turn recovery and persisted ready when no live work remains", async () => {
     const double = createProviderDouble();
-    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const text = "  raw     prompt because i asked  ";
@@ -249,22 +248,17 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
     deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
     await drain(sdk, filePath);
 
-    const renderingCall = captured.find((entry) => entry.op === "composeTurnRendering");
-    expect((renderingCall?.input as { parts?: unknown[] } | undefined)?.parts?.[0]).toMatchObject({
-      messageId: "m1",
-      text: deterministicText("smoothPrompt", { text: floor }, floor),
-      fallback: false,
-    });
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    expect(rendering?.content).toContain(deterministicText("smoothPrompt", { text: floor }, floor));
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: deterministicText("smoothPrompt", { text: floor }, floor),
     });
-    expect(formOf(filePath, "t1", "turn_rendering")?.state).toBe("ready");
+    expect(rendering?.state).toBe("ready");
   });
 
   it("terminal smoothing failure lands failed with reason, then turn composition consumes the floor", async () => {
     const double = createProviderDouble();
-    const captured = double.captureInputs();
     double.failKind("prompt_smoothing", 99, {
       retryable: true,
       reason: "scripted exhaustion",
@@ -290,13 +284,9 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
       }),
     );
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({ state: "ready" });
-    const renderingCall = captured.find((entry) => entry.op === "composeTurnRendering");
-    expect((renderingCall?.input as { parts?: unknown[] } | undefined)?.parts?.[0]).toMatchObject({
-      messageId: "m1",
-      text: floor,
-      fallback: true,
-    });
-    expect(formOf(filePath, "t1", "turn_rendering")?.state).toBe("ready");
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    expect(rendering?.content).toContain(floor);
+    expect(rendering?.state).toBe("ready");
   });
 
   it("cleanPrompt is pure for deterministic recovery floors", () => {

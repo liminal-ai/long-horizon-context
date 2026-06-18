@@ -377,21 +377,19 @@ describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaini
     const captured = double.captureInputs();
     await drain(sdk, filePath);
 
-    // The rebuilt summaries read exactly one member projection — the
-    // double-input fixture proves the composition input excludes the
-    // deleted turn (the read path a read-API assertion would miss).
-    const detailed = captured.filter((call) => call.op === "summarizeChunkDetailed");
+    // The rebuilt summaries read exactly one member projection. Detailed is
+    // deterministic material assembly; brief still exposes its provider input.
     const brief = captured.filter((call) => call.op === "summarizeChunkBrief");
-    expect(detailed).toHaveLength(1);
     expect(brief).toHaveLength(1);
-    expect((detailed[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([
-      PROJ,
-    ]);
     expect((brief[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([
       PROJ,
     ]);
 
     const after = readDerivedForms(filePath);
+    expect(
+      after.find((form) => form.subjectId === "c1" && form.derivationType === "chunk_summary_detailed")
+        ?.content,
+    ).toBe(PROJ);
     // Chunk 1's summaries are ready again at the next source version.
     for (const form of after.filter((candidate) => candidate.subjectId === "c1")) {
       expect(form.state).toBe("ready");

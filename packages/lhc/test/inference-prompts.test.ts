@@ -180,33 +180,18 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
     const { call, log } = recordingCall(cannedResponses());
     const provider = createInferenceProvider(resolvedConfig({ call }));
 
-    const detailed = await provider.summarizeChunkDetailed({
-      memberProjections: ["turn one: planning work"],
-      memberReceipts: [
-        [{ messageId: "m2", activity: "tool_call", account: RECEIPT_ACCOUNT, outcome: "succeeded" }],
-      ],
-    });
     const brief = await provider.summarizeChunkBrief({
       memberProjections: ["turn one: planning work"],
       memberOutcomes: [["succeeded"]],
     });
-    expect(detailed.ok).toBe(true);
     expect(brief.ok).toBe(true);
 
-    const detailedCall = log.find(
-      (input) => input.model === `${FAKE_MODEL_PREFIX}chunk_summary_detailed`,
-    );
     const briefCall = log.find(
       (input) => input.model === `${FAKE_MODEL_PREFIX}chunk_summary_brief`,
     );
-    expect(detailedCall).toBeDefined();
     expect(briefCall).toBeDefined();
-    if (detailedCall === undefined || briefCall === undefined) return;
+    if (briefCall === undefined) return;
 
-    // The detailed lane is the contrast: its rendering carries the receipt
-    // account verbatim, so its absence from the brief lane is stripping, not
-    // a template that ignores receipts altogether.
-    expect(userContent(detailedCall)).toContain(RECEIPT_ACCOUNT);
     expect(userContent(briefCall)).toContain("succeeded");
     expect(userContent(briefCall)).not.toContain(RECEIPT_ACCOUNT);
     expect(userContent(briefCall)).not.toContain("rewrote");
