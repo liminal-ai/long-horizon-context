@@ -8,6 +8,8 @@
 // ops retroactively (test plan, Chunk 2).
 import { deepStrictEqual } from "node:assert/strict";
 import { intakeStream, messages, threadView, turns } from "../../src/index.js";
+import { openDatabase } from "../../src/shared-tech/storage.js";
+import { listItems, type WorkOwner } from "../../src/shared-tech/work-queue/index.js";
 import { readDerivedForms } from "./threads.js";
 
 export interface ObservableState {
@@ -21,12 +23,21 @@ export interface ObservableState {
   derivations: unknown;
 }
 
+function queuedFor(filePath: string, owner: WorkOwner) {
+  const db = openDatabase(filePath);
+  try {
+    return listItems(db, owner);
+  } finally {
+    db.close();
+  }
+}
+
 export async function observableState(filePath: string): Promise<ObservableState> {
   const pulled = await threadView.pull({ filePath });
   return {
     events: await intakeStream.listEvents({ filePath }),
-    messages: await messages.listMessages({ filePath }, { includeDeleted: true }),
-    messageWork: await messages.listQueuedWork({ filePath }),
+    messages: await messages.list({ filePath }, { includeDeleted: true }),
+    messageWork: queuedFor(filePath, "messages"),
     turnWork: await turns.listQueuedWork({ filePath }),
     viewStatus: await threadView.status({ filePath }),
     pullMeta: pulled.ok ? pulled.value.meta : pulled,

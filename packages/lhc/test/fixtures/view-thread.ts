@@ -334,7 +334,7 @@ export async function mutationInFlightVariant(store: TempStore): Promise<Mutatio
   // A mid-thread closed-turn target: turn 2's prompt, so the cascade spans
   // all three subject kinds — its own smoothed_prompt, t2's two turn forms,
   // and c1's two chunk summaries.
-  const listed = await sdk.messages.listMessages({ filePath });
+  const listed = await sdk.messages.list({ filePath });
   if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
   const target = listed.value.find((record) => record.kind === "user_prompt" && record.turnId === "t2");
   if (target === undefined) {

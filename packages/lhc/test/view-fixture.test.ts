@@ -267,7 +267,7 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
 
   it("the straggler variant carries turnId-null notes between two turns and after the last turn", async () => {
     const variant = await stragglerVariantThread(store);
-    const listed = await messages.listMessages({ filePath: variant.filePath });
+    const listed = await messages.list({ filePath: variant.filePath });
     const turnList = await turns.listTurns({ filePath: variant.filePath });
     expect(listed.ok && turnList.ok).toBe(true);
     if (!listed.ok || !turnList.ok) return;

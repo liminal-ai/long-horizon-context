@@ -107,7 +107,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     store.cleanup();
   });
 
-  it("TC-3.1: buckets the five seeded states, requeues only the transient failure, returns without waiting, zero model calls", async () => {
+  it("TC-3.1: buckets the five seeded states, derives only the transient failure, and returns the repair receipt", async () => {
     const captured = fixture.double.captureInputs();
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
 
@@ -118,13 +118,12 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     if (!swept.ok) return;
     firstReceipt = swept.value;
 
-    // No waiting (AC-3.2): the sweep is report reads plus row writes; any
-    // drain or poll inside it would blow this bound (anti-shim tripwire).
+    // No drain or poll: message repair is synchronous through messages.derive.
     expect(elapsedMs).toBeLessThan(1000);
 
     // The tool_result_summary line carries the story's whole failed×classify
     // contract: 6 of the fixture's 8 results drained ready, the scripted
-    // transient exhaustion requeued, the scripted permanent failure reported
+    // transient exhaustion repaired, the scripted permanent failure reported
     // with its reason and left alone (AC-3.3, AC-3.5).
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.ready).toBe(6);
@@ -143,13 +142,12 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(renderings.inFlight).toBe(1);
     expect(renderings.requeued).toEqual([]);
 
-    // The transient requeue really landed through the owner: one work row by
-    // key, form cleared to pending with its queue row visible (AC-3.1's
-    // owners-only write path read back through the owner's report).
-    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
+    // The transient repair really landed through the owner: no queue row
+    // remains, and the form is ready through the owner's report.
+    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
     const transient = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
-    expect(transient.state).toBe("pending");
-    expect(transient.queueStatus).toBe("queued");
+    expect(transient.state).toBe("ready");
+    expect(transient.queueStatus).toBeUndefined();
 
     // The permanent failure is untouched: still failed, no work row.
     const permanent = await reportEntry(fixture.sdk, fixture.filePath, permanentId, "tool_result_summary");
@@ -157,26 +155,24 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(permanent.reason).toBe(PERMANENT_FAILURE_REASON);
     expect(workRowsFor(fixture.filePath, "tool_result_summary", permanentId)).toBe(0);
 
-    // Nothing requeued anywhere else, and the sweep itself called no
-    // inference callbacks (AC-3.1: no derivation, no model calls).
+    // Nothing repaired anywhere else.
     const allRequeued = swept.value.owners.flatMap((line) => line.requeued);
     expect(allRequeued).toEqual([transientId]);
-    expect(captured.length).toBe(0);
+    expect(captured.length).toBe(1);
   });
 
-  it("TC-3.2 (AC-3.4): a second sweep without draining reports the requeued form in-flight and writes no second row", async () => {
+  it("TC-3.2 (AC-3.4): a second sweep sees the repaired form ready and writes no queue row", async () => {
     const swept = await fixture.sdk.threadView.sweep({ filePath: fixture.filePath });
     expect(swept.ok).toBe(true);
     if (!swept.ok) return;
 
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.requeued).toEqual([]);
-    expect(results.inFlight).toBe(1);
-    expect(results.ready).toBe(6);
+    expect(results.inFlight).toBe(0);
+    expect(results.ready).toBe(7);
     expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
 
-    // Exactly one work row exists for the requeued form (count by key).
-    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
+    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
   });
 
   it("TC-3.3 schema leg (AC-3.5, AC-3.7): the SDK receipt validates against the shared receipt schema", async () => {
@@ -441,7 +437,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // thread is all tail (compact point 0), so seed the boundary at the healed
     // result's position.
     expect(next.value.compactPoint).toBe(0);
-    const listed = await fixture.sdk.messages.listMessages({ filePath: fixture.filePath });
+    const listed = await fixture.sdk.messages.list({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const healedMessage = listed.value.find((m) => m.messageId === transientId);

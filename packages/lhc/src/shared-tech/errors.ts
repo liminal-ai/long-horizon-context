@@ -17,6 +17,7 @@ export type ErrorCode =
   | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
   | "provider_failure" // system_error — exhausted retries; form.reason carries detail
   | "source_damaged" // state_corruption — handler found corrupt source; form blocked
+  | "inference_unavailable" // caller_error — synchronous derivation called outside an SDK inference seam
   // Epic 03 (tech design §Interface Definitions): the surface-skeleton stub
   // contract — machine-readable, never a throw on the thread-view surface.
   | "not_implemented" // system_error — operation's story has not landed yet
@@ -33,7 +34,7 @@ export type ErrorCode =
   // limit < 1, non-integer) is an operational caller error returned as a
   // result, mirroring the compact-params precedent (additive code, the
   // Epic 03 deviation pattern).
-  | "invalid_bounds"; // caller_error — listMessages bounds option rejected
+  | "invalid_bounds"; // caller_error — list bounds option rejected
 
 export interface ErrorResult {
   errorClass: ErrorClass;

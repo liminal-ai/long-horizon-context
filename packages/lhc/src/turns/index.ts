@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { EventKind } from "../intake-stream/index.js";
-import type { DerivationReportEntry, WorkHandler } from "../shared-tech/index.js";
+import type { DerivationReportEntry } from "../shared-tech/index.js";
 import {
   type ErrorResult,
   type OperationContext,
@@ -25,7 +25,6 @@ import { transition } from "./internal/state-machine.js";
 // callers go through applyEvent.
 export { type TurnEffect, type TurnState, transition } from "./internal/state-machine.js";
 
-import { applyTurnDeleteCascade, type MutationResult } from "../messages/index.js";
 import type { Derivation } from "../shared-tech/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
 import {
@@ -34,16 +33,7 @@ import {
   readTurnDerivationRow,
   reportTurnDerivations,
 } from "./internal/derivations.js";
-import { turnWorkHandlers } from "./internal/derive.js";
-import {
-  closeTurn,
-  insertOpenTurn,
-  markTurnDeleted,
-  nextTurnOrder,
-  readMutableTurn,
-  readTurns,
-  selectOpenTurnIds,
-} from "./internal/store.js";
+import { closeTurn, insertOpenTurn, nextTurnOrder, readTurns, selectOpenTurnIds } from "./internal/store.js";
 
 export interface TurnRecord {
   turnId: string;
@@ -114,13 +104,9 @@ function closeTurnAndQueueWork(ctx: OperationContext, turnId: string, eventOrder
   });
 }
 
-// Turn-owned work handlers, merged into the SDK's dispatch map at
-// construction (DD-6): turn derivation and the two chunk summaries.
-export const workHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = turnWorkHandlers;
-
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like
-// messages.createFromEvent: a turn-storage failure rejects the whole batch.
+// messages.create: a turn-storage failure rejects the whole batch.
 export function applyEvent(ctx: OperationContext, eventKind: EventKind, eventOrder: number): TurnTransitionOutcome {
   const openTurnId = selectOpenTurnIds(ctx.db)[0] ?? null;
   const effect = transition({ openTurnId }, eventKind);
@@ -317,7 +303,7 @@ function turnRequeueTarget(target: {
 }
 
 // Explicit re-queue through the owning surface (AC-4.4): same contract as
-// messages.requeue — blocked refused with the stored damage reason, missing
+// messages.derive — blocked refused with the stored damage reason, missing
 // rows refused, no-op against live work at the current source version, and
 // the no-op check + enqueue in one transaction. A successful requeue rebuilds
 // at the next source version: composed derivations recompute their gaps from
@@ -396,82 +382,6 @@ export async function requeue(
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`requeue failed: ${reason}`);
-  } finally {
-    db.close();
-  }
-}
-
-// ── delete (Epic 02 Story 6, Flow 6) ─────────────────────────────
-
-// The whole-exchange removal (AC-6.4–6.7): "that exchange was a dead end —
-// kill it." One transaction stamps the turn and all its live member
-// messages deleted, drops the turn's and members' derivations, and
-// re-queues the containing chunk's summaries from the remaining live
-// members — or drops them when the chunk empties out (AC-6.6). The shared
-// machinery is the messages domain's cascade module (DD-8, one cascade,
-// two callers), reached through its public surface; this operation owns
-// the turn-side validation and the turn-row stamp. Source events are never
-// touched; chunk membership rows are never moved or re-cut — reads filter
-// the deleted turn out, shrinking the chunk in place. Refusals read the
-// filtered view: a missing, deleted, or double-deleted turn is
-// turn_not_found; an open turn is turn_open; a refusal changes nothing.
-export async function deleteTurn(thread: ThreadRef, input: { turnId: string }): Promise<OpResult<MutationResult>> {
-  const resolved = await resolveThreadRef(thread);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
-  try {
-    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-      | { thread_id: string }
-      | undefined;
-    const threadId = meta?.thread_id ?? "";
-    return runInTransaction(
-      db,
-      () => new Date(),
-      threadId,
-      (ctx): OpResult<MutationResult> => {
-        const target = readMutableTurn(ctx.db, input.turnId);
-        if (target === undefined) {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "turn_not_found",
-              reason: `no turn ${input.turnId} exists in this thread`,
-            },
-          };
-        }
-        if (target.status !== "closed") {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "turn_open",
-              reason: `turn ${input.turnId} is open; open turns cannot be deleted (v1 boundary)`,
-            },
-          };
-        }
-        markTurnDeleted(ctx.db, input.turnId, ctx.clock().toISOString());
-        const cascade = applyTurnDeleteCascade(ctx, input.turnId);
-        return {
-          ok: true,
-          value: {
-            changed: { messageIds: cascade.memberMessageIds, turnIds: [input.turnId] },
-            cleared: cascade.cleared,
-            dropped: cascade.dropped,
-            queued: cascade.queued,
-            superseded: cascade.superseded,
-          },
-        };
-      },
-    );
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    return storageFailure(`delete failed: ${reason}`);
   } finally {
     db.close();
   }

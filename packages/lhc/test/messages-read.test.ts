@@ -7,6 +7,7 @@
 // unchanged (read-only delta, DD-6) and calls no model.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, intakeStream, type Lhc, type MessageEventInput, messages, threadView, turns } from "../src/index.js";
+import { listItems, type WorkOwner } from "../src/shared-tech/work-queue/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -86,13 +87,22 @@ function idsOf(result: { ok: boolean }): string[] {
   return (result as { ok: true; value: Array<{ messageId: string }> }).value.map((record) => record.messageId);
 }
 
+function queuedFor(filePath: string, owner: WorkOwner) {
+  const db = openRaw(filePath);
+  try {
+    return listItems(db, owner);
+  } finally {
+    db.close();
+  }
+}
+
 // The DD-6 observable-state snapshot: queued work through both owners, view
 // boundary/zone through status, derived-form rows, and the event log. A read
 // that mutates any of these fails the before/after deep-equal.
 async function observableState(filePath: string): Promise<Record<string, unknown>> {
   return {
     events: await intakeStream.listEvents({ filePath }),
-    messageWork: await messages.listQueuedWork({ filePath }),
+    messageWork: queuedFor(filePath, "messages"),
     turnWork: await turns.listQueuedWork({ filePath }),
     viewStatus: await threadView.status({ filePath }),
     derivations: readDerivedForms(filePath),
@@ -110,7 +120,7 @@ afterEach(() => {
 describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
   it("returns messages in record order with kind, token estimate, and turn membership", async () => {
     const { filePath } = await readFixture(store);
-    const listed = await messages.listMessages({ filePath });
+    const listed = await messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3", "m4", "m6", "m7"]);
@@ -132,7 +142,7 @@ describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
 
   it("honors from/to/limit windows exactly in source-event-order coordinates", async () => {
     const { filePath } = await readFixture(store);
-    const windows: Array<[Parameters<typeof messages.listMessages>[1], string[]]> = [
+    const windows: Array<[Parameters<typeof messages.list>[1], string[]]> = [
       [{ from: 2, to: 4 }, ["m2", "m3", "m4"]],
       [{ from: 6 }, ["m6", "m7"]],
       [{ to: 2 }, ["m1", "m2"]],
@@ -142,7 +152,7 @@ describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
       [{ from: 5, to: 5 }, []], // the turn_end order: an event, never a message
     ];
     for (const [opts, expected] of windows) {
-      expect(idsOf(await messages.listMessages({ filePath }, opts))).toEqual(expected);
+      expect(idsOf(await messages.list({ filePath }, opts))).toEqual(expected);
     }
   });
 
@@ -150,7 +160,7 @@ describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
     const { filePath } = await readFixture(store);
     const badBounds = [{ from: 5, to: 2 }, { limit: 0 }, { limit: -1 }, { from: 1.5 }];
     for (const opts of badBounds) {
-      const refused = await messages.listMessages({ filePath }, opts);
+      const refused = await messages.list({ filePath }, opts);
       expect(refused.ok).toBe(false);
       if (refused.ok) continue;
       expect(refused.error.errorClass).toBe("caller_error");
@@ -206,13 +216,13 @@ describe("TC-3.2 / AC-3.2: show returns the full record with owner-reported form
 describe("TC-3.3 / AC-3.3: deleted messages are audit-visible, never silently mixed", () => {
   it("default list excludes a deleted message; include-deleted lists it marked; show returns it flagged", async () => {
     const { filePath } = await readFixture(store);
-    const deleted = await messages.deleteMessage({ filePath }, { messageId: "m2" });
+    const deleted = await messages.remove({ filePath }, { messageId: "m2" });
     expect(deleted.ok).toBe(true);
 
-    const defaultList = await messages.listMessages({ filePath });
+    const defaultList = await messages.list({ filePath });
     expect(idsOf(defaultList)).toEqual(["m1", "m3", "m4", "m6", "m7"]);
 
-    const audited = await messages.listMessages({ filePath }, { includeDeleted: true });
+    const audited = await messages.list({ filePath }, { includeDeleted: true });
     expect(audited.ok).toBe(true);
     if (!audited.ok) return;
     expect(audited.value.map((m) => m.messageId)).toEqual(["m1", "m2", "m3", "m4", "m6", "m7"]);
@@ -246,10 +256,10 @@ describe("architecture risk: reads are read-only and inference-callback-free (DD
     const captured = double.captureInputs();
     const before = await observableState(filePath);
 
-    await messages.listMessages({ filePath });
-    await messages.listMessages({ filePath }, { from: 2, to: 4, limit: 2 });
-    await messages.listMessages({ filePath }, { includeDeleted: true });
-    await messages.listMessages({ filePath }, { from: 9, to: 1 }); // refused, must not write either
+    await messages.list({ filePath });
+    await messages.list({ filePath }, { from: 2, to: 4, limit: 2 });
+    await messages.list({ filePath }, { includeDeleted: true });
+    await messages.list({ filePath }, { from: 9, to: 1 }); // refused, must not write either
     await messages.show({ filePath }, "m4");
     await messages.show({ filePath }, "m99"); // not-found, must not write either
 
@@ -321,8 +331,8 @@ describe("architecture risk: background reads schedule no catch-up drain (DD-6, 
     const captured = bgDouble.captureInputs();
     const before = rawWorkAndForms(filePath);
 
-    const listed = await bg.messages.listMessages({ filePath });
-    await bg.messages.listMessages({ filePath }, { limit: 1 });
+    const listed = await bg.messages.list({ filePath });
+    await bg.messages.list({ filePath }, { limit: 1 });
     const shown = await bg.messages.show({ filePath }, "m1");
     expect(listed.ok && shown.ok).toBe(true);
     if (!listed.ok || !shown.ok) return;
@@ -359,7 +369,7 @@ describe("architecture risk: bounded listing loads only its window (AC-3.1, SV-0
     // In-window reads succeed and return exactly the window — the poisoned
     // rows are sourced neither as blocks nor as forms.
     for (const opts of [{ to: 1 }, { limit: 1 }] as const) {
-      const bounded = await messages.listMessages({ filePath }, opts);
+      const bounded = await messages.list({ filePath }, opts);
       expect(bounded.ok).toBe(true);
       if (!bounded.ok) return;
       expect(bounded.value.map((m) => m.messageId)).toEqual(["m1"]);
@@ -369,9 +379,9 @@ describe("architecture risk: bounded listing loads only its window (AC-3.1, SV-0
     // Positive controls: a window that *includes* a poisoned row does load it
     // and fails on parse — proof the pills are real, so the passes above are
     // genuine no-loads, not silently-dropped output.
-    const hitsBlock = await messages.listMessages({ filePath }, { from: 7 });
+    const hitsBlock = await messages.list({ filePath }, { from: 7 });
     expect(hitsBlock.ok).toBe(false);
-    const hitsForm = await messages.listMessages({ filePath }, { from: 4, to: 4 });
+    const hitsForm = await messages.list({ filePath }, { from: 4, to: 4 });
     expect(hitsForm.ok).toBe(false);
   });
 });

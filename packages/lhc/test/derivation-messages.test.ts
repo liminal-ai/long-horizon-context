@@ -97,9 +97,9 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
     ]);
 
     // Readable alongside the message through the production read surface
-    // (02F-001): listMessages carries the stored form on the message record —
+    // (02F-001): list carries the stored form on the message record —
     // not a fixture read of derivation.
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const message = listed.value[0];
@@ -155,7 +155,7 @@ describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stay
     expect(summary?.content).toBe(truncateForFallback(big));
     expect(summary?.metadata).toEqual({ outcome: "succeeded" });
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const resultMessage = listed.value.find((m) => m.kind === "tool_result");
@@ -235,7 +235,7 @@ describe("TC-2.6 / AC-2.6: inference callback exhaustion lands the form failed; 
     expect(form?.reason).toBe("scripted exhaustion (smoothPrompt)");
     expect(form?.content).toBeUndefined();
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);

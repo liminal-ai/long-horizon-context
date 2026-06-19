@@ -11,6 +11,7 @@ export * as turns from "./turns/index.js";
 import * as inspectDomain from "./inspect/index.js";
 import * as intakeStreamDomain from "./intake-stream/index.js";
 import * as messagesDomain from "./messages/index.js";
+import { messageWorkHandlers } from "./messages/internal/handlers.js";
 import type {
   CompactReceipt,
   ErrorResult,
@@ -45,11 +46,12 @@ import {
 } from "./shared-tech/index.js";
 import * as loggingDomain from "./shared-tech/logging/index.js";
 import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
-import type { WorkKind } from "./shared-tech/work-queue/index.js";
+import { mapWorkQHandlers, type WorkHandlerMap, type WorkKind } from "./shared-tech/work-queue/index.js";
 import * as threadViewDomain from "./thread-view/index.js";
 import { resolveViewConfig } from "./thread-view/index.js";
 import * as threadsDomain from "./threads/index.js";
 import * as turnsDomain from "./turns/index.js";
+import { turnWorkHandlers } from "./turns/internal/derive.js";
 
 export type {
   BatchResult,
@@ -160,10 +162,12 @@ export {
   type EnqueueDerivationTarget,
   type EnqueueInput,
   enqueue,
+  mapWorkQHandlers,
   type QueueDetailRow,
   queueDetail,
   supersedeQueued,
   WORK_KIND_REGISTRY,
+  type WorkHandlerMap,
   type WorkItemRecord,
   type WorkKind,
   type WorkOwner,
@@ -180,24 +184,6 @@ export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
 export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 
 // ── LHC initialization (DD-6/DD-7) ────────────────────────────────
-
-export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
-
-// Merge per-domain handler tables into the one join between the queue's
-// opaque kinds and domain code. A kind claimed by two tables is a wiring bug
-// (each kind has exactly one owner) and throws at construction.
-export function assembleWorkHandlerMap(tables: ReadonlyArray<WorkHandlerMap>): WorkHandlerMap {
-  const map: WorkHandlerMap = {};
-  for (const table of tables) {
-    for (const [kind, handler] of Object.entries(table)) {
-      if (map[kind as WorkKind] !== undefined) {
-        throw new TypeError(`work kind "${kind}" registered by more than one domain`);
-      }
-      map[kind as WorkKind] = handler;
-    }
-  }
-  return map;
-}
 
 function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
   return {
@@ -293,8 +279,8 @@ function requireNonNegative(value: number, name: string): void {
 // every operation invoked through sdk.* runs inside runWithInstanceSeam, so
 // the poke/touch it triggers deep inside reaches THIS SDK's scheduler
 // (background) or a no-op (manual) — never another SDK's. Non-function exports
-// (e.g. a domain's workHandlers table) pass through unchanged. The wrapped
-// object is the same shape as the namespace, so the public surface type holds.
+// pass through unchanged. The wrapped object is the same shape as the
+// namespace, so the public surface type holds.
 function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   const scoped: Record<string, unknown> = {};
   for (const key of Object.keys(surface)) {
@@ -498,9 +484,7 @@ export function initLhc(config: SdkConfig): Lhc {
   }
 
   // Handler maps merge from per-domain contributions at construction (DD-6).
-  // The tables are empty until Stories 2–3 land the real handlers; the
-  // assembly mechanics are production code from day one.
-  const workHandlers = assembleWorkHandlerMap([messagesDomain.workHandlers, turnsDomain.workHandlers]);
+  const workHandlers = mapWorkQHandlers([messageWorkHandlers, turnWorkHandlers]);
 
   const drainDeps: DrainDeps = {
     lookupHandler: (kind) => lookupWorkHandler(workHandlers, kind),
@@ -528,8 +512,9 @@ export function initLhc(config: SdkConfig): Lhc {
           touch: (filePath, db) => scheduler.touch(filePath, db),
           view: resolved.view,
           toolResult: resolved.toolResult,
+          config: resolved,
         }
-      : { poke: () => {}, touch: () => {}, view: resolved.view, toolResult: resolved.toolResult };
+      : { poke: () => {}, touch: () => {}, view: resolved.view, toolResult: resolved.toolResult, config: resolved };
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the

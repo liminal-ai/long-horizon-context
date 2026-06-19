@@ -97,7 +97,7 @@ describe("Story 2: tool-result rendering", () => {
       metadata: { outcome: "succeeded" },
     });
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(content);
@@ -230,7 +230,7 @@ describe("Story 2: tool-result rendering", () => {
       reason: "scripted tool summary failure",
     });
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe("short failure target");

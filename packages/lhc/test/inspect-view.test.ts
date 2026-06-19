@@ -129,7 +129,7 @@ const DEGRADED_COMPACT_PARAMS = {
 async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
   const fixture = await derivedThreadFixture(store, { failures: false });
   const { sdk, filePath } = fixture;
-  const listed = await sdk.messages.listMessages({ filePath });
+  const listed = await sdk.messages.list({ filePath });
   if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
   for (const turn of ["t4", "t5", "t6", "t8"]) {
     const target = listed.value.find((record) => record.kind === "user_prompt" && record.turnId === turn);

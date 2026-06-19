@@ -120,7 +120,7 @@ async function readyTurnThread(sdk: Lhc): Promise<string> {
 // The full mutation read-back surface in one snapshot: record, forms, queue.
 async function snapshot(filePath: string): Promise<unknown> {
   return {
-    messages: unwrap(await messages.listMessages({ filePath })),
+    messages: unwrap(await messages.list({ filePath })),
     derivations: readDerivedForms(filePath),
     queue: rawDetail(filePath),
   };
@@ -158,7 +158,7 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
 
     // Synchronous, before any drain: content, blocks, and the re-stamped
     // estimate read back changed.
-    const m1 = unwrap(await messages.listMessages({ filePath })).find((record) => record.messageId === "m1");
+    const m1 = unwrap(await messages.list({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.blocks).toEqual([{ blockType: "text", content: { text: "edited prompt" } }]);
     expect(m1?.tokenEstimate).toBe(estimateTokens("edited prompt"));
 
@@ -450,7 +450,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     // open-turn nor the message_not_found refusal would catch it — the
     // closed-turn boundary is the only gate that does.
     await send(sdk, filePath, [validEvent("runtime_note", { payload: { text: "a note before any turn" } })]);
-    const m1 = unwrap(await messages.listMessages({ filePath })).find((record) => record.messageId === "m1");
+    const m1 = unwrap(await messages.list({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.turnId).toBeUndefined();
 
     const before = await snapshot(filePath);

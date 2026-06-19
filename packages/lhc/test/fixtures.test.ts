@@ -292,20 +292,20 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
 
   it("threadWithToolRun: call+result pair recorded; error and missing-result variants hold their shapes", async () => {
     const paired = await threadWithToolRun(store);
-    const pairedMessages = await messages.listMessages({ filePath: paired.filePath });
+    const pairedMessages = await messages.list({ filePath: paired.filePath });
     expect(pairedMessages.ok).toBe(true);
     if (!pairedMessages.ok) return;
     expect(pairedMessages.value.map((m) => m.kind)).toEqual(["user_prompt", "tool_call", "tool_result"]);
 
     const errored = await threadWithToolRun(store, { isError: true });
-    const erroredMessages = await messages.listMessages({ filePath: errored.filePath });
+    const erroredMessages = await messages.list({ filePath: errored.filePath });
     expect(erroredMessages.ok).toBe(true);
     if (!erroredMessages.ok) return;
     const resultBlock = erroredMessages.value[2]?.blocks[0];
     expect(resultBlock?.content.isError).toBe(true);
 
     const missing = await threadWithToolRun(store, { missingResult: true });
-    const missingMessages = await messages.listMessages({ filePath: missing.filePath });
+    const missingMessages = await messages.list({ filePath: missing.filePath });
     expect(missingMessages.ok).toBe(true);
     if (!missingMessages.ok) return;
     expect(missingMessages.value.map((m) => m.kind)).toEqual(["user_prompt", "tool_call"]);

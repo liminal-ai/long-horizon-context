@@ -21,8 +21,7 @@ const READ_SURFACES: ReadonlyArray<{
   call: (ref: ThreadRef) => Promise<{ ok: boolean; error?: { errorClass: string; code: string } }>;
 }> = [
   { name: "intakeStream.listEvents", call: (ref) => intakeStream.listEvents(ref) },
-  { name: "messages.listMessages", call: (ref) => messages.listMessages(ref) },
-  { name: "messages.listQueuedWork", call: (ref) => messages.listQueuedWork(ref) },
+  { name: "messages.list", call: (ref) => messages.list(ref) },
   { name: "turns.listTurns", call: (ref) => turns.listTurns(ref) },
   { name: "turns.listQueuedWork", call: (ref) => turns.listQueuedWork(ref) },
 ];

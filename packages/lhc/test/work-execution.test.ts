@@ -235,7 +235,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     // pull/status before them, they suppress the open announcement, so the
     // read schedules no first-touch catch-up — the leftover rows stay exactly
     // as the dead process left them, and no model call fires off a read.
-    const read = await sdk.messages.listMessages({ filePath });
+    const read = await sdk.messages.list({ filePath });
     expect(read.ok).toBe(true);
     await sdk.drainSettled({ filePath });
     expect(liveCount(filePath)).toBe(2);

@@ -36,28 +36,6 @@ export function closeTurn(db: DatabaseSync, turnId: string, closedAtEventOrder: 
   );
 }
 
-// The turn delete's validation read (Flow 6): the live (deleted-filtered)
-// turn row. A deleted or missing target misses here and refuses as
-// turn_not_found — the filtered view is the refusal's read, so a double
-// delete is a refusal, never a silent success (AC-6.7).
-export function readMutableTurn(
-  db: DatabaseSync,
-  turnId: string,
-): { turnId: string; status: "open" | "closed" } | undefined {
-  const row = db.prepare(`SELECT status FROM turns WHERE turn_id = ? AND deleted_at IS NULL`).get(turnId) as unknown as
-    | { status: string }
-    | undefined;
-  if (row === undefined) return undefined;
-  return { turnId, status: row.status as "open" | "closed" };
-}
-
-// The turn delete's record apply: a projection-level tombstone on the turn
-// row, mirroring the message stamp. Events and membership rows are never
-// touched — reads filter; boundaries never re-cut (shrink-only membership).
-export function markTurnDeleted(db: DatabaseSync, turnId: string, deletedAt: string): void {
-  db.prepare(`UPDATE turns SET deleted_at = ? WHERE turn_id = ?`).run(deletedAt, turnId);
-}
-
 interface RawTurnRow {
   turn_id: string;
   status: string;

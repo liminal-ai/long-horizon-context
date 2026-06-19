@@ -104,8 +104,8 @@ async function toolResults(
   sdk: Lhc,
   filePath: string,
 ): Promise<Array<{ messageId: string; sourceEventOrder: number; tokenEstimate: number }>> {
-  const listed = await sdk.messages.listMessages({ filePath });
-  if (!listed.ok) throw new Error(`listMessages failed: ${listed.error.reason}`);
+  const listed = await sdk.messages.list({ filePath });
+  if (!listed.ok) throw new Error(`list failed: ${listed.error.reason}`);
   return listed.value
     .filter((m) => m.kind === "tool_result")
     .map((m) => ({
@@ -201,7 +201,7 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const results = listed.value.filter((m) => m.kind === "tool_result");
@@ -347,7 +347,7 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
     // Seam isolation, direction one: the throwing advance never ate the queue
     // poke — the background drain ran and the summaries landed ready.
     await sdk.drainSettled({ filePath });
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     for (const m of listed.value.filter((msg) => msg.kind === "tool_result")) {
@@ -405,7 +405,7 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     // Delete the older result: the live zone drops to 40 — status computes
     // the deleted-filtered sum, the same query the advance reads.
     const results = await toolResults(sdk, filePath);
-    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: results[0]?.messageId ?? "" });
+    const deleted = await sdk.messages.remove({ filePath }, { messageId: results[0]?.messageId ?? "" });
     expect(deleted.ok).toBe(true);
     const status = await sdk.threadView.status({ filePath });
     expect(status.ok).toBe(true);
@@ -417,7 +417,7 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     // Turn grouping: t1's surviving live result (40) evicts whole (remaining
     // 80 ≥ target 60); the newest closed turn {40, 40} is never a candidate.
     await intake(sdk, filePath, toolTurn([40, 40]));
-    const all = await toolResults(sdk, filePath); // listMessages is deleted-filtered too
+    const all = await toolResults(sdk, filePath); // list is deleted-filtered too
     expect(all).toHaveLength(3);
     expect(await boundaryOf(sdk, filePath)).toBe(all[0]?.sourceEventOrder);
     const after = await sdk.threadView.status({ filePath });

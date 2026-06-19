@@ -42,7 +42,7 @@ async function readTurns(filePath: string): Promise<TurnRecord[]> {
 async function readBack(filePath: string) {
   const [events, projected, turnRecords] = await Promise.all([
     intakeStream.listEvents({ filePath }),
-    messages.listMessages({ filePath }),
+    messages.list({ filePath }),
     turns.listTurns({ filePath }),
   ]);
   if (!events.ok || !projected.ok || !turnRecords.ok) {
@@ -73,7 +73,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     ]);
 
     // Membership is also visible on the members themselves.
-    const projected = await messages.listMessages({ filePath });
+    const projected = await messages.list({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
     expect(projected.value.map((message) => message.turnId)).toEqual(["t1", "t1", "t1", "t1"]);
@@ -194,7 +194,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     // A new prompt opens t2; the gap message must not be adopted into it.
     await send(filePath, [validEvent("user_prompt")]);
 
-    const projected = await messages.listMessages({ filePath });
+    const projected = await messages.list({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
     const gap = projected.value.find((message) => message.messageId === "m4")!;

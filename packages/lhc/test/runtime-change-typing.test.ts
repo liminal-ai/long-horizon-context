@@ -44,7 +44,7 @@ describe("Story 5: runtime-change typing", () => {
       }),
     ]);
 
-    const listed = await messages.listMessages({ filePath });
+    const listed = await messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);
@@ -66,7 +66,7 @@ describe("Story 5: runtime-change typing", () => {
       }),
     ]);
 
-    const listed = await messages.listMessages({ filePath });
+    const listed = await messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);

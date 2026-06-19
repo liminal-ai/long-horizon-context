@@ -233,7 +233,7 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
   });
 
   it("tool_result at-or-behind the boundary: abridged marker plus short form (boundary seeded below-SDK)", async () => {
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const result = listed.value.find((m) => m.kind === "tool_result");
@@ -283,7 +283,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const results = listed.value.filter((m) => m.kind === "tool_result");
@@ -343,7 +343,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     // No drain: the summary stays pending, so the ladder's truncation rung
     // renders — fixed 200-char prefix plus the exact dropped-count marker
     // (Epic 01's abbreviation rule).
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const result = listed.value.find((m) => m.kind === "tool_result");
@@ -404,7 +404,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
 
     // The visibility zone: boundary at its seeded default 0, so the sum is
     // every live tool result's estimate — cross-checked against the record.
-    const listed = await statusSdk.messages.listMessages({ filePath: heavy.filePath });
+    const listed = await statusSdk.messages.list({ filePath: heavy.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const expectedZone = listed.value

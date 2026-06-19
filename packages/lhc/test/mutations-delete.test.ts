@@ -1,25 +1,17 @@
-// Story 6 (Epic 02): messages.deleteMessage and turns.deleteTurn — Flow 6.
+// Story 6 (Epic 02): messages.remove — Flow 6.
 // Thread-view-level removal with the event log intact: a deleted message
 // leaves reads and its turn's membership while its source events stay in
 // the Epic 01 read-back (TC-6.1); its own forms drop while the turn and
 // chunk clear and re-queue for minus-one composition, the cascade stopping
-// exactly at the chunk (TC-6.2). Prompt protection routes whole-exchange
-// intent to the turn surface (TC-6.3), where deleteTurn removes the turn
-// and all its messages from reads and chunk membership (TC-6.4), re-derives
-// the chunk's summaries from the remaining members without moving a
-// boundary (TC-6.5, architecture risk: the captureInputs assertion proves
-// the composition read path is deleted-filtered), and an emptied-out chunk
-// drops its summary forms — absent, never failed, no rebuild queued
-// (TC-6.6, architecture risk). Refusals — open turn, missing id, double
+// exactly at the chunk (TC-6.2). Prompt protection refuses whole-turn removal
+// in this slice (TC-6.3). Refusals — open turn, missing id, double
 // delete through the filtered view — are stable and change nothing
 // (TC-6.7). The CLI parity leg (TC-6.8) lives in
 // cli-process-mutations-delete.test.ts (process suite). New file by the
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DrainReport,
-  estimateTokens,
   type InferenceCallbacks,
-  type InferenceResult,
   initLhc,
   intakeStream,
   type Lhc,
@@ -36,7 +28,6 @@ import {
 import {
   createInferenceCallbacksDouble,
   openRaw,
-  readChunks,
   readDerivedForms,
   type TempStore,
   tempStore,
@@ -110,7 +101,7 @@ function unwrap<T>(result: OpResult<T>): T {
 // chunks, events, forms, queue — for refusal-changes-nothing assertions.
 async function snapshot(filePath: string): Promise<unknown> {
   return {
-    messages: unwrap(await messages.listMessages({ filePath })),
+    messages: unwrap(await messages.list({ filePath })),
     turns: unwrap(await turns.listTurns({ filePath })),
     chunks: unwrap(await turns.listChunks({ filePath })),
     events: unwrap(await intakeStream.listEvents({ filePath })),
@@ -135,38 +126,6 @@ async function toolRunThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
-// Scripted smooth-turn compressions of a fixed size, every other operation on
-// the deterministic double — the TC-3.6 pattern for exact chunk membership.
-const PROJ = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
-function withScriptedProjections(base: InferenceCallbacks): InferenceCallbacks {
-  return {
-    smoothPrompt: (i) => base.smoothPrompt(i),
-    summarizeToolResult: (i) => base.summarizeToolResult(i),
-    composeTurnRendering: (i) => base.composeTurnRendering(i),
-    compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: PROJ }),
-    summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
-    summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
-  };
-}
-
-// Prompt+answer turns sized so chunks close at exactly two members:
-// target 2·per+1 means the third turn's placement closes the chunk holding
-// the first two (TC-3.6's golden case, reused as this story's fixture).
-function twoTurnChunkSdk(double: InferenceCallbacks): Lhc {
-  const per = estimateTokens(PROJ);
-  return manualSdk(withScriptedProjections(double), {
-    chunkPolicy: { targetProjectedTokens: 2 * per + 1, maxProjectedTokens: 100 * per },
-  });
-}
-
-async function sendPromptTurn(sdk: Lhc, filePath: string, n: number): Promise<void> {
-  await send(sdk, filePath, [
-    validEvent("user_prompt", { payload: { text: `prompt ${n}` } }),
-    validEvent("assistant_text", { payload: { text: `answer ${n}` } }),
-    validEvent("turn_end"),
-  ]);
-}
-
 describe("TC-6.1 / AC-6.1: a deleted message leaves reads and membership; its events remain", () => {
   it("deleting a tool-result message removes it from message reads and turn membership, not from event read-back", async () => {
     const double = createInferenceCallbacksDouble();
@@ -174,13 +133,13 @@ describe("TC-6.1 / AC-6.1: a deleted message leaves reads and membership; its ev
     const filePath = await toolRunThread(sdk);
     const eventsBefore = unwrap(await intakeStream.listEvents({ filePath }));
 
-    const result = await messages.deleteMessage({ filePath }, { messageId: "m3" });
+    const result = await messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.changed).toEqual({ messageIds: ["m3"], turnIds: [] });
 
     // Message reads exclude the deleted record.
-    const records = unwrap(await messages.listMessages({ filePath }));
+    const records = unwrap(await messages.list({ filePath }));
     expect(records.map((record) => record.messageId)).toEqual(["m1", "m2", "m4"]);
 
     // Turn membership shrinks in place — the turn row and its boundaries
@@ -221,7 +180,7 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     const before = readDerivedForms(filePath);
     expect(before.every((form) => form.state === "ready")).toBe(true);
 
-    const result = await messages.deleteMessage({ filePath }, { messageId: "m3" });
+    const result = await messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -268,186 +227,22 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
   });
 });
 
-describe("TC-6.3 / AC-6.3 (architecture risk): prompt protection routes to the turn surface", () => {
-  it("deleting a turn-initiating prompt is refused naming the turn and the turns-delete path; nothing changes", async () => {
+describe("TC-6.3 / AC-6.3 (architecture risk): prompt protection refuses unsupported whole-turn removal", () => {
+  it("deleting a turn-initiating prompt is refused naming the turn; nothing changes", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await toolRunThread(sdk);
     const before = await snapshot(filePath);
 
-    const result = await messages.deleteMessage({ filePath }, { messageId: "m1" });
+    const result = await messages.remove({ filePath }, { messageId: "m1" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.errorClass).toBe("caller_error");
     expect(result.error.code).toBe("message_initiates_turn");
-    // The error names the turn and points at the turn-delete operation.
     expect(result.error.reason).toContain("t1");
-    expect(result.error.reason).toContain("turns.deleteTurn");
-    expect(result.error.reason).toContain("turns delete");
+    expect(result.error.reason).toContain("whole turn is not supported");
 
     expect(await snapshot(filePath)).toEqual(before);
-  });
-});
-
-describe("TC-6.4 / AC-6.4: turn delete removes the turn and its messages from reads; events remain", () => {
-  it("a three-message turn leaves turn reads, message reads, and chunk membership; event read-back is byte-stable", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double);
-    const filePath = await newThread();
-    await send(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "kill this exchange" } }),
-      validEvent("assistant_text", { payload: { text: "dead end, part one" } }),
-      validEvent("assistant_text", { payload: { text: "dead end, part two" } }),
-      validEvent("turn_end"),
-    ]);
-    await drain(sdk, filePath);
-    const eventsBefore = unwrap(await intakeStream.listEvents({ filePath }));
-    expect(unwrap(await turns.listTurns({ filePath }))[0]?.chunkId).toBe("c1");
-
-    const result = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.changed).toEqual({
-      messageIds: ["m1", "m2", "m3"],
-      turnIds: ["t1"],
-    });
-    // The drop-set walk goes down as well as up: the turn's two forms and
-    // every member's own forms are rows-removed.
-    expect(result.value.dropped.map(clearKey).sort()).toEqual(
-      ["message/m1/smoothed_prompt", "turn/t1/smooth_turn_compression", "turn/t1/turn_rendering"].sort(),
-    );
-
-    expect(unwrap(await messages.listMessages({ filePath }))).toEqual([]);
-    expect(unwrap(await turns.listTurns({ filePath }))).toEqual([]);
-    // Chunk membership shrinks in place: the chunk row remains, its member
-    // listing empties, no boundary moves.
-    const chunks = unwrap(await turns.listChunks({ filePath }));
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]?.memberTurnIds).toEqual([]);
-
-    expect(unwrap(await intakeStream.listEvents({ filePath }))).toEqual(eventsBefore);
-    expect(eventsBefore).toHaveLength(4);
-  });
-});
-
-describe("TC-6.5 / AC-6.5 (architecture risk): the chunk re-derives from remaining members; boundaries never move", () => {
-  it("deleting one of chunk 1's two turns rebuilds its summaries from the survivor; chunk 2 and all boundaries are identical", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = twoTurnChunkSdk(double);
-    const filePath = await newThread();
-    for (let n = 1; n <= 5; n += 1) await sendPromptTurn(sdk, filePath, n);
-    await drain(sdk, filePath);
-
-    // Fixture sanity: c1{t1,t2} and c2{t3,t4} closed with summaries, c3{t5}
-    // still open — exact membership by the scripted compression size.
-    const chunksBefore = readChunks(filePath);
-    expect(chunksBefore.members).toEqual([
-      { chunkId: "c1", turnId: "t1", memberIdx: 0 },
-      { chunkId: "c1", turnId: "t2", memberIdx: 1 },
-      { chunkId: "c2", turnId: "t3", memberIdx: 0 },
-      { chunkId: "c2", turnId: "t4", memberIdx: 1 },
-      { chunkId: "c3", turnId: "t5", memberIdx: 0 },
-    ]);
-    const formsBefore = readDerivedForms(filePath);
-
-    const result = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.cleared.map(clearKey).sort()).toEqual([
-      "chunk/c1/chunk_summary_brief",
-      "chunk/c1/chunk_summary_detailed",
-    ]);
-    expect(result.value.queued.map((item) => item.workItemId).sort()).toEqual([
-      "w-c1-chunk_summary_brief-v2",
-      "w-c1-chunk_summary_detailed-v2",
-    ]);
-
-    const captured = double.captureInputs();
-    await drain(sdk, filePath);
-
-    // The rebuilt summaries read exactly one member compression. Detailed is
-    // deterministic material assembly; brief still exposes its inference-callback input.
-    const brief = captured.filter((call) => call.op === "summarizeChunkBrief");
-    expect(brief).toHaveLength(1);
-    expect((brief[0]?.input as { memberProjections: string[] }).memberProjections).toEqual([PROJ]);
-
-    const after = readDerivedForms(filePath);
-    expect(
-      after.find((form) => form.subjectId === "c1" && form.derivationType === "chunk_summary_detailed")?.content,
-    ).toBe(PROJ);
-    // Chunk 1's summaries are ready again at the next source version.
-    for (const form of after.filter((candidate) => candidate.subjectId === "c1")) {
-      expect(form.state).toBe("ready");
-      expect(form.sourceVersion).toBe(2);
-    }
-    // No other chunk's membership or derivations changed: every form
-    // outside the deleted turn's chain — the other turns', the other
-    // messages', chunk 2's — byte-equals its pre-delete row, and the raw
-    // chunk/member tables — the boundaries — are identical (membership
-    // only ever shrinks through reads).
-    const touched = new Set(["m1", "t1", "c1"]);
-    expect(after.filter((form) => !touched.has(form.subjectId))).toEqual(
-      formsBefore.filter((form) => !touched.has(form.subjectId)),
-    );
-    expect(readChunks(filePath)).toEqual(chunksBefore);
-    // The live read shrinks: chunk 1 lists only the survivor.
-    const liveChunks = unwrap(await turns.listChunks({ filePath }));
-    expect(liveChunks.find((chunk) => chunk.chunkId === "c1")?.memberTurnIds).toEqual(["t2"]);
-  });
-});
-
-describe("TC-6.6 / AC-6.6 (architecture risk): an emptied chunk drops its summaries — absent, never failed", () => {
-  it("deleting every turn in a chunk leaves an empty chunk with no summary rows, no queued rebuild, and clean reads", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = twoTurnChunkSdk(double);
-    const filePath = await newThread();
-    for (let n = 1; n <= 3; n += 1) await sendPromptTurn(sdk, filePath, n);
-    await drain(sdk, filePath);
-    expect(readChunks(filePath).members.filter((member) => member.chunkId === "c1")).toHaveLength(2);
-
-    const first = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    // One member left: the chunk clears and re-queues (the TC-6.5 path).
-    expect(first.value.queued.map((item) => item.workItemId).sort()).toEqual([
-      "w-c1-chunk_summary_brief-v2",
-      "w-c1-chunk_summary_detailed-v2",
-    ]);
-
-    const second = await turns.deleteTurn({ filePath }, { turnId: "t2" });
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    // Empties out: the summary forms drop with the last member — and the
-    // first delete's still-queued rebuilds are superseded, not run.
-    expect(second.value.cleared).toEqual([]);
-    expect(second.value.queued).toEqual([]);
-    expect(
-      second.value.dropped
-        .filter((entry) => entry.subjectKind === "chunk")
-        .map(clearKey)
-        .sort(),
-    ).toEqual(["chunk/c1/chunk_summary_brief", "chunk/c1/chunk_summary_detailed"]);
-    expect([...second.value.superseded].sort()).toEqual([
-      "w-c1-chunk_summary_brief-v2",
-      "w-c1-chunk_summary_detailed-v2",
-    ]);
-
-    // Dropped, never failed: no c1 rows in any state, no failed form
-    // anywhere, no live work targeting the empty chunk.
-    const forms = readDerivedForms(filePath);
-    expect(forms.some((form) => form.subjectId === "c1")).toBe(false);
-    expect(forms.some((form) => form.state === "failed")).toBe(false);
-    expect(rawDetail(filePath)).toEqual([]);
-
-    // Reads skip the empty chunk without error: it lists with zero members
-    // and no form states; a drain finds nothing to do.
-    const chunks = unwrap(await turns.listChunks({ filePath }));
-    const emptied = chunks.find((chunk) => chunk.chunkId === "c1");
-    expect(emptied?.memberTurnIds).toEqual([]);
-    expect(emptied?.derivations).toBeUndefined();
-    expect(unwrap(await turns.listTurns({ filePath })).map((turn) => turn.turnId)).toEqual(["t3"]);
-    const report = await drain(sdk, filePath);
-    expect(report.ran).toEqual([]);
   });
 });
 
@@ -467,7 +262,7 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
     const before = await snapshot(filePath);
 
     // Open-turn message: refused under the closed-turn boundary.
-    const openTurn = await messages.deleteMessage({ filePath }, { messageId: "m4" });
+    const openTurn = await messages.remove({ filePath }, { messageId: "m4" });
     expect(openTurn.ok).toBe(false);
     if (openTurn.ok) return;
     expect(openTurn.error.errorClass).toBe("caller_error");
@@ -475,7 +270,7 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
     expect(await snapshot(filePath)).toEqual(before);
 
     // Unknown id.
-    const missing = await messages.deleteMessage({ filePath }, { messageId: "m99" });
+    const missing = await messages.remove({ filePath }, { messageId: "m99" });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;
     expect(missing.error.code).toBe("message_not_found");
@@ -484,73 +279,15 @@ describe("TC-6.7 / AC-6.7: refusals are stable and change nothing — double del
     // Double delete: the first succeeds; the second reads the filtered view
     // and refuses as message_not_found — a refusal, not a silent success,
     // and not a tombstone-aware error branch.
-    const firstDelete = await messages.deleteMessage({ filePath }, { messageId: "m2" });
+    const firstDelete = await messages.remove({ filePath }, { messageId: "m2" });
     expect(firstDelete.ok).toBe(true);
     const afterDelete = await snapshot(filePath);
-    const secondDelete = await messages.deleteMessage({ filePath }, { messageId: "m2" });
+    const secondDelete = await messages.remove({ filePath }, { messageId: "m2" });
     expect(secondDelete.ok).toBe(false);
     if (secondDelete.ok) return;
     expect(secondDelete.error.errorClass).toBe("caller_error");
     expect(secondDelete.error.code).toBe("message_not_found");
     expect(await snapshot(filePath)).toEqual(afterDelete);
-  });
-
-  it("the turn surface refuses the same way: open turn, bogus id, double delete", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double);
-    const filePath = await newThread();
-    await send(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "closed prompt" } }),
-      validEvent("turn_end"),
-      validEvent("user_prompt", { payload: { text: "open prompt" } }),
-    ]);
-    await drain(sdk, filePath);
-    const before = await snapshot(filePath);
-
-    const openTurn = await turns.deleteTurn({ filePath }, { turnId: "t2" });
-    expect(openTurn.ok).toBe(false);
-    if (openTurn.ok) return;
-    expect(openTurn.error.errorClass).toBe("caller_error");
-    expect(openTurn.error.code).toBe("turn_open");
-    expect(await snapshot(filePath)).toEqual(before);
-
-    const missing = await turns.deleteTurn({ filePath }, { turnId: "t99" });
-    expect(missing.ok).toBe(false);
-    if (missing.ok) return;
-    expect(missing.error.code).toBe("turn_not_found");
-    expect(await snapshot(filePath)).toEqual(before);
-
-    const firstDelete = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(firstDelete.ok).toBe(true);
-    const afterDelete = await snapshot(filePath);
-    const secondDelete = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(secondDelete.ok).toBe(false);
-    if (secondDelete.ok) return;
-    expect(secondDelete.error.code).toBe("turn_not_found");
-    expect(await snapshot(filePath)).toEqual(afterDelete);
-  });
-
-  it("deleting a turn whose messages were individually deleted first still works (live-row membership walk)", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double);
-    const filePath = await newThread();
-    await send(sdk, filePath, [
-      validEvent("user_prompt", { payload: { text: "the prompt" } }),
-      validEvent("assistant_text", { payload: { text: "answer one" } }),
-      validEvent("assistant_text", { payload: { text: "answer two" } }),
-      validEvent("turn_end"),
-    ]);
-    await drain(sdk, filePath);
-    expect((await messages.deleteMessage({ filePath }, { messageId: "m2" })).ok).toBe(true);
-
-    const result = await turns.deleteTurn({ filePath }, { turnId: "t1" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // Only the still-live members are stamped now; the earlier delete
-    // already removed m2 and dropped its forms.
-    expect(result.value.changed).toEqual({ messageIds: ["m1", "m3"], turnIds: ["t1"] });
-    expect(unwrap(await messages.listMessages({ filePath }))).toEqual([]);
-    expect(unwrap(await turns.listTurns({ filePath }))).toEqual([]);
   });
 });
 
@@ -568,7 +305,7 @@ describe("background mode: delete-and-walk-away (production path)", () => {
     await sdk.drainSettled({ filePath });
     expect(readDerivedForms(filePath).every((form) => form.state === "ready")).toBe(true);
 
-    const result = await messages.deleteMessage({ filePath }, { messageId: "m3" });
+    const result = await messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     await sdk.drainSettled({ filePath });
 

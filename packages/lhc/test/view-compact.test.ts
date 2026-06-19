@@ -646,7 +646,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const bandHash = sha256(before);
 
     // t5 is banded inside c2's detailed entry; edit its prompt.
-    const listed = await mut.sdk.messages.listMessages({ filePath: mut.filePath });
+    const listed = await mut.sdk.messages.list({ filePath: mut.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const t5Prompt = listed.value.find((m) => m.turnId === "t5" && m.kind === "user_prompt");
@@ -687,7 +687,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
   });
 
   it("TC-1.5: a tail delete vanishes from the next pull; a banded delete leaves the snapshot until the next compact", async () => {
-    const listed = await mut.sdk.messages.listMessages({ filePath: mut.filePath });
+    const listed = await mut.sdk.messages.list({ filePath: mut.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
 
@@ -699,10 +699,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     expect(statusBefore.ok).toBe(true);
     if (!statusBefore.ok) return;
 
-    const tailDelete = await mut.sdk.messages.deleteMessage(
-      { filePath: mut.filePath },
-      { messageId: tailTarget.messageId },
-    );
+    const tailDelete = await mut.sdk.messages.remove({ filePath: mut.filePath }, { messageId: tailTarget.messageId });
     expect(tailDelete.ok).toBe(true);
     const afterTailDelete = await pullMessages(mut.sdk, mut.filePath);
     expect(afterTailDelete.some((m) => m.content === "findings for area 10")).toBe(false);
@@ -719,10 +716,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const bandTarget = listed.value.find((m) => m.turnId === "t6" && m.kind === "assistant_text");
     expect(bandTarget).toBeDefined();
     if (bandTarget === undefined) return;
-    const bandedDelete = await mut.sdk.messages.deleteMessage(
-      { filePath: mut.filePath },
-      { messageId: bandTarget.messageId },
-    );
+    const bandedDelete = await mut.sdk.messages.remove({ filePath: mut.filePath }, { messageId: bandTarget.messageId });
     expect(bandedDelete.ok).toBe(true);
 
     const afterBandedDelete = await pullMessages(mut.sdk, mut.filePath);

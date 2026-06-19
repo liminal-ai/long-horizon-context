@@ -86,26 +86,9 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
 // The delete's record apply (Flow 6): a projection-level tombstone — the
 // deleted_at stamp every read filters on. The source events are never
 // touched (record-never-destroyed, DD-12); event read-back keeps showing
-// them. The bulk variant is turns.deleteTurn's member stamp, scoped to live
-// rows so a turn whose messages were individually deleted first still
-// deletes cleanly (membership walk on live rows); it returns the stamped
-// ids in record order for the mutation result and the cascade's drop set.
+// them.
 export function markMessageDeleted(db: DatabaseSync, messageId: string, deletedAt: string): void {
   db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(deletedAt, messageId);
-}
-
-export function markTurnMessagesDeleted(db: DatabaseSync, turnId: string, deletedAt: string): string[] {
-  const rows = db
-    .prepare(
-      `UPDATE message SET deleted_at = ?
-       WHERE turn_id = ? AND deleted_at IS NULL
-       RETURNING message_id, source_event_order`,
-    )
-    .all(deletedAt, turnId) as unknown as Array<{
-    message_id: string;
-    source_event_order: number | bigint;
-  }>;
-  return rows.sort((a, b) => Number(a.source_event_order) - Number(b.source_event_order)).map((row) => row.message_id);
 }
 
 // The edit's record apply (AC-5.1): the new content lands in each block's

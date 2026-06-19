@@ -1,12 +1,8 @@
 // thread-view internal: the readiness sweep (Story 3, Flow 3, AC-3.1–3.7).
 // Thread-view's only writing interaction with other domains — and it writes
 // nothing itself: derivation state is read exclusively through the owners'
-// report surfaces, repair goes exclusively through the owners' requeue
+// report surfaces, repair goes exclusively through the owners' repair
 // surfaces (must-not-own: never a direct work_item or derivation touch).
-// No derivation, no inference calls, and no waiting: a requeue returns when
-// the queue row is written; background mode's drain heals it later. Any
-// drainSettled/polling in this module is a contract violation (anti-shim;
-// TC-3.1's elapsed bound is the tripwire).
 
 import * as messagesDomain from "../../messages/index.js";
 import type { DerivationReportEntry, OpResult, SweepReceipt } from "../../shared-tech/index.js";
@@ -48,15 +44,28 @@ type OwnerLine = SweepReceipt["owners"][number];
 // subjectKind turn|chunk). The owner's `already_queued` noop is what makes
 // once-per-invocation requeue dedupe structural (AC-3.4): a second ask for
 // work already live at the form's source version writes nothing.
-function requeueThroughOwner(
+async function repairThroughOwner(
   filePath: string,
   owner: Owner,
   entry: DerivationReportEntry,
-): Promise<OpResult<{ workItemId: string } | { noop: "already_queued" }>> {
+): Promise<OpResult<"repaired" | "already_queued">> {
   if (owner === "messages") {
-    return messagesDomain.requeue({ filePath }, { messageId: entry.subjectId, derivationType: entry.derivationType });
+    const derived = await messagesDomain.derive({ filePath }, [entry.subjectId]);
+    if (!derived.ok) return derived;
+    const result = derived.value[0];
+    if (result === undefined || result.outcome === "failed") {
+      return {
+        ok: false,
+        error: result?.error ?? {
+          errorClass: "caller_error",
+          code: "message_not_found",
+          reason: `no message ${entry.subjectId} exists in this thread`,
+        },
+      };
+    }
+    return { ok: true, value: result.outcome === "already_queued" ? "already_queued" : "repaired" };
   }
-  return turnsDomain.requeue(
+  const requeued = await turnsDomain.requeue(
     { filePath },
     {
       subjectKind: entry.subjectKind === "chunk" ? "chunk" : "turn",
@@ -64,6 +73,8 @@ function requeueThroughOwner(
       derivationType: entry.derivationType,
     },
   );
+  if (!requeued.ok) return requeued;
+  return { ok: true, value: "noop" in requeued.value ? "already_queued" : "repaired" };
 }
 
 // The sweep walk (Flow 3): `messages.report` + `turns.report` → bucket each
@@ -118,12 +129,12 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
             line.permanentFailed.push({ subjectId: entry.subjectId, reason });
             break;
           }
-          const requeued = await requeueThroughOwner(filePath, owner, entry);
-          if (!requeued.ok) return requeued;
+          const repaired = await repairThroughOwner(filePath, owner, entry);
+          if (!repaired.ok) return repaired;
           // already_queued counts as in-flight: a sibling form's requeue in
           // this same walk (a turn's two forms share one work item) or a
           // prior sweep already put the work live.
-          if ("noop" in requeued.value) line.inFlight += 1;
+          if (repaired.value === "already_queued") line.inFlight += 1;
           else line.requeued.push(entry.subjectId);
           break;
         }

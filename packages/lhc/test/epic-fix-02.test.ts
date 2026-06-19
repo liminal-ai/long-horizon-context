@@ -192,7 +192,7 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
 
     // Delete the tool_result (m3). Tool calls no longer have summaries, so no
     // paired call summary is cleared or re-queued.
-    const result = await sdk.messages.deleteMessage({ filePath }, { messageId: "m3" });
+    const result = await sdk.messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.dropped.map(formKey)).toEqual(["message/m3/tool_result_summary"]);
@@ -355,43 +355,6 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
   });
 });
 
-// ── REVERIFY-02-001: cascadeTurnDelete cascades to a cross-turn pair ──────────
-describe("REVERIFY-02-001: cascadeTurnDelete ignores removed tool-call summaries", () => {
-  it("deleting the turn holding a late result does not requeue the earlier tool call", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = sdkFor(double, "manual");
-    const filePath = await newThread("crossturn");
-
-    const b1 = await sdk.intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "call now" } }),
-      validEvent("tool_call", { payload: { toolCallId: "x", toolName: "run_cmd", arguments: {} } }),
-      validEvent("turn_end"),
-    ]);
-    expect(b1.ok).toBe(true);
-    expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-    expect(readDerivedForms(filePath).map((f) => f.derivationType)).not.toContain("tool_call_summary");
-
-    // t2: the paired result lands in a later turn and derives only its own
-    // tool-result summary.
-    const b2 = await sdk.intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "and the result" } }),
-      validEvent("tool_result", { payload: { toolCallId: "x", content: "done", isError: false } }),
-      validEvent("turn_end"),
-    ]);
-    expect(b2.ok).toBe(true);
-    expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-
-    const deleted = await sdk.turns.deleteTurn({ filePath }, { turnId: "t2" });
-    expect(deleted.ok).toBe(true);
-    if (!deleted.ok) return;
-    expect(deleted.value.cleared.map(formKey)).not.toContain("message/m2/tool_call_summary");
-    expect(deleted.value.queued.map((q) => q.kind)).not.toContain("tool_call_summary");
-
-    expect((await sdk.work.drain({ filePath })).ok).toBe(true);
-    expect(liveCount(filePath)).toBe(0);
-  });
-});
-
 // ── Fix 3.3 (P3): a stale claimed item for a deleted target discards ──────────
 describe("FIX-3.3: a claimed summary for a deleted message discards on completion", () => {
   it("completing the straggler after the delete discards as stale_discarded; tombstone and cascade stand", async () => {
@@ -420,7 +383,7 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
 
     // Delete m3 (the tool_result) while its summary item is claimed. Its own form
     // drops; the claimed item is left to the version check (DD-3).
-    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: "m3" });
+    const deleted = await sdk.messages.remove({ filePath }, { messageId: "m3" });
     expect(deleted.ok).toBe(true);
     if (!deleted.ok) return;
     expect(deleted.value.dropped.map(formKey)).toContain("message/m3/tool_result_summary");
@@ -435,7 +398,7 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
 
     // Tombstone intact: m3 is gone from the live read and its summary form was
     // not resurrected by the stale completion.
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value.map((m) => m.messageId)).not.toContain("m3");

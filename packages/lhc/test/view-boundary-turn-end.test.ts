@@ -61,8 +61,8 @@ interface ResultRow {
 }
 
 async function toolResults(sdk: Lhc, filePath: string): Promise<ResultRow[]> {
-  const listed = await sdk.messages.listMessages({ filePath });
-  if (!listed.ok) throw new Error(`listMessages failed: ${listed.error.reason}`);
+  const listed = await sdk.messages.list({ filePath });
+  if (!listed.ok) throw new Error(`list failed: ${listed.error.reason}`);
   return listed.value
     .filter((m) => m.kind === "tool_result")
     .map((m) => ({

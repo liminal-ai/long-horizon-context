@@ -3,12 +3,11 @@
 // halves of TC-3.3/TC-3.6 (Story 4's named debt, paid here), TC-3.8's
 // two-work-items assertion, TC-5.4's no-work-item clause, and the two
 // architecture-risk regressions: restart survival extended to work items and
-// the complete-surface rollback. Work items are asserted through the owning
-// domains' listQueuedWork read-back and openRaw — never through the batch
-// result alone. The work-queue util has no public SDK surface; everything
-// here enters through the SDK or the in-process CLI.
+// the complete-surface rollback. Work items are asserted below the SDK with
+// direct queue reads — never through the batch result alone.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, threads, turns, type WorkItemRecord } from "../src/index.js";
+import { listItems, type WorkOwner } from "../src/shared-tech/work-queue/index.js";
 import { openRaw, setIntakeClock, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -33,11 +32,13 @@ async function send(filePath: string, batch: MessageEventInput[]) {
   return result.value;
 }
 
-async function queuedFor(filePath: string, owner: "messages" | "turns"): Promise<WorkItemRecord[]> {
-  const result =
-    owner === "messages" ? await messages.listQueuedWork({ filePath }) : await turns.listQueuedWork({ filePath });
-  if (!result.ok) throw new Error(`queued-work read-back failed: ${result.error.reason}`);
-  return result.value;
+function queuedFor(filePath: string, owner: WorkOwner): WorkItemRecord[] {
+  const db = openRaw(filePath);
+  try {
+    return listItems(db, owner);
+  } finally {
+    db.close();
+  }
 }
 
 // Below-SDK count of durable work-item rows: the batch result alone is not
@@ -57,20 +58,20 @@ function rawWorkItemCount(filePath: string): number {
 async function readBack(filePath: string) {
   const [events, projected, turnRecords, messageWork, turnWork] = await Promise.all([
     intakeStream.listEvents({ filePath }),
-    messages.listMessages({ filePath }),
+    messages.list({ filePath }),
     turns.listTurns({ filePath }),
-    messages.listQueuedWork({ filePath }),
-    turns.listQueuedWork({ filePath }),
+    Promise.resolve(queuedFor(filePath, "messages")),
+    Promise.resolve(queuedFor(filePath, "turns")),
   ]);
-  if (!events.ok || !projected.ok || !turnRecords.ok || !messageWork.ok || !turnWork.ok) {
+  if (!events.ok || !projected.ok || !turnRecords.ok) {
     throw new Error("read-back failed");
   }
   return {
     events: events.value,
     messages: projected.value,
     turns: turnRecords.value,
-    messageWork: messageWork.value,
-    turnWork: turnWork.value,
+    messageWork,
+    turnWork,
   };
 }
 
@@ -318,9 +319,9 @@ describe("architecture-risk: durability and rollback over the complete record su
 // rollback, because every later queue site (intake, cascade, repair) leans
 // on that invariant.
 import {
-  assembleWorkHandlerMap,
   initLhc,
   lookupWorkHandler,
+  mapWorkQHandlers,
   runInTransaction,
   setSchedulerPoke,
   WORK_KIND_REGISTRY,
@@ -380,7 +381,7 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
 
   it("assembly merges per-domain tables, dispatch finds a registered handler, and a doubly-claimed kind is refused", () => {
     const handler: WorkHandler = async () => ({ ok: true });
-    const map = assembleWorkHandlerMap([{ prompt_smoothing: handler }, { turn_derivation: handler }]);
+    const map = mapWorkQHandlers([{ prompt_smoothing: handler }, { turn_derivation: handler }]);
     const found = lookupWorkHandler(map, "prompt_smoothing");
     expect(found.ok).toBe(true);
     if (!found.ok) return;
@@ -389,7 +390,7 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
     expect(missed.ok).toBe(false);
     // One owner per kind: a second table claiming the same kind is a wiring
     // bug surfaced at construction.
-    expect(() => assembleWorkHandlerMap([{ prompt_smoothing: handler }, { prompt_smoothing: handler }])).toThrow(
+    expect(() => mapWorkQHandlers([{ prompt_smoothing: handler }, { prompt_smoothing: handler }])).toThrow(
       /prompt_smoothing/,
     );
   });

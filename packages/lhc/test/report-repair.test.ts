@@ -324,8 +324,8 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
   });
 });
 
-describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form ready with the failure cleared", () => {
-  it("messages.requeue returns a failed smoothing to the pipeline; the commit poke alone drives the repair in background mode", async () => {
+describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivation ready with the failure cleared", () => {
+  it("messages.derive repairs a failed smoothing synchronously", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
@@ -337,20 +337,12 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     expect(before?.state).toBe("failed");
     expect(before?.reason).toBe(GAPPED_SMOOTHING_REASON);
 
-    // Background SDK first, so the requeue's poke-on-commit has a scheduler
-    // to land on; the repair must then run with no drain call at all.
-    const background = initLhc({
-      inferenceCallbacks: double,
-      mode: "background",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-      lease: { durationMs: 200 },
-    });
-    const requeued = await background.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
-    expect(requeued.ok).toBe(true);
-    if (!requeued.ok) return;
-    expect(requeued.value).toEqual({ workItemId: "w-m1-prompt_smoothing-v2" });
-
-    await background.drainSettled({ filePath });
+    const derived = await sdk.messages.derive({ filePath }, [messageId]);
+    expect(derived.ok).toBe(true);
+    if (!derived.ok) return;
+    expect(derived.value).toEqual([
+      { messageId, outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 2 },
+    ]);
 
     const repaired = formOf(filePath, messageId, "smoothed_prompt");
     expect(repaired?.state).toBe("ready");
@@ -375,9 +367,8 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
     const beforeRepair = formOf(filePath, turnId, "turn_rendering");
 
     // Repair the dependency first (now healthy), then rebuild the composition.
-    const repairSmoothing = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
+    const repairSmoothing = await sdk.messages.derive({ filePath }, [messageId]);
     expect(repairSmoothing.ok).toBe(true);
-    await drain(sdk, filePath);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
     // No auto-cascade: the rendering row is still exactly the fallback-composed row.
     expect(formOf(filePath, turnId, "turn_rendering")).toEqual(beforeRepair);
@@ -406,32 +397,22 @@ describe("TC-4.4 / AC-4.4: re-queue through the owning surface lands the form re
   });
 });
 
-describe("TC-4.5 / AC-4.5: re-queue is idempotent against live work", () => {
-  it("the second requeue before draining is an explicit no-op; one live item, no duplicates", async () => {
+describe("TC-4.5 / AC-4.5: derive returns one result per message id", () => {
+  it("derives derivable messages and reports non-derivable messages without queue exposure", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
-    const first = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.value).toEqual({ workItemId: "w-m1-prompt_smoothing-v2" });
-
-    const second = await sdk.messages.requeue({ filePath }, { messageId, derivationType: "smoothed_prompt" });
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.value).toEqual({ noop: "already_queued" });
-
-    // Queue read-back: exactly one live item for the form.
-    const detail = rawDetail(filePath);
-    expect(detail.map((row) => [row.workItemId, row.status])).toEqual([["w-m1-prompt_smoothing-v2", "queued"]]);
-
-    const report = await drain(sdk, filePath);
-    expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
-      ["w-m1-prompt_smoothing-v2", "done"],
+    const derived = await sdk.messages.derive({ filePath }, [messageId, "m2"]);
+    expect(derived.ok).toBe(true);
+    if (!derived.ok) return;
+    expect(derived.value).toEqual([
+      { messageId, outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 2 },
+      { messageId: "m2", outcome: "not_derivable" },
     ]);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
-    // One row per form by key — drain left no duplicate artifacts behind.
+    expect(rawDetail(filePath)).toEqual([]);
+    // One row per form by key — derive left no duplicate artifacts behind.
     const smoothings = readDerivedForms(filePath).filter(
       (form) => form.subjectId === messageId && form.derivationType === "smoothed_prompt",
     );
@@ -490,7 +471,7 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
   it("with every non-ready state present at once, message and turn reads return full records with states attached and zero errors", async () => {
     const { sdk, filePath } = await mixedStateThread();
 
-    const messagesRead = await sdk.messages.listMessages({ filePath });
+    const messagesRead = await sdk.messages.list({ filePath });
     expect(messagesRead.ok).toBe(true);
     if (!messagesRead.ok) return;
     expect(messagesRead.value.map((record) => record.messageId)).toEqual(["m1", "m3", "m5"]);

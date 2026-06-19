@@ -64,7 +64,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   // Deleted contract (AC-1.2): the audit listing carries everything; deleted
   // records count only in `deleted` — visible, byKind, and the token sum are
   // computed over the unflagged records alone.
-  const listed = await messages.listMessages(ref, { includeDeleted: true });
+  const listed = await messages.list(ref, { includeDeleted: true });
   if (!listed.ok) return listed;
   const messageSection: InspectOverview["messages"] = {
     visible: 0,

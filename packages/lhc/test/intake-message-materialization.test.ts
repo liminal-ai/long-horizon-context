@@ -29,7 +29,7 @@ async function readEvents(filePath: string): Promise<EventRecord[]> {
 }
 
 async function readMessages(filePath: string): Promise<MessageRecord[]> {
-  const result = await messages.listMessages({ filePath });
+  const result = await messages.list({ filePath });
   if (!result.ok) throw new Error(`message read-back failed: ${result.error.reason}`);
   return result.value;
 }

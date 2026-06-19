@@ -6,7 +6,7 @@
 // message_block covers it) and never a drain-time sweep or read-time join.
 // Completion writes for message derivations ride the work-queue util's `complete`
 // (Story 1): UPDATE-only with the source-version check — no write path here.
-// Read-back of message-owned derivation rows (the listMessages join) also lives
+// Read-back of message-owned derivation rows (the list join) also lives
 // here: stored state returned as stored — never re-derived on read.
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -63,7 +63,7 @@ interface RawDerivationRow {
 // reason, mechanically stamped metadata; nothing is derived at read time.
 //
 // messageIds, when provided, scopes the read to just those subjects so a
-// bounded listMessages loads only its window's derivations (AC-3.1's
+// bounded list loads only its window's derivations (AC-3.1's
 // no-load-everything clause), never every message-owned derivation in the thread.
 // Omitted — the report-surface path that already reads its own scope — reads
 // all message-owned derivation rows as before.

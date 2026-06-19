@@ -5,7 +5,7 @@
 // transitions, and work queueing.
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { createFromEvent, queueMessageWork } from "../../messages/index.js";
+import { create as createMessage } from "../../messages/index.js";
 import {
   createCommitHooks,
   type ErrorResult,
@@ -243,7 +243,7 @@ export async function runMessageEvents(
         // it can never drift from its source; a projection failure throws
         // and rejects the whole batch. Skipped events never reach this call
         // (no duplicate message, AC-5.4).
-        const created = createFromEvent(
+        const created = createMessage(
           ctx,
           {
             ...event,
@@ -251,17 +251,18 @@ export async function runMessageEvents(
             recordedAt,
           },
           turnOutcome.openTurnId,
+          resolveInstanceToolResultConfig(),
         );
-        // Message-owned work queues in the same iteration, gated on
+        // Message-owned work queues inside message creation, gated on
         // recorded: a skipped event never reaches this call, so it queues
-        // nothing (AC-5.4), and the kind gate inside queueMessageWork
+        // nothing (AC-5.4), and the kind gate inside messages.create
         // decides which messages are derivation sources (AC-2.8).
-        queuedItems.push(...queueMessageWork(ctx, created, resolveInstanceToolResultConfig()));
+        queuedItems.push(...created.queuedWork);
         const entry: BatchResult["events"][number] = {
           idempotencyKey: event.idempotencyKey,
           outcome: "recorded",
         };
-        if (created !== null) entry.messageId = created.messageId;
+        if (created.message !== null) entry.messageId = created.message.messageId;
         eventResults.push(entry);
       }
       walkHook?.(db, index);

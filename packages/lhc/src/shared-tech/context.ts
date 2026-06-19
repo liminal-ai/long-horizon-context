@@ -60,6 +60,7 @@ export interface InstanceSeam {
   // the domains, and the defaults' one resolution path lives there.
   view?: ResolvedViewConfig;
   toolResult?: ResolvedSdkConfig["toolResult"];
+  config?: ResolvedSdkConfig;
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
 
@@ -110,6 +111,10 @@ export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
 
 export function resolveInstanceToolResultConfig(): ResolvedSdkConfig["toolResult"] | undefined {
   return seamStore.getStore()?.toolResult;
+}
+
+export function resolveInstanceConfig(): ResolvedSdkConfig | undefined {
+  return seamStore.getStore()?.config;
 }
 
 // Reads-only operation scope (Epic 03 AC-1.1/AC-2.8): runs fn under the

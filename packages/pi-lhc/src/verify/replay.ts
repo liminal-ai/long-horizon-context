@@ -433,11 +433,11 @@ export async function replayCorpus(corpus: Corpus, threadRef: ThreadRef): Promis
   if (!overview.ok) {
     return { matches: false, diff: [...problems, `inspect.overview failed: ${overview.error.reason}`].join("\n") };
   }
-  const messageReadback = await messages.listMessages(threadRef);
+  const messageReadback = await messages.list(threadRef);
   if (!messageReadback.ok) {
     return {
       matches: false,
-      diff: [...problems, `messages.listMessages failed: ${messageReadback.error.reason}`].join("\n"),
+      diff: [...problems, `messages.list failed: ${messageReadback.error.reason}`].join("\n"),
     };
   }
   const turnReadback = await turns.listTurns(threadRef);

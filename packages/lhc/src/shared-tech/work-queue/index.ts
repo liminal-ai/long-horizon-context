@@ -10,7 +10,7 @@
 // domains' listQueuedWork.
 import type { DatabaseSync } from "node:sqlite";
 import { createCommitHooks, type OperationContext } from "../context.js";
-import type { CompletionTx, HandlerDerivationWrite, SubjectKind } from "../derivation.js";
+import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
@@ -20,6 +20,7 @@ export type WorkKind =
   | "chunk_summary_detailed"
   | "chunk_summary_brief";
 export type WorkSourceRef = { messageId: string } | { turnId: string } | { chunkId: string };
+export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
 
 // The work-kind registry: owner and sourceRef semantics per the epic's Work
 // Item contract. Mechanical metadata only — what a kind *means* stays with
@@ -33,6 +34,22 @@ export const WORK_KIND_REGISTRY: Readonly<
   chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
   chunk_summary_brief: { owner: "turns", sourceRefKey: "chunkId" },
 };
+
+// SDK construction wiring for durable work dispatch. Domains own their
+// handler tables; shared-tech owns merging those tables into the queue's
+// dispatch map and refusing duplicate kind claims.
+export function mapWorkQHandlers(handlerGroups: ReadonlyArray<Readonly<WorkHandlerMap>>): WorkHandlerMap {
+  const map: WorkHandlerMap = {};
+  for (const handlers of handlerGroups) {
+    for (const [kind, handler] of Object.entries(handlers)) {
+      if (map[kind as WorkKind] !== undefined) {
+        throw new TypeError(`work kind "${kind}" registered by more than one domain`);
+      }
+      map[kind as WorkKind] = handler;
+    }
+  }
+  return map;
+}
 
 export interface WorkItemRecord {
   workItemId: string;

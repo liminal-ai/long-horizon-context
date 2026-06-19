@@ -277,7 +277,7 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
 
   // ── group 3: mutate → rebuild → health2 ──
   nextGroup();
-  const listed = expectOk(await sdk.messages.listMessages(ref), "mutate.list");
+  const listed = expectOk(await sdk.messages.list(ref), "mutate.list");
   const editTarget = listed.find((record) => record.kind === EDIT_TARGET.kind && record.turnId === EDIT_TARGET.turnId);
   const deleteTarget = listed.find(
     (record) => record.kind === DELETE_TARGET.kind && record.turnId === DELETE_TARGET.turnId,
@@ -293,7 +293,7 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
     content: EDITED_MESSAGE_TEXT,
   });
   expectOk(edit, "mutate.edit");
-  const deleted = await sdk.messages.deleteMessage(ref, { messageId: deleteTarget.messageId });
+  const deleted = await sdk.messages.remove(ref, { messageId: deleteTarget.messageId });
   expectOk(deleted, "mutate.delete");
   const mutate: LifecyclePhases["mutate"] = {
     editedMessageId: editTarget.messageId,

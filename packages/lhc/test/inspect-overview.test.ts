@@ -257,14 +257,14 @@ describe("TC-1.2 / AC-1.2: deleted accounting", () => {
     const { filePath, sdk } = await twoTurnThread();
     const before = overviewValue(await sdk.inspect.overview({ filePath }));
 
-    const listed = await sdk.messages.listMessages({ filePath });
+    const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     const target = listed.value.find((record) => record.messageId === "m2");
     expect(target?.kind).toBe("assistant_text");
     if (target === undefined) return;
 
-    const deleted = await sdk.messages.deleteMessage({ filePath }, { messageId: "m2" });
+    const deleted = await sdk.messages.remove({ filePath }, { messageId: "m2" });
     expect(deleted.ok).toBe(true);
 
     const after = overviewValue(await sdk.inspect.overview({ filePath }));
@@ -307,9 +307,7 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
     expect(overview.ok).toBe(true);
     // Retroactive wrap (test plan, Chunk 2): the Chunk 1 read surface runs
     // under the same shared delta helper.
-    const listed = await expectReadOnly(filePath, () =>
-      reader.messages.listMessages({ filePath }, { includeDeleted: true }),
-    );
+    const listed = await expectReadOnly(filePath, () => reader.messages.list({ filePath }, { includeDeleted: true }));
     const shown = await expectReadOnly(filePath, () => reader.messages.show({ filePath }, "m1"));
     expect(listed.ok && shown.ok).toBe(true);
   });

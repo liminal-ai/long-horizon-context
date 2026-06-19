@@ -188,7 +188,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       messages: [makeUserMessage("first prompt"), makeAssistantMessage({ text: "first response" })],
     });
 
-    const beforeEdit = await instance.sdk.messages.listMessages(threadRef);
+    const beforeEdit = await instance.sdk.messages.list(threadRef);
     expect(beforeEdit.ok).toBe(true);
     if (!beforeEdit.ok) return;
     const user = beforeEdit.value.find((message) => message.kind === "user_prompt");
