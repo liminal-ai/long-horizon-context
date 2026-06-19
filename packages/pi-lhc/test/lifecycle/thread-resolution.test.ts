@@ -83,6 +83,7 @@ function productionConnector(launch: () => { resume?: boolean; continue?: boolea
     registryPath: store.registryPath,
     newThreadFilePath: () => store.threadPath(),
     parseLaunch: launch,
+    startupValidationReporter: () => {},
   });
 }
 

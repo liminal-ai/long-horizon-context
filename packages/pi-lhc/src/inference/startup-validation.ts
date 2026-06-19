@@ -22,11 +22,28 @@ import { ASSIGNMENT_KINDS } from "./model-call.js";
 export type { ValidationReport };
 
 interface ReportDeps {
-  headlessLog?: (message: string) => void;
+  reporter?: StartupValidationReporter;
 }
 
 function defaultHeadlessLog(message: string): void {
   writeSync(2, `${message}\n`);
+}
+
+export interface StartupValidationReporterInput {
+  message: string;
+  report: ValidationReport;
+  ctx: ExtensionContext;
+  state: SessionState;
+}
+
+export type StartupValidationReporter = (input: StartupValidationReporterInput) => void;
+
+export function defaultStartupValidationReporter({ message, ctx }: StartupValidationReporterInput): void {
+  if (ctx.hasUI) {
+    ctx.ui.notify(message, { level: "warn" });
+  } else {
+    defaultHeadlessLog(message);
+  }
 }
 
 /** Probe each assignment; classify unreachable lanes (AC-5.1, AC-5.2).
@@ -111,14 +128,8 @@ export function report(r: ValidationReport, ctx: ExtensionContext, state: Sessio
 
     const message = lines.join("\n");
     state.health.startupValidation = { ...r, message };
-
-    // Surface through UI when available (never assume a TUI; guard on ctx.hasUI)
-    if (ctx.hasUI) {
-      ctx.ui.notify(message, { level: "warn" });
-    } else {
-      const headlessLog = deps.headlessLog ?? defaultHeadlessLog;
-      headlessLog(message);
-    }
+    const reporter = deps.reporter ?? defaultStartupValidationReporter;
+    reporter({ message, report: r, ctx, state });
   } else {
     // Persist the structured report to SessionState.health (always, even in headless)
     state.health.startupValidation = r;

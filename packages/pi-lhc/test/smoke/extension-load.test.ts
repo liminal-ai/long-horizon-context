@@ -74,6 +74,7 @@ describe("extension load + hook rail", () => {
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
       parseLaunch: () => ({}),
+      startupValidationReporter: () => {},
     });
     // fire several hooks with DISTINCT ctx objects carrying methods
     await connector.handlers.session_start(syntheticCtx("ctx-1"), makeSessionStart("startup"));

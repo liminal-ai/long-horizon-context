@@ -16,7 +16,7 @@ import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-change
 import { TurnAccumulator } from "./capture/turn-accumulator.js";
 import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
 import { createModelCall } from "./inference/model-call.js";
-import { report, validateReachable } from "./inference/startup-validation.js";
+import { report, type StartupValidationReporter, validateReachable } from "./inference/startup-validation.js";
 import { detectForkFromSessionTree, forkInfoFromHook, seedFork } from "./lifecycle/fork.js";
 import { disposeInstance, initInstance } from "./lifecycle/instance.js";
 import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
@@ -67,6 +67,7 @@ export interface ConnectorDeps {
   newThreadFilePath?: () => string;
   parseLaunch?: () => LaunchFlags;
   selectThread?: (choices: readonly ThreadChoice[], ctx: ExtensionContext) => Promise<string | null>;
+  startupValidationReporter?: StartupValidationReporter;
   /** Assignment config for Story 6: operator overrides for provider/model/prompt
    *  per derivation kind. Uses loadAssignments to merge over shipped defaults. */
   assignmentConfig?: unknown;
@@ -459,7 +460,11 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     }
     const assignments = config.value.inference.assignments;
     const validationReport = validateReachable(assignments, ctx);
-    report(validationReport, ctx, state);
+    if (deps.startupValidationReporter === undefined) {
+      report(validationReport, ctx, state);
+    } else {
+      report(validationReport, ctx, state, { reporter: deps.startupValidationReporter });
+    }
   };
 
   // Dispose with flush before any session swap (session_before_switch fires

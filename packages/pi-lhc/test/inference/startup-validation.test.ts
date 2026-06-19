@@ -19,6 +19,8 @@ import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "../fixtures/model-call.js";
 import { tempStore } from "../fixtures/thread.js";
 
+const quietReporter = () => {};
+
 /** Create a minimal ExtensionContext for testing. */
 function createMockContext(
   availableModels: ModelHandle[] = [],
@@ -211,10 +213,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         health: {},
       };
 
-      const headlessLog = vi.fn();
+      const reporter = vi.fn();
 
       // Report should not throw even in headless mode
-      expect(() => report(validationReport, ctx, state, { headlessLog })).not.toThrow();
+      expect(() => report(validationReport, ctx, state, { reporter })).not.toThrow();
 
       // State should have the report persisted with headless-visible text.
       expect(state.health.startupValidation?.unreachable).toBe(validationReport.unreachable);
@@ -224,8 +226,8 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       // No UI notification in headless mode (hasUI=false).
       expect(notifySpy).not.toHaveBeenCalled();
-      expect(headlessLog).toHaveBeenCalledTimes(1);
-      const loggedMessage = headlessLog.mock.calls[0]?.[0] ?? "";
+      expect(reporter).toHaveBeenCalledTimes(1);
+      const loggedMessage = reporter.mock.calls[0]?.[0]?.message ?? "";
       expect(loggedMessage).toContain("unreachable derivation lanes");
       expect(loggedMessage).toContain("smoothed_prompt");
     });
@@ -312,7 +314,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       };
 
       // Report should not throw - validation failure is not fatal
-      expect(() => report(validationReport, ctx, state)).not.toThrow();
+      expect(() => report(validationReport, ctx, state, { reporter: quietReporter })).not.toThrow();
 
       // State should remain intact for capture to continue
       expect("filePath" in state.threadRef ? state.threadRef.filePath : undefined).toBe("/test/thread.sqlite");
@@ -377,6 +379,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
           registryPath: store.registryPath,
           newThreadFilePath: () => store.threadPath(),
           buildSdkConfig: () => ({ ok: true, value: sdkConfig }),
+          startupValidationReporter: quietReporter,
         });
 
         // Start session - validation runs and reports unreachable lane
@@ -449,7 +452,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         health: {},
       };
 
-      report(validationReport, ctx, state);
+      report(validationReport, ctx, state, { reporter: quietReporter });
 
       // State should be fully functional for capture operations
       expect(state.threadRef).toBeDefined();
@@ -476,7 +479,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         health: {},
       };
 
-      report(validationReport, ctx, state);
+      report(validationReport, ctx, state, { reporter: quietReporter });
 
       // Empty unreachable means all lanes validated successfully
       expect(state.health.startupValidation?.unreachable).toHaveLength(0);
@@ -497,8 +500,8 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       };
 
       // None of these should throw
-      expect(() => report(emptyReport, ctx, state)).not.toThrow();
-      expect(() => report(fullReport, ctx, state)).not.toThrow();
+      expect(() => report(emptyReport, ctx, state, { reporter: quietReporter })).not.toThrow();
+      expect(() => report(fullReport, ctx, state, { reporter: quietReporter })).not.toThrow();
 
       // State should be updated in both cases
       expect(state.health.startupValidation).toBeDefined();

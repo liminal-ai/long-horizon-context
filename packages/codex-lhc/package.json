@@ -11,5 +11,8 @@
     "test:all": "pnpm run test",
     "verify": "pnpm run format:check && pnpm run lint && pnpm run test",
     "verify:all": "pnpm run verify"
+  },
+  "engines": {
+    "node": ">=24.17.0 <25"
   }
 }

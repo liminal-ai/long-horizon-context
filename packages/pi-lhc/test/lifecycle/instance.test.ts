@@ -54,6 +54,7 @@ describe("Story 1: instance lifecycle", () => {
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
       parseLaunch: () => ({}),
+      startupValidationReporter: () => {},
     });
 
     await connector.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));

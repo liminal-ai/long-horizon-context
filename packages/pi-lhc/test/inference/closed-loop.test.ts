@@ -97,6 +97,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
       buildSdkConfig: () => ({ ok: true, value: sdkConfig }),
+      startupValidationReporter: () => {},
     });
     await connector.handlers.session_start(ctx, { reason: "new" });
     const instance = connector.getInstance();
@@ -164,6 +165,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
       buildSdkConfig: () => ({ ok: true, value: sdkConfig }),
+      startupValidationReporter: () => {},
     });
     await connector.handlers.session_start(ctx, { reason: "new" });
     const instance = connector.getInstance();

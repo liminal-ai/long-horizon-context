@@ -95,6 +95,7 @@ export async function attachCapture(
     newThreadFilePath: () => store.threadPath(),
     parseLaunch: () => launch,
     buildSdkConfig: () => captureConfig(),
+    startupValidationReporter: () => {},
   });
   const entries = entriesFor(store);
   registerConnector(connector, entries);

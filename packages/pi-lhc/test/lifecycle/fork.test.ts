@@ -179,6 +179,7 @@ describe("Story 4: fork as new thread", () => {
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
       parseLaunch: () => ({}),
+      startupValidationReporter: () => {},
       buildSdkConfig: () => ({
         ok: true,
         value: { provider: createDeterministicProvider(), mode: sdkMode },
