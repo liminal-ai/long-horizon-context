@@ -192,7 +192,7 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
 
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(3);
-    expect(results[1]?.turnId).toBeNull(); // recorded in the gap, no membership
+    expect(results[1]?.turnId).toBe("t2");
     expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(70);
 
@@ -285,7 +285,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
 
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(3);
-    expect(results[2]?.turnId).toBeNull(); // trailing turnless: no membership
+    expect(results[2]?.turnId).toBe("t3");
 
     const position = await boundaryOf(sdk, filePath);
     expect(position).toBe(results[0]?.sourceEventOrder); // lands on t1, before the newest closed turn

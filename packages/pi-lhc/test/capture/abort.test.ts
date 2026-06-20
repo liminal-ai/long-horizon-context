@@ -54,9 +54,9 @@ describe("Story 2: graceful interrupt (TC-2.6)", () => {
     // The aborted disposition is carried through on the runtime_note.
     expect(textOf(events[3]!).toLowerCase()).toContain("abort");
 
-    // The turn closes complete-but-aborted (closed at agent_end, not left open).
+    // The interrupted turn closes at agent_end, and LHC opens the next empty turn.
     const counts = await turnCounts(threadRef);
     expect(counts.closed).toBe(1);
-    expect(counts.open).toBe(0);
+    expect(counts.open).toBe(1);
   });
 });

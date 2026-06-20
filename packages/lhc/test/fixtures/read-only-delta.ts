@@ -7,7 +7,7 @@
 // and require deep equality. Lands with Story 2 and wraps Story 1's read
 // ops retroactively (test plan, Chunk 2).
 import { deepStrictEqual } from "node:assert/strict";
-import { intakeStream, messages, threadView, turns } from "../../src/index.js";
+import { intakeStream, messages, threadView } from "../../src/index.js";
 import { openDatabase } from "../../src/shared-tech/storage.js";
 import { listItems, type WorkOwner } from "../../src/shared-tech/work-queue/index.js";
 import { readDerivedForms } from "./threads.js";
@@ -38,7 +38,7 @@ export async function observableState(filePath: string): Promise<ObservableState
     events: await intakeStream.listEvents({ filePath }),
     messages: await messages.list({ filePath }, { includeDeleted: true }),
     messageWork: queuedFor(filePath, "messages"),
-    turnWork: await turns.listQueuedWork({ filePath }),
+    turnWork: queuedFor(filePath, "turns"),
     viewStatus: await threadView.status({ filePath }),
     pullMeta: pulled.ok ? pulled.value.meta : pulled,
     // The stored snapshot whole (Story 3): a forgotten view touch — config,

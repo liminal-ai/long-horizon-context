@@ -13,6 +13,13 @@ export function selectOpenTurnIds(db: DatabaseSync): string[] {
   return rows.map((row) => row.turn_id);
 }
 
+export function countTurnMembers(db: DatabaseSync, turnId: string): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM message WHERE turn_id = ? AND deleted_at IS NULL").get(turnId) as
+    | { n: number | bigint }
+    | undefined;
+  return Number(row?.n ?? 0);
+}
+
 export function nextTurnOrder(db: DatabaseSync): number {
   const row = db.prepare("SELECT MAX(turn_order) AS max_order FROM turns").get() as
     | { max_order: number | bigint | null }

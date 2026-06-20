@@ -39,11 +39,10 @@ export function classifyFailureReason(reason: string | undefined): ReasonClass {
 type Owner = "messages" | "turns";
 type OwnerLine = SweepReceipt["owners"][number];
 
-// One owner's requeue, dispatched by the entry's own subject vocabulary —
-// the consumed Epic 02 contract (messages by messageId; turns by
-// subjectKind turn|chunk). The owner's `already_queued` noop is what makes
-// once-per-invocation requeue dedupe structural (AC-3.4): a second ask for
-// work already live at the form's source version writes nothing.
+// One owner's repair, dispatched by the entry's own subject vocabulary:
+// messages by messageId; turns by subjectKind turn|chunk. Messages still
+// expose queued-work dedupe. Turns derive synchronously, so shared turn sites
+// are deduped by the sweep before calling the owner again.
 async function repairThroughOwner(
   filePath: string,
   owner: Owner,
@@ -65,21 +64,26 @@ async function repairThroughOwner(
     }
     return { ok: true, value: result.outcome === "already_queued" ? "already_queued" : "repaired" };
   }
-  const requeued = await turnsDomain.requeue(
-    { filePath },
-    {
-      subjectKind: entry.subjectKind === "chunk" ? "chunk" : "turn",
-      subjectId: entry.subjectId,
-      derivationType: entry.derivationType,
-    },
-  );
-  if (!requeued.ok) return requeued;
-  return { ok: true, value: "noop" in requeued.value ? "already_queued" : "repaired" };
+  const derived =
+    entry.subjectKind === "chunk"
+      ? entry.derivationType === "chunk_summary_brief"
+        ? await turnsDomain.deriveBriefChunk({ filePath }, entry.subjectId)
+        : await turnsDomain.deriveDetailedChunk({ filePath }, entry.subjectId)
+      : await turnsDomain.deriveTurn({ filePath }, entry.subjectId);
+  if (!derived.ok) return derived;
+  if (derived.value.outcome === "failed") return { ok: false, error: derived.value.error };
+  return { ok: true, value: "repaired" };
+}
+
+function turnsRepairSite(entry: DerivationReportEntry): string {
+  return entry.subjectKind === "chunk"
+    ? `${entry.derivationType}:${entry.subjectId}`
+    : `turn_derivation:${entry.subjectId}`;
 }
 
 // The sweep walk (Flow 3): `messages.report` + `turns.report` → bucket each
 // form — ready / pending ⇒ in-flight / blocked / failed × classify — then
-// requeue the transient failures through their owners and assemble the
+// repair the transient failures through their owners and assemble the
 // receipt per owner and kind. Buckets come from the owners' report joins,
 // not raw form states: "retrying" is a report-level distinction the sweep
 // must not re-derive. Pending forms are left alone (their work is already
@@ -106,6 +110,7 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
     { owner: "messages", entries: messageReport.value },
     { owner: "turns", entries: turnReport.value },
   ];
+  const repairedTurnSites = new Set<string>();
   for (const { owner, entries } of walks) {
     for (const entry of entries) {
       const line = lineFor(owner, entry.derivationType);
@@ -129,11 +134,18 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
             line.permanentFailed.push({ subjectId: entry.subjectId, reason });
             break;
           }
+          if (owner === "turns") {
+            const site = turnsRepairSite(entry);
+            if (repairedTurnSites.has(site)) {
+              line.ready += 1;
+              break;
+            }
+            repairedTurnSites.add(site);
+          }
           const repaired = await repairThroughOwner(filePath, owner, entry);
           if (!repaired.ok) return repaired;
-          // already_queued counts as in-flight: a sibling form's requeue in
-          // this same walk (a turn's two forms share one work item) or a
-          // prior sweep already put the work live.
+          // For messages, already_queued counts as in-flight: a prior sweep
+          // already put the work live.
           if (repaired.value === "already_queued") line.inFlight += 1;
           else line.requeued.push(entry.subjectId);
           break;

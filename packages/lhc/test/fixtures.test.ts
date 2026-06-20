@@ -286,8 +286,9 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     expect(listed.value.map((t) => [t.turnId, t.status])).toEqual([
       ["t1", "closed"],
       ["t2", "closed"],
+      ["t3", "open"],
     ]);
-    expect(listed.value.every((t) => t.memberMessageIds.length === 2)).toBe(true);
+    expect(listed.value.map((t) => t.memberMessageIds.length)).toEqual([2, 2, 0]);
   });
 
   it("threadWithToolRun: call+result pair recorded; error and missing-result variants hold their shapes", async () => {
@@ -370,9 +371,14 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     if (rejected.ok) return;
     expect(rejected.error.code).toBe("turn_state_corrupt");
     // The queued turn_derivation work the damage sits under is still there.
-    const queued = await turns.listQueuedWork({ filePath });
-    expect(queued.ok).toBe(true);
-    if (!queued.ok) return;
-    expect(queued.value.map((item) => item.kind)).toEqual(["turn_derivation"]);
+    const queueDb = openRaw(filePath);
+    try {
+      const queued = queueDb.prepare("SELECT kind FROM work_item WHERE owner = 'turns' ORDER BY rowid").all() as Array<{
+        kind: string;
+      }>;
+      expect(queued.map((item) => item.kind)).toEqual(["turn_derivation"]);
+    } finally {
+      queueDb.close();
+    }
   });
 });

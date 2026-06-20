@@ -23,7 +23,6 @@ const READ_SURFACES: ReadonlyArray<{
   { name: "intakeStream.listEvents", call: (ref) => intakeStream.listEvents(ref) },
   { name: "messages.list", call: (ref) => messages.list(ref) },
   { name: "turns.listTurns", call: (ref) => turns.listTurns(ref) },
-  { name: "turns.listQueuedWork", call: (ref) => turns.listQueuedWork(ref) },
 ];
 
 describe("F-EPIC-001 (SDK): blank file path is refused before any storage touch", () => {

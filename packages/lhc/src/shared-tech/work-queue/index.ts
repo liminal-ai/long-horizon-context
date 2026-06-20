@@ -6,8 +6,8 @@
 // derivations a kind produces, is the owning domains' business (callers
 // pass the derivation targets in). Writes run on the caller's handle inside the
 // ambient transaction, so items commit (or roll back) with the batch. No
-// public SDK surface: read-back reaches here only through the owning
-// domains' listQueuedWork.
+// public SDK surface: read-back reaches here through shared-tech inspection
+// helpers and owner repair reports.
 import type { DatabaseSync } from "node:sqlite";
 import { createCommitHooks, type OperationContext } from "../context.js";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";

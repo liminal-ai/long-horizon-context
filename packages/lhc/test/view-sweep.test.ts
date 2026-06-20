@@ -247,12 +247,11 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(workItemCount(sibling.filePath)).toBe(rowsBefore);
   });
 
-  it("once-per-invocation dedupe is structural: a turn's two transiently-failed forms share one work row, the second ask noops to in-flight", async () => {
-    // Both turn forms exhaust together through real retry mechanics (one
-    // turn_derivation item rebuilds both), so the sweep's walk meets two
-    // failed transient entries that share one queue site — the owner's
-    // already_queued noop is what keeps the second ask from double-queuing,
-    // and this test is what notices if Epic 02's requeue ever stops nooping.
+  it("once-per-invocation dedupe is structural: a turn's two transiently-failed forms share one synchronous repair site", async () => {
+    // Both turn forms exhaust together through real retry mechanics. The
+    // sweep's walk meets two failed transient entries backed by one
+    // turn_derivation handler, calls that handler once, and treats the sibling
+    // form as repaired by the same synchronous derive.
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
@@ -263,7 +262,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
 
-    double.failKind("turn_rendering", 3, {
+    double.failKind("smooth_turn_compression", 3, {
       retryable: true,
       reason: "timeout: scripted turn exhaustion (test)",
     });
@@ -281,11 +280,11 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(swept.ok).toBe(true);
     if (!swept.ok) return;
 
-    // The deterministic rendering side does not create a paired requeue here.
     const rendering = ownerLine(swept.value, "turns", "turn_rendering");
     const compression = ownerLine(swept.value, "turns", "smooth_turn_compression");
     const requeued = [...rendering.requeued, ...compression.requeued];
-    expect(requeued).toEqual([]);
+    expect(requeued).toEqual(["t1"]);
+    expect(rendering.ready + compression.ready).toBe(1);
     expect(rendering.inFlight + compression.inFlight).toBe(0);
     expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(0);
   });

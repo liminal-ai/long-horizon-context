@@ -83,19 +83,18 @@ export interface MessageCreateResult {
   queuedWork: WorkItemRecord[];
 }
 
-// Cross-domain surface, called by intake-stream inside the batch transaction
-// (the first such call through the operation context; turns.applyEvent
-// follows the pattern in Story 4). Synchronous and throwing by design: a
+// Cross-domain surface, called by intake-stream inside the batch transaction.
+// Synchronous and throwing by design: a
 // projection failure propagates to the pipeline's catch and rejects the
 // whole batch — recorded events without messages is the stranded state the
 // transaction exists to prevent. Returns null for turn_end (no message).
 // turnId is the membership stamp, settled by the pipeline before this call:
-// the turn open *after* this event's transition (so a prompt belongs to the
-// turn it just opened), or null in a gap — written once, never updated.
+// the current open turn after this event's turn intake. Written once, never
+// updated.
 export function create(
   ctx: OperationContext,
   recordedEvent: RecordedEvent,
-  turnId: string | null,
+  turnId: string,
   toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
 ): MessageCreateResult {
   const projected = projectEvent(recordedEvent);

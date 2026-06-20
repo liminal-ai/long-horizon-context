@@ -230,6 +230,10 @@ export function createThreadFile(filePath: string, threadId: string, createdAt: 
   const db = openDatabase(filePath);
   try {
     runMigrations(db, buildThreadMigrations({ threadId, createdAt }));
+    db.prepare(
+      `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
+       VALUES ('t1', 1, 'open', 0)`,
+    ).run();
   } finally {
     db.close();
   }

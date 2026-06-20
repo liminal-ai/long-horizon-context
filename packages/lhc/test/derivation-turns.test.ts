@@ -337,9 +337,9 @@ describe("TC-3.5 / AC-3.5: placement is recorded with the turn and readable thro
     const turns = await sdk.turns.listTurns({ filePath });
     expect(turns.ok).toBe(true);
     if (!turns.ok) return;
-    expect(turns.value).toEqual([
+    expect(turns.value[0]).toEqual(
       expect.objectContaining({ turnId: "t1", status: "closed", chunkId: "c1", memberIdx: 0 }),
-    ]);
+    );
   });
 });
 

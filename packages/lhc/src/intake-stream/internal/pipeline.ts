@@ -23,7 +23,7 @@ import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 // intake-stream at runtime and the registration executes only at flush.
 import { runPostCommitBoundaryAdvance } from "../../thread-view/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../../threads/index.js";
-import { applyEvent as applyTurnEvent, listOpenTurnIds } from "../../turns/index.js";
+import { create as createTurn, TurnStateCorruptionError } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
 import { validateEvents, validateThreadRef } from "./validate.js";
 
@@ -170,26 +170,6 @@ export async function runMessageEvents(
       }
     });
 
-    // Corruption check at state load (AC-3.9): after BEGIN IMMEDIATE, before
-    // any event is processed — once is sufficient because only this pipeline
-    // writes turn state and the write lock is already held, so more than one
-    // open turn can only mean external interference. The batch records
-    // nothing: nothing has been written yet, and the rollback closes the
-    // never-used transaction.
-    const openTurnIds = listOpenTurnIds(ctx);
-    if (openTurnIds.length > 1) {
-      db.exec("ROLLBACK;");
-      inTransaction = false;
-      return {
-        ok: false,
-        error: {
-          errorClass: "state_corruption",
-          code: "turn_state_corrupt",
-          reason: `thread has ${openTurnIds.length} open turns (${openTurnIds.join(", ")}); the invariant is at most one`,
-        },
-      };
-    }
-
     const skipSet = recordedKeys(
       db,
       events.map((event) => event.idempotencyKey),
@@ -219,7 +199,6 @@ export async function runMessageEvents(
         });
       } else {
         lastOrder += 1;
-        if (event.eventKind === "turn_end") batchCommittedTurnEnd = true;
         const recordedAt = clock().toISOString();
         insert.run(
           lastOrder,
@@ -231,28 +210,29 @@ export async function runMessageEvents(
           recordedAt,
         );
         skipSet.add(event.idempotencyKey);
-        // Turn transition before projection — the order is load-bearing: a
-        // prompt transitions first and stamps to the turn it just opened
-        // (AC-3.1, AC-3.3); non-transition kinds stamp to whatever is open,
-        // or null in a gap (AC-3.2, AC-3.8). Skipped events never reach this
-        // call, so a resend causes no transition (TC-5.4).
-        const turnOutcome = applyTurnEvent(ctx, event.eventKind, lastOrder);
+        // Turn intake before projection: a prompt can close a non-empty turn
+        // before stamping to the new open turn; non-boundary events stamp to
+        // the current open turn. Skipped events never reach this call, so a
+        // resend causes no transition (TC-5.4).
+        const recordedEvent = {
+          ...event,
+          eventOrder: lastOrder,
+          recordedAt,
+        };
+        const turnOutcome = createTurn(ctx, recordedEvent);
+        if (
+          event.eventKind === "turn_end" &&
+          turnOutcome.transitions.some((transition) => transition.action === "closed")
+        ) {
+          batchCommittedTurnEnd = true;
+        }
         turnTransitions.push(...turnOutcome.transitions);
         queuedItems.push(...turnOutcome.queuedWork);
         // Projection runs in the same iteration that recorded the event, so
         // it can never drift from its source; a projection failure throws
         // and rejects the whole batch. Skipped events never reach this call
         // (no duplicate message, AC-5.4).
-        const created = createMessage(
-          ctx,
-          {
-            ...event,
-            eventOrder: lastOrder,
-            recordedAt,
-          },
-          turnOutcome.openTurnId,
-          resolveInstanceToolResultConfig(),
-        );
+        const created = createMessage(ctx, recordedEvent, turnOutcome.turnId, resolveInstanceToolResultConfig());
         // Message-owned work queues inside message creation, gated on
         // recorded: a skipped event never reaches this call, so it queues
         // nothing (AC-5.4), and the kind gate inside messages.create
@@ -296,6 +276,16 @@ export async function runMessageEvents(
       } catch {
         // handle closed mid-walk; the open transaction died with it
       }
+    }
+    if (cause instanceof TurnStateCorruptionError) {
+      return {
+        ok: false,
+        error: {
+          errorClass: cause.errorClass,
+          code: cause.code,
+          reason: cause.message,
+        },
+      };
     }
     return storageFailure(`event batch failed and rolled back whole: ${detail(cause)}`);
   } finally {

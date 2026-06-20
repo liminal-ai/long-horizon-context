@@ -152,10 +152,10 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
       "turn_end",
     ]);
     expect(userTexts(events)).toEqual(["first", "second"]);
-    // Two distinct closed turns — the turn_end keys did not collide either.
+    // Two distinct closed turns, plus the next empty open turn.
     const counts = await turnCounts(b.threadRef);
     expect(counts.closed).toBe(2);
-    expect(counts.open).toBe(0);
+    expect(counts.open).toBe(1);
   });
 
   it("(4) preserves duplicate-safe re-delivery: re-flushing an identical batch is skipped, not duplicated", async () => {

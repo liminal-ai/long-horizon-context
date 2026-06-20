@@ -151,7 +151,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
       assistant_text: 1,
     });
     expect(overview1.value.turns.closed).toBe(1);
-    expect(overview1.value.turns.open).toBe(0);
+    expect(overview1.value.turns.open).toBe(1);
 
     // Failed derivations are visible, not hidden: Epic-1 replay is observe-only
     // (inference fails closed), so the queued derivations land failed.

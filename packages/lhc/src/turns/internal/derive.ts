@@ -229,8 +229,8 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   // batch pipeline writes turn state and it never leaves two turns open, so
   // more than one open turn means the record was damaged below the SDK. A
   // handler must not compose against a membership it cannot trust; the derivation
-  // lands blocked naming the damage, and requeue refuses with that reason
-  // until the source reads clean (Story 4).
+  // lands blocked naming the damage, and later derive attempts refuse with
+  // that reason until the source reads clean (Story 4).
   const openTurnIds = selectOpenTurnIds(db);
   if (openTurnIds.length > 1) {
     return sourceDamaged(`turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`);

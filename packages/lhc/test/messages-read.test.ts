@@ -6,7 +6,7 @@
 // Plus the architecture-risk legs: every read leaves observable state
 // unchanged (read-only delta, DD-6) and calls no model.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initLhc, intakeStream, type Lhc, type MessageEventInput, messages, threadView, turns } from "../src/index.js";
+import { initLhc, intakeStream, type Lhc, type MessageEventInput, messages, threadView } from "../src/index.js";
 import { listItems, type WorkOwner } from "../src/shared-tech/work-queue/index.js";
 import {
   createInferenceCallbacksDouble,
@@ -103,7 +103,7 @@ async function observableState(filePath: string): Promise<Record<string, unknown
   return {
     events: await intakeStream.listEvents({ filePath }),
     messageWork: queuedFor(filePath, "messages"),
-    turnWork: await turns.listQueuedWork({ filePath }),
+    turnWork: queuedFor(filePath, "turns"),
     viewStatus: await threadView.status({ filePath }),
     derivations: readDerivedForms(filePath),
   };

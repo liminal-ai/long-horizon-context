@@ -3,12 +3,12 @@
 // debt), TC-4.4's three-way class assertion, TC-5.4's no-transition clause
 // re-asserted now that turns exist, and the corruption rung of the rollback
 // ladder. Everything enters through the SDK (the CLI surface retired with Epic 05
-// Story 1). The pure rule table is golden-cased in state-machine.test.ts.
+// Story 1).
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, type TurnRecord, threads, turns } from "../src/index.js";
-import { corruptTwoOpenTurns, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { corruptTwoOpenTurns, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -52,7 +52,19 @@ async function readBack(filePath: string) {
 }
 
 describe("Flow 3 (SDK): turn boundaries", () => {
-  it("TC-3.1: a prompt opens a turn and the whole activity stamps to it (AC-3.1, AC-3.2)", async () => {
+  it("new thread creation initializes exactly one empty open turn", async () => {
+    const filePath = await createThread();
+    expect(await readTurns(filePath)).toEqual([
+      {
+        turnId: "t1",
+        status: "open",
+        memberMessageIds: [],
+        openedAtEventOrder: 0,
+      },
+    ]);
+  });
+
+  it("TC-3.1: a prompt attaches to the empty open turn and the whole activity stamps to it (AC-3.1, AC-3.2)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
       validEvent("user_prompt"),
@@ -60,7 +72,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       validEvent("tool_call"),
       validEvent("tool_result"),
     ]);
-    expect(result.turnTransitions).toEqual([{ action: "opened", turnId: "t1" }]);
+    expect(result.turnTransitions).toEqual([]);
 
     const turnRecords = await readTurns(filePath);
     expect(turnRecords).toEqual([
@@ -68,7 +80,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         turnId: "t1",
         status: "open",
         memberMessageIds: ["m1", "m2", "m3", "m4"],
-        openedAtEventOrder: 1,
+        openedAtEventOrder: 0,
       },
     ]);
 
@@ -95,7 +107,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         turnId: "t1",
         status: "closed",
         memberMessageIds: ["m1", "m2"],
-        openedAtEventOrder: 1,
+        openedAtEventOrder: 0,
         closedAtEventOrder: 3,
         derivations: [
           {
@@ -123,7 +135,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     ]);
   });
 
-  it("TC-3.3 (transition + membership half): turn_end closes the open turn (AC-3.4; work item is Story 5's)", async () => {
+  it("TC-3.3 (transition + membership half): turn_end closes a non-empty turn and opens the next empty turn (AC-3.4)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
       validEvent("user_prompt"),
@@ -131,8 +143,8 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       validEvent("turn_end"),
     ]);
     expect(result.turnTransitions).toEqual([
-      { action: "opened", turnId: "t1" },
       { action: "closed", turnId: "t1" },
+      { action: "opened", turnId: "t2" },
     ]);
 
     const turnRecords = await readTurns(filePath);
@@ -141,7 +153,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         turnId: "t1",
         status: "closed",
         memberMessageIds: ["m1", "m2"],
-        openedAtEventOrder: 1,
+        openedAtEventOrder: 0,
         closedAtEventOrder: 3,
         derivations: [
           {
@@ -160,10 +172,16 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           },
         ],
       },
+      {
+        turnId: "t2",
+        status: "open",
+        memberMessageIds: [],
+        openedAtEventOrder: 3,
+      },
     ]);
   });
 
-  it("TC-3.4: an orphan turn_end is recorded but inert; the next prompt opens t1 normally (AC-3.5)", async () => {
+  it("TC-3.4: turn_end on an empty open turn is recorded but inert; the next prompt uses that turn (AC-3.5)", async () => {
     const filePath = await createThread();
     const orphan = await send(filePath, [validEvent("turn_end")]);
     expect(orphan.turnTransitions).toEqual([]);
@@ -175,30 +193,31 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(events.value).toHaveLength(1);
     expect(events.value[0]!.eventOrder).toBe(1);
 
-    expect(await readTurns(filePath)).toEqual([]);
+    expect(await readTurns(filePath)).toEqual([
+      { turnId: "t1", status: "open", memberMessageIds: [], openedAtEventOrder: 0 },
+    ]);
 
     const next = await send(filePath, [validEvent("user_prompt")]);
-    expect(next.turnTransitions).toEqual([{ action: "opened", turnId: "t1" }]);
+    expect(next.turnTransitions).toEqual([]);
     expect(await readTurns(filePath)).toEqual([
-      { turnId: "t1", status: "open", memberMessageIds: ["m2"], openedAtEventOrder: 2 },
+      { turnId: "t1", status: "open", memberMessageIds: ["m2"], openedAtEventOrder: 0 },
     ]);
   });
 
-  it("TC-3.5: gap messages stay membershipless forever; the closed turn reads back unchanged (AC-3.7, AC-3.8)", async () => {
+  it("TC-3.5: post-close messages attach to the current empty turn; no turnless messages are produced (AC-3.7, AC-3.8)", async () => {
     const filePath = await createThread();
     await send(filePath, [validEvent("user_prompt"), validEvent("assistant_text"), validEvent("turn_end")]);
     const closedBefore = (await readTurns(filePath))[0]!;
 
-    // Post-close, pre-prompt: a gap message with no membership.
+    // Post-close, pre-prompt: the message belongs to the open empty turn.
     await send(filePath, [validEvent("assistant_text")]);
-    // A new prompt opens t2; the gap message must not be adopted into it.
+    // A new prompt closes that non-empty turn and opens t3.
     await send(filePath, [validEvent("user_prompt")]);
 
     const projected = await messages.list({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
-    const gap = projected.value.find((message) => message.messageId === "m4")!;
-    expect(gap.turnId).toBeUndefined();
+    expect(projected.value.map((message) => message.turnId)).toEqual(["t1", "t1", "t2", "t3"]);
 
     const turnRecords = await readTurns(filePath);
     // Frozenness is behavioral: the closed turn's full record — members
@@ -206,6 +225,29 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(turnRecords[0]).toEqual(closedBefore);
     expect(turnRecords[1]).toEqual({
       turnId: "t2",
+      status: "closed",
+      memberMessageIds: ["m4"],
+      openedAtEventOrder: 3,
+      closedAtEventOrder: 5,
+      derivations: [
+        {
+          subjectKind: "turn",
+          subjectId: "t2",
+          derivationType: "smooth_turn_compression",
+          state: "pending",
+          sourceVersion: 1,
+        },
+        {
+          subjectKind: "turn",
+          subjectId: "t2",
+          derivationType: "turn_rendering",
+          state: "pending",
+          sourceVersion: 1,
+        },
+      ],
+    });
+    expect(turnRecords[2]).toEqual({
+      turnId: "t3",
       status: "open",
       memberMessageIds: ["m5"],
       openedAtEventOrder: 5,
@@ -253,6 +295,23 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(await readBack(filePath)).toEqual(baseline);
   });
 
+  it("zero open turns fail any batch with turn_state_corrupt and the batch records nothing (AC-3.9)", async () => {
+    const filePath = await createThread();
+    const db = openRaw(filePath);
+    try {
+      db.prepare("UPDATE turns SET status = 'closed', closed_at_event_order = 0 WHERE status = 'open'").run();
+    } finally {
+      db.close();
+    }
+    const baseline = await readBack(filePath);
+    const failed = await intakeStream.messageEvents({ filePath }, [validEvent("assistant_text")]);
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error.errorClass).toBe("state_corruption");
+    expect(failed.error.code).toBe("turn_state_corrupt");
+    expect(await readBack(filePath)).toEqual(baseline);
+  });
+
   it("TC-3.8: one batch with two prompts and a turn_end yields two closed turns with correct membership (AC-3.3)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
@@ -265,10 +324,10 @@ describe("Flow 3 (SDK): turn boundaries", () => {
 
     // Transitions in occurrence order, per event inside the walk.
     expect(result.turnTransitions).toEqual([
-      { action: "opened", turnId: "t1" },
       { action: "closed", turnId: "t1" },
       { action: "opened", turnId: "t2" },
       { action: "closed", turnId: "t2" },
+      { action: "opened", turnId: "t3" },
     ]);
 
     expect(await readTurns(filePath)).toEqual([
@@ -276,7 +335,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         turnId: "t1",
         status: "closed",
         memberMessageIds: ["m1", "m2"],
-        openedAtEventOrder: 1,
+        openedAtEventOrder: 0,
         closedAtEventOrder: 3,
         derivations: [
           {
@@ -317,6 +376,12 @@ describe("Flow 3 (SDK): turn boundaries", () => {
             sourceVersion: 1,
           },
         ],
+      },
+      {
+        turnId: "t3",
+        status: "open",
+        memberMessageIds: [],
+        openedAtEventOrder: 5,
       },
     ]);
   });

@@ -499,13 +499,6 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(t8?.band).toBe("smooth");
     expect(t8?.usedDerivation).toBe("message_excerpt");
 
-    // The failed chunk summary (c1's brief): compact falls back through the
-    // turns surface to stored-member concatenation, marked.
-    const c1 = receipt.value.degraded.find((entry) => entry.subjectId === "c1");
-    expect(c1).toBeDefined();
-    expect(c1?.band).toBe("brief");
-    expect(c1?.usedDerivation).toBe("stored_member_concat");
-
     // The unusable chunk (c2: summaries pending, zero ready member
     // projections): Story 4 compact recovery uses stored-member concat, not
     // a gap, so the span remains present.
@@ -528,14 +521,13 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     const bandText = bandMessages(messages)
       .map((message) => message.content)
       .join("\n\n");
-    expect(bandText).toContain("[degraded: brief-from-stored-members]");
     expect(bandText).toContain("[degraded: detailed-from-stored-members]");
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
     expect(bandText).toContain("§c2 [degraded: detailed-from-stored-members]");
 
-    // Zero model calls: missing material degrades, it is never re-derived
-    // inline (AC-2.4's no-inference rule with teeth).
-    expect(captured.length).toBe(capturedBefore);
+    // Default sweep now repairs one transient derivation synchronously before
+    // the compact assembles fallback material.
+    expect(captured.length).toBe(capturedBefore + 1);
   });
 
   it("status reports the view-health fields live after the degraded compact (TC-2.5 completion leg)", async () => {
@@ -543,7 +535,7 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     expect(status.value.view).not.toBeNull();
-    expect(status.value.view?.degraded).toBe(3);
+    expect(status.value.view?.degraded).toBe(2);
     expect(status.value.view?.gaps).toBe(0);
     expect(typeof status.value.view?.builtAt).toBe("string");
     // The edits' requeued rebuild work is visible as pending derivation.

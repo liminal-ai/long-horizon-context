@@ -215,16 +215,12 @@ function expectedMessages(expected: readonly MessageEventInput[]): MessageProjec
 
 function expectedMessageRecords(expected: readonly MessageEventInput[]): ComparableMessageRecord[] {
   const records: ComparableMessageRecord[] = [];
-  let openTurnId: string | undefined;
-  let nextTurnOrder = 1;
+  let openTurnOrder = 1;
 
   for (const [index, event] of expected.entries()) {
     const sourceEventOrder = index + 1;
-    if (event.eventKind === "user_prompt") {
-      openTurnId = `t${nextTurnOrder}`;
-      nextTurnOrder += 1;
-    } else if (event.eventKind === "turn_end") {
-      openTurnId = undefined;
+    if (event.eventKind === "turn_end") {
+      openTurnOrder += 1;
       continue;
     }
 
@@ -233,7 +229,7 @@ function expectedMessageRecords(expected: readonly MessageEventInput[]): Compara
       sourceEventOrder,
       kind: event.eventKind,
       harness: event.harness,
-      ...(openTurnId === undefined ? {} : { turnId: openTurnId }),
+      turnId: `t${openTurnOrder}`,
       blocks: expectedBlocks(event),
     });
   }
@@ -291,16 +287,21 @@ function comparableMessageRecords(records: readonly MessageRecord[]): Comparable
 }
 
 function expectedTurnRecords(expected: readonly MessageEventInput[]): ComparableTurnRecord[] {
-  const records: ComparableTurnRecord[] = [];
-  let openTurn: ComparableTurnRecord | undefined;
+  const records: ComparableTurnRecord[] = [
+    {
+      turnId: "t1",
+      status: "open",
+      memberMessageIds: [],
+      openedAtEventOrder: 0,
+    },
+  ];
+  let openTurn = records[0]!;
 
   for (const [index, event] of expected.entries()) {
     const eventOrder = index + 1;
-    if (event.eventKind === "user_prompt") {
-      if (openTurn !== undefined) {
-        openTurn.status = "closed";
-        openTurn.closedAtEventOrder = eventOrder;
-      }
+    if (event.eventKind === "turn_end") {
+      openTurn.status = "closed";
+      openTurn.closedAtEventOrder = eventOrder;
       openTurn = {
         turnId: `t${records.length + 1}`,
         status: "open",
@@ -308,18 +309,10 @@ function expectedTurnRecords(expected: readonly MessageEventInput[]): Comparable
         openedAtEventOrder: eventOrder,
       };
       records.push(openTurn);
-    } else if (event.eventKind === "turn_end") {
-      if (openTurn !== undefined) {
-        openTurn.status = "closed";
-        openTurn.closedAtEventOrder = eventOrder;
-        openTurn = undefined;
-      }
       continue;
     }
 
-    if (openTurn !== undefined) {
-      openTurn.memberMessageIds.push(`m${eventOrder}`);
-    }
+    openTurn.memberMessageIds.push(`m${eventOrder}`);
   }
 
   return records;
@@ -383,13 +376,13 @@ function compareReadback(
     );
   }
 
-  // Turns — one closed turn per expected `turn_end`, none left open.
+  // Turns — one closed turn per expected `turn_end`, plus the final empty open turn.
   const expectedClosed = expected.filter((event) => event.eventKind === "turn_end").length;
   if (overview.turns.closed !== expectedClosed) {
     problems.push(`turns.closed: expected ${expectedClosed}, got ${overview.turns.closed}`);
   }
-  if (overview.turns.open !== 0) {
-    problems.push(`turns.open: expected 0, got ${overview.turns.open}`);
+  if (overview.turns.open !== 1) {
+    problems.push(`turns.open: expected 1, got ${overview.turns.open}`);
   }
 
   // Messages — full read-back records implied by the fixture, in source order.

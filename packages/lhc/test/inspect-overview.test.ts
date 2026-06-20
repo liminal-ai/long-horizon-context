@@ -130,7 +130,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
       deleted: 0,
       visibleTokens: 0,
     });
-    expect(overview.turns).toEqual({ open: 0, closed: 0 });
+    expect(overview.turns).toEqual({ open: 1, closed: 0 });
     expect(overview.chunks).toEqual({ count: 0, unchunkedTurns: 0 });
     expect(overview.derivation).toEqual(ZERO_DERIVATION);
     expect(overview.view).toBeNull();
@@ -176,7 +176,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
       tool_result: 1,
     });
     expect(overview.messages.deleted).toBe(0);
-    expect(overview.turns).toEqual({ open: 0, closed: 2 });
+    expect(overview.turns).toEqual({ open: 1, closed: 2 });
     // Both closed turns placed by their derivations into the one open chunk.
     expect(overview.chunks).toEqual({ count: 1, unchunkedTurns: 0 });
     // 2 smoothings + 1 result summary + 2 turns × 2 forms.
@@ -207,7 +207,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     });
     expect(overview.messages.deleted).toBe(0);
     expect(overview.messages.visibleTokens).toBeGreaterThan(0);
-    expect(overview.turns).toEqual({ open: 0, closed: 12 });
+    expect(overview.turns).toEqual({ open: 1, closed: 12 });
     expect(overview.chunks).toEqual({ count: 4, unchunkedTurns: 0 });
     // 12 smoothings + 6 ready result summaries + 24 turn
     // forms + 6 chunk summaries ready; the scripted transient and permanent
@@ -238,7 +238,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     // turn forms, c1's two chunk summaries — all pending, drain not settled.
     expect(fixture.mutation.cleared).toHaveLength(5);
     expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 45, pending: 5 });
-    expect(overview.turns).toEqual({ open: 0, closed: 12 });
+    expect(overview.turns).toEqual({ open: 1, closed: 12 });
     expect(overview.chunks).toEqual({ count: 4, unchunkedTurns: 0 });
     // The view is the pre-edit compact's snapshot, untouched by the mutation.
     expect(overview.view).toEqual({

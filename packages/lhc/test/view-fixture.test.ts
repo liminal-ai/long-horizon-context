@@ -265,7 +265,7 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
     expect(refused.error.reason).toMatch(/open turns/);
   });
 
-  it("the straggler variant carries turnId-null notes between two turns and after the last turn", async () => {
+  it("the straggler variant carries note messages in the current open turns", async () => {
     const variant = await stragglerVariantThread(store);
     const listed = await messages.list({ filePath: variant.filePath });
     const turnList = await turns.listTurns({ filePath: variant.filePath });
@@ -275,20 +275,18 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
     const between = listed.value.find((message) => message.messageId === variant.stragglerBetweenMessageId);
     const trailing = listed.value.find((message) => message.messageId === variant.stragglerTrailingMessageId);
     expect(between?.kind).toBe("runtime_note");
-    expect(between?.turnId).toBeUndefined();
+    expect(between?.turnId).toBeDefined();
     expect(trailing?.kind).toBe("runtime_note");
-    expect(trailing?.turnId).toBeUndefined();
+    expect(trailing?.turnId).toBeDefined();
 
-    // Between two turns: after t3 closed, before t4 opened — the selection
-    // rule 6 / G4 position.
-    const t3 = turnList.value.find((turn) => turn.turnId === "t3");
+    // The former between-turn note is now a member of the current open turn.
     const t4 = turnList.value.find((turn) => turn.turnId === "t4");
-    expect(between!.sourceEventOrder).toBeGreaterThan(t3!.closedAtEventOrder!);
-    expect(between!.sourceEventOrder).toBeLessThan(t4!.openedAtEventOrder);
+    expect(between!.turnId).toBe("t4");
+    expect(between!.sourceEventOrder).toBeGreaterThanOrEqual(t4!.openedAtEventOrder);
 
-    // After the last turn: beyond t12's close, with no turn following.
-    const t12 = turnList.value.find((turn) => turn.turnId === "t12");
-    expect(trailing!.sourceEventOrder).toBeGreaterThan(t12!.closedAtEventOrder!);
+    // The trailing note is the last recorded message and belongs to the
+    // current open turn after the last close.
+    expect(trailing!.turnId).toBeDefined();
     expect(Math.max(...listed.value.map((message) => message.sourceEventOrder))).toBe(trailing!.sourceEventOrder);
   });
 });

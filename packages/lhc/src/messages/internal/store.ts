@@ -14,10 +14,9 @@ export interface MessageRow {
   tokenEstimate: number;
   actor: string;
   harness: string;
-  // Membership stamp, settled at intake: the turn open after this event's
-  // transition, or null in a gap. Written once here, never updated — a null
-  // gap stamp stays null forever (AC-3.8), a closed turn's members never
-  // change (AC-3.7).
+  // Membership stamp, settled at intake: the current open turn after turn
+  // intake. Written once here, never updated; null remains possible for
+  // legacy or below-SDK records.
   turnId: string | null;
   blocks: Block[];
 }
@@ -41,11 +40,11 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
 // (deleted-filtered) message joined to its turn's status. A deleted target
 // misses here and refuses as message_not_found — the filtered view is the
 // refusal's read by design (never a distinct error for deleted; double
-// delete reads the same way, AC-6.7). turnStatus is null for a gap message
-// (no membership); the closed-turn target boundary refuses it the same as
-// an open turn. initiatesTurn carries the prompt-protection fact (AC-6.3):
-// a turn opens on its prompt's event, so the member whose source event
-// order equals the turn's opened-at order is the turn's initiating prompt.
+// delete reads the same way, AC-6.7). turnStatus is null only for legacy or
+// below-SDK records without membership; the closed-turn target boundary
+// refuses it the same as an open turn. initiatesTurn carries the prompt-
+// protection fact (AC-6.3): with initial empty turns, the initiator is the
+// first live member of a turn, not necessarily the turn's open event.
 export interface MutableMessageView {
   messageId: string;
   kind: string;
@@ -58,7 +57,13 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
   const row = db
     .prepare(
       `SELECT m.message_id, m.kind, m.turn_id, m.source_event_order,
-              t.status AS turn_status, t.opened_at_event_order
+              t.status AS turn_status,
+              NOT EXISTS (
+                SELECT 1 FROM message prior
+                WHERE prior.turn_id = m.turn_id
+                  AND prior.deleted_at IS NULL
+                  AND prior.source_event_order < m.source_event_order
+              ) AS is_first_member
        FROM message m LEFT JOIN turns t ON t.turn_id = m.turn_id
        WHERE m.message_id = ? AND m.deleted_at IS NULL`,
     )
@@ -69,7 +74,7 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
         turn_id: string | null;
         source_event_order: number | bigint;
         turn_status: string | null;
-        opened_at_event_order: number | bigint | null;
+        is_first_member: number | bigint;
       }
     | undefined;
   if (row === undefined) return undefined;
@@ -78,8 +83,7 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
     kind: row.kind,
     turnId: row.turn_id,
     turnStatus: row.turn_status as MutableMessageView["turnStatus"],
-    initiatesTurn:
-      row.opened_at_event_order !== null && Number(row.source_event_order) === Number(row.opened_at_event_order),
+    initiatesTurn: row.turn_id !== null && Number(row.is_first_member) === 1,
   };
 }
 

@@ -160,7 +160,10 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     ]);
     // turn_end produces no message.
     expect(result.events[2]).not.toHaveProperty("messageId");
-    expect(result.turnTransitions).toEqual([{ action: "closed", turnId: "t1" }]);
+    expect(result.turnTransitions).toEqual([
+      { action: "closed", turnId: "t1" },
+      { action: "opened", turnId: "t2" },
+    ]);
     expect(result.queuedWork).toEqual([
       {
         workItemId: "w-t1-turn_derivation-v1",

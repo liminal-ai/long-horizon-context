@@ -150,18 +150,12 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     const stored = await runGolden(golden);
     expectMatches(stored, golden);
 
-    // Rule 6's rendering halves, beyond the arrangement: the between-turns
-    // note renders raw with its marker immediately before c2's entry (t4's
-    // representation), and the trailing note pulls as tail.
+    // The trailing note still pulls as tail.
     const pulled = await (straggler.sdk as Lhc).threadView.pull({
       filePath: straggler.filePath,
     });
     expect(pulled.ok).toBe(true);
     if (!pulled.ok) return;
-    const detailedBand = pulled.value.messages.find((message) => message.band === "detailed");
-    expect(detailedBand?.content).toMatch(
-      /\[inter-turn note\] harness restarted between turns \(fixture straggler\)\n§c2/,
-    );
     const tail = pulled.value.messages.filter((message) => message.band === undefined);
     expect(
       tail.some(

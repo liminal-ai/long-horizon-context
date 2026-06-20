@@ -347,7 +347,7 @@ function compactStopped(signal: { aborted: boolean } | undefined): boolean {
 // IMMEDIATE replacing the view and resetting the boundary → receipt.
 // Assembly is entirely from stored artifacts: nothing here can reach a
 // inference (AC-2.4 zero-inference is structural — the sweep step repairs
-// through owners' requeue surfaces and calls no inference either).
+// through owner repair/derive surfaces and calls no inference itself).
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
@@ -434,7 +434,7 @@ export async function compact(
         if (compactStopped(opts.signal)) {
           return callerError("compact_stopped", "compact stopped during fallback assembly");
         }
-        const material = turnsDomain.compactChunkMaterial(ctx, chunk.chunkId, derivationType);
+        const material = turnsDomain.getChunkText(ctx, chunk.chunkId, derivationType);
         if (material.kind === "blocked") {
           return {
             ok: false,
@@ -575,8 +575,8 @@ export async function compact(
 
 // ── sweep (Flow 3: AC-3.1–3.5, 3.7) ──────────────────────────────
 
-// The standalone readiness sweep: walk the owners' reports, requeue the
-// transiently-failed derivations through the owners' requeue surfaces, return the
+// The standalone readiness sweep: walk the owners' reports, repair the
+// transiently-failed derivations through the owner surfaces, return the
 // per-owner/kind receipt. The walk itself lives in internal/sweep.ts; the
 // compact embeds the same walk (AC-3.6), so standalone and embedded receipts
 // share one shape by construction (AC-3.7's SDK leg; the CLI leg rides

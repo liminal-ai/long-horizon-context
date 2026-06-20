@@ -445,13 +445,11 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    // A note before any prompt opens a turn lands in a gap: m1 with no turn
-    // membership (turnId null). It exists and isn't deleted, so neither the
-    // open-turn nor the message_not_found refusal would catch it — the
-    // closed-turn boundary is the only gate that does.
+    // A note before any prompt attaches to the initialized open turn. It
+    // exists and is not deleted; the open-turn boundary refuses the edit.
     await send(sdk, filePath, [validEvent("runtime_note", { payload: { text: "a note before any turn" } })]);
     const m1 = unwrap(await messages.list({ filePath })).find((record) => record.messageId === "m1");
-    expect(m1?.turnId).toBeUndefined();
+    expect(m1?.turnId).toBe("t1");
 
     const before = await snapshot(filePath);
     const turnless = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });

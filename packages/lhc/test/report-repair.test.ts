@@ -360,7 +360,7 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     });
   });
 
-  it("turns.requeue rebuilds a fallback-composed rendering at the next source version", async () => {
+  it("turns.deriveTurn rebuilds a fallback-composed rendering at the next source version", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, messageId, turnId } = await gappedRenderingThread(store, sdk, double);
@@ -373,18 +373,11 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     // No auto-cascade: the rendering row is still exactly the fallback-composed row.
     expect(formOf(filePath, turnId, "turn_rendering")).toEqual(beforeRepair);
 
-    const rebuild = await sdk.turns.requeue(
-      { filePath },
-      { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
-    );
+    const rebuild = await sdk.turns.deriveTurn({ filePath }, turnId);
     expect(rebuild.ok).toBe(true);
     if (!rebuild.ok) return;
-    expect(rebuild.value).toEqual({ workItemId: "w-t1-turn_derivation-v2" });
-
-    const report = await drain(sdk, filePath);
-    expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
-      ["w-t1-turn_derivation-v2", "done"],
-    ]);
+    expect(rebuild.value).toEqual({ turnId, outcome: "derived", sourceVersion: 2 });
+    expect(liveCount(filePath)).toBe(0);
     const rebuilt = formOf(filePath, turnId, "turn_rendering");
     expect(rebuilt?.state).toBe("ready");
     expect(rebuilt?.sourceVersion).toBe(2);
@@ -420,8 +413,8 @@ describe("TC-4.5 / AC-4.5: derive returns one result per message id", () => {
   });
 });
 
-describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the drain continues, and requeue refuses with the stored reason", () => {
-  it("a turn derivation over the two-open-turns corruption blocks naming the damage; blocked is not failed — requeue is refused", async () => {
+describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the drain continues, and derive refuses with the stored reason", () => {
+  it("a turn derivation over the two-open-turns corruption blocks naming the damage; blocked is not failed — derive is refused", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath, turnId } = await damagedSourceThread(store);
@@ -451,15 +444,18 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
     ]);
 
     // The refusal carries the form's stored reason — not a generic string.
-    const refused = await sdk.turns.requeue(
-      { filePath },
-      { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
-    );
-    expect(refused.ok).toBe(false);
-    if (refused.ok) return;
-    expect(refused.error.code).toBe("source_damaged");
-    expect(refused.error.errorClass).toBe("state_corruption");
-    expect(refused.error.reason).toBe(rendering?.reason);
+    const refused = await sdk.turns.deriveTurn({ filePath }, turnId);
+    expect(refused.ok).toBe(true);
+    if (!refused.ok) return;
+    expect(refused.value).toEqual({
+      turnId,
+      outcome: "failed",
+      error: {
+        code: "source_damaged",
+        errorClass: "state_corruption",
+        reason: rendering?.reason,
+      },
+    });
 
     // Refused means refused: nothing queued, nothing changed.
     expect(liveCount(filePath)).toBe(0);

@@ -3,8 +3,8 @@
 // `turn_end`, and closes with exactly one LHC `turn_end` at `agent_end`
 // (TC-2.2). Session order is the converter's source-event order, never PI's
 // per-run `turnIndex` (TC-2.3). The accumulator goldens pin the state machine
-// directly, including the hard-kill tolerance (a dangling open turn, and an
-// agent_end with no open turn as a no-op).
+// directly, including the hard-kill tolerance (the initialized open turn remains
+// unclosed, and an agent_end with no accumulator-open turn is a no-op).
 
 import type { MessageEventInput } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -80,7 +80,7 @@ describe("Story 2: turn derivation — worked example (TC-2.2)", () => {
 
     const counts = await turnCounts(threadRef);
     expect(counts.closed).toBe(1);
-    expect(counts.open).toBe(0);
+    expect(counts.open).toBe(1);
   });
 });
 
@@ -115,7 +115,7 @@ describe("Story 2: turn derivation — source order, not turnIndex (TC-2.3)", ()
 
     const counts = await turnCounts(threadRef);
     expect(counts.closed).toBe(2);
-    expect(counts.open).toBe(0);
+    expect(counts.open).toBe(1);
   });
 });
 

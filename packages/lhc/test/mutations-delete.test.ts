@@ -145,7 +145,7 @@ describe("TC-6.1 / AC-6.1: a deleted message leaves reads and membership; its ev
     // Turn membership shrinks in place — the turn row and its boundaries
     // untouched, the deleted member filtered out.
     const turnRecords = unwrap(await turns.listTurns({ filePath }));
-    expect(turnRecords).toHaveLength(1);
+    expect(turnRecords).toHaveLength(2);
     expect(turnRecords[0]?.memberMessageIds).toEqual(["m1", "m2", "m4"]);
 
     // The audit surface is deliberately unfiltered: every source event,
