@@ -93,10 +93,8 @@ function logFallback(
   writeLog(
     {
       db,
-      clock: run.clock,
       threadId: readThreadId(run),
-      onCommit: () => {},
-      poke: resolveInstancePoke(),
+      filePath: "",
     },
     {
       level: "warning",
@@ -297,15 +295,16 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         ...(projection.provenance === undefined ? {} : { metadata: { provenance: projection.provenance } }),
       },
     ],
-    onApplied: (tx) => {
-      const placement = placeTurn(tx.db, turnId, projectedTokens, run.config.chunkPolicy);
+    onApplied: (transaction) => {
+      const placement = placeTurn(transaction.db, turnId, projectedTokens, run.config.chunkPolicy);
       for (const chunkId of placement.closedChunkIds) {
         enqueueChunkSummaries(
           {
-            db: tx.db,
+            db: transaction.db,
             clock: run.clock,
             threadId,
-            onCommit: tx.onCommit,
+            filePath: "",
+            postCommitHook: { add: transaction.onCommit },
             poke: resolveInstancePoke(),
           },
           chunkId,

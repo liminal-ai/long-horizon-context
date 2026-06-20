@@ -3,8 +3,10 @@ import type { DatabaseSync } from "node:sqlite";
 import type { EventRecord } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, HandlerOutcome, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
+  createDbReadTransaction,
+  type DbReadTransaction,
+  type DbWriteTransaction,
   type ErrorResult,
-  type OperationContext,
   type OpResult,
   resolveInstanceConfig,
   storageFailure,
@@ -84,8 +86,8 @@ export class TurnStateCorruptionError extends Error {
   readonly code = "turn_state_corrupt" as const;
 }
 
-function currentOpenTurnId(ctx: OperationContext): string {
-  const openTurnIds = selectOpenTurnIds(ctx.db);
+function currentOpenTurnId(transaction: DbWriteTransaction): string {
+  const openTurnIds = selectOpenTurnIds(transaction.db);
   if (openTurnIds.length !== 1) {
     throw new TurnStateCorruptionError(
       `thread has ${openTurnIds.length} open turns (${openTurnIds.join(", ")}); the invariant is exactly one`,
@@ -97,12 +99,12 @@ function currentOpenTurnId(ctx: OperationContext): string {
 // Closing a turn — by either close path — durably queues that turn's
 // derivation work in the same transaction (AC-3.6): the close update and the
 // work item commit or roll back together.
-function closeTurnAndQueueWork(ctx: OperationContext, turnId: string, eventOrder: number): WorkItemRecord {
-  closeTurn(ctx.db, turnId, eventOrder);
+function closeTurnAndQueueWork(transaction: DbWriteTransaction, turnId: string, eventOrder: number): WorkItemRecord {
+  closeTurn(transaction.db, turnId, eventOrder);
   // One work item, two derived derivations: the turn_derivation handler (Story 3)
   // lands the rendering and smooth turn compression as independent rows;
   // both go pending with the enqueue (DD-5).
-  return enqueue(ctx, {
+  return enqueue(transaction, {
     owner: "turns",
     kind: "turn_derivation",
     sourceRef: { turnId },
@@ -118,13 +120,13 @@ function closeTurnAndQueueWork(ctx: OperationContext, turnId: string, eventOrder
 // messages.create: a turn-storage failure rejects the whole batch.
 export type RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder">;
 
-export function create(ctx: OperationContext, recordedEvent: RecordedTurnEvent): TurnTransitionOutcome {
-  const openTurnId = currentOpenTurnId(ctx);
-  const hasMembers = countTurnMembers(ctx.db, openTurnId) > 0;
+export function create(transaction: DbWriteTransaction, recordedEvent: RecordedTurnEvent): TurnTransitionOutcome {
+  const openTurnId = currentOpenTurnId(transaction);
+  const hasMembers = countTurnMembers(transaction.db, openTurnId) > 0;
   if (recordedEvent.eventKind === "turn_end") {
     if (!hasMembers) return { transitions: [], turnId: openTurnId, queuedWork: [] };
-    const item = closeTurnAndQueueWork(ctx, openTurnId, recordedEvent.eventOrder);
-    const turnId = insertOpenTurn(ctx.db, nextTurnOrder(ctx.db), recordedEvent.eventOrder);
+    const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder);
+    const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
     return {
       transitions: [
         { action: "closed", turnId: openTurnId },
@@ -135,8 +137,8 @@ export function create(ctx: OperationContext, recordedEvent: RecordedTurnEvent):
     };
   }
   if (recordedEvent.eventKind === "user_prompt" && hasMembers) {
-    const item = closeTurnAndQueueWork(ctx, openTurnId, recordedEvent.eventOrder);
-    const turnId = insertOpenTurn(ctx.db, nextTurnOrder(ctx.db), recordedEvent.eventOrder);
+    const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder);
+    const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
     return {
       transitions: [
         { action: "closed", turnId: openTurnId },
@@ -161,29 +163,20 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
 }
 
 export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[]>> {
-  const resolved = await resolveThreadRef(thread);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    // Derivation read-back rides the turn read (AC-4.7): each record carries its
-    // stored derived derivations, attached from one grouped query — mirroring the
-    // message read's production path for "readable alongside the record".
-    const derivationsByTurn = readOwnedDerivations(db, "turn");
-    const records = readTurns(db).map((record) => {
-      const derivations = derivationsByTurn.get(record.turnId);
-      return derivations === undefined ? record : { ...record, derivations };
+    return await createDbReadTransaction(thread, (transaction) => {
+      // Derivation read-back rides the turn read (AC-4.7): each record carries its
+      // stored derived derivations, attached from one grouped query — mirroring the
+      // message read's production path for "readable alongside the record".
+      const derivationsByTurn = readOwnedDerivations(transaction.db, "turn");
+      return readTurns(transaction.db).map((record) => {
+        const derivations = derivationsByTurn.get(record.turnId);
+        return derivations === undefined ? record : { ...record, derivations };
+      });
     });
-    return { ok: true, value: records };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`turn read-back failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -192,35 +185,26 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
 // block. Derivations attach only where rows exist (a freshly opened chunk has no
 // summary rows until close queues them).
 export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
-  const resolved = await resolveThreadRef(thread);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    const derivationsByChunk = readOwnedDerivations(db, "chunk");
-    const records: ChunkRecord[] = readChunkRows(db).map((row) => {
-      const derivations = derivationsByChunk.get(row.chunkId);
-      return derivations === undefined ? row : { ...row, derivations };
+    return await createDbReadTransaction(thread, (transaction) => {
+      const derivationsByChunk = readOwnedDerivations(transaction.db, "chunk");
+      return readChunkRows(transaction.db).map((row) => {
+        const derivations = derivationsByChunk.get(row.chunkId);
+        return derivations === undefined ? row : { ...row, derivations };
+      });
     });
-    return { ok: true, value: records };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`chunk read-back failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
 export function getChunkText(
-  ctx: OperationContext,
+  transaction: DbReadTransaction,
   chunkId: string,
   derivationType: "chunk_summary_detailed" | "chunk_summary_brief" = "chunk_summary_detailed",
 ): CompactChunkMaterial {
-  return compactChunkMaterialFromStoredMembers(ctx.db, chunkId, derivationType);
+  return compactChunkMaterialFromStoredMembers(transaction.db, chunkId, derivationType);
 }
 
 // ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
@@ -232,21 +216,11 @@ export async function report(
   thread: ThreadRef,
   opts?: { notReady?: boolean; turnId?: string; chunkId?: string },
 ): Promise<OpResult<DerivationReportEntry[]>> {
-  const resolved = await resolveThreadRef(thread);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    return { ok: true, value: reportTurnDerivations(db, opts ?? {}) };
+    return await createDbReadTransaction(thread, (transaction) => reportTurnDerivations(transaction.db, opts ?? {}));
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`report read failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -275,13 +249,13 @@ function sourceVersionForDerive(rows: readonly { state: string; sourceVersion: n
 }
 
 function syntheticItem(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   kind: WorkKind,
   sourceRef: WorkSourceRef,
   sourceVersion: number,
   derivations: EnqueueDerivationTarget[],
 ): ClaimedWorkItem {
-  const upsert = ctx.db.prepare(
+  const upsert = transaction.db.prepare(
     `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
      VALUES (?, ?, ?, 'pending', ?)
      ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
@@ -299,7 +273,7 @@ function syntheticItem(
     kind,
     sourceRef,
     attempts: 0,
-    queuedAt: ctx.clock().toISOString(),
+    queuedAt: transaction.clock().toISOString(),
     sourceVersion,
     derivations,
   };
@@ -339,8 +313,13 @@ async function runTurnOwnedDerivation(
   }
   const sourceVersion = sourceVersionForDerive(rows as Array<{ state: string; sourceVersion: number }>);
 
-  const ctx: OperationContext = { db, clock: config.clock, threadId: "", onCommit: () => {}, poke: () => {} };
-  const item = syntheticItem(ctx, kind, sourceRef, sourceVersion, derivations);
+  const item = syntheticItem(
+    { db, clock: config.clock, threadId: "", filePath: "", postCommitHook: { add: () => {} }, poke: () => {} },
+    kind,
+    sourceRef,
+    sourceVersion,
+    derivations,
+  );
   const handler = turnWorkHandlers[kind];
   if (handler === undefined) {
     return {

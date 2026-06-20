@@ -3,12 +3,12 @@ import type { DatabaseSync } from "node:sqlite";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, HandlerOutcome, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
+  createDbReadTransaction,
+  createDbWriteTransaction,
+  type DbWriteTransaction,
   type ErrorResult,
-  type OperationContext,
   type OpResult,
   resolveInstanceConfig,
-  runInTransaction,
-  runWithThreadTouchSuppressed,
   storageFailure,
   truncateForFallback,
 } from "../shared-tech/index.js";
@@ -92,7 +92,7 @@ export interface MessageCreateResult {
 // the current open turn after this event's turn intake. Written once, never
 // updated.
 export function create(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   recordedEvent: RecordedEvent,
   turnId: string,
   toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
@@ -101,7 +101,7 @@ export function create(
   if (projected === null) return { message: null, queuedWork: [] };
   const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end">;
   const messageId = `m${recordedEvent.eventOrder}`;
-  insertMessage(ctx.db, {
+  insertMessage(transaction.db, {
     messageId,
     sourceEventOrder: recordedEvent.eventOrder,
     kind,
@@ -115,7 +115,7 @@ export function create(
     recordedEvent.eventKind === "tool_call" || recordedEvent.eventKind === "tool_result"
       ? { messageId, kind, toolCallId: recordedEvent.payload.toolCallId }
       : { messageId, kind };
-  return { message, queuedWork: queueMessageWork(ctx, message, toolResultConfig) };
+  return { message, queuedWork: queueMessageWork(transaction, message, toolResultConfig) };
 }
 
 // The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
@@ -145,11 +145,11 @@ const DEFAULT_TOOL_RESULT_CONFIG: ResolvedSdkConfig["toolResult"] = {
 };
 
 function writeLargeToolResultSummaryReady(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   messageId: string,
   config: ResolvedSdkConfig["toolResult"],
 ): boolean {
-  const row = ctx.db
+  const row = transaction.db
     .prepare(
       `SELECT content FROM message_block
        WHERE message_id = ? AND block_type = 'tool_result'
@@ -162,18 +162,18 @@ function writeLargeToolResultSummaryReady(
   if (typeof content !== "string") return false;
   if (estimateTokens(content) <= config.largeTierTokens) return false;
   const metadata = JSON.stringify({ outcome: block["isError"] === true ? "failed" : "succeeded" });
-  ctx.db
+  transaction.db
     .prepare(
       `INSERT INTO derivation
          (subject_kind, subject_id, derivation_type, state, content, metadata, source_version, derived_at)
        VALUES ('message', ?, 'tool_result_summary', 'ready', ?, ?, 1, ?)`,
     )
-    .run(messageId, truncateForFallback(content), metadata, ctx.clock().toISOString());
+    .run(messageId, truncateForFallback(content), metadata, transaction.clock().toISOString());
   return true;
 }
 
 function queueMessageWork(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   message: MessageCreated,
   toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
 ): WorkItemRecord[] {
@@ -181,7 +181,10 @@ function queueMessageWork(
   const items: WorkItemRecord[] = [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
   if (kind !== undefined) {
-    if (message.kind === "tool_result" && writeLargeToolResultSummaryReady(ctx, message.messageId, toolResultConfig)) {
+    if (
+      message.kind === "tool_result" &&
+      writeLargeToolResultSummaryReady(transaction, message.messageId, toolResultConfig)
+    ) {
       return items;
     }
     const derivation = MESSAGE_WORK_DERIVATIONS[kind];
@@ -190,7 +193,7 @@ function queueMessageWork(
       throw new Error(`no derived derivation mapped for message work kind ${kind}`);
     }
     items.push(
-      enqueue(ctx, {
+      enqueue(transaction, {
         owner: "messages",
         kind,
         sourceRef: { messageId: message.messageId },
@@ -250,53 +253,30 @@ function validateListOptions(opts: MessageListOptions): ErrorResult | undefined 
   return undefined;
 }
 
-// Reads-only is structural, not disciplined (DD-6, SV-01-001): the whole
-// operation runs in the touch-suppressed scope, so openThreadDatabase's open
-// announcement (openThreadDatabase → fireThreadTouch → scheduler.touch) can
-// never let a background SDK's scheduler hang a first-touch catch-up drain —
-// and the inference call that drain would make — off this read. A list calls
-// no inference and schedules no work in either host mode.
-export function list(threadRef: ThreadRef, filter?: MessageListOptions): Promise<OpResult<MessageRecord[]>> {
-  return runWithThreadTouchSuppressed(() => listInner(threadRef, filter));
-}
-
-async function listInner(threadRef: ThreadRef, filter?: MessageListOptions): Promise<OpResult<MessageRecord[]>> {
+export async function list(threadRef: ThreadRef, filter?: MessageListOptions): Promise<OpResult<MessageRecord[]>> {
   if (filter !== undefined) {
     const badBounds = validateListOptions(filter);
     if (badBounds !== undefined) return { ok: false, error: badBounds };
   }
-  const resolved = await resolveThreadRef(threadRef);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  // openThreadDatabase verifies the file is a real thread file and migrates
-  // a pre-Story-3 one before the read, so a thread recorded under an earlier
-  // story lists cleanly (F-03-001) and a non-thread file is rejected
-  // unmutated (F-03-002).
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    // Bounds resolve the window first (AC-3.1 no-load-everything), then the
-    // derivation read-back rides only that window (AC-2.1): each record carries its
-    // stored derived derivations, attached from one grouped query scoped to the
-    // listed ids — never every message-owned derivation in a large thread.
-    const records = readMessages(db, filter ?? {});
-    const derivationsByMessage = readMessageDerivations(
-      db,
-      records.map((record) => record.messageId),
-    );
-    const withDerivations = records.map((record) => {
-      const derivations = derivationsByMessage.get(record.messageId);
-      return derivations === undefined ? record : { ...record, derivations };
+    return await createDbReadTransaction(threadRef, (transaction) => {
+      // Bounds resolve the window first (AC-3.1 no-load-everything), then the
+      // derivation read-back rides only that window (AC-2.1): each record carries its
+      // stored derived derivations, attached from one grouped query scoped to the
+      // listed ids — never every message-owned derivation in a large thread.
+      const records = readMessages(transaction.db, filter ?? {});
+      const derivationsByMessage = readMessageDerivations(
+        transaction.db,
+        records.map((record) => record.messageId),
+      );
+      return records.map((record) => {
+        const derivations = derivationsByMessage.get(record.messageId);
+        return derivations === undefined ? record : { ...record, derivations };
+      });
     });
-    return { ok: true, value: withDerivations };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message read-back failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -313,43 +293,27 @@ export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
   derivations: DerivationReportEntry[];
 }
 
-// Reads-only is structural (DD-6, SV-01-001), exactly as list: the
-// open announcement that would let a background scheduler hang a first-touch
-// catch-up drain (and its inference call) off this show is suppressed for the
-// whole operation. show on a deleted message stays the audit read; neither
-// path touches the queue or inference callbacks.
-export function show(threadRef: ThreadRef, messageId: string): Promise<OpResult<MessageDetail>> {
-  return runWithThreadTouchSuppressed(() => showInner(threadRef, messageId));
-}
-
-async function showInner(threadRef: ThreadRef, messageId: string): Promise<OpResult<MessageDetail>> {
-  const resolved = await resolveThreadRef(threadRef);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
+export async function show(threadRef: ThreadRef, messageId: string): Promise<OpResult<MessageDetail>> {
   try {
-    const record = readMessageById(db, messageId);
-    if (record === undefined) {
-      return {
-        ok: false,
-        error: {
-          errorClass: "caller_error",
-          code: "message_not_found",
-          reason: `no message ${messageId} exists in this thread`,
-        },
-      };
-    }
-    const derivations = reportMessageDerivations(db, { messageId });
-    return { ok: true, value: { ...record, derivations } };
+    const result = await createDbReadTransaction(threadRef, (transaction): OpResult<MessageDetail> => {
+      const record = readMessageById(transaction.db, messageId);
+      if (record === undefined) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no message ${messageId} exists in this thread`,
+          },
+        };
+      }
+      const derivations = reportMessageDerivations(transaction.db, { messageId });
+      return { ok: true, value: { ...record, derivations } };
+    });
+    return result.ok ? result.value : result;
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`message show failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -363,21 +327,13 @@ export async function report(
   threadRef: ThreadRef,
   opts?: { notReady?: boolean; messageId?: string },
 ): Promise<OpResult<DerivationReportEntry[]>> {
-  const resolved = await resolveThreadRef(threadRef);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    return { ok: true, value: reportMessageDerivations(db, opts ?? {}) };
+    return await createDbReadTransaction(threadRef, (transaction) =>
+      reportMessageDerivations(transaction.db, opts ?? {}),
+    );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`report read failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -410,13 +366,13 @@ function sourceVersionForDerive(row: { sourceVersion: number; state: string } | 
 }
 
 function prepareSyntheticItem(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   messageId: string,
   workKind: WorkKind,
   derivationType: "smoothed_prompt" | "tool_result_summary",
   sourceVersion: number,
 ): ClaimedWorkItem {
-  ctx.db
+  transaction.db
     .prepare(
       `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
        VALUES ('message', ?, ?, 'pending', ?)
@@ -431,7 +387,7 @@ function prepareSyntheticItem(
     kind: workKind,
     sourceRef: { messageId },
     attempts: 0,
-    queuedAt: ctx.clock().toISOString(),
+    queuedAt: transaction.clock().toISOString(),
     sourceVersion,
     derivations: [{ subjectKind: "message", subjectId: messageId, derivationType }],
   };
@@ -474,7 +430,8 @@ async function runMessageDerivation(
       db,
       clock: config.clock,
       threadId: "",
-      onCommit: () => {},
+      filePath: "",
+      postCommitHook: { add: () => {} },
       poke: () => {},
     },
     messageId,
@@ -590,73 +547,55 @@ export async function edit(
   threadRef: ThreadRef,
   edit: { messageId: string; content: string },
 ): Promise<OpResult<MutationResult>> {
-  const resolved = await resolveThreadRef(threadRef);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-      | { thread_id: string }
-      | undefined;
-    const threadId = meta?.thread_id ?? "";
-    return runInTransaction(
-      db,
-      () => new Date(),
-      threadId,
-      (ctx): OpResult<MutationResult> => {
-        const target = readMutableMessage(ctx.db, edit.messageId);
-        if (target === undefined) {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "message_not_found",
-              reason: `no message ${edit.messageId} exists in this thread`,
-            },
-          };
-        }
-        // The closed-turn target boundary (story scope; AC-5.1): the edit's
-        // editable class is a message in a *closed* turn. Both failing cases —
-        // an open turn and a turnless gap message (no membership) — refuse under
-        // the one stable code; the reason distinguishes them so the open-turn
-        // message reads exactly as before. A deleted/missing target never gets
-        // here (it misses the filtered read above as message_not_found).
-        if (target.turnStatus !== "closed") {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "turn_open",
-              reason:
-                target.turnStatus === "open"
-                  ? `message ${edit.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
-                  : `message ${edit.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
-            },
-          };
-        }
-        applyMessageEdit(ctx.db, edit.messageId, edit.content);
-        const cascade = cascadeFromMessage(ctx, edit.messageId);
+    const result = await createDbWriteTransaction(threadRef, (transaction): OpResult<MutationResult> => {
+      const target = readMutableMessage(transaction.db, edit.messageId);
+      if (target === undefined) {
         return {
-          ok: true,
-          value: {
-            changed: { messageIds: [edit.messageId], turnIds: [] },
-            cleared: cascade.cleared,
-            dropped: cascade.dropped,
-            queued: cascade.queued,
-            superseded: cascade.superseded,
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no message ${edit.messageId} exists in this thread`,
           },
         };
-      },
-    );
+      }
+      // The closed-turn target boundary (story scope; AC-5.1): the edit's
+      // editable class is a message in a *closed* turn. Both failing cases —
+      // an open turn and a turnless gap message (no membership) — refuse under
+      // the one stable code; the reason distinguishes them so the open-turn
+      // message reads exactly as before. A deleted/missing target never gets
+      // here (it misses the filtered read above as message_not_found).
+      if (target.turnStatus !== "closed") {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_open",
+            reason:
+              target.turnStatus === "open"
+                ? `message ${edit.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
+                : `message ${edit.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
+          },
+        };
+      }
+      applyMessageEdit(transaction.db, edit.messageId, edit.content);
+      const cascade = cascadeFromMessage(transaction, edit.messageId);
+      return {
+        ok: true,
+        value: {
+          changed: { messageIds: [edit.messageId], turnIds: [] },
+          cleared: cascade.cleared,
+          dropped: cascade.dropped,
+          queued: cascade.queued,
+          superseded: cascade.superseded,
+        },
+      };
+    });
+    return result.ok ? result.value : result;
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`edit failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -673,76 +612,58 @@ export async function edit(
 // protection: deleting the turn's initiating prompt is refused because
 // initiating-prompt and whole-turn delete are unsupported in this slice.
 export async function remove(threadRef: ThreadRef, removal: { messageId: string }): Promise<OpResult<MutationResult>> {
-  const resolved = await resolveThreadRef(threadRef);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    const meta = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-      | { thread_id: string }
-      | undefined;
-    const threadId = meta?.thread_id ?? "";
-    return runInTransaction(
-      db,
-      () => new Date(),
-      threadId,
-      (ctx): OpResult<MutationResult> => {
-        const target = readMutableMessage(ctx.db, removal.messageId);
-        if (target === undefined) {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "message_not_found",
-              reason: `no message ${removal.messageId} exists in this thread`,
-            },
-          };
-        }
-        if (target.turnStatus !== "closed") {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "turn_open",
-              reason:
-                target.turnStatus === "open"
-                  ? `message ${removal.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
-                  : `message ${removal.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
-            },
-          };
-        }
-        if (target.initiatesTurn) {
-          return {
-            ok: false,
-            error: {
-              errorClass: "caller_error",
-              code: "message_initiates_turn",
-              reason: `message ${removal.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; deleting the initiating prompt or whole turn is not supported in this slice`,
-            },
-          };
-        }
-        markMessageDeleted(ctx.db, removal.messageId, ctx.clock().toISOString());
-        const cascade = cascadeMessageDelete(ctx, removal.messageId);
+    const result = await createDbWriteTransaction(threadRef, (transaction): OpResult<MutationResult> => {
+      const target = readMutableMessage(transaction.db, removal.messageId);
+      if (target === undefined) {
         return {
-          ok: true,
-          value: {
-            changed: { messageIds: [removal.messageId], turnIds: [] },
-            cleared: cascade.cleared,
-            dropped: cascade.dropped,
-            queued: cascade.queued,
-            superseded: cascade.superseded,
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_not_found",
+            reason: `no message ${removal.messageId} exists in this thread`,
           },
         };
-      },
-    );
+      }
+      if (target.turnStatus !== "closed") {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "turn_open",
+            reason:
+              target.turnStatus === "open"
+                ? `message ${removal.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
+                : `message ${removal.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
+          },
+        };
+      }
+      if (target.initiatesTurn) {
+        return {
+          ok: false,
+          error: {
+            errorClass: "caller_error",
+            code: "message_initiates_turn",
+            reason: `message ${removal.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; deleting the initiating prompt or whole turn is not supported in this slice`,
+          },
+        };
+      }
+      markMessageDeleted(transaction.db, removal.messageId, transaction.clock().toISOString());
+      const cascade = cascadeMessageDelete(transaction, removal.messageId);
+      return {
+        ok: true,
+        value: {
+          changed: { messageIds: [removal.messageId], turnIds: [] },
+          cleared: cascade.cleared,
+          dropped: cascade.dropped,
+          queued: cascade.queued,
+          superseded: cascade.superseded,
+        },
+      };
+    });
+    return result.ok ? result.value : result;
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`delete failed: ${reason}`);
-  } finally {
-    db.close();
   }
 }

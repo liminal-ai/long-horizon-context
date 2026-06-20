@@ -7,7 +7,7 @@
 // turn-derivation completion transaction; a crash leaves either a placed
 // turn (with any close's summary enqueues) or nothing.
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext } from "../../shared-tech/index.js";
+import type { DbWriteTransaction } from "../../shared-tech/index.js";
 import { enqueue, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 
 export interface ChunkPolicy {
@@ -127,9 +127,9 @@ export function placeTurn(
 // Closing queues the two summary kinds as two work items with independent
 // retry, states, and re-queue (AC-3.8); both enqueues ride the caller's
 // ambient transaction — the completion commit — per DD-5.
-export function enqueueChunkSummaries(ctx: OperationContext, chunkId: string): WorkItemRecord[] {
+export function enqueueChunkSummaries(transaction: DbWriteTransaction, chunkId: string): WorkItemRecord[] {
   return (["chunk_summary_detailed", "chunk_summary_brief"] as const).map((kind) =>
-    enqueue(ctx, {
+    enqueue(transaction, {
       owner: "turns",
       kind,
       sourceRef: { chunkId },

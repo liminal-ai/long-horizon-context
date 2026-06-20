@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-
 export * as inspect from "./inspect/index.js";
 export * as intakeStream from "./intake-stream/index.js";
 export * as messages from "./messages/index.js";
@@ -23,6 +21,8 @@ import type {
   ViewStatus,
 } from "./shared-tech/index.js";
 import {
+  createDbReadTransaction,
+  createDbWriteTransaction,
   createInferenceCallbacks,
   createScheduler,
   type DrainDeps,
@@ -124,15 +124,18 @@ export type {
   WorkHandler,
 } from "./shared-tech/index.js";
 export {
+  createDbReadTransaction,
+  createDbWriteTransaction,
   createDeterministicInferenceCallbacks,
   createDeterministicProvider,
+  type DbReadTransaction,
+  type DbWriteTransaction,
   type DeterministicOpName,
   deterministicOutcomesSuffix,
   deterministicReceiptsSuffix,
   deterministicText,
-  type OperationContext,
+  type PostCommitHook,
   type ProviderProvenance,
-  runInTransaction,
   setSchedulerPoke,
   setThreadTouch,
 } from "./shared-tech/index.js";
@@ -539,66 +542,27 @@ export function initLhc(config: SdkConfig): Lhc {
   const logging: LoggingSurface = {
     write: (ref, entry) =>
       runWithInstanceSeam(seam, async () => {
-        const resolvedRef = await threadsDomain.resolveThreadRef(ref);
-        if (!resolvedRef.ok) return resolvedRef;
-        const { filePath } = resolvedRef.value;
-        if (!existsSync(filePath)) {
-          return {
-            ok: false as const,
-            error: {
-              errorClass: "caller_error" as const,
-              code: "thread_not_found" as const,
-              reason: `no thread file exists at ${filePath}`,
-            },
-          };
-        }
-        const opened = threadsDomain.openThreadDatabase(filePath);
-        if (!opened.ok) return opened;
-        const db = opened.value;
         try {
-          loggingDomain.writeLog(
-            {
-              db,
-              clock: resolved.clock,
-              threadId: peekThreadId(filePath) ?? "",
-              onCommit: () => {},
-              poke: () => {},
+          const written = await createDbWriteTransaction(
+            ref,
+            (transaction) => {
+              loggingDomain.writeLog(transaction, entry);
             },
-            entry,
+            resolved.clock,
           );
-          return { ok: true as const, value: undefined };
+          return written.ok ? { ok: true as const, value: undefined } : written;
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           return storageFailure(`log write failed: ${reason}`);
-        } finally {
-          db.close();
         }
       }),
     query: (ref, q) =>
       runWithInstanceSeam(seam, async () => {
-        const resolvedRef = await threadsDomain.resolveThreadRef(ref);
-        if (!resolvedRef.ok) return resolvedRef;
-        const { filePath } = resolvedRef.value;
-        if (!existsSync(filePath)) {
-          return {
-            ok: false as const,
-            error: {
-              errorClass: "caller_error" as const,
-              code: "thread_not_found" as const,
-              reason: `no thread file exists at ${filePath}`,
-            },
-          };
-        }
-        const opened = threadsDomain.openThreadDatabase(filePath);
-        if (!opened.ok) return opened;
-        const db = opened.value;
         try {
-          return { ok: true as const, value: loggingDomain.queryLog(db, q) };
+          return await createDbReadTransaction(ref, (transaction) => loggingDomain.queryLog(transaction.db, q));
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           return storageFailure(`log query failed: ${reason}`);
-        } finally {
-          db.close();
         }
       }),
   };

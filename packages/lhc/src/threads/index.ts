@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { type ErrorResult, type OpResult, runWithThreadTouchSuppressed, storageFailure } from "../shared-tech/index.js";
+import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailure } from "../shared-tech/index.js";
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
 // Re-exported for the other domain surfaces: opening a thread file through
@@ -195,40 +195,19 @@ export interface ThreadFileInfo {
 }
 
 export async function info(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
-  return runWithThreadTouchSuppressed(() => infoInner(ref));
-}
-
-async function infoInner(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) {
-    return {
-      ok: false,
-      error: {
-        errorClass: "caller_error",
-        code: "thread_not_found",
-        reason: `no thread file exists at ${filePath}`,
-      },
-    };
-  }
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    const row = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
-      | { thread_id: string; created_at: string }
-      | undefined;
-    if (row === undefined) {
-      // openThreadDatabase validated the row exists; its absence here is
-      // external interference between the probe and this read.
-      return storageFailure(`thread file at ${filePath} lost its metadata row`);
-    }
-    return { ok: true, value: { threadId: row.thread_id, createdAt: row.created_at } };
+    const result = await createDbReadTransaction(ref, (transaction): OpResult<ThreadFileInfo> => {
+      const row = transaction.db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
+        | { thread_id: string; created_at: string }
+        | undefined;
+      if (row === undefined) {
+        return storageFailure(`thread file at ${transaction.filePath} lost its metadata row`);
+      }
+      return { ok: true, value: { threadId: row.thread_id, createdAt: row.created_at } };
+    });
+    return result.ok ? result.value : result;
   } catch (cause) {
     return storageFailure(`thread info read failed: ${detail(cause)}`);
-  } finally {
-    db.close();
   }
 }
 

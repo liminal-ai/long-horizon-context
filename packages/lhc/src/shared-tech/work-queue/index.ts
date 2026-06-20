@@ -9,8 +9,8 @@
 // public SDK surface: read-back reaches here through shared-tech inspection
 // helpers and owner repair reports.
 import type { DatabaseSync } from "node:sqlite";
-import { createCommitHooks, type OperationContext } from "../context.js";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
+import { createPostCommitHookSet, type DbWriteTransaction } from "../persist.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
@@ -122,10 +122,10 @@ export interface EnqueueInput extends WorkItemInput {
 // commit together or vanish together. Enqueue is the *only* place a
 // derivation row is created (completion is UPDATE-only); re-enqueueing
 // resets an existing row to pending at the enqueued source version.
-export function enqueue(ctx: OperationContext, input: EnqueueInput): WorkItemRecord {
-  const item = recordItem(ctx.db, input, ctx.clock().toISOString());
+export function enqueue(transaction: DbWriteTransaction, input: EnqueueInput): WorkItemRecord {
+  const item = recordItem(transaction.db, input, transaction.clock().toISOString());
   const sourceVersion = input.sourceVersion ?? 1;
-  const upsert = ctx.db.prepare(
+  const upsert = transaction.db.prepare(
     `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
      VALUES (?, ?, ?, 'pending', ?)
      ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
@@ -135,7 +135,7 @@ export function enqueue(ctx: OperationContext, input: EnqueueInput): WorkItemRec
   for (const target of input.derivations) {
     upsert.run(target.subjectKind, target.subjectId, target.derivationType, sourceVersion);
   }
-  ctx.onCommit(() => ctx.poke(ctx.threadId));
+  transaction.postCommitHook.add(() => transaction.poke(transaction.threadId));
   return item;
 }
 
@@ -297,7 +297,7 @@ export function complete(
   derivedAt: string,
   onApplied?: (tx: CompletionTx) => void,
 ): "done" | "stale_discarded" {
-  const hooks = createCommitHooks();
+  const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
     let hits = 0;
@@ -320,11 +320,11 @@ export function complete(
     }
     const stale = writes.length > 0 && hits === 0;
     if (!stale && onApplied !== undefined) {
-      onApplied({ db, onCommit: hooks.register });
+      onApplied({ db, onCommit: postCommitHook.add });
     }
     db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(item.workItemId);
     db.exec("COMMIT;");
-    hooks.flush();
+    postCommitHook.flush();
     return stale ? "stale_discarded" : "done";
   } catch (cause) {
     db.exec("ROLLBACK;");

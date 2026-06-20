@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type BatchResult,
   countLiveItems,
+  createDbWriteTransaction,
   type DrainReport,
   deterministicText,
   type EnqueueInput,
@@ -24,7 +25,6 @@ import {
   type Lhc,
   type MessageEventInput,
   type RenderingPart,
-  runInTransaction,
   type SdkConfig,
   threads,
 } from "../src/index.js";
@@ -103,21 +103,9 @@ function liveCount(filePath: string): number {
 // The story-sanctioned re-queue path for TC-3.3/TC-3.8: the Story 1 queue
 // util driven directly inside a real transaction (the public re-queue
 // operation with refusal/idempotency semantics is Story 4's surface).
-function requeueDirect(filePath: string, input: EnqueueInput): void {
-  const db = openRaw(filePath);
-  try {
-    const row = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get() as {
-      thread_id: string;
-    };
-    runInTransaction(
-      db,
-      () => new Date(),
-      row.thread_id,
-      (ctx) => enqueue(ctx, input),
-    );
-  } finally {
-    db.close();
-  }
+async function requeueDirect(filePath: string, input: EnqueueInput): Promise<void> {
+  const queued = await createDbWriteTransaction({ filePath }, (transaction) => enqueue(transaction, input));
+  if (!queued.ok) throw new Error(`direct requeue failed: ${queued.error.reason}`);
 }
 
 // Callbacks that delegate to the deterministic double except for scripted
@@ -224,7 +212,7 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
     // Leg 1: repair the failed smoothing through the queue util (now
     // healthy — the script above is consumed). The dependent must not move:
     // no live link, no auto-cascade, no queued turn work.
-    requeueDirect(filePath, {
+    await requeueDirect(filePath, {
       owner: "messages",
       kind: "prompt_smoothing",
       sourceRef: { messageId: "m1" },
@@ -243,7 +231,7 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
     // Leg 2: the explicit rebuild — turn_derivation re-queued at the next
     // source version through the queue util. Gaps recompute from current
     // dependency states: the smoothing is ready now, so the gap clears.
-    requeueDirect(filePath, {
+    await requeueDirect(filePath, {
       owner: "turns",
       kind: "turn_derivation",
       sourceRef: { turnId: "t1" },
@@ -595,7 +583,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
 
     // Re-queue the brief alone through the queue util (Story 4 owns the
     // public surface); the detailed form must not move.
-    requeueDirect(filePath, {
+    await requeueDirect(filePath, {
       owner: "turns",
       kind: "chunk_summary_brief",
       sourceRef: { chunkId: "c1" },

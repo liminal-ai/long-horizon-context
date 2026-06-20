@@ -322,10 +322,10 @@ describe("architecture-risk: durability and rollback over the complete record su
 // rollback, because every later queue site (intake, cascade, repair) leans
 // on that invariant.
 import {
+  createDbWriteTransaction,
   initLhc,
   lookupWorkHandler,
   mapWorkQHandlers,
-  runInTransaction,
   setSchedulerPoke,
   WORK_KIND_REGISTRY,
   type WorkHandler,
@@ -453,93 +453,98 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     expect(pokes).toEqual([]);
   });
 
-  it("enqueue via runInTransaction: rollback drops all three effects; commit lands them and then pokes", async () => {
+  it("enqueue via createDbWriteTransaction: rollback drops all three effects; commit lands them and then pokes", async () => {
     const filePath = await createThread();
-    const opened = threads.openThreadDatabase(filePath);
-    expect(opened.ok).toBe(true);
-    if (!opened.ok) return;
-    const db = opened.value;
     const pokes: string[] = [];
     setSchedulerPoke((threadId) => pokes.push(threadId));
     const clock = () => new Date(FIXED_INSTANT);
 
-    try {
-      // Rollback leg: the body enqueues, then throws.
-      expect(() =>
-        runInTransaction(db, clock, "th_direct", (ctx) => {
-          enqueue(ctx, {
+    // Rollback leg: the body enqueues, then throws.
+    await expect(
+      createDbWriteTransaction(
+        { filePath },
+        (transaction) => {
+          enqueue(transaction, {
             owner: "turns",
             kind: "chunk_summary_brief",
             sourceRef: { chunkId: "c1" },
             derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
           });
           throw new Error("induced rollback");
-        }),
-      ).toThrow("induced rollback");
-      expect(rawWorkItemCount(filePath)).toBe(0);
-      expect(rawFormRows(filePath)).toEqual([]);
-      expect(pokes).toEqual([]);
+        },
+        clock,
+      ),
+    ).rejects.toThrow("induced rollback");
+    expect(rawWorkItemCount(filePath)).toBe(0);
+    expect(rawFormRows(filePath)).toEqual([]);
+    expect(pokes).toEqual([]);
 
-      // Commit leg: same enqueue, no failure — and the poke fires after the
-      // body, not inside it.
-      const item = runInTransaction(db, clock, "th_direct", (ctx) => {
-        const record = enqueue(ctx, {
+    // Commit leg: same enqueue, no failure — and the poke fires after the
+    // body, not inside it.
+    const committed = await createDbWriteTransaction(
+      { filePath },
+      (transaction) => {
+        const record = enqueue(transaction, {
           owner: "turns",
           kind: "chunk_summary_brief",
           sourceRef: { chunkId: "c1" },
           derivations: [{ subjectKind: "chunk", subjectId: "c1", derivationType: "chunk_summary_brief" }],
         });
-        expect(pokes).toEqual([]); // not yet committed
+        expect(pokes).toEqual([]);
         return record;
-      });
-      expect(item.workItemId).toBe("w-c1-chunk_summary_brief-v1");
-      expect(pokes).toEqual(["th_direct"]);
-      expect(rawFormRows(filePath)).toEqual([{ key: "chunk/c1/chunk_summary_brief", state: "pending" }]);
-    } finally {
-      db.close();
-    }
+      },
+      clock,
+    );
+    expect(committed.ok).toBe(true);
+    if (!committed.ok) return;
+    expect(committed.value.workItemId).toBe("w-c1-chunk_summary_brief-v1");
+    expect(pokes).toHaveLength(1);
+    expect(pokes[0]).toMatch(/^th_/);
+    expect(rawFormRows(filePath)).toEqual([{ key: "chunk/c1/chunk_summary_brief", state: "pending" }]);
   });
 
   it("re-enqueueing at a later source version resets the form row to pending at that version", async () => {
     const filePath = await createThread();
-    const opened = threads.openThreadDatabase(filePath);
-    expect(opened.ok).toBe(true);
-    if (!opened.ok) return;
-    const db = opened.value;
     const clock = () => new Date(FIXED_INSTANT);
-    try {
-      runInTransaction(db, clock, "th_direct", (ctx) => {
-        enqueue(ctx, {
+    const queued = await createDbWriteTransaction(
+      { filePath },
+      (transaction) => {
+        enqueue(transaction, {
           owner: "messages",
           kind: "prompt_smoothing",
           sourceRef: { messageId: "mx" },
           derivations: [{ subjectKind: "message", subjectId: "mx", derivationType: "smoothed_prompt" }],
         });
-      });
-      // Versioned ids let the replacement coexist with (not collide into)
-      // the version-1 item (DD-1/DD-3).
-      const replacement = runInTransaction(db, clock, "th_direct", (ctx) =>
-        enqueue(ctx, {
+      },
+      clock,
+    );
+    expect(queued.ok).toBe(true);
+    // Versioned ids let the replacement coexist with (not collide into)
+    // the version-1 item (DD-1/DD-3).
+    const replacement = await createDbWriteTransaction(
+      { filePath },
+      (transaction) =>
+        enqueue(transaction, {
           owner: "messages",
           kind: "prompt_smoothing",
           sourceRef: { messageId: "mx" },
           sourceVersion: 2,
           derivations: [{ subjectKind: "message", subjectId: "mx", derivationType: "smoothed_prompt" }],
         }),
-      );
-      expect(replacement.workItemId).toBe("w-mx-prompt_smoothing-v2");
-      const forms = readDerivedForms(filePath);
-      expect(forms).toHaveLength(1);
-      expect(forms[0]).toMatchObject({
-        subjectKind: "message",
-        subjectId: "mx",
-        derivationType: "smoothed_prompt",
-        state: "pending",
-        sourceVersion: 2,
-      });
-      expect(rawWorkItemCount(filePath)).toBe(2);
-    } finally {
-      db.close();
-    }
+      clock,
+    );
+    expect(replacement.ok).toBe(true);
+    if (!replacement.ok) return;
+    expect(replacement.value.workItemId).toBe("w-mx-prompt_smoothing-v2");
+    const forms = readDerivedForms(filePath);
+    expect(forms).toHaveLength(1);
+    expect(forms[0]).toMatchObject({
+      subjectKind: "message",
+      subjectId: "mx",
+      derivationType: "smoothed_prompt",
+      state: "pending",
+      sourceVersion: 2,
+    });
+    expect(rawWorkItemCount(filePath)).toBe(2);
   });
 });

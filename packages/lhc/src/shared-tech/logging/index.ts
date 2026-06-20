@@ -4,7 +4,7 @@
 // caller's transaction (AC-5.5). Queries return entries by actionable fields
 // (AC-5.4).
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { OperationContext } from "../context.js";
+import type { DbReadTransaction, DbWriteTransaction } from "../persist.js";
 import { databasePathFor, openDatabase } from "../storage.js";
 
 export type LogLevel = "info" | "warning" | "error";
@@ -37,12 +37,7 @@ export interface LogQuery {
   reason?: string;
 }
 
-// Write a log entry. Fail-soft: never throws to the caller, never shares
-// the caller's transaction. A logging failure is contained and does not
-// affect the operation that produced the log entry (AC-5.5).
-export function writeLog(ctx: OperationContext, entry: LogEntry): void {
-  const path = databasePathFor(ctx.db);
-  if (path === undefined) return;
+function insertLog(path: string, entry: LogEntry): void {
   let db: DatabaseSync | undefined;
   try {
     db = openDatabase(path);
@@ -63,6 +58,19 @@ export function writeLog(ctx: OperationContext, entry: LogEntry): void {
   } finally {
     db?.close();
   }
+}
+
+// Write a log entry. Fail-soft: never throws to the caller, never shares
+// the caller's transaction. A logging failure is contained and does not
+// affect the operation that produced the log entry (AC-5.5).
+export function writeLog(transaction: DbReadTransaction | DbWriteTransaction, entry: LogEntry): void {
+  const path = databasePathFor(transaction.db);
+  if (path === undefined) return;
+  if ("postCommitHook" in transaction) {
+    transaction.postCommitHook.add(() => insertLog(path, entry));
+    return;
+  }
+  insertLog(path, entry);
 }
 
 // Query log entries by actionable fields (AC-5.4). Returns all matching

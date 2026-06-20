@@ -24,12 +24,12 @@ import type {
   ViewStatus,
 } from "../shared-tech/index.js";
 import {
+  createDbReadTransaction,
+  type DbReadTransaction,
+  type DbWriteTransaction,
   type ErrorResult,
-  type OperationContext,
   type OpResult,
-  resolveInstancePoke,
   resolveInstanceViewConfig,
-  runWithThreadTouchSuppressed,
   storageFailure,
 } from "../shared-tech/index.js";
 import { writeLog } from "../shared-tech/logging/index.js";
@@ -99,7 +99,17 @@ function detail(cause: unknown): string {
 // (openThreadDatabase → fireThreadTouch → scheduler.touch) never fires —
 // AC-1.1's no-queue-interaction holds in both host modes.
 export async function pull(ref: ThreadRef): Promise<OpResult<PullResult>> {
-  return runWithThreadTouchSuppressed(() => pullInner(ref));
+  try {
+    return await createDbReadTransaction(ref, (transaction) => {
+      const assembled = assembleView(transaction.db);
+      return {
+        messages: assembled.entries.map((entry) => entry.message),
+        meta: assembled.meta,
+      };
+    });
+  } catch (cause) {
+    return storageFailure(`view pull failed: ${detail(cause)}`);
+  }
 }
 
 // The one assembly both render targets consume (Story 5): pull serves the
@@ -159,31 +169,6 @@ function assembleView(db: Parameters<typeof readViewSnapshot>[0]): AssembledView
   };
 }
 
-async function pullInner(ref: ThreadRef): Promise<OpResult<PullResult>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
-  try {
-    const assembled = assembleView(db);
-    return {
-      ok: true,
-      value: {
-        messages: assembled.entries.map((entry) => entry.message),
-        meta: assembled.meta,
-      },
-    };
-  } catch (cause) {
-    return storageFailure(`view pull failed: ${detail(cause)}`);
-  } finally {
-    db.close();
-  }
-}
-
 // ── status (AC-2.8) ───────────────────────────────────────────────
 
 // Derivation counts bucket from one report entry the way the report's own
@@ -223,40 +208,39 @@ function bucketDerivation(entries: readonly DerivationReportEntry[], counts: Vie
 // status can never schedule a catch-up drain (AC-2.8 reads-only, both
 // host modes).
 export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
-  return runWithThreadTouchSuppressed(() => statusInner(ref));
-}
-
-async function statusInner(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return threadNotFound(filePath);
 
   const config = viewConfig();
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   let tailTokens: number;
   let zoneTokens: number;
   let view: ViewStatus["view"];
   try {
-    const snapshot = readViewSnapshot(db);
-    const compactPoint = snapshot?.compactPoint ?? 0;
-    const boundaryPosition = readBoundaryPosition(db);
-    tailTokens = tailTokenSum(db, compactPoint);
-    zoneTokens = visibilityZoneTokens(db, boundaryPosition, compactPoint);
-    view =
-      snapshot === null
-        ? null
-        : {
-            degraded: snapshot.degradedCount,
-            gaps: snapshot.gapCount,
-            builtAt: snapshot.createdAt,
-          };
+    const read = await createDbReadTransaction({ filePath }, (transaction) => {
+      const snapshot = readViewSnapshot(transaction.db);
+      const compactPoint = snapshot?.compactPoint ?? 0;
+      const boundaryPosition = readBoundaryPosition(transaction.db);
+      return {
+        tailTokens: tailTokenSum(transaction.db, compactPoint),
+        zoneTokens: visibilityZoneTokens(transaction.db, boundaryPosition, compactPoint),
+        view:
+          snapshot === null
+            ? null
+            : {
+                degraded: snapshot.degradedCount,
+                gaps: snapshot.gapCount,
+                builtAt: snapshot.createdAt,
+              },
+      };
+    });
+    if (!read.ok) return read;
+    tailTokens = read.value.tailTokens;
+    zoneTokens = read.value.zoneTokens;
+    view = read.value.view;
   } catch (cause) {
     return storageFailure(`view status failed: ${detail(cause)}`);
-  } finally {
-    db.close();
   }
 
   // The owners' report surfaces open their own handles; ours is closed first
@@ -297,24 +281,10 @@ async function statusInner(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
 // other reads, the whole operation runs touch-suppressed: a background SDK's
 // describe can never schedule a catch-up drain.
 export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
-  return runWithThreadTouchSuppressed(() => describeInner(ref));
-}
-
-async function describeInner(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    return { ok: true, value: readStoredView(db) };
+    return await createDbReadTransaction(ref, (transaction) => readStoredView(transaction.db));
   } catch (cause) {
     return storageFailure(`view describe failed: ${detail(cause)}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -417,12 +387,10 @@ export async function compact(
       throw cause;
     }
     const threadId = readThreadMetadata(db).threadId;
-    const ctx: OperationContext = {
+    const transaction: DbReadTransaction = {
       db,
-      clock: () => new Date(),
+      filePath,
       threadId,
-      onCommit: () => {},
-      poke: resolveInstancePoke(),
     };
     const compactChunkMaterials = new Map<
       string,
@@ -434,7 +402,7 @@ export async function compact(
         if (compactStopped(opts.signal)) {
           return callerError("compact_stopped", "compact stopped during fallback assembly");
         }
-        const material = turnsDomain.getChunkText(ctx, chunk.chunkId, derivationType);
+        const material = turnsDomain.getChunkText(transaction, chunk.chunkId, derivationType);
         if (material.kind === "blocked") {
           return {
             ok: false,
@@ -463,7 +431,7 @@ export async function compact(
         reason: entry.reason ?? "not_ready",
       }));
     for (const warning of warnings) {
-      writeLog(ctx, {
+      writeLog(transaction, {
         level: "warning",
         message: "compact chunk fallback used",
         derivationType: warning.derivationType,
@@ -599,9 +567,9 @@ export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
 // The post-commit advance, Story 4. NOT a host operation: no public advance
 // surface exists (story Anti-Shim Requirements) — the SDK's ThreadViewSurface
 // carries only the five operations, and this function's one production caller
-// is intake-stream's ctx.onCommit registration (the sanctioned
+// is intake-stream's post-commit hook registration (the sanctioned
 // intake→thread-view surface import, tech design §Module Boundaries). It
-// runs at flush in BOTH host modes — unlike the queue poke it is cheap and
+// runs at post-commit hook flush in BOTH host modes — unlike the queue poke it is cheap and
 // deterministic, and a CLI intake must advance too or CLI-driven threads
 // bloat. Budgets resolve through the per-instance seam exactly as the poke
 // does (the flush runs synchronously inside the SDK operation's seam scope),
@@ -612,11 +580,11 @@ export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
 // eats the queue poke; the boundary is then simply unchanged and the
 // over-budget condition stays visible because status computes the same zone
 // sum live (AC-4.9).
-export function runPostCommitBoundaryAdvance(ctx: OperationContext): void {
+export function runPostCommitBoundaryAdvance(transaction: DbWriteTransaction): void {
   // Story-0 injection point (TC-4.6): fired before the advance computes; an
   // installed hook's throw stands in for an advance failure.
   fireViewInjection("post-commit-advance");
-  executeBoundaryAdvance(ctx.db, viewConfig().visibility, ctx.clock);
+  executeBoundaryAdvance(transaction.db, viewConfig().visibility, transaction.clock);
 }
 
 // ── materialize (Flow 5: AC-5.2–5.5) ─────────────────────────────
@@ -635,13 +603,6 @@ export async function materialize(
   ref: ThreadRef,
   opts: { path: string; format?: "pi-session" },
 ): Promise<OpResult<{ writtenPath: string }>> {
-  return runWithThreadTouchSuppressed(() => materializeInner(ref, opts));
-}
-
-async function materializeInner(
-  ref: ThreadRef,
-  opts: { path: string; format?: "pi-session" },
-): Promise<OpResult<{ writtenPath: string }>> {
   const format = opts.format ?? "pi-session";
   if (format !== "pi-session") {
     return {
@@ -653,29 +614,23 @@ async function materializeInner(
       },
     };
   }
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   let input: MaterializeInput;
   try {
-    const assembled = assembleView(db);
-    const threadMeta = readThreadMetadata(db);
-    input = {
-      threadId: threadMeta.threadId,
-      headerTimestamp: assembled.snapshot?.createdAt ?? threadMeta.createdAt,
-      // Deterministic per thread file — never the writing process's cwd.
-      cwd: path.dirname(path.resolve(filePath)),
-      entries: assembled.entries,
-    };
+    const read = await createDbReadTransaction(ref, (transaction) => {
+      const assembled = assembleView(transaction.db);
+      const threadMeta = readThreadMetadata(transaction.db);
+      return {
+        threadId: threadMeta.threadId,
+        headerTimestamp: assembled.snapshot?.createdAt ?? threadMeta.createdAt,
+        // Deterministic per thread file — never the writing process's cwd.
+        cwd: path.dirname(path.resolve(transaction.filePath)),
+        entries: assembled.entries,
+      };
+    });
+    if (!read.ok) return read;
+    input = read.value;
   } catch (cause) {
     return storageFailure(`view materialize failed: ${detail(cause)}`);
-  } finally {
-    db.close();
   }
   try {
     return { ok: true, value: writePiSessionFile(input, opts.path) };

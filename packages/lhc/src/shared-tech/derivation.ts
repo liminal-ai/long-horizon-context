@@ -247,7 +247,7 @@ export interface CompletionTx {
 }
 
 export type HandlerOutcome =
-  | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (tx: CompletionTx) => void }
+  | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (transaction: CompletionTx) => void }
   | { ok: false; retryable: boolean; reason: string }
   | { ok: false; blocked: true; reason: string }; // source damage → derivation blocked, item terminal
 

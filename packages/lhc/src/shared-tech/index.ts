@@ -10,6 +10,7 @@ export * from "./errors.js";
 export * from "./inference-adapter.js";
 export * from "./inference-types.js";
 export * from "./inspect.js";
+export * from "./persist.js";
 export * from "./report.js";
 export * from "./scheduler.js";
 export * from "./storage.js";

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  countLiveItems,
   createDeterministicInferenceCallbacks,
   type DrainReport,
   type InferenceCallbacks,
@@ -8,9 +9,18 @@ import {
   type LogEntry,
   type LogLevel,
   type MessageEventInput,
+  setSchedulerPoke,
+  setThreadTouch,
   writeLog,
 } from "../src/index.js";
-import { createInferenceCallbacksDouble, openRaw, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  createInferenceCallbacksDouble,
+  openRaw,
+  readDerivedForms,
+  registerTestWorkHandlers,
+  tempStore,
+  validEvent,
+} from "./fixtures/index.js";
 
 let store: ReturnType<typeof tempStore>;
 let sdk: Lhc;
@@ -21,6 +31,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSchedulerPoke(null);
+  setThreadTouch(null);
   store.cleanup();
 });
 
@@ -57,6 +69,15 @@ async function drain(target: Lhc, filePath: string): Promise<DrainReport> {
   return result.value;
 }
 
+function liveCount(filePath: string): number {
+  const db = openRaw(filePath);
+  try {
+    return countLiveItems(db);
+  } finally {
+    db.close();
+  }
+}
+
 async function sendTurn(target: Lhc, filePath: string): Promise<void> {
   await send(target, filePath, [
     validEvent("user_prompt", { payload: { text: "raw prompt one" } }),
@@ -86,10 +107,8 @@ describe("Flow 5: Derivation Logging", () => {
       writeLog(
         {
           db,
-          clock: () => new Date("2026-01-01T00:00:00.000Z"),
           threadId: "logging-test",
-          onCommit: () => {},
-          poke: () => {},
+          filePath,
         },
         {
           level: "info",
@@ -245,8 +264,7 @@ describe("Flow 5: Derivation Logging", () => {
               } as never,
               clock: () => new Date("2026-01-01T00:00:00.000Z"),
               threadId: "logging-test",
-              onCommit: () => {},
-              poke: () => {},
+              filePath,
             },
             { level: "warning", message: "will be dropped" },
           ),
@@ -302,5 +320,33 @@ describe("Flow 5: Derivation Logging", () => {
     expect(queried.ok).toBe(true);
     if (!queried.ok) return;
     expect(queried.value.map((entry) => entry.message)).toEqual(["before rollback"]);
+  });
+
+  it("background logging.write catches up leftover work; logging.query stays read-only", async () => {
+    const filePath = await newThread();
+    await sendTurn(sdk, filePath);
+    expect(liveCount(filePath)).toBe(2);
+
+    const double = createInferenceCallbacksDouble();
+    const background = initLhc({
+      inferenceCallbacks: double,
+      mode: "background",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 1000 },
+    });
+    registerTestWorkHandlers(background, double);
+
+    const queried = await background.logging.query({ filePath }, {});
+    expect(queried.ok).toBe(true);
+    await background.drainSettled({ filePath });
+    expect(liveCount(filePath)).toBe(2);
+    expect(readDerivedForms(filePath).map((form) => form.state)).toEqual(["pending", "pending", "pending"]);
+
+    const written = await background.logging.write({ filePath }, { level: "info", message: "background touch" });
+    expect(written.ok).toBe(true);
+    await background.drainSettled({ filePath });
+
+    expect(liveCount(filePath)).toBe(0);
+    expect(readDerivedForms(filePath).map((form) => form.state)).toEqual(["ready", "ready", "ready"]);
   });
 });

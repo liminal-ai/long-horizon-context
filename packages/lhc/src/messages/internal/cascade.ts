@@ -17,7 +17,7 @@
 // with no live members drops its summary derivations too — dropped, never failed,
 // and no rebuild queued (AC-6.6).
 import type { DatabaseSync } from "node:sqlite";
-import type { OperationContext, SubjectKind } from "../../shared-tech/index.js";
+import type { DbWriteTransaction, SubjectKind } from "../../shared-tech/index.js";
 import {
   type EnqueueDerivationTarget,
   enqueue,
@@ -153,18 +153,18 @@ function rebuildKindFor(derivationType: string): WorkKind {
 // against dropped subjects are tidied with no replacement — dead work for a
 // source that no longer reads.
 function runCascade(
-  ctx: OperationContext,
+  transaction: DbWriteTransaction,
   dropSubjects: readonly ChainSubject[],
   clearSubjects: readonly ChainSubject[],
 ): CascadeOutcome {
-  const readDerivations = ctx.db.prepare(
+  const readDerivations = transaction.db.prepare(
     `SELECT derivation_type, source_version FROM derivation
      WHERE subject_kind = ? AND subject_id = ? ORDER BY derivation_type`,
   );
 
   const dropped: CascadeClear[] = [];
   const supersedeTargets: Array<{ kind: WorkKind; sourceRef: WorkSourceRef }> = [];
-  const dropRows = ctx.db.prepare(`DELETE FROM derivation WHERE subject_kind = ? AND subject_id = ?`);
+  const dropRows = transaction.db.prepare(`DELETE FROM derivation WHERE subject_kind = ? AND subject_id = ?`);
   for (const subject of dropSubjects) {
     const rows = readDerivations.all(subject.subjectKind, subject.subjectId) as unknown as Array<{
       derivation_type: string;
@@ -204,7 +204,7 @@ function runCascade(
     }
   }
 
-  const superseded = supersedeQueued(ctx.db, [
+  const superseded = supersedeQueued(transaction.db, [
     ...supersedeTargets,
     ...[...groups.values()].map((group) => ({
       kind: group.kind,
@@ -213,7 +213,7 @@ function runCascade(
   ]);
 
   const queued = [...groups.values()].map((group) => {
-    const item = enqueue(ctx, {
+    const item = enqueue(transaction, {
       owner: WORK_KIND_REGISTRY[group.kind].owner,
       kind: group.kind,
       sourceRef: sourceRefFor(group.subject),
@@ -230,23 +230,23 @@ function runCascade(
 // including) the edited message, inside the mutation's ambient transaction.
 // A call/result pair counterpart (epic-fix-001) joins the clear set: editing
 // one half is a source change for the other's summary.
-export function cascadeFromMessage(ctx: OperationContext, messageId: string): CascadeOutcome {
-  const clear = chainSubjects(ctx.db, messageId);
-  const counterpart = pairedCounterpartSubject(ctx.db, messageId);
+export function cascadeFromMessage(transaction: DbWriteTransaction, messageId: string): CascadeOutcome {
+  const clear = chainSubjects(transaction.db, messageId);
+  const counterpart = pairedCounterpartSubject(transaction.db, messageId);
   if (counterpart !== undefined) clear.push(counterpart);
-  return runCascade(ctx, [], clear);
+  return runCascade(transaction, [], clear);
 }
 
 // Message delete's close path (Flow 6): the deleted message's own derivations
 // drop; its turn and chunk clear and re-queue for minus-one composition.
 // The message-delete validation refuses turn-initiating prompts, so the turn
 // always keeps members and never empties through this path.
-export function cascadeMessageDelete(ctx: OperationContext, messageId: string): CascadeOutcome {
-  const [own, ...upward] = chainSubjects(ctx.db, messageId);
+export function cascadeMessageDelete(transaction: DbWriteTransaction, messageId: string): CascadeOutcome {
+  const [own, ...upward] = chainSubjects(transaction.db, messageId);
   // The deleted half's live pair counterpart re-derives from the live record
   // (epic-fix-001): its summary clears and re-queues, reverting outcome to
   // `unknown` for a call whose result is now gone.
-  const counterpart = pairedCounterpartSubject(ctx.db, messageId);
+  const counterpart = pairedCounterpartSubject(transaction.db, messageId);
   if (counterpart !== undefined) upward.push(counterpart);
-  return runCascade(ctx, own === undefined ? [] : [own], upward);
+  return runCascade(transaction, own === undefined ? [] : [own], upward);
 }

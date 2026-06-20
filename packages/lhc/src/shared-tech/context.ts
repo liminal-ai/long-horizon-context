@@ -3,45 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ResolvedSdkConfig } from "./derivation.js";
 import type { ResolvedViewConfig } from "./view.js";
 
-export interface OperationContext {
-  db: DatabaseSync; // open thread-file handle, inside the batch transaction
-  clock: () => Date; // injected for deterministic recordedAt/queuedAt in tests
-  threadId: string; // resolved identity of the thread being operated on
-  // Post-commit callback registration (DD-5): the transaction owner flushes
-  // the registered callbacks after its COMMIT succeeds and drops them on
-  // rollback, so anything registered here — the scheduler poke above all —
-  // is transactional by construction.
-  onCommit: (fn: () => void) => void;
-  // The scheduler poke for the SDK instance whose operation is running (DD-5,
-  // epic-fix-001): enqueue registers its onCommit poke against THIS, carried
-  // on the context, never a shared module slot. Resolved from the per-SDK
-  // seam in scope (background → its own scheduler; manual → a no-op), falling
-  // back to the below-SDK default seam only for direct domain calls with no
-  // SDK around. A manual SDK therefore never auto-drains even with a
-  // background SDK alive in the same process.
-  poke: (threadId: string) => void;
-}
-
-// The callback list behind ctx.onCommit, owned by whoever owns the
-// transaction. Flush after COMMIT; never call flush on a rollback path —
-// dropping the hooks is simply not flushing them.
-export interface CommitHooks {
-  register: (fn: () => void) => void;
-  flush: () => void;
-}
-
-export function createCommitHooks(): CommitHooks {
-  const callbacks: Array<() => void> = [];
-  return {
-    register: (fn) => {
-      callbacks.push(fn);
-    },
-    flush: () => {
-      for (const fn of callbacks.splice(0)) fn();
-    },
-  };
-}
-
 // Per-SDK-instance delivery seam (DD-5/DD-10, epic-fix-001). Each SDK runs
 // every one of its operations inside runWithInstanceSeam, so the code reached
 // deep inside — enqueue's poke and openThreadDatabase's touch — delivers to
@@ -64,14 +25,14 @@ export interface InstanceSeam {
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
 
-export function runWithInstanceSeam<T>(seam: InstanceSeam, fn: () => T): T {
-  return seamStore.run(seam, fn);
+export function runWithInstanceSeam<T>(seam: InstanceSeam, operation: () => T): T {
+  return seamStore.run(seam, operation);
 }
 
 // The below-SDK default seam (the former module-global poke/touch slots),
 // kept ONLY as the fallback for direct domain calls made with no SDK seam in
-// scope: the enqueue-atomicity tests that drive enqueue/runInTransaction
-// directly, and the single-background "production path" where a top-level
+// scope: the enqueue-atomicity tests that drive enqueue through
+// createDbWriteTransaction directly, and the single-background "production path" where a top-level
 // mutation still reaches the one installed scheduler. A background SDK
 // installs itself here at construction; a manual SDK leaves it alone AND
 // scopes its own operations to a no-op seam, so the fallback can never
@@ -125,7 +86,7 @@ export function resolveInstanceConfig(): ResolvedSdkConfig | undefined {
 // the seam (poke target, view config) carries through unchanged; for a
 // direct domain call with no seam in scope the installed scope delegates to
 // the below-SDK defaults, minus the touch. Write paths never use this.
-export function runWithThreadTouchSuppressed<T>(fn: () => T): T {
+export function runWithThreadTouchSuppressed<T>(operation: () => T): T {
   const seam = seamStore.getStore();
   const base: InstanceSeam = seam ?? {
     poke: (threadId) => {
@@ -135,7 +96,7 @@ export function runWithThreadTouchSuppressed<T>(fn: () => T): T {
       threadTouch?.(filePath, db);
     },
   };
-  return seamStore.run({ ...base, touch: () => {} }, fn);
+  return seamStore.run({ ...base, touch: () => {} }, operation);
 }
 
 // Thread-file open announcement (DD-10): openThreadDatabase fires this on
@@ -150,29 +111,4 @@ export function fireThreadTouch(filePath: string, db: DatabaseSync): void {
     return;
   }
   threadTouch?.(filePath, db);
-}
-
-// Transaction owner for operations outside the intake pipeline (mutations,
-// repair re-queues, tests of enqueue atomicity): BEGIN IMMEDIATE, run the
-// body with a context whose onCommit registrations flush only after COMMIT
-// succeeds and drop whole on rollback.
-export function runInTransaction<T>(
-  db: DatabaseSync,
-  clock: () => Date,
-  threadId: string,
-  fn: (ctx: OperationContext) => T,
-): T {
-  const hooks = createCommitHooks();
-  const poke = resolveInstancePoke();
-  db.exec("BEGIN IMMEDIATE;");
-  let value: T;
-  try {
-    value = fn({ db, clock, threadId, onCommit: hooks.register, poke });
-    db.exec("COMMIT;");
-  } catch (cause) {
-    db.exec("ROLLBACK;");
-    throw cause;
-  }
-  hooks.flush();
-  return value;
 }
