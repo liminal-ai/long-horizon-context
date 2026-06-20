@@ -203,6 +203,12 @@ export const MIGRATION_V9_STATEMENTS: readonly string[] = [
   `DELETE FROM work_item WHERE payload LIKE '%lower_band_projection%';`,
 ];
 
+// Claim ownership fencing: each claim/reclaim advances a monotonic epoch, and
+// completion/retry/terminal transitions must match the epoch they were handed.
+export const MIGRATION_V10_STATEMENTS: readonly string[] = [
+  `ALTER TABLE work_item ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;`,
+];
+
 export function getSchemaVersion(db: DatabaseSync): number {
   const row = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
   return Number(row?.user_version ?? 0);

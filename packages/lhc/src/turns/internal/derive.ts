@@ -480,6 +480,7 @@ export async function dispatchTurnOwnedWork(
   config: ResolvedSdkConfig,
   item: {
     workItemId: string;
+    claimEpoch: number;
     kind: WorkKind;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
@@ -496,7 +497,12 @@ export async function dispatchTurnOwnedWork(
   if (outcome.ok) {
     const disposition = applyDerivationSuccess(
       db,
-      { sourceVersion: item.sourceVersion, derivations: item.derivations, workItemId: item.workItemId },
+      {
+        sourceVersion: item.sourceVersion,
+        derivations: item.derivations,
+        workItemId: item.workItemId,
+        claimEpoch: item.claimEpoch,
+      },
       outcome.derivations ?? [],
       config.clock().toISOString(),
       outcome.onApplied,

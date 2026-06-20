@@ -121,6 +121,7 @@ export async function dispatchMessageDeriveWork(
   config: ResolvedSdkConfig,
   item: {
     workItemId: string;
+    claimEpoch: number;
     sourceVersion: number;
     derivations: readonly EnqueueDerivationTarget[];
   },
@@ -147,6 +148,7 @@ export async function dispatchMessageDeriveWork(
         sourceVersion: item.sourceVersion,
         derivations: item.derivations,
         workItemId: item.workItemId,
+        claimEpoch: item.claimEpoch,
       },
       outcome.derivations ?? [],
       config.clock().toISOString(),

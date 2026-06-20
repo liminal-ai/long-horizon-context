@@ -10,6 +10,7 @@ import {
   MIGRATION_V7_STATEMENTS,
   MIGRATION_V8_STATEMENTS,
   MIGRATION_V9_STATEMENTS,
+  MIGRATION_V10_STATEMENTS,
   type Migration,
   openDatabase,
   runMigrations,
@@ -139,6 +140,10 @@ function buildThreadMigrations(metadata?: { threadId: string; createdAt: string 
       version: 9, // Epic 07 Story 0: delete stale pre-rename work items left
       // behind by the rename to smooth_turn_compression (AC-0.4 §Rename Migration).
       statements: MIGRATION_V9_STATEMENTS,
+    },
+    {
+      version: 10, // Durable queue claim ownership fencing.
+      statements: MIGRATION_V10_STATEMENTS,
     },
   ];
 }

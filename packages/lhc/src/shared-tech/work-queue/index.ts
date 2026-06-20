@@ -165,6 +165,7 @@ interface RawWorkItemRow {
 // failed_terminal instead of skipping it (AC-1.8).
 export interface ClaimedWorkItem {
   workItemId: string;
+  claimEpoch: number;
   owner: WorkOwner;
   kind: string;
   sourceRef: WorkSourceRef;
@@ -187,6 +188,7 @@ interface RawClaimRow {
   kind: string;
   source_ref: string;
   attempts: number | bigint;
+  claim_epoch: number | bigint;
   queued_at: string;
   payload: string | null;
 }
@@ -239,6 +241,7 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
   const operation = payload.operation ?? operationIntentForRow(row.kind, sourceRef);
   return {
     workItemId: row.work_item_id,
+    claimEpoch: Number(row.claim_epoch),
     owner: row.owner as WorkOwner,
     kind: row.kind,
     sourceRef,
@@ -250,11 +253,14 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
   };
 }
 
-export function deleteClaimedItem(db: DatabaseSync, workItemId: string): void {
+export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string; claimEpoch: number }): boolean {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(workItemId);
+    const deleted = db
+      .prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+      .run(item.workItemId, item.claimEpoch);
     db.exec("COMMIT;");
+    return Number(deleted.changes) > 0;
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
@@ -265,16 +271,19 @@ export function retryClaimedItem(
   db: DatabaseSync,
   item: ClaimedWorkItem,
   opts: { reason: string; attempts: number; eligibleAt: string },
-): void {
+): boolean {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    db.prepare(
-      `UPDATE work_item
+    const updated = db
+      .prepare(
+        `UPDATE work_item
        SET status = 'queued', attempts = ?, last_error = ?,
            claimed_at = NULL, claim_expires_at = NULL, eligible_at = ?
-       WHERE work_item_id = ?`,
-    ).run(opts.attempts, opts.reason, opts.eligibleAt, item.workItemId);
+       WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`,
+      )
+      .run(opts.attempts, opts.reason, opts.eligibleAt, item.workItemId, item.claimEpoch);
     db.exec("COMMIT;");
+    return Number(updated.changes) > 0;
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
@@ -295,6 +304,7 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
     const claimed = db
       .prepare(
         `UPDATE work_item SET status = 'claimed', claimed_at = ?, claim_expires_at = ?,
+           claim_epoch = claim_epoch + 1,
            attempts = attempts + CASE WHEN status = 'claimed' THEN 1 ELSE 0 END
          WHERE work_item_id = (
            SELECT work_item_id FROM (
@@ -305,7 +315,7 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
            WHERE (status = 'queued' AND (eligible_at IS NULL OR eligible_at <= ?))
               OR (status = 'claimed' AND claim_expires_at <= ?)
          )
-         RETURNING work_item_id, owner, kind, source_ref, attempts, queued_at, payload`,
+         RETURNING work_item_id, owner, kind, source_ref, attempts, claim_epoch, queued_at, payload`,
       )
       .get(now, expiresAt, now, now) as unknown as RawClaimRow | undefined;
     if (claimed !== undefined) {
@@ -350,10 +360,17 @@ export function complete(
   writes: readonly HandlerDerivationWrite[],
   derivedAt: string,
   onApplied?: (tx: CompletionTx) => void,
-): "done" | "stale_discarded" {
+): "done" | "stale_discarded" | "lost_lease" {
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
+    const owned = db
+      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+      .get(item.workItemId, item.claimEpoch);
+    if (owned === undefined) {
+      db.exec("COMMIT;");
+      return "lost_lease";
+    }
     let hits = 0;
     const update = db.prepare(
       `UPDATE derivation
@@ -376,7 +393,10 @@ export function complete(
     if (!stale && onApplied !== undefined) {
       onApplied({ db, onCommit: postCommitHook.add });
     }
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(item.workItemId);
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+      item.workItemId,
+      item.claimEpoch,
+    );
     db.exec("COMMIT;");
     postCommitHook.flush();
     return stale ? "stale_discarded" : "done";
@@ -394,7 +414,8 @@ export interface RetryPolicy {
 
 export type FailAttemptResult =
   | { terminal: false; attempts: number; eligibleAt: string }
-  | { terminal: true; attempts: number };
+  | { terminal: true; attempts: number }
+  | { terminal: "lost_lease"; attempts: number };
 
 // Terminal failure: the derivation rows land `failed` (or `blocked` for source
 // damage) carrying the final reason plus attempts/last-error copied onto the
@@ -405,9 +426,16 @@ export function failTerminal(
   db: DatabaseSync,
   item: ClaimedWorkItem,
   opts: { reason: string; formState: "failed" | "blocked"; attempts: number; now: string },
-): void {
+): boolean {
   db.exec("BEGIN IMMEDIATE;");
   try {
+    const owned = db
+      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+      .get(item.workItemId, item.claimEpoch);
+    if (owned === undefined) {
+      db.exec("COMMIT;");
+      return false;
+    }
     const update = db.prepare(
       `UPDATE derivation
        SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
@@ -426,8 +454,12 @@ export function failTerminal(
         item.sourceVersion,
       );
     }
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(item.workItemId);
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+      item.workItemId,
+      item.claimEpoch,
+    );
     db.exec("COMMIT;");
+    return true;
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
@@ -450,20 +482,24 @@ export function failAttempt(
     const eligibleAt = new Date(Date.parse(opts.now) + backoffMs).toISOString();
     db.exec("BEGIN IMMEDIATE;");
     try {
-      db.prepare(
-        `UPDATE work_item
+      const updated = db
+        .prepare(
+          `UPDATE work_item
          SET status = 'queued', attempts = ?, last_error = ?,
              claimed_at = NULL, claim_expires_at = NULL, eligible_at = ?
-         WHERE work_item_id = ?`,
-      ).run(attempts, opts.reason, eligibleAt, item.workItemId);
+         WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`,
+        )
+        .run(attempts, opts.reason, eligibleAt, item.workItemId, item.claimEpoch);
       db.exec("COMMIT;");
+      if (Number(updated.changes) === 0) return { terminal: "lost_lease", attempts };
     } catch (cause) {
       db.exec("ROLLBACK;");
       throw cause;
     }
     return { terminal: false, attempts, eligibleAt };
   }
-  failTerminal(db, item, { reason: opts.reason, formState: "failed", attempts, now: opts.now });
+  const owned = failTerminal(db, item, { reason: opts.reason, formState: "failed", attempts, now: opts.now });
+  if (!owned) return { terminal: "lost_lease", attempts };
   return { terminal: true, attempts };
 }
 
@@ -536,6 +572,7 @@ export interface QueueDetailRow {
   eligibleAt?: string;
   claimedAt?: string;
   claimExpiresAt?: string;
+  claimEpoch: number;
   queuedAt: string;
   sourceVersion: number;
 }
@@ -547,7 +584,7 @@ export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
   const rows = db
     .prepare(
       `SELECT work_item_id, owner, kind, source_ref, status, attempts, last_error,
-              eligible_at, claimed_at, claim_expires_at, queued_at, payload
+              eligible_at, claimed_at, claim_expires_at, claim_epoch, queued_at, payload
        FROM work_item ORDER BY rowid`,
     )
     .all() as unknown as Array<
@@ -568,6 +605,7 @@ export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
       sourceRef: item.sourceRef,
       status: row.status as "queued" | "claimed",
       attempts: item.attempts,
+      claimEpoch: item.claimEpoch,
       queuedAt: item.queuedAt,
       sourceVersion: item.sourceVersion,
     };

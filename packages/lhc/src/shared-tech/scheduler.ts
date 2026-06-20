@@ -44,7 +44,7 @@ export interface DrainReport {
     workItemId: string;
     kind: WorkKind;
     sourceRef: WorkSourceRef;
-    disposition: "done" | "failed_terminal" | "stale_discarded";
+    disposition: "done" | "failed_terminal" | "stale_discarded" | "lost_lease";
     attempts: number;
     reason?: string;
   }>;
@@ -69,7 +69,7 @@ export interface DrainDeps {
 
 function ranEntry(
   item: ClaimedWorkItem,
-  disposition: "done" | "failed_terminal" | "stale_discarded",
+  disposition: "done" | "failed_terminal" | "stale_discarded" | "lost_lease",
   attempts: number,
   reason?: string,
 ): DrainReport["ran"][number] {
@@ -125,9 +125,9 @@ export async function drainOpenDb(
       // Unregistered kind: the normal terminal transaction, not a try/catch
       // skip — failed_terminal with the stable code, form (if resolvable
       // from the payload) lands failed, and the drain continues (AC-1.8).
-      applyDerivationTerminalFailure(
+      const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId },
+        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
         {
           reason: lookedUp.error.code,
           state: "failed",
@@ -135,16 +135,20 @@ export async function drainOpenDb(
           now: clock().toISOString(),
         },
       );
-      ran.push(ranEntry(item, "failed_terminal", item.attempts, lookedUp.error.code));
+      ran.push(
+        terminal === "lost_lease"
+          ? ranEntry(item, "lost_lease", item.attempts, lookedUp.error.code)
+          : ranEntry(item, "failed_terminal", item.attempts, lookedUp.error.code),
+      );
       continue;
     }
 
     const run = { openDb: () => db, inferenceCallbacks, clock, config: deps.config };
     const dispatchItem = item.operation === undefined ? undefined : { ...item, operation: item.operation };
     if (dispatchItem === undefined) {
-      applyDerivationTerminalFailure(
+      const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId },
+        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
         {
           reason: "unknown_work_kind",
           state: "failed",
@@ -152,7 +156,11 @@ export async function drainOpenDb(
           now: clock().toISOString(),
         },
       );
-      ran.push(ranEntry(item, "failed_terminal", item.attempts, "unknown_work_kind"));
+      ran.push(
+        terminal === "lost_lease"
+          ? ranEntry(item, "lost_lease", item.attempts, "unknown_work_kind")
+          : ranEntry(item, "failed_terminal", item.attempts, "unknown_work_kind"),
+      );
       continue;
     }
     let outcome: Awaited<ReturnType<DurableWorkDispatcher>>;
@@ -166,14 +174,18 @@ export async function drainOpenDb(
       outcome = { disposition: "failed", retryable: true, reason: `handler threw: ${detail}` };
     }
 
-    if (outcome.disposition === "done" || outcome.disposition === "stale_discarded") {
+    if (
+      outcome.disposition === "done" ||
+      outcome.disposition === "stale_discarded" ||
+      outcome.disposition === "lost_lease"
+    ) {
       ran.push(ranEntry(item, outcome.disposition, item.attempts));
       continue;
     }
     if (outcome.disposition === "blocked") {
-      applyDerivationTerminalFailure(
+      const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId },
+        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
         {
           reason: outcome.reason,
           state: "blocked",
@@ -181,7 +193,11 @@ export async function drainOpenDb(
           now: clock().toISOString(),
         },
       );
-      ran.push(ranEntry(item, "failed_terminal", item.attempts + 1, outcome.reason));
+      ran.push(
+        terminal === "lost_lease"
+          ? ranEntry(item, "lost_lease", item.attempts + 1, outcome.reason)
+          : ranEntry(item, "failed_terminal", item.attempts + 1, outcome.reason),
+      );
       continue;
     }
     if (outcome.disposition !== "failed") {
@@ -192,11 +208,12 @@ export async function drainOpenDb(
       if (outcome.retryable && attempts < retry.budget) {
         const backoffMs = Math.min(retry.backoffBaseMs * 2 ** attempts, retry.backoffCapMs);
         const eligibleAt = new Date(Date.parse(clock().toISOString()) + backoffMs).toISOString();
-        retryClaimedItem(db, item, { reason: outcome.reason, attempts, eligibleAt });
+        const owned = retryClaimedItem(db, item, { reason: outcome.reason, attempts, eligibleAt });
+        if (!owned) ran.push(ranEntry(item, "lost_lease", attempts, outcome.reason));
       } else {
-        applyDerivationTerminalFailure(
+        const terminal = applyDerivationTerminalFailure(
           db,
-          { ...item, workItemId: item.workItemId },
+          { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
           {
             reason: outcome.reason,
             state: "failed",
@@ -204,7 +221,11 @@ export async function drainOpenDb(
             now: clock().toISOString(),
           },
         );
-        ran.push(ranEntry(item, "failed_terminal", attempts, outcome.reason));
+        ran.push(
+          terminal === "lost_lease"
+            ? ranEntry(item, "lost_lease", attempts, outcome.reason)
+            : ranEntry(item, "failed_terminal", attempts, outcome.reason),
+        );
       }
     }
     // Under budget the item went back to queued (possibly backing off); the

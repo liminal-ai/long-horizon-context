@@ -6,13 +6,16 @@
 // CLI parity) live in cli-process-work.test.ts.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyDerivationSuccess,
   countLiveItems,
   type DrainReport,
+  type DurableWorkDispatcher,
   initLhc,
   intakeStream,
   type Lhc,
   type MessageEventInput,
   queueDetail,
+  registerTestingWork,
   setSchedulerPoke,
   setThreadTouch,
   threads,
@@ -30,6 +33,14 @@ import {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function until(pred: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
+  }
 }
 
 let store: TempStore;
@@ -444,5 +455,141 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     expect(report.stoppedBecause).toBe("max_items");
     expect(report.remaining).toBe(2);
     expect(liveCount(filePath)).toBe(2);
+  });
+});
+
+describe("claim ownership fencing", () => {
+  function deferredMessageSdk(now: { ms: number }) {
+    type Scripted =
+      | { disposition: "done"; content: string }
+      | { disposition: "failed"; retryable: boolean; reason: string };
+    const sdk = initLhc({
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "manual",
+      clock: () => new Date(now.ms),
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 50 },
+    });
+    const runs: Array<{ item: { workItemId: string; claimEpoch: number }; resolve: (scripted: Scripted) => void }> = [];
+    const dispatcher: DurableWorkDispatcher = (run, item) =>
+      new Promise((resolve) => {
+        runs.push({
+          item,
+          resolve: (scripted) => {
+            if (scripted.disposition === "done") {
+              const disposition = applyDerivationSuccess(
+                run.openDb(),
+                {
+                  sourceVersion: item.sourceVersion,
+                  derivations: item.derivations,
+                  workItemId: item.workItemId,
+                  claimEpoch: item.claimEpoch,
+                },
+                [
+                  {
+                    subjectKind: "message",
+                    subjectId: "m1",
+                    derivationType: "smoothed_prompt",
+                    content: scripted.content,
+                  },
+                ],
+                run.clock().toISOString(),
+              );
+              resolve({ disposition });
+              return;
+            }
+            resolve({ disposition: "failed", retryable: scripted.retryable, reason: scripted.reason });
+          },
+        });
+      });
+    registerTestingWork(sdk, { dispatchers: { "messages.derive": dispatcher } });
+    return { sdk, runs };
+  }
+
+  it("stale late success after reclaim reports lost_lease and cannot overwrite the newer completion", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const olderDrain = drain(sdk, filePath);
+    await until(() => runs.length === 1, "older claim");
+    expect(runs[0]?.item.claimEpoch).toBe(1);
+
+    now.ms += 100;
+    const newerDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "newer reclaim");
+    expect(runs[1]?.item.claimEpoch).toBe(2);
+
+    runs[1]?.resolve({ disposition: "done", content: "newer completion" });
+    const newerReport = await newerDrain;
+    expect(newerReport.ran[0]).toMatchObject({ disposition: "done", attempts: 1 });
+
+    runs[0]?.resolve({ disposition: "done", content: "stale completion" });
+    const olderReport = await olderDrain;
+    expect(olderReport.ran[0]).toMatchObject({ disposition: "lost_lease", attempts: 0 });
+
+    const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
+    expect(form?.state).toBe("ready");
+    expect(form?.content).toBe("newer completion");
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("stale late retry after reclaim reports lost_lease and cannot reset the newer claim to queued", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const olderDrain = drain(sdk, filePath);
+    await until(() => runs.length === 1, "older claim");
+    now.ms += 100;
+    const newerDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "newer reclaim");
+
+    runs[0]?.resolve({ disposition: "failed", retryable: true, reason: "older retry" });
+    const olderReport = await olderDrain;
+    expect(olderReport.ran[0]).toMatchObject({ disposition: "lost_lease", attempts: 1, reason: "older retry" });
+
+    const detail = liveDetail(filePath);
+    expect(detail).toHaveLength(1);
+    expect(detail[0]).toMatchObject({
+      workItemId: "w-m1-prompt_smoothing-v1",
+      status: "claimed",
+      claimEpoch: 2,
+      attempts: 1,
+    });
+
+    runs[1]?.resolve({ disposition: "done", content: "newer completion" });
+    await newerDrain;
+    expect(readDerivedForms(filePath)[0]?.content).toBe("newer completion");
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("stale late terminal failure after reclaim reports lost_lease and cannot stamp failed", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const olderDrain = drain(sdk, filePath);
+    await until(() => runs.length === 1, "older claim");
+    now.ms += 100;
+    const newerDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "newer reclaim");
+
+    runs[0]?.resolve({ disposition: "failed", retryable: false, reason: "older terminal" });
+    const olderReport = await olderDrain;
+    expect(olderReport.ran[0]).toMatchObject({ disposition: "lost_lease", attempts: 1, reason: "older terminal" });
+
+    const pending = readDerivedForms(filePath)[0];
+    expect(pending?.state).toBe("pending");
+    expect(pending?.reason).toBeUndefined();
+    expect(liveDetail(filePath)[0]).toMatchObject({ status: "claimed", claimEpoch: 2 });
+
+    runs[1]?.resolve({ disposition: "done", content: "newer completion" });
+    await newerDrain;
+    expect(readDerivedForms(filePath)[0]?.content).toBe("newer completion");
+    expect(liveCount(filePath)).toBe(0);
   });
 });

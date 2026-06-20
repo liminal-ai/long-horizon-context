@@ -20,10 +20,11 @@ export interface DerivationAttempt {
   sourceVersion: number;
   derivations: readonly EnqueueDerivationTarget[];
   workItemId?: string;
+  claimEpoch?: number;
 }
 
 export type DurableWorkDispatchResult =
-  | { disposition: "done" | "stale_discarded" }
+  | { disposition: "done" | "stale_discarded" | "lost_lease" }
   | { disposition: "failed"; retryable: boolean; reason: string }
   | { disposition: "blocked"; reason: string };
 
@@ -31,6 +32,7 @@ export type DurableWorkDispatcher = (
   run: HandlerRunContext,
   item: {
     workItemId: string;
+    claimEpoch: number;
     kind: string;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
@@ -89,10 +91,19 @@ export function applyDerivationSuccess(
   writes: readonly HandlerDerivationWrite[],
   derivedAt: string,
   onApplied?: (transaction: CompletionTx) => void,
-): "done" | "stale_discarded" {
+): "done" | "stale_discarded" | "lost_lease" {
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
+    if (attempt.workItemId !== undefined && attempt.claimEpoch !== undefined) {
+      const owned = db
+        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+        .get(attempt.workItemId, attempt.claimEpoch);
+      if (owned === undefined) {
+        db.exec("COMMIT;");
+        return "lost_lease";
+      }
+    }
     let hits = 0;
     const update = db.prepare(
       `UPDATE derivation
@@ -117,7 +128,14 @@ export function applyDerivationSuccess(
       onApplied({ db, onCommit: postCommitHook.add });
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
+      if (attempt.claimEpoch === undefined) {
+        db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
+      } else {
+        db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+          attempt.workItemId,
+          attempt.claimEpoch,
+        );
+      }
     }
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -132,9 +150,18 @@ export function applyDerivationTerminalFailure(
   db: DatabaseSync,
   attempt: DerivationAttempt,
   opts: { reason: string; state: "failed" | "blocked"; attempts: number; now: string },
-): void {
+): "done" | "lost_lease" {
   db.exec("BEGIN IMMEDIATE;");
   try {
+    if (attempt.workItemId !== undefined && attempt.claimEpoch !== undefined) {
+      const owned = db
+        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+        .get(attempt.workItemId, attempt.claimEpoch);
+      if (owned === undefined) {
+        db.exec("COMMIT;");
+        return "lost_lease";
+      }
+    }
     const update = db.prepare(
       `UPDATE derivation
        SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
@@ -154,9 +181,17 @@ export function applyDerivationTerminalFailure(
       );
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
+      if (attempt.claimEpoch === undefined) {
+        db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
+      } else {
+        db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+          attempt.workItemId,
+          attempt.claimEpoch,
+        );
+      }
     }
     db.exec("COMMIT;");
+    return "done";
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;

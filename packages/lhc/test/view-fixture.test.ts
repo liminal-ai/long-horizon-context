@@ -47,7 +47,7 @@ function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
 
 describe("FC-0.1: migration v6 storage on a current thread file", () => {
   it("creates the three view tables with their CHECK constraints and seeds the boundary at 0", () => {
-    expect(schemaVersionOf(fixture.filePath)).toBe(9);
+    expect(schemaVersionOf(fixture.filePath)).toBe(10);
     const db = openRaw(fixture.filePath);
     try {
       const tables = (

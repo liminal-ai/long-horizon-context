@@ -129,7 +129,12 @@ export function testWorkDispatchers(
       if (outcome.ok) {
         const disposition = applyDerivationSuccess(
           run.openDb(),
-          { sourceVersion: item.sourceVersion, derivations: item.derivations, workItemId: item.workItemId },
+          {
+            sourceVersion: item.sourceVersion,
+            derivations: item.derivations,
+            workItemId: item.workItemId,
+            claimEpoch: item.claimEpoch,
+          },
           outcome.derivations ?? [],
           run.clock().toISOString(),
           outcome.onApplied,
