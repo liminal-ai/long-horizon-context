@@ -111,6 +111,38 @@ function liveDetail(filePath: string): ReturnType<typeof queueDetail> {
   }
 }
 
+function claimHeadWorkItem(filePath: string, expiresAt: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      const changed = db
+        .prepare(
+          `UPDATE work_item
+           SET status = 'claimed',
+               claimed_at = ?,
+               claim_expires_at = ?,
+               claim_epoch = claim_epoch + 1
+           WHERE work_item_id = (
+             SELECT work_item_id FROM work_item
+             WHERE status IN ('queued', 'claimed')
+             ORDER BY rowid LIMIT 1
+           )`,
+        )
+        .run(new Date(Date.parse(expiresAt) - 1000).toISOString(), expiresAt);
+      if (Number(changed.changes) !== 1) {
+        throw new Error(`expected to claim exactly one work item, changed ${String(changed.changes)}`);
+      }
+      db.exec("COMMIT;");
+    } catch (cause) {
+      db.exec("ROLLBACK;");
+      throw cause;
+    }
+  } finally {
+    db.close();
+  }
+}
+
 describe("TC-1.1: a drain runs queued items one at a time, in queue order, and reports each disposition", () => {
   it("three items across both owners run in order; rows are deleted at terminal transition; derivedAt is monotone", async () => {
     const double = createInferenceCallbacksDouble();
@@ -261,6 +293,45 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(liveCount(filePath)).toBe(0);
     const states = readDerivedForms(filePath).map((f) => f.state);
     expect(states).toEqual(["ready", "ready", "ready"]);
+  });
+
+  it("first-touch catch-up wakes when a leftover claimed head reaches claim_expires_at", async () => {
+    const { filePath } = await newThread();
+    const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
+    expect(seeded.ok).toBe(true);
+
+    const expiresAt = new Date(Date.now() + 35).toISOString();
+    claimHeadWorkItem(filePath, expiresAt);
+    expect(liveDetail(filePath)[0]).toMatchObject({
+      workItemId: "w-m1-prompt_smoothing-v1",
+      status: "claimed",
+      claimExpiresAt: expiresAt,
+      claimEpoch: 1,
+    });
+
+    const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
+    const sdk = initLhc({
+      inferenceCallbacks: double,
+      mode: "background",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 1000 },
+    });
+    registerTestWorkHandlers(sdk, double);
+
+    const touched = await sdk.logging.write(
+      { filePath },
+      { level: "info", message: "touch thread for claimed-item catch-up" },
+    );
+    expect(touched.ok).toBe(true);
+
+    await sdk.drainSettled({ filePath });
+
+    expect(captured.filter((entry) => entry.op === "smoothPrompt")).toHaveLength(1);
+    expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`)).toEqual([
+      "m1/smoothed_prompt/ready",
+    ]);
+    expect(liveCount(filePath)).toBe(0);
   });
 });
 

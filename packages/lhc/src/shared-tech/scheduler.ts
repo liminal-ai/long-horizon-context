@@ -50,6 +50,7 @@ export interface DrainReport {
   }>;
   stoppedBecause: "empty" | "in_flight" | "waiting" | "max_items";
   waitingUntil?: string; // head's eligible_at when stoppedBecause = "waiting"
+  claimExpiresAt?: string; // head's claim_expires_at when stoppedBecause = "in_flight"
   remaining: number; // live items left behind the stop point
 }
 
@@ -98,6 +99,7 @@ export async function drainOpenDb(
   const ran: DrainReport["ran"] = [];
   let stoppedBecause: DrainReport["stoppedBecause"];
   let waitingUntil: string | undefined;
+  let claimExpiresAt: string | undefined;
 
   for (;;) {
     if (opts?.maxItems !== undefined && ran.length >= opts.maxItems) {
@@ -111,6 +113,7 @@ export async function drainOpenDb(
     }
     if (claim.outcome === "in_flight") {
       stoppedBecause = "in_flight";
+      claimExpiresAt = claim.claimExpiresAt;
       break;
     }
     if (claim.outcome === "waiting") {
@@ -235,6 +238,7 @@ export async function drainOpenDb(
 
   const report: DrainReport = { ran, stoppedBecause, remaining: countLiveItems(db) };
   if (waitingUntil !== undefined) report.waitingUntil = waitingUntil;
+  if (claimExpiresAt !== undefined) report.claimExpiresAt = claimExpiresAt;
   return report;
 }
 
@@ -278,14 +282,14 @@ interface ThreadDrainState {
   pending: boolean;
   passes: number; // test-only observability (TC-1.2); must not become API
   waiters: Array<() => void>;
-  // Fix 1 (DD-4 completion): at most one pending backoff wake per thread; a
-  // poke or a newer wake clears it. unref'd so it never keeps the process
-  // alive. Background only — manual never reaches the drain loop.
+  // At most one pending wake per thread; used for both backoff eligibility and
+  // claim expiry. A poke or newer wake clears it. unref'd so it never keeps
+  // the process alive. Background only — manual never reaches the drain loop.
   wakeTimer: ReturnType<typeof scheduleTimer> | undefined;
 }
 
-// A wake floored to a sane minimum: an eligible_at already in the past must
-// nudge once, not busy-spin (the durable claimNext gate is the real guard).
+// A wake floored to a sane minimum: an already-past wake target must nudge
+// once, not busy-spin (the durable claimNext gate is the real guard).
 const WAKE_MIN_DELAY_MS = 5;
 
 export interface Scheduler {
@@ -356,21 +360,28 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
     }
   }
 
-  // Arm the lone backoff wake (Fix 1): when a background pass stops on the
-  // eligibility gate, schedule a single nudge at the head's eligible_at that
-  // re-enters the existing poke path. The delay reads the SDK clock seam (no
-  // fresh Date here — E02-NB-001) and is floored to a sane minimum; correctness
-  // rides claimNext's durable gate, so a coarse timer never retries early.
-  function armWake(st: ThreadDrainState, waitingUntil: string): void {
+  // Arm the lone scheduler wake: when a background pass stops on retry backoff
+  // or an unexpired claim, schedule one nudge at the row's next check time
+  // through the existing poke path. The delay reads the SDK clock seam; a bad
+  // timestamp degrades to the minimum delay, while correctness still rides
+  // claimNext's durable gate.
+  function armWake(st: ThreadDrainState, wakeAt: string): void {
     clearWake(st);
     const nowMs = deps.config.clock().getTime();
-    const delay = Math.max(WAKE_MIN_DELAY_MS, Date.parse(waitingUntil) - nowMs);
+    const parsed = Date.parse(wakeAt);
+    const delay = Number.isFinite(parsed) ? Math.max(WAKE_MIN_DELAY_MS, parsed - nowMs) : WAKE_MIN_DELAY_MS;
     const timer = scheduleTimer(() => {
       st.wakeTimer = undefined;
       schedule(st.threadId);
     }, delay);
     timer.unref();
     st.wakeTimer = timer;
+  }
+
+  function nextWakeAt(report: DrainReport | undefined): string | undefined {
+    if (report?.stoppedBecause === "waiting") return report.waitingUntil;
+    if (report?.stoppedBecause === "in_flight") return report.claimExpiresAt;
+    return undefined;
   }
 
   async function runLoop(st: ThreadDrainState): Promise<void> {
@@ -384,25 +395,19 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
         st.passes += 1;
         // A failed pass (storage error) has no caller to report to in
         // background mode; the durable rows are untouched and the next poke
-        // or touch retries. A pass stopping on "waiting" leaves a backing-off
-        // head — handled below by arming a single eligibility wake.
+        // or touch retries. A pass stopping on "waiting" or "in_flight" leaves
+        // a head that has a known next-check timestamp handled below.
         const result = await runDrain(st.filePath, deps);
         lastReport = result.ok ? result.value : undefined;
       } while (st.pending);
     } finally {
       st.running = false;
-      // Fix 1 (DD-4 completion): honor eligibility in background mode. A pass
-      // that stopped on "waiting" left a backing-off head that no later poke is
-      // guaranteed to revisit; arm one wake at its eligible_at through the poke
-      // path and stay unsettled until it fires, so drainSettled awaits the
-      // retry. Any other stop reason (empty / max_items / in_flight, or a
-      // failed pass) settles the thread now.
-      if (
-        st.wakeTimer === undefined &&
-        lastReport?.stoppedBecause === "waiting" &&
-        lastReport.waitingUntil !== undefined
-      ) {
-        armWake(st, lastReport.waitingUntil);
+      // Honor retry eligibility and claim expiry in background mode. Either
+      // stop can leave a head that no later poke is guaranteed to revisit, so
+      // keep the thread unsettled until the timer fires and re-enters schedule.
+      const wakeAt = nextWakeAt(lastReport);
+      if (st.wakeTimer === undefined && wakeAt !== undefined) {
+        armWake(st, wakeAt);
       } else {
         for (const waiter of st.waiters.splice(0)) waiter();
       }
