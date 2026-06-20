@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import type { EventRecord } from "../intake-stream/index.js";
-import type { Derivation, DerivationReportEntry, HandlerOutcome, ResolvedSdkConfig } from "../shared-tech/index.js";
+import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
   type DbReadTransaction,
@@ -11,25 +10,11 @@ import {
   resolveInstanceConfig,
   storageFailure,
 } from "../shared-tech/index.js";
-import {
-  type ClaimedWorkItem,
-  complete,
-  type EnqueueDerivationTarget,
-  enqueue,
-  failTerminal,
-  type WorkItemRecord,
-  type WorkKind,
-  type WorkSourceRef,
-} from "../shared-tech/work-queue/index.js";
+import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
-import {
-  readChunkRows,
-  readOwnedDerivations,
-  readTurnDerivationRow,
-  reportTurnDerivations,
-} from "./internal/derivations.js";
-import { turnWorkHandlers } from "./internal/derive.js";
+import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
+import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import {
   closeTurn,
   countTurnMembers,
@@ -237,131 +222,6 @@ export type ChunkDeriveResult =
     }
   | { chunkId: string; outcome: "failed"; error: ErrorResult };
 
-// The queue site each turn-owned derivation rebuilds through. Both turn derivations ride
-// the one turn_derivation item (the handler lands rendering and projection
-// together, so a rebuild of either re-derives both — the rebuild rule from
-// Flow 3); each chunk summary rides its same-named kind alone (AC-3.8's
-// independent lifecycles).
-function sourceVersionForDerive(rows: readonly { state: string; sourceVersion: number }[]): number {
-  const versions = rows.map((row) => row.sourceVersion);
-  const max = Math.max(...versions);
-  return rows.some((row) => row.state === "pending") ? max : max + 1;
-}
-
-function syntheticItem(
-  transaction: DbWriteTransaction,
-  kind: WorkKind,
-  sourceRef: WorkSourceRef,
-  sourceVersion: number,
-  derivations: EnqueueDerivationTarget[],
-): ClaimedWorkItem {
-  const upsert = transaction.db.prepare(
-    `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
-     VALUES (?, ?, ?, 'pending', ?)
-     ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
-       state = 'pending', content = NULL, reason = NULL, metadata = NULL,
-       gaps = NULL, derived_at = NULL, source_version = excluded.source_version`,
-  );
-  for (const target of derivations) {
-    upsert.run(target.subjectKind, target.subjectId, target.derivationType, sourceVersion);
-  }
-  const sourceId =
-    "turnId" in sourceRef ? sourceRef.turnId : "chunkId" in sourceRef ? sourceRef.chunkId : sourceRef.messageId;
-  return {
-    workItemId: `sync-${sourceId}-${kind}-v${sourceVersion}`,
-    owner: "turns",
-    kind,
-    sourceRef,
-    attempts: 0,
-    queuedAt: transaction.clock().toISOString(),
-    sourceVersion,
-    derivations,
-  };
-}
-
-async function runTurnOwnedDerivation(
-  db: DatabaseSync,
-  config: ResolvedSdkConfig,
-  kind: WorkKind,
-  sourceRef: WorkSourceRef,
-  derivations: EnqueueDerivationTarget[],
-): Promise<{ outcome: "derived"; sourceVersion: number } | { outcome: "failed"; error: ErrorResult }> {
-  const rows = derivations.map((target) =>
-    readTurnDerivationRow(db, target.subjectKind as "turn" | "chunk", target.subjectId, target.derivationType),
-  );
-  if (rows.some((row) => row === undefined)) {
-    const target = derivations.find((_entry, index) => rows[index] === undefined)!;
-    return {
-      outcome: "failed",
-      error: {
-        errorClass: "caller_error",
-        code: "turn_not_found",
-        reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
-      },
-    };
-  }
-  const blocked = rows.find((row) => row?.state === "blocked");
-  if (blocked !== undefined) {
-    return {
-      outcome: "failed",
-      error: {
-        errorClass: "state_corruption",
-        code: "source_damaged",
-        reason: blocked.reason ?? `turn-owned derivation is blocked`,
-      },
-    };
-  }
-  const sourceVersion = sourceVersionForDerive(rows as Array<{ state: string; sourceVersion: number }>);
-
-  const item = syntheticItem(
-    { db, clock: config.clock, threadId: "", filePath: "", postCommitHook: { add: () => {} }, poke: () => {} },
-    kind,
-    sourceRef,
-    sourceVersion,
-    derivations,
-  );
-  const handler = turnWorkHandlers[kind];
-  if (handler === undefined) {
-    return {
-      outcome: "failed",
-      error: {
-        errorClass: "state_corruption",
-        code: "unknown_work_kind",
-        reason: `no handler registered for work kind "${kind}"`,
-      },
-    };
-  }
-  let outcome: HandlerOutcome;
-  try {
-    outcome = await handler(
-      { openDb: () => db, inferenceCallbacks: config.inferenceCallbacks, clock: config.clock, config },
-      { workItemId: item.workItemId, kind: item.kind, sourceRef: item.sourceRef as Record<string, string> },
-    );
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    outcome = { ok: false, retryable: false, reason: `handler threw: ${reason}` };
-  }
-  if (outcome.ok) {
-    complete(db, item, outcome.derivations ?? [], config.clock().toISOString(), outcome.onApplied);
-    return { outcome: "derived", sourceVersion };
-  }
-  const reason = "blocked" in outcome ? outcome.reason : outcome.reason;
-  failTerminal(db, item, {
-    reason,
-    formState: "blocked" in outcome ? "blocked" : "failed",
-    attempts: 1,
-    now: config.clock().toISOString(),
-  });
-  return {
-    outcome: "failed",
-    error: {
-      errorClass: "system_error",
-      code: "provider_failure",
-      reason,
-    },
-  };
-}
-
 function configRequired(operation: string): ResolvedSdkConfig | { error: ErrorResult } {
   const config = resolveInstanceConfig();
   if (config !== undefined) return config;
@@ -386,7 +246,7 @@ export async function deriveTurn(thread: ThreadRef, turnId: string): Promise<OpR
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const result = await runTurnOwnedDerivation(db, config, "turn_derivation", { turnId }, [
+    const result = await deriveTurnOwnedInOpenDb(db, config, "turn_derivation", { turnId }, [
       { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
       { subjectKind: "turn", subjectId: turnId, derivationType: "smooth_turn_compression" },
     ]);
@@ -416,7 +276,7 @@ async function deriveChunk(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const result = await runTurnOwnedDerivation(db, config, derivationType, { chunkId }, [
+    const result = await deriveTurnOwnedInOpenDb(db, config, derivationType, { chunkId }, [
       { subjectKind: "chunk", subjectId: chunkId, derivationType },
     ]);
     if (result.outcome === "failed") return { ok: true, value: { chunkId, ...result } };

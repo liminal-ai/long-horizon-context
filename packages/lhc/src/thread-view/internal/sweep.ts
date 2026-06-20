@@ -40,14 +40,14 @@ type Owner = "messages" | "turns";
 type OwnerLine = SweepReceipt["owners"][number];
 
 // One owner's repair, dispatched by the entry's own subject vocabulary:
-// messages by messageId; turns by subjectKind turn|chunk. Messages still
-// expose queued-work dedupe. Turns derive synchronously, so shared turn sites
-// are deduped by the sweep before calling the owner again.
+// messages by messageId; turns by subjectKind turn|chunk. Owner derive calls
+// are synchronous; shared turn sites are deduped by the sweep before calling
+// the owner again.
 async function repairThroughOwner(
   filePath: string,
   owner: Owner,
   entry: DerivationReportEntry,
-): Promise<OpResult<"repaired" | "already_queued">> {
+): Promise<OpResult<"repaired">> {
   if (owner === "messages") {
     const derived = await messagesDomain.derive({ filePath }, [entry.subjectId]);
     if (!derived.ok) return derived;
@@ -62,7 +62,7 @@ async function repairThroughOwner(
         },
       };
     }
-    return { ok: true, value: result.outcome === "already_queued" ? "already_queued" : "repaired" };
+    return { ok: true, value: "repaired" };
   }
   const derived =
     entry.subjectKind === "chunk"
@@ -144,10 +144,7 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           }
           const repaired = await repairThroughOwner(filePath, owner, entry);
           if (!repaired.ok) return repaired;
-          // For messages, already_queued counts as in-flight: a prior sweep
-          // already put the work live.
-          if (repaired.value === "already_queued") line.inFlight += 1;
-          else line.requeued.push(entry.subjectId);
+          line.requeued.push(entry.subjectId);
           break;
         }
       }

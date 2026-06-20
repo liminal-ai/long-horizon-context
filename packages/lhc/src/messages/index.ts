@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
-import type { Derivation, DerivationReportEntry, HandlerOutcome, ResolvedSdkConfig } from "../shared-tech/index.js";
+import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
   createDbWriteTransaction,
@@ -13,18 +12,11 @@ import {
   truncateForFallback,
 } from "../shared-tech/index.js";
 import { estimateTokens } from "../shared-tech/token-counting/index.js";
-import {
-  type ClaimedWorkItem,
-  complete,
-  enqueue,
-  failTerminal,
-  hasLiveItem,
-  type WorkItemRecord,
-  type WorkKind,
-} from "../shared-tech/work-queue/index.js";
+import { enqueue, type WorkItemRecord, type WorkKind } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
-import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
-import { messageWorkHandlers } from "./internal/handlers.js";
+import { readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
+import { deriveMessageInOpenDb, type MessageDeriveResult } from "./internal/derive.js";
+import { MESSAGE_WORK_DERIVATIONS, MESSAGE_WORK_KINDS } from "./internal/work.js";
 
 export { cleanPrompt } from "./internal/smoothing.js";
 
@@ -124,19 +116,6 @@ export function create(
 // AC-2.8/TC-2.9; Epic 02 AC-2.2/AC-2.7). Cross-domain surface, called by
 // intake-stream inside the batch transaction for every recorded message, so
 // the item commits (or rolls back) with the batch.
-const MESSAGE_WORK_KINDS: Partial<Record<EventKind, WorkKind>> = {
-  user_prompt: "prompt_smoothing",
-  tool_result: "tool_result_summary",
-};
-
-// Which derived derivation each message-owned kind produces — the owning domain's
-// knowledge, handed to the meaning-blind enqueue so the derivation's pending row
-// rides the same transaction (DD-5).
-const MESSAGE_WORK_DERIVATIONS: Partial<Record<WorkKind, string>> = {
-  prompt_smoothing: "smoothed_prompt",
-  tool_result_summary: "tool_result_summary",
-};
-
 const DEFAULT_TOOL_RESULT_CONFIG: ResolvedSdkConfig["toolResult"] = {
   smallTierTokens: 1000,
   largeTierTokens: 5000,
@@ -337,150 +316,11 @@ export async function report(
   }
 }
 
-export type MessageDeriveResult =
-  | {
-      messageId: string;
-      outcome: "derived";
-      derivationType: "smoothed_prompt" | "tool_result_summary";
-      sourceVersion: number;
-    }
-  | { messageId: string; outcome: "already_queued"; derivationType: "smoothed_prompt" | "tool_result_summary" }
-  | { messageId: string; outcome: "not_derivable" }
-  | { messageId: string; outcome: "failed"; error: ErrorResult };
-
-function derivationForKind(
-  kind: Exclude<EventKind, "turn_end">,
-): { workKind: WorkKind; derivationType: "smoothed_prompt" | "tool_result_summary" } | undefined {
-  const workKind = MESSAGE_WORK_KINDS[kind];
-  if (workKind === undefined) return undefined;
-  const derivationType = MESSAGE_WORK_DERIVATIONS[workKind] as "smoothed_prompt" | "tool_result_summary" | undefined;
-  if (derivationType === undefined) {
-    throw new Error(`no derived derivation mapped for message work kind ${workKind}`);
-  }
-  return { workKind, derivationType };
-}
-
-function sourceVersionForDerive(row: { sourceVersion: number; state: string } | undefined): number {
-  if (row === undefined) return 1;
-  return row.state === "pending" ? row.sourceVersion : row.sourceVersion + 1;
-}
-
-function prepareSyntheticItem(
-  transaction: DbWriteTransaction,
-  messageId: string,
-  workKind: WorkKind,
-  derivationType: "smoothed_prompt" | "tool_result_summary",
-  sourceVersion: number,
-): ClaimedWorkItem {
-  transaction.db
-    .prepare(
-      `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
-       VALUES ('message', ?, ?, 'pending', ?)
-       ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
-         state = 'pending', content = NULL, reason = NULL, metadata = NULL,
-         gaps = NULL, derived_at = NULL, source_version = excluded.source_version`,
-    )
-    .run(messageId, derivationType, sourceVersion);
-  return {
-    workItemId: `sync-${messageId}-${workKind}-v${sourceVersion}`,
-    owner: "messages",
-    kind: workKind,
-    sourceRef: { messageId },
-    attempts: 0,
-    queuedAt: transaction.clock().toISOString(),
-    sourceVersion,
-    derivations: [{ subjectKind: "message", subjectId: messageId, derivationType }],
-  };
-}
-
-function failedDerive(messageId: string, error: ErrorResult): MessageDeriveResult {
-  return { messageId, outcome: "failed", error };
-}
-
-async function runMessageDerivation(
-  db: DatabaseSync,
-  config: ResolvedSdkConfig,
-  messageId: string,
-): Promise<MessageDeriveResult> {
-  const record = readMessageById(db, messageId);
-  if (record === undefined || record.deleted === true) {
-    return failedDerive(messageId, {
-      errorClass: "caller_error",
-      code: "message_not_found",
-      reason: `no message ${messageId} exists in this thread`,
-    });
-  }
-  const mapped = derivationForKind(record.kind);
-  if (mapped === undefined) return { messageId, outcome: "not_derivable" };
-  const row = readMessageDerivationRow(db, messageId, mapped.derivationType);
-  if (row?.state === "blocked") {
-    return failedDerive(messageId, {
-      errorClass: "state_corruption",
-      code: "source_damaged",
-      reason: row.reason ?? `derivation ${mapped.derivationType} for message ${messageId} is blocked`,
-    });
-  }
-  const sourceVersion = sourceVersionForDerive(row);
-  if (hasLiveItem(db, mapped.workKind, { messageId }, sourceVersion)) {
-    return { messageId, outcome: "already_queued", derivationType: mapped.derivationType };
-  }
-
-  const item = prepareSyntheticItem(
-    {
-      db,
-      clock: config.clock,
-      threadId: "",
-      filePath: "",
-      postCommitHook: { add: () => {} },
-      poke: () => {},
-    },
-    messageId,
-    mapped.workKind,
-    mapped.derivationType,
-    sourceVersion,
-  );
-  const handler = messageWorkHandlers[mapped.workKind];
-  if (handler === undefined) {
-    return failedDerive(messageId, {
-      errorClass: "state_corruption",
-      code: "unknown_work_kind",
-      reason: `no handler registered for work kind "${mapped.workKind}"`,
-    });
-  }
-  let outcome: HandlerOutcome;
-  try {
-    outcome = await handler(
-      { openDb: () => db, inferenceCallbacks: config.inferenceCallbacks, clock: config.clock, config },
-      { workItemId: item.workItemId, kind: item.kind, sourceRef: item.sourceRef as Record<string, string> },
-    );
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    outcome = { ok: false, retryable: false, reason: `handler threw: ${reason}` };
-  }
-  if (outcome.ok) {
-    complete(db, item, outcome.derivations ?? [], config.clock().toISOString(), outcome.onApplied);
-    return { messageId, outcome: "derived", derivationType: mapped.derivationType, sourceVersion };
-  }
-  const reason = "blocked" in outcome ? outcome.reason : outcome.reason;
-  failTerminal(db, item, {
-    reason,
-    formState: "blocked" in outcome ? "blocked" : "failed",
-    attempts: 1,
-    now: config.clock().toISOString(),
-  });
-  return failedDerive(messageId, {
-    errorClass: "system_error",
-    code: "provider_failure",
-    reason,
-  });
-}
-
 // Synchronous message-owned derivation. For each message id, the domain
 // selects the one message-owned derivation implied by the stored message kind
 // (`user_prompt` -> `smoothed_prompt`, `tool_result` -> `tool_result_summary`),
 // runs the existing handler, and lands the normal version-checked derivation
 // write before returning. Non-derivable message kinds return `not_derivable`;
-// queued live work at the same source version returns `already_queued`.
 export async function derive(threadRef: ThreadRef, messageIds: string[]): Promise<OpResult<MessageDeriveResult[]>> {
   const config = resolveInstanceConfig();
   if (config === undefined) {
@@ -504,7 +344,7 @@ export async function derive(threadRef: ThreadRef, messageIds: string[]): Promis
   try {
     const results: MessageDeriveResult[] = [];
     for (const messageId of messageIds) {
-      results.push(await runMessageDerivation(db, config, messageId));
+      results.push(await deriveMessageInOpenDb(db, config, messageId));
     }
     return { ok: true, value: results };
   } catch (cause) {

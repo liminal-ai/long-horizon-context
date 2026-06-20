@@ -10,6 +10,8 @@
 // helpers and owner repair reports.
 import type { DatabaseSync } from "node:sqlite";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
+import type { DurableWorkOperation } from "../durable-work/index.js";
+import { operationIntent } from "../durable-work/index.js";
 import { createPostCommitHookSet, type DbWriteTransaction } from "../persist.js";
 
 export type WorkOwner = "messages" | "turns";
@@ -74,6 +76,7 @@ export interface WorkItemInput {
   owner: WorkOwner;
   kind: WorkKind;
   sourceRef: WorkSourceRef;
+  operation?: DurableWorkOperation;
   sourceVersion?: number; // defaults to 1 — first version of a fresh source
   derivations?: readonly EnqueueDerivationTarget[]; // carried in payload for the drain's terminal paths
 }
@@ -101,7 +104,11 @@ export function recordItem(db: DatabaseSync, input: WorkItemInput, queuedAt: str
     input.kind,
     JSON.stringify(input.sourceRef),
     queuedAt,
-    JSON.stringify({ sourceVersion, derivations: input.derivations ?? [] }),
+    JSON.stringify({
+      sourceVersion,
+      operation: input.operation ?? operationIntent(input.kind, input.sourceRef),
+      derivations: input.derivations ?? [],
+    }),
   );
   return {
     workItemId,
@@ -164,6 +171,7 @@ export interface ClaimedWorkItem {
   attempts: number;
   queuedAt: string;
   sourceVersion: number;
+  operation?: DurableWorkOperation;
   derivations: EnqueueDerivationTarget[];
 }
 
@@ -207,14 +215,28 @@ function legacyDerivationTargets(kind: string, sourceRef: WorkSourceRef): Enqueu
   return mapped.map((target) => ({ ...target, subjectId }));
 }
 
+function operationIntentForRow(kind: string, sourceRef: WorkSourceRef): DurableWorkOperation | undefined {
+  if (!(kind in WORK_KIND_REGISTRY)) return undefined;
+  return operationIntent(kind as WorkKind, sourceRef);
+}
+
 function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
   const sourceRef = JSON.parse(row.source_ref) as WorkSourceRef;
   const payload =
     row.payload === null
       ? // Pre-v5 row: version 1 (matching the backfill) and derivation targets
         // reconstructed from the backfill's own mapping.
-        { sourceVersion: 1, derivations: legacyDerivationTargets(row.kind, sourceRef) }
-      : (JSON.parse(row.payload) as { sourceVersion?: number; derivations?: EnqueueDerivationTarget[] });
+        {
+          sourceVersion: 1,
+          operation: operationIntentForRow(row.kind, sourceRef),
+          derivations: legacyDerivationTargets(row.kind, sourceRef),
+        }
+      : (JSON.parse(row.payload) as {
+          sourceVersion?: number;
+          operation?: DurableWorkOperation;
+          derivations?: EnqueueDerivationTarget[];
+        });
+  const operation = payload.operation ?? operationIntentForRow(row.kind, sourceRef);
   return {
     workItemId: row.work_item_id,
     owner: row.owner as WorkOwner,
@@ -223,8 +245,40 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
     attempts: Number(row.attempts),
     queuedAt: row.queued_at,
     sourceVersion: payload.sourceVersion ?? 1,
+    ...(operation === undefined ? {} : { operation }),
     derivations: payload.derivations ?? [],
   };
+}
+
+export function deleteClaimedItem(db: DatabaseSync, workItemId: string): void {
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(workItemId);
+    db.exec("COMMIT;");
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
+export function retryClaimedItem(
+  db: DatabaseSync,
+  item: ClaimedWorkItem,
+  opts: { reason: string; attempts: number; eligibleAt: string },
+): void {
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    db.prepare(
+      `UPDATE work_item
+       SET status = 'queued', attempts = ?, last_error = ?,
+           claimed_at = NULL, claim_expires_at = NULL, eligible_at = ?
+       WHERE work_item_id = ?`,
+    ).run(opts.attempts, opts.reason, opts.eligibleAt, item.workItemId);
+    db.exec("COMMIT;");
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
 }
 
 // Head-first, never skip-ahead: the claim decision is made against the oldest

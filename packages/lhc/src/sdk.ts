@@ -9,6 +9,7 @@ export * as turns from "./turns/index.js";
 import * as inspectDomain from "./inspect/index.js";
 import * as intakeStreamDomain from "./intake-stream/index.js";
 import * as messagesDomain from "./messages/index.js";
+import { dispatchMessageDeriveWork } from "./messages/internal/derive.js";
 import { messageWorkHandlers } from "./messages/internal/handlers.js";
 import type {
   CompactReceipt,
@@ -27,6 +28,9 @@ import {
   createScheduler,
   type DrainDeps,
   type DrainReport,
+  type DurableWorkDispatcher,
+  type DurableWorkDispatcherMap,
+  type DurableWorkOperation,
   INFERENCE_CALLBACK_OPERATIONS,
   type InferenceCallbacks,
   type InferenceConfig,
@@ -51,7 +55,7 @@ import * as threadViewDomain from "./thread-view/index.js";
 import { resolveViewConfig } from "./thread-view/index.js";
 import * as threadsDomain from "./threads/index.js";
 import * as turnsDomain from "./turns/index.js";
-import { turnWorkHandlers } from "./turns/internal/derive.js";
+import { dispatchTurnOwnedWork, turnWorkHandlers } from "./turns/internal/derive.js";
 
 export type {
   BatchResult,
@@ -82,6 +86,10 @@ export type {
   DerivationReportEntry,
   DerivationState,
   DrainReport,
+  DurableWorkDispatcher,
+  DurableWorkDispatcherMap,
+  DurableWorkDispatchResult,
+  DurableWorkOperation,
   ErrorClass,
   ErrorCode,
   ErrorResult,
@@ -124,6 +132,7 @@ export type {
   WorkHandler,
 } from "./shared-tech/index.js";
 export {
+  applyDerivationSuccess,
   createDbReadTransaction,
   createDbWriteTransaction,
   createDeterministicInferenceCallbacks,
@@ -207,6 +216,17 @@ export function lookupWorkHandler(map: WorkHandlerMap, kind: string): OpResult<W
   return { ok: true, value: handler };
 }
 
+export function lookupWorkDispatcher(
+  map: DurableWorkDispatcherMap,
+  operation: DurableWorkOperation | undefined,
+  kind: string,
+): OpResult<DurableWorkDispatcher> {
+  if (operation === undefined) return unknownWorkKind(kind);
+  const dispatcher = map[operation.operation];
+  if (dispatcher === undefined) return unknownWorkKind(kind);
+  return { ok: true, value: dispatcher };
+}
+
 // The work surface (CLI: lhc work …). Story 1 carries drain; report and
 // requeue land in Story 4.
 export interface WorkSurface {
@@ -255,13 +275,30 @@ export interface Lhc {
   logging: LoggingSurface;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
-  workHandlers: WorkHandlerMap;
-  lookupWorkHandler(kind: string): OpResult<WorkHandler>;
   work: WorkSurface;
   // Resolves when the scheduler has no running or pending drain for the
   // thread (issue 3) — the awaitable for background mode, and a no-op
   // resolve in manual mode.
   drainSettled(ref: threadsDomain.ThreadRef): Promise<void>;
+}
+
+interface WorkRegistration {
+  workHandlers: WorkHandlerMap;
+  workDispatchers: DurableWorkDispatcherMap;
+}
+
+const workRegistrationBySdk = new WeakMap<Lhc, WorkRegistration>();
+
+export function registerTestingWork(
+  sdk: Lhc,
+  registration: { handlers?: WorkHandlerMap; dispatchers?: DurableWorkDispatcherMap },
+): void {
+  const target = workRegistrationBySdk.get(sdk);
+  if (target === undefined) {
+    throw new TypeError("registerTestingWork called with an SDK not created by initLhc");
+  }
+  if (registration.handlers !== undefined) Object.assign(target.workHandlers, registration.handlers);
+  if (registration.dispatchers !== undefined) Object.assign(target.workDispatchers, registration.dispatchers);
 }
 
 const INIT_CONFIG_PREFIX = "initLhc config";
@@ -488,10 +525,19 @@ export function initLhc(config: SdkConfig): Lhc {
 
   // Handler maps merge from per-domain contributions at construction (DD-6).
   const workHandlers = mapWorkQHandlers([messageWorkHandlers, turnWorkHandlers]);
+  const workDispatchers: DurableWorkDispatcherMap = {
+    "messages.derive": (run, item) => dispatchMessageDeriveWork(run.openDb(), run.config, item),
+    "turns.deriveTurn": (run, item) =>
+      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "turn_derivation" }),
+    "turns.deriveDetailedChunk": (run, item) =>
+      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "chunk_summary_detailed" }),
+    "turns.deriveBriefChunk": (run, item) =>
+      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "chunk_summary_brief" }),
+  };
 
   const drainDeps: DrainDeps = {
-    lookupHandler: (kind) => lookupWorkHandler(workHandlers, kind),
-    hasAnyHandler: () => Object.keys(workHandlers).length > 0,
+    lookupDispatcher: (operation, kind) => lookupWorkDispatcher(workDispatchers, operation, kind),
+    hasAnyHandler: () => Object.keys(workDispatchers).length > 0,
     config: resolved,
     openThreadDatabase: threadsDomain.openThreadDatabase,
   };
@@ -572,7 +618,7 @@ export function initLhc(config: SdkConfig): Lhc {
     initLhc,
   };
 
-  return {
+  const sdk: Lhc = {
     threads: threadsDomain,
     intakeStream: scopeSurface(intakeStreamSurface, seam),
     messages: scopeSurface(messagesDomain, seam),
@@ -592,8 +638,6 @@ export function initLhc(config: SdkConfig): Lhc {
     logging,
     config: resolved,
     scheduler,
-    workHandlers,
-    lookupWorkHandler: (kind) => lookupWorkHandler(workHandlers, kind),
     work,
     drainSettled: async (ref) => {
       const resolvedRef = await threadsDomain.resolveThreadRef(ref);
@@ -603,6 +647,8 @@ export function initLhc(config: SdkConfig): Lhc {
       return scheduler.drainSettled(threadId);
     },
   };
+  workRegistrationBySdk.set(sdk, { workHandlers, workDispatchers });
+  return sdk;
 }
 
 /** @deprecated Use initLhc. */

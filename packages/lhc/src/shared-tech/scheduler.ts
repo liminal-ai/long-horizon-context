@@ -14,15 +14,18 @@ import {
   setImmediate as scheduleMacrotask,
   setTimeout as scheduleTimer,
 } from "node:timers";
-import type { HandlerOutcome, ResolvedSdkConfig, WorkHandler } from "./derivation.js";
+import type { ResolvedSdkConfig } from "./derivation.js";
+import {
+  applyDerivationTerminalFailure,
+  type DurableWorkDispatcher,
+  type DurableWorkOperation,
+} from "./durable-work/index.js";
 import { type ErrorResult, type OpResult, storageFailure } from "./errors.js";
 import {
   type ClaimedWorkItem,
   claimNext,
-  complete,
   countLiveItems,
-  failAttempt,
-  failTerminal,
+  retryClaimedItem,
   type WorkKind,
   type WorkSourceRef,
 } from "./work-queue/index.js";
@@ -51,7 +54,7 @@ export interface DrainReport {
 }
 
 export interface DrainDeps {
-  lookupHandler: (kind: string) => OpResult<WorkHandler>;
+  lookupDispatcher: (operation: DurableWorkOperation | undefined, kind: string) => OpResult<DurableWorkDispatcher>;
   // Whether any handler is registered at all. Background scheduling is gated
   // on this, fail-closed: with an empty map a background drain could only
   // turn queued rows into failed_terminal — destruction, not processing — so
@@ -117,62 +120,92 @@ export async function drainOpenDb(
     }
     const item = claim.item;
 
-    const lookedUp = deps.lookupHandler(item.kind);
+    const lookedUp = deps.lookupDispatcher(item.operation, item.kind);
     if (!lookedUp.ok) {
       // Unregistered kind: the normal terminal transaction, not a try/catch
       // skip — failed_terminal with the stable code, form (if resolvable
       // from the payload) lands failed, and the drain continues (AC-1.8).
-      failTerminal(db, item, {
-        reason: lookedUp.error.code,
-        formState: "failed",
-        attempts: item.attempts,
-        now: clock().toISOString(),
-      });
+      applyDerivationTerminalFailure(
+        db,
+        { ...item, workItemId: item.workItemId },
+        {
+          reason: lookedUp.error.code,
+          state: "failed",
+          attempts: item.attempts,
+          now: clock().toISOString(),
+        },
+      );
       ran.push(ranEntry(item, "failed_terminal", item.attempts, lookedUp.error.code));
       continue;
     }
 
-    let outcome: HandlerOutcome;
-    try {
-      outcome = await lookedUp.value(
-        { openDb: () => db, inferenceCallbacks, clock, config: deps.config },
+    const run = { openDb: () => db, inferenceCallbacks, clock, config: deps.config };
+    const dispatchItem = item.operation === undefined ? undefined : { ...item, operation: item.operation };
+    if (dispatchItem === undefined) {
+      applyDerivationTerminalFailure(
+        db,
+        { ...item, workItemId: item.workItemId },
         {
-          workItemId: item.workItemId,
-          kind: item.kind,
-          sourceRef: item.sourceRef as unknown as Record<string, string>,
+          reason: "unknown_work_kind",
+          state: "failed",
+          attempts: item.attempts,
+          now: clock().toISOString(),
         },
       );
+      ran.push(ranEntry(item, "failed_terminal", item.attempts, "unknown_work_kind"));
+      continue;
+    }
+    let outcome: Awaited<ReturnType<DurableWorkDispatcher>>;
+    try {
+      outcome = await lookedUp.value(run, dispatchItem);
     } catch (cause) {
       // A throwing handler is a bug by the error contract, but the queue
       // must not wedge on it: route it through the normal retry path so it
       // counts attempts and exhausts visibly.
       const detail = cause instanceof Error ? cause.message : String(cause);
-      outcome = { ok: false, retryable: true, reason: `handler threw: ${detail}` };
+      outcome = { disposition: "failed", retryable: true, reason: `handler threw: ${detail}` };
     }
 
-    if (outcome.ok) {
-      const disposition = complete(db, item, outcome.derivations ?? [], clock().toISOString(), outcome.onApplied);
-      ran.push(ranEntry(item, disposition, item.attempts));
+    if (outcome.disposition === "done" || outcome.disposition === "stale_discarded") {
+      ran.push(ranEntry(item, outcome.disposition, item.attempts));
       continue;
     }
-    if ("blocked" in outcome) {
-      failTerminal(db, item, {
-        reason: outcome.reason,
-        formState: "blocked",
-        attempts: item.attempts + 1,
-        now: clock().toISOString(),
-      });
+    if (outcome.disposition === "blocked") {
+      applyDerivationTerminalFailure(
+        db,
+        { ...item, workItemId: item.workItemId },
+        {
+          reason: outcome.reason,
+          state: "blocked",
+          attempts: item.attempts + 1,
+          now: clock().toISOString(),
+        },
+      );
       ran.push(ranEntry(item, "failed_terminal", item.attempts + 1, outcome.reason));
       continue;
     }
-    const failed = failAttempt(db, item, {
-      reason: outcome.reason,
-      retryable: outcome.retryable,
-      now: clock().toISOString(),
-      retry,
-    });
-    if (failed.terminal) {
-      ran.push(ranEntry(item, "failed_terminal", failed.attempts, outcome.reason));
+    if (outcome.disposition !== "failed") {
+      throw new Error(`unknown durable work disposition ${(outcome as { disposition: string }).disposition}`);
+    }
+    if (outcome.disposition === "failed") {
+      const attempts = item.attempts + 1;
+      if (outcome.retryable && attempts < retry.budget) {
+        const backoffMs = Math.min(retry.backoffBaseMs * 2 ** attempts, retry.backoffCapMs);
+        const eligibleAt = new Date(Date.parse(clock().toISOString()) + backoffMs).toISOString();
+        retryClaimedItem(db, item, { reason: outcome.reason, attempts, eligibleAt });
+      } else {
+        applyDerivationTerminalFailure(
+          db,
+          { ...item, workItemId: item.workItemId },
+          {
+            reason: outcome.reason,
+            state: "failed",
+            attempts,
+            now: clock().toISOString(),
+          },
+        );
+        ran.push(ranEntry(item, "failed_terminal", attempts, outcome.reason));
+      }
     }
     // Under budget the item went back to queued (possibly backing off); the
     // next claimNext re-reads the head — a backing-off head ends the drain

@@ -8,6 +8,7 @@
 // one commit (anti-shim: a crash leaves either a placed turn with queued
 // summaries or an open chunk — nothing between).
 
+import type { DatabaseSync } from "node:sqlite";
 import {
   cleanPrompt,
   findPairedToolCall,
@@ -16,17 +17,27 @@ import {
 } from "../../messages/recovery.js";
 import type {
   DerivationMetadata,
+  ErrorResult,
   HandlerOutcome,
   HandlerRunContext,
   InferenceResult,
+  ResolvedSdkConfig,
   ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
 } from "../../shared-tech/index.js";
-import { resolveInstancePoke, truncateForFallback } from "../../shared-tech/index.js";
+import {
+  applyDerivationSuccess,
+  applyDerivationTerminalFailure,
+  type DurableWorkDispatchResult,
+  resolveInstancePoke,
+  runWorkHandler,
+  truncateForFallback,
+  writePendingDerivations,
+} from "../../shared-tech/index.js";
 import { writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
-import type { WorkKind } from "../../shared-tech/work-queue/index.js";
+import type { EnqueueDerivationTarget, WorkKind, WorkSourceRef } from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
 import {
   type ComposeDerivationRow,
@@ -39,6 +50,7 @@ import {
   readMemberMessages,
   readMemberProjections,
   readMessageDerivationRows,
+  readTurnDerivationRow,
   readTurnSource,
 } from "./derivations.js";
 import { hasLiveRecoveryWork, recoverDerivation } from "./recovery.js";
@@ -384,3 +396,113 @@ export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> 
   chunk_summary_detailed: chunkSummaryHandler("chunk_summary_detailed"),
   chunk_summary_brief: chunkSummaryHandler("chunk_summary_brief"),
 };
+
+function sourceVersionForDerive(rows: readonly { state: string; sourceVersion: number }[]): number {
+  const versions = rows.map((row) => row.sourceVersion);
+  const max = Math.max(...versions);
+  return rows.some((row) => row.state === "pending") ? max : max + 1;
+}
+
+function failed(error: ErrorResult): { outcome: "failed"; error: ErrorResult } {
+  return { outcome: "failed", error };
+}
+
+export async function deriveTurnOwnedInOpenDb(
+  db: DatabaseSync,
+  config: ResolvedSdkConfig,
+  kind: WorkKind,
+  sourceRef: WorkSourceRef,
+  derivations: readonly EnqueueDerivationTarget[],
+  opts?: { sourceVersion?: number; workItemId?: string; preparePending?: boolean },
+): Promise<{ outcome: "derived"; sourceVersion: number } | { outcome: "failed"; error: ErrorResult }> {
+  const rows = derivations.map((target) =>
+    readTurnDerivationRow(db, target.subjectKind as "turn" | "chunk", target.subjectId, target.derivationType),
+  );
+  if (rows.some((row) => row === undefined)) {
+    const target = derivations.find((_entry, index) => rows[index] === undefined)!;
+    return failed({
+      errorClass: "caller_error",
+      code: "turn_not_found",
+      reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
+    });
+  }
+  const blocked = rows.find((row) => row?.state === "blocked");
+  if (blocked !== undefined) {
+    return failed({
+      errorClass: "state_corruption",
+      code: "source_damaged",
+      reason: blocked.reason ?? `turn-owned derivation is blocked`,
+    });
+  }
+  const sourceVersion =
+    opts?.sourceVersion ?? sourceVersionForDerive(rows as Array<{ state: string; sourceVersion: number }>);
+  if (opts?.preparePending !== false) writePendingDerivations(db, derivations, sourceVersion);
+
+  const handler = turnWorkHandlers[kind];
+  if (handler === undefined) {
+    return failed({
+      errorClass: "state_corruption",
+      code: "unknown_work_kind",
+      reason: `no handler registered for work kind "${kind}"`,
+    });
+  }
+  const outcome = await runWorkHandler(db, config, handler, {
+    workItemId:
+      opts?.workItemId ??
+      `sync-${"turnId" in sourceRef ? sourceRef.turnId : "chunkId" in sourceRef ? sourceRef.chunkId : sourceRef.messageId}-${kind}-v${sourceVersion}`,
+    kind,
+    sourceRef,
+  });
+  const attempt = {
+    sourceVersion,
+    derivations,
+    ...(opts?.workItemId === undefined ? {} : { workItemId: opts.workItemId }),
+  };
+  if (outcome.ok) {
+    applyDerivationSuccess(db, attempt, outcome.derivations ?? [], config.clock().toISOString(), outcome.onApplied);
+    return { outcome: "derived", sourceVersion };
+  }
+  applyDerivationTerminalFailure(db, attempt, {
+    reason: outcome.reason,
+    state: "blocked" in outcome ? "blocked" : "failed",
+    attempts: 1,
+    now: config.clock().toISOString(),
+  });
+  return failed({
+    errorClass: "system_error",
+    code: "provider_failure",
+    reason: outcome.reason,
+  });
+}
+
+export async function dispatchTurnOwnedWork(
+  db: DatabaseSync,
+  config: ResolvedSdkConfig,
+  item: {
+    workItemId: string;
+    kind: WorkKind;
+    sourceRef: WorkSourceRef;
+    sourceVersion: number;
+    derivations: readonly EnqueueDerivationTarget[];
+  },
+): Promise<DurableWorkDispatchResult> {
+  const handler = turnWorkHandlers[item.kind];
+  if (handler === undefined) return { disposition: "failed", retryable: false, reason: "unknown_work_kind" };
+  const outcome = await runWorkHandler(db, config, handler, {
+    workItemId: item.workItemId,
+    kind: item.kind,
+    sourceRef: item.sourceRef,
+  });
+  if (outcome.ok) {
+    const disposition = applyDerivationSuccess(
+      db,
+      { sourceVersion: item.sourceVersion, derivations: item.derivations, workItemId: item.workItemId },
+      outcome.derivations ?? [],
+      config.clock().toISOString(),
+      outcome.onApplied,
+    );
+    return { disposition };
+  }
+  if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
+  return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };
+}

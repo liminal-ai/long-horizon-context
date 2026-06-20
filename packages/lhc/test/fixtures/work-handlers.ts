@@ -6,7 +6,10 @@
 // are exercised against the real handler seam with the double scripted per
 // test. Registered by assigning into the SDK's assembled map, the same map
 // production domain tables merge into (DD-6).
+
 import type {
+  DurableWorkDispatcher,
+  DurableWorkDispatcherMap,
   HandlerDerivationWrite,
   InferenceCallbacks,
   InferenceResult,
@@ -15,6 +18,7 @@ import type {
   WorkHandler,
   WorkKind,
 } from "../../src/index.js";
+import { applyDerivationSuccess, registerTestingWork } from "../../src/index.js";
 import type { DerivationType } from "./model-call.js";
 
 interface FormSpec {
@@ -107,12 +111,53 @@ export function testWorkHandlers(
   return map;
 }
 
-// Registration is plain assignment into the assembled per-SDK map — the same
-// map initLhc merged the (empty until Stories 2–3) domain tables into.
+export function testWorkDispatchers(
+  inferenceCallbacks: InferenceCallbacks,
+  hooks: TestHandlerHooks = {},
+): DurableWorkDispatcherMap {
+  const handlers = testWorkHandlers(inferenceCallbacks, hooks);
+  const wrap =
+    (kind: WorkKind): DurableWorkDispatcher =>
+    async (run, item) => {
+      const handler = handlers[kind];
+      if (handler === undefined) return { disposition: "failed", retryable: false, reason: "missing_test_handler" };
+      const outcome = await handler(run, {
+        workItemId: item.workItemId,
+        kind,
+        sourceRef: item.sourceRef as unknown as Record<string, string>,
+      });
+      if (outcome.ok) {
+        const disposition = applyDerivationSuccess(
+          run.openDb(),
+          { sourceVersion: item.sourceVersion, derivations: item.derivations, workItemId: item.workItemId },
+          outcome.derivations ?? [],
+          run.clock().toISOString(),
+          outcome.onApplied,
+        );
+        return { disposition };
+      }
+      if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
+      return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };
+    };
+  const wrapFromItem: DurableWorkDispatcher = async (run, item) => {
+    if (!(item.kind in handlers)) return { disposition: "failed", retryable: false, reason: "missing_test_handler" };
+    return wrap(item.kind as WorkKind)(run, item);
+  };
+  return {
+    "messages.derive": wrapFromItem,
+    "turns.deriveTurn": wrap("turn_derivation"),
+    "turns.deriveDetailedChunk": wrap("chunk_summary_detailed"),
+    "turns.deriveBriefChunk": wrap("chunk_summary_brief"),
+  };
+}
+
 export function registerTestWorkHandlers(
   sdk: Lhc,
   inferenceCallbacks: InferenceCallbacks,
   hooks?: TestHandlerHooks,
 ): void {
-  Object.assign(sdk.workHandlers, testWorkHandlers(inferenceCallbacks, hooks));
+  registerTestingWork(sdk, {
+    handlers: testWorkHandlers(inferenceCallbacks, hooks),
+    dispatchers: testWorkDispatchers(inferenceCallbacks, hooks),
+  });
 }

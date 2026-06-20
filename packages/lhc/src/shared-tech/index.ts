@@ -6,6 +6,7 @@ export * from "./classify.js";
 export * from "./context.js";
 export * from "./derivation.js";
 export * from "./deterministic.js";
+export * from "./durable-work/index.js";
 export * from "./errors.js";
 export * from "./inference-adapter.js";
 export * from "./inference-types.js";

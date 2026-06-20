@@ -323,7 +323,8 @@ describe("architecture-risk: durability and rollback over the complete record su
 // on that invariant.
 import {
   createDbWriteTransaction,
-  initLhc,
+  type DurableWorkDispatcher,
+  lookupWorkDispatcher,
   lookupWorkHandler,
   mapWorkQHandlers,
   setSchedulerPoke,
@@ -331,7 +332,7 @@ import {
   type WorkHandler,
 } from "../src/index.js";
 import { enqueue } from "../src/shared-tech/work-queue/index.js";
-import { createInferenceCallbacksDouble, readDerivedForms, setIntakeWalkHook } from "./fixtures/index.js";
+import { readDerivedForms, setIntakeWalkHook } from "./fixtures/index.js";
 
 // Below-SDK read of derivation rows — enqueue's pending rows are asserted
 // durably, not through the batch result.
@@ -360,21 +361,15 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
     });
   });
 
-  it("initLhc assembles the handler map from domain tables; an unregistered kind reports the miss explicitly", () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
-    // All six kinds registered: Story 2's message-owned handlers plus
-    // Story 3's turn-owned ones (amended each story as the domain tables
-    // populated — Story 0 asserted an empty map, Story 2 the three message
-    // kinds).
-    expect(Object.keys(sdk.workHandlers).sort()).toEqual([
-      "chunk_summary_brief",
-      "chunk_summary_detailed",
+  it("dispatcher lookup reports an unregistered kind as a structured miss", () => {
+    const dispatcher: DurableWorkDispatcher = async () => ({ disposition: "done" });
+    const found = lookupWorkDispatcher(
+      { "messages.derive": dispatcher },
+      { operation: "messages.derive", messageId: "m1" },
       "prompt_smoothing",
-      "tool_result_summary",
-      "turn_derivation",
-    ]);
-    // The miss is reported as a structured result — not a throw, not silence.
-    const missed = sdk.lookupWorkHandler("bogus_kind");
+    );
+    expect(found.ok).toBe(true);
+    const missed = lookupWorkDispatcher({}, { operation: "messages.derive", messageId: "m1" }, "bogus_kind");
     expect(missed.ok).toBe(false);
     if (missed.ok) return;
     expect(missed.error.errorClass).toBe("state_corruption");
