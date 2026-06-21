@@ -8,20 +8,25 @@ const packageRoot = "packages/lhc";
 const defaultOutput = join(repoRoot, "tmp", "lhc-codebase-snapshot.txt");
 const args = process.argv.slice(2);
 const fullMode = args.includes("--full");
+const withTestsMode = args.includes("--with-tests");
 const outputArg = args.find((arg) => !arg.startsWith("--"));
 const outputPath = resolve(outputArg ?? defaultOutput);
 
 const focusedFiles = new Set([
   `${packageRoot}/src/messages/index.ts`,
+  `${packageRoot}/src/messages/internal/derive.ts`,
   `${packageRoot}/src/messages/internal/derivations.ts`,
   `${packageRoot}/src/messages/internal/handlers.ts`,
   `${packageRoot}/src/messages/internal/store.ts`,
+  `${packageRoot}/src/messages/internal/work.ts`,
   `${packageRoot}/src/shared-tech/derivation.ts`,
+  `${packageRoot}/src/shared-tech/durable-work/index.ts`,
   `${packageRoot}/src/shared-tech/errors.ts`,
   `${packageRoot}/src/shared-tech/index.ts`,
   `${packageRoot}/src/shared-tech/persist.ts`,
   `${packageRoot}/src/shared-tech/scheduler.ts`,
   `${packageRoot}/src/shared-tech/work-queue/index.ts`,
+  `${packageRoot}/src/sdk.ts`,
   `${packageRoot}/src/thread-view/index.ts`,
   `${packageRoot}/src/thread-view/internal/render.ts`,
   `${packageRoot}/src/thread-view/internal/select.ts`,
@@ -75,11 +80,17 @@ function trackedFiles() {
 function shouldInclude(repoRelativePath) {
   const parts = repoRelativePath.split("/");
   if (parts.some((part) => excludedPathParts.has(part))) return false;
-  if (repoRelativePath.startsWith(`${packageRoot}/test/`)) return false;
+  if (!withTestsMode && repoRelativePath.startsWith(`${packageRoot}/test/`)) return false;
   if (repoRelativePath.startsWith(`${packageRoot}/reference/`)) return false;
   if (!fullMode) return focusedFiles.has(repoRelativePath);
   const basename = parts.at(-1) ?? "";
-  if (!repoRelativePath.startsWith(`${packageRoot}/src/`) && !includedBasenames.has(basename)) return false;
+  if (
+    !repoRelativePath.startsWith(`${packageRoot}/src/`) &&
+    !repoRelativePath.startsWith(`${packageRoot}/test/`) &&
+    !includedBasenames.has(basename)
+  ) {
+    return false;
+  }
   if (includedBasenames.has(basename)) return true;
   return includedExtensions.has(extname(repoRelativePath));
 }
@@ -101,12 +112,20 @@ const chunks = [
     "This is a single-file repo snapshot that can be pasted into a chat interface so the full LHC repo package can be parsed in one context.",
     `Repo root: ${repoRoot}`,
     `Snapshot root: ${packageRoot}`,
-    `Snapshot mode: ${fullMode ? "full source" : "focused derivation/DWQ/thread-view architecture"}`,
+    `Snapshot mode: ${
+      fullMode
+        ? withTestsMode
+          ? "full source with tests"
+          : "full source"
+        : "focused derivation/DWQ/thread-view architecture"
+    }`,
     `Generated at: ${generatedAt}`,
     `File count: ${files.length}`,
     "",
     fullMode
-      ? "This full-source snapshot excludes tests, references, generated files, and vendor files."
+      ? withTestsMode
+        ? "This full-source snapshot includes test files and fixtures, but still excludes reference files, generated files, and vendor files."
+        : "This full-source snapshot excludes tests, references, generated files, and vendor files."
       : "This focused snapshot includes the files most relevant to derivation artifacts, durable work queue mechanics, synchronous derive operations, and thread-view repair/selection coupling. It intentionally excludes tests, thread registry/creation, SDK construction, prompts, inspect, materialize, and general provider plumbing.",
     "",
   ].join("\n"),

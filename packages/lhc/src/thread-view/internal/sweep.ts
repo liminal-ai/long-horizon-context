@@ -81,6 +81,13 @@ function turnsRepairSite(entry: DerivationReportEntry): string {
     : `turn_derivation:${entry.subjectId}`;
 }
 
+function repairFoundInFlight(result: OpResult<"repaired">): boolean {
+  return (
+    !result.ok &&
+    (result.error.code === "derivation_work_in_flight" || result.error.code === "derivation_retry_scheduled")
+  );
+}
+
 // The sweep walk (Flow 3): `messages.report` + `turns.report` → bucket each
 // form — ready / pending ⇒ in-flight / blocked / failed × classify — then
 // repair the transient failures through their owners and assemble the
@@ -110,7 +117,7 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
     { owner: "messages", entries: messageReport.value },
     { owner: "turns", entries: turnReport.value },
   ];
-  const repairedTurnSites = new Set<string>();
+  const repairedTurnSites = new Map<string, "repaired" | "in_flight">();
   for (const { owner, entries } of walks) {
     for (const entry of entries) {
       const line = lineFor(owner, entry.derivationType);
@@ -119,8 +126,33 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           line.ready += 1;
           break;
         case "pending":
-          // Queued or retrying — work is live; the sweep waits on nothing.
-          line.inFlight += 1;
+          if (entry.queue !== undefined) {
+            line.inFlight += 1;
+            break;
+          }
+          if (owner === "turns") {
+            const site = turnsRepairSite(entry);
+            const previous = repairedTurnSites.get(site);
+            if (previous === "repaired") {
+              line.ready += 1;
+              break;
+            }
+            if (previous === "in_flight") {
+              line.inFlight += 1;
+              break;
+            }
+          }
+          {
+            const repaired = await repairThroughOwner(filePath, owner, entry);
+            if (repairFoundInFlight(repaired)) {
+              line.inFlight += 1;
+              if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "in_flight");
+              break;
+            }
+            if (!repaired.ok) return repaired;
+            if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "repaired");
+            line.requeued.push(entry.subjectId);
+          }
           break;
         case "blocked":
           line.blocked.push({
@@ -136,14 +168,24 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           }
           if (owner === "turns") {
             const site = turnsRepairSite(entry);
-            if (repairedTurnSites.has(site)) {
+            const previous = repairedTurnSites.get(site);
+            if (previous === "repaired") {
               line.ready += 1;
               break;
             }
-            repairedTurnSites.add(site);
+            if (previous === "in_flight") {
+              line.inFlight += 1;
+              break;
+            }
           }
           const repaired = await repairThroughOwner(filePath, owner, entry);
+          if (repairFoundInFlight(repaired)) {
+            line.inFlight += 1;
+            if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "in_flight");
+            break;
+          }
           if (!repaired.ok) return repaired;
+          if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "repaired");
           line.requeued.push(entry.subjectId);
           break;
         }

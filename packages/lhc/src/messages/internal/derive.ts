@@ -4,11 +4,18 @@ import type { ErrorResult, ResolvedSdkConfig } from "../../shared-tech/index.js"
 import {
   applyDerivationSuccess,
   applyDerivationTerminalFailure,
+  DerivationCompletionError,
   type DurableWorkDispatchResult,
+  resolveInstancePoke,
   runWorkHandler,
-  writePendingDerivations,
 } from "../../shared-tech/index.js";
-import type { EnqueueDerivationTarget, WorkKind } from "../../shared-tech/work-queue/index.js";
+import {
+  createOrClaimImmediateWorkItem,
+  type EnqueueDerivationTarget,
+  type ImmediateDerivationBoundary,
+  retryClaimedItem,
+  type WorkKind,
+} from "../../shared-tech/work-queue/index.js";
 import { readMessageDerivationRow } from "./derivations.js";
 import { messageWorkHandlers } from "./handlers.js";
 import { readMessageById } from "./store.js";
@@ -53,11 +60,34 @@ function providerFailure(messageId: string, reason: string): MessageDeriveResult
   });
 }
 
+function retryScheduled(messageId: string, reason: string): MessageDeriveResult {
+  return failedDerive(messageId, {
+    errorClass: "system_error",
+    code: "derivation_retry_scheduled",
+    reason,
+  });
+}
+
+function pokeThreadScheduler(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+    | { thread_id: string }
+    | undefined;
+  if (row !== undefined) resolveInstancePoke()(row.thread_id);
+}
+
+function workInFlight(messageId: string, workKind: WorkKind, sourceVersion: number): MessageDeriveResult {
+  return failedDerive(messageId, {
+    errorClass: "caller_error",
+    code: "derivation_work_in_flight",
+    reason: `${workKind} work for message ${messageId} at sourceVersion ${sourceVersion} is already live`,
+  });
+}
+
 export async function deriveMessageInOpenDb(
   db: DatabaseSync,
   config: ResolvedSdkConfig,
   messageId: string,
-  opts?: { sourceVersion?: number; workItemId?: string; preparePending?: boolean },
+  opts?: { sourceVersion?: number },
 ): Promise<MessageDeriveResult> {
   const record = readMessageById(db, messageId);
   if (record === undefined || record.deleted === true) {
@@ -81,9 +111,10 @@ export async function deriveMessageInOpenDb(
   const derivations = [
     { subjectKind: "message" as const, subjectId: messageId, derivationType: mapped.derivationType },
   ];
-  if (opts?.preparePending !== false) {
-    writePendingDerivations(db, derivations, sourceVersion);
-  }
+  const expectedDerivations: ImmediateDerivationBoundary[] =
+    row === undefined
+      ? derivations.map((target) => ({ ...target, exists: false }))
+      : derivations.map((target) => ({ ...target, exists: true, state: row.state, sourceVersion: row.sourceVersion }));
   const handler = messageWorkHandlers[mapped.workKind];
   if (handler === undefined) {
     return failedDerive(messageId, {
@@ -92,27 +123,88 @@ export async function deriveMessageInOpenDb(
       reason: `no handler registered for work kind "${mapped.workKind}"`,
     });
   }
+  const claim = createOrClaimImmediateWorkItem(
+    db,
+    {
+      owner: "messages",
+      kind: mapped.workKind,
+      sourceRef: { messageId },
+      sourceVersion,
+      derivations,
+      expectedDerivations,
+    },
+    { now: config.clock().toISOString(), leaseDurationMs: config.lease.durationMs },
+  );
+  if (claim.outcome !== "claimed") {
+    if (claim.outcome === "queued") pokeThreadScheduler(db);
+    return workInFlight(messageId, mapped.workKind, sourceVersion);
+  }
   const outcome = await runWorkHandler(db, config, handler, {
-    workItemId: opts?.workItemId ?? `sync-${messageId}-${mapped.workKind}-v${sourceVersion}`,
+    workItemId: claim.item.workItemId,
     kind: mapped.workKind,
     sourceRef: { messageId },
   });
   const attempt = {
     sourceVersion,
     derivations,
-    ...(opts?.workItemId === undefined ? {} : { workItemId: opts.workItemId }),
+    workItemId: claim.item.workItemId,
+    claimEpoch: claim.item.claimEpoch,
   };
   if (outcome.ok) {
-    applyDerivationSuccess(db, attempt, outcome.derivations ?? [], config.clock().toISOString(), outcome.onApplied);
+    try {
+      const disposition = applyDerivationSuccess(
+        db,
+        attempt,
+        outcome.derivations ?? [],
+        config.clock().toISOString(),
+        outcome.onApplied,
+      );
+      if (disposition !== "done") {
+        return workInFlight(messageId, mapped.workKind, sourceVersion);
+      }
+    } catch (cause) {
+      if (cause instanceof DerivationCompletionError) {
+        return failedDerive(messageId, {
+          errorClass: cause.errorClass,
+          code: cause.code,
+          reason: cause.message,
+        });
+      }
+      throw cause;
+    }
     return { messageId, outcome: "derived", derivationType: mapped.derivationType, sourceVersion };
   }
   const reason = outcome.reason;
-  applyDerivationTerminalFailure(db, attempt, {
-    reason,
-    state: "blocked" in outcome ? "blocked" : "failed",
-    attempts: 1,
-    now: config.clock().toISOString(),
-  });
+  const attempts = claim.item.attempts + 1;
+  const now = config.clock().toISOString();
+  if (!("blocked" in outcome) && outcome.retryable && attempts < config.retry.budget) {
+    const backoffMs = Math.min(config.retry.backoffBaseMs * 2 ** attempts, config.retry.backoffCapMs);
+    const eligibleAt = new Date(Date.parse(now) + backoffMs).toISOString();
+    const owned = retryClaimedItem(db, claim.item, { reason, attempts, eligibleAt });
+    if (!owned) return workInFlight(messageId, mapped.workKind, sourceVersion);
+    pokeThreadScheduler(db);
+    return retryScheduled(messageId, reason);
+  }
+  try {
+    const disposition = applyDerivationTerminalFailure(db, attempt, {
+      reason,
+      state: "blocked" in outcome ? "blocked" : "failed",
+      attempts,
+      now,
+    });
+    if (disposition === "lost_lease") {
+      return workInFlight(messageId, mapped.workKind, sourceVersion);
+    }
+  } catch (cause) {
+    if (cause instanceof DerivationCompletionError) {
+      return failedDerive(messageId, {
+        errorClass: cause.errorClass,
+        code: cause.code,
+        reason: cause.message,
+      });
+    }
+    throw cause;
+  }
   return providerFailure(messageId, reason);
 }
 

@@ -525,9 +525,8 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
     expect(bandText).toContain("§c2 [degraded: detailed-from-stored-members]");
 
-    // Default sweep now repairs one transient derivation synchronously before
-    // the compact assembles fallback material.
-    expect(captured.length).toBe(capturedBefore + 1);
+    // Default sweep does not bypass older live queue work while compacting.
+    expect(captured.length).toBe(capturedBefore);
   });
 
   it("status reports the view-health fields live after the degraded compact (TC-2.5 completion leg)", async () => {
@@ -535,7 +534,7 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     expect(status.value.view).not.toBeNull();
-    expect(status.value.view?.degraded).toBe(2);
+    expect(status.value.view?.degraded).toBe(3);
     expect(status.value.view?.gaps).toBe(0);
     expect(typeof status.value.view?.builtAt).toBe("string");
     // The edits' requeued rebuild work is visible as pending derivation.

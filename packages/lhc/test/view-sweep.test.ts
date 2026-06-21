@@ -7,8 +7,11 @@
 // Failed and blocked states are reached through production paths (scripted
 // inference callback failures consumed by real retry/exhaustion mechanics, real source
 // damage on the sacrificial sibling), never by writing derivation rows.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { initLhc, type Lhc, type SweepReceipt } from "../src/index.js";
+import * as messagesDomain from "../src/messages/index.js";
+import { runSweep } from "../src/thread-view/internal/sweep.js";
+import * as turnsDomain from "../src/turns/index.js";
 import {
   assertSweepReceiptShape,
   blockedSiblingThread,
@@ -55,6 +58,15 @@ function workItemCount(filePath: string): number {
       n: number | bigint;
     };
     return Number(row.n);
+  } finally {
+    db.close();
+  }
+}
+
+function deleteWorkItem(filePath: string, workItemId: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(workItemId);
   } finally {
     db.close();
   }
@@ -123,11 +135,12 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
 
     // The tool_result_summary line carries the story's whole failed×classify
     // contract: 6 of the fixture's 8 results drained ready, the scripted
-    // transient exhaustion repaired, the scripted permanent failure reported
-    // with its reason and left alone (AC-3.3, AC-3.5).
+    // transient exhaustion is blocked by older live queue work, and the
+    // scripted permanent failure is reported with its reason and left alone.
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.ready).toBe(6);
-    expect(results.requeued).toEqual([transientId]);
+    expect(results.inFlight).toBe(1);
+    expect(results.requeued).toEqual([]);
     expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
     expect(results.blocked).toEqual([]);
 
@@ -142,12 +155,12 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(renderings.inFlight).toBe(1);
     expect(renderings.requeued).toEqual([]);
 
-    // The transient repair really landed through the owner: no queue row
-    // remains, and the form is ready through the owner's report.
-    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
+    // The transient repair did not bypass the older queue work; it is now
+    // scheduled behind the older head and reported as live work.
+    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
     const transient = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
-    expect(transient.state).toBe("ready");
-    expect(transient.queueStatus).toBeUndefined();
+    expect(transient.state).toBe("pending");
+    expect(transient.queueStatus).toBe("queued");
 
     // The permanent failure is untouched: still failed, no work row.
     const permanent = await reportEntry(fixture.sdk, fixture.filePath, permanentId, "tool_result_summary");
@@ -157,22 +170,22 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
 
     // Nothing repaired anywhere else.
     const allRequeued = swept.value.owners.flatMap((line) => line.requeued);
-    expect(allRequeued).toEqual([transientId]);
-    expect(captured.length).toBe(1);
+    expect(allRequeued).toEqual([]);
+    expect(captured.length).toBe(0);
   });
 
-  it("TC-3.2 (AC-3.4): a second sweep sees the repaired form ready and writes no queue row", async () => {
+  it("TC-3.2 (AC-3.4): a second sweep sees the deferred repair as queued live work", async () => {
     const swept = await fixture.sdk.threadView.sweep({ filePath: fixture.filePath });
     expect(swept.ok).toBe(true);
     if (!swept.ok) return;
 
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.requeued).toEqual([]);
-    expect(results.inFlight).toBe(0);
-    expect(results.ready).toBe(7);
+    expect(results.inFlight).toBe(1);
+    expect(results.ready).toBe(6);
     expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
 
-    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
+    expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
   });
 
   it("TC-3.3 schema leg (AC-3.5, AC-3.7): the SDK receipt validates against the shared receipt schema", async () => {
@@ -287,6 +300,126 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(rendering.ready + compression.ready).toBe(1);
     expect(rendering.inFlight + compression.inFlight).toBe(0);
     expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(0);
+  });
+
+  it("pending without a live queue row is repaired instead of counted inFlight", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = initLhc({
+      inferenceCallbacks: double,
+      mode: "manual",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    });
+    const filePath = store.threadPath();
+    const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+
+    const sent = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "abandoned pending prompt" } }),
+    ]);
+    expect(sent.ok).toBe(true);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    const swept = await sdk.threadView.sweep({ filePath });
+    expect(swept.ok).toBe(true);
+    if (!swept.ok) return;
+
+    const prompts = ownerLine(swept.value, "messages", "smoothed_prompt");
+    expect(prompts.inFlight).toBe(0);
+    expect(prompts.requeued).toEqual(["m1"]);
+    const entry = await reportEntry(sdk, filePath, "m1", "smoothed_prompt");
+    expect(entry.state).toBe("ready");
+    expect(entry.queueStatus).toBeUndefined();
+    expect(workItemCount(filePath)).toBe(0);
+  });
+
+  it("pending repair that races with newly live work is counted inFlight", async () => {
+    const messageReport = vi.spyOn(messagesDomain, "report").mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          subjectKind: "message",
+          subjectId: "m-race",
+          derivationType: "smoothed_prompt",
+          state: "pending",
+          sourceVersion: 1,
+        },
+      ],
+    });
+    const turnReport = vi.spyOn(turnsDomain, "report").mockResolvedValue({ ok: true, value: [] });
+    const derive = vi.spyOn(messagesDomain, "derive").mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          messageId: "m-race",
+          outcome: "failed",
+          error: {
+            errorClass: "caller_error",
+            code: "derivation_work_in_flight",
+            reason: "prompt_smoothing work for message m-race at sourceVersion 1 is already live",
+          },
+        },
+      ],
+    });
+    try {
+      const swept = await runSweep("/tmp/lhc-sweep-race-thread.db");
+      expect(swept.ok).toBe(true);
+      if (!swept.ok) return;
+      const prompts = ownerLine(swept.value, "messages", "smoothed_prompt");
+      expect(prompts.ready).toBe(0);
+      expect(prompts.inFlight).toBe(1);
+      expect(prompts.requeued).toEqual([]);
+      expect(prompts.blocked).toEqual([]);
+      expect(prompts.permanentFailed).toEqual([]);
+    } finally {
+      derive.mockRestore();
+      turnReport.mockRestore();
+      messageReport.mockRestore();
+    }
+  });
+
+  it("repair that schedules durable retry work is counted inFlight", async () => {
+    const messageReport = vi.spyOn(messagesDomain, "report").mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          subjectKind: "message",
+          subjectId: "m-retry",
+          derivationType: "smoothed_prompt",
+          state: "pending",
+          sourceVersion: 1,
+        },
+      ],
+    });
+    const turnReport = vi.spyOn(turnsDomain, "report").mockResolvedValue({ ok: true, value: [] });
+    const derive = vi.spyOn(messagesDomain, "derive").mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          messageId: "m-retry",
+          outcome: "failed",
+          error: {
+            errorClass: "system_error",
+            code: "derivation_retry_scheduled",
+            reason: "timeout: retry scheduled during sweep repair",
+          },
+        },
+      ],
+    });
+    try {
+      const swept = await runSweep("/tmp/lhc-sweep-retry-thread.db");
+      expect(swept.ok).toBe(true);
+      if (!swept.ok) return;
+      const prompts = ownerLine(swept.value, "messages", "smoothed_prompt");
+      expect(prompts.ready).toBe(0);
+      expect(prompts.inFlight).toBe(1);
+      expect(prompts.requeued).toEqual([]);
+      expect(prompts.blocked).toEqual([]);
+      expect(prompts.permanentFailed).toEqual([]);
+    } finally {
+      derive.mockRestore();
+      turnReport.mockRestore();
+      messageReport.mockRestore();
+    }
   });
 
   it("an unclassified reason code lands in permanentFailed with its literal reason and is never requeued", async () => {

@@ -17,6 +17,7 @@ import {
 import type { ResolvedSdkConfig } from "./derivation.js";
 import {
   applyDerivationTerminalFailure,
+  DerivationCompletionError,
   type DurableWorkDispatcher,
   type DurableWorkOperation,
 } from "./durable-work/index.js";
@@ -170,6 +171,7 @@ export async function drainOpenDb(
     try {
       outcome = await lookedUp.value(run, dispatchItem);
     } catch (cause) {
+      if (cause instanceof DerivationCompletionError) throw cause;
       // A throwing handler is a bug by the error contract, but the queue
       // must not wedge on it: route it through the normal retry path so it
       // counts attempts and exhausts visibly.
@@ -268,6 +270,12 @@ export async function runDrain(
   try {
     return { ok: true, value: await drainOpenDb(db, deps, opts) };
   } catch (cause) {
+    if (cause instanceof DerivationCompletionError) {
+      return {
+        ok: false,
+        error: { errorClass: cause.errorClass, code: cause.code, reason: cause.message },
+      };
+    }
     const detail = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`drain failed: ${detail}`);
   } finally {

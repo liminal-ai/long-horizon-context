@@ -11,7 +11,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
 import type { DurableWorkOperation } from "../durable-work/index.js";
-import { operationIntent } from "../durable-work/index.js";
+import { assertExactDerivationWrites, DerivationCompletionError, operationIntent } from "../durable-work/index.js";
 import { createPostCommitHookSet, type DbWriteTransaction } from "../persist.js";
 
 export type WorkOwner = "messages" | "turns";
@@ -87,6 +87,10 @@ function sourceIdOf(sourceRef: WorkSourceRef): string {
   return sourceRef.chunkId;
 }
 
+function targetKey(target: Pick<EnqueueDerivationTarget, "subjectKind" | "subjectId" | "derivationType">): string {
+  return `${target.subjectKind}/${target.subjectId}/${target.derivationType}`;
+}
+
 // Deterministic id scoped to the source version (DD-1/DD-3): re-queueing the
 // same kind for the same source *at the same version* is the same id —
 // natural idempotency for the repair path — while a post-mutation
@@ -124,6 +128,19 @@ export interface EnqueueInput extends WorkItemInput {
   derivations: readonly EnqueueDerivationTarget[];
 }
 
+export type ImmediateDerivationBoundary =
+  | (EnqueueDerivationTarget & { exists: false })
+  | (EnqueueDerivationTarget & { exists: true; state: string; sourceVersion: number });
+
+export interface ImmediateClaimInput extends EnqueueInput {
+  expectedDerivations: readonly ImmediateDerivationBoundary[];
+}
+
+export type ImmediateClaimOutcome =
+  | { outcome: "claimed"; item: ClaimedWorkItem }
+  | { outcome: "queued"; workItemId: string }
+  | { outcome: "in_flight"; workItemId: string };
+
 // The one way work is scheduled (DD-5): the work row, the derivation's `pending`
 // state row, and the scheduler poke all ride the ambient transaction — they
 // commit together or vanish together. Enqueue is the *only* place a
@@ -144,6 +161,153 @@ export function enqueue(transaction: DbWriteTransaction, input: EnqueueInput): W
   }
   transaction.postCommitHook.add(() => transaction.poke(transaction.threadId));
   return item;
+}
+
+export function createOrClaimImmediateWorkItem(
+  db: DatabaseSync,
+  input: ImmediateClaimInput,
+  opts: { now: string; leaseDurationMs: number },
+): ImmediateClaimOutcome {
+  const sourceVersion = input.sourceVersion ?? 1;
+  const queuedAt = opts.now;
+  const claimExpiresAt = new Date(Date.parse(opts.now) + opts.leaseDurationMs).toISOString();
+  const sourceRef = JSON.stringify(input.sourceRef);
+  const workItemId = `w-${sourceIdOf(input.sourceRef)}-${input.kind}-v${sourceVersion}`;
+  const currentBoundary = db.prepare(
+    `SELECT state, source_version
+     FROM derivation
+     WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
+  );
+  const boundariesMatch = (): boolean => {
+    for (const target of input.expectedDerivations) {
+      const row = currentBoundary.get(target.subjectKind, target.subjectId, target.derivationType) as
+        | { state: string; source_version: number | bigint }
+        | undefined;
+      if (!target.exists) {
+        if (row !== undefined) return false;
+        continue;
+      }
+      if (row === undefined || row.state !== target.state || Number(row.source_version) !== target.sourceVersion) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const upsertPending = (): void => {
+    const upsert = db.prepare(
+      `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
+       VALUES (?, ?, ?, 'pending', ?)
+       ON CONFLICT (subject_kind, subject_id, derivation_type) DO UPDATE SET
+         state = 'pending', content = NULL, reason = NULL, metadata = NULL,
+         gaps = NULL, derived_at = NULL, source_version = excluded.source_version`,
+    );
+    for (const target of input.derivations) {
+      upsert.run(target.subjectKind, target.subjectId, target.derivationType, sourceVersion);
+    }
+  };
+  const exactLive = (): { work_item_id: string } | undefined =>
+    db
+      .prepare(
+        `SELECT work_item_id
+         FROM work_item
+         WHERE status IN ('queued', 'claimed') AND owner = ? AND kind = ? AND source_ref = ?
+           AND COALESCE(json_extract(payload, '$.sourceVersion'), 1) = ?
+         LIMIT 1`,
+      )
+      .get(input.owner, input.kind, sourceRef, sourceVersion) as { work_item_id: string } | undefined;
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const head = db
+      .prepare(
+        `SELECT work_item_id, owner, kind, source_ref, status, attempts, claim_epoch, queued_at,
+                claim_expires_at, payload
+         FROM work_item
+         WHERE status IN ('queued', 'claimed')
+         ORDER BY rowid LIMIT 1`,
+      )
+      .get() as unknown as
+      | (RawClaimRow & {
+          status: "queued" | "claimed";
+          claim_expires_at: string | null;
+        })
+      | undefined;
+    if (head !== undefined) {
+      const headSourceVersion =
+        head.payload === null ? 1 : ((JSON.parse(head.payload) as { sourceVersion?: number }).sourceVersion ?? 1);
+      const isExactOperation =
+        head.owner === input.owner &&
+        head.kind === input.kind &&
+        head.source_ref === sourceRef &&
+        headSourceVersion === sourceVersion;
+      if (!isExactOperation) {
+        const live = exactLive();
+        if (live !== undefined) {
+          db.exec("COMMIT;");
+          return { outcome: "in_flight", workItemId: live.work_item_id };
+        }
+        if (!boundariesMatch()) {
+          db.exec("COMMIT;");
+          return { outcome: "in_flight", workItemId };
+        }
+        const item = recordItem(db, input, queuedAt);
+        upsertPending();
+        db.exec("COMMIT;");
+        return { outcome: "queued", workItemId: item.workItemId };
+      }
+      if (!boundariesMatch()) {
+        db.exec("COMMIT;");
+        return { outcome: "in_flight", workItemId: head.work_item_id };
+      }
+      const claimed = db
+        .prepare(
+          `UPDATE work_item
+           SET status = 'claimed', claimed_at = ?, claim_expires_at = ?,
+               claim_epoch = claim_epoch + 1,
+               attempts = attempts + CASE WHEN status = 'claimed' THEN 1 ELSE 0 END
+           WHERE work_item_id = ?
+             AND (
+               status = 'queued'
+               OR (
+                 status = 'claimed'
+                 AND (claim_expires_at IS NULL OR unixepoch(claim_expires_at) IS NULL OR claim_expires_at <= ?)
+               )
+             )
+           RETURNING work_item_id, owner, kind, source_ref, attempts, claim_epoch, queued_at, payload`,
+        )
+        .get(opts.now, claimExpiresAt, head.work_item_id, opts.now) as unknown as RawClaimRow | undefined;
+      if (claimed === undefined) {
+        db.exec("COMMIT;");
+        return { outcome: "in_flight", workItemId: head.work_item_id };
+      }
+      db.exec("COMMIT;");
+      return { outcome: "claimed", item: toClaimedItem(claimed) };
+    }
+
+    if (!boundariesMatch()) {
+      db.exec("COMMIT;");
+      return { outcome: "in_flight", workItemId };
+    }
+
+    const item = recordItem(db, input, queuedAt);
+    upsertPending();
+
+    const claimed = db
+      .prepare(
+        `UPDATE work_item
+         SET status = 'claimed', claimed_at = ?, claim_expires_at = ?, claim_epoch = claim_epoch + 1
+         WHERE work_item_id = ? AND status = 'queued'
+         RETURNING work_item_id, owner, kind, source_ref, attempts, claim_epoch, queued_at, payload`,
+      )
+      .get(opts.now, claimExpiresAt, item.workItemId) as unknown as RawClaimRow | undefined;
+    if (claimed === undefined) {
+      throw new Error(`failed to claim immediate work item ${item.workItemId}`);
+    }
+    db.exec("COMMIT;");
+    return { outcome: "claimed", item: toClaimedItem(claimed) };
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
 }
 
 interface RawWorkItemRow {
@@ -313,7 +477,9 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
              ORDER BY rowid LIMIT 1
            )
            WHERE (status = 'queued' AND (eligible_at IS NULL OR eligible_at <= ?))
-              OR (status = 'claimed' AND claim_expires_at <= ?)
+              OR (status = 'claimed' AND (
+                claim_expires_at IS NULL OR unixepoch(claim_expires_at) IS NULL OR claim_expires_at <= ?
+              ))
          )
          RETURNING work_item_id, owner, kind, source_ref, attempts, claim_epoch, queued_at, payload`,
       )
@@ -371,7 +537,9 @@ export function complete(
       db.exec("COMMIT;");
       return "lost_lease";
     }
+    assertExactDerivationWrites(item.derivations, writes);
     let hits = 0;
+    let misses = 0;
     const update = db.prepare(
       `UPDATE derivation
        SET state = 'ready', content = ?, reason = NULL, metadata = ?, gaps = NULL, derived_at = ?
@@ -387,9 +555,21 @@ export function complete(
         write.derivationType,
         item.sourceVersion,
       );
-      hits += Number(changed.changes);
+      const count = Number(changed.changes);
+      if (count === 0) misses += 1;
+      if (count > 1) {
+        throw new DerivationCompletionError(
+          `derivation completion write hit ${count} rows for ${targetKey(write)} at sourceVersion ${item.sourceVersion}`,
+        );
+      }
+      hits += count;
     }
     const stale = writes.length > 0 && hits === 0;
+    if (!stale && misses > 0) {
+      throw new DerivationCompletionError(
+        `derivation completion partially hit ${hits} of ${writes.length} rows at sourceVersion ${item.sourceVersion}`,
+      );
+    }
     if (!stale && onApplied !== undefined) {
       onApplied({ db, onCommit: postCommitHook.add });
     }
@@ -442,8 +622,10 @@ export function failTerminal(
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     const metadata = JSON.stringify({ attempts: opts.attempts, lastError: opts.reason });
+    let hits = 0;
+    let misses = 0;
     for (const target of item.derivations) {
-      update.run(
+      const changed = update.run(
         opts.formState,
         opts.reason,
         metadata,
@@ -452,6 +634,20 @@ export function failTerminal(
         target.subjectId,
         target.derivationType,
         item.sourceVersion,
+      );
+      const count = Number(changed.changes);
+      if (count === 0) misses += 1;
+      if (count > 1) {
+        throw new DerivationCompletionError(
+          `derivation completion terminal hit ${count} rows for ${targetKey(target)} at sourceVersion ${item.sourceVersion}`,
+        );
+      }
+      hits += count;
+    }
+    const stale = item.derivations.length > 0 && hits === 0;
+    if (!stale && misses > 0) {
+      throw new DerivationCompletionError(
+        `derivation completion terminal partially hit ${hits} of ${item.derivations.length} rows at sourceVersion ${item.sourceVersion}`,
       );
     }
     db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(

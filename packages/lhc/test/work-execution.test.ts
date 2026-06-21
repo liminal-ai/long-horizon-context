@@ -10,6 +10,8 @@ import {
   countLiveItems,
   type DrainReport,
   type DurableWorkDispatcher,
+  type InferenceCallbacks,
+  type InferenceResult,
   initLhc,
   intakeStream,
   type Lhc,
@@ -20,9 +22,9 @@ import {
   setThreadTouch,
   threads,
 } from "../src/index.js";
+import { applyDerivationTerminalFailure } from "../src/shared-tech/durable-work/index.js";
 import {
   createInferenceCallbacksDouble,
-  type InferenceCallbacksDouble,
   openRaw,
   readDerivedForms,
   registerTestWorkHandlers,
@@ -70,7 +72,7 @@ async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInpu
 }
 
 function manualSdk(
-  double: InferenceCallbacksDouble,
+  double: InferenceCallbacks,
   overrides: {
     clock?: () => Date;
     retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number };
@@ -138,6 +140,110 @@ function claimHeadWorkItem(filePath: string, expiresAt: string): void {
       db.exec("ROLLBACK;");
       throw cause;
     }
+  } finally {
+    db.close();
+  }
+}
+
+function setHeadClaimExpiry(filePath: string, expiresAt: string | null): void {
+  const db = openRaw(filePath);
+  try {
+    const changed = db
+      .prepare(
+        `UPDATE work_item
+         SET claim_expires_at = ?
+         WHERE work_item_id = (
+           SELECT work_item_id FROM work_item
+           WHERE status = 'claimed'
+           ORDER BY rowid LIMIT 1
+         )`,
+      )
+      .run(expiresAt);
+    if (Number(changed.changes) !== 1) {
+      throw new Error(`expected to update exactly one claimed work item, changed ${String(changed.changes)}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function deleteWorkItem(filePath: string, workItemId: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(workItemId);
+  } finally {
+    db.close();
+  }
+}
+
+function expireWorkItemClaim(filePath: string, workItemId: string, expiresAt: string): void {
+  const db = openRaw(filePath);
+  try {
+    const changed = db
+      .prepare(`UPDATE work_item SET claim_expires_at = ? WHERE work_item_id = ? AND status = 'claimed'`)
+      .run(expiresAt, workItemId);
+    if (Number(changed.changes) !== 1) {
+      throw new Error(`expected to expire one claimed work item, changed ${String(changed.changes)}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function setWorkItemAttempts(filePath: string, workItemId: string, attempts: number): void {
+  const db = openRaw(filePath);
+  try {
+    const changed = db.prepare(`UPDATE work_item SET attempts = ? WHERE work_item_id = ?`).run(attempts, workItemId);
+    if (Number(changed.changes) !== 1) {
+      throw new Error(`expected to update one work item, changed ${String(changed.changes)}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function setReadyDerivation(
+  filePath: string,
+  target: { subjectKind: "message" | "turn" | "chunk"; subjectId: string; derivationType: string },
+  content: string,
+  sourceVersion: number,
+): void {
+  const db = openRaw(filePath);
+  try {
+    const changed = db
+      .prepare(
+        `UPDATE derivation
+         SET state = 'ready', content = ?, reason = NULL, metadata = NULL,
+             gaps = NULL, derived_at = ?, source_version = ?
+         WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
+      )
+      .run(
+        content,
+        "2026-06-10T12:00:01.000Z",
+        sourceVersion,
+        target.subjectKind,
+        target.subjectId,
+        target.derivationType,
+      );
+    if (Number(changed.changes) !== 1) {
+      throw new Error(`expected to update one derivation, changed ${String(changed.changes)}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function insertAbandonedChunkSummary(filePath: string, chunkId: string, derivationType: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.prepare(
+      `INSERT INTO chunk (chunk_id, chunk_order, status, accumulated_projected_tokens)
+       VALUES (?, 1, 'closed', 0)`,
+    ).run(chunkId);
+    db.prepare(
+      `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
+       VALUES ('chunk', ?, ?, 'pending', 1)`,
+    ).run(chunkId, derivationType);
   } finally {
     db.close();
   }
@@ -256,6 +362,100 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(liveCount(filePath)).toBe(0);
   });
 
+  it("sync derive queued behind an older head wakes the background scheduler", async () => {
+    const double = createInferenceCallbacksDouble();
+    const background = initLhc({
+      inferenceCallbacks: double,
+      mode: "background",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 1000 },
+    });
+    registerTestWorkHandlers(background, double);
+    const manual = manualSdk(double);
+    const { threadId, filePath } = await newThread();
+
+    const touched = await background.logging.write({ filePath }, { level: "info", message: "touch empty thread" });
+    expect(touched.ok).toBe(true);
+    await background.drainSettled({ filePath });
+
+    await send(manual, filePath, [
+      validEvent("user_prompt", { payload: { text: "first prompt" } }),
+      validEvent("assistant_text", { payload: { text: "first answer" } }),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "second prompt" } }),
+      validEvent("assistant_text", { payload: { text: "second answer" } }),
+      validEvent("turn_end"),
+    ]);
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`DELETE FROM work_item WHERE kind = 'prompt_smoothing'`).run();
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = 'w-t2-turn_derivation-v1'`).run();
+    } finally {
+      db.close();
+    }
+
+    const queued = await background.turns.deriveTurn({ filePath }, "t2");
+    expect(queued.ok).toBe(true);
+    if (!queued.ok) return;
+    expect(queued.value).toMatchObject({
+      turnId: "t2",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+
+    await background.drainSettled({ filePath });
+
+    expect(background.scheduler.testPassCount(threadId)).toBeGreaterThan(0);
+    expect(liveCount(filePath)).toBe(0);
+    expect(
+      readDerivedForms(filePath)
+        .filter((form) => form.subjectId === "t2")
+        .map((form) => [form.derivationType, form.state])
+        .sort(),
+    ).toEqual([
+      ["smooth_turn_compression", "ready"],
+      ["turn_rendering", "ready"],
+    ]);
+  });
+
+  it("sync derive retry work wakes the background scheduler", async () => {
+    const double = createInferenceCallbacksDouble();
+    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: sync retry wake" });
+    const background = initLhc({
+      inferenceCallbacks: double,
+      mode: "background",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 1000 },
+    });
+    registerTestWorkHandlers(background, double);
+    const manual = manualSdk(double);
+    const { filePath } = await newThread();
+
+    const touched = await background.logging.write({ filePath }, { level: "info", message: "touch empty thread" });
+    expect(touched.ok).toBe(true);
+    await background.drainSettled({ filePath });
+
+    await send(manual, filePath, [validEvent("user_prompt", { payload: { text: "retry prompt" } })]);
+
+    const retried = await background.messages.derive({ filePath }, ["m1"]);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+    expect(retried.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: sync retry wake" },
+    });
+
+    await background.drainSettled({ filePath });
+
+    expect(liveCount(filePath)).toBe(0);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({
+      subjectId: "m1",
+      derivationType: "smoothed_prompt",
+      state: "ready",
+    });
+  });
+
   it("reopening a thread with leftover queued rows recovers them when the process engages — message reads stay pure (Epic 04 DD-6)", async () => {
     // Build the leftover state with no background scheduler installed: rows
     // accumulate exactly as a dead process would have left them.
@@ -332,6 +532,32 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
       "m1/smoothed_prompt/ready",
     ]);
     expect(liveCount(filePath)).toBe(0);
+  });
+
+  it.each([
+    { label: "null", claimExpiresAt: null },
+    { label: "invalid", claimExpiresAt: "not-a-date" },
+  ])("a claimed head with $label claim_expires_at is reclaimed immediately", async ({ claimExpiresAt }) => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    claimHeadWorkItem(filePath, "2026-06-10T12:05:00.000Z");
+    setHeadClaimExpiry(filePath, claimExpiresAt);
+
+    const report = await drain(sdk, filePath);
+    expect(report.ran).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        disposition: "done",
+        attempts: 1,
+      }),
+    ]);
+    expect(report.stoppedBecause).toBe("empty");
+    expect(report.claimExpiresAt).toBeUndefined();
+    expect(liveCount(filePath)).toBe(0);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "ready" });
   });
 });
 
@@ -532,7 +758,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
 describe("claim ownership fencing", () => {
   function deferredMessageSdk(now: { ms: number }) {
     type Scripted =
-      | { disposition: "done"; content: string }
+      | { disposition: "done"; content: string; mismatchedWrite?: boolean }
       | { disposition: "failed"; retryable: boolean; reason: string };
     const sdk = initLhc({
       inferenceCallbacks: createInferenceCallbacksDouble(),
@@ -548,6 +774,23 @@ describe("claim ownership fencing", () => {
           item,
           resolve: (scripted) => {
             if (scripted.disposition === "done") {
+              const writes = scripted.mismatchedWrite
+                ? [
+                    {
+                      subjectKind: "message" as const,
+                      subjectId: "m1",
+                      derivationType: "tool_result_summary",
+                      content: scripted.content,
+                    },
+                  ]
+                : [
+                    {
+                      subjectKind: "message" as const,
+                      subjectId: "m1",
+                      derivationType: "smoothed_prompt",
+                      content: scripted.content,
+                    },
+                  ];
               const disposition = applyDerivationSuccess(
                 run.openDb(),
                 {
@@ -556,14 +799,7 @@ describe("claim ownership fencing", () => {
                   workItemId: item.workItemId,
                   claimEpoch: item.claimEpoch,
                 },
-                [
-                  {
-                    subjectKind: "message",
-                    subjectId: "m1",
-                    derivationType: "smoothed_prompt",
-                    content: scripted.content,
-                  },
-                ],
+                writes,
                 run.clock().toISOString(),
               );
               resolve({ disposition });
@@ -577,7 +813,7 @@ describe("claim ownership fencing", () => {
     return { sdk, runs };
   }
 
-  it("stale late success after reclaim reports lost_lease and cannot overwrite the newer completion", async () => {
+  it("stale late success after reclaim reports lost_lease before validating mismatched writes", async () => {
     const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
     const { sdk, runs } = deferredMessageSdk(now);
     const { filePath } = await newThread();
@@ -596,7 +832,7 @@ describe("claim ownership fencing", () => {
     const newerReport = await newerDrain;
     expect(newerReport.ran[0]).toMatchObject({ disposition: "done", attempts: 1 });
 
-    runs[0]?.resolve({ disposition: "done", content: "stale completion" });
+    runs[0]?.resolve({ disposition: "done", content: "stale completion", mismatchedWrite: true });
     const olderReport = await olderDrain;
     expect(olderReport.ran[0]).toMatchObject({ disposition: "lost_lease", attempts: 0 });
 
@@ -661,6 +897,835 @@ describe("claim ownership fencing", () => {
     runs[1]?.resolve({ disposition: "done", content: "newer completion" });
     await newerDrain;
     expect(readDerivedForms(filePath)[0]?.content).toBe("newer completion");
+    expect(liveCount(filePath)).toBe(0);
+  });
+});
+
+describe("completion exactness", () => {
+  it("rejects completion attempts that pass only one claim fence field", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    const db = openRaw(filePath);
+    try {
+      expect(() =>
+        applyDerivationSuccess(
+          db,
+          {
+            sourceVersion: 1,
+            derivations: [],
+            workItemId: "w-m1-prompt_smoothing-v1",
+          } as unknown as Parameters<typeof applyDerivationSuccess>[1],
+          [],
+          "2026-06-10T12:00:00.000Z",
+        ),
+      ).toThrow("DerivationAttempt requires workItemId and claimEpoch together");
+      expect(() =>
+        applyDerivationTerminalFailure(
+          db,
+          {
+            sourceVersion: 1,
+            derivations: [],
+            claimEpoch: 1,
+          } as unknown as Parameters<typeof applyDerivationTerminalFailure>[1],
+          {
+            reason: "scripted terminal",
+            state: "failed",
+            attempts: 1,
+            now: "2026-06-10T12:00:00.000Z",
+          },
+        ),
+      ).toThrow("DerivationAttempt requires workItemId and claimEpoch together");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a queued turn_derivation success missing one expected write rolls back and leaves the item live", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    registerTestingWork(sdk, {
+      dispatchers: {
+        "turns.deriveTurn": async (run, item) => {
+          const disposition = applyDerivationSuccess(
+            run.openDb(),
+            {
+              sourceVersion: item.sourceVersion,
+              derivations: item.derivations,
+              workItemId: item.workItemId,
+              claimEpoch: item.claimEpoch,
+            },
+            [
+              {
+                subjectKind: "turn",
+                subjectId: "t1",
+                derivationType: "turn_rendering",
+                content: "partial rendering",
+              },
+            ],
+            run.clock().toISOString(),
+          );
+          return { disposition };
+        },
+      },
+    });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt"), validEvent("turn_end")]);
+    await drain(sdk, filePath, { maxItems: 1 });
+
+    const failed = await sdk.work.drain({ filePath });
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error).toMatchObject({
+      errorClass: "state_corruption",
+      code: "derivation_completion_mismatch",
+    });
+    expect(failed.error.reason).toContain("derivation_completion_mismatch");
+
+    const forms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
+    expect(forms.map((form) => [form.derivationType, form.state, form.content]).sort()).toEqual([
+      ["smooth_turn_compression", "pending", undefined],
+      ["turn_rendering", "pending", undefined],
+    ]);
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        status: "claimed",
+      }),
+    ]);
+
+    const db = openRaw(filePath);
+    try {
+      const members = db.prepare(`SELECT COUNT(*) AS n FROM chunk_member WHERE turn_id = 't1'`).get() as {
+        n: number | bigint;
+      };
+      const summaries = db.prepare(`SELECT COUNT(*) AS n FROM work_item WHERE kind LIKE 'chunk_summary_%'`).get() as {
+        n: number | bigint;
+      };
+      expect(Number(members.n)).toBe(0);
+      expect(Number(summaries.n)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a stale queued terminal failure deletes owned work without stamping the newer derivation", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    const db = openRaw(filePath);
+    try {
+      db.prepare(
+        `UPDATE derivation
+         SET source_version = 2
+         WHERE subject_kind = 'message' AND subject_id = 'm1' AND derivation_type = 'smoothed_prompt'`,
+      ).run();
+    } finally {
+      db.close();
+    }
+
+    double.failKind("prompt_smoothing", 1, { retryable: false, reason: "stale terminal failure" });
+    const report = await drain(sdk, filePath);
+    expect(report.ran[0]).toMatchObject({
+      workItemId: "w-m1-prompt_smoothing-v1",
+      disposition: "failed_terminal",
+      reason: "stale terminal failure",
+    });
+    expect(liveCount(filePath)).toBe(0);
+    expect(readDerivedForms(filePath)).toEqual([
+      expect.objectContaining({
+        subjectId: "m1",
+        derivationType: "smoothed_prompt",
+        state: "pending",
+        sourceVersion: 2,
+      }),
+    ]);
+    expect(readDerivedForms(filePath)[0]?.reason).toBeUndefined();
+  });
+
+  it("a queued terminal failure that hits only part of its targets rolls back and leaves the item live", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt"), validEvent("turn_end")]);
+    await drain(sdk, filePath, { maxItems: 1 });
+
+    const db = openRaw(filePath);
+    try {
+      db.prepare(
+        `UPDATE derivation
+         SET source_version = 2
+         WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'turn_rendering'`,
+      ).run();
+    } finally {
+      db.close();
+    }
+
+    double.failKind("turn_rendering", 1, { retryable: false, reason: "partial terminal failure" });
+    const failed = await sdk.work.drain({ filePath });
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error).toMatchObject({
+      errorClass: "state_corruption",
+      code: "derivation_completion_mismatch",
+    });
+    expect(failed.error.reason).toContain("terminal partially hit 1 of 2 rows");
+
+    const forms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
+    expect(forms.map((form) => [form.derivationType, form.state, form.reason, form.sourceVersion]).sort()).toEqual([
+      ["smooth_turn_compression", "pending", undefined, 1],
+      ["turn_rendering", "pending", undefined, 2],
+    ]);
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        status: "claimed",
+      }),
+    ]);
+  });
+
+  it("an extra handler write target fails closed before any completion write lands", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    registerTestingWork(sdk, {
+      dispatchers: {
+        "messages.derive": async (run, item) => {
+          const disposition = applyDerivationSuccess(
+            run.openDb(),
+            {
+              sourceVersion: item.sourceVersion,
+              derivations: item.derivations,
+              workItemId: item.workItemId,
+              claimEpoch: item.claimEpoch,
+            },
+            [
+              {
+                subjectKind: "message",
+                subjectId: "m1",
+                derivationType: "smoothed_prompt",
+                content: "expected write",
+              },
+              {
+                subjectKind: "message",
+                subjectId: "m1",
+                derivationType: "tool_result_summary",
+                content: "extra write",
+              },
+            ],
+            run.clock().toISOString(),
+          );
+          return { disposition };
+        },
+      },
+    });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const failed = await sdk.work.drain({ filePath });
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error).toMatchObject({
+      errorClass: "state_corruption",
+      code: "derivation_completion_mismatch",
+    });
+    expect(failed.error.reason).toContain("derivation_completion_mismatch");
+    expect(readDerivedForms(filePath)).toEqual([
+      expect.objectContaining({
+        subjectId: "m1",
+        derivationType: "smoothed_prompt",
+        state: "pending",
+      }),
+    ]);
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        status: "claimed",
+      }),
+    ]);
+  });
+});
+
+describe("sync derive collision policy", () => {
+  it("messages.derive claims an exact queued head and refuses an unexpired exact claim", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const claimedQueued = await sdk.messages.derive({ filePath }, ["m1"]);
+    expect(claimedQueued.ok).toBe(true);
+    if (!claimedQueued.ok) return;
+    expect(claimedQueued.value).toEqual([
+      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
+    ]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "ready" });
+    expect(liveCount(filePath)).toBe(0);
+
+    const claimedThread = await newThread();
+    await send(sdk, claimedThread.filePath, [validEvent("user_prompt")]);
+    claimHeadWorkItem(claimedThread.filePath, "2026-06-10T12:05:00.000Z");
+
+    const refusedClaimed = await sdk.messages.derive({ filePath: claimedThread.filePath }, ["m1"]);
+    expect(refusedClaimed.ok).toBe(true);
+    if (!refusedClaimed.ok) return;
+    expect(refusedClaimed.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: {
+        errorClass: "caller_error",
+        code: "derivation_work_in_flight",
+        reason: expect.stringContaining("prompt_smoothing work for message m1 at sourceVersion 1 is already live"),
+      },
+    });
+
+    expireWorkItemClaim(claimedThread.filePath, "w-m1-prompt_smoothing-v1", "2026-06-10T11:59:59.000Z");
+    const reclaimed = await sdk.messages.derive({ filePath: claimedThread.filePath }, ["m1"]);
+    expect(reclaimed.ok).toBe(true);
+    if (!reclaimed.ok) return;
+    expect(reclaimed.value).toEqual([
+      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
+    ]);
+    expect(readDerivedForms(claimedThread.filePath)[0]).toMatchObject({ state: "ready" });
+    expect(liveCount(claimedThread.filePath)).toBe(0);
+  });
+
+  it("messages.derive preserves retry policy when it claims an existing queued item", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double, {
+      clock: () => new Date("2026-06-10T12:00:00.000Z"),
+      retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 60_000 },
+    });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    setWorkItemAttempts(filePath, "w-m1-prompt_smoothing-v1", 1);
+    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: sync takeover retry" });
+
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: sync takeover retry" },
+    });
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        status: "queued",
+        attempts: 2,
+        lastError: "timeout: sync takeover retry",
+        eligibleAt: "2026-06-10T12:00:04.000Z",
+      }),
+    ]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({
+      subjectId: "m1",
+      derivationType: "smoothed_prompt",
+      state: "pending",
+      sourceVersion: 1,
+    });
+  });
+
+  it("messages.derive retry after expired-claim recovery preserves claim_epoch and attempt accounting", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double, {
+      clock: () => new Date("2026-06-10T12:00:00.000Z"),
+      retry: { budget: 5, backoffBaseMs: 0, backoffCapMs: 0 },
+    });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    claimHeadWorkItem(filePath, "2026-06-10T11:59:59.000Z");
+    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: expired claim retry" });
+
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: expired claim retry" },
+    });
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        status: "queued",
+        attempts: 2,
+        claimEpoch: 2,
+        lastError: "timeout: expired claim retry",
+        eligibleAt: "2026-06-10T12:00:00.000Z",
+      }),
+    ]);
+  });
+
+  it("messages.derive refuses when the derivation advances after its initial read", async () => {
+    let advanceOnClock = false;
+    let filePath = "";
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double, {
+      clock: () => {
+        if (advanceOnClock) {
+          advanceOnClock = false;
+          const db = openRaw(filePath);
+          try {
+            db.prepare(
+              `UPDATE derivation
+               SET state = 'ready', content = 'newer completion', source_version = 2
+               WHERE subject_kind = 'message' AND subject_id = 'm1' AND derivation_type = 'smoothed_prompt'`,
+            ).run();
+          } finally {
+            db.close();
+          }
+        }
+        return new Date("2026-06-10T12:00:00.000Z");
+      },
+    });
+    ({ filePath } = await newThread());
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    advanceOnClock = true;
+    const raced = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(raced.ok).toBe(true);
+    if (!raced.ok) return;
+    expect(raced.value).toEqual([
+      {
+        messageId: "m1",
+        outcome: "failed",
+        error: expect.objectContaining({
+          errorClass: "caller_error",
+          code: "derivation_work_in_flight",
+        }),
+      },
+    ]);
+    expect(readDerivedForms(filePath)).toEqual([
+      expect.objectContaining({
+        subjectId: "m1",
+        derivationType: "smoothed_prompt",
+        state: "ready",
+        content: "newer completion",
+        sourceVersion: 2,
+      }),
+    ]);
+    expect(liveDetail(filePath).map((item) => item.workItemId)).toEqual([]);
+  });
+
+  it("messages.derive refuses an exact expired head if the derivation boundary advanced before claim", async () => {
+    let advanceOnClock = false;
+    let filePath = "";
+    const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
+    const sdk = manualSdk(double, {
+      clock: () => {
+        if (advanceOnClock) {
+          advanceOnClock = false;
+          setReadyDerivation(
+            filePath,
+            { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
+            "newer prompt",
+            2,
+          );
+        }
+        return new Date("2026-06-10T12:00:00.000Z");
+      },
+    });
+    ({ filePath } = await newThread());
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    claimHeadWorkItem(filePath, "2026-06-10T11:59:59.000Z");
+
+    advanceOnClock = true;
+    const raced = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(raced.ok).toBe(true);
+    if (!raced.ok) return;
+    expect(raced.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(captured).toHaveLength(0);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({
+      subjectId: "m1",
+      derivationType: "smoothed_prompt",
+      state: "ready",
+      content: "newer prompt",
+      sourceVersion: 2,
+    });
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        status: "claimed",
+        attempts: 0,
+        claimEpoch: 1,
+      }),
+    ]);
+  });
+
+  it("messages.derive reports stale_discarded completion as in-flight instead of derived", async () => {
+    let filePath = "";
+    const base = createInferenceCallbacksDouble();
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: async () => {
+        setReadyDerivation(
+          filePath,
+          { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
+          "newer prompt while handler ran",
+          2,
+        );
+        return { ok: true, text: "stale prompt completion" };
+      },
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      composeTurnRendering: (input) => base.composeTurnRendering(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
+    ({ filePath } = await newThread());
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const raced = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(raced.ok).toBe(true);
+    if (!raced.ok) return;
+    expect(raced.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(readDerivedForms(filePath)[0]).toMatchObject({
+      subjectId: "m1",
+      derivationType: "smoothed_prompt",
+      state: "ready",
+      content: "newer prompt while handler ran",
+      sourceVersion: 2,
+    });
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("turns.deriveTurn refuses an abandoned later turn while older turn_derivation work is queued", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "first prompt" } }),
+      validEvent("assistant_text", { payload: { text: "first answer" } }),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "second prompt" } }),
+      validEvent("assistant_text", { payload: { text: "second answer" } }),
+      validEvent("turn_end"),
+    ]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`DELETE FROM work_item WHERE kind = 'prompt_smoothing'`).run();
+    } finally {
+      db.close();
+    }
+    deleteWorkItem(filePath, "w-t2-turn_derivation-v1");
+
+    const refused = await sdk.turns.deriveTurn({ filePath }, "t2");
+
+    expect(refused.ok).toBe(true);
+    if (!refused.ok) return;
+    expect(refused.value).toMatchObject({
+      turnId: "t2",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        status: "queued",
+      }),
+      expect.objectContaining({
+        workItemId: "w-t2-turn_derivation-v1",
+        status: "queued",
+      }),
+    ]);
+    expect(
+      readDerivedForms(filePath)
+        .filter((form) => form.subjectId === "t2")
+        .map((form) => [form.derivationType, form.state, form.sourceVersion])
+        .sort(),
+    ).toEqual([
+      ["smooth_turn_compression", "pending", 1],
+      ["turn_rendering", "pending", 1],
+    ]);
+  });
+
+  it("turns.deriveTurn refuses an exact head when one of its two derivations advances before claim", async () => {
+    let advanceOnClock = false;
+    let filePath = "";
+    const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
+    const sdk = manualSdk(double, {
+      clock: () => {
+        if (advanceOnClock) {
+          advanceOnClock = false;
+          setReadyDerivation(
+            filePath,
+            { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression" },
+            "newer compression",
+            2,
+          );
+        }
+        return new Date("2026-06-10T12:00:00.000Z");
+      },
+    });
+    ({ filePath } = await newThread());
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "turn boundary" } }),
+      validEvent("assistant_text", { payload: { text: "answer" } }),
+      validEvent("turn_end"),
+    ]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    advanceOnClock = true;
+    const raced = await sdk.turns.deriveTurn({ filePath }, "t1");
+
+    expect(raced.ok).toBe(true);
+    if (!raced.ok) return;
+    expect(raced.value).toMatchObject({
+      turnId: "t1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(captured).toHaveLength(0);
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        status: "queued",
+        attempts: 0,
+        claimEpoch: 0,
+      }),
+    ]);
+    expect(
+      readDerivedForms(filePath)
+        .filter((form) => form.subjectId === "t1")
+        .map((form) => [form.derivationType, form.state, form.content, form.sourceVersion])
+        .sort(),
+    ).toEqual([
+      ["smooth_turn_compression", "ready", "newer compression", 2],
+      ["turn_rendering", "pending", undefined, 1],
+    ]);
+  });
+
+  it("two concurrent messages.derive calls share the durable claim", async () => {
+    const base = createInferenceCallbacksDouble();
+    const smoothCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      composeTurnRendering: (input) => base.composeTurnRendering(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "claim me" } })]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    const first = sdk.messages.derive({ filePath }, ["m1"]);
+    await until(() => smoothCalls.length === 1, "first sync message derive claim");
+    const second = await sdk.messages.derive({ filePath }, ["m1"]);
+    smoothCalls[0]?.resolve({ ok: true, text: "owned message completion" });
+    const owned = await first;
+
+    expect(second.ok).toBe(true);
+    expect(owned.ok).toBe(true);
+    if (!second.ok || !owned.ok) return;
+    expect(second.value).toEqual([
+      {
+        messageId: "m1",
+        outcome: "failed",
+        error: expect.objectContaining({
+          errorClass: "caller_error",
+          code: "derivation_work_in_flight",
+        }),
+      },
+    ]);
+    expect(owned.value).toEqual([
+      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
+    ]);
+    expect(readDerivedForms(filePath)).toEqual([
+      expect.objectContaining({
+        subjectId: "m1",
+        derivationType: "smoothed_prompt",
+        state: "ready",
+        content: "owned message completion",
+      }),
+    ]);
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("two concurrent turns.deriveTurn calls share the durable claim", async () => {
+    const base = createInferenceCallbacksDouble();
+    const compressionCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: (input) => base.smoothPrompt(input),
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      composeTurnRendering: (input) => base.composeTurnRendering(input),
+      compressSmoothTurn: () => new Promise((resolve) => compressionCalls.push({ resolve })),
+      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "turn claim" } }),
+      validEvent("assistant_text", { payload: { text: "answer" } }),
+      validEvent("turn_end"),
+    ]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+    deleteWorkItem(filePath, "w-t1-turn_derivation-v1");
+
+    const first = sdk.turns.deriveTurn({ filePath }, "t1");
+    await until(() => compressionCalls.length === 1, "first sync turn derive claim");
+    const second = await sdk.turns.deriveTurn({ filePath }, "t1");
+    compressionCalls[0]?.resolve({ ok: true, text: "owned turn compression" });
+    const owned = await first;
+
+    expect(second.ok).toBe(true);
+    expect(owned.ok).toBe(true);
+    if (!second.ok || !owned.ok) return;
+    expect(second.value).toMatchObject({
+      turnId: "t1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(owned.value).toEqual({ turnId: "t1", outcome: "derived", sourceVersion: 1 });
+    const turnForms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
+    expect(turnForms.map((form) => [form.derivationType, form.state, form.content]).sort()).toEqual([
+      ["smooth_turn_compression", "ready", "owned turn compression"],
+      ["turn_rendering", "ready", expect.stringContaining("turn claim")],
+    ]);
+    expect(liveDetail(filePath).filter((item) => item.workItemId === "w-t1-turn_derivation-v1")).toEqual([]);
+  });
+
+  it("two concurrent turns.deriveBriefChunk calls share the durable claim", async () => {
+    const base = createInferenceCallbacksDouble();
+    const briefCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: (input) => base.smoothPrompt(input),
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      composeTurnRendering: (input) => base.composeTurnRendering(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
+      summarizeChunkBrief: () => new Promise((resolve) => briefCalls.push({ resolve })),
+    };
+    const sdk = manualSdk(callbacks);
+    const { filePath } = await newThread();
+    insertAbandonedChunkSummary(filePath, "c1", "chunk_summary_brief");
+
+    const first = sdk.turns.deriveBriefChunk({ filePath }, "c1");
+    await until(() => briefCalls.length === 1, "first sync chunk derive claim");
+    const second = await sdk.turns.deriveBriefChunk({ filePath }, "c1");
+    briefCalls[0]?.resolve({ ok: true, text: "owned chunk brief" });
+    const owned = await first;
+
+    expect(second.ok).toBe(true);
+    expect(owned.ok).toBe(true);
+    if (!second.ok || !owned.ok) return;
+    expect(second.value).toMatchObject({
+      chunkId: "c1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(owned.value).toEqual({
+      chunkId: "c1",
+      outcome: "derived",
+      derivationType: "chunk_summary_brief",
+      sourceVersion: 1,
+    });
+    expect(readDerivedForms(filePath)).toEqual([
+      expect.objectContaining({
+        subjectKind: "chunk",
+        subjectId: "c1",
+        derivationType: "chunk_summary_brief",
+        state: "ready",
+        content: "owned chunk brief",
+      }),
+    ]);
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("sync derive success is fenced by claim_epoch after a competing claim completes", async () => {
+    const base = createInferenceCallbacksDouble();
+    const smoothCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      composeTurnRendering: (input) => base.composeTurnRendering(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "stale owner" } })]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    const staleOwner = sdk.messages.derive({ filePath }, ["m1"]);
+    await until(() => smoothCalls.length === 1, "first sync message derive claim");
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        status: "claimed",
+        claimEpoch: 1,
+      }),
+    ]);
+
+    expireWorkItemClaim(filePath, "w-m1-prompt_smoothing-v1", "2026-06-10T11:59:59.000Z");
+    claimHeadWorkItem(filePath, "2026-06-10T12:05:00.000Z");
+    const competingClaim = liveDetail(filePath)[0];
+    expect(competingClaim).toMatchObject({ workItemId: "w-m1-prompt_smoothing-v1", claimEpoch: 2 });
+    const db = openRaw(filePath);
+    try {
+      applyDerivationSuccess(
+        db,
+        {
+          sourceVersion: 1,
+          derivations: [{ subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" }],
+          workItemId: "w-m1-prompt_smoothing-v1",
+          claimEpoch: 2,
+        },
+        [
+          {
+            subjectKind: "message",
+            subjectId: "m1",
+            derivationType: "smoothed_prompt",
+            content: "competing completion",
+          },
+        ],
+        "2026-06-10T12:00:01.000Z",
+      );
+    } finally {
+      db.close();
+    }
+
+    smoothCalls[0]?.resolve({ ok: true, text: "stale completion" });
+    const result = await staleOwner;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual([
+      {
+        messageId: "m1",
+        outcome: "failed",
+        error: expect.objectContaining({
+          errorClass: "caller_error",
+          code: "derivation_work_in_flight",
+        }),
+      },
+    ]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({
+      state: "ready",
+      content: "competing completion",
+    });
     expect(liveCount(filePath)).toBe(0);
   });
 });

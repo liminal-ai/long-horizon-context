@@ -16,12 +16,13 @@ export type DurableWorkOperation =
   | { operation: "turns.deriveDetailedChunk"; chunkId: string }
   | { operation: "turns.deriveBriefChunk"; chunkId: string };
 
-export interface DerivationAttempt {
+interface DerivationAttemptBase {
   sourceVersion: number;
   derivations: readonly EnqueueDerivationTarget[];
-  workItemId?: string;
-  claimEpoch?: number;
 }
+
+export type DerivationAttempt = DerivationAttemptBase &
+  ({ workItemId?: undefined; claimEpoch?: undefined } | { workItemId: string; claimEpoch: number });
 
 export type DurableWorkDispatchResult =
   | { disposition: "done" | "stale_discarded" | "lost_lease" }
@@ -42,6 +43,52 @@ export type DurableWorkDispatcher = (
 ) => Promise<DurableWorkDispatchResult>;
 
 export type DurableWorkDispatcherMap = Partial<Record<DurableWorkOperation["operation"], DurableWorkDispatcher>>;
+
+export class DerivationCompletionError extends Error {
+  readonly errorClass = "state_corruption" as const;
+  readonly code = "derivation_completion_mismatch" as const;
+
+  constructor(detail: string) {
+    super(`derivation_completion_mismatch: ${detail}`);
+  }
+}
+
+function targetKey(target: Pick<EnqueueDerivationTarget, "subjectKind" | "subjectId" | "derivationType">): string {
+  return `${target.subjectKind}/${target.subjectId}/${target.derivationType}`;
+}
+
+function assertAttemptClaimPair(attempt: DerivationAttempt): void {
+  const hasWorkItemId = attempt.workItemId !== undefined;
+  const hasClaimEpoch = attempt.claimEpoch !== undefined;
+  if (hasWorkItemId !== hasClaimEpoch) {
+    throw new TypeError("DerivationAttempt requires workItemId and claimEpoch together");
+  }
+}
+
+export function assertExactDerivationWrites(
+  expected: readonly EnqueueDerivationTarget[],
+  writes: readonly HandlerDerivationWrite[],
+): void {
+  const expectedKeys = expected.map(targetKey);
+  const writeKeys = writes.map(targetKey);
+  const duplicateExpected = expectedKeys.find((key, index) => expectedKeys.indexOf(key) !== index);
+  if (duplicateExpected !== undefined) {
+    throw new DerivationCompletionError(`derivation completion target duplicated: ${duplicateExpected}`);
+  }
+  const duplicateWrite = writeKeys.find((key, index) => writeKeys.indexOf(key) !== index);
+  if (duplicateWrite !== undefined) {
+    throw new DerivationCompletionError(`derivation completion write duplicated: ${duplicateWrite}`);
+  }
+  const expectedSet = new Set(expectedKeys);
+  const writeSet = new Set(writeKeys);
+  const missing = expectedKeys.filter((key) => !writeSet.has(key));
+  const extra = writeKeys.filter((key) => !expectedSet.has(key));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new DerivationCompletionError(
+      `derivation completion target mismatch: missing [${missing.join(", ")}], extra [${extra.join(", ")}]`,
+    );
+  }
+}
 
 export function operationIntent(kind: WorkKind, sourceRef: WorkSourceRef): DurableWorkOperation {
   switch (kind) {
@@ -92,10 +139,11 @@ export function applyDerivationSuccess(
   derivedAt: string,
   onApplied?: (transaction: CompletionTx) => void,
 ): "done" | "stale_discarded" | "lost_lease" {
+  assertAttemptClaimPair(attempt);
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
-    if (attempt.workItemId !== undefined && attempt.claimEpoch !== undefined) {
+    if (attempt.workItemId !== undefined) {
       const owned = db
         .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
         .get(attempt.workItemId, attempt.claimEpoch);
@@ -104,7 +152,9 @@ export function applyDerivationSuccess(
         return "lost_lease";
       }
     }
+    assertExactDerivationWrites(attempt.derivations, writes);
     let hits = 0;
+    let misses = 0;
     const update = db.prepare(
       `UPDATE derivation
        SET state = 'ready', content = ?, reason = NULL, metadata = ?, gaps = ?, derived_at = ?
@@ -121,21 +171,29 @@ export function applyDerivationSuccess(
         write.derivationType,
         attempt.sourceVersion,
       );
-      hits += Number(changed.changes);
+      const count = Number(changed.changes);
+      if (count === 0) misses += 1;
+      if (count > 1) {
+        throw new DerivationCompletionError(
+          `derivation completion write hit ${count} rows for ${targetKey(write)} at sourceVersion ${attempt.sourceVersion}`,
+        );
+      }
+      hits += count;
     }
     const stale = writes.length > 0 && hits === 0;
+    if (!stale && misses > 0) {
+      throw new DerivationCompletionError(
+        `derivation completion partially hit ${hits} of ${writes.length} rows at sourceVersion ${attempt.sourceVersion}`,
+      );
+    }
     if (!stale && onApplied !== undefined) {
       onApplied({ db, onCommit: postCommitHook.add });
     }
     if (attempt.workItemId !== undefined) {
-      if (attempt.claimEpoch === undefined) {
-        db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
-      } else {
-        db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
-          attempt.workItemId,
-          attempt.claimEpoch,
-        );
-      }
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+        attempt.workItemId,
+        attempt.claimEpoch,
+      );
     }
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -151,9 +209,10 @@ export function applyDerivationTerminalFailure(
   attempt: DerivationAttempt,
   opts: { reason: string; state: "failed" | "blocked"; attempts: number; now: string },
 ): "done" | "lost_lease" {
+  assertAttemptClaimPair(attempt);
   db.exec("BEGIN IMMEDIATE;");
   try {
-    if (attempt.workItemId !== undefined && attempt.claimEpoch !== undefined) {
+    if (attempt.workItemId !== undefined) {
       const owned = db
         .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
         .get(attempt.workItemId, attempt.claimEpoch);
@@ -168,8 +227,10 @@ export function applyDerivationTerminalFailure(
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     const metadata = JSON.stringify({ attempts: opts.attempts, lastError: opts.reason });
+    let hits = 0;
+    let misses = 0;
     for (const target of attempt.derivations) {
-      update.run(
+      const changed = update.run(
         opts.state,
         opts.reason,
         metadata,
@@ -179,16 +240,26 @@ export function applyDerivationTerminalFailure(
         target.derivationType,
         attempt.sourceVersion,
       );
-    }
-    if (attempt.workItemId !== undefined) {
-      if (attempt.claimEpoch === undefined) {
-        db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(attempt.workItemId);
-      } else {
-        db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
-          attempt.workItemId,
-          attempt.claimEpoch,
+      const count = Number(changed.changes);
+      if (count === 0) misses += 1;
+      if (count > 1) {
+        throw new DerivationCompletionError(
+          `derivation completion terminal hit ${count} rows for ${targetKey(target)} at sourceVersion ${attempt.sourceVersion}`,
         );
       }
+      hits += count;
+    }
+    const stale = attempt.derivations.length > 0 && hits === 0;
+    if (!stale && misses > 0) {
+      throw new DerivationCompletionError(
+        `derivation completion terminal partially hit ${hits} of ${attempt.derivations.length} rows at sourceVersion ${attempt.sourceVersion}`,
+      );
+    }
+    if (attempt.workItemId !== undefined) {
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+        attempt.workItemId,
+        attempt.claimEpoch,
+      );
     }
     db.exec("COMMIT;");
     return "done";

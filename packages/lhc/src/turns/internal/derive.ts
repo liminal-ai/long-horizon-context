@@ -29,15 +29,22 @@ import type {
 import {
   applyDerivationSuccess,
   applyDerivationTerminalFailure,
+  DerivationCompletionError,
   type DurableWorkDispatchResult,
   resolveInstancePoke,
   runWorkHandler,
   truncateForFallback,
-  writePendingDerivations,
 } from "../../shared-tech/index.js";
 import { writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
-import type { EnqueueDerivationTarget, WorkKind, WorkSourceRef } from "../../shared-tech/work-queue/index.js";
+import {
+  createOrClaimImmediateWorkItem,
+  type EnqueueDerivationTarget,
+  type ImmediateDerivationBoundary,
+  retryClaimedItem,
+  type WorkKind,
+  type WorkSourceRef,
+} from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
 import {
   type ComposeDerivationRow,
@@ -90,6 +97,13 @@ function readThreadId(run: HandlerRunContext): string {
     | { thread_id: string }
     | undefined;
   return row?.thread_id ?? "";
+}
+
+function pokeThreadScheduler(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+    | { thread_id: string }
+    | undefined;
+  if (row !== undefined) resolveInstancePoke()(row.thread_id);
 }
 
 function logFallback(
@@ -407,13 +421,40 @@ function failed(error: ErrorResult): { outcome: "failed"; error: ErrorResult } {
   return { outcome: "failed", error };
 }
 
+function sourceRefId(sourceRef: WorkSourceRef): string {
+  if ("turnId" in sourceRef) return sourceRef.turnId;
+  if ("chunkId" in sourceRef) return sourceRef.chunkId;
+  return sourceRef.messageId;
+}
+
+function workInFlight(
+  kind: WorkKind,
+  sourceRef: WorkSourceRef,
+  sourceVersion: number,
+): { outcome: "failed"; error: ErrorResult } {
+  const sourceId = sourceRefId(sourceRef);
+  return failed({
+    errorClass: "caller_error",
+    code: "derivation_work_in_flight",
+    reason: `${kind} work for ${sourceId} at sourceVersion ${sourceVersion} is already live`,
+  });
+}
+
+function retryScheduled(reason: string): { outcome: "failed"; error: ErrorResult } {
+  return failed({
+    errorClass: "system_error",
+    code: "derivation_retry_scheduled",
+    reason,
+  });
+}
+
 export async function deriveTurnOwnedInOpenDb(
   db: DatabaseSync,
   config: ResolvedSdkConfig,
   kind: WorkKind,
   sourceRef: WorkSourceRef,
   derivations: readonly EnqueueDerivationTarget[],
-  opts?: { sourceVersion?: number; workItemId?: string; preparePending?: boolean },
+  opts?: { sourceVersion?: number },
 ): Promise<{ outcome: "derived"; sourceVersion: number } | { outcome: "failed"; error: ErrorResult }> {
   const rows = derivations.map((target) =>
     readTurnDerivationRow(db, target.subjectKind as "turn" | "chunk", target.subjectId, target.derivationType),
@@ -436,8 +477,13 @@ export async function deriveTurnOwnedInOpenDb(
   }
   const sourceVersion =
     opts?.sourceVersion ?? sourceVersionForDerive(rows as Array<{ state: string; sourceVersion: number }>);
-  if (opts?.preparePending !== false) writePendingDerivations(db, derivations, sourceVersion);
-
+  const expectedDerivations: ImmediateDerivationBoundary[] = derivations.map((target, index) => {
+    const row = rows[index];
+    if (row === undefined) {
+      throw new Error(`missing checked derivation row for ${target.subjectKind} ${target.subjectId}`);
+    }
+    return { ...target, exists: true, state: row.state, sourceVersion: row.sourceVersion };
+  });
   const handler = turnWorkHandlers[kind];
   if (handler === undefined) {
     return failed({
@@ -446,28 +492,87 @@ export async function deriveTurnOwnedInOpenDb(
       reason: `no handler registered for work kind "${kind}"`,
     });
   }
+  const claim = createOrClaimImmediateWorkItem(
+    db,
+    {
+      owner: "turns",
+      kind,
+      sourceRef,
+      sourceVersion,
+      derivations,
+      expectedDerivations,
+    },
+    { now: config.clock().toISOString(), leaseDurationMs: config.lease.durationMs },
+  );
+  if (claim.outcome !== "claimed") {
+    if (claim.outcome === "queued") pokeThreadScheduler(db);
+    return workInFlight(kind, sourceRef, sourceVersion);
+  }
   const outcome = await runWorkHandler(db, config, handler, {
-    workItemId:
-      opts?.workItemId ??
-      `sync-${"turnId" in sourceRef ? sourceRef.turnId : "chunkId" in sourceRef ? sourceRef.chunkId : sourceRef.messageId}-${kind}-v${sourceVersion}`,
+    workItemId: claim.item.workItemId,
     kind,
     sourceRef,
   });
   const attempt = {
     sourceVersion,
     derivations,
-    ...(opts?.workItemId === undefined ? {} : { workItemId: opts.workItemId }),
+    workItemId: claim.item.workItemId,
+    claimEpoch: claim.item.claimEpoch,
   };
   if (outcome.ok) {
-    applyDerivationSuccess(db, attempt, outcome.derivations ?? [], config.clock().toISOString(), outcome.onApplied);
+    try {
+      const disposition = applyDerivationSuccess(
+        db,
+        attempt,
+        outcome.derivations ?? [],
+        config.clock().toISOString(),
+        outcome.onApplied,
+      );
+      if (disposition !== "done") {
+        return workInFlight(kind, sourceRef, sourceVersion);
+      }
+    } catch (cause) {
+      if (cause instanceof DerivationCompletionError) {
+        return failed({
+          errorClass: cause.errorClass,
+          code: cause.code,
+          reason: cause.message,
+        });
+      }
+      throw cause;
+    }
     return { outcome: "derived", sourceVersion };
   }
-  applyDerivationTerminalFailure(db, attempt, {
-    reason: outcome.reason,
-    state: "blocked" in outcome ? "blocked" : "failed",
-    attempts: 1,
-    now: config.clock().toISOString(),
-  });
+  const attempts = claim.item.attempts + 1;
+  const now = config.clock().toISOString();
+  if (!("blocked" in outcome) && outcome.retryable && attempts < config.retry.budget) {
+    const backoffMs = Math.min(config.retry.backoffBaseMs * 2 ** attempts, config.retry.backoffCapMs);
+    const eligibleAt = new Date(Date.parse(now) + backoffMs).toISOString();
+    const owned = retryClaimedItem(db, claim.item, { reason: outcome.reason, attempts, eligibleAt });
+    if (!owned) return workInFlight(kind, sourceRef, sourceVersion);
+    pokeThreadScheduler(db);
+    return retryScheduled(outcome.reason);
+  }
+  try {
+    const disposition = applyDerivationTerminalFailure(db, attempt, {
+      reason: outcome.reason,
+      state: "blocked" in outcome ? "blocked" : "failed",
+      attempts,
+      now,
+    });
+    if (disposition === "lost_lease") {
+      return workInFlight(kind, sourceRef, sourceVersion);
+    }
+  } catch (cause) {
+    if (cause instanceof DerivationCompletionError) {
+      return failed({
+        errorClass: cause.errorClass,
+        code: cause.code,
+        reason: cause.message,
+      });
+    }
+    throw cause;
+  }
   return failed({
     errorClass: "system_error",
     code: "provider_failure",
