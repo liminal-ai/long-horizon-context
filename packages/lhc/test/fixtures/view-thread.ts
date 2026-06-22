@@ -151,6 +151,7 @@ export async function derivedThreadFixture(
     inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
   });
@@ -231,19 +232,20 @@ export async function derivedThreadFixture(
     await drain(sdk, filePath);
   }
 
-  // Shape invariants the chunk policy is pinned for: 12 closed turns in 4
-  // chunks, the first three closed. A failure here means the deterministic
-  // substrate moved (inference callback output or tokenizer), not a flaky test.
+  // Shape invariants the chunk policy is pinned for. The straggler variant
+  // includes one extra closed note turn, so it carries one extra chunk.
   fixture.chunks = readChunks(filePath);
-  if (fixture.chunks.chunks.length !== 4) {
+  const expectedChunks = stragglers ? 5 : 4;
+  if (fixture.chunks.chunks.length !== expectedChunks) {
     throw new Error(
-      `fixture invariant: expected 4 chunks, got ${fixture.chunks.chunks.length} — re-pin FIXTURE_CHUNK_POLICY`,
+      `fixture invariant: expected ${expectedChunks} chunks, got ${fixture.chunks.chunks.length} — re-pin FIXTURE_CHUNK_POLICY`,
     );
   }
   const closed = fixture.chunks.chunks.filter((chunk) => chunk.status === "closed").length;
-  if (closed !== 3) {
+  const expectedClosed = stragglers ? 4 : 3;
+  if (closed !== expectedClosed) {
     throw new Error(
-      `fixture invariant: expected chunks c1–c3 closed, got ${closed} closed — re-pin FIXTURE_CHUNK_POLICY`,
+      `fixture invariant: expected ${expectedClosed} closed chunks, got ${closed} closed — re-pin FIXTURE_CHUNK_POLICY`,
     );
   }
 
@@ -289,7 +291,11 @@ export async function stragglerVariantThread(store: TempStore): Promise<DerivedT
 // consumers refuse it with state_corruption.
 export async function corruptedVariantThread(store: TempStore): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+  const sdk = initLhc({
+    inferenceCallbacks: double,
+    mode: "manual",
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+  });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
@@ -418,7 +424,11 @@ export async function blockedSiblingThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc; blockedTurnId: string }> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+  const sdk = initLhc({
+    inferenceCallbacks: double,
+    mode: "manual",
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+  });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);

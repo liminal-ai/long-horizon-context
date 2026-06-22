@@ -132,7 +132,13 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
     double.composeTurnRendering({
       parts: [{ messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false }],
     }),
-    double.compressSmoothTurn({ rendering: "the rendering text" }),
+    double.compressSmoothTurn({
+      rendering: "the rendering text",
+      inputTokens: 10,
+      targetMinTokens: 4,
+      targetAimTokens: 5,
+      targetMaxTokens: 7,
+    }),
     double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
     double.summarizeChunkBrief({ memberProjections: ["projection one", "projection two"] }),
   ];
@@ -210,8 +216,25 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     expect(cleanResult.ok).toBe(true);
     expect(capturedScripted).toHaveLength(0);
     const capturedClean = clean.captureInputs();
-    await clean.compressSmoothTurn({ rendering: "r" });
-    expect(capturedClean).toEqual([{ op: "compressSmoothTurn", input: { rendering: "r" } }]);
+    await clean.compressSmoothTurn({
+      rendering: "r",
+      inputTokens: 10,
+      targetMinTokens: 4,
+      targetAimTokens: 5,
+      targetMaxTokens: 7,
+    });
+    expect(capturedClean).toEqual([
+      {
+        op: "compressSmoothTurn",
+        input: {
+          rendering: "r",
+          inputTokens: 10,
+          targetMinTokens: 4,
+          targetAimTokens: 5,
+          targetMaxTokens: 7,
+        },
+      },
+    ]);
     expect(capturedScripted).toHaveLength(0);
     const scriptedResult = await scripted.smoothPrompt({ text: "untouched" });
     expect(scriptedResult.ok).toBe(false);

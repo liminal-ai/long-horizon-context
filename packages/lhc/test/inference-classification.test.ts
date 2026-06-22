@@ -57,6 +57,7 @@ function inferenceSdk(call: ModelCall, timeoutMs?: number): Lhc {
     mode: "manual",
     retry: RETRY,
     chunkPolicy: CHUNK_POLICY,
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
   });
 }
 

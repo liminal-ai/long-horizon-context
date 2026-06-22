@@ -364,7 +364,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   smooth_turn_compression: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "lower-band-v1",
+    prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "smooth-turn-compression-v1",
     targetMinRatio: 0.35,
     targetMaxRatio: 0.65,
     targetAimRatio: 0.5,
@@ -378,6 +378,15 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
     targetAimRatio: 0.12,
   },
 };
+
+function resolveCompressionTargets(assignment?: ModelAssignment): ResolvedSdkConfig["compressionTargets"] {
+  const defaults = DEFAULT_INFERENCE_ASSIGNMENTS.smooth_turn_compression!;
+  return {
+    minRatio: assignment?.targetMinRatio ?? defaults.targetMinRatio!,
+    aimRatio: assignment?.targetAimRatio ?? defaults.targetAimRatio!,
+    maxRatio: assignment?.targetMaxRatio ?? defaults.targetMaxRatio!,
+  };
+}
 
 // Resolve the `inference` construction path (Epic 05 Flow 1, DD-5; Epic 07
 // Story 0 AC-0.3/6.1–6.4): validate the host function and the assignment map,
@@ -420,6 +429,12 @@ function resolveInferenceCallbacks(
       const value = assignment[field];
       if (typeof value !== "string" || value.trim() === "") {
         throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.${field} must be a non-empty string`);
+      }
+    }
+    for (const field of ["targetMinRatio", "targetAimRatio", "targetMaxRatio"] as const) {
+      const value = assignment[field];
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+        throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.${field} must be a positive number`);
       }
     }
     if (PROMPT_REGISTRY[assignment.prompt] === undefined) {
@@ -482,6 +497,7 @@ export function initLhc(config: SdkConfig): Lhc {
     );
   }
   const guards = resolveGuards(config.guards);
+  const compressionTargets = resolveCompressionTargets(config.inference?.assignments?.smooth_turn_compression);
 
   let inferenceCallbacks: InferenceCallbacks;
   if (config.inference !== undefined) {
@@ -505,6 +521,7 @@ export function initLhc(config: SdkConfig): Lhc {
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
     guards,
+    compressionTargets,
     toolResult: config.toolResult ?? {
       smallTierTokens: 1000,
       smallTargetRatio: 0.15,
@@ -526,6 +543,18 @@ export function initLhc(config: SdkConfig): Lhc {
   requirePositive(resolved.guards.smoothedPrompt.suspiciousOutputRatio, "guards.smoothedPrompt.suspiciousOutputRatio");
   requirePositive(resolved.guards.toolResultSummary.timeoutMs, "guards.toolResultSummary.timeoutMs");
   requirePositive(resolved.guards.smoothTurnCompression.tinyTurnTokens, "guards.smoothTurnCompression.tinyTurnTokens");
+  requirePositive(resolved.compressionTargets.minRatio, "compressionTargets.minRatio");
+  requirePositive(resolved.compressionTargets.aimRatio, "compressionTargets.aimRatio");
+  requirePositive(resolved.compressionTargets.maxRatio, "compressionTargets.maxRatio");
+  if (resolved.compressionTargets.maxRatio < resolved.compressionTargets.minRatio) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: compressionTargets.maxRatio must be >= minRatio`);
+  }
+  if (
+    resolved.compressionTargets.aimRatio < resolved.compressionTargets.minRatio ||
+    resolved.compressionTargets.aimRatio > resolved.compressionTargets.maxRatio
+  ) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: compressionTargets.aimRatio must be between minRatio and maxRatio`);
+  }
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
   requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");
   requirePositive(resolved.toolResult.midTargetRatio, "toolResult.midTargetRatio");

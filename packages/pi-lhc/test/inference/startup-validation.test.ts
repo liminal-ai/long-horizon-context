@@ -373,6 +373,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
             assignments,
           },
           mode: "background",
+          guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
         };
 
         const connector = createConn({

@@ -144,7 +144,13 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     return this.run("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | "));
   }
 
-  compressSmoothTurn(i: { rendering: string }): Promise<InferenceResult> {
+  compressSmoothTurn(i: {
+    rendering: string;
+    inputTokens: number;
+    targetMinTokens: number;
+    targetAimTokens: number;
+    targetMaxTokens: number;
+  }): Promise<InferenceResult> {
     return this.run("compressSmoothTurn", i, i.rendering);
   }
 

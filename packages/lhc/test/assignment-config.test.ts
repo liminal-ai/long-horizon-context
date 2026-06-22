@@ -35,7 +35,17 @@ const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> 
     run: (p) =>
       p.config.inferenceCallbacks.summarizeToolResult({ toolName: "read", content: "c", outcome: "succeeded" }),
   },
-  { kind: "smooth_turn_compression", run: (p) => p.config.inferenceCallbacks.compressSmoothTurn({ rendering: "r" }) },
+  {
+    kind: "smooth_turn_compression",
+    run: (p) =>
+      p.config.inferenceCallbacks.compressSmoothTurn({
+        rendering: "r",
+        inputTokens: 10,
+        targetMinTokens: 4,
+        targetAimTokens: 5,
+        targetMaxTokens: 7,
+      }),
+  },
   {
     kind: "chunk_summary_brief",
     run: (p) => p.config.inferenceCallbacks.summarizeChunkBrief({ memberProjections: ["m"] }),
@@ -47,7 +57,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
     const assignments: Record<string, ModelAssignment> = {
       smoothed_prompt: { provider: "p", model: "m", prompt: "smoothing-v1" },
       tool_result_summary: { provider: "p", model: "m", prompt: "tool-result-v1" },
-      smooth_turn_compression: { provider: "p", model: "m", prompt: "lower-band-v1" },
+      smooth_turn_compression: { provider: "p", model: "m", prompt: "smooth-turn-compression-v1" },
       chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v1" },
     };
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
@@ -78,7 +88,7 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
       smooth_turn_compression: {
         provider: "p",
         model: "m",
-        prompt: "lower-band-v1",
+        prompt: "smooth-turn-compression-v1",
         targetMinRatio: 0.35,
         targetAimRatio: 0.5,
         targetMaxRatio: 0.65,
@@ -93,6 +103,22 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
       },
     };
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
+  });
+
+  it("rejects smooth_turn_compression target aim outside min/max", () => {
+    const assignments: Record<string, ModelAssignment> = {
+      smooth_turn_compression: {
+        provider: "p",
+        model: "m",
+        prompt: "smooth-turn-compression-v1",
+        targetMinRatio: 0.35,
+        targetAimRatio: 0.8,
+        targetMaxRatio: 0.65,
+      },
+    };
+    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).toThrow(
+      /compressionTargets\.aimRatio must be between minRatio and maxRatio/,
+    );
   });
 });
 

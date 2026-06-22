@@ -70,6 +70,17 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     },
     embedded: ["reported 3 open items"],
   },
+  "smooth-turn-compression-v1": {
+    input: {
+      rendering:
+        "[1] User prompt (m1)\nPlease inspect notes/plan.md\n\n[2] Assistant response (m2)\nIt has 3 open items.",
+      inputTokens: 120,
+      targetMinTokens: 42,
+      targetAimTokens: 60,
+      targetMaxTokens: 78,
+    },
+    embedded: ["notes/plan.md", "42-78", "Preserve substance"],
+  },
   "chunk-detailed-v1": {
     input: {
       memberProjections: ["turn one: read notes/plan.md", "turn two: edited src/app.ts"],

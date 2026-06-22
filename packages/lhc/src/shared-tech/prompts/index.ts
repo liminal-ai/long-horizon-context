@@ -6,6 +6,7 @@ import type { ModelCallInput } from "../inference-types.js";
 import { chunkBriefV1 } from "./chunk-brief-v1.js";
 import { chunkDetailedV1 } from "./chunk-detailed-v1.js";
 import { lowerBandV1 } from "./lower-band-v1.js";
+import { smoothTurnCompressionV1 } from "./smooth-turn-compression-v1.js";
 import { smoothingV1 } from "./smoothing-v1.js";
 import { toolResultV1 } from "./tool-result-v1.js";
 import { toolResultV2 } from "./tool-result-v2.js";
@@ -25,6 +26,7 @@ export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [toolResultV2.name]: toolResultV2,
   [turnComposeV1.name]: turnComposeV1,
   [lowerBandV1.name]: lowerBandV1,
+  [smoothTurnCompressionV1.name]: smoothTurnCompressionV1,
   [chunkDetailedV1.name]: chunkDetailedV1,
   [chunkBriefV1.name]: chunkBriefV1,
 };
@@ -39,6 +41,6 @@ export const PROMPT_NAMES: readonly string[] = Object.keys(PROMPT_REGISTRY);
 export const DEFAULT_PROMPT_NAMES: Record<string, string> = {
   smoothed_prompt: smoothingV1.name,
   tool_result_summary: toolResultV2.name,
-  smooth_turn_compression: lowerBandV1.name,
+  smooth_turn_compression: smoothTurnCompressionV1.name,
   chunk_summary_brief: chunkBriefV1.name,
 };

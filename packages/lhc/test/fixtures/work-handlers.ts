@@ -54,7 +54,14 @@ const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
     {
       subjectKind: "turn",
       derivationType: "smooth_turn_compression",
-      call: (p, id) => p.compressSmoothTurn({ rendering: `turn:${id}` }),
+      call: (p, id) =>
+        p.compressSmoothTurn({
+          rendering: `turn:${id}`,
+          inputTokens: 10,
+          targetMinTokens: 4,
+          targetAimTokens: 5,
+          targetMaxTokens: 7,
+        }),
     },
   ],
   chunk_summary_detailed: [

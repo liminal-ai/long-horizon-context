@@ -159,8 +159,8 @@ export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
 
 export const DEFAULT_ASSIGNMENT_PROMPTS: Record<AssignmentKind, string> = {
   smoothed_prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
-  tool_result_summary: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v1",
-  smooth_turn_compression: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "lower-band-v1",
+  tool_result_summary: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v2",
+  smooth_turn_compression: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "smooth-turn-compression-v1",
   chunk_summary_brief: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v1",
 };
 

@@ -34,6 +34,7 @@ import {
   type MessageEventInput,
   type MutationResult,
   type OpResult,
+  type SdkConfig,
   type ViewContentsReport,
   type ViewStatus,
 } from "../../src/index.js";
@@ -58,11 +59,12 @@ export const LIFECYCLE_PROFILE = {
 // inference adapter — the inference-callback slot is the one swap point; the
 // sequence, phase names, and every other configuration value stay owned here
 // so the deterministic leg and the real leg run THE SAME lifecycle.
-export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
+export function createLifecycleSdk(inference?: InferenceConfig, guards?: SdkConfig["guards"]): Lhc {
   return initLhc({
     ...(inference !== undefined ? { inference } : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    ...(guards === undefined ? {} : { guards }),
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
     view: {
@@ -203,6 +205,7 @@ export interface LifecycleOptions {
   // of deterministic inference callbacks. Same configuration otherwise (see
   // createLifecycleSdk).
   inference?: InferenceConfig;
+  guards?: SdkConfig["guards"];
 }
 
 export interface LifecycleRun {
@@ -227,12 +230,12 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   const outPath = join(store.dir, `${name}-session.jsonl`);
   const ref = { filePath };
 
-  let sdk = createLifecycleSdk(opts.inference);
+  let sdk = createLifecycleSdk(opts.inference, opts.guards);
   const nextGroup = (): void => {
     // The fresh instance is the same configuration assembled again — the
     // continuity proof is that no phase depends on the prior instance's
     // memory, only on the thread file.
-    if (opts.freshSdkBetweenGroups) sdk = createLifecycleSdk(opts.inference);
+    if (opts.freshSdkBetweenGroups) sdk = createLifecycleSdk(opts.inference, opts.guards);
   };
   const checkpoint = async (cp: LifecycleCheckpoint): Promise<void> => {
     if (opts.onCheckpoint !== undefined) await opts.onCheckpoint(cp, { sdk, filePath });

@@ -383,6 +383,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     run = await runLifecycle(store, {
       name: "real-capstone",
       inference: { call, assignments: realAssignments(realModel) },
+      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
       onCheckpoint: (checkpoint, ctx) => {
         // Pre-mutation snapshot: the regeneration assertion compares each
         // mutation-cleared form's content before the edit and after rebuild.

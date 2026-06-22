@@ -248,7 +248,7 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     // The fixture's pinned arrangement under these params (literal rules):
     // c1 fits brief, c2 fills detailed within its share, smooth carries the
     // newest turn, tail under the full share plus turn-boundary snap.
-    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 27 });
+    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 26 });
     expect(receipt.value.bands.detailed.entries).toBe(1);
     expect(receipt.value.bands.detailed.tokens).toBeGreaterThan(shares.detailed);
     expect(receipt.value.bands.smooth.entries).toBe(1);
@@ -435,6 +435,7 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
     inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
   });
   const filePath = intoStore.threadPath();

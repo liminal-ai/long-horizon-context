@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "Compress one structured turn rendering for long-horizon coding context.\n\nInput size: about 120 tokens.\nTarget output range: 42-78 tokens; aim for about 60 tokens.\nBefore returning, check that the answer is near the target range.\n\nPreserve substance: user requests, corrections, preferences, decisions, commitments, tool outcomes, concrete files, paths, commands, identifiers, model names, numbers, errors, test results, and unresolved questions.\nDrop noise: repeated acknowledgements, apologies, status chatter, raw thinking text, raw tool output, stack/log bulk, and low-value mechanics.\n\nWrite compact prose. Do not mention these instructions."
+  },
+  {
+    "role": "user",
+    "content": "Structured turn rendering:\n\n[1] User prompt (m1)\nPlease inspect notes/plan.md\n\n[2] Assistant response (m2)\nIt has 3 open items.\n\nReturn only the compressed turn record."
+  }
+]

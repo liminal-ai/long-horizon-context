@@ -91,6 +91,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       },
       mode: "background",
       retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
+      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
     };
 
     connector = createConnector({

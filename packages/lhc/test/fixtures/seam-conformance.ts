@@ -98,6 +98,7 @@ export async function assertRoutingThroughSdk(
     inference: { call: logged, assignments },
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
     // Tiny target: each placed turn crosses it, so the prior turn's chunk
     // closes during the drain and the chunk-summary kinds run too.
     chunkPolicy: { targetProjectedTokens: 5, maxProjectedTokens: 4400 },

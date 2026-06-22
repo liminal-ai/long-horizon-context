@@ -84,6 +84,7 @@ function manualSdk(
     clock: overrides.clock ?? (() => new Date()),
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
   });
   registerTestWorkHandlers(sdk, double);
   return sdk;

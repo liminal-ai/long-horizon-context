@@ -61,6 +61,7 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks, chunkPolicy?: SdkConf
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
   };
   if (chunkPolicy !== undefined) config.chunkPolicy = chunkPolicy;
   return initLhc(config);
@@ -98,6 +99,29 @@ function liveCount(filePath: string): number {
   } finally {
     db.close();
   }
+}
+
+function structuredRendering(parts: readonly RenderingPart[]): string {
+  const labels: Record<RenderingPart["kind"], string> = {
+    user_prompt: "User prompt",
+    assistant_text: "Assistant response",
+    assistant_thinking: "Assistant thinking",
+    runtime_note: "Runtime note",
+    model_change: "Model change",
+    thinking_level_change: "Thinking level change",
+    tool_call: "Tool call",
+    tool_result: "Tool result",
+  };
+  return parts
+    .map((part, index) => {
+      const annotations = [
+        part.fallback ? "fallback" : undefined,
+        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
+      ].filter((annotation): annotation is string => annotation !== undefined);
+      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
+      return `[${index + 1}] ${labels[part.kind]} (${part.messageId})${suffix}\n${part.text}`;
+    })
+    .join("\n\n");
 }
 
 // The story-sanctioned re-queue path for TC-3.3/TC-3.8: the Story 1 queue
@@ -146,7 +170,15 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
       { messageId: "m1", kind: "user_prompt", text: smoothed, fallback: false },
       { messageId: "m2", kind: "assistant_text", text: answer, fallback: false },
     ];
-    const renderingText = parts.map((part) => part.text).join(" | ");
+    const renderingText = structuredRendering(parts);
+    const inputTokens = estimateTokens(renderingText);
+    const compressionInput = {
+      rendering: renderingText,
+      inputTokens,
+      targetMinTokens: Math.max(1, Math.round(inputTokens * 0.35)),
+      targetAimTokens: Math.max(1, Math.round(inputTokens * 0.5)),
+      targetMaxTokens: Math.max(1, Math.round(inputTokens * 0.65)),
+    };
     const rendering = formOf(filePath, "t1", "turn_rendering");
     const compression = formOf(filePath, "t1", "smooth_turn_compression");
     expect(rendering).toMatchObject({
@@ -159,7 +191,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
     expect(compression).toMatchObject({
       subjectKind: "turn",
       state: "ready",
-      content: deterministicText("compressSmoothTurn", { rendering: renderingText }, renderingText),
+      content: deterministicText("compressSmoothTurn", compressionInput, renderingText),
       sourceVersion: 1,
     });
     expect(liveCount(filePath)).toBe(0);

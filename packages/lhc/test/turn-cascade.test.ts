@@ -44,6 +44,13 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     ...overrides,
+    guards: {
+      ...overrides.guards,
+      smoothTurnCompression: {
+        tinyTurnTokens: 1,
+        ...overrides.guards?.smoothTurnCompression,
+      },
+    },
   });
 }
 
@@ -68,6 +75,12 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
 // it back here instead of capturing a model call.
 function renderingContent(filePath: string): string {
   return readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ?? "";
+}
+
+function renderingBodies(filePath: string): string[] {
+  return renderingContent(filePath)
+    .split("\n\n")
+    .map((part) => part.split("\n").slice(1).join("\n"));
 }
 
 function execSql(filePath: string, sql: string, ...params: SQLInputValue[]): void {
@@ -98,7 +111,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
     // turn_rendering is deterministic; its first segment is the ready smoothed prompt.
-    expect(renderingContent(filePath).split(" | ")[0]).toBe(smoothed);
+    expect(renderingBodies(filePath)[0]).toBe(smoothed);
 
     const logs = await sdk.logging.query({ filePath }, { reason: "not_ready" });
     expect(logs.ok).toBe(true);
@@ -123,7 +136,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     // The rendering falls back to the prompt floor (smoothed not ready), so its
     // first segment is the deterministic floor text.
-    expect(renderingContent(filePath).split(" | ")[0]).toBe("pending prompt because I asked");
+    expect(renderingBodies(filePath)[0]).toBe("pending prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "pending prompt because I asked",
@@ -153,7 +166,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    expect(renderingContent(filePath).split(" | ")[0]).toBe(original);
+    expect(renderingBodies(filePath)[0]).toBe(original);
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: original,
@@ -181,7 +194,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    expect(renderingContent(filePath).split(" | ")[0]).toBe("failed prompt because I asked");
+    expect(renderingBodies(filePath)[0]).toBe("failed prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "failed prompt because I asked",
@@ -277,7 +290,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     await drain(sdk, filePath);
 
     expect(workerCompleted).toBe(true);
-    expect(renderingContent(filePath).split(" | ")[0]).toBe("race prompt because I asked");
+    expect(renderingBodies(filePath)[0]).toBe("race prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "real worker output",
@@ -303,9 +316,13 @@ describe("Story 3: turn construction recovery cascade", () => {
     // turn_rendering is the parts' text joined in record order; thinking and
     // runtime notes render verbatim, in position, between the answer texts.
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
-    expect(renderingContent(filePath)).toEqual(
-      [smoothed, "first answer", "thinking exactly", "runtime changed exactly", "second answer"].join(" | "),
-    );
+    expect(renderingBodies(filePath)).toEqual([
+      smoothed,
+      "first answer",
+      "thinking exactly",
+      "runtime changed exactly",
+      "second answer",
+    ]);
   });
 
   it("recovers small tool-result summaries with passthrough content", async () => {
@@ -551,7 +568,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath, { maxItems: 1 });
 
-    expect(renderingContent(filePath).split(" | ")[0]).toBe("live work because I asked");
+    expect(renderingBodies(filePath)[0]).toBe("live work because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({ state: "pending" });
 
     const db = openRaw(filePath);

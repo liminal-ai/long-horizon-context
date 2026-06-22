@@ -60,6 +60,7 @@ export interface DerivationMetadata {
   attempts?: number;
   lastError?: string;
   discardReason?: string;
+  sizeDisposition?: "in_range" | "under_min" | "over_max";
   // Epic 05 (DD-4): which provider/model/prompt produced the content —
   // copied from the InferenceResult's config-known strings, never authored
   // from model output. Deterministic domain assembly never sets it.
@@ -135,7 +136,13 @@ export interface InferenceCallbacks {
     facts?: ToolResultFacts;
   }): Promise<InferenceResult>;
   composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult>;
-  compressSmoothTurn(i: { rendering: string }): Promise<InferenceResult>;
+  compressSmoothTurn(i: {
+    rendering: string;
+    inputTokens: number;
+    targetMinTokens: number;
+    targetAimTokens: number;
+    targetMaxTokens: number;
+  }): Promise<InferenceResult>;
   // The two summary inputs differ by contract (AC-3.8): detailed receives
   // the members' tool-run receipts (what changed, outcome) alongside the
   // projections; brief receives outcomes only — receipt text is stripped
@@ -248,6 +255,11 @@ export interface ResolvedSdkConfig {
   clock: () => Date;
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
   guards: ResolvedDerivationGuards;
+  compressionTargets: {
+    minRatio: number;
+    aimRatio: number;
+    maxRatio: number;
+  };
   toolResult: {
     smallTierTokens: number;
     smallTargetRatio: number;

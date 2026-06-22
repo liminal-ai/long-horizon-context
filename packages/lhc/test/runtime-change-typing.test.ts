@@ -25,6 +25,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
   });
 }
 
@@ -108,10 +109,10 @@ describe("Story 5: runtime-change typing", () => {
     // verified via the messages read above).
     const compression = captured.find((entry) => entry.op === "compressSmoothTurn");
     const renderingText = (compression?.input as { rendering?: string } | undefined)?.rendering ?? "";
-    const segments = renderingText.split(" | ");
+    const segments = renderingText.split("\n\n");
     expect(segments).toHaveLength(4);
-    expect(segments[1]).toBe(`model_change ${modelBlock.previousModel} -> ${modelBlock.newModel}`);
-    expect(segments[2]).toBe(`thinking_level_change ${thinkingBlock.previousLevel} -> ${thinkingBlock.newLevel}`);
-    expect(segments[3]).toBe("answer");
+    expect(segments[1]).toContain(`model_change ${modelBlock.previousModel} -> ${modelBlock.newModel}`);
+    expect(segments[2]).toContain(`thinking_level_change ${thinkingBlock.previousLevel} -> ${thinkingBlock.newLevel}`);
+    expect(segments[3]).toContain("answer");
   });
 });

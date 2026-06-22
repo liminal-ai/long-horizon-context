@@ -16,6 +16,7 @@ import type {
   HandlerOutcome,
   HandlerRunContext,
   InferenceResult,
+  RenderingPart,
   ResolvedSdkConfig,
   ToolOutcome,
   ToolRunReceipt,
@@ -69,8 +70,38 @@ function dependencyNotReady(reason: string): HandlerOutcome {
   return { ok: false, retryable: true, reason };
 }
 
-function composeTurnRenderingText(parts: readonly { text: string }[]): string {
-  return parts.map((part) => part.text).join(" | ");
+function renderingPartLabel(kind: RenderingPart["kind"]): string {
+  switch (kind) {
+    case "user_prompt":
+      return "User prompt";
+    case "assistant_text":
+      return "Assistant response";
+    case "assistant_thinking":
+      return "Assistant thinking";
+    case "runtime_note":
+      return "Runtime note";
+    case "model_change":
+      return "Model change";
+    case "thinking_level_change":
+      return "Thinking level change";
+    case "tool_call":
+      return "Tool call";
+    case "tool_result":
+      return "Tool result";
+  }
+}
+
+function composeTurnRenderingText(parts: readonly RenderingPart[]): string {
+  return parts
+    .map((part, index) => {
+      const annotations = [
+        part.fallback ? "fallback" : undefined,
+        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
+      ].filter((annotation): annotation is string => annotation !== undefined);
+      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
+      return `[${index + 1}] ${renderingPartLabel(part.kind)} (${part.messageId})${suffix}\n${part.text}`;
+    })
+    .join("\n\n");
 }
 
 function detailedReceiptSuffix(memberReceipts: readonly (readonly ToolRunReceipt[])[]): string {
@@ -84,6 +115,32 @@ function composeDetailedChunkSummary(
   memberReceipts: readonly (readonly ToolRunReceipt[])[],
 ): string {
   return memberProjections.join(" | ") + detailedReceiptSuffix(memberReceipts);
+}
+
+function compressionTargetTokens(
+  inputTokens: number,
+  targets: ResolvedSdkConfig["compressionTargets"],
+): {
+  inputTokens: number;
+  targetMinTokens: number;
+  targetAimTokens: number;
+  targetMaxTokens: number;
+} {
+  return {
+    inputTokens,
+    targetMinTokens: Math.max(1, Math.round(inputTokens * targets.minRatio)),
+    targetAimTokens: Math.max(1, Math.round(inputTokens * targets.aimRatio)),
+    targetMaxTokens: Math.max(1, Math.round(inputTokens * targets.maxRatio)),
+  };
+}
+
+function sizeDisposition(
+  outputTokens: number,
+  targets: { targetMinTokens: number; targetMaxTokens: number },
+): NonNullable<DerivationMetadata["sizeDisposition"]> {
+  if (outputTokens < targets.targetMinTokens) return "under_min";
+  if (outputTokens > targets.targetMaxTokens) return "over_max";
+  return "in_range";
 }
 
 function readThreadId(run: HandlerRunContext): string {
@@ -295,7 +352,13 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   }
 
   const renderingText = composeTurnRenderingText(parts);
-  const projection = await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText });
+  const inputTokens = estimateTokens(renderingText);
+  const tinyTurnTokens = run.config.guards.smoothTurnCompression.tinyTurnTokens;
+  const targetTokens = compressionTargetTokens(inputTokens, run.config.compressionTargets);
+  const projection =
+    inputTokens < tinyTurnTokens
+      ? ({ ok: true, text: renderingText } as const)
+      : await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText, ...targetTokens });
   if (!projection.ok) return inferenceFailed(projection);
 
   // The projection's token count is estimated exactly once, here, as the
@@ -309,6 +372,13 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const renderingMetadata: DerivationMetadata = {
     ...(receipts.length > 0 ? { receipts } : {}),
   };
+  const compressionMetadata: DerivationMetadata = {};
+  if ("provenance" in projection && projection.provenance !== undefined) {
+    compressionMetadata.provenance = projection.provenance;
+  }
+  if (inputTokens >= tinyTurnTokens) {
+    compressionMetadata.sizeDisposition = sizeDisposition(projectedTokens, targetTokens);
+  }
 
   return {
     ok: true,
@@ -325,7 +395,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectId: turnId,
         derivationType: "smooth_turn_compression",
         content: projection.text,
-        ...(projection.provenance === undefined ? {} : { metadata: { provenance: projection.provenance } }),
+        ...(Object.keys(compressionMetadata).length > 0 ? { metadata: compressionMetadata } : {}),
       },
     ],
     onApplied: (transaction) => {

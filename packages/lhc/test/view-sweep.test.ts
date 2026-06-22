@@ -270,6 +270,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
       inferenceCallbacks: double,
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
     });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });

@@ -62,6 +62,7 @@ function manualSdk(
     mode: overrides.mode ?? "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 5000 },
+    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
   if (overrides.clock !== undefined) config.clock = overrides.clock;

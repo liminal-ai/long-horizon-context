@@ -85,7 +85,13 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
     }) => ok("summarizeToolResult", i, i.content),
     composeTurnRendering: (i: { parts: RenderingPart[] }) =>
       ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),
-    compressSmoothTurn: (i: { rendering: string }) => ok("compressSmoothTurn", i, i.rendering),
+    compressSmoothTurn: (i: {
+      rendering: string;
+      inputTokens: number;
+      targetMinTokens: number;
+      targetAimTokens: number;
+      targetMaxTokens: number;
+    }) => ok("compressSmoothTurn", i, i.rendering),
     summarizeChunkDetailed: async (i: { memberProjections: string[]; memberReceipts?: ToolRunReceipt[][] }) => {
       const base = await ok("summarizeChunkDetailed", i, i.memberProjections.join(" | "));
       if (!base.ok) return base;
