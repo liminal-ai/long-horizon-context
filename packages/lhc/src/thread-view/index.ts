@@ -1,11 +1,11 @@
-// thread-view surface (Epic 03): pull, status, compact, sweep, materialize;
+// thread-view surface (Epic 03): model context, status, compact, sweep, materialize;
 // Epic 04 Story 3 adds describe (the stored-snapshot read inspect composes).
-// Story 1 landed the hot-path reads (`pull`, `status`): local reads and
+// Story 1 landed the hot-path reads (`getLlmRequestContext`, `status`): local reads and
 // deterministic string assembly only, no inference, no network, no queue
 // interaction, no writes (AC-1.1, AC-2.8). Story 2 landed `compact`;
 // Story 3 landed `sweep` (standalone and embedded default-on in compact);
 // Story 5 lands `materialize` (the PI session-file render target over the
-// same pull assembly). Story 0's substrate (profile resolution, consumed by
+// same serving-view assembly). Story 0's substrate (profile resolution, consumed by
 // initLhc) re-exports at the bottom.
 import { existsSync } from "node:fs";
 import * as path from "node:path";
@@ -14,12 +14,11 @@ import type {
   Band,
   CompactReceipt,
   DerivationReportEntry,
-  PullResult,
+  LlmRequestContext,
   ResolvedViewConfig,
   StoredView,
   SweepReceipt,
   ViewCompactParams,
-  ViewMessage,
   ViewProfile,
   ViewStatus,
 } from "../shared-tech/index.js";
@@ -36,10 +35,11 @@ import { writeLog } from "../shared-tech/logging/index.js";
 import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import * as turnsDomain from "../turns/index.js";
+import { assembleView } from "./internal/assemble.js";
 import { executeBoundaryAdvance, readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
-import { assembleBandText, renderBandMessage, renderTailMessage, toolNamesByCallId } from "./internal/render.js";
+import { assembleBandText } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
 import {
   type ArrangementEntry,
@@ -49,9 +49,7 @@ import {
   selectArrangement,
 } from "./internal/select.js";
 import {
-  readReadyToolResultSummaries,
   readStoredView,
-  readTailMessages,
   readThreadMetadata,
   readViewSnapshot,
   replaceViewSnapshot,
@@ -84,7 +82,7 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-// ── pull (Flow 1: AC-1.1–1.3, 1.5 default-boundary leg, 1.7) ─────
+// ── model context (Flow 1: AC-1.1–1.3, 1.5 default-boundary leg, 1.7) ─────
 
 // The hot-path read: view header + bands (if any), tail messages after the
 // compact point (deleted-filtered, record order), boundary position; then
@@ -98,75 +96,22 @@ function detail(cause: unknown): string {
 // background SDK's scheduler hang a first-touch catch-up drain off this read
 // (openThreadDatabase → fireThreadTouch → scheduler.touch) never fires —
 // AC-1.1's no-queue-interaction holds in both host modes.
-export async function pull(ref: ThreadRef): Promise<OpResult<PullResult>> {
+export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<LlmRequestContext>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => {
+      const threadId = readThreadMetadata(transaction.db).threadId;
       const assembled = assembleView(transaction.db);
       return {
-        messages: assembled.entries.map((entry) => entry.message),
-        meta: assembled.meta,
+        threadId,
+        messages: assembled.entries.map((entry) => ({
+          role: entry.message.role,
+          content: [{ type: "text" as const, text: entry.message.content }],
+        })),
       };
     });
   } catch (cause) {
-    return storageFailure(`view pull failed: ${detail(cause)}`);
+    return storageFailure(`view getLlmRequestContext failed: ${detail(cause)}`);
   }
-}
-
-// The one assembly both render targets consume (Story 5): pull serves the
-// messages; materialize serves the same entries with the metadata the file's
-// generated fields derive from (entry ids, record-time timestamps). Sharing
-// the array is what makes AC-5.3's parity structural — materialize cannot
-// diverge from pull because there is no second assembly to diverge.
-interface AssembledView {
-  entries: Array<{ message: ViewMessage; entryId: string; timestamp: string }>;
-  meta: PullResult["meta"];
-  snapshot: ReturnType<typeof readViewSnapshot>;
-}
-
-function assembleView(db: Parameters<typeof readViewSnapshot>[0]): AssembledView {
-  const snapshot = readViewSnapshot(db);
-  const compactPoint = snapshot?.compactPoint ?? 0;
-  const boundaryPosition = readBoundaryPosition(db);
-  const tailRows = readTailMessages(db, compactPoint);
-  const renderCtx = {
-    boundaryPosition,
-    toolNameByCallId: toolNamesByCallId(tailRows),
-    toolResultSummaries: readReadyToolResultSummaries(db),
-  };
-
-  const entries: AssembledView["entries"] = [];
-  if (snapshot !== null) {
-    for (const band of snapshot.bands) {
-      entries.push({
-        message: renderBandMessage(band.band, band.renderedText),
-        // Band entries are not record messages; their generated fields
-        // derive from view metadata (AC-5.2).
-        entryId: `${snapshot.viewId}-${band.band}`,
-        timestamp: snapshot.createdAt,
-      });
-    }
-  }
-  for (const row of tailRows) {
-    entries.push({
-      message: renderTailMessage(row, renderCtx),
-      entryId: row.messageId,
-      timestamp: row.recordedAt,
-    });
-  }
-
-  return {
-    entries,
-    meta: {
-      compactPoint: snapshot?.compactPoint ?? null,
-      coveredFrom: snapshot?.coveredFrom ?? null,
-      boundaryPosition,
-      gapCount: snapshot?.gapCount ?? 0,
-      degradedCount: snapshot?.degradedCount ?? 0,
-      viewId: snapshot?.viewId ?? null,
-      createdAt: snapshot?.createdAt ?? null,
-    },
-    snapshot,
-  };
 }
 
 // ── status (AC-2.8) ───────────────────────────────────────────────
@@ -174,7 +119,7 @@ function assembleView(db: Parameters<typeof readViewSnapshot>[0]): AssembledView
 // Derivation counts bucket from one report entry the way the report's own
 // vocabulary reads (shared/derivation.ts): never-attempted or first-flight
 // pending, retrying (pending with attempts spent), failed, blocked. Ready
-// forms are healthy and not an operational situation.
+// Ready derivations are healthy and not an operational situation.
 function bucketDerivation(entries: readonly DerivationReportEntry[], counts: ViewStatus["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
@@ -203,7 +148,7 @@ function bucketDerivation(entries: readonly DerivationReportEntry[], counts: Vie
 // by the same query the Story 4 advance will use, so "visible in status" is
 // structural, not stored.
 //
-// Like pull, the whole read — including the owners' report surfaces it
+// Like model context, the whole read — including the owners' report surfaces it
 // consumes — runs in the touch-suppressed scope, so a background SDK's
 // status can never schedule a catch-up drain (AC-2.8 reads-only, both
 // host modes).
@@ -215,6 +160,7 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
 
   const config = viewConfig();
   let tailTokens: number;
+  let boundaryPosition: number;
   let zoneTokens: number;
   let view: ViewStatus["view"];
   try {
@@ -224,6 +170,7 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
       const boundaryPosition = readBoundaryPosition(transaction.db);
       return {
         tailTokens: tailTokenSum(transaction.db, compactPoint),
+        boundaryPosition,
         zoneTokens: visibilityZoneTokens(transaction.db, boundaryPosition, compactPoint),
         view:
           snapshot === null
@@ -237,6 +184,7 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
     });
     if (!read.ok) return read;
     tailTokens = read.value.tailTokens;
+    boundaryPosition = read.value.boundaryPosition;
     zoneTokens = read.value.zoneTokens;
     view = read.value.view;
   } catch (cause) {
@@ -266,7 +214,7 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
       compactRecommended: tailTokens > config.compactThreshold,
       derivation,
       view,
-      visibility: { zoneTokens, maxTokens: config.visibility.maxTokens },
+      visibility: { boundaryPosition, zoneTokens, maxTokens: config.visibility.maxTokens },
     },
   };
 }
@@ -316,8 +264,8 @@ function compactStopped(signal: { aborted: boolean } | undefined): boolean {
 // intact on refusal) → selection walk → band rendering → one BEGIN
 // IMMEDIATE replacing the view and resetting the boundary → receipt.
 // Assembly is entirely from stored artifacts: nothing here can reach a
-// inference (AC-2.4 zero-inference is structural — the sweep step repairs
-// through owner repair/derive surfaces and calls no inference itself).
+// inference (AC-2.4 zero-inference is structural — the sweep step schedules
+// repair through owner surfaces and calls no inference itself).
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
@@ -589,14 +537,14 @@ export function runPostCommitBoundaryAdvance(transaction: DbWriteTransaction): v
 
 // ── materialize (Flow 5: AC-5.2–5.5) ─────────────────────────────
 
-// PI session-file materialization: run the pull assembly internally, hand
+// PI session-file materialization: run the serving assembly internally, hand
 // the same entry array to the JSONL writer, return the written path. No
 // thread state changes (reads + a file write outside the thread file), and
 // every generated field derives from view/record metadata, never write-time
 // clocks — repeating after no thread changes produces a byte-identical file
-// (AC-5.2). Parity with pull is by construction: one assembly, two shapes
-// (AC-5.3). A never-compacted thread materializes its tail-only pull with
-// the header timestamp from the thread's created-at (AC-5.4). Like pull,
+// (AC-5.2). Parity with model context is by construction: one assembly, two shapes
+// (AC-5.3). A never-compacted thread materializes its tail-only model context with
+// the header timestamp from the thread's created-at (AC-5.4). Like model context,
 // the whole operation runs touch-suppressed: a background SDK's materialize
 // can never schedule a catch-up drain.
 export async function materialize(

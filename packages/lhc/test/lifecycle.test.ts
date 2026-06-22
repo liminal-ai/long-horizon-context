@@ -11,7 +11,7 @@
 // surfaces stamp into outputs (event recorded_at, view created_at, mutation
 // timestamps), so this file freezes Date — and only Date; the scheduler's
 // real setImmediate/setTimeout stay live for the background drains. With
-// the clock frozen, pull outputs are byte-identical across runs with no
+// the clock frozen, LlmRequestContext outputs are byte-identical across runs with no
 // normalization at all.
 //
 // One pinned deviation (AC-5.3/AC-5.4 file equality): a thread's id is the
@@ -27,11 +27,11 @@ import {
   type DerivationReportEntry,
   estimateTokens,
   type HealthReport,
+  type LlmRequestContext,
+  type LlmRequestContextMessage,
   type MutationResult,
   type OpResult,
-  type PullResult,
   type SweepReceipt,
-  type ViewMessage,
 } from "../src/index.js";
 import {
   DELETED_MESSAGE_TEXT,
@@ -68,8 +68,20 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function measured(messages: readonly ViewMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message.content), 0);
+function messageText(message: LlmRequestContextMessage): string {
+  return message.content.map((part) => part.text).join("");
+}
+
+function isBandMessage(message: LlmRequestContextMessage): boolean {
+  return messageText(message).startsWith("[context ·");
+}
+
+function measured(messages: readonly LlmRequestContextMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTokens(messageText(message)), 0);
+}
+
+function comparableContext(context: LlmRequestContext): LlmRequestContext {
+  return { ...context, threadId: "<threadId>" };
 }
 
 function clearedKeys(...mutations: MutationResult[]): string[] {
@@ -106,7 +118,7 @@ describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK config
     expect(phases.drain.settled).toBe(true);
     expect(phases.status.ok).toBe(true);
     expect(phases.compact1.ok).toBe(true);
-    expect(phases.pull1.ok).toBe(true);
+    expect(phases.llmContext1.ok).toBe(true);
     expect(phases.inspect1.overview.ok).toBe(true);
     expect(phases.inspect1.view.ok).toBe(true);
     expect(phases.inspect1.health.ok).toBe(true);
@@ -116,7 +128,7 @@ describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK config
     expect(phases.rebuild.settled).toBe(true);
     expect(phases.health2.ok).toBe(true);
     expect(phases.compact2.ok).toBe(true);
-    expect(phases.pull2.ok).toBe(true);
+    expect(phases.llmContext2.ok).toBe(true);
     expect(phases.materialize.ok).toBe(true);
   });
 
@@ -131,31 +143,32 @@ describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK config
 });
 
 describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
-  it("post-compact pull serves bands + tail, and the view report's loadCost prices that pull", () => {
+  it("post-compact model context serves bands + tail, and the view report's loadCost prices that context", () => {
     const receipt = ok(run.phases.compact1);
     expect(receipt.profile).toBe(LIFECYCLE_PROFILE.name);
-    const pull = ok(run.phases.pull1);
+    const context = ok(run.phases.llmContext1);
 
     // Bands open the array in gradient order; the tail follows in record
     // order — the served shape the PI extension will consume.
-    const bands = pull.messages.filter((message) => message.band !== undefined);
-    expect(bands.map((message) => message.band)).toEqual(["brief", "detailed", "smooth"]);
-    expect(pull.messages.slice(0, bands.length)).toEqual(bands);
-    const tail = pull.messages.slice(bands.length);
+    const bands = context.messages.filter(isBandMessage);
+    expect(bands.map((message) => messageText(message).match(/^\[context · ([^\]]+)\]/)?.[1])).toEqual([
+      "brief",
+      "detailed",
+      "smooth",
+    ]);
+    expect(context.messages.slice(0, bands.length)).toEqual(bands);
+    const tail = context.messages.slice(bands.length);
     expect(tail.length).toBeGreaterThan(0);
-    expect(tail.every((message) => message.band === undefined)).toBe(true);
-    expect(pull.meta.viewId).toBe(receipt.viewId);
-    expect(pull.meta.compactPoint).toBe(receipt.compactPoint);
 
     // Cross-epic loadCost checkpoint (test plan: report at compact1 vs
-    // pull1): the inspect report's serving cost equals this independent
-    // pull re-measured with the shared estimator.
+    // llmContext1): the inspect report's serving cost equals this independent
+    // context read re-measured with the shared estimator.
     const report = ok(run.phases.inspect1.view);
     expect(report.meta?.viewId).toBe(receipt.viewId);
     expect(report.meta?.profile).toBe(LIFECYCLE_PROFILE.name);
     expect(report.loadCost.bandTokens).toBe(measured(bands));
     expect(report.loadCost.tailTokens).toBe(measured(tail));
-    expect(report.loadCost.total).toBe(measured(pull.messages));
+    expect(report.loadCost.total).toBe(measured(context.messages));
 
     // Overview agrees on the same view identity with derivation settled.
     const overview = ok(run.phases.inspect1.overview);
@@ -210,21 +223,23 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
   });
 
   it("the second compact's view reflects post-edit content", () => {
-    const pull1 = ok(run.phases.pull1);
-    const pull2 = ok(run.phases.pull2);
+    const llmContext1 = ok(run.phases.llmContext1);
+    const llmContext2 = ok(run.phases.llmContext2);
 
     // Before the mutations: the original prompt and the to-be-deleted text
     // are served verbatim in the tail (full fidelity).
-    expect(pull1.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(true);
-    expect(pull1.messages.some((m) => m.content === DELETED_MESSAGE_TEXT)).toBe(true);
+    expect(llmContext1.messages.some((m) => messageText(m) === "turn 12: please investigate area 12")).toBe(true);
+    expect(llmContext1.messages.some((m) => messageText(m) === DELETED_MESSAGE_TEXT)).toBe(true);
 
     // After mutate + rebuild + compact2: the edited prompt serves verbatim,
     // the deleted message is gone from the served view entirely.
     expect(
-      pull2.messages.some((m) => m.band === undefined && m.role === "user" && m.content === EDITED_MESSAGE_TEXT),
+      llmContext2.messages.some(
+        (m) => !isBandMessage(m) && m.role === "user" && messageText(m) === EDITED_MESSAGE_TEXT,
+      ),
     ).toBe(true);
-    expect(pull2.messages.some((m) => m.content.includes(DELETED_MESSAGE_TEXT))).toBe(false);
-    expect(pull2.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(false);
+    expect(llmContext2.messages.some((m) => messageText(m).includes(DELETED_MESSAGE_TEXT))).toBe(false);
+    expect(llmContext2.messages.some((m) => messageText(m) === "turn 12: please investigate area 12")).toBe(false);
   });
 
   it("the second compact receipt's sweep section agrees with the health report taken immediately before it", () => {
@@ -253,18 +268,20 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
 });
 
 describe("TC-5.2 / AC-5.3: replay determinism on a fresh thread", () => {
-  it("produces hash-equal pull outputs and a byte-identical materialized file (modulo the one random thread id)", async () => {
+  it("produces hash-equal LlmRequestContext outputs and a byte-identical materialized file (modulo the one random thread id)", async () => {
     const replay = await runLifecycle(store, { name: "replay" });
 
-    // Pull outputs: exact hash equality, no normalization — the frozen
+    // LlmRequestContext outputs: exact hash equality, no normalization — the frozen
     // clock leaves no ambient input, so any inequality is real
     // nondeterminism in the built surfaces.
-    const pulls: Array<[OpResult<PullResult>, OpResult<PullResult>]> = [
-      [run.phases.pull1, replay.phases.pull1],
-      [run.phases.pull2, replay.phases.pull2],
+    const contexts: Array<[OpResult<LlmRequestContext>, OpResult<LlmRequestContext>]> = [
+      [run.phases.llmContext1, replay.phases.llmContext1],
+      [run.phases.llmContext2, replay.phases.llmContext2],
     ];
-    for (const [original, replayed] of pulls) {
-      expect(sha256(JSON.stringify(ok(replayed)))).toBe(sha256(JSON.stringify(ok(original))));
+    for (const [original, replayed] of contexts) {
+      expect(sha256(JSON.stringify(comparableContext(ok(replayed))))).toBe(
+        sha256(JSON.stringify(comparableContext(ok(original)))),
+      );
     }
 
     // Materialized file: identical bytes after substituting each thread's
@@ -275,7 +292,7 @@ describe("TC-5.2 / AC-5.3: replay determinism on a fresh thread", () => {
 });
 
 describe("TC-5.3 / AC-5.4: teardown continuity — fresh initLhc between phase groups", () => {
-  it("yields final pull, health, and materialized file identical to the uninterrupted run's", async () => {
+  it("yields final LlmRequestContext, health, and materialized file identical to the uninterrupted run's", async () => {
     const teardown = await runLifecycle(store, {
       name: "teardown",
       freshSdkBetweenGroups: true,
@@ -283,7 +300,9 @@ describe("TC-5.3 / AC-5.4: teardown continuity — fresh initLhc between phase g
 
     // No in-memory dependency: the end state lives in the thread file, so a
     // fresh instance continuing each phase group lands byte-identical.
-    expect(JSON.stringify(ok(teardown.phases.pull2))).toBe(JSON.stringify(ok(run.phases.pull2)));
+    expect(JSON.stringify(comparableContext(ok(teardown.phases.llmContext2)))).toBe(
+      JSON.stringify(comparableContext(ok(run.phases.llmContext2))),
+    );
     expect(ok(teardown.phases.health2)).toEqual(ok(run.phases.health2));
     expect(sha256(comparableSessionFile(teardown))).toBe(sha256(comparableSessionFile(run)));
   }, 60000);

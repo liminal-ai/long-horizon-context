@@ -200,13 +200,16 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       derivationType: "chunk_summary_detailed",
       reason: "failed_floor",
     });
-    const pulled = await compactSdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const detailed = pulled.value.messages.find((message) => message.band === "detailed");
-    expect(detailed?.content).toContain("§c1 [degraded: detailed-from-stored-members]");
-    expect(detailed?.content).toContain("§t1\nprompt 1\nanswer 1");
-    expect(detailed?.content).not.toContain("unavailable");
+    const contextRead = await compactSdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const detailed = contextRead.value.messages.find((message) =>
+      message.content.some((part) => part.text.startsWith("[context · detailed]")),
+    );
+    const detailedText = detailed?.content.map((part) => part.text).join("");
+    expect(detailedText).toContain("§c1 [degraded: detailed-from-stored-members]");
+    expect(detailedText).toContain("§t1\nprompt 1\nanswer 1");
+    expect(detailedText).not.toContain("unavailable");
 
     const logs = await compactSdk.logging.query(
       { filePath },

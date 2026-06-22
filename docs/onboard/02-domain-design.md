@@ -300,7 +300,7 @@ sequenceDiagram
 
 ## Thread view
 
-A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter forms. The `thread-view` domain generates these views, keeps them current as new events arrive, and renders them for a harness to consume. A harness either loads a view that LHC has written to a file or pulls the current view from LHC directly.
+A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter forms. The `thread-view` domain generates these views, keeps them current as new events arrive, and renders them for a harness to consume. A harness either loads a view that LHC has written to a file or asks LHC for the current `LlmRequestContext` directly.
 
 A view is a rendering, not a second copy of the conversation. It is assembled from records the other domains already own: messages, turns, chunks, and the summaries derived from them. Producing a view never changes the canonical history; it selects and arranges what already exists.
 
@@ -340,7 +340,7 @@ sequenceDiagram
 
 ### Assembling the active view
 
-Between compacts, the view a harness consumes is assembled cheaply from the locked brief, detailed, and smooth bands plus the current full-fidelity tail of recent turns. Assembling it is deterministic local work, reads and rendering, with no provider calls and no summarizing. An extensible harness can pull the assembled view before each model call without paying to re-derive anything.
+Between compacts, the context a harness consumes is assembled cheaply from the locked brief, detailed, and smooth bands plus the current full-fidelity tail of recent turns. Assembling it is deterministic local work, reads and rendering, with no provider calls and no summarizing. An extensible harness can load `LlmRequestContext` without paying to re-derive anything.
 
 Assembly selects already-derived artifacts; it does not create missing ones. If a band depends on a summary that has not been derived yet, or that failed to derive, the view reports the gap rather than inventing the missing content or running repair in the hot path. Recovering missing derived state belongs to the domain that owns it, not to view assembly.
 
@@ -351,10 +351,10 @@ sequenceDiagram
   participant H as harness
   participant V as thread-view
   participant F as thread file
-  H->>V: pull current view
+  H->>V: get LlmRequestContext
   V->>F: read locked bands and recent turns
   F-->>V: band artifacts and full tail
-  V-->>H: assembled view
+  V-->>H: visible model context
 ```
 
 ### Keeping derivations ready
@@ -369,7 +369,7 @@ The decision is split into two steps to keep the view stable for a harness that 
 
 ### Rendering for a harness
 
-The same assembled view renders in more than one form. An extensible harness that can take its context from LHC pulls the view as an in-memory message array. A closed harness that reads only its own session file gets the view written into that provider's file format. Both come from the same view; only the output form differs. A written provider file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
+The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into that provider's file format. Both come from the same view; only the output form differs. A written provider file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
 
 ## Inspect
 

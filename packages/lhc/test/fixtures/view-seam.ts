@@ -16,9 +16,9 @@ export {
 import { DatabaseSync } from "node:sqlite";
 
 // Sanctioned below-SDK write (same sanctioning as corrupt.ts): seeds the
-// view_boundary row to an arbitrary position for TC-1.4's mid-tail pulls.
+// view_boundary row to an arbitrary position for TC-1.4's mid-tail context reads.
 // Boundary *mechanics* — how the position legally moves — are Story 4's to
-// prove; this helper only manufactures a position the pull must respect.
+// prove; this helper only manufactures a position the model context read must respect.
 // UPDATE-only on purpose: migration v6 seeded the singleton row, mirroring
 // the production advance's write shape.
 export function seedViewBoundary(filePath: string, position: number): void {

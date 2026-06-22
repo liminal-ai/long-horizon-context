@@ -13,7 +13,7 @@
 //   - status zoneTokens legs are unchanged (shared-query invariant holds).
 // Every advance here fires through a REAL `intake.messageEvents` commit — no
 // host-called advance surface exists and no test invents one (story Anti-Shim
-// Requirements); rendering is proven through real `pull` calls. Budgets
+// Requirements); rendering is proven through real `getLlmRequestContext` reads. Budgets
 // resolve through SDK view config (the per-instance seam); the one
 // direct-domain-call leg proves the below-SDK default-budget fallback while
 // it proves poke-failure isolation.
@@ -28,6 +28,7 @@ import {
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  openRaw,
   setViewInjectionHook,
   type TempStore,
   tempStore,
@@ -94,10 +95,14 @@ async function intake(sdk: Lhc, filePath: string, batch: readonly MessageEventIn
   if (!result.ok) throw new Error(`intake failed: ${result.error.reason}`);
 }
 
-async function boundaryOf(sdk: Lhc, filePath: string): Promise<number> {
-  const pulled = await sdk.threadView.pull({ filePath });
-  if (!pulled.ok) throw new Error(`pull failed: ${pulled.error.reason}`);
-  return pulled.value.meta.boundaryPosition;
+async function boundaryOf(filePath: string): Promise<number> {
+  const db = openRaw(filePath);
+  try {
+    const row = db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint };
+    return Number(row.position);
+  } finally {
+    db.close();
+  }
 }
 
 async function toolResults(
@@ -115,8 +120,19 @@ async function toolResults(
     }));
 }
 
-function abridgedCount(messages: ReadonlyArray<{ content: string }>): number {
-  return messages.filter((m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]")).length;
+function messageText(message: { content: readonly { text: string }[] }): string {
+  return message.content.map((part) => part.text).join("");
+}
+
+function messageTexts(messages: ReadonlyArray<{ content: readonly { text: string }[] }>): string[] {
+  return messages.map((message) => messageText(message));
+}
+
+function abridgedCount(messages: ReadonlyArray<{ content: readonly { text: string }[] }>): number {
+  return messages.filter((m) => {
+    const text = messageText(m);
+    return text.startsWith("[tool result · ") && text.includes(" · abridged]");
+  }).length;
 }
 
 describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move the boundary; the crossing close evicts whole oldest turns", () => {
@@ -126,17 +142,17 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
 
     // Two under-max closed turns (zone 40, then 80 ≤ max 100): boundary unmoved.
     await intake(sdk, filePath, toolTurn([20, 20]));
-    const afterFirst = await sdk.threadView.pull({ filePath });
+    const afterFirst = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(afterFirst.ok).toBe(true);
     if (!afterFirst.ok) return;
-    expect(afterFirst.value.meta.boundaryPosition).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
 
     await intake(sdk, filePath, toolTurn([20, 20]));
-    const afterSecond = await sdk.threadView.pull({ filePath });
+    const afterSecond = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(afterSecond.ok).toBe(true);
     if (!afterSecond.ok) return;
-    expect(afterSecond.value.meta.boundaryPosition).toBe(0);
-    // Rendered bytes do not change below max: the earlier pull's messages are
+    expect(await boundaryOf(filePath)).toBe(0);
+    // Rendered bytes do not change below max: the earlier context read's messages are
     // a byte-identical prefix of the later one (AC-4.3's no-churn half).
     expect(afterSecond.value.messages.slice(0, afterFirst.value.messages.length)).toEqual(afterFirst.value.messages);
     expect(abridgedCount(afterSecond.value.messages)).toBe(0);
@@ -149,10 +165,10 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(6);
     const expectedPosition = results[1]?.sourceEventOrder;
-    const crossed = await sdk.threadView.pull({ filePath });
+    const crossed = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(crossed.ok).toBe(true);
     if (!crossed.ok) return;
-    expect(crossed.value.meta.boundaryPosition).toBe(expectedPosition);
+    expect(await boundaryOf(filePath)).toBe(expectedPosition);
     expect(abridgedCount(crossed.value.messages)).toBe(2);
 
     // Oldest-first: precisely the first turn's two results render abridged.
@@ -172,7 +188,7 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
 
     // The next under-max close (zone 90 ≤ 100): no movement.
     await intake(sdk, filePath, toolTurn([10]));
-    expect(await boundaryOf(sdk, filePath)).toBe(expectedPosition);
+    expect(await boundaryOf(filePath)).toBe(expectedPosition);
   });
 });
 
@@ -218,12 +234,12 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
     // Turn grouping: t1 {r1, r2} = 80 evicts whole (remaining 80 ≥ target
     // 60); the newest closed turn is never a candidate.
     await intake(sdk, filePath, toolTurn([80]));
-    expect(await boundaryOf(sdk, filePath)).toBe(r2.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(r2.sourceEventOrder);
 
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const contents = pulled.value.messages.map((m) => m.content);
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const contents = messageTexts(contextRead.value.messages);
 
     // r1: failed summary ⇒ deterministic truncation rung — fixed 200-char
     // prefix, exact dropped-count marker, abridged marker, record pointer.
@@ -261,7 +277,7 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
     // Turns 40/40/40: the third close crosses max (120 > 100); evict the
     // whole oldest turn (remaining 80 ≥ target 60), peek stops at t2.
     const advanced = results[1]?.sourceEventOrder ?? 0;
-    expect(await boundaryOf(sdk, filePath)).toBe(advanced);
+    expect(await boundaryOf(filePath)).toBe(advanced);
 
     // Small tool-free closes: no backward motion, flipped stay flipped.
     for (let i = 0; i < 2; i += 1) {
@@ -270,11 +286,11 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
         validEvent("assistant_text", { payload: { text: `small answer ${i}` } }),
         validEvent("turn_end"),
       ]);
-      const pulled = await sdk.threadView.pull({ filePath });
-      expect(pulled.ok).toBe(true);
-      if (!pulled.ok) return;
-      expect(pulled.value.meta.boundaryPosition).toBe(advanced);
-      expect(abridgedCount(pulled.value.messages)).toBe(2);
+      const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+      expect(contextRead.ok).toBe(true);
+      if (!contextRead.ok) return;
+      expect(await boundaryOf(filePath)).toBe(advanced);
+      expect(abridgedCount(contextRead.value.messages)).toBe(2);
     }
 
     // Compact: the boundary resets to the compact point (AC-4.7 — the reset
@@ -283,20 +299,18 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
     const receipt = await sdk.threadView.compact({ filePath }, { params: { lowerBound: 40 }, sweep: false });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
-    const afterCompact = await sdk.threadView.pull({ filePath });
+    const afterCompact = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(afterCompact.ok).toBe(true);
     if (!afterCompact.ok) return;
-    expect(afterCompact.value.meta.compactPoint).toBe(receipt.value.compactPoint);
-    expect(afterCompact.value.meta.boundaryPosition).toBe(receipt.value.compactPoint);
+    expect(await boundaryOf(filePath)).toBe(receipt.value.compactPoint);
 
     // Fresh tail renders full: a new under-max tool result is not abridged.
     await intake(sdk, filePath, toolTurn([20]));
-    const fresh = await sdk.threadView.pull({ filePath });
+    const fresh = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(fresh.ok).toBe(true);
     if (!fresh.ok) return;
-    const tail = fresh.value.messages.filter((m) => m.band === undefined);
-    expect(abridgedCount(tail)).toBe(0);
-    expect(tail.map((m) => m.content)).toContain(`[tool result · read_file]\n${tokens(20)}`);
+    expect(abridgedCount(fresh.value.messages)).toBe(0);
+    expect(messageTexts(fresh.value.messages)).toContain(`[tool result · read_file]\n${tokens(20)}`);
   });
 });
 
@@ -337,7 +351,7 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
     // is visible in status — computed live, the same sum the advance reads.
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(3);
-    expect(await boundaryOf(sdk, filePath)).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
     const status = await sdk.threadView.status({ filePath });
     expect(status.ok).toBe(true);
     if (!status.ok) return;
@@ -360,7 +374,7 @@ describe("TC-4.6 (AC-4.9): a failed advance leaves intake intact and the conditi
     setViewInjectionHook("post-commit-advance", null);
     await intake(sdk, filePath, toolTurn([10]));
     const all = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(all[0]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(all[0]?.sourceEventOrder);
     const healed = await sdk.threadView.status({ filePath });
     expect(healed.ok).toBe(true);
     if (!healed.ok) return;
@@ -390,7 +404,7 @@ describe("seam isolation, direction two (architecture-risk): a failing poke neve
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(2); // the batches committed
     // The advance ran before the throwing poke: position = the older turn.
-    expect(await boundaryOf(sdk, filePath)).toBe(results[0]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[0]?.sourceEventOrder);
   });
 });
 
@@ -400,7 +414,7 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     const filePath = await newThread(sdk);
     // Zone 80 ≤ max 100: no advance yet.
     await intake(sdk, filePath, toolTurn([40, 40]));
-    expect(await boundaryOf(sdk, filePath)).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
 
     // Delete the older result: the live zone drops to 40 — status computes
     // the deleted-filtered sum, the same query the advance reads.
@@ -419,7 +433,7 @@ describe("deleted-filter consistency (story DoD): the advance's sum and status's
     await intake(sdk, filePath, toolTurn([40, 40]));
     const all = await toolResults(sdk, filePath); // list is deleted-filtered too
     expect(all).toHaveLength(3);
-    expect(await boundaryOf(sdk, filePath)).toBe(all[0]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(all[0]?.sourceEventOrder);
     const after = await sdk.threadView.status({ filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -436,7 +450,7 @@ describe("both host modes advance in-process (story DoD)", () => {
     // closed turn is never a candidate.
     await intake(sdk, filePath, [...toolTurn([40]), ...toolTurn([40]), ...toolTurn([40])]);
     const results = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[0]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[0]?.sourceEventOrder);
     if (mode === "background") await sdk.drainSettled({ filePath });
   });
 });

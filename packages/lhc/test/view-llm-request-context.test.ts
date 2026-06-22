@@ -1,12 +1,12 @@
-// Epic 03 Story 1: pull and status on the record (TC-1.1, TC-1.2, TC-1.4,
-// TC-2.5 pre-compact legs, the per-kind tail-mapping legs, and the pull/status
+// Epic 03 Story 1: model context and status on the record (TC-1.1, TC-1.2, TC-1.4,
+// TC-2.5 pre-compact legs, the per-kind tail-mapping legs, and the model-context/status
 // legs of the suite-wide zero-model assertion). Every TC goes through the
-// real SDK surface (initLhc().threadView.pull/status) against real temp
+// real SDK surface (initLhc().threadView.model-context/status) against real temp
 // thread files; the inference callbacks double appears only in construction/fixture
 // setup — no Epic 03 operation may touch it.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, type Lhc, type SdkViewConfig, type ViewMessage } from "../src/index.js";
+import { initLhc, type Lhc, type LlmRequestContextMessage, type SdkViewConfig } from "../src/index.js";
 import {
   blockedSiblingThread,
   createInferenceCallbacksDouble,
@@ -58,6 +58,14 @@ function sha256(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function textPart(text: string): [{ type: "text"; text: string }] {
+  return [{ type: "text", text }];
+}
+
+function messageText(message: LlmRequestContextMessage | undefined): string | undefined {
+  return message?.content.map((part) => part.text).join("");
+}
+
 function workItemCount(filePath: string): number {
   const db = openRaw(filePath);
   try {
@@ -71,7 +79,7 @@ function workItemCount(filePath: string): number {
 }
 
 // Below-SDK read-only snapshot of everything a read could illegally mutate:
-// queue rows, form states, view rows, boundary position (TC-1.2 / TC-2.5
+// queue rows, derivation states, view rows, boundary position (TC-1.2 / TC-2.5
 // reads-only assertions).
 function stateSnapshot(filePath: string): Record<string, unknown> {
   const db = openRaw(filePath);
@@ -100,8 +108,8 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
 // since Story 3, materialize since Story 5 (view-render-targets.test.ts owns
 // the operation). No stubbed op remains on this surface.
 
-describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread pulls the full conversation in order; later intake appends", () => {
-  it("carries both intake rounds in record order with tail-only meta", async () => {
+describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread returns full model context in order; later intake appends", () => {
+  it("carries threadId and both intake rounds in record order", async () => {
     const sdk = manualSdk();
     const filePath = await newThread(sdk);
     await intake(sdk, filePath, [
@@ -110,55 +118,48 @@ describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread pulls the full convers
       validEvent("turn_end"),
     ]);
 
-    const first = await sdk.threadView.pull({ filePath });
+    const first = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
+    const info = await sdk.threads.info({ filePath });
+    expect(info.ok).toBe(true);
+    if (!info.ok) return;
+    expect(first.value.threadId).toBe(info.value.threadId);
     expect(first.value.messages).toEqual([
-      { role: "user", content: "first question" },
-      { role: "assistant", content: "first answer" },
+      { role: "user", content: textPart("first question") },
+      { role: "assistant", content: textPart("first answer") },
     ]);
-    // Never compacted: no band content, no error, tail from event 1 (AC-1.3).
-    expect(first.value.messages.every((m) => m.band === undefined)).toBe(true);
-    expect(first.value.meta).toEqual({
-      compactPoint: null,
-      coveredFrom: null,
-      boundaryPosition: 0,
-      gapCount: 0,
-      degradedCount: 0,
-      viewId: null,
-      createdAt: null,
-    });
 
     await intake(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "second question" } }),
       validEvent("assistant_text", { payload: { text: "second answer" } }),
       validEvent("turn_end"),
     ]);
-    const second = await sdk.threadView.pull({ filePath });
+    const second = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     // All committed intake appears, in record order; the new batch appends
     // after the first round's messages, which are byte-unchanged (AC-1.2).
     expect(second.value.messages).toEqual([
-      { role: "user", content: "first question" },
-      { role: "assistant", content: "first answer" },
-      { role: "user", content: "second question" },
-      { role: "assistant", content: "second answer" },
+      { role: "user", content: textPart("first question") },
+      { role: "assistant", content: textPart("first answer") },
+      { role: "user", content: textPart("second question") },
+      { role: "assistant", content: textPart("second answer") },
     ]);
   });
 });
 
-describe("TC-1.2 (AC-1.1, AC-1.7): two pulls with nothing between are byte-identical and create no work or model calls", () => {
+describe("TC-1.2 (AC-1.1, AC-1.7): two model-context reads with nothing between are byte-identical and create no work or model calls", () => {
   it("hashes identical, zero work rows created, inference callbacks double observes zero calls", async () => {
     // The double's capture log starts recording here; any Epic 03 read that
-    // touched inference callbacks would append to it (zero-model assertion, pull
+    // touched inference callbacks would append to it (zero-model assertion, model-context
     // leg of the suite-wide architecture-risk row).
     const captured = fixture.double.captureInputs();
     const before = stateSnapshot(fixture.filePath);
     const workRowsBefore = workItemCount(fixture.filePath);
 
-    const one = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
-    const two = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
+    const one = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const two = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     expect(one.ok && two.ok).toBe(true);
     if (!one.ok || !two.ok) return;
 
@@ -176,7 +177,7 @@ describe("TC-1.2 (AC-1.1, AC-1.7): two pulls with nothing between are byte-ident
 describe("tail mapping legs (architecture-risk): one named leg per message kind", () => {
   let sdk: Lhc;
   let filePath: string;
-  let pulled: ViewMessage[];
+  let contextMessages: LlmRequestContextMessage[];
 
   beforeAll(async () => {
     sdk = manualSdk();
@@ -194,42 +195,42 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
       validEvent("assistant_text", { payload: { text: "mapping answer" } }),
       validEvent("turn_end"),
     ]);
-    const result = await sdk.threadView.pull({ filePath });
-    if (!result.ok) throw new Error(`pull failed: ${result.error.reason}`);
-    pulled = result.value.messages;
+    const result = await sdk.threadView.getLlmRequestContext({ filePath });
+    if (!result.ok) throw new Error(`model context failed: ${result.error.reason}`);
+    contextMessages = result.value.messages;
   });
 
   it("user_prompt: user role, text verbatim", () => {
-    expect(pulled[0]).toEqual({ role: "user", content: "mapping prompt" });
+    expect(contextMessages[0]).toEqual({ role: "user", content: textPart("mapping prompt") });
   });
 
   it("assistant_thinking: assistant role, fenced [thinking] block", () => {
-    expect(pulled[1]).toEqual({
+    expect(contextMessages[1]).toEqual({
       role: "assistant",
-      content: "[thinking]\nmapping thought\n[/thinking]",
+      content: textPart("[thinking]\nmapping thought\n[/thinking]"),
     });
   });
 
   it("tool_call: assistant role, name marker plus deterministic arg rendering", () => {
-    expect(pulled[2]).toEqual({
+    expect(contextMessages[2]).toEqual({
       role: "assistant",
-      content: '[tool call · read_file] {"path":"map.txt"}',
+      content: textPart('[tool call · read_file] {"path":"map.txt"}'),
     });
   });
 
   it("tool_result ahead of the boundary: user role, name marker plus full content", () => {
-    expect(pulled[3]).toEqual({
+    expect(contextMessages[3]).toEqual({
       role: "user",
-      content: "[tool result · read_file]\nmapping output",
+      content: textPart("[tool result · read_file]\nmapping output"),
     });
   });
 
   it("runtime_note: user role, [runtime note] marker plus text", () => {
-    expect(pulled[4]).toEqual({ role: "user", content: "[runtime note] mapping note" });
+    expect(contextMessages[4]).toEqual({ role: "user", content: textPart("[runtime note] mapping note") });
   });
 
   it("assistant_text: assistant role, text verbatim", () => {
-    expect(pulled[5]).toEqual({ role: "assistant", content: "mapping answer" });
+    expect(contextMessages[5]).toEqual({ role: "assistant", content: textPart("mapping answer") });
   });
 
   it("tool_result at-or-behind the boundary: abridged marker plus short form (boundary seeded below-SDK)", async () => {
@@ -241,18 +242,18 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
     if (result === undefined) return;
     seedViewBoundary(filePath, result.sourceEventOrder);
 
-    const repulled = await sdk.threadView.pull({ filePath });
-    expect(repulled.ok).toBe(true);
-    if (!repulled.ok) return;
-    const short = repulled.value.messages[3];
-    // Summaries are pending on this undrained thread: the short-form ladder
-    // falls to the deterministic truncation rung (content under the limit
-    // passes through whole), with the abridged marker and the record pointer.
+    const refreshedContext = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(refreshedContext.ok).toBe(true);
+    if (!refreshedContext.ok) return;
+    const short = refreshedContext.value.messages[3];
+    // Summaries are pending on this undrained thread, but rendering now uses
+    // deterministic truncation for at-or-behind-boundary tool results.
     expect(short).toEqual({
       role: "user",
-      content: `[tool result · read_file · abridged]\nmapping output [full content in record §${result.messageId}]`,
+      content: textPart(
+        `[tool result · read_file · abridged]\nmapping output [full content in record §${result.messageId}]`,
+      ),
     });
-    expect(repulled.value.meta.boundaryPosition).toBe(result.sourceEventOrder);
   });
 });
 
@@ -279,7 +280,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
       ]);
     }
     // Drain through the real Epic 02 machinery so the tool-result summaries
-    // are ready — the short-form ladder's first rung.
+    // are ready but still not rendered for at-or-behind-boundary results.
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
 
@@ -291,7 +292,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     const [behind, ahead] = results;
     if (behind === undefined || ahead === undefined) return;
     const behindSummary = behind.derivations?.find(
-      (form) => form.derivationType === "tool_result_summary" && form.state === "ready",
+      (derivation) => derivation.derivationType === "tool_result_summary" && derivation.state === "ready",
     );
     expect(behindSummary?.content).toBeDefined();
 
@@ -301,10 +302,10 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     // rendering is under test here.
     seedViewBoundary(filePath, behind.sourceEventOrder);
 
-    const pull = await sdk.threadView.pull({ filePath });
-    expect(pull.ok).toBe(true);
-    if (!pull.ok) return;
-    const contents = pull.value.messages.map((m) => m.content);
+    const context = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(context.ok).toBe(true);
+    if (!context.ok) return;
+    const contents = context.value.messages.map((m) => messageText(m));
 
     // Behind: deterministic short form, abridged marker, record pointer.
     // Ready model summaries remain stored derivations but are not rendered
@@ -350,11 +351,11 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (result === undefined) return;
     seedViewBoundary(filePath, result.sourceEventOrder);
 
-    const pull = await sdk.threadView.pull({ filePath });
-    expect(pull.ok).toBe(true);
-    if (!pull.ok) return;
-    const short = pull.value.messages.find((m) => m.content.startsWith("[tool result"));
-    expect(short?.content).toBe(
+    const context = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(context.ok).toBe(true);
+    if (!context.ok) return;
+    const short = context.value.messages.find((m) => messageText(m)?.startsWith("[tool result"));
+    expect(messageText(short)).toBe(
       `[tool result · read_file · abridged]\n${"x".repeat(200)}… [truncated 60 chars] [full content in record §${result.messageId}]`,
     );
   });
@@ -394,7 +395,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
 
     // Derivation counts by state, from the owners' report surfaces: the
     // fixture's two scripted failures (transient-exhausted + permanent), all
-    // other forms drained ready — nothing pending, retrying, or blocked here
+    // other derivations drained ready — nothing pending, retrying, or blocked here
     // (the blocked leg reads the sacrificial sibling below).
     expect(status.value.derivation).toEqual({ pending: 0, retrying: 0, failed: 2, blocked: 0 });
 
@@ -410,20 +411,20 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     const expectedZone = listed.value
       .filter((m) => m.kind === "tool_result")
       .reduce((sum, m) => sum + m.tokenEstimate, 0);
-    expect(status.value.visibility).toEqual({ zoneTokens: expectedZone, maxTokens: 64000 });
+    expect(status.value.visibility).toEqual({ boundaryPosition: 0, zoneTokens: expectedZone, maxTokens: 64000 });
 
-    // Reads only: no work rows, no form-state change, no view row, boundary
+    // Reads only: no work rows, no derivation-state change, no view row, boundary
     // unmoved, zero model calls — and no compact occurred uninvoked.
     expect(stateSnapshot(heavy.filePath)).toEqual(before);
     expect(captured.length).toBe(0);
   });
 
-  it("counts blocked forms through the owner's report (sacrificial sibling)", async () => {
+  it("counts blocked derivations through the owner's report (sacrificial sibling)", async () => {
     const sibling = await blockedSiblingThread(heavyStore);
     const status = await sibling.sdk.threadView.status({ filePath: sibling.filePath });
     expect(status.ok).toBe(true);
     if (!status.ok) return;
-    // The sibling's damaged turn landed both turn forms blocked through the
+    // The sibling's damaged turn landed both turn derivations blocked through the
     // production terminal path (turn_rendering + smooth_turn_compression).
     expect(status.value.derivation.blocked).toBe(2);
     expect(status.value.view).toBeNull();
@@ -449,10 +450,10 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
   });
 });
 
-describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and status are reads-only in a background SDK with pending work queued", () => {
-  it("schedules no catch-up drain: work rows, form states, inference callback count, and status all unchanged; repeated pulls byte-identical", async () => {
+describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): model context and status are reads-only in a background SDK with pending work queued", () => {
+  it("schedules no catch-up drain: work rows, derivation states, inference callback count, and status all unchanged; repeated model-context reads byte-identical", async () => {
     // Pending work manufactured through a manual SDK (its no-op seam never
-    // drains): one tool-heavy turn leaves live queue rows and pending forms.
+    // drains): one tool-heavy turn leaves live queue rows and pending derivations.
     const seeder = manualSdk();
     const filePath = await newThread(seeder);
     await intake(seeder, filePath, [
@@ -470,7 +471,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
 
     // The production background path: a fresh background SDK whose scheduler
     // WOULD hang a first-touch catch-up drain off the open announcement
-    // (openThreadDatabase → fireThreadTouch → scheduler.touch) if pull or
+    // (openThreadDatabase → fireThreadTouch → scheduler.touch) if model context or
     // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
     const bgDouble = createInferenceCallbacksDouble();
     const bg = initLhc({
@@ -481,14 +482,14 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     const captured = bgDouble.captureInputs();
     const before = stateSnapshot(filePath);
 
-    const one = await bg.threadView.pull({ filePath });
+    const one = await bg.threadView.getLlmRequestContext({ filePath });
     const firstStatus = await bg.threadView.status({ filePath });
-    const two = await bg.threadView.pull({ filePath });
+    const two = await bg.threadView.getLlmRequestContext({ filePath });
     expect(one.ok && two.ok && firstStatus.ok).toBe(true);
     if (!one.ok || !two.ok || !firstStatus.ok) return;
 
     // The pending work is visible through the read itself (never-attempted
-    // forms bucket as pending) — proof the reads ran against live queue rows.
+    // derivations bucket as pending) — proof the reads ran against live queue rows.
     expect(firstStatus.value.derivation.pending).toBeGreaterThan(0);
 
     // Give any wrongly-scheduled catch-up drain room to surface, then wait
@@ -496,11 +497,11 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): pull and stat
     await new Promise((resolve) => setTimeout(resolve, 25));
     await bg.drainSettled({ filePath });
 
-    // Byte-identical repeated pulls (AC-1.7) in background mode.
+    // Byte-identical repeated model-context reads (AC-1.7) in background mode.
     expect(sha256(one.value)).toBe(sha256(two.value));
     expect(JSON.stringify(one.value)).toBe(JSON.stringify(two.value));
 
-    // Reads only: queue rows, form states, view rows, and boundary all
+    // Reads only: queue rows, derivation states, view rows, and boundary all
     // unchanged; the inference callback double observed zero calls.
     expect(stateSnapshot(filePath)).toEqual(before);
     expect(captured.length).toBe(0);

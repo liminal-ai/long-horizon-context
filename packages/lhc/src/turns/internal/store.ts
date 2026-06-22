@@ -45,6 +45,7 @@ export function closeTurn(db: DatabaseSync, turnId: string, closedAtEventOrder: 
 
 interface RawTurnRow {
   turn_id: string;
+  turn_order: number | bigint;
   status: string;
   opened_at_event_order: number | bigint;
   closed_at_event_order: number | bigint | null;
@@ -72,7 +73,7 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
 
   const turnRows = db
     .prepare(
-      `SELECT turn_id, status, opened_at_event_order, closed_at_event_order
+      `SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
@@ -82,6 +83,7 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
   return turnRows.map((row) => {
     const record: TurnRecord = {
       turnId: row.turn_id,
+      turnOrder: Number(row.turn_order),
       status: row.status as TurnRecord["status"],
       memberMessageIds: membersByTurn.get(row.turn_id) ?? [],
       openedAtEventOrder: Number(row.opened_at_event_order),
@@ -96,4 +98,35 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
     }
     return record;
   });
+}
+
+// The turn structure for compact selection: every turn row in turn order,
+// including tombstoned ones (the deleted flag carried through). Unlike
+// readTurns, this keeps tombstoned rows because the consumer's referential
+// checks treat a tombstoned turn as a legitimate reference target, not damage
+// — it separates the live selection set from the referential universe itself.
+export interface TurnStructureRow {
+  turnId: string;
+  turnOrder: number;
+  status: "open" | "closed";
+  openedAtEventOrder: number;
+  closedAtEventOrder: number | null;
+  deleted: boolean;
+}
+
+export function readTurnStructure(db: DatabaseSync): TurnStructureRow[] {
+  const rows = db
+    .prepare(
+      `SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order, deleted_at
+       FROM turns ORDER BY turn_order`,
+    )
+    .all() as unknown as Array<RawTurnRow & { deleted_at: string | null }>;
+  return rows.map((row) => ({
+    turnId: row.turn_id,
+    turnOrder: Number(row.turn_order),
+    status: row.status as "open" | "closed",
+    openedAtEventOrder: Number(row.opened_at_event_order),
+    closedAtEventOrder: row.closed_at_event_order === null ? null : Number(row.closed_at_event_order),
+    deleted: row.deleted_at !== null,
+  }));
 }

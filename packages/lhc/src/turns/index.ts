@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import type { EventRecord } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
+  createDbWriteTransaction,
   type DbReadTransaction,
   type DbWriteTransaction,
   type ErrorResult,
@@ -10,22 +12,40 @@ import {
   resolveInstanceConfig,
   storageFailure,
 } from "../shared-tech/index.js";
-import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js";
+import {
+  type EnqueueDerivationTarget,
+  enqueue,
+  hasLiveItem,
+  type WorkItemRecord,
+  type WorkKind,
+  type WorkSourceRef,
+} from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
-import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
+import { type ChunkStructureRow, readChunkStructure } from "./internal/chunks.js";
+import {
+  chunkExists,
+  readChunkRows,
+  readOwnedDerivations,
+  readTurnDerivationRow,
+  readTurnSource,
+  reportTurnDerivations,
+} from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import {
   closeTurn,
   countTurnMembers,
   insertOpenTurn,
   nextTurnOrder,
+  readTurnStructure,
   readTurns,
   selectOpenTurnIds,
+  type TurnStructureRow,
 } from "./internal/store.js";
 
 export interface TurnRecord {
   turnId: string;
+  turnOrder: number;
   status: "open" | "closed";
   memberMessageIds: string[];
   openedAtEventOrder: number;
@@ -192,6 +212,22 @@ export function getChunkText(
   return compactChunkMaterialFromStoredMembers(transaction.db, chunkId, derivationType);
 }
 
+// In-transaction read for coordinators that already hold an open thread
+// handle (thread-view's compact selection): the turn and chunk structure on
+// the caller's handle, so thread-view asks the turns owner for turn ordering,
+// boundaries, and chunk membership instead of reading the turn/chunk tables
+// itself. Turns carry the deleted flag and chunks carry raw (unvalidated)
+// membership so the consumer keeps ownership of the source-state corruption
+// policy; it never sees the live-only shapes listTurns/listChunks return.
+export interface TurnChunkStructure {
+  turns: TurnStructureRow[];
+  chunks: ChunkStructureRow[];
+}
+
+export function readTurnChunkStructure(db: DatabaseSync): TurnChunkStructure {
+  return { turns: readTurnStructure(db), chunks: readChunkStructure(db) };
+}
+
 // ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
 
 // This owner's repair report: every turn- and chunk-owned derivation's durable
@@ -295,4 +331,143 @@ export function deriveDetailedChunk(thread: ThreadRef, chunkId: string): Promise
 
 export function deriveBriefChunk(thread: ThreadRef, chunkId: string): Promise<OpResult<ChunkDeriveResult>> {
   return deriveChunk(thread, chunkId, "chunk_summary_brief");
+}
+
+export type TurnDerivationRepairScheduleResult =
+  | { subjectId: string; outcome: "scheduled"; sourceVersion: number }
+  | { subjectId: string; outcome: "in_flight"; sourceVersion: number }
+  | { subjectId: string; outcome: "failed"; error: ErrorResult };
+
+function failedScheduleRepair(subjectId: string, error: ErrorResult): TurnDerivationRepairScheduleResult {
+  return { subjectId, outcome: "failed", error };
+}
+
+function nextSourceVersion(rows: readonly { state: string; sourceVersion: number }[]): number {
+  const versions = rows.map((row) => row.sourceVersion);
+  const max = Math.max(...versions);
+  return rows.some((row) => row.state === "pending") ? max : max + 1;
+}
+
+function sourceRefId(sourceRef: WorkSourceRef): string {
+  if ("turnId" in sourceRef) return sourceRef.turnId;
+  if ("chunkId" in sourceRef) return sourceRef.chunkId;
+  return sourceRef.messageId;
+}
+
+function scheduleTurnOwned(
+  transaction: DbWriteTransaction,
+  kind: WorkKind,
+  sourceRef: WorkSourceRef,
+  derivations: readonly EnqueueDerivationTarget[],
+): TurnDerivationRepairScheduleResult {
+  const subjectId = sourceRefId(sourceRef);
+  const rows = derivations.map((target) =>
+    readTurnDerivationRow(
+      transaction.db,
+      target.subjectKind as "turn" | "chunk",
+      target.subjectId,
+      target.derivationType,
+    ),
+  );
+  if (rows.some((row) => row === undefined)) {
+    const target = derivations.find((_entry, index) => rows[index] === undefined)!;
+    return failedScheduleRepair(subjectId, {
+      errorClass: "caller_error",
+      code: "turn_not_found",
+      reason: `no derived derivation ${target.derivationType} exists for ${target.subjectKind} ${target.subjectId}`,
+    });
+  }
+  const blocked = rows.find((row) => row?.state === "blocked");
+  if (blocked !== undefined) {
+    return failedScheduleRepair(subjectId, {
+      errorClass: "state_corruption",
+      code: "source_damaged",
+      reason: blocked.reason ?? "turn-owned derivation is blocked",
+    });
+  }
+  const sourceVersion = nextSourceVersion(rows as Array<{ state: string; sourceVersion: number }>);
+  if (hasLiveItem(transaction.db, kind, sourceRef, sourceVersion)) {
+    return { subjectId, outcome: "in_flight", sourceVersion };
+  }
+  enqueue(transaction, {
+    owner: "turns",
+    kind,
+    sourceRef,
+    sourceVersion,
+    derivations,
+  });
+  return { subjectId, outcome: "scheduled", sourceVersion };
+}
+
+// Owner repair scheduling for callers that must not run inference. The
+// existing turn-owned derivation rows are reset to pending and the durable
+// work item is enqueued in one write transaction.
+export async function scheduleTurnDerivationRepair(
+  threadRef: ThreadRef,
+  turnId: string,
+): Promise<OpResult<TurnDerivationRepairScheduleResult>> {
+  try {
+    return await createDbWriteTransaction(threadRef, (transaction) => {
+      const source = readTurnSource(transaction.db, turnId);
+      if (source === undefined || source.deleted) {
+        return failedScheduleRepair(turnId, {
+          errorClass: "caller_error",
+          code: "turn_not_found",
+          reason: `no turn ${turnId} exists in this thread`,
+        });
+      }
+      if (source.status !== "closed") {
+        return failedScheduleRepair(turnId, {
+          errorClass: "caller_error",
+          code: "turn_open",
+          reason: `turn ${turnId} is open; only closed turns can be scheduled for derivation`,
+        });
+      }
+      return scheduleTurnOwned(transaction, "turn_derivation", { turnId }, [
+        { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
+        { subjectKind: "turn", subjectId: turnId, derivationType: "smooth_turn_compression" },
+      ]);
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`schedule turn derivation repair failed: ${reason}`);
+  }
+}
+
+async function scheduleChunkDerivationRepair(
+  threadRef: ThreadRef,
+  chunkId: string,
+  derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
+): Promise<OpResult<TurnDerivationRepairScheduleResult>> {
+  try {
+    return await createDbWriteTransaction(threadRef, (transaction) => {
+      if (!chunkExists(transaction.db, chunkId)) {
+        return failedScheduleRepair(chunkId, {
+          errorClass: "caller_error",
+          code: "turn_not_found",
+          reason: `no chunk ${chunkId} exists in this thread`,
+        });
+      }
+      return scheduleTurnOwned(transaction, derivationType, { chunkId }, [
+        { subjectKind: "chunk", subjectId: chunkId, derivationType },
+      ]);
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`schedule chunk derivation repair failed: ${reason}`);
+  }
+}
+
+export function scheduleDetailedChunkDerivationRepair(
+  threadRef: ThreadRef,
+  chunkId: string,
+): Promise<OpResult<TurnDerivationRepairScheduleResult>> {
+  return scheduleChunkDerivationRepair(threadRef, chunkId, "chunk_summary_detailed");
+}
+
+export function scheduleBriefChunkDerivationRepair(
+  threadRef: ThreadRef,
+  chunkId: string,
+): Promise<OpResult<TurnDerivationRepairScheduleResult>> {
+  return scheduleChunkDerivationRepair(threadRef, chunkId, "chunk_summary_brief");
 }

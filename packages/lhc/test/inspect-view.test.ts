@@ -1,9 +1,9 @@
 // Story 3 (Epic 04), default suite: TC-2.1–2.3 — the view-contents report
 // plus the describe legs. `threadView.describe` exposes the stored active
 // view row verbatim (null when absent, never recomputed); `inspect.view`
-// composes describe + a measured pull so loadCost equals what pull serves
+// composes describe + a measured context read so loadCost equals what model context serves
 // now (AC-2.3, parity by construction) — asserted here against an
-// INDEPENDENT pull re-measured with the same estimator, on a compacted
+// INDEPENDENT context read re-measured with the same estimator, on a compacted
 // fixture, a boundary-advanced fixture (short forms costed short, AC-2.2),
 // and a never-compacted thread (meta null, tail-only, AC-2.4). Reads are
 // pure (AC-1.4 contract): read-only delta assert, zero model calls.
@@ -14,6 +14,7 @@ import {
   type InferenceCallbacks,
   initLhc,
   type Lhc,
+  type LlmRequestContext,
   type MessageEventInput,
   type StoredView,
   type ViewContentsReport,
@@ -41,8 +42,16 @@ function resultValue<T>(result: { ok: boolean }): T {
   return (result as { ok: true; value: T }).value;
 }
 
-function measured(messages: ReadonlyArray<{ content: string }>): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message.content), 0);
+function servedText(message: { content: string | readonly { text: string }[] }): string {
+  return typeof message.content === "string" ? message.content : message.content.map((part) => part.text).join("");
+}
+
+function isBandMessage(message: { content: string | readonly { text: string }[] }): boolean {
+  return servedText(message).startsWith("[context ·");
+}
+
+function measured(messages: ReadonlyArray<{ content: string | readonly { text: string }[] }>): number {
+  return messages.reduce((sum, message) => sum + estimateTokens(servedText(message)), 0);
 }
 
 // Independent stored-row read (anti-shim: the report and describe are
@@ -116,8 +125,8 @@ function bandsFromRaw(raw: StoredView): ViewContentsReport["bands"] {
 
 // The TC-2.1 substrate: the tool-heavy fixture with one degraded entry and
 // one gap reached through production paths — post-build edits (not drained)
-// clear t8's turn forms (the smooth entry degrades down its ladder) and all
-// of c2's chain (summaries pending, zero ready member projections: the gap
+// clear t8's turn derivations (the smooth entry degrades down its ladder) and all
+// of c2's chain (summaries pending, zero ready member smooth compressions: the gap
 // rung). Same recipe Epic 03's degraded compact proved; params force the
 // chunk bands so profileName stores null and config carries the resolved
 // truth.
@@ -186,7 +195,7 @@ function tokens(n: number): string {
 }
 
 describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot", () => {
-  it("report entries, forms, degraded flags, gap reasons, config, and provenance equal describe output and the stored row", async () => {
+  it("report entries, derivations, degraded flags, gap reasons, config, and provenance equal describe output and the stored row", async () => {
     const { filePath, sdk } = await degradedCompactedThread();
     const raw = readRawStoredView(filePath);
     expect(raw).not.toBeNull();
@@ -212,7 +221,7 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     });
     expect(report.meta?.config).toEqual(raw.config);
 
-    // Every band entry in served order with form/degraded verbatim; per-band
+    // Every band entry in served order with derivation/degraded verbatim; per-band
     // stored token counts; every gap with its reason — all from the row.
     expect(report.bands).toEqual(bandsFromRaw(raw));
     expect(report.gaps).toEqual(raw.gaps);
@@ -226,14 +235,12 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     expect(entries.some((entry) => entry.subjectId === "c2" && entry.degraded)).toBe(true);
 
     // Load-cost parity on the compacted shape too (bands + tail): an
-    // independent pull re-measured with the same estimator.
-    const pulled = resultValue<{ messages: Array<{ content: string; band?: string }> }>(
-      await sdk.threadView.pull({ filePath }),
-    );
-    expect(report.loadCost.total).toBe(measured(pulled.messages));
-    expect(report.loadCost.bandTokens).toBe(measured(pulled.messages.filter((message) => message.band !== undefined)));
+    // independent context read re-measured with the same estimator.
+    const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
+    expect(report.loadCost.total).toBe(measured(contextRead.messages));
+    expect(report.loadCost.bandTokens).toBe(measured(contextRead.messages.filter(isBandMessage)));
     expect(report.loadCost.total).toBe(report.loadCost.bandTokens + report.loadCost.tailTokens);
-    expect(report.tail.messageCount).toBe(pulled.messages.filter((message) => message.band === undefined).length);
+    expect(report.tail.messageCount).toBe(contextRead.messages.filter((message) => !isBandMessage(message)).length);
   });
 
   it("describe returns ok/null on a never-compacted thread and thread_not_found on a missing one", async () => {
@@ -253,7 +260,7 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
 });
 
 describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixture", () => {
-  it("tail costs short forms short and total equals an independent pull re-measured", async () => {
+  it("tail costs short forms short and total equals an independent context read re-measured", async () => {
     // Small budgets so a real intake post-commit advance moves the boundary
     // into the tail (Epic 03 Story 4 mechanics — never a hand-set position).
     const sdk = initLhc({
@@ -302,31 +309,35 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
       if (!sent.ok) throw new Error(`intake failed: ${sent.error.reason}`);
     }
 
-    const pulled = resultValue<{
-      messages: Array<{ content: string; band?: string }>;
-      meta: { boundaryPosition: number; compactPoint: number | null };
-    }>(await sdk.threadView.pull({ filePath }));
-    expect(pulled.meta.boundaryPosition).toBeGreaterThan(pulled.meta.compactPoint ?? 0);
-    const tailServed = pulled.messages.filter((message) => message.band === undefined);
-    const abridged = tailServed.filter((message) => message.content.includes(" · abridged]"));
+    const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
+    const db = new DatabaseSync(filePath);
+    const boundaryPosition = Number(
+      (db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint }).position,
+    );
+    db.close();
+    expect(boundaryPosition).toBeGreaterThan(compacted.value.compactPoint);
+    const tailServed = contextRead.messages.filter((message) => !isBandMessage(message));
+    const abridged = tailServed.filter((message) => servedText(message).includes(" · abridged]"));
     const fullResults = tailServed.filter(
-      (message) => message.content.startsWith("[tool result · ") && !message.content.includes(" · abridged]"),
+      (message) => servedText(message).startsWith("[tool result · ") && !servedText(message).includes(" · abridged]"),
     );
     expect(abridged.length).toBe(1);
     expect(fullResults.length).toBe(1);
     // Short forms cost short: the abridged result is cheaper as served than
     // its full sibling of identical record size.
-    expect(estimateTokens(abridged[0]?.content ?? "")).toBeLessThan(estimateTokens(fullResults[0]?.content ?? ""));
+    expect(estimateTokens(abridged[0] === undefined ? "" : servedText(abridged[0]))).toBeLessThan(
+      estimateTokens(fullResults[0] === undefined ? "" : servedText(fullResults[0])),
+    );
 
     const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
     // Tail as served: count and tokens measured over the served tail —
-    // boundary-aware shortening inherited from pull, never re-implemented.
+    // boundary-aware shortening inherited from the serving assembly, never re-implemented.
     expect(report.tail.messageCount).toBe(tailServed.length);
     expect(report.tail.tokens).toBe(measured(tailServed));
     expect(report.loadCost.tailTokens).toBe(report.tail.tokens);
-    // The governing contract: total equals an independent pull's measured
+    // The governing contract: total equals an independent context read's measured
     // content under the same estimator.
-    expect(report.loadCost.total).toBe(measured(pulled.messages));
+    expect(report.loadCost.total).toBe(measured(contextRead.messages));
     expect(report.loadCost.total).toBe(report.loadCost.bandTokens + report.loadCost.tailTokens);
   });
 });
@@ -341,17 +352,15 @@ describe("TC-2.3 / AC-2.4: never-compacted thread reports tail-only under the sa
     expect(report.sourceState).toBeNull();
     expect(report.loadCost.bandTokens).toBe(0);
 
-    const pulled = resultValue<{ messages: Array<{ content: string; band?: string }> }>(
-      await sdk.threadView.pull({ filePath }),
-    );
-    // The whole record serves as tail: every pulled message is band-absent
+    const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
+    // The whole record serves as tail: every contextRead message is band-absent
     // and the report counts all six visible messages.
-    expect(pulled.messages.every((message) => message.band === undefined)).toBe(true);
-    expect(report.tail.messageCount).toBe(pulled.messages.length);
+    expect(contextRead.messages.every((message) => !isBandMessage(message))).toBe(true);
+    expect(report.tail.messageCount).toBe(contextRead.messages.length);
     expect(report.tail.messageCount).toBe(6);
-    expect(report.tail.tokens).toBe(measured(pulled.messages));
+    expect(report.tail.tokens).toBe(measured(contextRead.messages));
     expect(report.loadCost.tailTokens).toBe(report.tail.tokens);
-    expect(report.loadCost.total).toBe(measured(pulled.messages));
+    expect(report.loadCost.total).toBe(measured(contextRead.messages));
   });
 });
 

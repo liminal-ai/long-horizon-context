@@ -8,11 +8,11 @@
   ],
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm --filter lhc run build && pnpm -r --if-present typecheck",
+    "test": "pnpm --filter lhc run build && pnpm -r --if-present test",
     "format": "biome format --write .",
     "lint": "biome check .",
-    "test:all": "pnpm -r --if-present test:all",
+    "test:all": "pnpm --filter lhc run build && pnpm -r --if-present test:all",
     "format:check": "biome format .",
     "verify": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test",
     "verify:all": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:all"

@@ -24,7 +24,7 @@ The system is organized into domains, each owning one part of the conversation m
 
 ## What we call things
 
-**Draft — partially ratified.** Some terms are explicitly agreed and current: the **derivation** family (derive/deriving, derivation, derivation type, state) was settled in the derivation-cascade work, along with projection's scope and the band names. Others accumulated in spec documents without ever being put in front of Lee as naming decisions (host; render/materialize/pull; visibility boundary; compact point; record) and are still pending review.
+**Draft — partially ratified.** Some terms are explicitly agreed and current: the **derivation** family (derive/deriving, derivation, derivation type, state) was settled in the derivation-cascade work, along with thread-view scope and the band names. Others accumulated in spec documents without ever being put in front of Lee as naming decisions (host; render/materialize/`LlmRequestContext`; visibility boundary; compact point; record) and are still pending review.
 
 The working vocabulary of the project. Each entry says what the term means and, where it matters, where its edge is — the nearby thing it should *not* be confused with.
 
@@ -54,6 +54,6 @@ The working vocabulary of the project. Each entry says what the term means and, 
 
 **Degraded / gap.** What a view shows when a needed derivation is missing: a **degraded** entry renders the best available fallback (a cruder derivation, a deterministic floor, or raw content); a **gap** is an explicit placeholder where nothing usable exists. The fallback goes into the view (more content, not less) and the failure goes to the log; the record stays clean. Nothing is silently omitted.
 
-**Render / materialize / pull.** Three ways view content leaves LHC: **render** is producing the output form of an entry; **materialize** is writing the view to a file in a provider's format; **pull** is a host fetching the view (plus tail) directly through the SDK.
+**Render / materialize / LlmRequestContext.** Three ways view content leaves LHC: **render** is producing the output form of an entry; **materialize** is writing the view to a file in a provider's format; **LlmRequestContext** is the host-facing model context returned by `threadView.getLlmRequestContext`.
 
 **Host.** The process that owns an SDK instance and everything LHC needs from the outside world: storage location, configuration, model access. PI extension now; app server later; possibly a wrapper CLI around another harness someday. One login — the host's — covers everything LHC does.

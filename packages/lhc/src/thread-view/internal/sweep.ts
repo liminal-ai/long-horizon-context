@@ -13,7 +13,7 @@ export type ReasonClass = "transient" | "permanent";
 // The reason-code classification table (tech design §Spec Validation row 1):
 // data, not branching logic — the single source for transient-vs-permanent.
 // Keys are the reason class codes the production terminal-failure path
-// persists as the prefix of a failed form's reason (`<code>: <detail>`,
+// persists as the prefix of a failed derivation's reason (`<code>: <detail>`,
 // FC-0.4's distinguishable-on-read-back guarantee). Codes absent from the
 // table classify PERMANENT — the conservative default: an unknown failure is
 // reported in the receipt with its literal reason and never requeued, where
@@ -39,40 +39,58 @@ export function classifyFailureReason(reason: string | undefined): ReasonClass {
 type Owner = "messages" | "turns";
 type OwnerLine = SweepReceipt["owners"][number];
 
-// One owner's repair, dispatched by the entry's own subject vocabulary:
-// messages by messageId; turns by subjectKind turn|chunk. Owner derive calls
-// are synchronous; shared turn sites are deduped by the sweep before calling
-// the owner again.
+// One owner's repair scheduling, dispatched by the entry's own subject
+// vocabulary: messages by messageId; turns by subjectKind turn|chunk. The
+// owner writes pending derivation state and durable queue rows; sweep never
+// claims work or calls providers. Shared turn sites are deduped by the sweep
+// before calling the owner again.
 async function repairThroughOwner(
   filePath: string,
   owner: Owner,
   entry: DerivationReportEntry,
-): Promise<OpResult<"repaired">> {
+): Promise<OpResult<"scheduled" | "in_flight">> {
   if (owner === "messages") {
-    const derived = await messagesDomain.derive({ filePath }, [entry.subjectId]);
-    if (!derived.ok) return derived;
-    const result = derived.value[0];
-    if (result === undefined || result.outcome === "failed") {
+    const scheduled = await messagesDomain.scheduleDerivationRepair({ filePath }, [entry.subjectId]);
+    if (!scheduled.ok) return scheduled;
+    const result = scheduled.value[0];
+    if (result === undefined) {
       return {
         ok: false,
-        error: result?.error ?? {
+        error: {
           errorClass: "caller_error",
           code: "message_not_found",
           reason: `no message ${entry.subjectId} exists in this thread`,
         },
       };
     }
-    return { ok: true, value: "repaired" };
+    if (result.outcome === "in_flight") return { ok: true, value: "in_flight" };
+    if (result.outcome === "failed") {
+      return {
+        ok: false,
+        error: result.error,
+      };
+    }
+    if (result.outcome === "not_derivable") {
+      return {
+        ok: false,
+        error: {
+          errorClass: "state_corruption",
+          code: "source_damaged",
+          reason: `message ${entry.subjectId} has reported ${entry.derivationType} derivation state, but messages owner says it is not derivable`,
+        },
+      };
+    }
+    return { ok: true, value: "scheduled" };
   }
-  const derived =
+  const scheduled =
     entry.subjectKind === "chunk"
       ? entry.derivationType === "chunk_summary_brief"
-        ? await turnsDomain.deriveBriefChunk({ filePath }, entry.subjectId)
-        : await turnsDomain.deriveDetailedChunk({ filePath }, entry.subjectId)
-      : await turnsDomain.deriveTurn({ filePath }, entry.subjectId);
-  if (!derived.ok) return derived;
-  if (derived.value.outcome === "failed") return { ok: false, error: derived.value.error };
-  return { ok: true, value: "repaired" };
+        ? await turnsDomain.scheduleBriefChunkDerivationRepair({ filePath }, entry.subjectId)
+        : await turnsDomain.scheduleDetailedChunkDerivationRepair({ filePath }, entry.subjectId)
+      : await turnsDomain.scheduleTurnDerivationRepair({ filePath }, entry.subjectId);
+  if (!scheduled.ok) return scheduled;
+  if (scheduled.value.outcome === "failed") return { ok: false, error: scheduled.value.error };
+  return { ok: true, value: scheduled.value.outcome };
 }
 
 function turnsRepairSite(entry: DerivationReportEntry): string {
@@ -81,20 +99,14 @@ function turnsRepairSite(entry: DerivationReportEntry): string {
     : `turn_derivation:${entry.subjectId}`;
 }
 
-function repairFoundInFlight(result: OpResult<"repaired">): boolean {
-  return (
-    !result.ok &&
-    (result.error.code === "derivation_work_in_flight" || result.error.code === "derivation_retry_scheduled")
-  );
-}
-
 // The sweep walk (Flow 3): `messages.report` + `turns.report` → bucket each
-// form — ready / pending ⇒ in-flight / blocked / failed × classify — then
+// derivation — ready / pending ⇒ in-flight / blocked / failed × classify — then
 // repair the transient failures through their owners and assemble the
 // receipt per owner and kind. Buckets come from the owners' report joins,
-// not raw form states: "retrying" is a report-level distinction the sweep
-// must not re-derive. Pending forms are left alone (their work is already
-// live); blocked and permanent-failed are reported with reasons, never
+// not raw derivation states: "retrying" is a report-level distinction the sweep
+// must not re-derive. Pending derivations with live queue rows are left in flight;
+// pending derivations without live work are scheduled through their owner.
+// Blocked and permanent-failed derivations are reported with reasons, never
 // requeued.
 export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>> {
   const messageReport = await messagesDomain.report({ filePath });
@@ -117,7 +129,7 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
     { owner: "messages", entries: messageReport.value },
     { owner: "turns", entries: turnReport.value },
   ];
-  const repairedTurnSites = new Map<string, "repaired" | "in_flight">();
+  const repairedTurnSites = new Map<string, "scheduled" | "in_flight">();
   for (const { owner, entries } of walks) {
     for (const entry of entries) {
       const line = lineFor(owner, entry.derivationType);
@@ -133,8 +145,8 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           if (owner === "turns") {
             const site = turnsRepairSite(entry);
             const previous = repairedTurnSites.get(site);
-            if (previous === "repaired") {
-              line.ready += 1;
+            if (previous === "scheduled") {
+              line.inFlight += 1;
               break;
             }
             if (previous === "in_flight") {
@@ -144,13 +156,13 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           }
           {
             const repaired = await repairThroughOwner(filePath, owner, entry);
-            if (repairFoundInFlight(repaired)) {
+            if (!repaired.ok) return repaired;
+            if (repaired.value === "in_flight") {
               line.inFlight += 1;
               if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "in_flight");
               break;
             }
-            if (!repaired.ok) return repaired;
-            if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "repaired");
+            if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "scheduled");
             line.requeued.push(entry.subjectId);
           }
           break;
@@ -169,8 +181,8 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
           if (owner === "turns") {
             const site = turnsRepairSite(entry);
             const previous = repairedTurnSites.get(site);
-            if (previous === "repaired") {
-              line.ready += 1;
+            if (previous === "scheduled") {
+              line.inFlight += 1;
               break;
             }
             if (previous === "in_flight") {
@@ -179,13 +191,13 @@ export async function runSweep(filePath: string): Promise<OpResult<SweepReceipt>
             }
           }
           const repaired = await repairThroughOwner(filePath, owner, entry);
-          if (repairFoundInFlight(repaired)) {
+          if (!repaired.ok) return repaired;
+          if (repaired.value === "in_flight") {
             line.inFlight += 1;
             if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "in_flight");
             break;
           }
-          if (!repaired.ok) return repaired;
-          if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "repaired");
+          if (owner === "turns") repairedTurnSites.set(turnsRepairSite(entry), "scheduled");
           line.requeued.push(entry.subjectId);
           break;
         }

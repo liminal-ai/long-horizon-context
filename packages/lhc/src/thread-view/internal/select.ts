@@ -17,8 +17,10 @@
 // (render.ts's renderArrangementEntry, including attached inter-turn notes),
 // so the budgeted tokens are the stored tokens — no second estimate.
 import type { DatabaseSync } from "node:sqlite";
+import * as messagesDomain from "../../messages/index.js";
 import type { Band } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import * as turnsDomain from "../../turns/index.js";
 import {
   type CompactChunkMaterialSnapshot,
   type DerivationSnapshot,
@@ -99,31 +101,25 @@ export interface SelectionResult {
 // ── reads (corruption check lives here, pre-transaction) ─────────
 
 export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
-  const turnRows = db
-    .prepare(
-      `SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order, deleted_at
-       FROM turns ORDER BY turn_order`,
-    )
-    .all() as unknown as Array<{
-    turn_id: string;
-    turn_order: number | bigint;
-    status: string;
-    opened_at_event_order: number | bigint;
-    closed_at_event_order: number | bigint | null;
-    deleted_at: string | null;
-  }>;
+  // Message, turn, and chunk material comes from the owner domains, not direct
+  // SQL against their tables (bad-code-log: domain-boundary leakage). The
+  // owners return source-faithful structure — turns carry the deleted flag,
+  // chunks carry raw membership — so thread-view keeps ownership of the
+  // source-state corruption policy below. The derivation and event-aggregate
+  // reads stay here as thread-view's own selection inputs.
+  const structure = turnsDomain.readTurnChunkStructure(db);
   // Referential checks compare against every turn row (a tombstoned turn is
   // a legitimate reference target, not damage); the selection walk itself
   // sees live turns only.
-  const turnIds = new Set(turnRows.map((row) => row.turn_id));
-  const turns: SelectionTurn[] = turnRows
-    .filter((row) => row.deleted_at === null)
+  const turnIds = new Set(structure.turns.map((row) => row.turnId));
+  const turns: SelectionTurn[] = structure.turns
+    .filter((row) => !row.deleted)
     .map((row) => ({
-      turnId: row.turn_id,
-      turnOrder: Number(row.turn_order),
-      status: row.status as "open" | "closed",
-      openedAt: Number(row.opened_at_event_order),
-      closedAt: row.closed_at_event_order === null ? null : Number(row.closed_at_event_order),
+      turnId: row.turnId,
+      turnOrder: row.turnOrder,
+      status: row.status,
+      openedAt: row.openedAtEventOrder,
+      closedAt: row.closedAtEventOrder,
     }));
 
   // Canonical damage the walk cannot select across (AC-2.5): the Epic 01
@@ -147,80 +143,40 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     }
   }
 
-  const messageRows = db
-    .prepare(
-      `SELECT message_id, source_event_order, kind, token_estimate, turn_id
-       FROM message WHERE deleted_at IS NULL ORDER BY source_event_order`,
-    )
-    .all() as unknown as Array<{
-    message_id: string;
-    source_event_order: number | bigint;
-    kind: string;
-    token_estimate: number | bigint;
-    turn_id: string | null;
-  }>;
-  const blockRows = db
-    .prepare(
-      `SELECT mb.message_id, mb.block_type, mb.content
-       FROM message_block mb JOIN message m ON m.message_id = mb.message_id
-       WHERE m.deleted_at IS NULL
-       ORDER BY m.source_event_order, mb.block_index`,
-    )
-    .all() as unknown as Array<{ message_id: string; block_type: string; content: string }>;
-  const blocksByMessage = new Map<string, Array<{ blockType: string; content: Record<string, unknown> }>>();
-  for (const row of blockRows) {
-    const blocks = blocksByMessage.get(row.message_id) ?? [];
-    blocks.push({
-      blockType: row.block_type,
-      content: JSON.parse(row.content) as Record<string, unknown>,
-    });
-    blocksByMessage.set(row.message_id, blocks);
-  }
-  const messages: SelectionMessage[] = messageRows.map((row) => {
-    if (row.turn_id !== null && !turnIds.has(row.turn_id)) {
+  const messages: SelectionMessage[] = messagesDomain.readLiveMessages(db).map((record) => {
+    const turnId = record.turnId ?? null;
+    if (turnId !== null && !turnIds.has(turnId)) {
       throw new CanonicalCorruptionError(
         "source_damaged",
-        `canonical record corrupt: message ${row.message_id} references missing turn ${row.turn_id}`,
+        `canonical record corrupt: message ${record.messageId} references missing turn ${turnId}`,
       );
     }
     return {
-      messageId: row.message_id,
-      order: Number(row.source_event_order),
-      kind: row.kind,
-      tokenEstimate: Number(row.token_estimate),
-      turnId: row.turn_id,
-      text: excerptLine(row.kind, blocksByMessage.get(row.message_id) ?? []),
+      messageId: record.messageId,
+      order: record.sourceEventOrder,
+      kind: record.kind,
+      tokenEstimate: record.tokenEstimate,
+      turnId,
+      text: excerptLine(record.kind, record.blocks),
     };
   });
 
-  const chunkRows = db
-    .prepare(`SELECT chunk_id, chunk_order, status FROM chunk ORDER BY chunk_order`)
-    .all() as unknown as Array<{ chunk_id: string; chunk_order: number | bigint; status: string }>;
-  const memberRows = db
-    .prepare(
-      `SELECT cm.chunk_id, cm.turn_id, cm.member_idx FROM chunk_member cm
-       JOIN chunk c ON c.chunk_id = cm.chunk_id
-       ORDER BY c.chunk_order, cm.member_idx`,
-    )
-    .all() as unknown as Array<{ chunk_id: string; turn_id: string; member_idx: number | bigint }>;
-  const membersByChunk = new Map<string, string[]>();
-  for (const row of memberRows) {
-    if (!turnIds.has(row.turn_id)) {
-      throw new CanonicalCorruptionError(
-        "source_damaged",
-        `canonical record corrupt: chunk ${row.chunk_id} membership references missing turn ${row.turn_id}`,
-      );
+  const chunks: SelectionChunk[] = structure.chunks.map((row) => {
+    for (const memberTurnId of row.memberTurnIds) {
+      if (!turnIds.has(memberTurnId)) {
+        throw new CanonicalCorruptionError(
+          "source_damaged",
+          `canonical record corrupt: chunk ${row.chunkId} membership references missing turn ${memberTurnId}`,
+        );
+      }
     }
-    const members = membersByChunk.get(row.chunk_id) ?? [];
-    members.push(row.turn_id);
-    membersByChunk.set(row.chunk_id, members);
-  }
-  const chunks: SelectionChunk[] = chunkRows.map((row) => ({
-    chunkId: row.chunk_id,
-    chunkOrder: Number(row.chunk_order),
-    status: row.status as "open" | "closed",
-    memberTurnIds: membersByChunk.get(row.chunk_id) ?? [],
-  }));
+    return {
+      chunkId: row.chunkId,
+      chunkOrder: row.chunkOrder,
+      status: row.status,
+      memberTurnIds: row.memberTurnIds,
+    };
+  });
 
   const formRows = db
     .prepare(

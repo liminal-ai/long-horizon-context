@@ -6,7 +6,7 @@
 //
 // Story 2 landed overview and health; Story 3 lands `view` — the stored
 // snapshot from `threadView.describe` plus the serving cost measured from
-// `threadView.pull` (parity by construction, DD-4).
+// thread-view serving assembly (parity by construction, DD-4).
 //
 // Reads-only is structural, not disciplined (DD-6): every operation runs in
 // the touch-suppressed scope, so the open announcements fired by the surfaces

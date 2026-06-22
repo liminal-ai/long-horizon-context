@@ -57,6 +57,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(await readTurns(filePath)).toEqual([
       {
         turnId: "t1",
+        turnOrder: 1,
         status: "open",
         memberMessageIds: [],
         openedAtEventOrder: 0,
@@ -78,6 +79,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(turnRecords).toEqual([
       {
         turnId: "t1",
+        turnOrder: 1,
         status: "open",
         memberMessageIds: ["m1", "m2", "m3", "m4"],
         openedAtEventOrder: 0,
@@ -105,6 +107,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(turnRecords).toEqual([
       {
         turnId: "t1",
+        turnOrder: 1,
         status: "closed",
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 0,
@@ -128,6 +131,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       },
       {
         turnId: "t2",
+        turnOrder: 2,
         status: "open",
         memberMessageIds: ["m3"],
         openedAtEventOrder: 3,
@@ -151,6 +155,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(turnRecords).toEqual([
       {
         turnId: "t1",
+        turnOrder: 1,
         status: "closed",
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 0,
@@ -174,6 +179,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       },
       {
         turnId: "t2",
+        turnOrder: 2,
         status: "open",
         memberMessageIds: [],
         openedAtEventOrder: 3,
@@ -194,13 +200,13 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(events.value[0]!.eventOrder).toBe(1);
 
     expect(await readTurns(filePath)).toEqual([
-      { turnId: "t1", status: "open", memberMessageIds: [], openedAtEventOrder: 0 },
+      { turnId: "t1", turnOrder: 1, status: "open", memberMessageIds: [], openedAtEventOrder: 0 },
     ]);
 
     const next = await send(filePath, [validEvent("user_prompt")]);
     expect(next.turnTransitions).toEqual([]);
     expect(await readTurns(filePath)).toEqual([
-      { turnId: "t1", status: "open", memberMessageIds: ["m2"], openedAtEventOrder: 0 },
+      { turnId: "t1", turnOrder: 1, status: "open", memberMessageIds: ["m2"], openedAtEventOrder: 0 },
     ]);
   });
 
@@ -225,6 +231,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(turnRecords[0]).toEqual(closedBefore);
     expect(turnRecords[1]).toEqual({
       turnId: "t2",
+      turnOrder: 2,
       status: "closed",
       memberMessageIds: ["m4"],
       openedAtEventOrder: 3,
@@ -248,6 +255,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     });
     expect(turnRecords[2]).toEqual({
       turnId: "t3",
+      turnOrder: 3,
       status: "open",
       memberMessageIds: ["m5"],
       openedAtEventOrder: 5,
@@ -333,6 +341,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(await readTurns(filePath)).toEqual([
       {
         turnId: "t1",
+        turnOrder: 1,
         status: "closed",
         memberMessageIds: ["m1", "m2"],
         openedAtEventOrder: 0,
@@ -356,6 +365,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       },
       {
         turnId: "t2",
+        turnOrder: 2,
         status: "closed",
         memberMessageIds: ["m3", "m4"],
         openedAtEventOrder: 3,
@@ -379,6 +389,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       },
       {
         turnId: "t3",
+        turnOrder: 3,
         status: "open",
         memberMessageIds: [],
         openedAtEventOrder: 5,

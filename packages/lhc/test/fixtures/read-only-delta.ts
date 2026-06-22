@@ -18,7 +18,7 @@ export interface ObservableState {
   messageWork: unknown;
   turnWork: unknown;
   viewStatus: unknown;
-  pullMeta: unknown;
+  modelContext: unknown;
   storedView: unknown;
   derivations: unknown;
 }
@@ -33,16 +33,16 @@ function queuedFor(filePath: string, owner: WorkOwner) {
 }
 
 export async function observableState(filePath: string): Promise<ObservableState> {
-  const pulled = await threadView.pull({ filePath });
+  const contextRead = await threadView.getLlmRequestContext({ filePath });
   return {
     events: await intakeStream.listEvents({ filePath }),
     messages: await messages.list({ filePath }, { includeDeleted: true }),
     messageWork: queuedFor(filePath, "messages"),
     turnWork: queuedFor(filePath, "turns"),
     viewStatus: await threadView.status({ filePath }),
-    pullMeta: pulled.ok ? pulled.value.meta : pulled,
+    modelContext: contextRead,
     // The stored snapshot whole (Story 3): a forgotten view touch — config,
-    // arrangement, band rows, provenance — moves this even when pull's meta
+    // arrangement, band rows, provenance — moves this even when model context output
     // would not show it.
     storedView: await threadView.describe({ filePath }),
     derivations: readDerivedForms(filePath),

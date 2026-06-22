@@ -8,7 +8,7 @@
 // derivation directly.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, type Lhc, type MessageEventInput, type ViewMessage } from "../src/index.js";
+import { initLhc, type Lhc, type LlmRequestContextMessage, type MessageEventInput } from "../src/index.js";
 import {
   corruptTwoOpenTurns,
   createInferenceCallbacksDouble,
@@ -120,14 +120,18 @@ function boundaryPosition(filePath: string): number {
   }
 }
 
-function bandMessages(messages: readonly ViewMessage[]): ViewMessage[] {
-  return messages.filter((message) => message.band !== undefined);
+function messageText(message: LlmRequestContextMessage): string {
+  return message.content.map((part) => part.text).join("");
 }
 
-async function pullMessages(sdk: Lhc, filePath: string): Promise<ViewMessage[]> {
-  const pulled = await sdk.threadView.pull({ filePath });
-  if (!pulled.ok) throw new Error(`pull failed: ${pulled.error.reason}`);
-  return pulled.value.messages;
+function bandMessages(messages: readonly LlmRequestContextMessage[]): LlmRequestContextMessage[] {
+  return messages.filter((message) => messageText(message).startsWith("[context ·"));
+}
+
+async function contextMessages(sdk: Lhc, filePath: string): Promise<LlmRequestContextMessage[]> {
+  const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+  if (!contextRead.ok) throw new Error(`model context failed: ${contextRead.error.reason}`);
+  return contextRead.value.messages;
 }
 
 describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named rejections", () => {
@@ -276,9 +280,11 @@ describe("TC-2.6 (AC-2.10): band entries carry their subject keys visibly", () =
     const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
 
-    const messages = await pullMessages(fixture.sdk, fixture.filePath);
+    const messages = await contextMessages(fixture.sdk, fixture.filePath);
     const bands = bandMessages(messages);
-    const byBand = new Map(bands.map((message) => [message.band, message.content]));
+    const byBand = new Map(
+      bands.map((message) => [messageText(message).match(/^\[context · ([^\]]+)\]/)?.[1], messageText(message)]),
+    );
     expect(byBand.get("brief")).toMatch(/§c\d+/);
     expect(byBand.get("detailed")).toMatch(/§c\d+/);
     expect(byBand.get("smooth")).toMatch(/§t\d+/);
@@ -305,9 +311,9 @@ describe("architecture-risk: coverage edge accounting", () => {
     // chunk: gaps report unusable material, not the window's edge.
     expect(receipt.value.gaps).toEqual([]);
 
-    const messages = await pullMessages(fixture.sdk, fixture.filePath);
+    const messages = await contextMessages(fixture.sdk, fixture.filePath);
     const bandText = bandMessages(messages)
-      .map((message) => message.content)
+      .map((message) => messageText(message))
       .join("\n");
     expect(bandText).not.toContain("§c1");
     expect(bandText).toContain("§c2");
@@ -316,16 +322,16 @@ describe("architecture-risk: coverage edge accounting", () => {
 });
 
 describe("architecture-risk: restart serves the snapshot (real-file durability)", () => {
-  it("a fresh SDK on the same file pulls byte-identical band content", async () => {
+  it("a fresh SDK on the same file serves byte-identical band content", async () => {
     const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
-    const before = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
+    const before = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     expect(before.ok).toBe(true);
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
     const fresh = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
-    const after = await fresh.threadView.pull({ filePath: fixture.filePath });
+    const after = await fresh.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
     expect(JSON.stringify(after.value)).toBe(JSON.stringify(before.value));
@@ -336,9 +342,9 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
   it("an injected crash leaves the previous view serving; the rerun lands clean with no partial state", async () => {
     const first = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
     expect(first.ok).toBe(true);
-    const priorPull = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
-    expect(priorPull.ok).toBe(true);
-    if (!priorPull.ok) return;
+    const priorContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(priorContext.ok).toBe(true);
+    if (!priorContext.ok) return;
     expect(boundaryPosition(fixture.filePath)).toBe(48);
 
     setViewInjectionHook("compact-write", () => {
@@ -356,10 +362,10 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
 
     // The previous view still serves, byte-identical; no partial rows, no
     // boundary movement.
-    const afterCrash = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
+    const afterCrash = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     expect(afterCrash.ok).toBe(true);
     if (!afterCrash.ok) return;
-    expect(JSON.stringify(afterCrash.value)).toBe(JSON.stringify(priorPull.value));
+    expect(JSON.stringify(afterCrash.value)).toBe(JSON.stringify(priorContext.value));
     expect(viewRowCount(fixture.filePath)).toBe(1);
     expect(boundaryPosition(fixture.filePath)).toBe(48);
 
@@ -371,10 +377,10 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
     expect(rerun.value.coveredFrom).toBe(13);
     expect(viewRowCount(fixture.filePath)).toBe(1);
     expect(boundaryPosition(fixture.filePath)).toBe(56);
-    const rerunPull = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
-    expect(rerunPull.ok).toBe(true);
-    if (!rerunPull.ok) return;
-    expect(JSON.stringify(rerunPull.value)).not.toBe(JSON.stringify(priorPull.value));
+    const rerunContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(rerunContext.ok).toBe(true);
+    if (!rerunContext.ok) return;
+    expect(JSON.stringify(rerunContext.value)).not.toBe(JSON.stringify(priorContext.value));
   });
 });
 
@@ -517,9 +523,9 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(receipt.value.coveredFrom).toBe(1);
 
     // The rendered text carries the markers (degrade visibly, AC-2.5/2.10).
-    const messages = await pullMessages(degraded.sdk, degraded.filePath);
+    const messages = await contextMessages(degraded.sdk, degraded.filePath);
     const bandText = bandMessages(messages)
-      .map((message) => message.content)
+      .map((message) => messageText(message))
       .join("\n\n");
     expect(bandText).toContain("[degraded: detailed-from-stored-members]");
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
@@ -567,9 +573,12 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
         { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
       );
       expect(first.ok).toBe(true);
-      const priorPull = await sdk.threadView.pull({ filePath });
-      expect(priorPull.ok).toBe(true);
-      if (!priorPull.ok) return;
+      const priorContext = await sdk.threadView.getLlmRequestContext({ filePath });
+      expect(priorContext.ok).toBe(true);
+      if (!priorContext.ok) return;
+      const priorView = await sdk.threadView.describe({ filePath });
+      expect(priorView.ok).toBe(true);
+      if (!priorView.ok) return;
 
       // Manufactured canonical corruption, damaged below the SDK (the Epic 01
       // two-open-turns pattern): open a turn through real intake, then add a
@@ -593,13 +602,16 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
 
       // Pre-transaction refusal: prior view serves byte-identically, record
       // untouched.
-      const afterPull = await sdk.threadView.pull({ filePath });
-      expect(afterPull.ok).toBe(true);
-      if (!afterPull.ok) return;
-      expect(JSON.stringify(afterPull.value.messages.filter((m) => m.band !== undefined))).toBe(
-        JSON.stringify(priorPull.value.messages.filter((m) => m.band !== undefined)),
+      const afterContext = await sdk.threadView.getLlmRequestContext({ filePath });
+      expect(afterContext.ok).toBe(true);
+      if (!afterContext.ok) return;
+      expect(JSON.stringify(bandMessages(afterContext.value.messages))).toBe(
+        JSON.stringify(bandMessages(priorContext.value.messages)),
       );
-      expect(afterPull.value.meta.viewId).toBe(priorPull.value.meta.viewId);
+      const afterView = await sdk.threadView.describe({ filePath });
+      expect(afterView.ok).toBe(true);
+      if (!afterView.ok) return;
+      expect(afterView.value?.viewId).toBe(priorView.value?.viewId);
       expect(recordSnapshot(filePath)).toBe(recordBefore);
     } finally {
       corruptStore.cleanup();
@@ -632,8 +644,8 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     mutStore.cleanup();
   });
 
-  it("TC-1.3: editing a banded subject leaves band bytes unchanged across pulls, before and after the drain", async () => {
-    const before = bandMessages(await pullMessages(mut.sdk, mut.filePath));
+  it("TC-1.3: editing a banded subject leaves band bytes unchanged across context reads, before and after the drain", async () => {
+    const before = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     const bandHash = sha256(before);
 
     // t5 is banded inside c2's detailed entry; edit its prompt.
@@ -649,14 +661,14 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     );
     expect(edited.ok).toBe(true);
 
-    const afterEdit = bandMessages(await pullMessages(mut.sdk, mut.filePath));
+    const afterEdit = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     expect(sha256(afterEdit)).toBe(bandHash);
 
     // Drain the requeued rebuilds: the rebuilt summary lands in the RECORD
     // only; the snapshot still serves the same bytes.
     const drained = await mut.sdk.work.drain({ filePath: mut.filePath });
     expect(drained.ok).toBe(true);
-    const afterDrain = bandMessages(await pullMessages(mut.sdk, mut.filePath));
+    const afterDrain = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     expect(sha256(afterDrain)).toBe(bandHash);
 
     // The record really changed underneath: c2's rebuilt detailed summary is
@@ -670,14 +682,16 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
         )
         .get() as { content: string | null } | undefined;
       expect(row?.content).toBeDefined();
-      const detailedBand = afterDrain.find((m) => m.band === "detailed");
-      expect(detailedBand?.content).not.toContain(row?.content ?? "<unset>");
+      const detailedBand = afterDrain.find((m) => messageText(m).startsWith("[context · detailed]"));
+      expect(detailedBand === undefined ? undefined : messageText(detailedBand)).not.toContain(
+        row?.content ?? "<unset>",
+      );
     } finally {
       db.close();
     }
   });
 
-  it("TC-1.5: a tail delete vanishes from the next pull; a banded delete leaves the snapshot until the next compact", async () => {
+  it("TC-1.5: a tail delete vanishes from the next context read; a banded delete leaves the snapshot until the next compact", async () => {
     const listed = await mut.sdk.messages.list({ filePath: mut.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -692,8 +706,8 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
 
     const tailDelete = await mut.sdk.messages.remove({ filePath: mut.filePath }, { messageId: tailTarget.messageId });
     expect(tailDelete.ok).toBe(true);
-    const afterTailDelete = await pullMessages(mut.sdk, mut.filePath);
-    expect(afterTailDelete.some((m) => m.content === "findings for area 10")).toBe(false);
+    const afterTailDelete = await contextMessages(mut.sdk, mut.filePath);
+    expect(afterTailDelete.some((m) => messageText(m) === "findings for area 10")).toBe(false);
 
     // The record change is visible to the status read (tail sum shrank).
     const statusAfter = await mut.sdk.threadView.status({ filePath: mut.filePath });
@@ -710,7 +724,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const bandedDelete = await mut.sdk.messages.remove({ filePath: mut.filePath }, { messageId: bandTarget.messageId });
     expect(bandedDelete.ok).toBe(true);
 
-    const afterBandedDelete = await pullMessages(mut.sdk, mut.filePath);
+    const afterBandedDelete = await contextMessages(mut.sdk, mut.filePath);
     expect(sha256(bandMessages(afterBandedDelete))).toBe(sha256(bandsBefore));
 
     // Next-compact visibility: the record changed under the snapshot — the

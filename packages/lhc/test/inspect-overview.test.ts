@@ -12,13 +12,13 @@ import {
   initLhc,
   type Lhc,
   type MessageEventInput,
-  threadView,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   derivedThreadFixture,
   expectReadOnly,
   mutationInFlightVariant,
+  openRaw,
   type TempStore,
   tempStore,
   validEvent,
@@ -219,14 +219,18 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
       compactPoint: compacted.value.compactPoint,
       coveredFrom: compacted.value.coveredFrom,
     });
-    // Visibility mirrors the serving surface: the stored boundary pull
-    // reports and the zone sum status computes live.
-    const pulled = await threadView.pull({ filePath });
+    // Visibility mirrors the durable boundary position and the zone sum
+    // status computes live.
+    const db = openRaw(filePath);
+    const boundary = Number(
+      (db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint }).position,
+    );
+    db.close();
     const status = await sdk.threadView.status({ filePath });
-    expect(pulled.ok && status.ok).toBe(true);
-    if (!pulled.ok || !status.ok) return;
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
     expect(overview.visibility).toEqual({
-      boundaryPosition: pulled.value.meta.boundaryPosition,
+      boundaryPosition: boundary,
       zoneTokens: status.value.visibility.zoneTokens,
     });
   });

@@ -15,7 +15,7 @@
 // provenance, mutation regeneration, coherent checkpoints.
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Derivation, HealthReport, MutationResult, OpResult } from "../src/index.js";
+import type { Derivation, HealthReport, LlmRequestContextMessage, MutationResult, OpResult } from "../src/index.js";
 import {
   assertModelCallContract,
   assertRoutingThroughSdk,
@@ -61,6 +61,10 @@ function ok<T>(result: OpResult<T>): T {
     throw new Error(`expected ok result: ${JSON.stringify(result.error)}`);
   }
   return result.value;
+}
+
+function messageText(message: LlmRequestContextMessage): string {
+  return message.content.map((part) => part.text).join("");
 }
 
 // All seven kinds assigned to the one real lane; prompt names stay the
@@ -178,7 +182,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     store = tempStore();
     if ("notRan" in suiteEnv) throw new Error("keyed leg started without a key");
     const call = createOpenRouterCall(suiteEnv.key, realModel);
-    // The Epic 04 sequence verbatim — intake, drain, compact, pull, inspect,
+    // The Epic 04 sequence verbatim — intake, drain, compact, model context, inspect,
     // edit, rebuild, drain, compact, materialize — with the inference
     // adapter in the inference-callback slot (the one swap point).
     run = await runLifecycle(store, {
@@ -213,9 +217,9 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
       expect(form.content).not.toMatch(MARKER_AT_START);
       expect(form.content).not.toMatch(MARKER_ANYWHERE);
     }
-    for (const pull of [ok(run.phases.pull1), ok(run.phases.pull2)]) {
-      for (const message of pull.messages) {
-        expect(message.content).not.toMatch(MARKER_ANYWHERE);
+    for (const context of [ok(run.phases.llmContext1), ok(run.phases.llmContext2)]) {
+      for (const message of context.messages) {
+        expect(messageText(message)).not.toMatch(MARKER_ANYWHERE);
       }
     }
     expect(readFileSync(run.outPath, "utf8")).not.toMatch(MARKER_ANYWHERE);
@@ -286,14 +290,17 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   });
 
   it("the second compact's view reflects post-edit content", () => {
-    const pull2 = ok(run.phases.pull2);
+    const llmContext2 = ok(run.phases.llmContext2);
     expect(
-      pull2.messages.some(
-        (message) => message.band === undefined && message.role === "user" && message.content === EDITED_MESSAGE_TEXT,
+      llmContext2.messages.some(
+        (message) =>
+          !messageText(message).startsWith("[context ·") &&
+          message.role === "user" &&
+          messageText(message) === EDITED_MESSAGE_TEXT,
       ),
     ).toBe(true);
-    expect(pull2.messages.some((m) => m.content.includes(DELETED_MESSAGE_TEXT))).toBe(false);
-    expect(pull2.messages.some((m) => m.content === "turn 12: please investigate area 12")).toBe(false);
+    expect(llmContext2.messages.some((m) => messageText(m).includes(DELETED_MESSAGE_TEXT))).toBe(false);
+    expect(llmContext2.messages.some((m) => messageText(m) === "turn 12: please investigate area 12")).toBe(false);
   });
 
   it("mutation results carried queued replacement work (the cleared set was re-derived, not left stale)", () => {

@@ -1,5 +1,5 @@
 // Epic 03 Story 5: render targets (TC-5.1, TC-5.2, TC-5.3, TC-5.5). One
-// view, two shapes: the pull's message array and the materialized PI session
+// view, two shapes: model-context messages and the materialized PI session
 // file must carry the same content because they come from the same assembly.
 // Every TC goes through the real SDK surface (initLhc().threadView.*)
 // against real temp thread files; the inference callbacks double appears only in
@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, type Lhc, type ViewMessage } from "../src/index.js";
+import { initLhc, type Lhc, type LlmRequestContextMessage } from "../src/index.js";
 import {
   assertPiSessionConformance,
   createInferenceCallbacksDouble,
@@ -91,62 +91,71 @@ function readSessionFile(path: string): {
   return { text, header, entries };
 }
 
-describe("TC-5.1 (AC-5.1): pull opens with band context messages in gradient order, tail in record order, deterministic", () => {
-  it("bands brief → detailed → smooth with labels, then the tail; repeated pulls byte-identical", async () => {
+function messageText(message: LlmRequestContextMessage | undefined): string | undefined {
+  return message?.content.map((part) => part.text).join("");
+}
+
+describe("TC-5.1 (AC-5.1): model context opens with band context messages in gradient order, tail in record order, deterministic", () => {
+  it("bands brief → detailed → smooth with labels, then the tail; repeated contexts byte-identical", async () => {
     const ref = { filePath: fixture.filePath };
     const compacted = await fixture.sdk.threadView.compact(ref, { params: GRADIENT_PARAMS });
     expect(compacted.ok).toBe(true);
 
-    const first = await fixture.sdk.threadView.pull(ref);
+    const first = await fixture.sdk.threadView.getLlmRequestContext(ref);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const messages = first.value.messages;
+    const texts = messages.map((message) => messageText(message));
 
     // Band messages open the array in gradient order, each a labeled `user`
     // context message carrying its band marker.
-    const bands = messages.filter((m) => m.band !== undefined);
-    expect(bands.map((m) => m.band)).toEqual(["brief", "detailed", "smooth"]);
-    for (const band of bands) {
-      expect(band.role).toBe("user");
-      expect(band.content.startsWith(`[context · ${band.band}]\n`)).toBe(true);
+    const bandTexts = texts.filter((text) => text?.startsWith("[context ·"));
+    expect(bandTexts.map((text) => text?.match(/^\[context · ([^\]]+)\]/)?.[1])).toEqual([
+      "brief",
+      "detailed",
+      "smooth",
+    ]);
+    for (let i = 0; i < bandTexts.length; i += 1) {
+      expect(messages[i]?.role).toBe("user");
     }
-    expect(messages.slice(0, bands.length)).toEqual(bands);
+    expect(texts.slice(0, bandTexts.length)).toEqual(bandTexts);
 
     // Tail follows in record order: with this config the compact point sits
     // at t9's start, so the tail opens with turn 9's prompt and carries the
     // turn 9–12 prompts in conversation order.
-    const tail = messages.slice(bands.length);
-    expect(tail.every((m) => m.band === undefined)).toBe(true);
-    expect(tail[0]).toEqual({ role: "user", content: "turn 9: please investigate area 9" });
-    const prompts = tail.filter((m) => m.content.startsWith("turn ")).map((m) => m.content.split(":")[0]);
+    const tail = messages.slice(bandTexts.length);
+    const tailTexts = tail.map((message) => messageText(message));
+    expect(tail[0]).toEqual({ role: "user", content: [{ type: "text", text: "turn 9: please investigate area 9" }] });
+    const prompts = tailTexts.filter((text) => text?.startsWith("turn ")).map((text) => text?.split(":")[0]);
     expect(prompts).toEqual(["turn 9", "turn 10", "turn 11", "turn 12"]);
     // Roles per the pinned mapping: prompts/tool-results user, the
     // assistant kinds assistant.
     for (const m of tail) {
-      if (m.content.startsWith("[tool call") || m.content.startsWith("[thinking]")) {
+      const text = messageText(m) ?? "";
+      if (text.startsWith("[tool call") || text.startsWith("[thinking]")) {
         expect(m.role).toBe("assistant");
       }
-      if (m.content.startsWith("[tool result")) expect(m.role).toBe("user");
+      if (text.startsWith("[tool result")) expect(m.role).toBe("user");
     }
 
-    // Deterministic across repeated pulls: byte-identical result.
-    const second = await fixture.sdk.threadView.pull(ref);
+    // Deterministic across repeated model-context reads: byte-identical result.
+    const second = await fixture.sdk.threadView.getLlmRequestContext(ref);
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(JSON.stringify(second.value)).toBe(JSON.stringify(first.value));
   });
 });
 
-describe("TC-5.2 (AC-5.2, AC-5.3): materialize/pull parity, byte-identical repeat, thread state untouched", () => {
-  it("every pull message appears in the file, same order, same text; repeat is byte-identical; state hash unchanged", async () => {
+describe("TC-5.2 (AC-5.2, AC-5.3): materialize/model-context parity, byte-identical repeat, thread state untouched", () => {
+  it("every model-context message appears in the file, same order, same text; repeat is byte-identical; state hash unchanged", async () => {
     const ref = { filePath: fixture.filePath };
     // The view from TC-5.1's compact (suite order) — recompact defensively so
     // this test stands alone too.
     const compacted = await fixture.sdk.threadView.compact(ref, { params: GRADIENT_PARAMS });
     expect(compacted.ok).toBe(true);
-    const pulled = await fixture.sdk.threadView.pull(ref);
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
+    const contextMessages = await fixture.sdk.threadView.getLlmRequestContext(ref);
+    expect(contextMessages.ok).toBe(true);
+    if (!contextMessages.ok) return;
 
     const before = fullStateHash(fixture.filePath);
     const outPath = join(store.dir, "render-parity.jsonl");
@@ -158,18 +167,23 @@ describe("TC-5.2 (AC-5.2, AC-5.3): materialize/pull parity, byte-identical repea
     // Item-for-item parity: same count, same order, same role, same rendered
     // text in the target encoding (one text block per message).
     const file = readSessionFile(outPath);
-    expect(file.entries).toHaveLength(pulled.value.messages.length);
+    expect(file.entries).toHaveLength(contextMessages.value.messages.length);
     file.entries.forEach((entry, i) => {
-      const source = pulled.value.messages[i] as ViewMessage;
+      const source = contextMessages.value.messages[i];
+      expect(source).toBeDefined();
+      if (source === undefined) return;
       expect(entry.message.role).toBe(source.role);
-      expect(entry.message.content).toEqual([{ type: "text", text: source.content }]);
+      expect(entry.message.content).toEqual(source.content);
     });
 
     // Band entries' generated fields derive from view metadata: the view's
     // created-at and viewId, never a write-time clock.
-    expect(file.entries[0]?.timestamp).toBe(pulled.value.meta.createdAt);
-    expect(file.entries[0]?.id).toBe(`${pulled.value.meta.viewId}-brief`);
-    expect(file.header["timestamp"]).toBe(pulled.value.meta.createdAt);
+    const described = await fixture.sdk.threadView.describe(ref);
+    expect(described.ok).toBe(true);
+    if (!described.ok || described.value === null) return;
+    expect(file.entries[0]?.timestamp).toBe(described.value.createdAt);
+    expect(file.entries[0]?.id).toBe(`${described.value.viewId}-brief`);
+    expect(file.header["timestamp"]).toBe(described.value.createdAt);
 
     // Repeat with no thread changes → byte-identical file.
     const again = await fixture.sdk.threadView.materialize(ref, { path: outPath });
@@ -216,16 +230,19 @@ describe("TC-5.3 (AC-5.4): a never-compacted thread materializes its tail-only v
     expect(() => assertPiSessionConformance(file.text)).not.toThrow();
 
     // Tail-only: every entry is a record message (no band context entries),
-    // matching the pull of the same never-compacted thread.
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    expect(pulled.value.meta.viewId).toBeNull();
+    // matching the model context of the same never-compacted thread.
+    const contextMessages = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextMessages.ok).toBe(true);
+    if (!contextMessages.ok) return;
+    const described = await sdk.threadView.describe({ filePath });
+    expect(described.ok).toBe(true);
+    if (!described.ok) return;
+    expect(described.value).toBeNull();
     // Four record messages (turn_end projects no message), zero band entries.
     expect(file.entries).toHaveLength(4);
     expect(file.entries.every((e) => !e.message.content[0]?.text.startsWith("[context ·"))).toBe(true);
     file.entries.forEach((entry, i) => {
-      expect(entry.message.content[0]?.text).toBe(pulled.value.messages[i]?.content);
+      expect(entry.message.content).toEqual(contextMessages.value.messages[i]?.content);
     });
 
     // viewId null ⇒ the header derives from the thread's created-at.

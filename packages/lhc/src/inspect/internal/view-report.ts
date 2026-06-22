@@ -1,13 +1,13 @@
-// View-contents report composition (Flow 2, DD-4): describe + pull are the
-// only sources. The stored arrangement, gaps, config, per-band stored token
-// counts, and source-state provenance come from `threadView.describe`; the
-// serving cost comes from MEASURING `threadView.pull`'s output with the
-// shared estimator — parity with what agents receive is by construction
-// (AC-2.3), and AC-2.2's boundary-aware tail shortening is inherited from
-// pull, never re-implemented. Nothing here recomputes selection, rendering,
-// form choice, or boundary state.
+// View-contents report composition (Flow 2, DD-4): describe + model context
+// are the only sources. The stored arrangement, gaps, config, per-band stored
+// token counts, and source-state provenance come from `threadView.describe`;
+// the serving cost comes from MEASURING `threadView.getLlmRequestContext`'s
+// messages with the shared estimator — parity with what agents receive is by
+// construction (AC-2.3), and AC-2.2's boundary-aware tail shortening is
+// inherited from model context, never re-implemented. Nothing here recomputes
+// selection, rendering, form choice, or boundary state.
 
-import type { Band, ViewContentsReport, ViewMessage } from "../../shared-tech/index.js";
+import type { Band, LlmRequestContextMessage, ViewContentsReport } from "../../shared-tech/index.js";
 import { type OpResult, storageFailure } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import * as threadView from "../../thread-view/index.js";
@@ -15,29 +15,33 @@ import type { ThreadRef } from "../../threads/index.js";
 
 const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
-function measuredTokens(messages: readonly ViewMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message.content), 0);
+function messageText(message: LlmRequestContextMessage): string {
+  return message.content.map((part) => part.text).join("");
+}
+
+function measuredTokens(messages: readonly LlmRequestContextMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTokens(messageText(message)), 0);
 }
 
 export async function composeViewReport(ref: ThreadRef): Promise<OpResult<ViewContentsReport>> {
   const described = await threadView.describe(ref);
   if (!described.ok) return described;
-  const pulled = await threadView.pull(ref);
-  if (!pulled.ok) return pulled;
+  const context = await threadView.getLlmRequestContext(ref);
+  if (!context.ok) return context;
   const stored = described.value;
+  const storedBandCount = stored?.bands.length ?? 0;
 
-  const bandMessages = pulled.value.messages.filter((message) => message.band !== undefined);
-  const tailMessages = pulled.value.messages.filter((message) => message.band === undefined);
+  const bandMessages = context.value.messages.slice(0, storedBandCount);
+  const tailMessages = context.value.messages.slice(storedBandCount);
 
-  // Cross-check count only (Flow 2): the arrangement is describe's; pull just
+  // Cross-check count only (Flow 2): the arrangement is describe's; model context
   // has to be serving the same snapshot's bands. A mismatch means the two
   // reads saw different stored state (a compact landed between them) —
   // report it, never paper over it. Existing code, no additions (tech
   // design §Interface Definitions).
-  const storedBandCount = stored?.bands.length ?? 0;
   if (bandMessages.length !== storedBandCount) {
     return storageFailure(
-      `view report cross-check failed: describe saw ${storedBandCount} stored band(s) but pull served ${bandMessages.length} band message(s); the view changed between reads`,
+      `view report cross-check failed: describe saw ${storedBandCount} stored band(s) but model context produced ${bandMessages.length} band message(s); the view changed between reads`,
     );
   }
 

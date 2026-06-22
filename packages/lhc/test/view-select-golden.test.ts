@@ -50,6 +50,10 @@ function loadGolden(name: string): Golden {
   return JSON.parse(readFileSync(join(import.meta.dirname, "goldens", name), "utf8")) as Golden;
 }
 
+function messageText(message: { content: readonly { text: string }[] }): string {
+  return message.content.map((part) => part.text).join("");
+}
+
 interface StoredView {
   compactPoint: number;
   coveredFrom: number;
@@ -150,20 +154,21 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     const stored = await runGolden(golden);
     expectMatches(stored, golden);
 
-    // The trailing note still pulls as tail.
-    const pulled = await (straggler.sdk as Lhc).threadView.pull({
+    // The trailing note still appears in the tail.
+    const contextRead = await (straggler.sdk as Lhc).threadView.getLlmRequestContext({
       filePath: straggler.filePath,
     });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const tail = pulled.value.messages.filter((message) => message.band === undefined);
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const tail = contextRead.value.messages.filter((message) => !messageText(message).startsWith("[context ·"));
     expect(
       tail.some(
-        (message) => message.content === "[runtime note] session closing note after the last turn (fixture straggler)",
+        (message) =>
+          messageText(message) === "[runtime note] session closing note after the last turn (fixture straggler)",
       ),
     ).toBe(true);
     // The note appears once: banded with c2, not duplicated into the tail.
-    expect(tail.some((message) => message.content.includes("harness restarted between turns"))).toBe(false);
+    expect(tail.some((message) => messageText(message).includes("harness restarted between turns"))).toBe(false);
   });
 });
 
@@ -176,7 +181,7 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
 // §Flow 5) before implementation: contents are n joined "tok" words (exactly
 // n o200k tokens each), so every sum in the golden is checkable by hand.
 // Every advance fires through a real intake commit; positions and zone sums
-// read back through real pull/status calls (no test-only advance surface).
+// read back through real model-context/status calls (no test-only advance surface).
 
 interface BoundaryGolden {
   case: string;
@@ -230,11 +235,16 @@ async function replayTrajectory(golden: BoundaryGolden): Promise<Array<{ positio
   for (const batch of golden.batches) {
     const result = await sdk.intakeStream.messageEvents({ filePath }, trajectoryBatch(batch));
     if (!result.ok) throw new Error(`trajectory intake failed: ${result.error.reason}`);
-    const pulled = await sdk.threadView.pull({ filePath });
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
     const status = await sdk.threadView.status({ filePath });
-    if (!pulled.ok || !status.ok) throw new Error("trajectory read-back failed");
+    if (!contextRead.ok || !status.ok) throw new Error("trajectory read-back failed");
+    const db = openRaw(filePath);
+    const position = Number(
+      (db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint }).position,
+    );
+    db.close();
     observed.push({
-      position: pulled.value.meta.boundaryPosition,
+      position,
       zoneTokens: status.value.visibility.zoneTokens,
     });
   }

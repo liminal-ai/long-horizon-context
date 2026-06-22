@@ -191,10 +191,12 @@ describe("Story 2: tool-result rendering", () => {
       }),
     ]);
 
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const rendered = pulled.value.messages.map((message) => message.content).join("\n");
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const rendered = contextRead.value.messages
+      .map((message) => message.content.map((part) => part.text).join(""))
+      .join("\n");
     expect(rendered).toContain(`[tool call · exec] ${args}`);
     expect(rendered).not.toContain("truncated");
     expect(formOf(filePath, "m1", "tool_call_summary")).toBeUndefined();

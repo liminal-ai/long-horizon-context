@@ -138,6 +138,44 @@ export function enqueueChunkSummaries(transaction: DbWriteTransaction, chunkId: 
   );
 }
 
+// The chunk structure for compact selection: every chunk in chunk order with
+// its raw membership in member order. Membership is NOT filtered by turn
+// liveness — references are returned as stored so the consumer can run its
+// own referential check (a member pointing at no turn row at all is damage;
+// a member pointing at a tombstoned turn is not). This is why it does not
+// reuse readChunkRows, whose live-turn join would hide both cases.
+export interface ChunkStructureRow {
+  chunkId: string;
+  chunkOrder: number;
+  status: "open" | "closed";
+  memberTurnIds: string[];
+}
+
+export function readChunkStructure(db: DatabaseSync): ChunkStructureRow[] {
+  const chunkRows = db
+    .prepare(`SELECT chunk_id, chunk_order, status FROM chunk ORDER BY chunk_order`)
+    .all() as unknown as Array<{ chunk_id: string; chunk_order: number | bigint; status: string }>;
+  const memberRows = db
+    .prepare(
+      `SELECT cm.chunk_id, cm.turn_id FROM chunk_member cm
+       JOIN chunk c ON c.chunk_id = cm.chunk_id
+       ORDER BY c.chunk_order, cm.member_idx`,
+    )
+    .all() as unknown as Array<{ chunk_id: string; turn_id: string }>;
+  const membersByChunk = new Map<string, string[]>();
+  for (const row of memberRows) {
+    const members = membersByChunk.get(row.chunk_id) ?? [];
+    members.push(row.turn_id);
+    membersByChunk.set(row.chunk_id, members);
+  }
+  return chunkRows.map((row) => ({
+    chunkId: row.chunk_id,
+    chunkOrder: Number(row.chunk_order),
+    status: row.status as "open" | "closed",
+    memberTurnIds: membersByChunk.get(row.chunk_id) ?? [],
+  }));
+}
+
 // Placement read-back for the turns surface (AC-3.5): chunkId + memberIdx by
 // turn, one query, stored values only.
 export function readPlacements(db: DatabaseSync): Map<string, { chunkId: string; memberIdx: number }> {

@@ -4,12 +4,13 @@
 // newest closed turn; the floor budget is retired (two-field config, 64k/32k
 // defaults). Every advance here fires through a REAL `intake.messageEvents`
 // commit — no host-called advance surface exists and no test invents one;
-// rendering is proven through real `pull` calls.
+// rendering is proven through real `getLlmRequestContext` reads.
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SdkViewConfig } from "../src/index.js";
 import {
   boundaryTokens,
   createInferenceCallbacksDouble,
+  openRaw,
   seedTurnedToolResults,
   setViewInjectionHook,
   type TempStore,
@@ -41,10 +42,14 @@ async function newThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
-async function boundaryOf(sdk: Lhc, filePath: string): Promise<number> {
-  const pulled = await sdk.threadView.pull({ filePath });
-  if (!pulled.ok) throw new Error(`pull failed: ${pulled.error.reason}`);
-  return pulled.value.meta.boundaryPosition;
+async function boundaryOf(filePath: string): Promise<number> {
+  const db = openRaw(filePath);
+  try {
+    const row = db.prepare(`SELECT position FROM view_boundary`).get() as { position: number | bigint };
+    return Number(row.position);
+  } finally {
+    db.close();
+  }
 }
 
 async function zoneTokensOf(sdk: Lhc, filePath: string): Promise<number> {
@@ -73,8 +78,19 @@ async function toolResults(sdk: Lhc, filePath: string): Promise<ResultRow[]> {
     }));
 }
 
-function abridgedCount(messages: ReadonlyArray<{ content: string }>): number {
-  return messages.filter((m) => m.content.startsWith("[tool result · ") && m.content.includes(" · abridged]")).length;
+function messageText(message: { content: readonly { text: string }[] }): string {
+  return message.content.map((part) => part.text).join("");
+}
+
+function messageTexts(messages: ReadonlyArray<{ content: readonly { text: string }[] }>): string[] {
+  return messages.map((message) => messageText(message));
+}
+
+function abridgedCount(messages: ReadonlyArray<{ content: readonly { text: string }[] }>): number {
+  return messages.filter((m) => {
+    const text = messageText(m);
+    return text.startsWith("[tool result · ") && text.includes(" · abridged]");
+  }).length;
 }
 
 // Per-turn all-or-nothing (AC-5.2): with the boundary at `position`, every
@@ -126,7 +142,7 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     // boundary holds.
     await seedTurnedToolResults(sdk, filePath, [{ results: [30, 30] }]);
     expect(advances.count()).toBe(1);
-    expect(await boundaryOf(sdk, filePath)).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
 
     // A second turn opens and accumulates tool results across mid-turn
     // batches, crossing max (zone 60+40 = 100, then 140 > 100): no batch runs
@@ -135,16 +151,16 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     await intakeRaw(sdk, filePath, turnedToolResultEvents([{ results: [40], close: false }]));
     await intakeRaw(sdk, filePath, turnedToolResultEvents([{ results: [40], turnless: true }]));
     expect(advances.count()).toBe(1); // mid-turn batches never even check
-    expect(await boundaryOf(sdk, filePath)).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
     expect(await zoneTokensOf(sdk, filePath)).toBe(140);
 
-    // Consecutive pulls during the open turn are byte-identical (AC-5.1).
-    const firstPull = await sdk.threadView.pull({ filePath });
-    const secondPull = await sdk.threadView.pull({ filePath });
-    expect(firstPull.ok && secondPull.ok).toBe(true);
-    if (!firstPull.ok || !secondPull.ok) return;
-    expect(secondPull.value.messages).toEqual(firstPull.value.messages);
-    expect(abridgedCount(firstPull.value.messages)).toBe(0);
+    // Consecutive context reads during the open turn are byte-identical (AC-5.1).
+    const firstContextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    const secondContextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(firstContextRead.ok && secondContextRead.ok).toBe(true);
+    if (!firstContextRead.ok || !secondContextRead.ok) return;
+    expect(secondContextRead.value.messages).toEqual(firstContextRead.value.messages);
+    expect(abridgedCount(firstContextRead.value.messages)).toBe(0);
 
     // The batch closing the turn commits: exactly one advance runs. Zone 140
     // > 100; groups t1=60, t2=80 (newest closed, never a candidate). Evicting
@@ -155,24 +171,24 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
 
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(4);
-    const position = await boundaryOf(sdk, filePath);
+    const position = await boundaryOf(filePath);
     expect(position).toBe(results[1]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(80);
 
     // Whole-turn, all-or-nothing: both of t1's results flipped together,
     // both of t2's stayed full.
     expectNoPartialTurn(results, position);
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    expect(abridgedCount(pulled.value.messages)).toBe(2);
-    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(40)}`);
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    expect(abridgedCount(contextRead.value.messages)).toBe(2);
+    expect(messageTexts(contextRead.value.messages)).toContain(`[tool result · read_file]\n${boundaryTokens(40)}`);
 
     // A small next turn closes under max (zone 90 ≤ 100): the check runs, no
     // movement.
     await seedTurnedToolResults(sdk, filePath, [{ results: [10] }]);
     expect(advances.count()).toBe(3);
-    expect(await boundaryOf(sdk, filePath)).toBe(position);
+    expect(await boundaryOf(filePath)).toBe(position);
     expect(await zoneTokensOf(sdk, filePath)).toBe(90);
   });
 
@@ -193,14 +209,14 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(3);
     expect(results[1]?.turnId).toBe("t2");
-    expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[1]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(70);
 
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    expect(abridgedCount(pulled.value.messages)).toBe(2); // t1's result + the singleton
-    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(70)}`);
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    expect(abridgedCount(contextRead.value.messages)).toBe(2); // t1's result + the singleton
+    expect(messageTexts(contextRead.value.messages)).toContain(`[tool result · read_file]\n${boundaryTokens(70)}`);
   });
 });
 
@@ -223,7 +239,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
 
     const results = await toolResults(sdk, filePath);
     expect(results).toHaveLength(4);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[1]?.sourceEventOrder);
 
     const status = await sdk.threadView.status({ filePath });
     expect(status.ok).toBe(true);
@@ -244,7 +260,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     // turn (60) is never a candidate. Zone lands exactly at target.
     await seedTurnedToolResults(sdk, filePath, [{ results: [40] }, { results: [40] }, { results: [60] }]);
     const results = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[1]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[1]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(60);
   });
 
@@ -256,13 +272,13 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     // above max until newer closes or a compact create room.
     await seedTurnedToolResults(sdk, filePath, [{ results: [30] }, { results: [120] }]);
     const results = await toolResults(sdk, filePath);
-    expect(await boundaryOf(sdk, filePath)).toBe(results[0]?.sourceEventOrder);
+    expect(await boundaryOf(filePath)).toBe(results[0]?.sourceEventOrder);
     expect(await zoneTokensOf(sdk, filePath)).toBe(120);
 
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    expect(pulled.value.messages.map((m) => m.content)).toContain(`[tool result · read_file]\n${boundaryTokens(120)}`);
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    expect(messageTexts(contextRead.value.messages)).toContain(`[tool result · read_file]\n${boundaryTokens(120)}`);
   });
 
   it("never evicts the newest closed turn when a legal trailing turnless singleton sits after it", async () => {
@@ -287,21 +303,21 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     expect(results).toHaveLength(3);
     expect(results[2]?.turnId).toBe("t3");
 
-    const position = await boundaryOf(sdk, filePath);
+    const position = await boundaryOf(filePath);
     expect(position).toBe(results[0]?.sourceEventOrder); // lands on t1, before the newest closed turn
     expect(await zoneTokensOf(sdk, filePath)).toBe(115); // 45 (newest closed) + 70 (trailing turnless)
 
     // The newest closed turn stays intact: no turn is partially flipped, and
     // both it and the trailing turnless render full — only t1 is abridged.
     expectNoPartialTurn(results, position);
-    const pulled = await sdk.threadView.pull({ filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    expect(abridgedCount(pulled.value.messages)).toBe(1); // only t1's result
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    expect(abridgedCount(contextRead.value.messages)).toBe(1); // only t1's result
+    expect(messageTexts(contextRead.value.messages)).toContain(
       `[tool result · read_file]\n${boundaryTokens(45)}`, // newest closed turn, full
     );
-    expect(pulled.value.messages.map((m) => m.content)).toContain(
+    expect(messageTexts(contextRead.value.messages)).toContain(
       `[tool result · read_file]\n${boundaryTokens(70)}`, // trailing turnless, full
     );
   });
@@ -310,7 +326,7 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     const sdk = visSdk();
     const filePath = await newThread(sdk);
     await seedTurnedToolResults(sdk, filePath, [{ results: [150] }]);
-    expect(await boundaryOf(sdk, filePath)).toBe(0);
+    expect(await boundaryOf(filePath)).toBe(0);
     expect(await zoneTokensOf(sdk, filePath)).toBe(150);
   });
 
@@ -344,7 +360,7 @@ describe("TC-5.3 (AC-5.5): remaining Epic 03 contracts under the new trigger", (
       const trajectory: number[] = [];
       for (const turns of script) {
         await seedTurnedToolResults(sdk, filePath, [...turns]);
-        trajectory.push(await boundaryOf(sdk, filePath));
+        trajectory.push(await boundaryOf(filePath));
       }
       trajectories.push(trajectory);
     }

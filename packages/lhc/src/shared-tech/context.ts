@@ -80,7 +80,7 @@ export function resolveInstanceConfig(): ResolvedSdkConfig | undefined {
 
 // Reads-only operation scope (Epic 03 AC-1.1/AC-2.8): runs fn under the
 // current seam with the thread-touch announcement suppressed, so a pure read
-// — thread-view pull/status above all — can never schedule a background
+// — thread-view model context/status above all — can never schedule a background
 // scheduler's first-touch catch-up drain through its openThreadDatabase
 // calls (or those of the report surfaces it consumes). Everything else on
 // the seam (poke target, view config) carries through unchanged; for a

@@ -106,7 +106,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
       throw new Error("fixture did not record the manufactured failed subjects");
     }
     // The pending leg of the seed: one more closed turn, NOT drained (manual
-    // mode never drains uninvoked), so its smoothed_prompt and turn forms sit
+    // mode never drains uninvoked), so its smoothed_prompt and turn derivations sit
     // pending with live queue rows when the sweep walks the reports.
     const sent = await fixture.sdk.intakeStream.messageEvents({ filePath: fixture.filePath }, [
       validEvent("user_prompt", { payload: { text: "extra pending turn for the sweep seed" } }),
@@ -119,7 +119,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     store.cleanup();
   });
 
-  it("TC-3.1: buckets the five seeded states, derives only the transient failure, and returns the repair receipt", async () => {
+  it("TC-3.1: buckets the five seeded states, schedules only the transient failure, and returns the repair receipt", async () => {
     const captured = fixture.double.captureInputs();
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(0);
 
@@ -130,21 +130,21 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     if (!swept.ok) return;
     firstReceipt = swept.value;
 
-    // No drain or poll: message repair is synchronous through messages.derive.
+    // No drain or poll: sweep only schedules durable repair work.
     expect(elapsedMs).toBeLessThan(1000);
 
     // The tool_result_summary line carries the story's whole failed×classify
     // contract: 6 of the fixture's 8 results drained ready, the scripted
-    // transient exhaustion is blocked by older live queue work, and the
-    // scripted permanent failure is reported with its reason and left alone.
+    // transient exhaustion is scheduled, and the scripted permanent failure
+    // is reported with its reason and left alone.
     const results = ownerLine(swept.value, "messages", "tool_result_summary");
     expect(results.ready).toBe(6);
-    expect(results.inFlight).toBe(1);
-    expect(results.requeued).toEqual([]);
+    expect(results.inFlight).toBe(0);
+    expect(results.requeued).toEqual([transientId]);
     expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
     expect(results.blocked).toEqual([]);
 
-    // Pending forms are left alone and reported as in-flight: the undrained
+    // Pending derivations are left alone and reported as in-flight: the undrained
     // extra turn's prompt smoothing (messages) and turn derivation (turns).
     const prompts = ownerLine(swept.value, "messages", "smoothed_prompt");
     expect(prompts.ready).toBe(12);
@@ -156,7 +156,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(renderings.requeued).toEqual([]);
 
     // The transient repair did not bypass the older queue work; it is now
-    // scheduled behind the older head and reported as live work.
+    // scheduled behind the older head.
     expect(workRowsFor(fixture.filePath, "tool_result_summary", transientId)).toBe(1);
     const transient = await reportEntry(fixture.sdk, fixture.filePath, transientId, "tool_result_summary");
     expect(transient.state).toBe("pending");
@@ -168,9 +168,9 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     expect(permanent.reason).toBe(PERMANENT_FAILURE_REASON);
     expect(workRowsFor(fixture.filePath, "tool_result_summary", permanentId)).toBe(0);
 
-    // Nothing repaired anywhere else.
+    // Nothing scheduled anywhere else.
     const allRequeued = swept.value.owners.flatMap((line) => line.requeued);
-    expect(allRequeued).toEqual([]);
+    expect(allRequeued).toEqual([transientId]);
     expect(captured.length).toBe(0);
   });
 
@@ -204,11 +204,11 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
     ]);
   });
 
-  it("zero-model assertion across all five ops (architecture-risk): pull, status, compact, sweep, materialize", async () => {
+  it("zero-model assertion across all five ops (architecture-risk): model context, status, compact, sweep, materialize", async () => {
     const captured = fixture.double.captureInputs();
     const before = captured.length;
 
-    const pulled = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
+    const contextRead = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     const status = await fixture.sdk.threadView.status({ filePath: fixture.filePath });
     const compacted = await fixture.sdk.threadView.compact(
       { filePath: fixture.filePath },
@@ -220,7 +220,7 @@ describe("TC-3.1–TC-3.3 (AC-3.1–3.5, 3.7): the standalone sweep over the see
       { path: `${fixture.filePath}.out.jsonl` },
     );
 
-    expect(pulled.ok && status.ok && compacted.ok && swept.ok).toBe(true);
+    expect(contextRead.ok && status.ok && compacted.ok && swept.ok).toBe(true);
     // Epic 03 Story 5 (sanctioned amendment): materialize is real now — it
     // succeeds, and like the other four it still calls no model.
     expect(materialized.ok).toBe(true);
@@ -238,7 +238,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     store.cleanup();
   });
 
-  it("blocked forms are reported with their stored reasons and never requeued", async () => {
+  it("blocked derivations are reported with their stored reasons and never requeued", async () => {
     const sibling = await blockedSiblingThread(store);
     const rowsBefore = workItemCount(sibling.filePath);
 
@@ -246,7 +246,7 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(swept.ok).toBe(true);
     if (!swept.ok) return;
 
-    // The damaged turn landed both turn forms blocked through the production
+    // The damaged turn landed both turn derivations blocked through the production
     // terminal path; the sweep reports each with its reason and asks the
     // owners for nothing.
     for (const kind of ["turn_rendering", "smooth_turn_compression"]) {
@@ -260,11 +260,11 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(workItemCount(sibling.filePath)).toBe(rowsBefore);
   });
 
-  it("once-per-invocation dedupe is structural: a turn's two transiently-failed forms share one synchronous repair site", async () => {
-    // Both turn forms exhaust together through real retry mechanics. The
+  it("once-per-invocation dedupe is structural: a turn's two transiently-failed derivations share one durable repair site", async () => {
+    // Both turn derivations exhaust together through real retry mechanics. The
     // sweep's walk meets two failed transient entries backed by one
-    // turn_derivation handler, calls that handler once, and treats the sibling
-    // form as repaired by the same synchronous derive.
+    // turn_derivation item, schedules it once, and treats the sibling derivation as
+    // in flight behind the same durable work row.
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
@@ -297,12 +297,12 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     const compression = ownerLine(swept.value, "turns", "smooth_turn_compression");
     const requeued = [...rendering.requeued, ...compression.requeued];
     expect(requeued).toEqual(["t1"]);
-    expect(rendering.ready + compression.ready).toBe(1);
-    expect(rendering.inFlight + compression.inFlight).toBe(0);
-    expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(0);
+    expect(rendering.ready + compression.ready).toBe(0);
+    expect(rendering.inFlight + compression.inFlight).toBe(1);
+    expect(workRowsFor(filePath, "turn_derivation", "t1")).toBe(1);
   });
 
-  it("pending without a live queue row is repaired instead of counted inFlight", async () => {
+  it("pending without a live queue row is scheduled instead of counted inFlight", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
       inferenceCallbacks: double,
@@ -327,9 +327,15 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
     expect(prompts.inFlight).toBe(0);
     expect(prompts.requeued).toEqual(["m1"]);
     const entry = await reportEntry(sdk, filePath, "m1", "smoothed_prompt");
-    expect(entry.state).toBe("ready");
-    expect(entry.queueStatus).toBeUndefined();
-    expect(workItemCount(filePath)).toBe(0);
+    expect(entry.state).toBe("pending");
+    expect(entry.queueStatus).toBe("queued");
+    expect(workItemCount(filePath)).toBe(1);
+
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok).toBe(true);
+    const healed = await reportEntry(sdk, filePath, "m1", "smoothed_prompt");
+    expect(healed.state).toBe("ready");
+    expect(healed.queueStatus).toBeUndefined();
   });
 
   it("pending repair that races with newly live work is counted inFlight", async () => {
@@ -346,17 +352,14 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
       ],
     });
     const turnReport = vi.spyOn(turnsDomain, "report").mockResolvedValue({ ok: true, value: [] });
-    const derive = vi.spyOn(messagesDomain, "derive").mockResolvedValue({
+    const repair = vi.spyOn(messagesDomain, "scheduleDerivationRepair").mockResolvedValue({
       ok: true,
       value: [
         {
           messageId: "m-race",
-          outcome: "failed",
-          error: {
-            errorClass: "caller_error",
-            code: "derivation_work_in_flight",
-            reason: "prompt_smoothing work for message m-race at sourceVersion 1 is already live",
-          },
+          outcome: "in_flight",
+          derivationType: "smoothed_prompt",
+          sourceVersion: 1,
         },
       ],
     });
@@ -371,13 +374,13 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
       expect(prompts.blocked).toEqual([]);
       expect(prompts.permanentFailed).toEqual([]);
     } finally {
-      derive.mockRestore();
+      repair.mockRestore();
       turnReport.mockRestore();
       messageReport.mockRestore();
     }
   });
 
-  it("repair that schedules durable retry work is counted inFlight", async () => {
+  it("repair scheduling through the owner is reported as requeued", async () => {
     const messageReport = vi.spyOn(messagesDomain, "report").mockResolvedValue({
       ok: true,
       value: [
@@ -391,17 +394,14 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
       ],
     });
     const turnReport = vi.spyOn(turnsDomain, "report").mockResolvedValue({ ok: true, value: [] });
-    const derive = vi.spyOn(messagesDomain, "derive").mockResolvedValue({
+    const repair = vi.spyOn(messagesDomain, "scheduleDerivationRepair").mockResolvedValue({
       ok: true,
       value: [
         {
           messageId: "m-retry",
-          outcome: "failed",
-          error: {
-            errorClass: "system_error",
-            code: "derivation_retry_scheduled",
-            reason: "timeout: retry scheduled during sweep repair",
-          },
+          outcome: "scheduled",
+          derivationType: "smoothed_prompt",
+          sourceVersion: 1,
         },
       ],
     });
@@ -411,12 +411,46 @@ describe("classification edges (architecture-risk): blocked, in-walk dedupe, unc
       if (!swept.ok) return;
       const prompts = ownerLine(swept.value, "messages", "smoothed_prompt");
       expect(prompts.ready).toBe(0);
-      expect(prompts.inFlight).toBe(1);
-      expect(prompts.requeued).toEqual([]);
+      expect(prompts.inFlight).toBe(0);
+      expect(prompts.requeued).toEqual(["m-retry"]);
       expect(prompts.blocked).toEqual([]);
       expect(prompts.permanentFailed).toEqual([]);
     } finally {
-      derive.mockRestore();
+      repair.mockRestore();
+      turnReport.mockRestore();
+      messageReport.mockRestore();
+    }
+  });
+
+  it("message owner not-derivable during sweep repair is state corruption", async () => {
+    const messageReport = vi.spyOn(messagesDomain, "report").mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          subjectKind: "message",
+          subjectId: "m-not-derivable",
+          derivationType: "smoothed_prompt",
+          state: "pending",
+          sourceVersion: 1,
+        },
+      ],
+    });
+    const turnReport = vi.spyOn(turnsDomain, "report").mockResolvedValue({ ok: true, value: [] });
+    const repair = vi.spyOn(messagesDomain, "scheduleDerivationRepair").mockResolvedValue({
+      ok: true,
+      value: [{ messageId: "m-not-derivable", outcome: "not_derivable" }],
+    });
+    try {
+      const swept = await runSweep("/tmp/lhc-sweep-not-derivable-thread.db");
+      expect(swept.ok).toBe(false);
+      if (swept.ok) return;
+      expect(swept.error).toMatchObject({
+        errorClass: "state_corruption",
+        code: "source_damaged",
+      });
+      expect(swept.error.reason).toContain("not derivable");
+    } finally {
+      repair.mockRestore();
       turnReport.mockRestore();
       messageReport.mockRestore();
     }
@@ -552,7 +586,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     expect(healed.content).toBeDefined();
 
     // The next default compact sees the heal: its embedded sweep reports the
-    // form ready (7 now), nothing to requeue, only the permanent failure
+    // derivation ready (7 now), nothing to requeue, only the permanent failure
     // still on the books.
     const next = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { profile: "coding" });
     expect(next.ok).toBe(true);
@@ -564,7 +598,7 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     expect(results.requeued).toEqual([]);
     expect(results.permanentFailed).toEqual([{ subjectId: permanentId, reason: PERMANENT_FAILURE_REASON }]);
 
-    // And the healed form feeds sweep accounting while the served view still
+    // And the healed derivation feeds sweep accounting while the served view still
     // uses the deterministic boundary floor: with the coding bound this small
     // thread is all tail (compact point 0), so seed the boundary at the healed
     // result's position.
@@ -577,10 +611,10 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     if (healedMessage === undefined) return;
     seedViewBoundary(fixture.filePath, healedMessage.sourceEventOrder);
 
-    const pulled = await fixture.sdk.threadView.pull({ filePath: fixture.filePath });
-    expect(pulled.ok).toBe(true);
-    if (!pulled.ok) return;
-    const contents = pulled.value.messages.map((m) => m.content);
+    const contextRead = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const contents = contextRead.value.messages.map((m) => m.content.map((part) => part.text).join(""));
     expect(contents).toContain(
       `[tool result · read_file · abridged]\ncontents of area-6/file-1.txt: detail 6.1 with enough text to summarize [full content in record §${transientId}]`,
     );

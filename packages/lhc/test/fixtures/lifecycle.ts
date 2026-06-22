@@ -6,8 +6,8 @@
 // replay, teardown, and process legs all run THIS sequence rather than a
 // re-described one (DD-8).
 //
-// Phases: create | intake | drain | status | compact1 | pull1 | inspect1 |
-// mutate | rebuild | health2 | compact2 | pull2 | materialize.
+// Phases: create | intake | drain | status | compact1 | llmContext1 | inspect1 |
+// mutate | rebuild | health2 | compact2 | llmContext2 | materialize.
 //
 // Mode is background — the production posture the PI extension will run —
 // and the drain/rebuild phases settle through `drainSettled`, the real
@@ -30,10 +30,10 @@ import {
   type InspectOverview,
   initLhc,
   type Lhc,
+  type LlmRequestContext,
   type MessageEventInput,
   type MutationResult,
   type OpResult,
-  type PullResult,
   type ViewContentsReport,
   type ViewStatus,
 } from "../../src/index.js";
@@ -85,7 +85,7 @@ const TOOL_HEAVY_TURNS = new Set([5, 6, 7, 8]);
 const TURNS_PER_BATCH = 3; // multi-turn batches (story scope)
 
 // Mutation targets: both in the post-compact tail (compact point at t9's
-// start under the lifecycle profile), so the second compact's pull shows the
+// start under the lifecycle profile), so the second compact's model context shows the
 // edit verbatim and the deletion's absence — the tail is full fidelity.
 export const EDIT_TARGET = { turnId: "t12", kind: "user_prompt" } as const;
 export const EDITED_MESSAGE_TEXT = "turn 12 revised: drop area 12 and re-check area 5 instead";
@@ -161,7 +161,7 @@ export interface LifecyclePhases {
   drain: { settled: true };
   status: OpResult<ViewStatus>;
   compact1: OpResult<CompactReceipt>;
-  pull1: OpResult<PullResult>;
+  llmContext1: OpResult<LlmRequestContext>;
   inspect1: {
     overview: OpResult<InspectOverview>;
     view: OpResult<ViewContentsReport>;
@@ -181,7 +181,7 @@ export interface LifecyclePhases {
   rebuild: { settled: true };
   health2: OpResult<HealthReport>;
   compact2: OpResult<CompactReceipt>;
-  pull2: OpResult<PullResult>;
+  llmContext2: OpResult<LlmRequestContext>;
   materialize: OpResult<{ writtenPath: string }>;
 }
 
@@ -259,12 +259,12 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   const status = await sdk.threadView.status(ref);
   expectOk(status, "status");
 
-  // ── group 2: compact1 → pull1 → inspect1 ──
+  // ── group 2: compact1 → llmContext1 → inspect1 ──
   nextGroup();
   const compact1 = await sdk.threadView.compact(ref, { profile: LIFECYCLE_PROFILE.name });
   expectOk(compact1, "compact1");
-  const pull1 = await sdk.threadView.pull(ref);
-  expectOk(pull1, "pull1");
+  const llmContext1 = await sdk.threadView.getLlmRequestContext(ref);
+  expectOk(llmContext1, "llmContext1");
   const inspect1 = {
     overview: await sdk.inspect.overview(ref),
     view: await sdk.inspect.view(ref),
@@ -317,12 +317,12 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   expectOk(health2, "health2");
   await checkpoint("health2");
 
-  // ── group 4: compact2 → pull2 → materialize ──
+  // ── group 4: compact2 → llmContext2 → materialize ──
   nextGroup();
   const compact2 = await sdk.threadView.compact(ref, { profile: LIFECYCLE_PROFILE.name });
   expectOk(compact2, "compact2");
-  const pull2 = await sdk.threadView.pull(ref);
-  expectOk(pull2, "pull2");
+  const llmContext2 = await sdk.threadView.getLlmRequestContext(ref);
+  expectOk(llmContext2, "llmContext2");
   const materialize = await sdk.threadView.materialize(ref, { path: outPath });
   expectOk(materialize, "materialize");
   await checkpoint("materialize");
@@ -337,13 +337,13 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
       drain,
       status,
       compact1,
-      pull1,
+      llmContext1,
       inspect1,
       mutate,
       rebuild,
       health2,
       compact2,
-      pull2,
+      llmContext2,
       materialize,
     },
   };

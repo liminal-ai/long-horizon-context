@@ -475,7 +475,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
     // First touch of the thread in this process lifetime is a read. Message
     // list/show are read-only (Epic 04 DD-6, SV-01-001): like thread-view's
-    // pull/status before them, they suppress the open announcement, so the
+    // model-context/status before them, they suppress the open announcement, so the
     // read schedules no first-touch catch-up — the leftover rows stay exactly
     // as the dead process left them, and no model call fires off a read.
     const read = await sdk.messages.list({ filePath });

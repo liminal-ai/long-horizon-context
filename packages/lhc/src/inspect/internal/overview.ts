@@ -109,14 +109,10 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   bucketEntries(messageReport.value, derivation);
   bucketEntries(turnReport.value, derivation);
 
-  // View summary and visibility (DD-5): zone tokens from status; view
-  // identity from describe — the stored snapshot fields verbatim (the Story 3
-  // swap Story 2 tracked: pull's meta was the interim source). Boundary
-  // position still rides pull's meta, the serving surface that exposes it.
+  // View summary and visibility (DD-5): visibility from status; view
+  // identity from describe — the stored snapshot fields verbatim.
   const status = await threadView.status(ref);
   if (!status.ok) return status;
-  const pulled = await threadView.pull(ref);
-  if (!pulled.ok) return pulled;
   const described = await threadView.describe(ref);
   if (!described.ok) return described;
   const stored = described.value;
@@ -141,7 +137,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
       derivation,
       view,
       visibility: {
-        boundaryPosition: pulled.value.meta.boundaryPosition,
+        boundaryPosition: status.value.visibility.boundaryPosition,
         zoneTokens: status.value.visibility.zoneTokens,
       },
     },

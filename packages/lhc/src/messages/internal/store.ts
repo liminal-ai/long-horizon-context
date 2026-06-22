@@ -153,6 +153,10 @@ interface RawMessageRow {
   harness: string;
   turn_id: string | null;
   deleted_at: string | null;
+  // The source event's recorded_at, joined from the durable event row on
+  // source_event_order = event_order (every message has exactly one source
+  // event).
+  recorded_at: string;
 }
 
 interface RawBlockRow {
@@ -170,6 +174,7 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
     tokenEstimate: Number(row.token_estimate),
     actor: row.actor,
     harness: row.harness,
+    recordedAt: row.recorded_at,
   };
   if (row.turn_id !== null) record.turnId = row.turn_id;
   // The deleted marker (Epic 04 AC-3.3): present only on deleted rows, which
@@ -201,21 +206,22 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   // includeDeleted is the Epic 04 audit opt-in: deleted rows return flagged.
   const conditions: string[] = [];
   const params: number[] = [];
-  if (opts.includeDeleted !== true) conditions.push("deleted_at IS NULL");
+  if (opts.includeDeleted !== true) conditions.push("m.deleted_at IS NULL");
   if (opts.from !== undefined) {
-    conditions.push("source_event_order >= ?");
+    conditions.push("m.source_event_order >= ?");
     params.push(opts.from);
   }
   if (opts.to !== undefined) {
-    conditions.push("source_event_order <= ?");
+    conditions.push("m.source_event_order <= ?");
     params.push(opts.to);
   }
   if (opts.limit !== undefined) params.push(opts.limit);
   const messageRows = db
     .prepare(
-      `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, deleted_at
-       FROM message${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ""}
-       ORDER BY source_event_order${opts.limit !== undefined ? " LIMIT ?" : ""}`,
+      `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
+              m.turn_id, m.deleted_at, e.recorded_at
+       FROM message m JOIN event e ON e.event_order = m.source_event_order${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ""}
+       ORDER BY m.source_event_order${opts.limit !== undefined ? " LIMIT ?" : ""}`,
     )
     .all(...params) as unknown as RawMessageRow[];
   if (messageRows.length === 0) return [];
@@ -253,8 +259,10 @@ export function readMessageById(
 ): (MessageRecord & { deleted: boolean }) | undefined {
   const row = db
     .prepare(
-      `SELECT message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, deleted_at
-       FROM message WHERE message_id = ?`,
+      `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
+              m.turn_id, m.deleted_at, e.recorded_at
+       FROM message m JOIN event e ON e.event_order = m.source_event_order
+       WHERE m.message_id = ?`,
     )
     .get(messageId) as unknown as RawMessageRow | undefined;
   if (row === undefined) return undefined;

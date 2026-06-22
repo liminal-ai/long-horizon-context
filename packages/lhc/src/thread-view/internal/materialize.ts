@@ -1,8 +1,8 @@
-// PI session JSONL writer (Story 5, Flow 5): the pure mapping from pull's
+// PI session JSONL writer (Story 5, Flow 5): the pure mapping from the
 // assembled entries to the pinned PI session file format, plus the file
 // write. This module never sees a database handle — it renders what the
-// surface's pull assembly hands it, which is what makes AC-5.3's
-// materialize↔pull parity structural rather than tested-into-existence
+// serving assembly hands it, which is what makes AC-5.3's
+// materialize↔model-context parity structural rather than tested-into-existence
 // (must-not-own: materialize never reads the record).
 //
 // Format pin (tech design §External Contracts, from
@@ -15,19 +15,19 @@
 // must be a block array, so both roles use the one block encoding.
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ViewMessage } from "../../shared-tech/index.js";
+import type { AssembledContextMessage } from "./render.js";
 
 // CURRENT_SESSION_VERSION at the pin (PI coding agent 0.79.1) — see
 // test/fixtures/pi-session-structure.provenance.md.
 export const PI_SESSION_VERSION = 3;
 
-// One pull entry with the metadata the file's generated fields derive from:
+// One assembled entry with the metadata the file's generated fields derive from:
 // the entry id (message id for tail entries, viewId-band for band entries)
 // and the record-time timestamp (event recorded_at for tail entries, view
 // created-at for band entries). Never a write-time clock anywhere (AC-5.2 —
 // byte-identical repeats are the test for any sneaky Date.now()).
 export interface MaterializeEntry {
-  message: ViewMessage;
+  message: AssembledContextMessage;
   entryId: string;
   timestamp: string;
 }

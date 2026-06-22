@@ -14,8 +14,8 @@ import { messageWorkHandlers } from "./messages/internal/handlers.js";
 import type {
   CompactReceipt,
   ErrorResult,
+  LlmRequestContext,
   OpResult,
-  PullResult,
   StoredView,
   SweepReceipt,
   ViewCompactParams,
@@ -101,6 +101,9 @@ export type {
   InferenceConfig,
   InferenceResult,
   InspectOverview,
+  LlmRequestContext,
+  LlmRequestContextMessage,
+  LlmRequestContextPart,
   ModelAssignment,
   ModelCall,
   ModelCallFailureKind,
@@ -108,7 +111,6 @@ export type {
   ModelCallResult,
   OpResult,
   ProviderResult,
-  PullResult,
   RenderingPart,
   ResolvedSdkConfig,
   ResolvedViewConfig,
@@ -123,8 +125,6 @@ export type {
   ToolRunReceipt,
   ViewCompactParams,
   ViewContentsReport,
-  ViewMessage,
-  ViewMeta,
   ViewProfile,
   ViewProfileOverride,
   ViewStatus,
@@ -239,7 +239,7 @@ export interface WorkSurface {
 // operation. Epic 04 Story 3 adds `describe`, the stored-snapshot read the
 // inspect domain composes (DD-1).
 export interface ThreadViewSurface {
-  pull(ref: threadsDomain.ThreadRef): Promise<OpResult<PullResult>>;
+  getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   compact(
@@ -625,7 +625,7 @@ export function initLhc(config: SdkConfig): Lhc {
     turns: scopeSurface(turnsDomain, seam),
     threadView: scopeSurface<ThreadViewSurface>(
       {
-        pull: threadViewDomain.pull,
+        getLlmRequestContext: threadViewDomain.getLlmRequestContext,
         status: threadViewDomain.status,
         describe: threadViewDomain.describe,
         compact: threadViewDomain.compact,

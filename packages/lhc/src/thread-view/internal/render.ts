@@ -1,9 +1,9 @@
 // Tail and band formatting (Story 1): the seven-kind tail mapping table
 // (tech design §Tail message rendering — contract, not implementation
 // choice), short/full tool-result selection by boundary position, and the
-// short-form ladder (ready summary → deterministic truncation). Pure
-// functions over read state by design: no DB handle, no inference, no clock —
-// determinism is structural (AC-1.7 byte-identical pulls fall out of it).
+// deterministic at-or-behind-boundary truncation rule. Pure functions over
+// read state by design: no DB handle, no inference, no clock — determinism is
+// structural (AC-1.7 byte-identical model-context reads fall out of it).
 //
 // Story 2 adds the band-entry side: the degrade ladders (tech design
 // §Degrade ladders), gap entries as the last rung (never absence, AC-2.5),
@@ -11,9 +11,15 @@
 // [inter-turn note] markers, and band-text assembly. select.ts consumes the
 // same entry renderer to price entries during the fill walk, so the tokens
 // the walk budgets are the tokens the band stores — one renderer, no drift.
-import type { Band, ViewMessage } from "../../shared-tech/index.js";
+import type { Band } from "../../shared-tech/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 import type { TailMessageRow } from "./snapshot.js";
+
+export interface AssembledContextMessage {
+  role: "user" | "assistant";
+  content: string;
+  band?: Band;
+}
 
 // Epic 01's deterministic abbreviation rule: a fixed prefix plus an exact
 // tail marker, a pure function of the input string alone. Restated here —
@@ -36,13 +42,11 @@ function textOf(message: TailMessageRow): string {
 }
 
 // What the tail renderer needs beyond the message itself: the boundary
-// position (short/full selection), the call-id → tool-name pairing (results
-// carry only their call id), and the ready tool-result summaries (the
-// short-form ladder's first rung).
+// position (short/full selection) and the call-id → tool-name pairing
+// (results carry only their call id).
 export interface TailRenderContext {
   boundaryPosition: number;
   toolNameByCallId: ReadonlyMap<string, string>;
-  toolResultSummaries: ReadonlyMap<string, string>;
 }
 
 // The call-id → tool-name map from the messages in hand. Pairing within the
@@ -62,14 +66,14 @@ export function toolNamesByCallId(messages: readonly TailMessageRow[]): Map<stri
   return names;
 }
 
-function renderToolCall(message: TailMessageRow): ViewMessage {
+function renderToolCall(message: TailMessageRow): AssembledContextMessage {
   const block = blockContent(message);
   const name = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
   const args = JSON.stringify(block["arguments"] ?? {});
   return { role: "assistant", content: `[tool call · ${name}] ${args}` };
 }
 
-function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): ViewMessage {
+function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {
   const block = blockContent(message);
   const callId = block["toolCallId"];
   const name = (typeof callId === "string" ? ctx.toolNameByCallId.get(callId) : undefined) ?? "unknown_tool";
@@ -86,9 +90,9 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): View
   };
 }
 
-// One tail message → one ViewMessage per the mapping table. Each kind is its
+// One tail message → one assembled message per the mapping table. Each kind is its
 // own arm so a single kind's drift fails its own named test leg.
-export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContext): ViewMessage {
+export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {
   switch (message.kind) {
     case "user_prompt":
       return { role: "user", content: textOf(message) };
@@ -124,13 +128,13 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
 // One non-empty band → one labeled `user` message: band-marker header, then
 // the snapshot bytes verbatim (AC-5.1 resolution: inference APIs reject
 // unknown roles; `user` is what the MVP's injection used).
-export function renderBandMessage(band: Band, renderedText: string): ViewMessage {
+export function renderBandMessage(band: Band, renderedText: string): AssembledContextMessage {
   return { role: "user", band, content: `[context · ${band}]\n${renderedText}` };
 }
 
 // ── band entries: degrade ladders, gaps, keys (Story 2) ──────────
 
-// One derivation's stored state as the ladder reads it (a projection of
+// One derivation's stored state as the ladder reads it (a read shape for
 // Derivation: the resolvers never write, never re-derive).
 export interface DerivationSnapshot {
   state: "pending" | "ready" | "failed" | "blocked";
@@ -156,13 +160,13 @@ export interface ResolvedRepresentation {
   reason?: string;
 }
 
-function usable(form: DerivationSnapshot | undefined): form is DerivationSnapshot & { content: string } {
+function usable(derivation: DerivationSnapshot | undefined): derivation is DerivationSnapshot & { content: string } {
   // "Usable" means state = ready (tech design §Degrade ladders).
-  return form?.state === "ready" && typeof form.content === "string";
+  return derivation?.state === "ready" && typeof derivation.content === "string";
 }
 
-function ladderState(form: DerivationSnapshot | undefined): string {
-  return form === undefined ? "absent" : form.state;
+function ladderState(derivation: DerivationSnapshot | undefined): string {
+  return derivation === undefined ? "absent" : derivation.state;
 }
 
 // Smooth (turn) ladder: turn_rendering → smooth_turn_compression →
@@ -176,14 +180,14 @@ export function resolveSmoothRepresentation(
   if (usable(rendering)) {
     return { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
   }
-  const projection = lookup(turnId, "smooth_turn_compression");
-  if (usable(projection)) {
+  const compression = lookup(turnId, "smooth_turn_compression");
+  if (usable(compression)) {
     return {
       derivationUsed: "smooth_turn_compression",
-      body: projection.content,
+      body: compression.content,
       degraded: true,
       gap: false,
-      degradedMarker: "smooth-from-projection",
+      degradedMarker: "smooth-from-compression",
     };
   }
   if (excerpt !== null) {
@@ -200,12 +204,12 @@ export function resolveSmoothRepresentation(
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable form (turn_rendering: ${ladderState(rendering)}, smooth_turn_compression: ${ladderState(projection)}, no live messages)`,
+    reason: `no usable derivation (turn_rendering: ${ladderState(rendering)}, smooth_turn_compression: ${ladderState(compression)}, no live messages)`,
   };
 }
 
 // Detailed (chunk) ladder: chunk_summary_detailed → chunk_summary_brief →
-// concatenated member projections (truncated, marked) → gap entry.
+// concatenated member smooth compressions (truncated, marked) → gap entry.
 export function resolveDetailedRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
@@ -238,12 +242,12 @@ export function resolveDetailedRepresentation(
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable form (chunk_summary_detailed: ${ladderState(detailed)}, compact material absent)`,
+    reason: `no usable derivation (chunk_summary_detailed: ${ladderState(detailed)}, compact material absent)`,
   };
 }
 
 // Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
-// truncated → gap entry (no projections rung in this band's ladder).
+// truncated → gap entry (no compression rung in this band's ladder).
 export function resolveBriefRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
@@ -276,12 +280,12 @@ export function resolveBriefRepresentation(
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable form (chunk_summary_brief: ${ladderState(brief)}, compact material absent)`,
+    reason: `no usable derivation (chunk_summary_brief: ${ladderState(brief)}, compact material absent)`,
   };
 }
 
 // The per-message line an excerpt or note renders — a compact, deterministic
-// projection of the raw record (last-rung fallback, not the tail mapping).
+// excerpt of the raw record (last-rung fallback, not the tail mapping).
 export function excerptLine(
   kind: string,
   blocks: ReadonlyArray<{ blockType: string; content: Record<string, unknown> }>,

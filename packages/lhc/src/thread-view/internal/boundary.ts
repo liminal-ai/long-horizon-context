@@ -42,7 +42,7 @@ export function visibilityZoneTokens(db: DatabaseSync, position: number, compact
 
 // The compact point for the advance's zone predicate: the stored view's, or
 // the zero origin when the thread has never compacted — the same default the
-// pull uses, read without dragging band bytes along.
+// serving assembly uses, read without dragging band bytes along.
 function readCompactPoint(db: DatabaseSync): number {
   const row = db.prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`).get() as
     | { compact_point: number | bigint }

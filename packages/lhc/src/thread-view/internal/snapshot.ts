@@ -1,7 +1,7 @@
-// The pull's read path (Story 1): the stored view snapshot — header plus
+// The model-context read path (Story 1): the stored view snapshot — header plus
 // band rows, absent ⇒ tail-only signal — and the record reads the tail
-// assembly needs (live messages after the compact point, their ready
-// tool-result summaries, the tail token sum). Story 2 adds the one writer:
+// assembly needs (live messages after the compact point, the tail token sum).
+// Story 2 adds the one writer:
 // the atomic replace at compact. Direct record/derivation reads are
 // sanctioned for thread-view internals (tech design §System View — the
 // surface-import rule governs code imports, not SQL); what must NOT read
@@ -20,7 +20,7 @@ export interface ViewSnapshot {
   gapCount: number;
   degradedCount: number;
   // Non-empty bands in gradient order (brief → detailed → smooth), the order
-  // the pull prepends them in.
+  // the serving assembly prepends them in.
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
 }
 
@@ -36,7 +36,7 @@ interface RawViewRow {
 const BAND_GRADIENT_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
 // null ⇒ no view exists (never compacted): the whole record renders as tail
-// from event 1 through the same pull code path — snapshot-absent, not a
+// from event 1 through the same serving assembly path — snapshot-absent, not a
 // separate branch (story Anti-Shim Requirements).
 export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   const header = db
@@ -194,7 +194,7 @@ export function readThreadMetadata(db: DatabaseSync): { threadId: string; create
 }
 
 // The tail's token sum for status (AC-2.8): every live message after the
-// compact point, all kinds — the same population the pull renders as tail.
+// compact point, all kinds — the same population the serving assembly renders as tail.
 export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
   const row = db
     .prepare(
@@ -261,17 +261,4 @@ export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): 
     db.exec("ROLLBACK;");
     throw cause;
   }
-}
-
-// Ready tool-result summaries by message id — the short-form ladder's first
-// rung. Stored state read verbatim, never derived here (no-inference rule).
-export function readReadyToolResultSummaries(db: DatabaseSync): Map<string, string> {
-  const rows = db
-    .prepare(
-      `SELECT subject_id, content FROM derivation
-       WHERE subject_kind = 'message' AND derivation_type = 'tool_result_summary'
-         AND state = 'ready' AND content IS NOT NULL`,
-    )
-    .all() as unknown as Array<{ subject_id: string; content: string }>;
-  return new Map(rows.map((row) => [row.subject_id, row.content]));
 }
