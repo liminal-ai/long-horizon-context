@@ -12,9 +12,9 @@ Add a deterministic classifier that parses mechanical facts from tool results be
 
 **Objective:** The model should not infer mechanical facts (exit code, path, byte count, match count, failure type, system error). Parse those facts deterministically first, pass them as authoritative to the prompt, and let the model write a concise receipt from facts plus an excerpt of the raw output. Route to different prompt modes based on the tool result's operation class and response shape.
 
-**Scope In:** Deterministic classifier/parser, prompt-mode routing, extended `summarizeToolResult` input, replacement prompt template, removal of large-result inference skip, `guards.toolResultSummary.timeoutMs` wiring.
+**Scope In:** Deterministic classifier/parser, prompt-mode routing, extended `summarizeToolResult` input, replacement prompt template, removal of large-result inference skip, retirement of `largeTierTokens` config.
 
-**Scope Out:** No changes to `smoothed_prompt`, `smooth_turn_compression`, or chunk derivations. No changes to the visibility boundary's deterministic truncation of tool results in the tail (that is a separate concern from `tool_result_summary`). No deterministic-only summary templates for receipt-shaped results (future optimization noted in the derivation testing, not this story).
+**Scope Out:** No changes to `smoothed_prompt`, `smooth_turn_compression`, or chunk derivations. No changes to the visibility boundary's deterministic truncation of tool results in the tail (that is a separate concern from `tool_result_summary`). No deterministic-only summary templates for receipt-shaped results (future optimization noted in the derivation testing, not this story). No per-handler timeout wiring — `guards.toolResultSummary.timeoutMs` exists on config but the adapter applies a single global `inference.timeoutMs` to all calls; per-call timeout is an adapter-level concern across all six operations and belongs in a dedicated adapter story.
 
 **Dependencies:** Story 1 (guard config on `ResolvedSdkConfig.guards`).
 
@@ -27,8 +27,8 @@ Add a deterministic classifier that parses mechanical facts from tool results be
 - `toolResultGuidance` has three heuristic buckets (read/fetch, search/grep, exec/shell) plus a generic fallback — no parsed facts, no classification.
 - `summarizeToolResult` signature: `{ toolName, content, outcome, targetTokens, guidance }`.
 - The adapter already bounds input via `maxInputChars` (default 200,000) on all inference calls.
-- `guards.toolResultSummary.timeoutMs` exists on `ResolvedSdkConfig.guards` (default 60,000ms) but the handler does not read it — timeout is global via the adapter's `safeCall`.
 - The recovery path in `turns/internal/derive.ts` duplicates the same three-tier logic (small/large/mid).
+- `findPairedToolCall` currently returns only `{ toolName: string } | undefined` — it does not return the tool call's `arguments`/input, which the classifier needs for bash command parsing.
 - Current prompt template `tool-result-v1` is generic and untuned.
 
 **Derivation Testing Reference:**
@@ -37,7 +37,7 @@ A reference classifier, prompt shape, and fixture sets exist in `derivation-test
 ### Acceptance Criteria
 <!-- Jira: Acceptance Criteria field -->
 
-**AC-2.1:** A deterministic classifier produces an operation class, response shape, prompt mode, and parsed facts for every tool result before any model call.
+**AC-2.1:** A deterministic classifier produces an operation class, response shape, prompt mode, and parsed facts for tool results that will go to inference (above the small-result passthrough threshold).
 
 - **TC-2.1a:** Classifier runs before inference
   - Given: a tool result message
@@ -57,7 +57,7 @@ A reference classifier, prompt shape, and fixture sets exist in `derivation-test
 - **TC-2.2a:** Facts appear in prompt input
   - Given: a bash tool result with exit code 127 and "command not found"
   - When: the model call is made
-  - Then: the prompt input includes parsed facts with `exitCode: 127`, `failureType: "command_not_found"`, `missingCommand: "<name>"`, and `retryGuidance`
+  - Then: the rendered prompt contains parsed facts with `exitCode: 127`, `failureType: "command_not_found"`, `missingCommand: "<name>"`, and `retryGuidance`
 - **TC-2.2b:** Standing instructions present
   - Given: any classified tool result sent to inference
   - When: the prompt is rendered
@@ -74,23 +74,27 @@ A reference classifier, prompt shape, and fixture sets exist in `derivation-test
   - When: classified
   - Then: prompt mode is `test_summary` and the model call receives test-specific guidance
 
-**AC-2.4:** Large tool results flow through to inference instead of being skipped. The adapter's existing `maxInputChars` bounding handles the input size. The `largeTierTokens` threshold no longer skips inference; it may influence target token calculation but does not gate whether the model is called.
+**AC-2.4:** Large tool results flow through to inference instead of being skipped. The adapter's existing `maxInputChars` bounding handles the input size. `largeTierTokens` is retired from `SdkConfig.toolResult` and `ResolvedSdkConfig.toolResult` — after the inference skip is removed, it serves no purpose. (`toolResultTargetTokens` uses only `smallTierTokens` for the ratio branch, not `largeTierTokens`.)
 
 - **TC-2.4a:** Large result reaches inference
-  - Given: a tool result above `largeTierTokens` (5000 tokens)
+  - Given: a tool result of 6000 tokens (above the old `largeTierTokens` threshold)
   - When: the handler processes it
   - Then: a model call is made (the adapter bounds the input); the result is not deterministically truncated and stored without inference
 - **TC-2.4b:** Adapter bounding applies
   - Given: a very large tool result (200,000+ characters)
   - When: the model call is made
   - Then: the adapter's `maxInputChars` truncates the raw content before the prompt is rendered
+- **TC-2.4c:** `largeTierTokens` removed
+  - Given: the updated codebase
+  - When: `SdkConfig.toolResult` is inspected
+  - Then: `largeTierTokens` is not a field; `truncateForFallback` is not called by the tool-result handler
 
 **AC-2.5:** The `summarizeToolResult` callback signature is extended to include the classification output.
 
 - **TC-2.5a:** Extended signature
   - Given: the updated `InferenceCallbacks.summarizeToolResult`
   - When: a classified tool result is passed to inference
-  - Then: the input includes `operationClass`, `responseShape`, `promptMode`, and `facts` alongside the existing `toolName`, `content`, `outcome`, `targetTokens`
+  - Then: the model-call render input includes `operationClass`, `responseShape`, `promptMode`, and `facts` alongside the existing `toolName`, `content`, `outcome`, `targetTokens`
 - **TC-2.5b:** `guidance` field retired
   - Given: the updated signature
   - When: the model call is made
@@ -145,7 +149,7 @@ The classifier input needs the tool name, the raw tool output, the outcome (`suc
 
 Current behavior: tool results above `largeTierTokens` are deterministically truncated and stored as ready with no model call.
 
-New behavior: all tool results flow through the classifier. The classifier's response shape (e.g. `large_file_content`, `large_log`) informs the prompt mode, but does not skip inference. The adapter's existing `maxInputChars` bounding truncates the raw content before the prompt is rendered. The small-result passthrough (≤ target tokens) remains — small results are already concise and don't need summarization.
+New behavior: tool results above the small-result passthrough threshold are classified and sent to inference regardless of size. The classifier's response shape (e.g. `large_file_content`, `large_log`) informs the prompt mode but does not skip inference. The adapter's existing `maxInputChars` bounding truncates the raw content before the prompt is rendered. The small-result passthrough (≤ target tokens) remains — small results are already concise and are stored as-is without classification or inference.
 
 #### Prompt Template Replacement
 
@@ -160,7 +164,7 @@ The current `tool-result-v1` template is generic. The new template (e.g. `tool-r
   - Do not add diagnostic conclusions, root-cause analysis, or recommended code changes beyond what parsed fields or raw response directly support
 - Raw tool output (bounded by the adapter)
 
-Fields excluded from the prompt to prevent leakage into summaries: `operationClass`, `responseShape`, `outputChars`, `outputWords`.
+Fields excluded from the rendered prompt messages to prevent leakage into summaries: `operationClass`, `responseShape`, `outputChars`, `outputWords`. These may exist on the model call input object for routing/rendering, but must not appear in the system or user message text the model sees.
 
 #### Recovery Path
 
@@ -182,14 +186,16 @@ Risk Reminders:
 
 | Area | Files / Modules |
 |------|-----------------|
-| Classifier | `src/messages/internal/classify-tool-result.ts` — new file, ported from `derivation-testing/tool_result_summary/lib/classify.mjs` |
-| Tool-result handler | `src/messages/internal/handlers.ts` — replace three-tier logic with classify → call, remove `toolResultGuidance`, remove large-result inference skip |
+| Classifier | `src/messages/internal/classify-tool-result.ts` — new file, ported from `derivation-testing/tool_result_summary/lib/classify.mjs`. The classifier may import types (e.g. `ToolOutcome`) from shared-tech but must not import runtime services, DB, inference, logging, or other domains. |
+| Paired tool call | `src/messages/internal/derivations.ts` — extend `findPairedToolCall` to return the tool call's `arguments` (the block's `toolInput` or equivalent) alongside `toolName`, so the classifier can parse bash commands |
+| Tool-result handler | `src/messages/internal/handlers.ts` — replace three-tier logic with classify → call, remove `toolResultGuidance`, remove large-result inference skip, remove `truncateForFallback` call |
 | Recovery bridge | `src/messages/recovery.ts` — export the shared classify-and-call function for turns recovery |
 | Turn recovery path | `src/turns/internal/derive.ts` — use the shared classify-and-call function instead of inline three-tier logic |
-| Callback signature | `src/shared-tech/derivation.ts` — extend `summarizeToolResult` input with `operationClass`, `responseShape`, `promptMode`, `facts`; remove `guidance` |
+| Callback signature | `src/shared-tech/derivation.ts` — extend `summarizeToolResult` input with `operationClass`, `responseShape`, `promptMode`, `facts`; remove `guidance`. Remove `largeTierTokens` from `SdkConfig.toolResult` and `ResolvedSdkConfig.toolResult`. |
 | Prompt template | `src/shared-tech/prompts/tool-result-v2.ts` — new template rendering from classification; update `index.ts` to register it and update default prompt name |
 | Old prompt | `src/shared-tech/prompts/tool-result-v1.ts` — keep the file (historical), but the default assignment no longer points to it |
 | Adapter | `src/shared-tech/inference-adapter.ts` — ensure the adapter passes through the new fields to the prompt template |
+| Test doubles | `test/fixtures/inference-callbacks-double.ts`, `src/shared-tech/deterministic.ts` — update `summarizeToolResult` doubles/deterministic callbacks to match the new signature (no `guidance`, add classification fields) |
 | Tests | `test/tool-result-classification.test.ts` — classifier unit tests; `test/tool-result-summary.test.ts` — handler integration tests |
 
 #### Derivation Testing References
@@ -236,11 +242,15 @@ Key prompt lessons from testing (must be preserved in the new template):
 
 #### Technical Notes
 
-- The classifier needs access to the paired tool_call's `toolInput` (specifically the `command` field for bash classification). The handler already reads the paired tool call via `findPairedToolCall`. The classifier receives `toolInput` as an optional field.
+- `findPairedToolCall` must be extended to return the tool call's `arguments` (the block content's input fields) alongside `toolName`. The classifier needs the `command` field for bash operation-class classification.
+- The classifier runs only for tool results that will go to inference (above the small-result passthrough threshold). Small results are already concise — running the classifier on them is wasted work with no observable output.
 - The `toolResultGuidance` function in `handlers.ts` is retired — prompt-mode-specific guidance moves into the prompt template.
-- The `toolResultTargetTokens` function stays — it computes the target token count from the tier config, which the prompt still needs.
-- Small-result passthrough stays: tool results whose token count ≤ target tokens are stored as-is with no model call. The classifier still runs (the classification could be useful for metadata), but no inference is called.
+- The `toolResultTargetTokens` function stays — it computes the target token count from the tier config, which the prompt still needs. It uses only `smallTierTokens` for the ratio branch; `largeTierTokens` is not involved and is retired.
 - `tool-result-v1.ts` stays in the prompts directory as a historical file but is no longer the default assignment. The default prompt name for `tool_result_summary` changes to `tool-result-v2` in `DEFAULT_PROMPT_NAMES` and `DEFAULT_INFERENCE_ASSIGNMENTS`.
+- The shared classify-and-call function returns a `{ write }` shape, following the shared-call pattern from `deriveSmoothedPrompt`. This story has no warning-log behavior.
+- The exact operation class, response shape, prompt mode, and fact field names are ported from `derivation-testing/tool_result_summary/lib/classify.mjs` — that file is authoritative for names and logic. The lists in this story are illustrative; the `.mjs` is the source of truth.
+- The `guidance` field removal from `summarizeToolResult` affects every test double and deterministic callback that implements the interface. All call sites and doubles must be updated.
+- `toolResultGuidance` is currently exported from `messages/recovery.ts` and imported by `turns/internal/derive.ts`. Remove the export from `messages/recovery.ts` after the recovery path rewrite (AC-2.7) stops importing it — do not remove the export before the recovery path is updated or the import will break mid-story.
 
 #### Anti-Shim Requirements
 
@@ -248,7 +258,7 @@ Key prompt lessons from testing (must be preserved in the new template):
 - Assert no `guidance` field in the model call input.
 - Assert large results reach inference (model spy called), not deterministically truncated.
 - Assert the prompt does not contain excluded diagnostic fields.
-- The classifier must not import from shared-tech or other domains — it is a pure `messages/internal/` module.
+- The classifier may import types (e.g. `ToolOutcome`) from shared-tech but must not import runtime services, DB access, inference, logging, or other domains.
 
 #### Production Path Proof
 
@@ -262,7 +272,7 @@ Key prompt lessons from testing (must be preserved in the new template):
 - Source truth remains the message content (the raw tool result).
 - Derived state is the summary text plus metadata (outcome, classification).
 - The classifier's parsed facts are not stored as derivation content — they are input to the model call. The model's output is what gets stored.
-- Classification metadata (operation class, prompt mode) could optionally be stored in `DerivationMetadata` for observability, but this is not required by the ACs.
+- Classification metadata (operation class, prompt mode) is not stored in `DerivationMetadata`. The derivation stores only the summary text plus existing outcome/provenance metadata. If inspect needs prompt-mode observability later, add it deliberately in a separate story.
 
 #### Verification
 
@@ -274,20 +284,24 @@ Key prompt lessons from testing (must be preserved in the new template):
 
 - **Numbering:** ACs renumbered from 5.x to 2.x. This is Story 2 in the updated sequence.
 - **Large-result policy:** The original spec described excerpting as a new mechanism. The implementation relies on the adapter's existing `maxInputChars` bounding — no new excerpt mechanism is needed.
-- **Timeout:** `guards.toolResultSummary.timeoutMs` exists but the current adapter applies a global timeout via `safeCall`. Per-handler timeout override is not implemented in this story unless the adapter already supports per-call timeout. If it doesn't, the guard value serves as documentation of the intended per-handler timeout and can be wired when the adapter supports it.
+- **`largeTierTokens` retired:** The original spec kept `largeTierTokens` as a config field. After removing the inference skip, it serves no purpose — `toolResultTargetTokens` uses only `smallTierTokens`. Removed from `SdkConfig.toolResult` and `ResolvedSdkConfig.toolResult`.
+- **Per-handler timeout deferred:** `guards.toolResultSummary.timeoutMs` exists on config but is out of scope. The adapter applies a single global `inference.timeoutMs` to all calls; per-call timeout is an adapter-level concern across all six operations and belongs in a dedicated adapter story.
 - **Design references:** The old stories referenced tech-design.md line numbers. That document is stale after the refactor. This story references the derivation testing findings directly.
 
 ### Definition of Done
 <!-- Jira: Definition of Done or Acceptance Criteria footer -->
 
-- Deterministic classifier produces operation class, response shape, prompt mode, and parsed facts for every tool result.
-- Classifier is a pure function in `messages/internal/` — no inference, no database, no throws on any input.
+- Deterministic classifier produces operation class, response shape, prompt mode, and parsed facts for tool results going to inference.
+- Classifier is a pure function in `messages/internal/` — may import shared-tech types, no runtime services, no database, no throws on any input.
+- `findPairedToolCall` returns tool input (arguments) alongside tool name.
 - Parsed facts are passed to the model as authoritative input.
 - Prompt renders mode-specific guidance based on `promptMode`.
-- Prompt excludes `operationClass`, `responseShape`, `outputChars`, `outputWords` from model-visible content.
+- Rendered prompt excludes `operationClass`, `responseShape`, `outputChars`, `outputWords` from model-visible message text.
 - Standing instructions (no field labels, no diagnostic conclusions) are in the prompt template.
 - Large tool results flow through to inference instead of being deterministically truncated and skipped.
+- `largeTierTokens` removed from `SdkConfig.toolResult` and `ResolvedSdkConfig.toolResult`.
 - `summarizeToolResult` signature includes classification fields; `guidance` is removed.
+- All test doubles and deterministic callbacks updated to match the new signature.
 - Default prompt name for `tool_result_summary` points to `tool-result-v2`.
-- Recovery path uses the same classifier and extended signature.
+- Recovery path uses the same shared classify-and-call function with `{ write }` return shape.
 - `pnpm run verify` passes.
