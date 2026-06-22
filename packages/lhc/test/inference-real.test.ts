@@ -1,5 +1,7 @@
 // Epic 05 Story 5 — TC-4.1, TC-4.2, TC-4.3: the opt-in real-inference suite
 // and the real-adapter lifecycle capstone (AC-4.1, AC-4.2, AC-1.2).
+// Epic 07 adds focused real-inference seam checks for the smoothed-prompt
+// guard and tool-result classifier paths.
 //
 // The suite keys on OPENROUTER_API_KEY, resolved ONCE at module load by the
 // suite-level guard from process.env plus ~/.lhc/.env: exactly one ran/not-ran line lands in run output, and
@@ -7,7 +9,7 @@
 // produce a silent pass — unkeyed runs show one NOT-RAN line, a green
 // accounting leg that asserted the not-ran record, and the keyed legs
 // reported as skipped (never as passes). This is the CI-default posture:
-// zero network calls. With the key present, the seven derivation kinds
+// zero network calls. With the key present, the six derivation kinds
 // round-trip a real endpoint, the same seam-conformance helpers that ran
 // against the fake host run against the real one unchanged (DD-13), and the
 // Epic 04 lifecycle sequence completes under the real adapter with
@@ -15,7 +17,19 @@
 // provenance, mutation regeneration, coherent checkpoints.
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Derivation, HealthReport, LlmRequestContextMessage, MutationResult, OpResult } from "../src/index.js";
+import type {
+  Derivation,
+  HealthReport,
+  Lhc,
+  LlmRequestContextMessage,
+  ModelCall,
+  ModelCallInput,
+  ModelCallResult,
+  MutationResult,
+  OpResult,
+} from "../src/index.js";
+import { estimateTokens, initLhc } from "../src/index.js";
+import { truncateForFallback } from "../src/shared-tech/index.js";
 import {
   assertModelCallContract,
   assertRoutingThroughSdk,
@@ -38,6 +52,7 @@ import {
   type TempStore,
   tempStore,
   validAssignments,
+  validEvent,
 } from "./fixtures/index.js";
 
 // ── the suite-level guard: one resolution, one visible line ───────
@@ -67,8 +82,8 @@ function messageText(message: LlmRequestContextMessage): string {
   return message.content.map((part) => part.text).join("");
 }
 
-// All seven kinds assigned to the one real lane; prompt names stay the
-// registry defaults validAssignments already wires.
+// All inference-backed kinds assigned to the one real lane; prompt names stay
+// the registry defaults validAssignments already wires.
 function realAssignments(model: string): ReturnType<typeof validAssignments> {
   const overrides: Partial<Record<InferenceDerivationType, { provider: string; model: string }>> = {};
   for (const kind of INFERENCE_DERIVATION_TYPES) {
@@ -121,7 +136,7 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
 
 // ── TC-4.1 / TC-4.3: keyed seven-kind round-trips + conformance ───
 
-describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): seven real round-trips through the shared seam helpers", () => {
+describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): six real derivation kinds through the shared seam helpers", () => {
   const call = realKey === undefined ? undefined : createOpenRouterCall(realKey, realModel);
   const assignments = realAssignments(realModel);
   let store: TempStore;
@@ -132,7 +147,7 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): seven real round-trips through t
     if (call === undefined) throw new Error("keyed leg started without a key");
     // TC-4.3: the SAME routing helper Story 2's fake-host seam test runs,
     // unchanged, against the real host — it drives a real intake → drain
-    // exercising all seven kinds and asserts routing, lane coverage, and
+    // exercising all six derivation kinds and asserts routing, lane coverage, and
     // single-turn message shape internally.
     routing = await assertRoutingThroughSdk(call, assignments, store);
   }, 300_000);
@@ -145,7 +160,7 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): seven real round-trips through t
     await assertModelCallContract(call, probeInput({ provider: "openrouter", model: realModel }));
   }, 120_000);
 
-  it("TC-4.1: each of the seven kinds round-tripped real inference to a ready form", () => {
+  it("TC-4.1: each of the six derivation kinds lands ready with real adapter content", () => {
     for (const kind of DERIVATION_TYPES) {
       const ready = routing.derivations.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
@@ -169,6 +184,186 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): seven real round-trips through t
     }
   });
 });
+
+// ── Epic 07: focused real-inference seam checks ───────────────────
+
+function tokenText(minTokens: number, word = "guardword"): string {
+  let text = "";
+  while (estimateTokens(text) < minTokens) text += `${word} `;
+  return text.trim();
+}
+
+function recordRealCall(call: ModelCall): { call: ModelCall; log: ModelCallInput[] } {
+  const log: ModelCallInput[] = [];
+  return {
+    log,
+    call: async (input): Promise<ModelCallResult> => {
+      log.push(structuredClone(input));
+      return call(input);
+    },
+  };
+}
+
+async function newRealThread(sdk: Lhc, store: TempStore, name: string): Promise<string> {
+  const created = await sdk.threads.newThread({ filePath: store.threadPath(name), registryPath: store.registryPath });
+  return ok(created).filePath;
+}
+
+async function drainRealWork(sdk: Lhc, filePath: string): Promise<void> {
+  const drained = ok(await sdk.work.drain({ filePath }));
+  expect(drained.stoppedBecause).toBe("empty");
+  expect(drained.remaining).toBe(0);
+}
+
+function findDerivation(filePath: string, subjectId: string, derivationType: string): Derivation {
+  const derivation = readDerivedForms(filePath).find(
+    (form) => form.subjectId === subjectId && form.derivationType === derivationType,
+  );
+  if (derivation === undefined) throw new Error(`missing ${derivationType} for ${subjectId}`);
+  return derivation;
+}
+
+function renderedPrompt(input: ModelCallInput): string {
+  return input.messages.map((message) => message.content).join("\n---\n");
+}
+
+describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seams", () => {
+  let store: TempStore;
+
+  beforeAll(() => {
+    store = tempStore();
+  });
+  afterAll(() => {
+    store.cleanup();
+  });
+
+  it("smoothed-prompt guard skips over-cap real calls while under-cap prompts still reach the model", async () => {
+    if (realKey === undefined) throw new Error("keyed leg started without a key");
+    const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
+    const sdk = initLhc({
+      inference: { call: recorded.call, assignments: realAssignments(realModel) },
+      mode: "manual",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    });
+
+    const overCapPrompt = tokenText(760, "overcap");
+    const overCapPath = await newRealThread(sdk, store, "real-smoothing-overcap");
+    ok(
+      await sdk.intakeStream.messageEvents({ filePath: overCapPath }, [
+        validEvent("user_prompt", { payload: { text: overCapPrompt } }),
+      ]),
+    );
+    await drainRealWork(sdk, overCapPath);
+
+    const overCap = findDerivation(overCapPath, "m1", "smoothed_prompt");
+    expect(overCap.state).toBe("ready");
+    expect(overCap.content).toBe(sdk.messages.cleanPrompt(overCapPrompt));
+    expect(overCap.metadata?.provenance).toBeUndefined();
+    expect(recorded.log).toHaveLength(0);
+
+    const underCapPrompt = [
+      "plz plz plz clean this rough request but keep the path packages/lhc/src/messages/index.ts",
+      "I need the model to preserve command pnpm run verify and the number 42 while removing repetition.",
+      "Also keep identifier tool_result_summary exactly as written.",
+    ].join(" ");
+    expect(estimateTokens(sdk.messages.cleanPrompt(underCapPrompt))).toBeLessThan(700);
+    const underCapPath = await newRealThread(sdk, store, "real-smoothing-undercap");
+    ok(
+      await sdk.intakeStream.messageEvents({ filePath: underCapPath }, [
+        validEvent("user_prompt", { payload: { text: underCapPrompt } }),
+      ]),
+    );
+    await drainRealWork(sdk, underCapPath);
+
+    expect(recorded.log).toHaveLength(1);
+    const underCap = findDerivation(underCapPath, "m1", "smoothed_prompt");
+    expect(underCap.state).toBe("ready");
+    expect((underCap.content ?? "").trim()).not.toBe("");
+    expect(underCap.content).not.toBe(sdk.messages.cleanPrompt(underCapPrompt));
+    expect(underCap.metadata?.provenance).toEqual({
+      provider: "openrouter",
+      model: realModel,
+      prompt: assignmentsForKind("smoothed_prompt").prompt,
+    });
+  }, 300_000);
+
+  it("tool-result classification reaches the real adapter for bash failures and formerly-large outputs", async () => {
+    if (realKey === undefined) throw new Error("keyed leg started without a key");
+    const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
+    const sdk = initLhc({
+      inference: { call: recorded.call, assignments: realAssignments(realModel), maxInputChars: 3000 },
+      mode: "manual",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+    });
+    const filePath = await newRealThread(sdk, store, "real-tool-result-classifier");
+    const bashFailure = [
+      "zsh: frobnicate: command not found",
+      "Command exited with code 127",
+      tokenText(1200, "failure-context"),
+    ].join("\n");
+    const largeHead = "HEAD_UNIQUE_STORY2_REAL_INFERENCE ".repeat(60);
+    const largeMiddle = "MIDDLE_UNIQUE_SHOULD_BE_BOUND_OUT ".repeat(2500);
+    const largeTail = "TAIL_UNIQUE_STORY2_REAL_INFERENCE ".repeat(60);
+    const largeOutput = `${largeHead}\n${largeMiddle}\n${largeTail}`;
+    expect(estimateTokens(largeOutput)).toBeGreaterThan(5000);
+
+    ok(
+      await sdk.intakeStream.messageEvents({ filePath }, [
+        validEvent("tool_call", {
+          payload: { toolCallId: "missing-command", toolName: "bash", arguments: { command: "frobnicate --version" } },
+        }),
+        validEvent("tool_result", {
+          payload: { toolCallId: "missing-command", content: bashFailure, isError: true },
+        }),
+        validEvent("tool_call", {
+          payload: { toolCallId: "large-output", toolName: "bash", arguments: { command: "pnpm run verify" } },
+        }),
+        validEvent("tool_result", {
+          payload: { toolCallId: "large-output", content: largeOutput, isError: false },
+        }),
+      ]),
+    );
+    await drainRealWork(sdk, filePath);
+
+    expect(recorded.log).toHaveLength(2);
+    const failurePrompt = renderedPrompt(recorded.log[0]!);
+    expect(failurePrompt).toContain('"exitCode": 127');
+    expect(failurePrompt).toContain('"failureType": "command_not_found"');
+    expect(failurePrompt).toContain('"missingCommand": "frobnicate"');
+    for (const forbidden of ["operationClass", "responseShape", "outputChars", "outputWords"]) {
+      expect(failurePrompt).not.toContain(forbidden);
+    }
+
+    const largePrompt = renderedPrompt(recorded.log[1]!);
+    expect(largePrompt).toContain("HEAD_UNIQUE_STORY2_REAL_INFERENCE");
+    expect(largePrompt).toContain("TAIL_UNIQUE_STORY2_REAL_INFERENCE");
+    expect(largePrompt).toContain("[... truncated: tool result was");
+    expect(largePrompt).not.toContain("MIDDLE_UNIQUE_SHOULD_BE_BOUND_OUT");
+
+    const failureSummary = findDerivation(filePath, "m2", "tool_result_summary");
+    expect(failureSummary.state).toBe("ready");
+    expect((failureSummary.content ?? "").trim()).not.toBe("");
+    expect(failureSummary.metadata?.provenance).toEqual({
+      provider: "openrouter",
+      model: realModel,
+      prompt: assignmentsForKind("tool_result_summary").prompt,
+    });
+
+    const largeSummary = findDerivation(filePath, "m4", "tool_result_summary");
+    expect(largeSummary.state).toBe("ready");
+    expect((largeSummary.content ?? "").trim()).not.toBe("");
+    expect(largeSummary.content).not.toBe(truncateForFallback(largeOutput));
+    expect(largeSummary.metadata?.provenance).toEqual({
+      provider: "openrouter",
+      model: realModel,
+      prompt: assignmentsForKind("tool_result_summary").prompt,
+    });
+  }, 300_000);
+});
+
+function assignmentsForKind(kind: InferenceDerivationType) {
+  return realAssignments(realModel)[kind];
+}
 
 // ── TC-4.2: the real-adapter lifecycle capstone ───────────────────
 
