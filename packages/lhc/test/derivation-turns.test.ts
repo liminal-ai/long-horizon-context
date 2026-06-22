@@ -507,7 +507,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // Detailed is deterministic material assembly; brief still goes through
     // its own inference operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
-    expect(detailed?.content).toBe(memberProjections.join(" | "));
+    expect(detailed?.content).toBe(`[turn 0001]\n${memberProjections[0]}`);
     expect(brief?.content).toBe(
       deterministicText(
         "summarizeChunkBrief",
@@ -585,6 +585,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
     expect(detailed?.content).toContain(`${account}=>failed`);
+    expect(detailed?.content).toContain("[turn 0001]");
     expect(brief?.content).toContain("[outcomes failed]");
     expect(brief?.content).not.toContain("toolcall(");
     expect(brief?.content).not.toContain("toolresult(");

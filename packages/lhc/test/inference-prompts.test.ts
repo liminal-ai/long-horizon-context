@@ -48,22 +48,6 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     },
     embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary"],
   },
-  "turn-compose-v1": {
-    input: {
-      parts: [
-        { messageId: "m1", kind: "user_prompt", text: "please read notes/plan.md", fallback: false },
-        {
-          messageId: "m2",
-          kind: "tool_call",
-          text: "read_file called on notes/plan.md",
-          fallback: false,
-          outcome: "succeeded",
-        },
-        { messageId: "m3", kind: "assistant_text", text: "the plan has 3 open items", fallback: false },
-      ],
-    },
-    embedded: ["please read notes/plan.md", "outcome: succeeded", "the plan has 3 open items"],
-  },
   "lower-band-v1": {
     input: {
       rendering: "The user asked for notes/plan.md; the assistant read it and reported 3 open items.",
@@ -80,23 +64,6 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
       targetMaxTokens: 78,
     },
     embedded: ["notes/plan.md", "42-78", "Preserve substance"],
-  },
-  "chunk-detailed-v1": {
-    input: {
-      memberProjections: ["turn one: read notes/plan.md", "turn two: edited src/app.ts"],
-      memberReceipts: [
-        [
-          {
-            messageId: "m2",
-            activity: "tool_call",
-            account: "read_file fetched notes/plan.md",
-            outcome: "succeeded",
-          },
-        ],
-        [],
-      ],
-    },
-    embedded: ["turn one: read notes/plan.md", "read_file fetched notes/plan.md => succeeded"],
   },
   "chunk-brief-v1": {
     input: {
@@ -173,7 +140,7 @@ describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
 describe("TC-2.2: registry completeness (AC-2.3)", () => {
   it("every registry key resolves to a template carrying that exact name", () => {
     const names = Object.keys(PROMPT_REGISTRY);
-    expect(names.length).toBeGreaterThanOrEqual(6);
+    expect(names.length).toBeGreaterThanOrEqual(4);
     for (const name of names) {
       expect(PROMPT_REGISTRY[name]?.name).toBe(name);
       expect(typeof PROMPT_REGISTRY[name]?.render).toBe("function");

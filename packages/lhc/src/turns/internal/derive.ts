@@ -104,8 +104,7 @@ function composeTurnRenderingText(parts: readonly RenderingPart[]): string {
     .join("\n\n");
 }
 
-function detailedReceiptSuffix(memberReceipts: readonly (readonly ToolRunReceipt[])[]): string {
-  const receipts = memberReceipts.flat();
+function detailedReceiptBlock(receipts: readonly ToolRunReceipt[]): string {
   if (receipts.length === 0) return "";
   return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
 }
@@ -114,7 +113,14 @@ function composeDetailedChunkSummary(
   memberProjections: readonly string[],
   memberReceipts: readonly (readonly ToolRunReceipt[])[],
 ): string {
-  return memberProjections.join(" | ") + detailedReceiptSuffix(memberReceipts);
+  return memberProjections
+    .map((projection, index) => {
+      const receiptBlock = detailedReceiptBlock(memberReceipts[index] ?? []);
+      const section = [`[turn ${String(index + 1).padStart(4, "0")}]`, projection];
+      if (receiptBlock !== "") section.push(receiptBlock);
+      return section.join("\n");
+    })
+    .join("\n\n");
 }
 
 function compressionTargetTokens(
@@ -143,11 +149,15 @@ function sizeDisposition(
   return "in_range";
 }
 
-function readThreadId(run: HandlerRunContext): string {
-  const row = run.openDb().prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+function readThreadIdFromDb(db: DatabaseSync): string {
+  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
     | { thread_id: string }
     | undefined;
   return row?.thread_id ?? "";
+}
+
+function readThreadId(run: HandlerRunContext): string {
+  return readThreadIdFromDb(run.openDb());
 }
 
 function pokeThreadScheduler(db: DatabaseSync): void {
@@ -434,6 +444,7 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
 
     const members = readMemberProjections(db, chunkId);
     const memberProjections: string[] = [];
+    const fallbackLogs: LogEntry[] = [];
     for (const member of members) {
       if (member.sourceCorruptionReason !== undefined) {
         return sourceDamaged(member.sourceCorruptionReason);
@@ -444,6 +455,23 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
       }
       if (member.state === "blocked") {
         return sourceDamaged(`member ${member.turnId} smooth_turn_compression blocked while deriving ${kind}`);
+      }
+      if (
+        kind === "chunk_summary_detailed" &&
+        member.state === "failed" &&
+        member.renderingState === "ready" &&
+        member.renderingContent !== undefined
+      ) {
+        memberProjections.push(member.renderingContent);
+        fallbackLogs.push({
+          level: "warning",
+          message: "derivation fallback used",
+          derivationType: "chunk_summary_detailed",
+          subjectId: chunkId,
+          reason: "failed_floor",
+          floorUsed: member.turnId,
+        });
+        continue;
       }
       return dependencyNotReady(
         `member_projection_not_ready: member ${member.turnId} smooth_turn_compression is ${member.state ?? "missing"}`,
@@ -476,6 +504,21 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
           ...(result.provenance === undefined ? {} : { metadata: { provenance: result.provenance } }),
         },
       ],
+      ...(fallbackLogs.length === 0
+        ? {}
+        : {
+            onApplied: (transaction) => {
+              const logTransaction = {
+                db: transaction.db,
+                clock: run.clock,
+                threadId: readThreadIdFromDb(transaction.db),
+                filePath: "",
+                postCommitHook: { add: transaction.onCommit },
+                poke: resolveInstancePoke(),
+              };
+              for (const entry of fallbackLogs) writeLog(logTransaction, entry);
+            },
+          }),
     };
   };
 }

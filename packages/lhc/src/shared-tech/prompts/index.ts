@@ -4,13 +4,11 @@
 // changes. Versioning is in the name (`smoothing-v1`).
 import type { ModelCallInput } from "../inference-types.js";
 import { chunkBriefV1 } from "./chunk-brief-v1.js";
-import { chunkDetailedV1 } from "./chunk-detailed-v1.js";
 import { lowerBandV1 } from "./lower-band-v1.js";
 import { smoothTurnCompressionV1 } from "./smooth-turn-compression-v1.js";
 import { smoothingV1 } from "./smoothing-v1.js";
 import { toolResultV1 } from "./tool-result-v1.js";
 import { toolResultV2 } from "./tool-result-v2.js";
-import { turnComposeV1 } from "./turn-compose-v1.js";
 
 export interface PromptTemplate<I = unknown> {
   name: string;
@@ -24,10 +22,8 @@ export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [smoothingV1.name]: smoothingV1,
   [toolResultV1.name]: toolResultV1,
   [toolResultV2.name]: toolResultV2,
-  [turnComposeV1.name]: turnComposeV1,
   [lowerBandV1.name]: lowerBandV1,
   [smoothTurnCompressionV1.name]: smoothTurnCompressionV1,
-  [chunkDetailedV1.name]: chunkDetailedV1,
   [chunkBriefV1.name]: chunkBriefV1,
 };
 

@@ -121,6 +121,8 @@ export interface MemberProjection {
   turnId: string;
   state?: string; // undefined: no projection row exists for the member
   content?: string;
+  renderingState?: string;
+  renderingContent?: string;
   receipts: ToolRunReceipt[]; // empty when the member turn had no tool activity
   sourceCorruptionReason?: string;
 }
@@ -129,7 +131,9 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
   const rows = db
     .prepare(
       `SELECT cm.turn_id, t.turn_id AS existing_turn_id, t.deleted_at,
-              df.state, df.content, rf.metadata AS rendering_metadata
+              df.state, df.content,
+              rf.state AS rendering_state, rf.content AS rendering_content,
+              rf.metadata AS rendering_metadata
        FROM chunk_member cm
        LEFT JOIN turns t ON t.turn_id = cm.turn_id
        LEFT JOIN derivation df ON df.subject_kind = 'turn'
@@ -142,6 +146,8 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     turn_id: string;
     state: string | null;
     content: string | null;
+    rendering_state: string | null;
+    rendering_content: string | null;
     rendering_metadata: string | null;
     existing_turn_id: string | null;
     deleted_at: string | null;
@@ -161,6 +167,8 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     }
     if (row.state !== null) projection.state = row.state;
     if (row.content !== null) projection.content = row.content;
+    if (row.rendering_state !== null) projection.renderingState = row.rendering_state;
+    if (row.rendering_content !== null) projection.renderingContent = row.rendering_content;
     return [projection];
   });
 }
