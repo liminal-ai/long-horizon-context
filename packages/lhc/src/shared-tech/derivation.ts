@@ -4,7 +4,7 @@
 // mutation cascade, and the drain all speak this vocabulary across domain
 // lines, so it lives in shared-tech/ (tech design §Interfaces, DD-2/DD-7).
 import type { DatabaseSync } from "node:sqlite";
-import type { InferenceConfig } from "./inference-types.js";
+import type { DerivationGuards, InferenceConfig, ResolvedDerivationGuards } from "./inference-types.js";
 import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
 
 export type SubjectKind = "message" | "turn" | "chunk";
@@ -59,6 +59,7 @@ export interface DerivationMetadata {
   receipts?: ToolRunReceipt[];
   attempts?: number;
   lastError?: string;
+  discardReason?: string;
   // Epic 05 (DD-4): which provider/model/prompt produced the content —
   // copied from the InferenceResult's config-known strings, never authored
   // from model output. Deterministic domain assembly never sets it.
@@ -178,7 +179,7 @@ export interface SdkConfig {
   mode: "background" | "manual";
   clock?: () => Date;
   retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number }; // 3 / 5000 / 60000
-  smoothing?: { maxInferenceTokens: number }; // 4000
+  guards?: DerivationGuards;
   toolResult?: {
     smallTierTokens: number;
     largeTierTokens: number;
@@ -198,7 +199,7 @@ export interface ResolvedSdkConfig {
   mode: "background" | "manual";
   clock: () => Date;
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
-  smoothing: { maxInferenceTokens: number };
+  guards: ResolvedDerivationGuards;
   toolResult: {
     smallTierTokens: number;
     largeTierTokens: number;

@@ -382,7 +382,10 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 // Unknown keys are rejected — never silently ignored. Then the adapter is built into the same InferenceCallbacks
 // slot direct injection uses. No partial construction: every mistake throws
 // before anything is assembled (AC-1.1, AC-1.3).
-function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbacks {
+function resolveInferenceCallbacks(
+  inference: InferenceConfig,
+  guards: ResolvedSdkConfig["guards"],
+): InferenceCallbacks {
   if (typeof inference.call !== "function") {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.call must be a function`);
   }
@@ -428,9 +431,6 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
     merged[kind] = assignment ?? DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
   }
 
-  // Guard defaults (AC-6.2, TC-6.2a).
-  const resolvedGuards = resolveGuards(inference.guards);
-
   const timeoutMs = inference.timeoutMs ?? 60_000;
   const maxInputChars = inference.maxInputChars ?? 200_000;
   requirePositive(timeoutMs, "inference.timeoutMs");
@@ -438,7 +438,7 @@ function resolveInferenceCallbacks(inference: InferenceConfig): InferenceCallbac
   return createInferenceCallbacks({
     call: inference.call,
     assignments: merged,
-    guards: resolvedGuards,
+    guards,
     timeoutMs,
     maxInputChars,
   });
@@ -464,14 +464,23 @@ export function initLhc(config: SdkConfig): Lhc {
   if (directCallbacks === undefined && config.inference === undefined) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
   }
+  if (
+    config.inference !== undefined &&
+    "guards" in config.inference &&
+    (config.inference as { guards?: unknown }).guards !== undefined
+  ) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.guards is retired; use top-level guards`);
+  }
   if (config.mode !== "background" && config.mode !== "manual") {
     throw new TypeError(
       `${INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got ${JSON.stringify(config.mode)}`,
     );
   }
+  const guards = resolveGuards(config.guards);
+
   let inferenceCallbacks: InferenceCallbacks;
   if (config.inference !== undefined) {
-    inferenceCallbacks = resolveInferenceCallbacks(config.inference);
+    inferenceCallbacks = resolveInferenceCallbacks(config.inference, guards);
   } else {
     if (directCallbacks === null || typeof directCallbacks !== "object") {
       throw new TypeError(`${INIT_CONFIG_PREFIX}: inferenceCallbacks must implement InferenceCallbacks`);
@@ -490,7 +499,7 @@ export function initLhc(config: SdkConfig): Lhc {
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
-    smoothing: config.smoothing ?? { maxInferenceTokens: 4000 },
+    guards,
     toolResult: config.toolResult ?? {
       smallTierTokens: 1000,
       largeTierTokens: 5000,
@@ -509,7 +518,10 @@ export function initLhc(config: SdkConfig): Lhc {
   if (resolved.retry.backoffCapMs < resolved.retry.backoffBaseMs) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: retry.backoffCapMs must be >= retry.backoffBaseMs`);
   }
-  requirePositive(resolved.smoothing.maxInferenceTokens, "smoothing.maxInferenceTokens");
+  requirePositive(resolved.guards.smoothedPrompt.maxInferenceTokens, "guards.smoothedPrompt.maxInferenceTokens");
+  requirePositive(resolved.guards.smoothedPrompt.suspiciousOutputRatio, "guards.smoothedPrompt.suspiciousOutputRatio");
+  requirePositive(resolved.guards.toolResultSummary.timeoutMs, "guards.toolResultSummary.timeoutMs");
+  requirePositive(resolved.guards.smoothTurnCompression.tinyTurnTokens, "guards.smoothTurnCompression.tinyTurnTokens");
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
   requirePositive(resolved.toolResult.largeTierTokens, "toolResult.largeTierTokens");
   if (resolved.toolResult.largeTierTokens < resolved.toolResult.smallTierTokens) {

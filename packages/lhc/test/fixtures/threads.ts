@@ -8,12 +8,12 @@ import { DatabaseSync } from "node:sqlite";
 import {
   type DependencyGap,
   type Derivation,
+  type DerivationMetadata,
   type DerivationState,
   intakeStream,
   type Lhc,
   type MessageEventInput,
   type SubjectKind,
-  type ToolOutcome,
   threads,
 } from "../../src/index.js";
 import { corruptTwoOpenTurns } from "./corrupt.js";
@@ -173,7 +173,7 @@ export function readDerivedForms(filePath: string): Derivation[] {
       if (row.content !== null) record.content = row.content;
       if (row.reason !== null) record.reason = row.reason;
       if (row.metadata !== null) {
-        record.metadata = JSON.parse(row.metadata) as { outcome?: ToolOutcome };
+        record.metadata = JSON.parse(row.metadata) as DerivationMetadata;
       }
       if (row.gaps !== null) record.gaps = JSON.parse(row.gaps) as DependencyGap[];
       if (row.derived_at !== null) record.derivedAt = row.derived_at;
@@ -195,7 +195,7 @@ export function setFormState(
     state: DerivationState;
     content?: string;
     reason?: string;
-    metadata?: { outcome?: ToolOutcome };
+    metadata?: DerivationMetadata;
     derivedAt?: string;
   },
 ): void {

@@ -411,7 +411,7 @@ describe("Story 3: turn construction recovery cascade", () => {
   it("recovers over-cap prompts with deterministic cleaned text and no smoothing model call", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
-    const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
+    const sdk = sdkFor(double, { guards: { smoothedPrompt: { maxInferenceTokens: 1 } } });
     const filePath = await newThread();
 
     await send(sdk, filePath, [

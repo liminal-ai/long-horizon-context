@@ -53,6 +53,19 @@ export interface DerivationGuards {
   };
 }
 
+export interface ResolvedDerivationGuards {
+  smoothedPrompt: {
+    maxInferenceTokens: number;
+    suspiciousOutputRatio: number;
+  };
+  toolResultSummary: {
+    timeoutMs: number;
+  };
+  smoothTurnCompression: {
+    tinyTurnTokens: number;
+  };
+}
+
 /** SdkConfig.inference — the alternative to SdkConfig.inferenceCallbacks (DD-5). */
 export interface InferenceConfig {
   call: ModelCall;
@@ -60,7 +73,6 @@ export interface InferenceConfig {
   // host omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS; deterministic
   // types are optional. Unknown keys are rejected at construction.
   assignments?: Record<string, ModelAssignment>;
-  guards?: DerivationGuards; // optional operational limits
   timeoutMs?: number; // default 60_000 (DD-6)
   maxInputChars?: number; // default 200_000 (DD-7)
 }
@@ -69,7 +81,7 @@ export interface InferenceConfig {
 export interface ResolvedInferenceConfig {
   call: ModelCall;
   assignments: Record<string, ModelAssignment>;
-  guards: DerivationGuards; // filled with defaults
+  guards: ResolvedDerivationGuards;
   timeoutMs: number;
   maxInputChars: number;
 }
@@ -77,7 +89,7 @@ export interface ResolvedInferenceConfig {
 // Default guard values (AC-6.2, TC-6.2a): the documented operational limits
 // applied when the host omits a guard. Centralized so construction and tests
 // share one source of truth for the defaults.
-export const DEFAULT_GUARDS: DerivationGuards = {
+export const DEFAULT_GUARDS: ResolvedDerivationGuards = {
   smoothedPrompt: { maxInferenceTokens: 700, suspiciousOutputRatio: 0.15 },
   toolResultSummary: { timeoutMs: 60_000 },
   smoothTurnCompression: { tinyTurnTokens: 80 },
@@ -86,19 +98,19 @@ export const DEFAULT_GUARDS: DerivationGuards = {
 // Fill a DerivationGuards with defaults for every omitted value (AC-6.2). A
 // pure function: no defaults drift between construction and the values tests
 // pin (TC-6.2a).
-export function resolveGuards(guards?: DerivationGuards): DerivationGuards {
+export function resolveGuards(guards?: DerivationGuards): ResolvedDerivationGuards {
   const g = guards ?? {};
   return {
     smoothedPrompt: {
-      maxInferenceTokens: g.smoothedPrompt?.maxInferenceTokens ?? DEFAULT_GUARDS.smoothedPrompt!.maxInferenceTokens!,
+      maxInferenceTokens: g.smoothedPrompt?.maxInferenceTokens ?? DEFAULT_GUARDS.smoothedPrompt.maxInferenceTokens,
       suspiciousOutputRatio:
-        g.smoothedPrompt?.suspiciousOutputRatio ?? DEFAULT_GUARDS.smoothedPrompt!.suspiciousOutputRatio!,
+        g.smoothedPrompt?.suspiciousOutputRatio ?? DEFAULT_GUARDS.smoothedPrompt.suspiciousOutputRatio,
     },
     toolResultSummary: {
-      timeoutMs: g.toolResultSummary?.timeoutMs ?? DEFAULT_GUARDS.toolResultSummary!.timeoutMs!,
+      timeoutMs: g.toolResultSummary?.timeoutMs ?? DEFAULT_GUARDS.toolResultSummary.timeoutMs,
     },
     smoothTurnCompression: {
-      tinyTurnTokens: g.smoothTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.smoothTurnCompression!.tinyTurnTokens!,
+      tinyTurnTokens: g.smoothTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.smoothTurnCompression.tinyTurnTokens,
     },
   };
 }

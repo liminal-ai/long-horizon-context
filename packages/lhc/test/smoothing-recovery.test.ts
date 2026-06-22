@@ -40,7 +40,7 @@ async function newThread(): Promise<string> {
 
 function sdkFor(
   inferenceCallbacks: InferenceCallbacks,
-  overrides: Partial<Pick<SdkConfig, "retry" | "smoothing">> = {},
+  overrides: Partial<Pick<SdkConfig, "retry" | "guards">> = {},
 ): Lhc {
   const config: SdkConfig = {
     inferenceCallbacks,
@@ -48,7 +48,7 @@ function sdkFor(
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   };
-  if (overrides.smoothing !== undefined) config.smoothing = overrides.smoothing;
+  if (overrides.guards !== undefined) config.guards = overrides.guards;
   return initLhc(config);
 }
 
@@ -100,7 +100,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
   it("skips inference over the cap but still stores the deterministic floor as ready", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
-    const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
+    const sdk = sdkFor(double, { guards: { smoothedPrompt: { maxInferenceTokens: 1 } } });
     const filePath = await newThread();
     const fenced = "```ts\n\tconst  i = 1;\n\n\t\treturn  i;\n```";
     const text = `  hello    world  \n${fenced}\n  because i asked  `.repeat(8);
@@ -125,12 +125,12 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
     const text = "one two three four five six seven eight nine ten";
     const tokenCount = estimateTokens(text);
 
-    const equalSdk = sdkFor(equalDouble, { smoothing: { maxInferenceTokens: tokenCount } });
+    const equalSdk = sdkFor(equalDouble, { guards: { smoothedPrompt: { maxInferenceTokens: tokenCount } } });
     const equalFile = await newThread();
     await send(equalSdk, equalFile, [validEvent("user_prompt", { payload: { text } })]);
     await drain(equalSdk, equalFile);
 
-    const overSdk = sdkFor(overDouble, { smoothing: { maxInferenceTokens: tokenCount - 1 } });
+    const overSdk = sdkFor(overDouble, { guards: { smoothedPrompt: { maxInferenceTokens: tokenCount - 1 } } });
     const overFile = await newThread();
     await send(overSdk, overFile, [validEvent("user_prompt", { payload: { text } })]);
     await drain(overSdk, overFile);
@@ -294,7 +294,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
 
   it("over-cap deterministic smoothing leaves no live queue items", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = sdkFor(double, { smoothing: { maxInferenceTokens: 1 } });
+    const sdk = sdkFor(double, { guards: { smoothedPrompt: { maxInferenceTokens: 1 } } });
     const filePath = await newThread();
 
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "hello world ".repeat(50) } })]);

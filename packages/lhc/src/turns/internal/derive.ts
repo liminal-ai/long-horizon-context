@@ -10,7 +10,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import {
-  cleanPrompt,
+  deriveSmoothedPrompt,
   findPairedToolCall,
   toolResultGuidance,
   toolResultTargetTokens,
@@ -35,7 +35,7 @@ import {
   runWorkHandler,
   truncateForFallback,
 } from "../../shared-tech/index.js";
-import { writeLog } from "../../shared-tech/logging/index.js";
+import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import {
   createOrClaimImmediateWorkItem,
@@ -176,13 +176,18 @@ async function recoverMessageDerivations(
     const block = message.blocks[0]?.content ?? {};
     const content = typeof block["content"] === "string" ? block["content"] : "";
     let result: InferenceResult;
+    let promptMetadata: DerivationMetadata | undefined;
+    let promptWarningLog: LogEntry | undefined;
     if (message.kind === "user_prompt") {
       const text = typeof block["text"] === "string" ? block["text"] : "";
-      const cleaned = cleanPrompt(text);
-      result =
-        estimateTokens(cleaned) > run.config.smoothing.maxInferenceTokens
-          ? { ok: true, text: cleaned }
-          : await run.inferenceCallbacks.smoothPrompt({ text: cleaned });
+      const derived = await deriveSmoothedPrompt(run, message.messageId, text);
+      if ("write" in derived) {
+        result = { ok: true, text: derived.write.content };
+        promptMetadata = derived.write.metadata;
+        promptWarningLog = derived.warningLog;
+      } else {
+        result = derived;
+      }
     } else {
       const tokens = estimateTokens(content);
       const outcome = toolOutcomeFromMessage(message);
@@ -212,8 +217,8 @@ async function recoverMessageDerivations(
             ...(result.provenance === undefined ? {} : { provenance: result.provenance }),
           }
         : result.provenance === undefined
-          ? undefined
-          : { provenance: result.provenance };
+          ? promptMetadata
+          : { ...(promptMetadata ?? {}), provenance: result.provenance };
     const recovered: ComposeDerivationRow = {
       state: "ready",
       content: result.text,
@@ -221,7 +226,7 @@ async function recoverMessageDerivations(
       ...(metadata === undefined ? {} : { metadata }),
     };
     derivations.set(key, recovered);
-    recoverDerivation(run.openDb(), {
+    const recovery = recoverDerivation(run.openDb(), {
       subjectKind: "message",
       subjectId: message.messageId,
       derivationType: plan.derivationType,
@@ -230,6 +235,9 @@ async function recoverMessageDerivations(
       sourceVersion: row.sourceVersion,
       derivedAt: run.clock().toISOString(),
     });
+    if (recovery.persisted && promptWarningLog !== undefined) {
+      writeLog({ db: run.openDb(), threadId: readThreadId(run), filePath: "" }, promptWarningLog);
+    }
   }
 }
 

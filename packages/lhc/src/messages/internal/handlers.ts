@@ -7,6 +7,7 @@
 // stale or deleted source discards here exactly as everywhere else. Outcomes
 // on tool-activity summaries come from outcome.ts — the record, never the
 // inference text (AC-2.4) — and land in derivation metadata apart from content.
+import type { DatabaseSync } from "node:sqlite";
 import type {
   HandlerDerivationWrite,
   HandlerOutcome,
@@ -15,6 +16,7 @@ import type {
   WorkHandler,
 } from "../../shared-tech/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
+import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
 import { findPairedToolCall, type MessageSource, readMessageSource } from "./derivations.js";
@@ -65,6 +67,73 @@ function landDerivation(write: HandlerDerivationWrite, result: InferenceResult):
   return { ok: true, derivations: [derivation] };
 }
 
+function readThreadId(db: DatabaseSync): string {
+  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+    | { thread_id: string }
+    | undefined;
+  return row?.thread_id ?? "";
+}
+
+export interface SmoothedPromptDerivation {
+  write: HandlerDerivationWrite;
+  warningLog?: LogEntry;
+}
+
+export async function deriveSmoothedPrompt(
+  run: HandlerRunContext,
+  messageId: string,
+  text: string,
+): Promise<SmoothedPromptDerivation | Extract<InferenceResult, { ok: false }>> {
+  const cleaned = cleanPrompt(text);
+  const cleanedTokens = estimateTokens(cleaned);
+  const guards = run.config.guards.smoothedPrompt;
+  if (cleanedTokens > guards.maxInferenceTokens) {
+    return {
+      write: {
+        subjectKind: "message",
+        subjectId: messageId,
+        derivationType: "smoothed_prompt",
+        content: cleaned,
+      },
+    };
+  }
+
+  const result = await run.inferenceCallbacks.smoothPrompt({ text: cleaned });
+  if (!result.ok) return result;
+
+  const resultTokens = estimateTokens(result.text);
+  if (resultTokens < guards.suspiciousOutputRatio * cleanedTokens) {
+    return {
+      write: {
+        subjectKind: "message",
+        subjectId: messageId,
+        derivationType: "smoothed_prompt",
+        content: cleaned,
+        metadata: { discardReason: "suspicious_output_ratio" },
+      },
+      warningLog: {
+        level: "warning",
+        message: "suspicious smoothed_prompt output discarded",
+        derivationType: "smoothed_prompt",
+        subjectId: messageId,
+        reason: "suspicious_output_ratio",
+        floorUsed: cleaned,
+      },
+    };
+  }
+
+  const write: HandlerDerivationWrite = {
+    subjectKind: "message",
+    subjectId: messageId,
+    derivationType: "smoothed_prompt",
+    content: result.text,
+  };
+  if (result.provenance !== undefined) {
+    write.metadata = { provenance: result.provenance };
+  }
+  return { write };
+}
+
 const smoothPromptHandler: WorkHandler = async (run, item) => {
   const loaded = loadSource(run, item, "user_prompt");
   if (!loaded.ok) return loaded.outcome;
@@ -72,29 +141,17 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
   if (typeof text !== "string") {
     return sourceDamaged(`prompt ${loaded.messageId} has no text block`);
   }
-  const cleaned = cleanPrompt(text);
-  if (estimateTokens(cleaned) > run.config.smoothing.maxInferenceTokens) {
-    return {
-      ok: true,
-      derivations: [
-        {
-          subjectKind: "message",
-          subjectId: loaded.messageId,
-          derivationType: "smoothed_prompt",
-          content: cleaned,
-        },
-      ],
+  const derived = await deriveSmoothedPrompt(run, loaded.messageId, text);
+  if (!("write" in derived)) return { ok: false, retryable: derived.retryable, reason: derived.reason };
+  const outcome: HandlerOutcome = { ok: true, derivations: [derived.write] };
+  if (derived.warningLog !== undefined) {
+    outcome.onApplied = (transaction) => {
+      transaction.onCommit(() => {
+        writeLog({ db: transaction.db, threadId: readThreadId(transaction.db), filePath: "" }, derived.warningLog!);
+      });
     };
   }
-  return landDerivation(
-    {
-      subjectKind: "message",
-      subjectId: loaded.messageId,
-      derivationType: "smoothed_prompt",
-      content: "",
-    },
-    await run.inferenceCallbacks.smoothPrompt({ text: cleaned }),
-  );
+  return outcome;
 };
 
 export function toolResultGuidance(toolName: string): string {

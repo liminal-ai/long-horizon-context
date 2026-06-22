@@ -10,7 +10,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createInferenceCallbacks } from "../src/shared-tech/inference-adapter.js";
-import type { ModelCallInput, ResolvedInferenceConfig } from "../src/shared-tech/inference-types.js";
+import {
+  type ModelCallInput,
+  type ResolvedInferenceConfig,
+  resolveGuards,
+} from "../src/shared-tech/inference-types.js";
 import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY, type PromptTemplate } from "../src/shared-tech/prompts/index.js";
 import { cannedResponses, FAKE_MODEL_PREFIX, recordingCall, validAssignments } from "./fixtures/index.js";
 
@@ -93,7 +97,7 @@ function resolvedConfig(
 ): ResolvedInferenceConfig {
   return {
     assignments: validAssignments(),
-    guards: {},
+    guards: resolveGuards(),
     timeoutMs: 60_000,
     maxInputChars: 200_000,
     ...overrides,
