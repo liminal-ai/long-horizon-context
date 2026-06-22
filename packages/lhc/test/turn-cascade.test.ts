@@ -11,7 +11,6 @@ import {
   type SdkConfig,
   threads,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -309,7 +308,7 @@ describe("Story 3: turn construction recovery cascade", () => {
     );
   });
 
-  it("uses and writes tool-result truncation floors, never raw full results", async () => {
+  it("recovers small tool-result summaries with passthrough content", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 1, { retryable: true, reason: "recovery unavailable" });
     const sdk = sdkFor(double);
@@ -328,17 +327,14 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    const floor = truncateForFallback(content);
-    // The rendering carries the truncated tool-result floor, never the full result.
-    expect(renderingContent(filePath)).toContain(floor);
-    expect(renderingContent(filePath)).not.toContain(content);
+    expect(renderingContent(filePath)).toContain(content);
     expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
       state: "ready",
-      content: floor,
+      content,
     });
   });
 
-  it("recovers over-large failed tool-result summaries with deterministic truncation and no model call", async () => {
+  it("recovers over-large failed tool-result summaries through inference classification", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -361,30 +357,37 @@ describe("Story 3: turn construction recovery cascade", () => {
          AND subject_id = 'm3'
          AND derivation_type = 'tool_result_summary'`,
     );
+    deleteWorkItem(filePath, "w-m3-tool_result_summary-v1");
 
     await drain(sdk, filePath);
 
-    const floor = truncateForFallback(content);
-    expect(captured.filter((entry) => entry.op === "summarizeToolResult")).toEqual([]);
+    const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toMatchObject({
+      toolName: "read_file",
+      content,
+      outcome: "succeeded",
+      promptMode: "large_log",
+    });
+    expect(calls[0]?.input).not.toHaveProperty("guidance");
     expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
       state: "ready",
-      content: floor,
       metadata: { outcome: "succeeded" },
     });
   });
 
-  it("recovers in-threshold tool-result summaries with paired tool guidance and tier target", async () => {
+  it("recovers tool-result summaries with paired classification and tier target", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
-    const content = "search-hit ".repeat(80);
+    const content = "search-hit ".repeat(1500);
     const tokens = estimateTokens(content);
 
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "summarize search output" } }),
       validEvent("tool_call", {
-        payload: { toolCallId: "call", toolName: "grep", arguments: { pattern: "TODO" } },
+        payload: { toolCallId: "call", toolName: "bash", arguments: { command: "rg TODO src" } },
       }),
       validEvent("tool_result", { payload: { toolCallId: "call", content, isError: true } }),
       validEvent("turn_end"),
@@ -396,12 +399,16 @@ describe("Story 3: turn construction recovery cascade", () => {
     const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.input).toMatchObject({
-      toolName: "grep",
+      toolName: "bash",
       content,
       outcome: "failed",
-      targetTokens: Math.ceil(tokens * 0.15),
-      guidance: expect.stringContaining("line numbers"),
+      targetTokens: Math.ceil(tokens * 0.04),
+      operationClass: "search_or_listing",
+      responseShape: "search_result",
+      promptMode: "search_summary",
+      facts: expect.objectContaining({ command: "rg TODO src" }),
     });
+    expect(calls[0]?.input).not.toHaveProperty("guidance");
     expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
       state: "ready",
       metadata: { outcome: "failed" },

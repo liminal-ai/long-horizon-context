@@ -197,8 +197,17 @@ export function findPairedToolResult(
   };
 }
 
-export function findPairedToolCall(db: DatabaseSync, toolCallId: string): { toolName: string } | undefined {
+export function findPairedToolCall(
+  db: DatabaseSync,
+  toolCallId: string,
+): { toolName: string; toolInput?: Record<string, unknown> } | undefined {
   const block = findPairedBlock(db, "tool_call", toolCallId);
   if (block === undefined) return undefined;
-  return { toolName: typeof block["toolName"] === "string" ? block["toolName"] : "" };
+  const args = block["arguments"];
+  return {
+    toolName: typeof block["toolName"] === "string" ? block["toolName"] : "",
+    ...(args !== null && typeof args === "object" && !Array.isArray(args)
+      ? { toolInput: args as Record<string, unknown> }
+      : {}),
+  };
 }

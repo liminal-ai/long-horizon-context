@@ -9,7 +9,6 @@ import {
   type MessageEventInput,
   threads,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -71,7 +70,7 @@ function liveCount(filePath: string): number {
 }
 
 describe("Story 2: tool-result rendering", () => {
-  it("large tool results satisfy tool_result_summary by deterministic truncation with no work item", async () => {
+  it("large tool results queue work and reach inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -87,15 +86,28 @@ describe("Story 2: tool-result rendering", () => {
       }),
     ]);
 
-    expect(batch.queuedWork).toEqual([]);
-    expect(captured).toEqual([]);
-    expect(liveCount(filePath)).toBe(0);
+    expect(batch.queuedWork.map((item) => item.workItemId)).toEqual(["w-m2-tool_result_summary-v1"]);
+    expect(liveCount(filePath)).toBe(1);
+    await drain(sdk, filePath);
+
+    const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toMatchObject({
+      toolName: "read_file",
+      content,
+      outcome: "succeeded",
+      operationClass: "unknown",
+      responseShape: "large_log",
+      promptMode: "large_log",
+      facts: expect.objectContaining({ outcome: "succeeded", noOutput: false }),
+    });
+    expect(calls[0]?.input).not.toHaveProperty("guidance");
     expect(formOf(filePath, "m1", "tool_call_summary")).toBeUndefined();
     expect(formOf(filePath, "m2", "tool_result_summary")).toMatchObject({
       state: "ready",
-      content: truncateForFallback(content),
       metadata: { outcome: "succeeded" },
     });
+    expect(formOf(filePath, "m2", "tool_result_summary")?.content).not.toContain("truncated");
 
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
@@ -103,7 +115,7 @@ describe("Story 2: tool-result rendering", () => {
     expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(content);
   });
 
-  it("in-threshold tool-result summaries run through queued inference with tier target and guidance", async () => {
+  it("small results pass through while larger results classify before queued inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -113,13 +125,13 @@ describe("Story 2: tool-result rendering", () => {
     const mid = "mid-result ".repeat(1500);
     const batch = await send(sdk, filePath, [
       validEvent("tool_call", {
-        payload: { toolCallId: "small", toolName: "read_file", arguments: { path: "a.txt" } },
+        payload: { toolCallId: "small", toolName: "read", arguments: { path: "a.txt" } },
       }),
       validEvent("tool_result", {
         payload: { toolCallId: "small", content: small, isError: false },
       }),
       validEvent("tool_call", {
-        payload: { toolCallId: "mid", toolName: "grep", arguments: { pattern: "TODO" } },
+        payload: { toolCallId: "mid", toolName: "bash", arguments: { command: "rg TODO src" } },
       }),
       validEvent("tool_result", {
         payload: { toolCallId: "mid", content: mid, isError: true },
@@ -134,22 +146,21 @@ describe("Story 2: tool-result rendering", () => {
     expect(report.ran.map((entry) => entry.disposition)).toEqual(["done", "done"]);
 
     const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     expect(calls[0]?.input).toMatchObject({
-      toolName: "read_file",
-      content: small,
-      outcome: "succeeded",
-      guidance: expect.stringContaining("paths"),
-    });
-    expect(calls[1]?.input).toMatchObject({
-      toolName: "grep",
+      toolName: "bash",
       content: mid,
       outcome: "failed",
-      guidance: expect.stringContaining("line numbers"),
+      operationClass: "search_or_listing",
+      responseShape: "search_result",
+      promptMode: "search_summary",
+      facts: expect.objectContaining({
+        command: "rg TODO src",
+        outcome: "failed",
+      }),
     });
-    expect((calls[1]?.input as { targetTokens?: number }).targetTokens).toBeGreaterThan(
-      (calls[0]?.input as { targetTokens?: number }).targetTokens ?? 0,
-    );
+    expect(calls[0]?.input).not.toHaveProperty("guidance");
+    expect(formOf(filePath, "m2", "tool_result_summary")?.content).toBe(small);
     expect(formOf(filePath, "m4", "tool_result_summary")?.metadata).toEqual({
       outcome: "failed",
     });
@@ -202,7 +213,7 @@ describe("Story 2: tool-result rendering", () => {
     expect(formOf(filePath, "m1", "tool_call_summary")).toBeUndefined();
   });
 
-  it("terminal in-threshold summary failure lands failed with reason while the source result remains intact", async () => {
+  it("terminal summary failure lands failed with reason while the source result remains intact", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 99, {
       retryable: true,
@@ -216,7 +227,7 @@ describe("Story 2: tool-result rendering", () => {
         payload: { toolCallId: "fail", toolName: "read_file", arguments: { path: "x" } },
       }),
       validEvent("tool_result", {
-        payload: { toolCallId: "fail", content: "short failure target", isError: true },
+        payload: { toolCallId: "fail", content: "failure target ".repeat(1500), isError: true },
       }),
     ]);
     const report = await drain(sdk, filePath);
@@ -235,6 +246,8 @@ describe("Story 2: tool-result rendering", () => {
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe("short failure target");
+    expect(listed.value.find((m) => m.messageId === "m2")?.blocks[0]?.content["content"]).toBe(
+      "failure target ".repeat(1500),
+    );
   });
 });

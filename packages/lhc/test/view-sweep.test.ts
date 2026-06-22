@@ -566,7 +566,11 @@ describe("TC-3.4 (AC-3.6, AC-2.7): the compact-embedded sweep, the skip, and the
     // full receipt embeds (Story 2's "absent" placeholder is gone from the
     // vocabulary), and the embedded requeue's poke-on-commit lands on the
     // background scheduler — the production repair path needs no drain call.
-    const bg = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "background" });
+    const bg = initLhc({
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "background",
+      toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
+    });
     const receipt = await bg.threadView.compact({ filePath: fixture.filePath }, { profile: "coding" });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;

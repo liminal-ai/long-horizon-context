@@ -365,7 +365,7 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
       validEvent("user_prompt", { payload: { text: "prompt" } }),
       validEvent("tool_call", { payload: { toolCallId: "k", toolName: "run_cmd", arguments: {} } }),
       validEvent("tool_result", {
-        payload: { toolCallId: "k", content: "ok ".repeat(100), isError: false },
+        payload: { toolCallId: "k", content: "ok ".repeat(1500), isError: false },
       }),
       validEvent("turn_end"),
     ]);

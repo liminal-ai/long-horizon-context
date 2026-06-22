@@ -8,6 +8,7 @@ import { chunkDetailedV1 } from "./chunk-detailed-v1.js";
 import { lowerBandV1 } from "./lower-band-v1.js";
 import { smoothingV1 } from "./smoothing-v1.js";
 import { toolResultV1 } from "./tool-result-v1.js";
+import { toolResultV2 } from "./tool-result-v2.js";
 import { turnComposeV1 } from "./turn-compose-v1.js";
 
 export interface PromptTemplate<I = unknown> {
@@ -21,6 +22,7 @@ export interface PromptTemplate<I = unknown> {
 export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [smoothingV1.name]: smoothingV1,
   [toolResultV1.name]: toolResultV1,
+  [toolResultV2.name]: toolResultV2,
   [turnComposeV1.name]: turnComposeV1,
   [lowerBandV1.name]: lowerBandV1,
   [chunkDetailedV1.name]: chunkDetailedV1,
@@ -36,7 +38,7 @@ export const PROMPT_NAMES: readonly string[] = Object.keys(PROMPT_REGISTRY);
 // config reaches for, and what test fixtures assign.
 export const DEFAULT_PROMPT_NAMES: Record<string, string> = {
   smoothed_prompt: smoothingV1.name,
-  tool_result_summary: toolResultV1.name,
+  tool_result_summary: toolResultV2.name,
   smooth_turn_compression: lowerBandV1.name,
   chunk_summary_brief: chunkBriefV1.name,
 };

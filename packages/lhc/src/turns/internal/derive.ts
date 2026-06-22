@@ -9,12 +9,7 @@
 // summaries or an open chunk — nothing between).
 
 import type { DatabaseSync } from "node:sqlite";
-import {
-  deriveSmoothedPrompt,
-  findPairedToolCall,
-  toolResultGuidance,
-  toolResultTargetTokens,
-} from "../../messages/recovery.js";
+import { deriveSmoothedPrompt, deriveToolResultSummary, findPairedToolCall } from "../../messages/recovery.js";
 import type {
   DerivationMetadata,
   ErrorResult,
@@ -33,7 +28,6 @@ import {
   type DurableWorkDispatchResult,
   resolveInstancePoke,
   runWorkHandler,
-  truncateForFallback,
 } from "../../shared-tech/index.js";
 import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
@@ -138,15 +132,27 @@ function toolOutcomeFromMessage(message: ComposeMessage): ToolOutcome {
   return block["isError"] === true ? "failed" : "succeeded";
 }
 
-function pairedToolName(run: HandlerRunContext, messages: readonly ComposeMessage[], toolCallId: unknown): string {
-  if (typeof toolCallId !== "string") return "unknown_tool";
+function pairedToolCall(
+  run: HandlerRunContext,
+  messages: readonly ComposeMessage[],
+  toolCallId: unknown,
+): { toolName: string; toolInput?: Record<string, unknown> } {
+  if (typeof toolCallId !== "string") return { toolName: "unknown_tool" };
   const sameTurnCall = messages.find((message) => {
     if (message.kind !== "tool_call") return false;
     return message.blocks[0]?.content["toolCallId"] === toolCallId;
   });
   const sameTurnToolName = sameTurnCall?.blocks[0]?.content["toolName"];
-  if (typeof sameTurnToolName === "string") return sameTurnToolName;
-  return findPairedToolCall(run.openDb(), toolCallId)?.toolName ?? "unknown_tool";
+  const sameTurnToolInput = sameTurnCall?.blocks[0]?.content["arguments"];
+  if (typeof sameTurnToolName === "string") {
+    return {
+      toolName: sameTurnToolName,
+      ...(sameTurnToolInput !== null && typeof sameTurnToolInput === "object" && !Array.isArray(sameTurnToolInput)
+        ? { toolInput: sameTurnToolInput as Record<string, unknown> }
+        : {}),
+    };
+  }
+  return findPairedToolCall(run.openDb(), toolCallId) ?? { toolName: "unknown_tool" };
 }
 
 async function recoverMessageDerivations(
@@ -189,33 +195,26 @@ async function recoverMessageDerivations(
         result = derived;
       }
     } else {
-      const tokens = estimateTokens(content);
       const outcome = toolOutcomeFromMessage(message);
-      if (tokens > run.config.toolResult.largeTierTokens) {
-        result = { ok: true, text: truncateForFallback(content) };
+      const pairedCall = pairedToolCall(run, messages, block["toolCallId"]);
+      const derived = await deriveToolResultSummary(run, message.messageId, {
+        toolName: pairedCall.toolName,
+        ...(pairedCall.toolInput === undefined ? {} : { toolInput: pairedCall.toolInput }),
+        content,
+        outcome,
+      });
+      if ("write" in derived) {
+        result = { ok: true, text: derived.write.content };
+        promptMetadata = derived.write.metadata;
       } else {
-        const targetTokens = toolResultTargetTokens(tokens, run.config);
-        const toolName = pairedToolName(run, messages, block["toolCallId"]);
-        result =
-          tokens <= targetTokens
-            ? { ok: true, text: content }
-            : await run.inferenceCallbacks.summarizeToolResult({
-                toolName,
-                content,
-                outcome,
-                targetTokens,
-                guidance: toolResultGuidance(toolName),
-              });
+        result = derived;
       }
     }
     if (!result.ok) continue;
 
     const metadata: DerivationMetadata | undefined =
       message.kind === "tool_result"
-        ? {
-            outcome: toolOutcomeFromMessage(message),
-            ...(result.provenance === undefined ? {} : { provenance: result.provenance }),
-          }
+        ? promptMetadata
         : result.provenance === undefined
           ? promptMetadata
           : { ...(promptMetadata ?? {}), provenance: result.provenance };

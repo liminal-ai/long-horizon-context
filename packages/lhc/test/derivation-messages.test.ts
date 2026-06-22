@@ -18,7 +18,6 @@ import {
   type MessageEventInput,
   threads,
 } from "../src/index.js";
-import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -146,13 +145,16 @@ describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stay
   it("a 300KB result drains to a bounded summary and reads back whole through the Epic 01 surface", async () => {
     const big = "result-bytes ".repeat(24000); // ~300KB
     const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
     const sdk = manualSdk(double);
     const { filePath } = await threadWithToolRun(store, { resultContent: big });
 
     await drain(sdk, filePath);
+    expect(captured.filter((entry) => entry.op === "summarizeToolResult")).toHaveLength(1);
     const summary = formOf(filePath, "m3", "tool_result_summary");
     expect(summary?.state).toBe("ready");
-    expect(summary?.content).toBe(truncateForFallback(big));
+    expect(summary?.content).toMatch(/^toolresult\(/);
+    expect(summary?.content).not.toContain("truncated");
     expect(summary?.metadata).toEqual({ outcome: "succeeded" });
 
     const listed = await sdk.messages.list({ filePath });
@@ -177,8 +179,9 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
     };
     const sdk = manualSdk(callbacks);
 
-    const ok = await threadWithToolRun(store);
-    const errored = await threadWithToolRun(store, { isError: true });
+    const content = "model text status fixture ".repeat(1500);
+    const ok = await threadWithToolRun(store, { resultContent: content });
+    const errored = await threadWithToolRun(store, { resultContent: content, isError: true });
     for (const { filePath } of [ok, errored]) await drain(sdk, filePath);
 
     const summaries = [ok, errored].map(({ filePath }) => formOf(filePath, "m3", "tool_result_summary"));
@@ -189,22 +192,29 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
 });
 
 describe("TC-2.5 / AC-2.5: message-level input discipline — the message and its call-id pair only", () => {
-  it("the captured tool-result summary input carries tool guidance and outcome", async () => {
+  it("the captured tool-result summary input carries classification and outcome", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
-    const { filePath } = await threadWithToolRun(store);
+    const content = "src/file.ts:1:TODO\n".repeat(1200);
+    const { filePath } = await threadWithToolRun(store, { resultContent: content });
 
     await drain(sdk, filePath);
     const inputs = captured.filter((entry) => entry.op === "summarizeToolResult");
     expect(inputs).toHaveLength(1);
     expect(inputs[0]?.input).toEqual({
       toolName: "read_file",
-      content: "contents of notes.txt",
+      content,
       outcome: "succeeded",
       targetTokens: expect.any(Number),
-      guidance: expect.stringContaining("paths"),
+      operationClass: "unknown",
+      responseShape: "search_result",
+      promptMode: "search_summary",
+      facts: expect.objectContaining({
+        outcome: "succeeded",
+      }),
     });
+    expect(inputs[0]?.input).not.toHaveProperty("guidance");
   });
 });
 

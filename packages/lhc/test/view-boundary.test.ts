@@ -195,7 +195,12 @@ describe("TC-4.1 (AC-4.3, re-cut for turn grouping): under-max closes never move
 describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses deterministic truncation; non-tool content untouched", () => {
   it("renders deterministic tool-result floors even when a ready summary exists", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = initLhc({ inferenceCallbacks: double, mode: "manual", view: { visibility: BUDGETS } });
+    const sdk = initLhc({
+      inferenceCallbacks: double,
+      mode: "manual",
+      view: { visibility: BUDGETS },
+      toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
+    });
     const filePath = await newThread(sdk);
 
     // r1 (60 tokens, 239 chars — over the 200-char abbreviation limit) will

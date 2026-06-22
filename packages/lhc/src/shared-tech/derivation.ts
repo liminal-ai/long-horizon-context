@@ -129,7 +129,10 @@ export interface InferenceCallbacks {
     content: string;
     outcome?: ToolOutcome;
     targetTokens?: number;
-    guidance?: string;
+    operationClass?: ToolResultOperationClass;
+    responseShape?: ToolResultResponseShape;
+    promptMode?: ToolResultPromptMode;
+    facts?: ToolResultFacts;
   }): Promise<InferenceResult>;
   composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult>;
   compressSmoothTurn(i: { rendering: string }): Promise<InferenceResult>;
@@ -148,6 +151,52 @@ export interface InferenceCallbacks {
 
 /** @deprecated Use InferenceCallbacks. */
 export type DerivationProvider = InferenceCallbacks;
+
+export type ToolResultOperationClass =
+  | "read"
+  | "mutation_write"
+  | "mutation_edit"
+  | "command"
+  | "search_or_listing"
+  | "verification"
+  | "vcs_inspection"
+  | "filesystem_mutation"
+  | "multi_tool"
+  | "unknown";
+
+export type ToolResultResponseShape =
+  | "structured_receipt"
+  | "simple_failure"
+  | "no_output"
+  | "search_result"
+  | "test_result"
+  | "file_content"
+  | "large_file_content"
+  | "diff_output"
+  | "large_log"
+  | "multi_tool_result"
+  | "unknown_content";
+
+export type ToolResultPromptMode =
+  | "receipt"
+  | "failure"
+  | "no_output"
+  | "search_summary"
+  | "test_summary"
+  | "content_summary"
+  | "diff_summary"
+  | "large_log"
+  | "multi_tool_summary"
+  | "generic_summary";
+
+export type ToolResultFacts = Record<string, unknown>;
+
+export interface ToolResultClassification {
+  operationClass: ToolResultOperationClass;
+  responseShape: ToolResultResponseShape;
+  promptMode: ToolResultPromptMode;
+  facts: ToolResultFacts;
+}
 
 export const INFERENCE_CALLBACK_OPERATIONS = [
   "smoothPrompt",
@@ -182,10 +231,9 @@ export interface SdkConfig {
   guards?: DerivationGuards;
   toolResult?: {
     smallTierTokens: number;
-    largeTierTokens: number;
     smallTargetRatio: number;
     midTargetRatio: number;
-  }; // 1000 / 5000 / 0.15 / 0.04
+  }; // 1000 / 0.15 / 0.04
   lease?: { durationMs: number }; // 120000
   chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
   view?: SdkViewConfig; // Epic 03: profiles, visibility budgets, compact threshold
@@ -202,7 +250,6 @@ export interface ResolvedSdkConfig {
   guards: ResolvedDerivationGuards;
   toolResult: {
     smallTierTokens: number;
-    largeTierTokens: number;
     smallTargetRatio: number;
     midTargetRatio: number;
   };

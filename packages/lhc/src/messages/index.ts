@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
-import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
+import type { Derivation, DerivationReportEntry } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
   createDbWriteTransaction,
@@ -10,9 +10,7 @@ import {
   type OpResult,
   resolveInstanceConfig,
   storageFailure,
-  truncateForFallback,
 } from "../shared-tech/index.js";
-import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import { enqueue, hasLiveItem, type WorkItemRecord, type WorkKind } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
@@ -93,7 +91,6 @@ export function create(
   transaction: DbWriteTransaction,
   recordedEvent: RecordedEvent,
   turnId: string,
-  toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
 ): MessageCreateResult {
   const projected = projectEvent(recordedEvent);
   if (projected === null) return { message: null, queuedWork: [] };
@@ -113,7 +110,7 @@ export function create(
     recordedEvent.eventKind === "tool_call" || recordedEvent.eventKind === "tool_result"
       ? { messageId, kind, toolCallId: recordedEvent.payload.toolCallId }
       : { messageId, kind };
-  return { message, queuedWork: queueMessageWork(transaction, message, toolResultConfig) };
+  return { message, queuedWork: queueMessageWork(transaction, message) };
 }
 
 // The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
@@ -122,56 +119,11 @@ export function create(
 // AC-2.8/TC-2.9; Epic 02 AC-2.2/AC-2.7). Cross-domain surface, called by
 // intake-stream inside the batch transaction for every recorded message, so
 // the item commits (or rolls back) with the batch.
-const DEFAULT_TOOL_RESULT_CONFIG: ResolvedSdkConfig["toolResult"] = {
-  smallTierTokens: 1000,
-  largeTierTokens: 5000,
-  smallTargetRatio: 0.15,
-  midTargetRatio: 0.04,
-};
-
-function writeLargeToolResultSummaryReady(
-  transaction: DbWriteTransaction,
-  messageId: string,
-  config: ResolvedSdkConfig["toolResult"],
-): boolean {
-  const row = transaction.db
-    .prepare(
-      `SELECT content FROM message_block
-       WHERE message_id = ? AND block_type = 'tool_result'
-       ORDER BY block_index LIMIT 1`,
-    )
-    .get(messageId) as { content: string } | undefined;
-  if (row === undefined) return false;
-  const block = JSON.parse(row.content) as Record<string, unknown>;
-  const content = block["content"];
-  if (typeof content !== "string") return false;
-  if (estimateTokens(content) <= config.largeTierTokens) return false;
-  const metadata = JSON.stringify({ outcome: block["isError"] === true ? "failed" : "succeeded" });
-  transaction.db
-    .prepare(
-      `INSERT INTO derivation
-         (subject_kind, subject_id, derivation_type, state, content, metadata, source_version, derived_at)
-       VALUES ('message', ?, 'tool_result_summary', 'ready', ?, ?, 1, ?)`,
-    )
-    .run(messageId, truncateForFallback(content), metadata, transaction.clock().toISOString());
-  return true;
-}
-
-function queueMessageWork(
-  transaction: DbWriteTransaction,
-  message: MessageCreated,
-  toolResultConfig: ResolvedSdkConfig["toolResult"] = DEFAULT_TOOL_RESULT_CONFIG,
-): WorkItemRecord[] {
+function queueMessageWork(transaction: DbWriteTransaction, message: MessageCreated): WorkItemRecord[] {
   if (message === null) return [];
   const items: WorkItemRecord[] = [];
   const kind = MESSAGE_WORK_KINDS[message.kind];
   if (kind !== undefined) {
-    if (
-      message.kind === "tool_result" &&
-      writeLargeToolResultSummaryReady(transaction, message.messageId, toolResultConfig)
-    ) {
-      return items;
-    }
     const derivation = MESSAGE_WORK_DERIVATIONS[kind];
     if (derivation === undefined) {
       // Every queuing kind names its derivation above; a miss is a wiring bug.

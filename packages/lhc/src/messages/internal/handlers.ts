@@ -13,12 +13,13 @@ import type {
   HandlerOutcome,
   HandlerRunContext,
   InferenceResult,
+  ToolOutcome,
   WorkHandler,
 } from "../../shared-tech/index.js";
-import { truncateForFallback } from "../../shared-tech/index.js";
 import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
+import { classifyToolResult } from "./classify-tool-result.js";
 import { findPairedToolCall, type MessageSource, readMessageSource } from "./derivations.js";
 import { deriveToolOutcome } from "./outcome.js";
 import { cleanPrompt } from "./smoothing.js";
@@ -52,19 +53,6 @@ function loadSource(
     };
   }
   return { ok: true, messageId, source };
-}
-
-function landDerivation(write: HandlerDerivationWrite, result: InferenceResult): HandlerOutcome {
-  if (!result.ok) return { ok: false, retryable: result.retryable, reason: result.reason };
-  const derivation: HandlerDerivationWrite = { ...write, content: result.text };
-  // Provenance is copied from the inference result — stamped there from
-  // config-known strings, never authored here and never parsed from text
-  // (Epic 05 DD-4). Deterministic domain assembly sets none, so its derivations
-  // carry none.
-  if (result.provenance !== undefined) {
-    derivation.metadata = { ...(write.metadata ?? {}), provenance: result.provenance };
-  }
-  return { ok: true, derivations: [derivation] };
 }
 
 function readThreadId(db: DatabaseSync): string {
@@ -154,24 +142,69 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
   return outcome;
 };
 
-export function toolResultGuidance(toolName: string): string {
-  const normalized = toolName.toLowerCase();
-  if (normalized.includes("read") || normalized.includes("fetch")) {
-    return "Preserve paths, filenames, cited identifiers, error messages, and the parts of the retrieved content that affect the next action.";
-  }
-  if (normalized.includes("search") || normalized.includes("rg") || normalized.includes("grep")) {
-    return "Preserve query terms, match counts, ranked hits, file paths, and line numbers.";
-  }
-  if (normalized.includes("exec") || normalized.includes("shell") || normalized.includes("command")) {
-    return "Preserve command outcome, exit status, stderr, failing step names, and the shortest useful stdout excerpt.";
-  }
-  return "Preserve the status, concrete identifiers, counts, paths, and any error text or result items needed to continue.";
-}
-
 export function toolResultTargetTokens(tokens: number, config: HandlerRunContext["config"]): number {
   const tier = config.toolResult;
   const ratio = tokens <= tier.smallTierTokens ? tier.smallTargetRatio : tier.midTargetRatio;
   return Math.max(1, Math.ceil(tokens * ratio));
+}
+
+export interface ToolResultSummaryDerivation {
+  write: HandlerDerivationWrite;
+}
+
+export async function deriveToolResultSummary(
+  run: HandlerRunContext,
+  messageId: string,
+  input: {
+    toolName: string;
+    toolInput?: Record<string, unknown>;
+    content: string;
+    outcome: ToolOutcome;
+  },
+): Promise<ToolResultSummaryDerivation | Extract<InferenceResult, { ok: false }>> {
+  const tokens = estimateTokens(input.content);
+  if (tokens <= run.config.toolResult.smallTierTokens) {
+    return {
+      write: {
+        subjectKind: "message",
+        subjectId: messageId,
+        derivationType: "tool_result_summary",
+        content: input.content,
+        metadata: { outcome: input.outcome },
+      },
+    };
+  }
+
+  const targetTokens = toolResultTargetTokens(tokens, run.config);
+  const classification = classifyToolResult({
+    toolName: input.toolName,
+    ...(input.toolInput === undefined ? {} : { toolInput: input.toolInput }),
+    rawOutput: input.content,
+    outcome: input.outcome,
+  });
+  const result = await run.inferenceCallbacks.summarizeToolResult({
+    toolName: input.toolName,
+    content: input.content,
+    outcome: input.outcome,
+    targetTokens,
+    operationClass: classification.operationClass,
+    responseShape: classification.responseShape,
+    promptMode: classification.promptMode,
+    facts: classification.facts,
+  });
+  if (!result.ok) return result;
+
+  const write: HandlerDerivationWrite = {
+    subjectKind: "message",
+    subjectId: messageId,
+    derivationType: "tool_result_summary",
+    content: result.text,
+    metadata: { outcome: input.outcome },
+  };
+  if (result.provenance !== undefined) {
+    write.metadata = { ...write.metadata, provenance: result.provenance };
+  }
+  return { write };
 }
 
 const toolResultSummaryHandler: WorkHandler = async (run, item) => {
@@ -187,53 +220,15 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   // The summary abbreviates; the full result content stays untouched in the
   // record (AC-2.3) — nothing here writes back to message_block. The result
   // is tool activity, so its outcome is stamped from its own isError flag.
-  const tokens = estimateTokens(content);
   const outcome = deriveToolOutcome({ isError: block["isError"] === true });
-  if (tokens > run.config.toolResult.largeTierTokens) {
-    return {
-      ok: true,
-      derivations: [
-        {
-          subjectKind: "message",
-          subjectId: loaded.messageId,
-          derivationType: "tool_result_summary",
-          content: truncateForFallback(content),
-          metadata: { outcome },
-        },
-      ],
-    };
-  }
-  const targetTokens = toolResultTargetTokens(tokens, run.config);
-  if (tokens <= targetTokens) {
-    return {
-      ok: true,
-      derivations: [
-        {
-          subjectKind: "message",
-          subjectId: loaded.messageId,
-          derivationType: "tool_result_summary",
-          content,
-          metadata: { outcome },
-        },
-      ],
-    };
-  }
-  return landDerivation(
-    {
-      subjectKind: "message",
-      subjectId: loaded.messageId,
-      derivationType: "tool_result_summary",
-      content: "",
-      metadata: { outcome },
-    },
-    await run.inferenceCallbacks.summarizeToolResult({
-      toolName: pairedCall?.toolName ?? "unknown_tool",
-      content,
-      outcome,
-      targetTokens,
-      guidance: toolResultGuidance(pairedCall?.toolName ?? "unknown_tool"),
-    }),
-  );
+  const derived = await deriveToolResultSummary(run, loaded.messageId, {
+    toolName: pairedCall?.toolName ?? "unknown_tool",
+    ...(pairedCall?.toolInput === undefined ? {} : { toolInput: pairedCall.toolInput }),
+    content,
+    outcome,
+  });
+  if (!("write" in derived)) return { ok: false, retryable: derived.retryable, reason: derived.reason };
+  return { ok: true, derivations: [derived.write] };
 };
 
 // The domain's handler table, merged into the SDK dispatch map at

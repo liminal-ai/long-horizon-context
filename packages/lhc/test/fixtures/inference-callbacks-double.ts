@@ -15,6 +15,10 @@ import {
   type InferenceResult,
   type RenderingPart,
   type ToolOutcome,
+  type ToolResultFacts,
+  type ToolResultOperationClass,
+  type ToolResultPromptMode,
+  type ToolResultResponseShape,
   type ToolRunReceipt,
 } from "../../src/index.js";
 
@@ -128,7 +132,10 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     content: string;
     outcome?: ToolOutcome;
     targetTokens?: number;
-    guidance?: string;
+    operationClass?: ToolResultOperationClass;
+    responseShape?: ToolResultResponseShape;
+    promptMode?: ToolResultPromptMode;
+    facts?: ToolResultFacts;
   }): Promise<InferenceResult> {
     return this.run("summarizeToolResult", i, i.content);
   }

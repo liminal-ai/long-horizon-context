@@ -20,7 +20,6 @@ export interface InstanceSeam {
   // consuming site (thread-view), never here — shared-tech/ may not import
   // the domains, and the defaults' one resolution path lives there.
   view?: ResolvedViewConfig;
-  toolResult?: ResolvedSdkConfig["toolResult"];
   config?: ResolvedSdkConfig;
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
@@ -68,10 +67,6 @@ export function resolveInstancePoke(): (threadId: string) => void {
 // thread-view surface defaults those itself — see InstanceSeam.view).
 export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
   return seamStore.getStore()?.view;
-}
-
-export function resolveInstanceToolResultConfig(): ResolvedSdkConfig["toolResult"] | undefined {
-  return seamStore.getStore()?.toolResult;
 }
 
 export function resolveInstanceConfig(): ResolvedSdkConfig | undefined {

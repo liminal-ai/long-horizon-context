@@ -130,9 +130,10 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
         content: boundContent(i.content, config.maxInputChars),
         outcome: i.outcome ?? "unknown",
         targetTokens: i.targetTokens ?? 150,
-        guidance:
-          i.guidance ??
-          "Preserve the status, concrete identifiers, counts, paths, and any error text or result items needed to continue.",
+        operationClass: i.operationClass ?? "unknown",
+        responseShape: i.responseShape ?? "unknown_content",
+        promptMode: i.promptMode ?? "generic_summary",
+        facts: i.facts ?? {},
       }),
     composeTurnRendering: (i) => callKind("turn_rendering", i),
     compressSmoothTurn: (i) => callKind("smooth_turn_compression", i),

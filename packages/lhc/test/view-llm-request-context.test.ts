@@ -259,7 +259,11 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
 
 describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-tool content full everywhere", () => {
   it("renders deterministic tool-result floors behind the boundary and full content ahead of it", async () => {
-    const sdk = manualSdk();
+    const sdk = initLhc({
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "manual",
+      toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
+    });
     const filePath = await newThread(sdk);
     for (const turn of [1, 2]) {
       await intake(sdk, filePath, [

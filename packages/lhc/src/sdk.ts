@@ -122,6 +122,11 @@ export type {
   SubjectKind,
   SweepReceipt,
   ToolOutcome,
+  ToolResultClassification,
+  ToolResultFacts,
+  ToolResultOperationClass,
+  ToolResultPromptMode,
+  ToolResultResponseShape,
   ToolRunReceipt,
   ViewCompactParams,
   ViewContentsReport,
@@ -354,7 +359,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   tool_result_summary: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    prompt: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v1",
+    prompt: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v2",
   },
   smooth_turn_compression: {
     provider: DEFAULT_INFERENCE_LANE.provider,
@@ -502,7 +507,6 @@ export function initLhc(config: SdkConfig): Lhc {
     guards,
     toolResult: config.toolResult ?? {
       smallTierTokens: 1000,
-      largeTierTokens: 5000,
       smallTargetRatio: 0.15,
       midTargetRatio: 0.04,
     },
@@ -523,10 +527,6 @@ export function initLhc(config: SdkConfig): Lhc {
   requirePositive(resolved.guards.toolResultSummary.timeoutMs, "guards.toolResultSummary.timeoutMs");
   requirePositive(resolved.guards.smoothTurnCompression.tinyTurnTokens, "guards.smoothTurnCompression.tinyTurnTokens");
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
-  requirePositive(resolved.toolResult.largeTierTokens, "toolResult.largeTierTokens");
-  if (resolved.toolResult.largeTierTokens < resolved.toolResult.smallTierTokens) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: toolResult.largeTierTokens must be >= smallTierTokens`);
-  }
   requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");
   requirePositive(resolved.toolResult.midTargetRatio, "toolResult.midTargetRatio");
   requirePositive(resolved.lease.durationMs, "lease.durationMs");
@@ -572,10 +572,9 @@ export function initLhc(config: SdkConfig): Lhc {
           poke: (threadId) => scheduler.poke(threadId),
           touch: (filePath, db) => scheduler.touch(filePath, db),
           view: resolved.view,
-          toolResult: resolved.toolResult,
           config: resolved,
         }
-      : { poke: () => {}, touch: () => {}, view: resolved.view, toolResult: resolved.toolResult, config: resolved };
+      : { poke: () => {}, touch: () => {}, view: resolved.view, config: resolved };
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the

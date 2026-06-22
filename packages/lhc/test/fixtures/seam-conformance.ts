@@ -65,7 +65,7 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
       },
     }),
     validEvent("tool_result", {
-      payload: { toolCallId: "call-seam-1", content: "contents of fixture.txt", isError: false },
+      payload: { toolCallId: "call-seam-1", content: "contents of fixture.txt ".repeat(1500), isError: false },
     }),
     validEvent("assistant_text", { payload: { text: "the fixture file holds fixture text" } }),
     validEvent("turn_end"),

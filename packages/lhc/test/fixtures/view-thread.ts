@@ -152,6 +152,7 @@ export async function derivedThreadFixture(
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
+    toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
   });
 
   const filePath = store.threadPath();

@@ -9,7 +9,6 @@ import {
   createDbReadTransaction,
   createDbWriteTransaction,
   type OpResult,
-  resolveInstanceToolResultConfig,
   storageFailure,
 } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
@@ -155,12 +154,7 @@ export async function runMessageEvents(
             }
             turnTransitions.push(...turnOutcome.transitions);
             queuedItems.push(...turnOutcome.queuedWork);
-            const created = createMessage(
-              transaction,
-              recordedEvent,
-              turnOutcome.turnId,
-              resolveInstanceToolResultConfig(),
-            );
+            const created = createMessage(transaction, recordedEvent, turnOutcome.turnId);
             queuedItems.push(...created.queuedWork);
             const entry: BatchResult["events"][number] = {
               idempotencyKey: event.idempotencyKey,

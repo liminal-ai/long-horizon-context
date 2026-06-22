@@ -3,7 +3,17 @@
 // functions of the input. The test double reuses these helpers so in-process
 // and spawned runs produce byte-identical artifacts. It is selectable only by
 // explicit construction — never a production default.
-import type { InferenceCallbacks, InferenceResult, RenderingPart, ToolOutcome, ToolRunReceipt } from "./derivation.js";
+import type {
+  InferenceCallbacks,
+  InferenceResult,
+  RenderingPart,
+  ToolOutcome,
+  ToolResultFacts,
+  ToolResultOperationClass,
+  ToolResultPromptMode,
+  ToolResultResponseShape,
+  ToolRunReceipt,
+} from "./derivation.js";
 
 export type DeterministicOpName =
   | "smoothPrompt"
@@ -68,7 +78,10 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       content: string;
       outcome?: ToolOutcome;
       targetTokens?: number;
-      guidance?: string;
+      operationClass?: ToolResultOperationClass;
+      responseShape?: ToolResultResponseShape;
+      promptMode?: ToolResultPromptMode;
+      facts?: ToolResultFacts;
     }) => ok("summarizeToolResult", i, i.content),
     composeTurnRendering: (i: { parts: RenderingPart[] }) =>
       ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),

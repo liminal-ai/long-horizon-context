@@ -64,6 +64,7 @@ export function createLifecycleSdk(inference?: InferenceConfig): Lhc {
     mode: "background",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
+    toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
     view: {
       profiles: [{ ...LIFECYCLE_PROFILE, percentages: { ...LIFECYCLE_PROFILE.percentages } }],
       // Low threshold so the status checkpoint genuinely recommends the

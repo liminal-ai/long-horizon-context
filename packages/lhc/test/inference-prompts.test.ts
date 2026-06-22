@@ -28,15 +28,25 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     input: { text: "plz smooth this prmpt about src/app.ts line 42 thx" },
     embedded: ["src/app.ts line 42"],
   },
-  "tool-result-v1": {
+  "tool-result-v2": {
     input: {
       toolName: "read_file",
       content: "contents of notes/plan.md: 3 open items",
       outcome: "succeeded",
       targetTokens: 120,
-      guidance: "Preserve paths and counts.",
+      operationClass: "read",
+      responseShape: "file_content",
+      promptMode: "content_summary",
+      facts: {
+        toolName: "read_file",
+        outcome: "succeeded",
+        targetPath: "notes/plan.md",
+        operationClass: "read",
+        responseShape: "file_content",
+        outputChars: 39,
+      },
     },
-    embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120"],
+    embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary"],
   },
   "turn-compose-v1": {
     input: {
@@ -110,6 +120,17 @@ function userContent(input: ModelCallInput): string {
   return user.content;
 }
 
+function rawToolResponseExcerpt(input: ModelCallInput): string {
+  const user = userContent(input);
+  const marker = "Raw tool response excerpt:\n```text\n";
+  const start = user.indexOf(marker);
+  if (start < 0) throw new Error("no raw tool response marker in rendered call");
+  const afterMarker = user.slice(start + marker.length);
+  const end = afterMarker.indexOf("\n```");
+  if (end < 0) throw new Error("no closing raw tool response fence in rendered call");
+  return afterMarker.slice(0, end);
+}
+
 describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
   for (const name of Object.keys(PROMPT_FIXTURES)) {
     it(`${name} renders its fixture input to the committed golden`, () => {
@@ -164,6 +185,35 @@ describe("TC-2.2: registry completeness (AC-2.3)", () => {
   });
 });
 
+describe("TC-2.6: tool-result prompt excludes diagnostic routing fields", () => {
+  it("does not render operationClass, responseShape, outputChars, or outputWords", () => {
+    const rendered = renderByName("tool-result-v2", {
+      toolName: "bash",
+      content: "zsh: nope: command not found\nCommand exited with code 127",
+      outcome: "failed",
+      targetTokens: 80,
+      operationClass: "command",
+      responseShape: "simple_failure",
+      promptMode: "failure",
+      facts: {
+        operationClass: "command",
+        responseShape: "simple_failure",
+        outputChars: 56,
+        outputWords: 8,
+        exitCode: 127,
+        failureType: "command_not_found",
+      },
+    });
+    const joined = rendered.map((message) => message.content).join("\n");
+    expect(joined).not.toContain("operationClass");
+    expect(joined).not.toContain("responseShape");
+    expect(joined).not.toContain("outputChars");
+    expect(joined).not.toContain("outputWords");
+    expect(joined).toContain('"exitCode": 127');
+    expect(joined).toContain('"failureType": "command_not_found"');
+  });
+});
+
 describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", () => {
   const RECEIPT_ACCOUNT = "read_file fetched notes/plan.md and rewrote temp/out.txt";
 
@@ -201,7 +251,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     expect(input).toBeDefined();
     if (input === undefined) return;
     const user = userContent(input);
-    const bounded = user.slice(user.indexOf("Output:\n") + "Output:\n".length);
+    const bounded = rawToolResponseExcerpt(input);
     expect(bounded.length).toBeLessThanOrEqual(MAX_INPUT_CHARS);
     expect(bounded.startsWith("HHHH")).toBe(true);
     expect(bounded.endsWith("TTTT")).toBe(true);
@@ -226,7 +276,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     expect(input).toBeDefined();
     if (input === undefined) return;
     const user = userContent(input);
-    const bounded = user.slice(user.indexOf("Output:\n") + "Output:\n".length);
+    const bounded = rawToolResponseExcerpt(input);
     // The bounded whole never exceeds the cap, even though no marker fits.
     expect(bounded.length).toBeLessThanOrEqual(tinyMax);
     // With no room for the marker the bound degrades to a plain head: a true
