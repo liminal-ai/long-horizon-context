@@ -1,5 +1,4 @@
-// PRE-DIAL-IN: structurally sound, untuned (AC-2.3); the dial-in working
-// period produces the tuned text under a new versioned name.
+// Pre-dial-in template kept under its versioned name.
 import type { PromptTemplate } from "./index.js";
 
 export const lowerBandV1: PromptTemplate<{ rendering: string }> = {

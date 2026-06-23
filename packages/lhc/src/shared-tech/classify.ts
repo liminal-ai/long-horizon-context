@@ -1,10 +1,8 @@
-// Failure classification (DD-3): a pure table from the boundary's failure
-// vocabulary onto Epic 02's retryable-or-not. The queue machinery consumes
-// `retryable` exactly as it always has — no queue changes, no new states.
-// `safeCall` is the containment wrapper around the host function: a thrown
-// exception classifies `other` (AC-3.3) and the adapter-owned timeout race
-// classifies `timeout` (DD-6) — both structured failures, so no host
-// function behavior can crash a drain.
+// Failure classification is a pure table from the model-call failure vocabulary
+// onto retryable-or-not. The queue machinery consumes `retryable` exactly as it
+// always has: no queue changes, no new states. `safeCall` contains the host
+// function: a thrown exception classifies `other` and the adapter-owned timeout
+// race classifies `timeout`, so host behavior cannot crash a drain.
 import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult } from "./inference-types.js";
 
 export const FAILURE_CLASSIFICATION: Record<ModelCallFailureKind, { retryable: boolean }> = {
@@ -17,7 +15,7 @@ export const FAILURE_CLASSIFICATION: Record<ModelCallFailureKind, { retryable: b
   invalid_request: { retryable: false },
 };
 
-/** try/catch + timeout race around the host function (AC-3.3, DD-6). */
+/** try/catch + timeout race around the host function. */
 export async function safeCall(call: ModelCall, input: ModelCallInput, timeoutMs: number): Promise<ModelCallResult> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<ModelCallResult>((resolve) => {
@@ -30,7 +28,7 @@ export async function safeCall(call: ModelCall, input: ModelCallInput, timeoutMs
     }, timeoutMs);
   });
   // The async wrapper folds synchronous throws into the same rejection path —
-  // the host's promise contract is not trusted (AC-3.3).
+  // the host's promise contract is not trusted.
   const attempt = (async (): Promise<ModelCallResult> => {
     try {
       return await call(input);
@@ -39,7 +37,7 @@ export async function safeCall(call: ModelCall, input: ModelCallInput, timeoutMs
     }
   })();
   try {
-    // A host that resolves after the race resolves into nothing (DD-6).
+    // A host that resolves after the race resolves into nothing.
     return await Promise.race([attempt, timeout]);
   } finally {
     clearTimeout(timer);

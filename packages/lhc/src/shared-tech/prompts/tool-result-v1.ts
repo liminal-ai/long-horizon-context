@@ -1,6 +1,5 @@
-// PRE-DIAL-IN: structurally sound, untuned (AC-2.3); the dial-in working
-// period produces the tuned text under a new versioned name. Input bounding
-// (DD-7) is applied by the adapter before this template renders.
+// Pre-dial-in template kept under its versioned name. Input bounding is applied
+// by the adapter before this template renders.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 

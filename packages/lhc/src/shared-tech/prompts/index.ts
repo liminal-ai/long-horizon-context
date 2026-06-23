@@ -1,7 +1,7 @@
-// The name-keyed prompt registry (DD-8): one module per template exporting
-// `{ name, render(input) → messages }`; config selects by name and dial-in
-// swaps by adding a module and editing config — no handler, adapter, or host
-// changes. Versioning is in the name (`smoothing-v1`).
+// Name-keyed prompt registry: one module per template exporting
+// `{ name, render(input) → messages }`. Config selects by name, and dial-in
+// swaps by adding a module and editing config, with no handler, adapter, or
+// host changes. Versioning is in the name (`smoothing-v1`).
 import type { ModelCallInput } from "../inference-types.js";
 import { chunkBriefV1 } from "./chunk-brief-v1.js";
 import { chunkBriefV2 } from "./chunk-brief-v2.js";

@@ -1,8 +1,7 @@
-// SETTLED (AC-2.3): the POC's tuned smoothing prompt, ported verbatim from
-// pi-long-horizon's pi-codex-user-prompt-smoothing-provider (tested
-// extensively there against alternatives). The protected-literals sentence
-// rides along verbatim: LHC's smoothing input carries no literals list, so
-// the clause is simply inert here, and the dial-in period owns any rewording
+// Settled smoothing prompt, ported verbatim from pi-long-horizon's
+// pi-codex-user-prompt-smoothing-provider and versioned by name. The
+// protected-literals sentence rides along verbatim: LHC's smoothing input
+// carries no literals list, so the clause is inert here. Any rewording belongs
 // under a new versioned name.
 import type { PromptTemplate } from "./index.js";
 

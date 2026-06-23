@@ -1,7 +1,6 @@
-// PRE-DIAL-IN: structurally sound, untuned (AC-2.3); the dial-in working
-// period produces the tuned text under a new versioned name. Receipt text is
-// structurally absent here: the brief handler strips it before inference
-// is called (AC-3.8) and this template's input carries outcomes only.
+// Pre-dial-in template kept under its versioned name. Receipt text is
+// structurally absent here: the brief handler strips it before inference is
+// called and this template's input carries outcomes only.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 
@@ -26,7 +25,7 @@ export const chunkBriefV1: PromptTemplate<{
       role: "user",
       content:
         `Turns, in order:\n\n${i.memberProjections
-          .map((projection, idx) => `${String(idx + 1)}. ${projection}`)
+          .map((memberText, idx) => `${String(idx + 1)}. ${memberText}`)
           .join("\n\n")}` + outcomesSection(i.memberOutcomes),
     },
   ],

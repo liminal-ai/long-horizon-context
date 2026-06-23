@@ -1,8 +1,7 @@
 // The logging surface: a domain-blind tech-util for recording fallback
 // events and diagnostics. LHC internals and the host extension both write
-// through this surface (AC-5.2). Writes are fail-soft and never share the
-// caller's transaction (AC-5.5). Queries return entries by actionable fields
-// (AC-5.4).
+// through this surface. Writes are fail-soft and never share the caller's
+// transaction. Queries return entries by actionable fields.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { DbReadTransaction, DbWriteTransaction } from "../persist.js";
 import { databasePathFor, openDatabase } from "../storage.js";
@@ -54,7 +53,7 @@ function insertLog(path: string, entry: LogEntry): void {
     );
   } catch {
     // Fail-soft: drop the log entry but do not propagate the error to the caller
-    // (AC-5.5). The operation that produced this log entry continues unchanged.
+    // The operation that produced this log entry continues unchanged.
   } finally {
     db?.close();
   }
@@ -62,7 +61,7 @@ function insertLog(path: string, entry: LogEntry): void {
 
 // Write a log entry. Fail-soft: never throws to the caller, never shares
 // the caller's transaction. A logging failure is contained and does not
-// affect the operation that produced the log entry (AC-5.5).
+// affect the operation that produced the log entry.
 export function writeLog(transaction: DbReadTransaction | DbWriteTransaction, entry: LogEntry): void {
   const path = databasePathFor(transaction.db);
   if (path === undefined) return;
@@ -73,8 +72,8 @@ export function writeLog(transaction: DbReadTransaction | DbWriteTransaction, en
   insertLog(path, entry);
 }
 
-// Query log entries by actionable fields (AC-5.4). Returns all matching
-// entries in descending order of recorded_at (newest first).
+// Query log entries by actionable fields. Returns all matching entries in
+// descending order of recorded_at (newest first).
 export function queryLog(db: DatabaseSync, q: LogQuery): StoredLogEntry[] {
   const conditions: string[] = [];
   const params: SQLInputValue[] = [];
