@@ -23,7 +23,7 @@ import { ASSIGNMENT_KINDS, type AssignmentKind, defaultAssignments } from "./mod
  *  Example:
  *  {
  *    smoothed_prompt: { provider: "openai", model: "gpt-4o", prompt: "custom-smoothing" },
- *    tool_call_summary: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.tool_call_summary }
+ *    tool_result_summary: { provider: "anthropic", model: "claude-3-opus", prompt: DEFAULT_PROMPT_NAMES.tool_result_summary }
  *  }
  */
 export interface AssignmentConfig {
