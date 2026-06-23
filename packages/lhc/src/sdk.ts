@@ -71,11 +71,10 @@ export type {
   MessageRecord,
   MutationResult,
 } from "./messages/index.js";
-// Epic 05 inference vocabulary (shared-tech/inference-types.ts): the host-supplied
-// ModelCall boundary and the per-kind assignment config — type-only; the
-// adapter and registry are construction internals behind initLhc.
-// Epic 04 inspect vocabulary (shared-tech/inspect.ts): the report shapes the
-// inspect surface serves.
+// Inference vocabulary: the host-supplied ModelCall boundary and per-kind
+// assignment config. The adapter and registry are construction internals behind
+// initLhc.
+// Inspect vocabulary: the report shapes the inspect surface serves.
 export type {
   Band,
   CompactReceipt,
@@ -190,8 +189,8 @@ export {
   type WorkOwner,
   type WorkSourceRef,
 } from "./shared-tech/work-queue/index.js";
-// Epic 03 view vocabulary (shared-tech/view.ts): config shapes live on SdkConfig
-// from Story 0; the operation shapes land with Stories 1–5.
+// Thread-view vocabulary: config shapes live on SdkConfig and operation shapes
+// live on the thread-view surface below.
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,
@@ -200,7 +199,7 @@ export {
 export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
 export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 
-// ── LHC initialization (DD-6/DD-7) ────────────────────────────────
+// ── LHC initialization ────────────────────────────────────────────
 
 function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
   return {
@@ -214,7 +213,7 @@ function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
 }
 
 // Dispatch-time lookup: an unregistered kind is reported explicitly — never
-// a throw, never a silent undefined (DD-6, AC-1.8's foundation).
+// a throw, never a silent undefined.
 export function lookupWorkHandler(map: WorkHandlerMap, kind: string): OpResult<WorkHandler> {
   const handler = map[kind as WorkKind];
   if (handler === undefined) return unknownWorkKind(kind);
@@ -232,17 +231,14 @@ export function lookupWorkDispatcher(
   return { ok: true, value: dispatcher };
 }
 
-// The work surface (CLI: lhc work …). Story 1 carries drain; report and
-// requeue land in Story 4.
+// The work surface used by CLI work operations.
 export interface WorkSurface {
   drain(ref: threadsDomain.ThreadRef, opts?: { maxItems?: number }): Promise<OpResult<DrainReport>>;
 }
 
-// The thread-view surface as the SDK exposes it (Epic 03, tech design
-// §Interface Definitions): the operations only — the Story 0 config
-// substrate the domain index also carries is construction machinery, not an
-// operation. Epic 04 Story 3 adds `describe`, the stored-snapshot read the
-// inspect domain composes (DD-1).
+// The thread-view surface as the SDK exposes it: operations only. Config
+// substrate is construction machinery, not an operation. `describe` is the
+// stored-snapshot read the inspect domain composes.
 export interface ThreadViewSurface {
   getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
@@ -273,9 +269,8 @@ export interface Lhc {
   messages: typeof messagesDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
-  // Epic 04: the read-only report surface. Scoped through the instance seam
-  // like every other namespace so the status read it composes resolves THIS
-  // SDK's view config (threshold, visibility budgets).
+  // Read-only report surface. Scoped through the instance seam like every other
+  // namespace so composed status reads resolve this SDK's view config.
   inspect: typeof inspectDomain;
   logging: LoggingSurface;
   config: ResolvedSdkConfig;
@@ -339,17 +334,16 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   return scoped as T;
 }
 
-// The default provider lane and model for inference derivation types (AC-6.4),
-// used when the host omits an inference type from inference.assignments
-// (AC-6.2). The provider key is an opaque routing key the host's ModelCall
-// interprets — LHC never resolves it.
+// The default provider lane and model for inference derivation types, used
+// when the host omits an inference type from inference.assignments. The
+// provider key is a host routing key; LHC never resolves it.
 const DEFAULT_INFERENCE_LANE = { provider: "codex", model: "gpt-5.4-mini" } as const;
 
-// Default assignment per inference derivation type (AC-6.2, AC-6.4): the
-// documented default lane and model, the registry's default prompt template,
-// and the tested target ratios for the compression/brief types. Deterministic
-// derivations are not inference assignments. Construction-internal: the defaults are observable
-// through routed calls (TC-6.4a), not part of the public export surface.
+// Default assignment per inference derivation type: documented default lane and
+// model, registry default prompt template, and tested target ratios for
+// compression/brief types. Deterministic derivations are not inference
+// assignments. Construction-internal: defaults are observable through routed
+// calls, not part of the public export surface.
 const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> = {
   smoothed_prompt: {
     provider: DEFAULT_INFERENCE_LANE.provider,
@@ -391,14 +385,13 @@ function resolveTargetRatios(
   };
 }
 
-// Resolve the `inference` construction path (Epic 05 Flow 1, DD-5; Epic 07
-// Story 0 AC-0.3/6.1–6.4): validate the host function and the assignment map,
-// then fill defaults. Provided inference assignments must carry non-empty
-// provider/model and a registry-known prompt (AC-6.1). Inference types the host
-// omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS (AC-6.2, AC-6.4).
-// Unknown keys are rejected — never silently ignored. Then the adapter is built into the same InferenceCallbacks
-// slot direct injection uses. No partial construction: every mistake throws
-// before anything is assembled (AC-1.1, AC-1.3).
+// Resolve the `inference` construction path: validate the host function and
+// assignment map, then fill defaults. Provided inference assignments must carry
+// non-empty provider/model and a registry-known prompt. Inference types the host
+// omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS. Unknown keys are
+// rejected, never silently ignored. Then the adapter is built into the same
+// InferenceCallbacks slot direct injection uses. No partial construction: every
+// mistake throws before anything is assembled.
 function resolveInferenceCallbacks(
   inference: InferenceConfig,
   guards: ResolvedSdkConfig["guards"],
@@ -420,8 +413,8 @@ function resolveInferenceCallbacks(
     }
   }
 
-  // Validate every provided INFERENCE assignment (AC-6.1): non-empty
-  // provider/model/prompt, and the prompt must name a registry template.
+  // Validate every provided inference assignment: non-empty
+  // provider/model/prompt, and prompt must name a registry template.
   for (const kind of inferenceKeys) {
     const assignment = provided[kind];
     if (assignment === undefined) continue; // filled from defaults below
@@ -447,7 +440,7 @@ function resolveInferenceCallbacks(
     }
   }
 
-  // Merge: inference types default-filled (AC-6.2, AC-6.4).
+  // Merge with default-filled inference types.
   const merged: Record<string, ModelAssignment> = {};
   for (const kind of inferenceKeys) {
     const assignment = provided[kind];
@@ -472,9 +465,9 @@ function resolveInferenceCallbacks(
 // failures after construction return OpResults per the error contract.
 export function initLhc(config: SdkConfig): Lhc {
   // Inference callbacks arrive by direct injection or by the inference config
-  // (Epic 05 DD-5); there is no named inference-callback registry and no env/flag
-  // resolution path to fall back on. The XOR rule is validated before anything
-  // downstream so the error names the caller's mistake, not a symptom (AC-1.1).
+  // There is no named inference-callback registry and no env/flag resolution
+  // path to fall back on. The XOR rule is validated before anything downstream
+  // so the error names the caller's mistake, not a symptom.
   if (config.inferenceCallbacks !== undefined && config.provider !== undefined) {
     throw new TypeError(
       `${INIT_CONFIG_PREFIX}: inferenceCallbacks and provider are aliases; supply only inferenceCallbacks`,
@@ -537,8 +530,8 @@ export function initLhc(config: SdkConfig): Lhc {
     },
     lease: config.lease ?? { durationMs: 120000 },
     chunkPolicy: config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
-    // Epic 03 (FC-0.2): built-ins merged with user profiles by name, band
-    // sums and visibility budgets validated — throws naming the violation.
+    // Built-ins merged with user profiles by name; band sums and visibility
+    // budgets validated, throwing with the violated setting named.
     view: resolveViewConfig(config.view),
   };
   requirePositive(resolved.retry.budget, "retry.budget");
@@ -584,7 +577,7 @@ export function initLhc(config: SdkConfig): Lhc {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens`);
   }
 
-  // Handler maps merge from per-domain contributions at construction (DD-6).
+  // Handler maps merge from per-domain contributions at construction.
   const workHandlers = mapWorkQHandlers([messageWorkHandlers, turnWorkHandlers]);
   const workDispatchers: DurableWorkDispatcherMap = {
     "messages.derive": (run, item) => dispatchMessageDeriveWork(run.openDb(), run.config, item),
@@ -604,17 +597,15 @@ export function initLhc(config: SdkConfig): Lhc {
   };
   const scheduler = createScheduler(resolved.mode, drainDeps);
 
-  // This SDK's per-instance delivery seam (epic-fix-001). Every operation
+  // This SDK's per-instance delivery seam. Every operation
   // invoked through the scoped surfaces below runs inside it, so enqueue pokes
-  // (DD-5) and thread-file touches (DD-10) reach THIS instance's scheduler in
-  // background mode, or a no-op in manual mode — isolated from any other SDK
-  // alive in the process. A manual SDK therefore never auto-drains, whatever
-  // the construction order, because its operations deliver to the no-op seam,
-  // not to whatever a background SDK installed below.
-  // The seam also carries this instance's resolved view config (Epic 03,
-  // tech design Flow 4): thread-view operations invoked through sdk.* read
-  // THIS SDK's profiles/budgets/threshold; below-SDK direct domain calls
-  // fall back to the built-in defaults inside the thread-view surface.
+  // and thread-file touches reach this instance's scheduler in background mode,
+  // or a no-op in manual mode, isolated from any other SDK alive in the process.
+  // A manual SDK therefore never auto-drains, whatever the construction order.
+  // The seam also carries this instance's resolved view config: thread-view
+  // operations invoked through sdk.* read this SDK's profiles/budgets/threshold;
+  // below-SDK direct domain calls fall back to built-in defaults inside the
+  // thread-view surface.
   const seam: InstanceSeam =
     resolved.mode === "background"
       ? {
