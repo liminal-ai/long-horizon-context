@@ -1,12 +1,9 @@
-// Test injection facility (Story 0, FC-0.6): one mechanism, two named
-// points, pattern from Epic 02's intake walk hook. Production code carries
-// the points as no-ops unless a test installs a hook:
+// Test injection facility: one mechanism, two named points. Production code
+// carries the points as no-ops unless a test installs a hook:
 //   - "post-commit-advance": fired by the boundary advance after intake's
-//     commit flush, before the advance computes (TC-4.6's failure injection —
-//     an installed hook that throws stands in for an advance failure);
+//     commit flush, before the advance computes;
 //   - "compact-write": fired by compact between the sweep and the view-write
-//     transaction (TC-2.4's crash injection — a throwing hook proves the
-//     prior view survives an aborted write).
+//     transaction.
 // Tests reach the setters through test/fixtures/view-seam.ts (the one
 // directory sanctioned to import below the SDK surface); production code
 // only ever fires.

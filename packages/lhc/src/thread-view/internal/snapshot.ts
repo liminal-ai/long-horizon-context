@@ -1,12 +1,8 @@
-// The model-context read path (Story 1): the stored view snapshot — header plus
-// band rows, absent ⇒ tail-only signal — and the record reads the tail
-// assembly needs (live messages after the compact point, the tail token sum).
-// Story 2 adds the one writer:
-// the atomic replace at compact. Direct record/derivation reads are
-// sanctioned for thread-view internals (tech design §System View — the
-// surface-import rule governs code imports, not SQL); what must NOT read
-// derivation directly is the status's derivation counting, which goes
-// through the owners' report surfaces in index.ts.
+// Stored view snapshot reads and the one atomic compact writer. This module
+// reads the snapshot header and bands, the live tail messages after the compact
+// point, and the tail token sum. Direct record/derivation reads are contained
+// to thread-view internals; status derivation counting still goes through the
+// owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { Band, RenderingPartKind, StoredView } from "../../shared-tech/index.js";
 
@@ -35,9 +31,9 @@ interface RawViewRow {
 
 const BAND_GRADIENT_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
-// null ⇒ no view exists (never compacted): the whole record renders as tail
-// from event 1 through the same serving assembly path — snapshot-absent, not a
-// separate branch (story Anti-Shim Requirements).
+// null means no view exists (never compacted): the whole record renders as tail
+// from event 1 through the same serving assembly path, snapshot-absent rather
+// than a separate branch.
 export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   const header = db
     .prepare(
@@ -72,11 +68,9 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   };
 }
 
-// The full stored row for `describe` (Epic 04 Story 3): everything the
-// compact wrote, parsed verbatim — arrangement, gaps, config, source-state
-// provenance, per-band stored token counts. Reading, never recomputing: the
-// JSON columns are the snapshot, and this read is the only path between
-// them and the describe surface.
+// The full stored row for `describe`: everything compact wrote, parsed
+// verbatim. Arrangement, gaps, config, source-state provenance, and per-band
+// stored token counts are read from the snapshot, never recomputed.
 export function readStoredView(db: DatabaseSync): StoredView | null {
   const header = db
     .prepare(
@@ -127,15 +121,15 @@ export interface TailMessageRow {
   messageId: string;
   sourceEventOrder: number;
   kind: RenderingPartKind;
-  // The source event's recorded_at — materialize's entry timestamp (AC-5.2:
-  // generated fields derive from record times, never write-time clocks).
+  // The source event's recorded_at: materialize's entry timestamp. Generated
+  // fields derive from record times, never write-time clocks.
   recordedAt: string;
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
 // Live messages after the compact point in record order, with their projected
-// blocks — the deleted-read filter applied here so a deleted message never
-// reaches rendering (AC-1.x delete filtering).
+// blocks. The deleted-read filter is applied here so a deleted message never
+// reaches rendering.
 export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMessageRow[] {
   const messageRows = db
     .prepare(
@@ -180,9 +174,9 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
   }));
 }
 
-// The thread's identity row — materialize's header source (AC-5.2: the
-// header id derives from thread id + view created-at; a never-compacted
-// thread's header uses the thread's created-at).
+// The thread's identity row: materialize's header source. The header id derives
+// from thread id + view created-at; a never-compacted thread's header uses the
+// thread's created-at.
 export function readThreadMetadata(db: DatabaseSync): { threadId: string; createdAt: string } {
   const row = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
     | { thread_id: string; created_at: string }
@@ -193,8 +187,8 @@ export function readThreadMetadata(db: DatabaseSync): { threadId: string; create
   return { threadId: row.thread_id, createdAt: row.created_at };
 }
 
-// The tail's token sum for status (AC-2.8): every live message after the
-// compact point, all kinds — the same population the serving assembly renders as tail.
+// The tail's token sum for status: every live message after the compact point,
+// all kinds. This is the same population the serving assembly renders as tail.
 export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
   const row = db
     .prepare(
@@ -205,7 +199,7 @@ export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
   return Number(row.total);
 }
 
-// ── the atomic replace (Story 2, AC-2.6) ──────────────────────────
+// ── the atomic replace ───────────────────────────────────────────
 
 export interface ViewReplaceInput {
   viewId: string;
@@ -222,10 +216,9 @@ export interface ViewReplaceInput {
 
 // Compact's one transaction: delete the singleton view row (the FK cascade
 // drops its bands), insert the new header and bands, and reset the boundary
-// to the compact point (AC-4.7) — all inside one BEGIN IMMEDIATE, so a crash
-// anywhere rolls the whole replace back and the previous view keeps serving
-// (AC-2.6, TC-2.4). Compact is the only writer of these rows; the boundary's
-// other writer is Story 4's advance.
+// to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
+// rolls the whole replace back and the previous view keeps serving. Compact is
+// the only writer of these rows; the boundary's other writer is advance.
 export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): void {
   db.exec("BEGIN IMMEDIATE;");
   try {

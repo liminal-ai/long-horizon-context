@@ -1,9 +1,8 @@
-// Profile config resolution and validation (Story 0, FC-0.2): built-in
-// profiles, user profiles merged over them by name, and the budget rules —
-// band shares sum to 100, lower bound positive, visibility max > target.
-// Pure functions, no IO. Config mistakes are programmer errors at SDK
-// construction and throw naming the violation (Epic 02 rule); nothing here
-// returns OpResults.
+// Profile config resolution and validation: built-in profiles, user profiles
+// merged over them by name, and the budget rules. Band shares sum to 100, lower
+// bound is positive, visibility max is greater than target. Pure functions, no
+// IO. Config mistakes are programmer errors at SDK construction and throw
+// naming the violation; nothing here returns OpResults.
 import type {
   ResolvedViewConfig,
   SdkViewConfig,
@@ -12,8 +11,7 @@ import type {
   VisibilityBudgets,
 } from "../../shared-tech/index.js";
 
-// Built-in profiles (tech design §Interface Definitions): defaults, knobs
-// not architecture.
+// Built-in profiles: defaults and knobs, not architecture.
 export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
   {
     name: "continuation",
@@ -47,7 +45,7 @@ const BAND_KEYS = ["full", "smooth", "detailed", "brief"] as const;
 
 // The violated constraint, named, or null when the profile is sound: one
 // rule set shared by both rejection surfaces — SDK construction (throws,
-// below) and compact invocation (caller-error result, AC-2.3).
+// below) and compact invocation (caller-error result).
 export function profileViolation(profile: ViewProfile): string | null {
   if (!Number.isFinite(profile.lowerBound) || profile.lowerBound <= 0) {
     return `profile "${profile.name}": lowerBound must be a positive number, got ${profile.lowerBound}`;
@@ -67,8 +65,7 @@ export function profileViolation(profile: ViewProfile): string | null {
 
 // A complete, merged profile validates whole: positive lower bound, finite
 // non-negative shares, shares summing to exactly 100. Errors name the
-// violated constraint and the profile (AC-2.3's vocabulary, applied at
-// construction).
+// violated constraint and the profile.
 export function validateProfile(profile: ViewProfile): void {
   const violation = profileViolation(profile);
   if (violation !== null) fail(violation);
@@ -84,7 +81,7 @@ function isCompleteOverride(entry: ViewProfileOverride): boolean {
 
 // Merge one configured entry: field-wise over the built-in it names, or — for
 // a name no built-in carries — the entry must be complete, since there is
-// nothing to merge over (FC-0.2's unknown-built-in-override-target violation).
+// nothing to merge over.
 function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined): ViewProfile {
   if (base === undefined) {
     if (!isCompleteOverride(entry)) {
@@ -120,12 +117,10 @@ const BUDGET_KEYS = ["maxTokens", "targetTokens"] as const;
 function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): VisibilityBudgets {
   // Unknown budget fields are config mistakes, not silent passengers — the
   // retired floorTokens in particular must be rejected, never quietly carried
-  // (Epic 05 AC-5.4: no hidden floor fallback).
+  // as a hidden fallback.
   for (const key of Object.keys(partial ?? {})) {
     if (!(BUDGET_KEYS as readonly string[]).includes(key)) {
-      fail(
-        `visibility.${key} is not a budget field (budgets are maxTokens and targetTokens; floorTokens was retired by Epic 05)`,
-      );
+      fail(`visibility.${key} is not a budget field (budgets are maxTokens and targetTokens; floorTokens is retired)`);
     }
   }
   const visibility: VisibilityBudgets = {
@@ -137,7 +132,7 @@ function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): Vis
       fail(`visibility.${key} must be a positive number, got ${visibility[key]}`);
     }
   }
-  // The budget ordering rule (Epic 05 AC-5.4): max > target.
+  // The budget ordering rule: max > target.
   if (visibility.maxTokens <= visibility.targetTokens) {
     fail(
       `visibility.maxTokens (${visibility.maxTokens}) must be greater than targetTokens (${visibility.targetTokens})`,
@@ -148,8 +143,7 @@ function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): Vis
 
 // The one resolution path: built-ins, user profiles merged by name, every
 // resolved profile validated, visibility and threshold defaulted and checked.
-// Called from initLhc so validation runs through real construction, never a
-// standalone validator (Story 0 production-path proof).
+// Called from initLhc so validation runs through real construction.
 export function resolveViewConfig(config?: SdkViewConfig): ResolvedViewConfig {
   const profiles: Record<string, ViewProfile> = {};
   for (const builtIn of BUILT_IN_PROFILES) {

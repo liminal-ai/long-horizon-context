@@ -1,9 +1,8 @@
-// Visibility boundary (Epic 03 Stories 1 + 4, decision reshaped by Epic 05
-// Story 6). The boundary is a source event order shared with the compact
-// point's coordinate system; tool results at-or-behind it render short. Its
-// writers are exactly two: the post-commit advance below — gated by intake
-// to turn-end batches since Epic 05 — and compact's reset, which lands
-// inside compact's own transaction (snapshot.ts, Story 2).
+// Visibility boundary. The boundary is a source event order shared with the
+// compact point's coordinate system; tool results at-or-behind it render short.
+// Its writers are exactly two: the post-commit advance below, gated by intake
+// to turn-end batches, and compact's reset, which lands inside compact's own
+// transaction.
 import type { DatabaseSync } from "node:sqlite";
 import type { VisibilityBudgets } from "../../shared-tech/index.js";
 
@@ -22,11 +21,9 @@ export function readBoundaryPosition(db: DatabaseSync): number {
 
 // The visibility zone's token sum: live (deleted-filtered) tool results ahead
 // of both the boundary position and the compact point, one indexed query.
-// Parameterized by position on purpose (story Technical Notes): Story 4's
-// advance consumes this same function instead of re-deriving the sum, so
-// "the advance's sum equals what status reports" is structural — the design
-// requires the two sums equal, and sharing the query makes that a fact of
-// the code rather than a discipline.
+// Parameterized by position on purpose: advance consumes this same function
+// instead of re-deriving the sum, so "the advance's sum equals what status
+// reports" is structural.
 export function visibilityZoneTokens(db: DatabaseSync, position: number, compactPoint: number): number {
   const row = db
     .prepare(
@@ -38,7 +35,7 @@ export function visibilityZoneTokens(db: DatabaseSync, position: number, compact
   return Number(row.zone);
 }
 
-// ── the post-commit advance (Story 4, AC-4.3–4.6, 4.9) ───────────
+// ── the post-commit advance ──────────────────────────────────────
 
 // The compact point for the advance's zone predicate: the stored view's, or
 // the zero origin when the thread has never compacted — the same default the
@@ -51,8 +48,8 @@ function readCompactPoint(db: DatabaseSync): number {
 }
 
 // One zone member as the decision walks it. Rows come back oldest-first by
-// source event order — the flip order AC-4.3 pins. turn_id carries the
-// whole-turn grouping key (Epic 05 AC-5.2); NULL means turnless intake.
+// source event order. turn_id carries the whole-turn grouping key; NULL means
+// turnless intake.
 export interface ZoneToolResult {
   sourceEventOrder: number;
   tokenEstimate: number;
@@ -61,8 +58,7 @@ export interface ZoneToolResult {
 
 // The zone's member rows: the same population visibilityZoneTokens sums —
 // identical WHERE clause on purpose, so the decision's arithmetic and the
-// status read's sum can never diverge (story Technical Notes; the amended
-// boundary suite's status assertions are the canary).
+// status read's sum can never diverge.
 function readZoneToolResults(db: DatabaseSync, position: number, compactPoint: number): ZoneToolResult[] {
   const rows = db
     .prepare(
@@ -88,8 +84,7 @@ function readZoneToolResults(db: DatabaseSync, position: number, compactPoint: n
 // group can never be evicted. With the turn-end trigger this is normally
 // vacuous — the just-closed turn left nothing open — but a batch may legally
 // record a turn_end and then open a new turn with tool results before
-// committing, and that open turn must not be eaten (Epic 05 AC-5.3's
-// open-turn untouchability, made explicit rather than assumed).
+// committing, and that open turn must not be eaten.
 function readOpenTurnId(db: DatabaseSync): string | null {
   const row = db.prepare(`SELECT turn_id FROM turns WHERE status = 'open' AND deleted_at IS NULL LIMIT 1`).get() as
     | { turn_id: string }
@@ -97,9 +92,9 @@ function readOpenTurnId(db: DatabaseSync): string | null {
   return row?.turn_id ?? null;
 }
 
-// One whole-turn eviction unit (Epic 05 DD-10): consecutive zone rows sharing
-// a turn_id. A NULL turn_id row is its own singleton group — whole-turn
-// semantics degenerate to whole-message for messages belonging to no turn.
+// One whole-turn eviction unit: consecutive zone rows sharing a turn_id. A NULL
+// turn_id row is its own singleton group, so whole-turn semantics degenerate to
+// whole-message for messages belonging to no turn.
 export interface ZoneTurnGroup {
   turnId: string | null;
   tokenSum: number;
@@ -126,26 +121,22 @@ export function groupZone(zone: readonly ZoneToolResult[]): ZoneTurnGroup[] {
   return groups;
 }
 
-// The pure decision (Epic 05 tech design §Flow 5): token sums from stored
-// per-message estimates, no inference, no IO — same inputs, same answer
-// (AC-5.5 determinism; the re-cut Boundary G1 golden drives the arithmetic,
-// golden G2 the peek-ahead landing).
+// The pure decision: token sums from stored per-message estimates, no
+// inference, no IO. Same inputs, same answer.
 //
 // Zone is the turn-grouped tool results oldest-first. Under-or-at max the
 // boundary does not move. Over max, walk candidate groups oldest-first — the
 // open turn's group (when one exists) is never a candidate, and the walk stops
 // before the newest closed turn so that turn and everything after it (any
-// trailing turnless singletons recorded after its close) are never evicted
-// (AC-5.3: the newest closed turn is never evicted). The boundary lands on a
-// group's last source event order, so an eviction reaching the newest closed
-// turn — or any group past it — would render that turn short; stopping before
-// it keeps it intact even when a later turnless singleton sits in the zone.
-// With no closed turn present the newest remaining group is protected instead
-// (whole-message degeneration for a turnless-only zone). A group is evicted
-// only if the zone's sum after evicting it remains at-or-above target (the
-// peek-ahead stop). The advance therefore lands in [target, target + one
-// group), and the zone may legally sit above target or even max until a newer
-// turn closes or a compact creates room.
+// trailing turnless singletons recorded after its close) are never evicted. The
+// boundary lands on a group's last source event order, so an eviction reaching
+// the newest closed turn, or any group past it, would render that turn short;
+// stopping before it keeps it intact even when a later turnless singleton sits
+// in the zone. With no closed turn present the newest remaining group is
+// protected instead. A group is evicted only if the zone's sum after evicting it
+// remains at-or-above target. The advance therefore lands in
+// [target, target + one group), and the zone may legally sit above target or
+// even max until a newer turn closes or a compact creates room.
 export function advanceDecision(
   groups: readonly ZoneTurnGroup[],
   budgets: VisibilityBudgets,
@@ -184,11 +175,10 @@ export function advanceDecision(
   return newPosition;
 }
 
-// The advance executor: indexed sum → over max ⇒ decide → write the new
-// position in its own short transaction (never inside intake's — AC-4.9's
-// isolation; this runs at flush, strictly after intake's COMMIT). The
-// position-forward guard in the UPDATE makes never-backward (AC-4.6) a
-// property of the write, not just of the decision's inputs.
+// The advance executor: indexed sum, over max, decide, then write the new
+// position in its own short transaction. It runs at flush, strictly after
+// intake's COMMIT. The position-forward guard in the UPDATE makes
+// never-backward a property of the write, not just of the decision's inputs.
 export function executeBoundaryAdvance(db: DatabaseSync, budgets: VisibilityBudgets, clock: () => Date): void {
   const position = readBoundaryPosition(db);
   const compactPoint = readCompactPoint(db);

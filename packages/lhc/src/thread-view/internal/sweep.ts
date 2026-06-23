@@ -1,4 +1,4 @@
-// thread-view internal: the readiness sweep (Story 3, Flow 3, AC-3.1–3.7).
+// thread-view internal: the readiness sweep.
 // Thread-view's only writing interaction with other domains — and it writes
 // nothing itself: derivation state is read exclusively through the owners'
 // report surfaces, repair goes exclusively through the owners' repair
@@ -10,14 +10,14 @@ import * as turnsDomain from "../../turns/index.js";
 
 export type ReasonClass = "transient" | "permanent";
 
-// The reason-code classification table (tech design §Spec Validation row 1):
-// data, not branching logic — the single source for transient-vs-permanent.
+// The reason-code classification table: data, not branching logic, and the
+// single source for transient-vs-permanent.
 // Keys are the reason class codes the production terminal-failure path
-// persists as the prefix of a failed derivation's reason (`<code>: <detail>`,
-// FC-0.4's distinguishable-on-read-back guarantee). Codes absent from the
-// table classify PERMANENT — the conservative default: an unknown failure is
-// reported in the receipt with its literal reason and never requeued, where
-// the other default would re-spend on a permanent failure at every compact.
+// persists as the prefix of a failed derivation's reason (`<code>: <detail>`).
+// Codes absent from the table classify PERMANENT, the conservative default: an
+// unknown failure is reported in the receipt with its literal reason and never
+// requeued, where the other default would re-spend on a permanent failure at
+// every compact.
 // Expanding the table is config-tier work later, not a redesign.
 export const REASON_CLASS_TABLE: Readonly<Record<string, ReasonClass>> = {
   rate_limit: "transient",
@@ -99,12 +99,11 @@ function turnsRepairSite(entry: DerivationReportEntry): string {
     : `turn_derivation:${entry.subjectId}`;
 }
 
-// The sweep walk (Flow 3): `messages.report` + `turns.report` → bucket each
-// derivation — ready / pending ⇒ in-flight / blocked / failed × classify — then
-// repair the transient failures through their owners and assemble the
-// receipt per owner and kind. Buckets come from the owners' report joins,
-// not raw derivation states: "retrying" is a report-level distinction the sweep
-// must not re-derive. Pending derivations with live queue rows are left in flight;
+// The sweep walk: `messages.report` + `turns.report`, bucket each derivation,
+// repair the transient failures through their owners, and assemble the receipt
+// per owner and kind. Buckets come from the owners' report joins, not raw
+// derivation states: "retrying" is a report-level distinction the sweep must
+// not re-derive. Pending derivations with live queue rows are left in flight;
 // pending derivations without live work are scheduled through their owner.
 // Blocked and permanent-failed derivations are reported with reasons, never
 // requeued.

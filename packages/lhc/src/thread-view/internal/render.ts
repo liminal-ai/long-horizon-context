@@ -1,16 +1,13 @@
-// Tail and band formatting (Story 1): the seven-kind tail mapping table
-// (tech design §Tail message rendering — contract, not implementation
-// choice), short/full tool-result selection by boundary position, and the
-// deterministic at-or-behind-boundary truncation rule. Pure functions over
-// read state by design: no DB handle, no inference, no clock — determinism is
-// structural (AC-1.7 byte-identical model-context reads fall out of it).
+// Tail and band formatting: the tail mapping table, short/full tool-result
+// selection by boundary position, and the deterministic at-or-behind-boundary
+// truncation rule. Pure functions over read state by design: no DB handle, no
+// inference, no clock.
 //
-// Story 2 adds the band-entry side: the degrade ladders (tech design
-// §Degrade ladders), gap entries as the last rung (never absence, AC-2.5),
-// visible subject keys (§t12 / §c4, AC-2.10), the [degraded: …] and
-// [inter-turn note] markers, and band-text assembly. select.ts consumes the
-// same entry renderer to price entries during the fill walk, so the tokens
-// the walk budgets are the tokens the band stores — one renderer, no drift.
+// The band-entry side includes degrade ladders, gap entries as the last rung,
+// visible subject keys, the [degraded: ...] and [inter-turn note] markers, and
+// band-text assembly. select.ts consumes the same entry renderer to price
+// entries during the fill walk, so the tokens the walk budgets are the tokens
+// the band stores: one renderer, no drift.
 import type { Band } from "../../shared-tech/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 import type { TailMessageRow } from "./snapshot.js";
@@ -21,11 +18,10 @@ export interface AssembledContextMessage {
   band?: Band;
 }
 
-// Epic 01's deterministic abbreviation rule: a fixed prefix plus an exact
-// tail marker, a pure function of the input string alone. Restated here —
-// byte-identical to turns/internal/compose.ts's truncateForFallback —
-// because cross-domain internals may not be imported and the turns domain
-// is frozen for this epic (tech design §Top-Tier Surfaces: no changes).
+// Deterministic abbreviation: a fixed prefix plus an exact tail marker, a pure
+// function of the input string alone. Restated here, byte-identical to
+// turns/internal/compose.ts's truncateForFallback, because cross-domain
+// internals may not be imported.
 export const ABBREVIATION_LIMIT = FALLBACK_TRUNCATION_LIMIT;
 
 export function deterministicTruncation(text: string): string {
@@ -125,14 +121,13 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
   }
 }
 
-// One non-empty band → one labeled `user` message: band-marker header, then
-// the snapshot bytes verbatim (AC-5.1 resolution: inference APIs reject
-// unknown roles; `user` is what the MVP's injection used).
+// One non-empty band to one labeled `user` message: band-marker header, then
+// the snapshot bytes verbatim. Inference APIs reject unknown roles.
 export function renderBandMessage(band: Band, renderedText: string): AssembledContextMessage {
   return { role: "user", band, content: `[context · ${band}]\n${renderedText}` };
 }
 
-// ── band entries: degrade ladders, gaps, keys (Story 2) ──────────
+// ── band entries: degrade ladders, gaps, keys ────────────────────
 
 // One derivation's stored state as the ladder reads it (a read shape for
 // Derivation: the resolvers never write, never re-derive).
@@ -161,7 +156,7 @@ export interface ResolvedRepresentation {
 }
 
 function usable(derivation: DerivationSnapshot | undefined): derivation is DerivationSnapshot & { content: string } {
-  // "Usable" means state = ready (tech design §Degrade ladders).
+  // "Usable" means state = ready.
   return derivation?.state === "ready" && typeof derivation.content === "string";
 }
 

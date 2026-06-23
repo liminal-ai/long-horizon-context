@@ -1,18 +1,16 @@
-// Band selection (Story 2): the six-rule walk from tech design §Deterministic
-// Algorithms — compact point, smooth/detailed/brief fills, rule-5 unchunked
-// turns, rule-6 turnless stragglers — plus the coverage edge (covered_from)
-// and canonical-corruption detection. Two halves, deliberately split:
+// Band selection: compact point, smooth/detailed/brief fills, unchunked turns,
+// turnless stragglers, the coverage edge (covered_from), and
+// canonical-corruption detection. Two halves, deliberately split:
 //
 //   - readSelectionInputs: the record/derivation reads, with the corruption check
-//     IN the reads, before any transaction opens (story Technical Notes) —
-//     a refusal here means nothing was written, so the prior view is
-//     trivially intact (AC-2.5). Never moved inside the transaction.
+//     in the reads, before any transaction opens. A refusal here means nothing
+//     was written, so the prior view is trivially intact. Never moved inside
+//     the transaction.
 //   - selectArrangement: a pure function over those inputs. No DB handle, no
-//     clock, no inference — same inputs ⇒ same arrangement, byte-for-byte
-//     (AC-2.9; goldens G1–G4 pin the tie-breakers).
+//     clock, no inference: same inputs, same arrangement.
 //
-// Tie-breakers, pinned (tech design): inclusion thresholds are ≤; walks are
-// newest-first everywhere; chunk coverage is decided by the chunk's newest
+// Tie-breakers: inclusion thresholds are <=; walks are newest-first everywhere;
+// chunk coverage is decided by the chunk's newest
 // member turn. Entry costs are the tokens of the rendered entry text itself
 // (render.ts's renderArrangementEntry, including attached inter-turn notes),
 // so the budgeted tokens are the stored tokens — no second estimate.
@@ -32,8 +30,8 @@ import {
 } from "./render.js";
 
 // Canonical source state needed to identify or read the compacted span is
-// damaged: compact refuses with state_corruption (AC-2.5). Derived-material
-// damage never raises this — it degrades through the ladders instead.
+// damaged: compact refuses with state_corruption. Derived-material damage never
+// raises this; it degrades through the ladders instead.
 export class CanonicalCorruptionError extends Error {
   readonly code: "turn_state_corrupt" | "source_damaged";
   constructor(code: "turn_state_corrupt" | "source_damaged", reason: string) {
@@ -122,9 +120,9 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
       closedAt: row.closedAtEventOrder,
     }));
 
-  // Canonical damage the walk cannot select across (AC-2.5): the Epic 01
-  // turn-state invariant (at most one open turn, open turns carry no close),
-  // and referential damage between the chunk/message rows and their turns.
+  // Canonical damage the walk cannot select across: the turn-state invariant
+  // (at most one open turn, open turns carry no close), and referential damage
+  // between chunk/message rows and their turns.
   const openTurns = turns.filter((turn) => turn.status === "open");
   if (openTurns.length > 1) {
     throw new CanonicalCorruptionError(
@@ -178,7 +176,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     };
   });
 
-  const formRows = db
+  const derivationRows = db
     .prepare(
       `SELECT subject_id, derivation_type, state, content, reason FROM derivation
        WHERE subject_kind IN ('turn', 'chunk')`,
@@ -191,7 +189,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     reason: string | null;
   }>;
   const derivations = new Map<string, DerivationSnapshot>();
-  for (const row of formRows) {
+  for (const row of derivationRows) {
     const snapshot: DerivationSnapshot = { state: row.state as DerivationSnapshot["state"] };
     if (row.content !== null) snapshot.content = row.content;
     if (row.reason !== null) snapshot.reason = row.reason;
@@ -371,11 +369,10 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     return entry;
   }
 
-  // The one fill rule, shared by all three bands (rules 2–4, ruling 013's
-  // literal reading): newest-first whole-entry fill, ≤ inclusion (an entry
-  // exactly filling the budget is included), the first crossing entry stops
-  // the band — included only when the band was still empty (one oversized
-  // entry still represents).
+  // The one fill rule, shared by all three bands: newest-first whole-entry
+  // fill, <= inclusion (an entry exactly filling the budget is included), the
+  // first crossing entry stops the band, included only when the band was still
+  // empty.
   function fillBand<T>(
     candidates: readonly T[], // newest-first
     bandBudget: number,
