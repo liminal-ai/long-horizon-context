@@ -87,6 +87,3 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
     }) => ok("summarizeChunkBrief", i, i.text),
   };
 }
-
-/** @deprecated Use createDeterministicInferenceCallbacks. */
-export const createDeterministicProvider = createDeterministicInferenceCallbacks;

@@ -115,12 +115,10 @@ function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined)
 const BUDGET_KEYS = ["maxTokens", "targetTokens"] as const;
 
 function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): VisibilityBudgets {
-  // Unknown budget fields are config mistakes, not silent passengers — the
-  // retired floorTokens in particular must be rejected, never quietly carried
-  // as a hidden fallback.
+  // Unknown budget fields are config mistakes, not silent passengers.
   for (const key of Object.keys(partial ?? {})) {
     if (!(BUDGET_KEYS as readonly string[]).includes(key)) {
-      fail(`visibility.${key} is not a budget field (budgets are maxTokens and targetTokens; floorTokens is retired)`);
+      fail(`visibility.${key} is not a budget field (budgets are maxTokens and targetTokens)`);
     }
   }
   const visibility: VisibilityBudgets = {

@@ -14,8 +14,8 @@ export function boundaryTokens(n: number): string {
 
 let boundaryCallCounter = 0;
 
-// One tool run: call + result with the given token count. No turn framing —
-// emitted into a gap, the result records turnless (turn_id NULL).
+// One tool run: call + result with the given token count. If sent while a
+// turn is open, current intake stamps it with that turn.
 export function boundaryToolRun(resultTokens: number): MessageEventInput[] {
   boundaryCallCounter += 1;
   const toolCallId = `call-tb-${boundaryCallCounter}`;
@@ -34,22 +34,15 @@ export function boundaryToolRun(resultTokens: number): MessageEventInput[] {
 }
 
 // One scripted turn's worth of tool results, sized in tokens. `close: false`
-// leaves the turn open (mid-turn legs); `turnless: true` drops the prompt and
-// the turn_end so the results record with no turn membership (DD-10's
-// singleton-group legs).
+// leaves the turn open (mid-turn legs).
 export interface TurnedToolResultsSpec {
   results: readonly number[];
   close?: boolean;
-  turnless?: boolean;
 }
 
 export function turnedToolResultEvents(turns: readonly TurnedToolResultsSpec[]): MessageEventInput[] {
   const events: MessageEventInput[] = [];
   for (const turn of turns) {
-    if (turn.turnless === true) {
-      for (const n of turn.results) events.push(...boundaryToolRun(n));
-      continue;
-    }
     events.push(validEvent("user_prompt", { payload: { text: "scripted boundary turn" } }));
     for (const n of turn.results) events.push(...boundaryToolRun(n));
     if (turn.close !== false) events.push(validEvent("turn_end"));

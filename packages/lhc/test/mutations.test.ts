@@ -11,8 +11,8 @@
 // held across the edit by the delayed double completes after the post-edit
 // rebuild is queued, discards on the source-version mismatch as
 // stale_discarded, and the post-edit artifact stands. Refusals (open turn,
-// turnless no-membership target, missing id, deleted target through the
-// filtered view) change nothing (TC-5.5). The CLI parity leg of TC-5.6 lives in
+// missing id, deleted target through the filtered view) change nothing
+// (TC-5.5). The CLI parity leg of TC-5.6 lives in
 // cli-process-mutations.test.ts (process suite).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -441,7 +441,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     expect(await snapshot(filePath)).toEqual(afterStamp);
   });
 
-  it("refuses a turnless (no-membership) target under the closed-turn boundary; read-back unchanged", async () => {
+  it("refuses an open-turn target under the closed-turn boundary; read-back unchanged", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
@@ -452,11 +452,11 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     expect(m1?.turnId).toBe("t1");
 
     const before = await snapshot(filePath);
-    const turnless = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });
-    expect(turnless.ok).toBe(false);
-    if (turnless.ok) return;
-    expect(turnless.error.errorClass).toBe("caller_error");
-    expect(turnless.error.code).toBe("turn_open");
+    const openTurn = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });
+    expect(openTurn.ok).toBe(false);
+    if (openTurn.ok) return;
+    expect(openTurn.error.errorClass).toBe("caller_error");
+    expect(openTurn.error.code).toBe("turn_open");
     expect(await snapshot(filePath)).toEqual(before);
   });
 });

@@ -1,13 +1,13 @@
 // A-8 registry additions (pi-lhc Epic 02 Story 1 prerequisite): the cwd column,
 // partial-id (prefix) resolve with ambiguity failure, the cwd-scoped listing,
-// deterministic most-recent ordering, and lazy upgrade of a pre-cwd registry.
+// and deterministic most-recent ordering.
 // These are the registry operations the connector's launch-driven thread
 // resolution depends on; they are proven here at the registry boundary, not
 // only through the connector (anti-shim: the scope is the query, not a filter
 // over an unscoped list).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { threads } from "../src/index.js";
-import { openRaw, type TempStore, tempStore } from "./fixtures/index.js";
+import { type TempStore, tempStore } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -146,47 +146,5 @@ describe("A-8: cwd-scoped listing and most-recent ordering", () => {
       expect(listed.value).toHaveLength(3);
       expect(listed.value.at(-1)?.threadId).toBe(last);
     }
-  });
-});
-
-describe("A-8: lazy upgrade of a pre-cwd registry (migrate-on-read)", () => {
-  it("reads a v1 registry, upgrading it to carry the cwd column", async () => {
-    // Build a registry at the pre-A-8 v1 schema by hand (no cwd column).
-    const db = openRaw(store.registryPath);
-    db.exec(
-      `CREATE TABLE threads (
-        thread_id TEXT PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        title TEXT,
-        created_at TEXT NOT NULL
-      );`,
-    );
-    db.exec(`PRAGMA user_version = 1;`);
-    db.prepare("INSERT INTO threads (thread_id, file_path, title, created_at) VALUES (?, ?, ?, ?)").run(
-      "th_legacy0000",
-      "/tmp/legacy.sqlite",
-      "legacy",
-      "2026-01-01T00:00:00.000Z",
-    );
-    db.close();
-
-    // A read through the domain upgrades the schema and succeeds; the legacy
-    // row reports cwd undefined.
-    const resolved = await threads.resolve({ threadId: "th_legacy0000", registryPath: store.registryPath });
-    expect(resolved.ok).toBe(true);
-    if (resolved.ok) {
-      expect(resolved.value.title).toBe("legacy");
-      expect(resolved.value.cwd).toBeUndefined();
-    }
-
-    // The registry now carries the cwd column at the current version.
-    const after = openRaw(store.registryPath);
-    const columns = (after.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
-    const version = after.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-    after.close();
-    expect(columns).toContain("cwd");
-    expect(Number(version.user_version)).toBe(2);
   });
 });

@@ -108,7 +108,6 @@ export type {
   ModelCallInput,
   ModelCallResult,
   OpResult,
-  ProviderResult,
   RenderingPart,
   ResolvedSdkConfig,
   ResolvedViewConfig,
@@ -138,7 +137,6 @@ export {
   createDbReadTransaction,
   createDbWriteTransaction,
   createDeterministicInferenceCallbacks,
-  createDeterministicProvider,
   type DbReadTransaction,
   type DbWriteTransaction,
   type DeterministicOpName,
@@ -465,24 +463,11 @@ export function initLhc(config: SdkConfig): Lhc {
   // There is no named inference-callback registry and no env/flag resolution
   // path to fall back on. The XOR rule is validated before anything downstream
   // so the error names the caller's mistake, not a symptom.
-  if (config.inferenceCallbacks !== undefined && config.provider !== undefined) {
-    throw new TypeError(
-      `${INIT_CONFIG_PREFIX}: inferenceCallbacks and provider are aliases; supply only inferenceCallbacks`,
-    );
-  }
-  const directCallbacks = config.inferenceCallbacks ?? config.provider;
-  if (directCallbacks !== undefined && config.inference !== undefined) {
+  if (config.inferenceCallbacks !== undefined && config.inference !== undefined) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
   }
-  if (directCallbacks === undefined && config.inference === undefined) {
+  if (config.inferenceCallbacks === undefined && config.inference === undefined) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
-  }
-  if (
-    config.inference !== undefined &&
-    "guards" in config.inference &&
-    (config.inference as { guards?: unknown }).guards !== undefined
-  ) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.guards is retired; use top-level guards`);
   }
   if (config.mode !== "background" && config.mode !== "manual") {
     throw new TypeError(
@@ -500,6 +485,7 @@ export function initLhc(config: SdkConfig): Lhc {
   if (config.inference !== undefined) {
     inferenceCallbacks = resolveInferenceCallbacks(config.inference, guards);
   } else {
+    const directCallbacks = config.inferenceCallbacks;
     if (directCallbacks === null || typeof directCallbacks !== "object") {
       throw new TypeError(`${INIT_CONFIG_PREFIX}: inferenceCallbacks must implement InferenceCallbacks`);
     }
@@ -513,7 +499,6 @@ export function initLhc(config: SdkConfig): Lhc {
 
   const resolved: ResolvedSdkConfig = {
     inferenceCallbacks,
-    provider: inferenceCallbacks,
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
@@ -694,6 +679,3 @@ export function initLhc(config: SdkConfig): Lhc {
   workRegistrationBySdk.set(sdk, { workHandlers, workDispatchers });
   return sdk;
 }
-
-/** @deprecated Use initLhc. */
-export const createSdk = initLhc;

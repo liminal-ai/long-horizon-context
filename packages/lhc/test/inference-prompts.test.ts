@@ -48,12 +48,6 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     },
     embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary"],
   },
-  "lower-band-v1": {
-    input: {
-      rendering: "The user asked for notes/plan.md; the assistant read it and reported 3 open items.",
-    },
-    embedded: ["reported 3 open items"],
-  },
   "smooth-turn-compression-v1": {
     input: {
       rendering:

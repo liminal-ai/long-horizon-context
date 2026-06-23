@@ -18,12 +18,12 @@ The pieces this product connects, and the vocabulary the rest of the document us
 
 - A conversation is a **thread**: a durable, append-only record of every prompt, response, tool call, and result, in one SQLite file. PI calls its unit of work a *session*; a session's traffic feeds a thread as **intake events**.
 - Thread content is organized into **turns** (one user prompt and everything the agent did in response) and **chunks** (consecutive turns grouped for summarization).
-- LHC runs background **derivations** over the record — model-generated transformations: prompt smoothing, tool-result summaries, chunk summaries at two depths. v1 has **seven derivation kinds**. Each carries a **model assignment** — which provider and model runs it. A failed derivation is recorded with a classified reason and can be **requeued**.
+- LHC runs background **derivations** over the record — prompt smoothing, tool-result summaries, turn renderings and compressions, and chunk summaries at two depths. v1 has **six derivation types**. Each inference-backed derivation carries a **model assignment** — which provider and model runs it. A failed derivation is recorded with a classified reason and can be **requeued**.
 - The model sees a **thread-view**: a rendering where older history appears in **bands** of graduated fidelity (oldest as brief summaries, then detailed summaries, then lightly-smoothed content) followed by the **tail** — the recent stretch at full fidelity. Within the tail, a **visibility boundary** marks how much raw tool output stays full versus summarized; it advances in batches so the prompt prefix stays stable for provider caching.
 - **Smart compact** rebuilds the bands: it redistributes accumulated tail material into the gradient and writes a new view snapshot. It is explicit — invoked by an operator or host, never self-triggering — and returns a **receipt** listing what was built, requeued, and gapped. A **sweep** is the pre-compact pass that requeues recoverable derivation failures.
 - Thread state is read through **inspect** surfaces: an overview, a **health report** (derivation states, failures with reasons, repair preview), and view-contents reports.
 
-A **host** initializes LHC in-process (`initLhc` — the agreed rename of the current `createSdk` export; code rename pending, this spec uses the new name) and operates it directly. LHC has no daemon, no server, and no credentials of its own; the host supplies one model-call function through which all derivation inference flows. A **provider lane** is one authenticated route to a model provider (the user's Anthropic login, their OpenAI key); a host's lanes are whatever its user is logged into.
+A **host** initializes LHC in-process with `initLhc` and operates it directly. LHC has no daemon, no server, and no credentials of its own; the host supplies one model-call function through which all derivation inference flows. A **provider lane** is one authenticated route to a model provider (the user's Anthropic login, their OpenAI key); a host's lanes are whatever its user is logged into.
 
 **The POC** (`pi-lh`) is the proof-of-concept PI extension dogfooded daily for months on a pre-SDK codebase. It validated the integration shape; this product rebuilds it on the v1 SDK and retires it.
 
@@ -33,7 +33,7 @@ Two roles recur: the **operator** (the human running PI) and the **agent** (the 
 
 ## Summary
 
-`pi-lhc` is an npm-published PI extension package. It replaces PI's context handling with LHC: it captures every message and turn into a durable LHC thread, serves the thread-view through PI's context hook, runs the seven derivation kinds through the user's PI provider logins, and adds operator commands and agent tools for inspecting and managing the thread. It ships two ways — installed into an existing PI (`pi install npm:pi-lhc`) or run standalone (`npx pi-lhc`) — both sharing the user's PI auth. It is the first production host of the LHC SDK.
+`pi-lhc` is an npm-published PI extension package. It replaces PI's context handling with LHC: it captures every message and turn into a durable LHC thread, serves the thread-view through PI's context hook, runs inference-backed derivations through the user's PI provider logins, and adds operator commands and agent tools for inspecting and managing the thread. It ships two ways — installed into an existing PI (`pi install npm:pi-lhc`) or run standalone (`npx pi-lhc`) — both sharing the user's PI auth. It is the first production host of the LHC SDK.
 
 ## Problem Statement
 

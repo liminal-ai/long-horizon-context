@@ -2,7 +2,7 @@
 // replay seeding, source immutability, and derived form requeue behavior.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createDeterministicProvider, inspect, intakeStream } from "lhc";
+import { createDeterministicInferenceCallbacks, inspect, intakeStream } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { eventsAfterShutdown, kindsOf, startCapture } from "../capture/support.js";
@@ -182,7 +182,7 @@ describe("Story 4: fork as new thread", () => {
       startupValidationReporter: () => {},
       buildSdkConfig: () => ({
         ok: true,
-        value: { provider: createDeterministicProvider(), mode: sdkMode },
+        value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: sdkMode },
       }),
     });
 

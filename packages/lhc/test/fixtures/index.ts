@@ -99,13 +99,6 @@ export {
 } from "./inference-callbacks-double.js";
 export { type IntakeWalkHook, setIntakeClock, setIntakeWalkHook } from "./intake-seam.js";
 export {
-  type LegacyRecordedEvent,
-  legacyEpic01ThreadFile,
-  legacyEpic02ThreadFile,
-  legacyStory2ThreadFile,
-  schemaVersionOf,
-} from "./legacy.js";
-export {
   createLifecycleSdk,
   DELETE_TARGET,
   DELETED_MESSAGE_TEXT,
@@ -192,7 +185,6 @@ export {
   mixedStateVariantThread,
   mutationInFlightVariant,
   PERMANENT_FAILURE_REASON,
-  stragglerVariantThread,
   TRANSIENT_EXHAUST_REASON,
 } from "./view-thread.js";
 export {

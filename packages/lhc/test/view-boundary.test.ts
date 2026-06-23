@@ -8,8 +8,8 @@
 //   - floor-protection legs (the old TC-4.3 monster-turn and oversized-newest
 //     cases) are superseded by the newest-turn-protection legs in TC-5.2
 //     (view-boundary-turn-end.test.ts);
-//   - construction tests drop floorTokens for the two-field budgets and gain
-//     the rejected-unknown-config leg;
+//   - construction tests cover the two-field visibility budget shape and the
+//     rejected-unknown-config leg;
 //   - status zoneTokens legs are unchanged (shared-query invariant holds).
 // Every advance here fires through a REAL `intake.messageEvents` commit — no
 // host-called advance surface exists and no test invents one (story Anti-Shim

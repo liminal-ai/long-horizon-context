@@ -4,7 +4,7 @@
 // capture() directly so it can assert the per-event skip outcomes the SDK
 // returns on re-delivery.
 
-import { createDeterministicProvider, intakeStream } from "lhc";
+import { createDeterministicInferenceCallbacks, intakeStream } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { mapMessage } from "../../src/capture/map-message.js";
@@ -149,7 +149,7 @@ describe("Story 2: idempotent re-delivery (TC-2.7, idempotency risk)", () => {
   it("skips a re-delivered batch by idempotency key and records no duplicates", async () => {
     const thread = await makeTempThread(store);
     const built = await initInstance(thread.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     expect(built.ok).toBe(true);

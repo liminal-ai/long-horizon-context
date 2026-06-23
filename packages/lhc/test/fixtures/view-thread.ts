@@ -86,15 +86,10 @@ export interface DerivedThreadFixture {
   // are disabled for a variant.
   failedTransientMessageId?: string;
   failedPermanentMessageId?: string;
-  // The straggler variant's turnId-null messages: one between two turns, one
-  // after the last turn — absent unless stragglers are enabled.
-  stragglerBetweenMessageId?: string;
-  stragglerTrailingMessageId?: string;
 }
 
 export interface DerivedThreadOptions {
   failures?: boolean; // default true: manufacture the two failed states
-  stragglers?: boolean; // default false: insert the turnless runtime notes
 }
 
 async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<string[]> {
@@ -144,7 +139,6 @@ export async function derivedThreadFixture(
   opts: DerivedThreadOptions = {},
 ): Promise<DerivedThreadFixture> {
   const failures = opts.failures ?? true;
-  const stragglers = opts.stragglers ?? false;
 
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
@@ -201,52 +195,19 @@ export async function derivedThreadFixture(
     }
     await drain(sdk, filePath);
 
-    if (stragglers && turn === 3) {
-      // A runtime note between turn 3's end and turn 4's prompt: projected
-      // with turnId = null (the Epic 01 straggler), selection rule 6 / G4.
-      const noteIds = await send(sdk, filePath, [
-        validEvent("runtime_note", {
-          payload: { text: "harness restarted between turns (fixture straggler)" },
-        }),
-      ]);
-      const noteId = noteIds[0];
-      if (noteId === undefined || noteId === "") {
-        throw new Error("fixture invariant: between-turns straggler did not project");
-      }
-      fixture.stragglerBetweenMessageId = noteId;
-    }
     turnIds.push(`t${turn}`);
   }
 
-  if (stragglers) {
-    const noteIds = await send(sdk, filePath, [
-      validEvent("runtime_note", {
-        payload: { text: "session closing note after the last turn (fixture straggler)" },
-      }),
-    ]);
-    const noteId = noteIds[0];
-    if (noteId === undefined || noteId === "") {
-      throw new Error("fixture invariant: trailing straggler did not project");
-    }
-    fixture.stragglerTrailingMessageId = noteId;
-    await drain(sdk, filePath);
-  }
-
-  // Shape invariants the chunk policy is pinned for. The straggler variant
-  // includes one extra closed note turn, so it carries one extra chunk.
+  // Shape invariants the chunk policy is pinned for.
   fixture.chunks = readChunks(filePath);
-  const expectedChunks = stragglers ? 5 : 4;
-  if (fixture.chunks.chunks.length !== expectedChunks) {
+  if (fixture.chunks.chunks.length !== 4) {
     throw new Error(
-      `fixture invariant: expected ${expectedChunks} chunks, got ${fixture.chunks.chunks.length} — re-pin FIXTURE_CHUNK_POLICY`,
+      `fixture invariant: expected 4 chunks, got ${fixture.chunks.chunks.length} — re-pin FIXTURE_CHUNK_POLICY`,
     );
   }
   const closed = fixture.chunks.chunks.filter((chunk) => chunk.status === "closed").length;
-  const expectedClosed = stragglers ? 4 : 3;
-  if (closed !== expectedClosed) {
-    throw new Error(
-      `fixture invariant: expected ${expectedClosed} closed chunks, got ${closed} closed — re-pin FIXTURE_CHUNK_POLICY`,
-    );
+  if (closed !== 3) {
+    throw new Error(`fixture invariant: expected 3 closed chunks, got ${closed} closed — re-pin FIXTURE_CHUNK_POLICY`);
   }
 
   if (failures) {
@@ -276,13 +237,6 @@ export async function derivedThreadFixture(
   }
 
   return fixture;
-}
-
-// The turnless-straggler variant (FC-0.5, golden G4's substrate): the same
-// conversation with a runtime note between two turns and one after the last
-// turn, fully drained, no manufactured failures.
-export async function stragglerVariantThread(store: TempStore): Promise<DerivedThreadFixture> {
-  return derivedThreadFixture(store, { failures: false, stragglers: true });
 }
 
 // The canonical-corruption variant (FC-0.5, Epic 01 fixture pattern): a

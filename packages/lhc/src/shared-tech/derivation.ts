@@ -94,9 +94,6 @@ export type InferenceResult =
   | { ok: true; text: string; provenance?: ProviderProvenance }
   | { ok: false; retryable: boolean; reason: string };
 
-/** @deprecated Use InferenceResult. */
-export type ProviderResult = InferenceResult;
-
 // Message kinds a rendering part can carry — mirrors the intake event-kind
 // vocabulary minus turn_end (turn_end never projects a message). Mirrored
 // rather than imported: shared-tech/ may not import the domains.
@@ -146,9 +143,6 @@ export interface InferenceCallbacks {
     targetMaxTokens: number;
   }): Promise<InferenceResult>;
 }
-
-/** @deprecated Use InferenceCallbacks. */
-export type DerivationProvider = InferenceCallbacks;
 
 export type ToolResultOperationClass =
   | "read"
@@ -205,21 +199,12 @@ export const INFERENCE_CALLBACK_OPERATIONS = [
 
 export type InferenceCallbackName = (typeof INFERENCE_CALLBACK_OPERATIONS)[number];
 
-/** @deprecated Use INFERENCE_CALLBACK_OPERATIONS. */
-export const PROVIDER_OPERATIONS = INFERENCE_CALLBACK_OPERATIONS;
-
-/** @deprecated Use InferenceCallbackName. */
-export type ProviderOperationName = InferenceCallbackName;
-
 // ── LHC initialization config ────────────────────────────────────
 // Inference callbacks arrive exactly one way: direct callback injection
 // (`inferenceCallbacks`) or `inference` (host model-call function + per-kind
-// assignments). `provider` remains only as a deprecated spelling for direct
-// callbacks.
+// assignments).
 export interface SdkConfig {
   inferenceCallbacks?: InferenceCallbacks;
-  /** @deprecated Use inferenceCallbacks. */
-  provider?: InferenceCallbacks;
   inference?: InferenceConfig;
   mode: "background" | "manual";
   clock?: () => Date;
@@ -238,8 +223,6 @@ export interface SdkConfig {
 // Every optional filled by initLhc's central defaults.
 export interface ResolvedSdkConfig {
   inferenceCallbacks: InferenceCallbacks;
-  /** @deprecated Use inferenceCallbacks. */
-  provider: InferenceCallbacks;
   mode: "background" | "manual";
   clock: () => Date;
   retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };

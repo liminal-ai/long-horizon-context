@@ -5,7 +5,7 @@
 // skipping new events as false duplicates — while the converter's same-key
 // dedup (the reload/replay safety net) stays intact.
 
-import { createDeterministicProvider, intakeStream, type MessageEventInput, type ThreadRef } from "lhc";
+import { createDeterministicInferenceCallbacks, intakeStream, type MessageEventInput, type ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { mapMessage } from "../../src/capture/map-message.js";
@@ -94,7 +94,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     expect(counts.closed).toBe(1);
 
     const built = await initInstance(b.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     expect(built.ok).toBe(true);
@@ -161,7 +161,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
   it("(4) preserves duplicate-safe re-delivery: re-flushing an identical batch is skipped, not duplicated", async () => {
     const thread = await makeTempThread(store);
     const built = await initInstance(thread.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     expect(built.ok).toBe(true);
@@ -229,7 +229,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     expect(userTexts(events)).toEqual(["reload replay"]);
 
     const built = await initInstance(b.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     expect(built.ok).toBe(true);

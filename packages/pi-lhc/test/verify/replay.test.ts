@@ -7,9 +7,9 @@
 // (story §Anti-Shim Requirements).
 
 import {
-  createDeterministicProvider,
-  createSdk,
+  createDeterministicInferenceCallbacks,
   type EventRecord,
+  initLhc,
   inspect,
   intakeStream,
   type MessageEventInput,
@@ -57,7 +57,7 @@ async function readBack(threadRef: ThreadRef): Promise<MessageEventInput[]> {
 /** A real background instance for inducing a Story-2 capture failure (the gap
  *  path does not call the provider, so the deterministic one is fine). */
 function liveInstance(threadRef: ThreadRef): LhcInstance {
-  const sdk = createSdk({ provider: createDeterministicProvider(), mode: "background" });
+  const sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" });
   return {
     sdk,
     threadRef,

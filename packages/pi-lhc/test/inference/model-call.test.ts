@@ -9,7 +9,7 @@
 // on the ModelCallResult shapes, exercising classification and routing without
 // a live provider.
 
-import { createSdk, type ModelCallInput, threads } from "lhc";
+import { initLhc, type ModelCallInput, threads } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 import { classifyFailure, createModelCall, defaultAssignments } from "../../src/inference/model-call.js";
 import type { PiAiComplete } from "../../src/inference/pi-ai.js";
@@ -261,7 +261,7 @@ describe("Story 5: Inference Host Routing", () => {
     it("LHC adapter classifies empty resolved output as empty_output", async () => {
       const store = tempStore();
       try {
-        const sdk = createSdk({
+        const sdk = initLhc({
           inference: {
             call: async () => ({ ok: true, text: "" }),
             assignments: defaultAssignments({ provider: "openai", id: "gpt-4o-mini" }),

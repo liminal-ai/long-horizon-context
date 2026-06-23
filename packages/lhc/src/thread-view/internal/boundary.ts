@@ -48,12 +48,11 @@ function readCompactPoint(db: DatabaseSync): number {
 }
 
 // One zone member as the decision walks it. Rows come back oldest-first by
-// source event order. turn_id carries the whole-turn grouping key; NULL means
-// turnless intake.
+// source event order. turn_id carries the whole-turn grouping key.
 export interface ZoneToolResult {
   sourceEventOrder: number;
   tokenEstimate: number;
-  turnId: string | null;
+  turnId: string;
 }
 
 // The zone's member rows: the same population visibilityZoneTokens sums —
@@ -70,7 +69,7 @@ function readZoneToolResults(db: DatabaseSync, position: number, compactPoint: n
     .all(position, compactPoint) as unknown as Array<{
     source_event_order: number | bigint;
     token_estimate: number | bigint;
-    turn_id: string | null;
+    turn_id: string;
   }>;
   return rows.map((row) => ({
     sourceEventOrder: Number(row.source_event_order),
@@ -92,11 +91,9 @@ function readOpenTurnId(db: DatabaseSync): string | null {
   return row?.turn_id ?? null;
 }
 
-// One whole-turn eviction unit: consecutive zone rows sharing a turn_id. A NULL
-// turn_id row is its own singleton group, so whole-turn semantics degenerate to
-// whole-message for messages belonging to no turn.
+// One whole-turn eviction unit: consecutive zone rows sharing a turn_id.
 export interface ZoneTurnGroup {
-  turnId: string | null;
+  turnId: string;
   tokenSum: number;
   // Highest source_event_order in the group: the boundary position an
   // eviction of this group lands on.
@@ -107,7 +104,7 @@ export function groupZone(zone: readonly ZoneToolResult[]): ZoneTurnGroup[] {
   const groups: ZoneTurnGroup[] = [];
   for (const result of zone) {
     const current = groups[groups.length - 1];
-    if (current !== undefined && current.turnId !== null && current.turnId === result.turnId) {
+    if (current !== undefined && current.turnId === result.turnId) {
       current.tokenSum += result.tokenEstimate;
       current.lastSourceEventOrder = result.sourceEventOrder;
     } else {
@@ -126,15 +123,9 @@ export function groupZone(zone: readonly ZoneToolResult[]): ZoneTurnGroup[] {
 //
 // Zone is the turn-grouped tool results oldest-first. Under-or-at max the
 // boundary does not move. Over max, walk candidate groups oldest-first — the
-// open turn's group (when one exists) is never a candidate, and the walk stops
-// before the newest closed turn so that turn and everything after it (any
-// trailing turnless singletons recorded after its close) are never evicted. The
-// boundary lands on a group's last source event order, so an eviction reaching
-// the newest closed turn, or any group past it, would render that turn short;
-// stopping before it keeps it intact even when a later turnless singleton sits
-// in the zone. With no closed turn present the newest remaining group is
-// protected instead. A group is evicted only if the zone's sum after evicting it
-// remains at-or-above target. The advance therefore lands in
+// open turn's group (when one exists) is never a candidate, and the newest
+// remaining group is protected. A group is evicted only if the zone's sum after
+// evicting it remains at-or-above target. The advance therefore lands in
 // [target, target + one group), and the zone may legally sit above target or
 // even max until a newer turn closes or a compact creates room.
 export function advanceDecision(
@@ -147,21 +138,8 @@ export function advanceDecision(
   if (total <= budgets.maxTokens) return null;
 
   // The open turn's group is never evictable; its tokens still count in the sum.
-  const candidates = groups.filter((group) => group.turnId === null || group.turnId !== openTurnId);
-
-  // Stop the walk before the newest closed turn — the last candidate carrying a
-  // turn_id. It and everything after it (the turn itself plus any trailing
-  // turnless singletons) are protected: the boundary lands on a group's last
-  // order, so any landing there or beyond would flip the newest closed turn
-  // short. With no closed turn in the zone, fall back to protecting the newest
-  // candidate group (the turnless-only whole-message behavior).
-  let stop = candidates.length - 1;
-  for (let i = candidates.length - 1; i >= 0; i -= 1) {
-    if (candidates[i]?.turnId !== null) {
-      stop = i;
-      break;
-    }
-  }
+  const candidates = groups.filter((group) => group.turnId !== openTurnId);
+  const stop = candidates.length - 1;
 
   let remaining = total;
   let newPosition: number | null = null;

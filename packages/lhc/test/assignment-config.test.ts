@@ -176,19 +176,6 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
       }),
     ).not.toThrow();
   });
-
-  it("nested inference guards are rejected in favor of top-level guards", () => {
-    const { call } = recordingCall();
-    expect(() =>
-      initLhc({
-        mode: "manual",
-        inference: {
-          call,
-          guards: { smoothedPrompt: { maxInferenceTokens: 500 } },
-        },
-      } as Parameters<typeof initLhc>[0]),
-    ).toThrow(/inference\.guards is retired; use top-level guards/);
-  });
 });
 
 describe("TC-6.4a: inference types resolve to a default provider lane and model (AC-6.4)", () => {

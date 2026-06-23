@@ -15,13 +15,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
+import { initLhc, type MessageEventInput } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   type DerivedThreadFixture,
   derivedThreadFixture,
   openRaw,
-  stragglerVariantThread,
   type TempStore,
   tempStore,
   validEvent,
@@ -29,7 +28,7 @@ import {
 
 interface Golden {
   case: string;
-  fixture: "derived-thread" | "straggler-variant";
+  fixture: "derived-thread";
   params: {
     lowerBound: number;
     percentages: { full: number; smooth: number; detailed: number; brief: number };
@@ -48,10 +47,6 @@ interface Golden {
 
 function loadGolden(name: string): Golden {
   return JSON.parse(readFileSync(join(import.meta.dirname, "goldens", name), "utf8")) as Golden;
-}
-
-function messageText(message: { content: readonly { text: string }[] }): string {
-  return message.content.map((part) => part.text).join("");
 }
 
 interface StoredView {
@@ -91,23 +86,20 @@ function readStoredView(filePath: string): StoredView {
 
 let store: TempStore;
 let fixture: DerivedThreadFixture;
-let straggler: DerivedThreadFixture;
 
 beforeAll(async () => {
   store = tempStore();
   fixture = await derivedThreadFixture(store);
-  straggler = await stragglerVariantThread(store);
 });
 afterAll(() => {
   store.cleanup();
 });
 
 async function runGolden(golden: Golden): Promise<StoredView> {
-  const target = golden.fixture === "straggler-variant" ? straggler : fixture;
-  const receipt = await target.sdk.threadView.compact({ filePath: target.filePath }, { params: golden.params });
+  const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: golden.params });
   expect(receipt.ok).toBe(true);
   if (!receipt.ok) throw new Error(receipt.error.reason);
-  const stored = readStoredView(target.filePath);
+  const stored = readStoredView(fixture.filePath);
   if (process.env["GOLDEN_DUMP"] === "1") {
     console.log(`${golden.case}\n${JSON.stringify(stored, null, 2)}`);
   }
@@ -147,28 +139,6 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     // The loner condition itself: exactly one smooth entry, and the smooth
     // budget (250 × 4% = 10) is smaller than any turn entry could render.
     expect(stored.arrangement.filter((entry) => entry.band === "smooth")).toHaveLength(1);
-  });
-
-  it("G4 turnless straggler: the note rides the following turn's band entry; the trailing note is tail", async () => {
-    const golden = loadGolden("g4-turnless-straggler.json");
-    const stored = await runGolden(golden);
-    expectMatches(stored, golden);
-
-    // The trailing note still appears in the tail.
-    const contextRead = await (straggler.sdk as Lhc).threadView.getLlmRequestContext({
-      filePath: straggler.filePath,
-    });
-    expect(contextRead.ok).toBe(true);
-    if (!contextRead.ok) return;
-    const tail = contextRead.value.messages.filter((message) => !messageText(message).startsWith("[context ·"));
-    expect(
-      tail.some(
-        (message) =>
-          messageText(message) === "[runtime note] session closing note after the last turn (fixture straggler)",
-      ),
-    ).toBe(true);
-    // The note appears once: banded with c2, not duplicated into the tail.
-    expect(tail.some((message) => messageText(message).includes("harness restarted between turns"))).toBe(false);
   });
 });
 

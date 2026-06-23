@@ -5,7 +5,7 @@
 // PI entry id → provider response / tool-call id → content fingerprint, with
 // blockIndex and kind disambiguating one message's fan-out.
 
-import { createDeterministicProvider, intakeStream, type MessageEventInput } from "lhc";
+import { createDeterministicInferenceCallbacks, intakeStream, type MessageEventInput } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { eventKey } from "../../src/capture/idempotency.js";
@@ -144,7 +144,7 @@ describe("Story 2: corpus double-replay (idempotency architecture-risk)", () => 
   it("replaying the same corpus twice produces no duplicate events; re-delivered keys come back skipped", async () => {
     const thread = await makeTempThread(store);
     const built = await initInstance(thread.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     expect(built.ok).toBe(true);

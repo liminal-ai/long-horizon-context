@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SdkViewConfig } from "../src/index.js";
 import {
   boundaryTokens,
+  boundaryToolRun,
   createInferenceCallbacksDouble,
   openRaw,
   seedTurnedToolResults,
@@ -62,7 +63,7 @@ interface ResultRow {
   messageId: string;
   sourceEventOrder: number;
   tokenEstimate: number;
-  turnId: string | null;
+  turnId: string;
 }
 
 async function toolResults(sdk: Lhc, filePath: string): Promise<ResultRow[]> {
@@ -74,7 +75,7 @@ async function toolResults(sdk: Lhc, filePath: string): Promise<ResultRow[]> {
       messageId: m.messageId,
       sourceEventOrder: m.sourceEventOrder,
       tokenEstimate: m.tokenEstimate,
-      turnId: m.turnId ?? null,
+      turnId: m.turnId,
     }));
 }
 
@@ -99,7 +100,6 @@ function abridgedCount(messages: ReadonlyArray<{ content: readonly { text: strin
 function expectNoPartialTurn(results: readonly ResultRow[], position: number): void {
   const byTurn = new Map<string, boolean[]>();
   for (const r of results) {
-    if (r.turnId === null) continue; // turnless: a singleton is whole by construction
     const flips = byTurn.get(r.turnId) ?? [];
     flips.push(r.sourceEventOrder <= position);
     byTurn.set(r.turnId, flips);
@@ -178,7 +178,7 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     // the check, the boundary never moves, and the over-budget condition is
     // visible in status.
     await intakeRaw(sdk, filePath, turnedToolResultEvents([{ results: [40], close: false }]));
-    await intakeRaw(sdk, filePath, turnedToolResultEvents([{ results: [40], turnless: true }]));
+    await intakeRaw(sdk, filePath, boundaryToolRun(40));
     expect(advances.count()).toBe(1); // mid-turn batches never even check
     expect(await boundaryOf(filePath)).toBe(0);
     expect(await zoneTokensOf(sdk, filePath)).toBe(140);
@@ -219,33 +219,6 @@ describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction
     expect(advances.count()).toBe(3);
     expect(await boundaryOf(filePath)).toBe(position);
     expect(await zoneTokensOf(sdk, filePath)).toBe(90);
-  });
-
-  it("evicts a turnless tool result as a singleton group", async () => {
-    const sdk = visSdk();
-    const filePath = await newThread(sdk);
-
-    // One closed turn (50), a turnless result in the gap (30), then a closed
-    // turn (70): zone 150 > 100. Walk excluding the newest closed turn:
-    // evict t1 (remaining 100 ≥ 60), evict the singleton (remaining 70 ≥ 60),
-    // stop. The boundary lands on the turnless result.
-    await seedTurnedToolResults(sdk, filePath, [
-      { results: [50] },
-      { results: [30], turnless: true },
-      { results: [70] },
-    ]);
-
-    const results = await toolResults(sdk, filePath);
-    expect(results).toHaveLength(3);
-    expect(results[1]?.turnId).toBe("t2");
-    expect(await boundaryOf(filePath)).toBe(results[1]?.sourceEventOrder);
-    expect(await zoneTokensOf(sdk, filePath)).toBe(70);
-
-    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
-    expect(contextRead.ok).toBe(true);
-    if (!contextRead.ok) return;
-    expect(abridgedCount(contextRead.value.messages)).toBe(2); // t1's result + the singleton
-    expect(messageTexts(contextRead.value.messages)).toContain(`[tool result · read_file]\n${boundaryTokens(70)}`);
   });
 });
 
@@ -308,47 +281,6 @@ describe("TC-5.2 (AC-5.3, AC-5.4): peek-ahead landing, newest-turn protection, t
     expect(contextRead.ok).toBe(true);
     if (!contextRead.ok) return;
     expect(messageTexts(contextRead.value.messages)).toContain(`[tool result · read_file]\n${boundaryTokens(120)}`);
-  });
-
-  it("never evicts the newest closed turn when a legal trailing turnless singleton sits after it", async () => {
-    const sdk = visSdk();
-    const filePath = await newThread(sdk);
-    // A legal zone shape: two closed turns, then a tool result recorded after
-    // the newest turn closed (turn_id NULL — a trailing turnless singleton).
-    // Turns 50/45 then turnless 70: total 165 > 100. The newest closed turn
-    // (45) and the trailing turnless (70) are both protected — the boundary
-    // lands on a group's last order, so walking past either would flip the
-    // newest closed turn short. Only t1 (50) is evictable (remaining 115 ≥ 60);
-    // the walk stops before the newest closed turn and the zone legally stays
-    // above max. (The pre-fix code evicted the newest closed turn here: it
-    // protected only the trailing turnless as the last candidate.)
-    await seedTurnedToolResults(sdk, filePath, [
-      { results: [50] },
-      { results: [45] },
-      { results: [70], turnless: true },
-    ]);
-
-    const results = await toolResults(sdk, filePath);
-    expect(results).toHaveLength(3);
-    expect(results[2]?.turnId).toBe("t3");
-
-    const position = await boundaryOf(filePath);
-    expect(position).toBe(results[0]?.sourceEventOrder); // lands on t1, before the newest closed turn
-    expect(await zoneTokensOf(sdk, filePath)).toBe(115); // 45 (newest closed) + 70 (trailing turnless)
-
-    // The newest closed turn stays intact: no turn is partially flipped, and
-    // both it and the trailing turnless render full — only t1 is abridged.
-    expectNoPartialTurn(results, position);
-    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
-    expect(contextRead.ok).toBe(true);
-    if (!contextRead.ok) return;
-    expect(abridgedCount(contextRead.value.messages)).toBe(1); // only t1's result
-    expect(messageTexts(contextRead.value.messages)).toContain(
-      `[tool result · read_file]\n${boundaryTokens(45)}`, // newest closed turn, full
-    );
-    expect(messageTexts(contextRead.value.messages)).toContain(
-      `[tool result · read_file]\n${boundaryTokens(70)}`, // trailing turnless, full
-    );
   });
 
   it("holds the boundary when the only closed turn is oversized: no candidate exists", async () => {

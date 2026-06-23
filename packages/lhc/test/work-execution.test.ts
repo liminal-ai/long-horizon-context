@@ -524,13 +524,13 @@ describe("TC-1.7 / AC-1.8: an unregistered kind lands failed_terminal with a sta
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
 
-    // Raw row with an unregistered kind, queued ahead of any valid work.
+    // Raw current-shape row with an unregistered kind, queued ahead of any valid work.
     const db = openRaw(filePath);
     try {
       db.prepare(
-        `INSERT INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at)
+        `INSERT INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at, payload)
          VALUES ('w-mX-bogus_kind-v1', 'messages', 'bogus_kind', '{"messageId":"mX"}', 'queued',
-                 '2026-06-10T11:00:00.000Z')`,
+                 '2026-06-10T11:00:00.000Z', '{"sourceVersion":1,"derivations":[]}')`,
       ).run();
     } finally {
       db.close();

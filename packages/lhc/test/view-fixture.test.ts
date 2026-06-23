@@ -1,9 +1,9 @@
-// Epic 03 Story 0 foundation checks (FC-0.1–FC-0.6): migration v6 storage,
+// Epic 03 Story 0 foundation checks (FC-0.1–FC-0.6): view storage,
 // profile config validation through real initLhc construction, the
 // derived-thread fixture's state fidelity proven by read-back through the
 // owning report surfaces (states reached through production drains, never
-// hand-written rows), the corruption and turnless-straggler variants, and
-// the two-point test injection facility.
+// hand-written rows), the corruption variant, and the two-point test injection
+// facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, messages, turns } from "../src/index.js";
 import {
@@ -15,9 +15,7 @@ import {
   fireViewInjection,
   openRaw,
   PERMANENT_FAILURE_REASON,
-  schemaVersionOf,
   setViewInjectionHook,
-  stragglerVariantThread,
   type TempStore,
   TRANSIENT_EXHAUST_REASON,
   tempStore,
@@ -45,11 +43,13 @@ function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
   });
 }
 
-describe("FC-0.1: migration v6 storage on a current thread file", () => {
+describe("FC-0.1: current view storage on a current thread file", () => {
   it("creates the three view tables with their CHECK constraints and seeds the boundary at 0", () => {
-    expect(schemaVersionOf(fixture.filePath)).toBe(10);
     const db = openRaw(fixture.filePath);
     try {
+      const version = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
+      expect(Number(version?.user_version ?? 0)).toBe(1);
+
       const tables = (
         db
           .prepare(
@@ -252,7 +252,7 @@ describe("FC-0.4: the two failed forms carry distinguishable reason classes (Sto
   });
 });
 
-describe("FC-0.5: corruption and turnless-straggler variants", () => {
+describe("FC-0.5: corruption variant", () => {
   it("the corruption variant refuses canonical consumption with state_corruption naming the damage", async () => {
     const corrupted = await corruptedVariantThread(store);
     const refused = await corrupted.sdk.intakeStream.messageEvents({ filePath: corrupted.filePath }, [
@@ -263,31 +263,6 @@ describe("FC-0.5: corruption and turnless-straggler variants", () => {
     expect(refused.error.errorClass).toBe("state_corruption");
     expect(refused.error.code).toBe("turn_state_corrupt");
     expect(refused.error.reason).toMatch(/open turns/);
-  });
-
-  it("the straggler variant carries note messages in the current open turns", async () => {
-    const variant = await stragglerVariantThread(store);
-    const listed = await messages.list({ filePath: variant.filePath });
-    const turnList = await turns.listTurns({ filePath: variant.filePath });
-    expect(listed.ok && turnList.ok).toBe(true);
-    if (!listed.ok || !turnList.ok) return;
-
-    const between = listed.value.find((message) => message.messageId === variant.stragglerBetweenMessageId);
-    const trailing = listed.value.find((message) => message.messageId === variant.stragglerTrailingMessageId);
-    expect(between?.kind).toBe("runtime_note");
-    expect(between?.turnId).toBeDefined();
-    expect(trailing?.kind).toBe("runtime_note");
-    expect(trailing?.turnId).toBeDefined();
-
-    // The former between-turn note is now a member of the current open turn.
-    const t4 = turnList.value.find((turn) => turn.turnId === "t4");
-    expect(between!.turnId).toBe("t4");
-    expect(between!.sourceEventOrder).toBeGreaterThanOrEqual(t4!.openedAtEventOrder);
-
-    // The trailing note is the last recorded message and belongs to the
-    // current open turn after the last close.
-    expect(trailing!.turnId).toBeDefined();
-    expect(Math.max(...listed.value.map((message) => message.sourceEventOrder))).toBe(trailing!.sourceEventOrder);
   });
 });
 

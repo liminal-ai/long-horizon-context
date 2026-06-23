@@ -50,7 +50,7 @@ export interface MessageRecord {
   // pairs with sourceEventOrder), read from the durable event, never a
   // read-time clock.
   recordedAt: string;
-  turnId?: string;
+  turnId: string;
   // Stored derivations for messages that are derivation sources. Kinds with no
   // derivable output carry no rows and no key. Stored state is returned
   // verbatim, never re-derived on read.
@@ -355,9 +355,8 @@ export interface MutationResult {
 // are never touched, and no generated thread-view is either — visibility
 // arrives at the next compact/rebuild.
 // Refusals read through the deleted-filtered view and enforce the closed-turn
-// target boundary: only a message in a closed turn is editable, so an
-// open-turn *or* a turnless (no-membership) gap target is refused turn_open —
-// the boundary's one stable code — a missing or deleted message is
+// target boundary: only a message in a closed turn is editable. An open-turn
+// message is refused as turn_open, a missing or deleted message is
 // message_not_found, and a refusal changes nothing.
 export async function edit(
   threadRef: ThreadRef,
@@ -376,10 +375,6 @@ export async function edit(
           },
         };
       }
-      // The editable class is a message in a closed turn. Both failing cases,
-      // an open turn and a turnless gap message, refuse under one stable code;
-      // the reason distinguishes them. A deleted/missing target never gets here
-      // because it misses the filtered read above as message_not_found.
       if (target.turnStatus !== "closed") {
         return {
           ok: false,
@@ -388,8 +383,8 @@ export async function edit(
             code: "turn_open",
             reason:
               target.turnStatus === "open"
-                ? `message ${edit.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be edited (v1 boundary)`
-                : `message ${edit.messageId} has no turn membership; only closed-turn messages can be edited (v1 boundary)`,
+                ? `message ${edit.messageId} belongs to open turn ${target.turnId}; open-turn messages cannot be edited (v1 boundary)`
+                : `message ${edit.messageId} references no readable turn; only closed-turn messages can be edited (v1 boundary)`,
           },
         };
       }
@@ -420,9 +415,9 @@ export async function edit(
 // composition) land in one transaction. The source events are never touched;
 // event read-back keeps returning them. Validation reads the same filtered view
 // as edit, so a missing, deleted, or double-deleted target is message_not_found
-// and an open-turn or turnless gap target is turn_open. The delete-specific
-// refusal is prompt protection: deleting the turn's initiating prompt is
-// refused because initiating-prompt and whole-turn delete are unsupported.
+// and an open-turn target is turn_open. The delete-specific refusal is prompt
+// protection: deleting the turn's initiating prompt is refused because
+// initiating-prompt and whole-turn delete are unsupported.
 export async function remove(threadRef: ThreadRef, removal: { messageId: string }): Promise<OpResult<MutationResult>> {
   try {
     const result = await createDbWriteTransaction(threadRef, (transaction): OpResult<MutationResult> => {
@@ -445,8 +440,8 @@ export async function remove(threadRef: ThreadRef, removal: { messageId: string 
             code: "turn_open",
             reason:
               target.turnStatus === "open"
-                ? `message ${removal.messageId} belongs to open turn ${target.turnId ?? ""}; open-turn messages cannot be deleted (v1 boundary)`
-                : `message ${removal.messageId} has no turn membership; only closed-turn messages can be deleted (v1 boundary)`,
+                ? `message ${removal.messageId} belongs to open turn ${target.turnId}; open-turn messages cannot be deleted (v1 boundary)`
+                : `message ${removal.messageId} references no readable turn; only closed-turn messages can be deleted (v1 boundary)`,
           },
         };
       }
@@ -456,7 +451,7 @@ export async function remove(threadRef: ThreadRef, removal: { messageId: string 
           error: {
             errorClass: "caller_error",
             code: "message_initiates_turn",
-            reason: `message ${removal.messageId} is the prompt that initiates turn ${target.turnId ?? ""}; deleting the initiating prompt or whole turn is not supported in this slice`,
+            reason: `message ${removal.messageId} is the prompt that initiates turn ${target.turnId}; deleting the initiating prompt or whole turn is not supported in this slice`,
           },
         };
       }

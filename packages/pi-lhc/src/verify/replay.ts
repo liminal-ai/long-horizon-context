@@ -278,7 +278,7 @@ function comparableMessageRecords(records: readonly MessageRecord[]): Comparable
     kind: record.kind,
     blocks: record.blocks,
     harness: record.harness,
-    ...(record.turnId === undefined ? {} : { turnId: record.turnId }),
+    turnId: record.turnId,
   }));
 }
 

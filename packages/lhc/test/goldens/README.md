@@ -1,10 +1,10 @@
-# Selection goldens (Epic 03 Story 2, G1–G4)
+# Selection goldens (Epic 03 Story 2, G1–G3)
 
 Committed expected arrangements for the band-selection walk (tech design
 §Deterministic Algorithms), consumed by `test/view-select-golden.test.ts`.
 Each golden pins the exact arrangement a compact must produce on the Story-0
-fixture (or its straggler variant) under explicit params: subject ids per
-band, form used, compact point, covered_from, and gaps.
+fixture under explicit params: subject ids per band, form used, compact point,
+covered_from, and gaps.
 
 **Goldens are immutable once committed.** An implementation that disagrees
 with a golden is wrong until the *design rule* is shown wrong — that takes the
@@ -24,7 +24,6 @@ literal rules.
 | `g2-edge-inclusion.json` | G2a | entry exactly filling the remainder is included (≤) |
 | `g2-edge-exclusion.json` | G2b | one token under the exact fill → excluded, band stops |
 | `g3-oversized-loner.json` | G3 | oversized entry on an otherwise-empty band represents alone |
-| `g4-turnless-straggler.json` | G4 | rule 6: straggler rides the following turn's band entry; trailing straggler is tail |
 | `boundary-g1-trajectory.json` | Boundary G1 (Epic 03 Story 4, re-cut by Epic 05 Story 6) | advance trajectory under the turn-end trigger: over-max check at turn close only, whole-turn oldest-first eviction with the peek-ahead stop, newest-closed-turn protection, mid-turn batches never move, never-backward across batches |
 
 ## Regeneration (only with a granted deviation)

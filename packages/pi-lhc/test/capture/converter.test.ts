@@ -5,7 +5,7 @@
 // capture() directly because the two failure shapes (writable→gap vs
 // store-unavailable→health) are the architecture-risk contract.
 import { rmSync } from "node:fs";
-import { createDeterministicProvider, inspect, intakeStream, type MessageEventInput, threads } from "lhc";
+import { createDeterministicInferenceCallbacks, inspect, intakeStream, type MessageEventInput, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
@@ -156,7 +156,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
   async function liveInstance(): Promise<LhcInstance> {
     const thread = await makeTempThread(store);
     const built = await initInstance(thread.threadRef, {
-      provider: createDeterministicProvider(),
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
     });
     if (!built.ok) throw new Error(`instance init failed: ${built.error.reason}`);

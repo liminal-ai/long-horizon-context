@@ -67,18 +67,17 @@ function sourceRefFor(subject: ChainSubject): WorkSourceRef {
 }
 
 // The structural walk: the mutated message's turn from its membership stamp,
-// the turn's chunk from its placement row. Either link may be absent — a gap
-// message has no turn, an unplaced turn no chunk — and the chain simply
-// stops there; reach is structural, not configured. Deliberately unfiltered:
-// the walk runs after a delete stamps its subject, and the chain above a
-// just-deleted record is exactly what must still cascade.
+// the turn's chunk from its placement row. The chunk link may be absent for an
+// unplaced turn, and the chain stops there. Deliberately unfiltered: the walk
+// runs after a delete stamps its subject, and the chain above a just-deleted
+// record is exactly what must still cascade.
 function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
   const subjects: ChainSubject[] = [{ subjectKind: "message", subjectId: messageId }];
   const turnRow = db.prepare(`SELECT turn_id FROM message WHERE message_id = ?`).get(messageId) as unknown as
-    | { turn_id: string | null }
+    | { turn_id: string }
     | undefined;
-  const turnId = turnRow?.turn_id ?? null;
-  if (turnId === null) return subjects;
+  const turnId = turnRow?.turn_id;
+  if (turnId === undefined) return subjects;
   subjects.push({ subjectKind: "turn", subjectId: turnId });
   const chunkRow = db.prepare(`SELECT chunk_id FROM chunk_member WHERE turn_id = ?`).get(turnId) as unknown as
     | { chunk_id: string }

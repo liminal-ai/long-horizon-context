@@ -1,5 +1,5 @@
 // Band selection: compact point, smooth/detailed/brief fills, unchunked turns,
-// turnless stragglers, the coverage edge (covered_from), and
+// the coverage edge (covered_from), and
 // canonical-corruption detection. Two halves, deliberately split:
 //
 //   - readSelectionInputs: the record/derivation reads, with the corruption check
@@ -11,8 +11,7 @@
 //
 // Tie-breakers: inclusion thresholds are <=; walks are newest-first everywhere;
 // chunk coverage is decided by the chunk's newest
-// member turn. Entry costs are the tokens of the rendered entry text itself
-// (render.ts's renderArrangementEntry, including attached inter-turn notes),
+// member turn. Entry costs are the tokens of the rendered entry text itself,
 // so the budgeted tokens are the stored tokens — no second estimate.
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
@@ -46,7 +45,7 @@ export interface SelectionMessage {
   order: number; // source_event_order
   kind: string;
   tokenEstimate: number;
-  turnId: string | null;
+  turnId: string;
   text: string; // excerpt/note line (render.excerptLine)
 }
 
@@ -142,8 +141,8 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
   }
 
   const messages: SelectionMessage[] = messagesDomain.readLiveMessages(db).map((record) => {
-    const turnId = record.turnId ?? null;
-    if (turnId !== null && !turnIds.has(turnId)) {
+    const turnId = record.turnId;
+    if (!turnIds.has(turnId)) {
       throw new CanonicalCorruptionError(
         "source_damaged",
         `canonical record corrupt: message ${record.messageId} references missing turn ${turnId}`,
@@ -233,32 +232,15 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
   const messagesByTurn = new Map<string, SelectionMessage[]>();
   for (const message of messages) {
-    if (message.turnId === null) continue;
     const list = messagesByTurn.get(message.turnId) ?? [];
     list.push(message);
     messagesByTurn.set(message.turnId, list);
   }
 
-  // Rule 6: turnless stragglers attach to the FOLLOWING turn — they ride its
-  // band assignment, price into its fill cost, and render marked immediately
-  // before its entry. No following turn ⇒ tail by construction.
-  const notesByTurn = new Map<string, SelectionMessage[]>();
-  for (const message of messages) {
-    if (message.turnId !== null) continue;
-    const following = turns.find((turn) => turn.openedAt > message.order);
-    if (following === undefined) continue; // trailing straggler: tail
-    const list = notesByTurn.get(following.turnId) ?? [];
-    list.push(message);
-    notesByTurn.set(following.turnId, list);
-  }
-
   // The oldest event order a turn's entry represents: its oldest live
-  // message or attached note, falling back to its open boundary.
+  // message, falling back to its open boundary.
   function turnStartOrder(turn: SelectionTurn): number {
-    const candidates = [
-      ...(messagesByTurn.get(turn.turnId) ?? []).map((message) => message.order),
-      ...(notesByTurn.get(turn.turnId) ?? []).map((note) => note.order),
-    ];
+    const candidates = (messagesByTurn.get(turn.turnId) ?? []).map((message) => message.order);
     return candidates.length === 0 ? turn.openedAt : Math.min(...candidates);
   }
 
@@ -285,31 +267,25 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
   }
 
   function snapCompactPoint(oldestTaken: SelectionMessage): number {
-    // The turn whose boundary the point snaps against: the message's own
-    // turn, or — for a turnless straggler — the turn it attaches to.
-    let candidate: SelectionTurn | undefined =
-      oldestTaken.turnId !== null ? turnsById.get(oldestTaken.turnId) : undefined;
-    if (candidate === undefined && oldestTaken.turnId === null) {
-      candidate = turns.find((turn) => turn.openedAt > oldestTaken.order);
-    }
+    const candidate = turnsById.get(oldestTaken.turnId);
     const previousClose = (turn: SelectionTurn): number => {
       const previous = closedTurns.filter((t) => t.turnOrder < turn.turnOrder).at(-1);
       return previous?.closedAt ?? 0;
     };
     if (candidate === undefined) {
-      // A trailing straggler with no following turn sits after the last turn
-      // boundary, where the compact point cannot pass it: tail begins after
-      // the newest closed turn.
-      return closedTurns.at(-1)?.closedAt ?? 0;
+      throw new CanonicalCorruptionError(
+        "source_damaged",
+        `canonical record corrupt: message ${oldestTaken.messageId} references missing turn ${oldestTaken.turnId}`,
+      );
     }
     if (candidate.status === "open") {
       // Open-turn messages are tail regardless of budget; the tail begins at
       // the open turn's start.
       return previousClose(candidate);
     }
-    // Fully covered down to the turn's start (notes included) ⇒ the tail
-    // begins at this turn; otherwise snap FORWARD to the next turn start —
-    // the partially-covered turn falls whole to the bands.
+    // Fully covered down to the turn's start ⇒ the tail begins at this turn;
+    // otherwise snap FORWARD to the next turn start — the partially-covered
+    // turn falls whole to the bands.
     if (oldestTaken.order <= turnStartOrder(candidate)) {
       return previousClose(candidate);
     }
@@ -326,8 +302,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     const turnMessages = messagesByTurn.get(turn.turnId) ?? [];
     const excerpt = turnMessages.length === 0 ? null : turnMessages.map((message) => message.text).join("\n");
     const rep = resolveSmoothRepresentation(turn.turnId, lookup, excerpt);
-    const noteTexts = (notesByTurn.get(turn.turnId) ?? []).map((note) => note.text);
-    const text = renderArrangementEntry("turn", turn.turnId, rep, noteTexts);
+    const text = renderArrangementEntry("turn", turn.turnId, rep, []);
     const entry: ArrangementEntry = {
       band: "smooth",
       subjectKind: "turn",
@@ -348,8 +323,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       band === "detailed"
         ? resolveDetailedRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_detailed"))
         : resolveBriefRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_brief"));
-    const noteTexts = chunk.memberTurnIds.flatMap((turnId) => (notesByTurn.get(turnId) ?? []).map((note) => note.text));
-    const text = renderArrangementEntry("chunk", chunk.chunkId, rep, noteTexts);
+    const text = renderArrangementEntry("chunk", chunk.chunkId, rep, []);
     const memberStarts = chunk.memberTurnIds
       .map((turnId) => turnsById.get(turnId))
       .filter((turn): turn is SelectionTurn => turn !== undefined)

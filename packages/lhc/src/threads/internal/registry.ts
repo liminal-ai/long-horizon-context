@@ -2,42 +2,54 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { type Migration, openDatabase, runMigrations } from "../../shared-tech/storage.js";
+import { getSchemaVersion, openDatabase } from "../../shared-tech/storage.js";
 
 export const DEFAULT_REGISTRY_PATH = join(homedir(), ".lhc", "registry.sqlite");
+const CURRENT_REGISTRY_SCHEMA_VERSION = 1;
 
 export function resolveRegistryPath(registryPath?: string): string {
   return registryPath ?? DEFAULT_REGISTRY_PATH;
 }
 
-const REGISTRY_MIGRATIONS: readonly Migration[] = [
-  {
-    version: 1,
-    statements: [
-      `CREATE TABLE threads (
-        thread_id TEXT PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        title TEXT,
-        created_at TEXT NOT NULL
-      );`,
-    ],
-  },
-  {
-    // The cwd a thread was created in, so the resume picker can scope its list
-    // to the current directory. Added as its own version so a registry created
-    // under v1 upgrades lazily on next open rather than silently lacking the
-    // column.
-    version: 2,
-    statements: [`ALTER TABLE threads ADD COLUMN cwd TEXT;`],
-  },
+const REGISTRY_SCHEMA_STATEMENTS: readonly string[] = [
+  `CREATE TABLE threads (
+    thread_id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    title TEXT,
+    cwd TEXT,
+    created_at TEXT NOT NULL
+  );`,
+  `PRAGMA user_version = ${CURRENT_REGISTRY_SCHEMA_VERSION};`,
 ];
 
-// First write creates the database and schema lazily (design decision 6).
+function hasNoSchema(db: DatabaseSync): boolean {
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 1").get();
+  return row === undefined && getSchemaVersion(db) === 0;
+}
+
+function ensureCurrentRegistry(db: DatabaseSync): void {
+  const version = getSchemaVersion(db);
+  if (version === CURRENT_REGISTRY_SCHEMA_VERSION) return;
+  throw new Error(`registry schema version ${version}, expected ${CURRENT_REGISTRY_SCHEMA_VERSION}`);
+}
+
+// First write creates the current registry file and schema lazily.
 export function openRegistryForWrite(registryPath: string): DatabaseSync {
   mkdirSync(dirname(registryPath), { recursive: true });
   const db = openDatabase(registryPath);
   try {
-    runMigrations(db, REGISTRY_MIGRATIONS);
+    if (hasNoSchema(db)) {
+      db.exec("BEGIN IMMEDIATE;");
+      try {
+        for (const statement of REGISTRY_SCHEMA_STATEMENTS) db.exec(statement);
+        db.exec("COMMIT;");
+      } catch (cause) {
+        db.exec("ROLLBACK;");
+        throw cause;
+      }
+    } else {
+      ensureCurrentRegistry(db);
+    }
   } catch (cause) {
     db.close();
     throw cause;
@@ -47,15 +59,12 @@ export function openRegistryForWrite(registryPath: string): DatabaseSync {
 
 // Reads never create the registry: callers map null to empty list /
 // thread_not_found. The existence check is the non-creation guarantee —
-// openDatabase would create the file. An existing registry is brought to the
-// current schema on open so reads can rely on the current columns (e.g. the
-// A-8 `cwd` column) regardless of which version created it; a registry already
-// at the latest version pays nothing (runMigrations is a no-op).
+// openDatabase would create the file.
 export function openRegistryForRead(registryPath: string): DatabaseSync | null {
   if (!existsSync(registryPath)) return null;
   const db = openDatabase(registryPath);
   try {
-    runMigrations(db, REGISTRY_MIGRATIONS);
+    ensureCurrentRegistry(db);
   } catch (cause) {
     db.close();
     throw cause;

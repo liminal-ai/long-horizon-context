@@ -5,7 +5,7 @@
 // injected SDK config or selector) for AC-1.2/1.5/1.7. Real temp registry
 // throughout; reload identity is carried by durable PI session entries.
 
-import { createDeterministicProvider, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
+import { createDeterministicInferenceCallbacks, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 function backgroundConfig(): SdkConfig {
-  return { provider: createDeterministicProvider(), mode: "background" };
+  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" };
 }
 
 function idOf(ref: ThreadRef): string {

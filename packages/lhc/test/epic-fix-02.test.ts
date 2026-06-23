@@ -190,14 +190,11 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     expect(resultBefore?.state).toBe("ready");
     const promptBefore = before.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
 
-    // Delete the tool_result (m3). Tool calls no longer have summaries, so no
-    // paired call summary is cleared or re-queued.
+    // Delete the tool_result (m3). Only the result's own derivation drops.
     const result = await sdk.messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.dropped.map(formKey)).toEqual(["message/m3/tool_result_summary"]);
-    expect(result.value.cleared.map(formKey)).not.toContain("message/m2/tool_call_summary");
-    expect(result.value.queued.map((item) => item.kind)).not.toContain("tool_call_summary");
 
     const rebuild = await sdk.work.drain({ filePath });
     expect(rebuild.ok).toBe(true);

@@ -102,7 +102,6 @@ describe("Story 2: tool-result rendering", () => {
       facts: expect.objectContaining({ outcome: "succeeded", noOutput: false }),
     });
     expect(calls[0]?.input).not.toHaveProperty("guidance");
-    expect(formOf(filePath, "m1", "tool_call_summary")).toBeUndefined();
     expect(formOf(filePath, "m2", "tool_result_summary")).toMatchObject({
       state: "ready",
       metadata: { outcome: "succeeded" },
@@ -166,7 +165,7 @@ describe("Story 2: tool-result rendering", () => {
     });
   });
 
-  it("tool-call arguments render as recorded with no tool_call_summary derivation", async () => {
+  it("tool-call arguments render as recorded", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -183,8 +182,6 @@ describe("Story 2: tool-result rendering", () => {
     ]);
     await drain(sdk, filePath);
 
-    const derivationTypes = readDerivedForms(filePath).map((f) => f.derivationType);
-    expect(derivationTypes).not.toContain("tool_call_summary");
     const rendering = readDerivedForms(filePath).find((f) => f.derivationType === "turn_rendering");
     expect(rendering?.content).toContain('exec({"cmd":"pnpm test"})');
   });
@@ -210,7 +207,6 @@ describe("Story 2: tool-result rendering", () => {
       .join("\n");
     expect(rendered).toContain(`[tool call · exec] ${args}`);
     expect(rendered).not.toContain("truncated");
-    expect(formOf(filePath, "m1", "tool_call_summary")).toBeUndefined();
   });
 
   it("terminal summary failure lands failed with reason while the source result remains intact", async () => {

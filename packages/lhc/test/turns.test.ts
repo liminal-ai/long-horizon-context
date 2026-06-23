@@ -210,7 +210,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     ]);
   });
 
-  it("TC-3.5: post-close messages attach to the current empty turn; no turnless messages are produced (AC-3.7, AC-3.8)", async () => {
+  it("TC-3.5: post-close messages attach to the current empty turn (AC-3.7, AC-3.8)", async () => {
     const filePath = await createThread();
     await send(filePath, [validEvent("user_prompt"), validEvent("assistant_text"), validEvent("turn_end")]);
     const closedBefore = (await readTurns(filePath))[0]!;

@@ -7,7 +7,7 @@
 // yet, so events are written directly through the instance). Real temp
 // registry/thread throughout (the store is never mocked).
 import { existsSync } from "node:fs";
-import { createDeterministicProvider, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
+import { createDeterministicInferenceCallbacks, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function backgroundConfig(): SdkConfig {
-  return { provider: createDeterministicProvider(), mode: "background" };
+  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" };
 }
 
 function idOf(ref: ThreadRef): string {

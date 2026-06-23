@@ -14,9 +14,8 @@ export interface MessageRow {
   actor: string;
   harness: string;
   // Membership stamp, settled at intake: the current open turn after turn
-  // intake. Written once here, never updated; null remains possible for
-  // legacy or below-SDK records.
-  turnId: string | null;
+  // intake. Written once here, never updated.
+  turnId: string;
   blocks: Block[];
 }
 
@@ -38,15 +37,15 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
 // Mutation validation reads the live (deleted-filtered) message joined to its
 // turn's status. A deleted target misses here and refuses as message_not_found:
 // the filtered view is the refusal read by design, including double delete.
-// turnStatus is null only for legacy or below-SDK records without membership;
-// the closed-turn target boundary refuses it the same as an open turn.
+// turnStatus is null only when the stored membership references no readable
+// turn; the closed-turn target boundary refuses it the same as an open turn.
 // initiatesTurn carries the prompt-protection fact: with initial empty turns,
 // the initiator is the first live member of a turn, not necessarily the turn's
 // open event.
 export interface MutableMessageView {
   messageId: string;
   kind: string;
-  turnId: string | null;
+  turnId: string;
   turnStatus: "open" | "closed" | null;
   initiatesTurn: boolean;
 }
@@ -69,7 +68,7 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
     | {
         message_id: string;
         kind: string;
-        turn_id: string | null;
+        turn_id: string;
         source_event_order: number | bigint;
         turn_status: string | null;
         is_first_member: number | bigint;
@@ -81,7 +80,7 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
     kind: row.kind,
     turnId: row.turn_id,
     turnStatus: row.turn_status as MutableMessageView["turnStatus"],
-    initiatesTurn: row.turn_id !== null && Number(row.is_first_member) === 1,
+    initiatesTurn: Number(row.is_first_member) === 1,
   };
 }
 
@@ -146,7 +145,7 @@ interface RawMessageRow {
   token_estimate: number | bigint;
   actor: string;
   harness: string;
-  turn_id: string | null;
+  turn_id: string;
   deleted_at: string | null;
   // The source event's recorded_at, joined from the durable event row on
   // source_event_order = event_order (every message has exactly one source
@@ -170,8 +169,8 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
     actor: row.actor,
     harness: row.harness,
     recordedAt: row.recorded_at,
+    turnId: row.turn_id,
   };
-  if (row.turn_id !== null) record.turnId = row.turn_id;
   // The deleted marker is present only on deleted rows, which only the
   // includeDeleted read surfaces. It is never silently mixed into default reads.
   if (row.deleted_at !== null) record.deleted = true;

@@ -225,8 +225,7 @@ export function createOrClaimImmediateWorkItem(
         })
       | undefined;
     if (head !== undefined) {
-      const headSourceVersion =
-        head.payload === null ? 1 : ((JSON.parse(head.payload) as { sourceVersion?: number }).sourceVersion ?? 1);
+      const headSourceVersion = parseWorkPayload(head).sourceVersion ?? 1;
       const isExactOperation =
         head.owner === input.owner &&
         head.kind === input.kind &&
@@ -272,8 +271,9 @@ export function createOrClaimImmediateWorkItem(
         db.exec("COMMIT;");
         return { outcome: "in_flight", workItemId: head.work_item_id };
       }
+      const item = toClaimedItem(claimed);
       db.exec("COMMIT;");
-      return { outcome: "claimed", item: toClaimedItem(claimed) };
+      return { outcome: "claimed", item };
     }
 
     if (!boundariesMatch()) {
@@ -295,8 +295,9 @@ export function createOrClaimImmediateWorkItem(
     if (claimed === undefined) {
       throw new Error(`failed to claim immediate work item ${item.workItemId}`);
     }
+    const claimedItem = toClaimedItem(claimed);
     db.exec("COMMIT;");
-    return { outcome: "claimed", item: toClaimedItem(claimed) };
+    return { outcome: "claimed", item: claimedItem };
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
@@ -347,28 +348,17 @@ interface RawClaimRow {
   attempts: number | bigint;
   claim_epoch: number | bigint;
   queued_at: string;
-  payload: string | null;
+  payload: string;
 }
 
-// Derivation targets for pre-v5 rows whose payload is NULL. The storage
-// migration created pending derivation rows at source version 1 for these
-// kinds, and terminal failures must still find those rows.
-const LEGACY_KIND_DERIVATIONS: Partial<
-  Record<string, ReadonlyArray<{ subjectKind: SubjectKind; derivationType: string }>>
-> = {
-  prompt_smoothing: [{ subjectKind: "message", derivationType: "smoothed_prompt" }],
-  tool_result_summary: [{ subjectKind: "message", derivationType: "tool_result_summary" }],
-  turn_derivation: [
-    { subjectKind: "turn", derivationType: "turn_rendering" },
-    { subjectKind: "turn", derivationType: "smooth_turn_compression" },
-  ],
-};
+interface WorkPayload {
+  sourceVersion?: number;
+  operation?: DurableWorkOperation;
+  derivations?: EnqueueDerivationTarget[];
+}
 
-function legacyDerivationTargets(kind: string, sourceRef: WorkSourceRef): EnqueueDerivationTarget[] {
-  const mapped = LEGACY_KIND_DERIVATIONS[kind];
-  if (mapped === undefined) return [];
-  const subjectId = sourceIdOf(sourceRef);
-  return mapped.map((target) => ({ ...target, subjectId }));
+function parseWorkPayload(row: Pick<RawClaimRow, "work_item_id" | "payload">): WorkPayload {
+  return JSON.parse(row.payload) as WorkPayload;
 }
 
 function operationIntentForRow(kind: string, sourceRef: WorkSourceRef): DurableWorkOperation | undefined {
@@ -378,20 +368,7 @@ function operationIntentForRow(kind: string, sourceRef: WorkSourceRef): DurableW
 
 function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
   const sourceRef = JSON.parse(row.source_ref) as WorkSourceRef;
-  const payload =
-    row.payload === null
-      ? // Pre-v5 row: version 1 (matching the backfill) and derivation targets
-        // reconstructed from the backfill's own mapping.
-        {
-          sourceVersion: 1,
-          operation: operationIntentForRow(row.kind, sourceRef),
-          derivations: legacyDerivationTargets(row.kind, sourceRef),
-        }
-      : (JSON.parse(row.payload) as {
-          sourceVersion?: number;
-          operation?: DurableWorkOperation;
-          derivations?: EnqueueDerivationTarget[];
-        });
+  const payload = parseWorkPayload(row);
   const operation = payload.operation ?? operationIntentForRow(row.kind, sourceRef);
   return {
     workItemId: row.work_item_id,
@@ -475,8 +452,9 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
       )
       .get(now, expiresAt, now, now) as unknown as RawClaimRow | undefined;
     if (claimed !== undefined) {
+      const item = toClaimedItem(claimed);
       db.exec("COMMIT;");
-      return { outcome: "claimed", item: toClaimedItem(claimed) };
+      return { outcome: "claimed", item };
     }
     // No row claimable: re-read the head inside the same transaction to
     // classify the stop. A claimed head with a live lease, or a queued head

@@ -1,7 +1,7 @@
 // Startup validation probes inference assignments against PI's registry,
 // reports unreachable lanes, and leaves capture running.
 //
-// This layer runs AFTER shape validation (which LHC's createSdk enforces at
+// This layer runs AFTER shape validation (which LHC's initLhc enforces at
 // construction). It adds a reachability probe on top: for each assignment,
 // check that the provider/model pair exists in PI's registry and that auth is
 // configured. This surfaces misconfigurations before the first derivation use,
