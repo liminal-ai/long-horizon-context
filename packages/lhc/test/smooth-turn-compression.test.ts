@@ -140,12 +140,10 @@ describe("Story 3: smooth turn compression", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => double.smoothPrompt(input),
       summarizeToolResult: (input) => double.summarizeToolResult(input),
-      composeTurnRendering: (input) => double.composeTurnRendering(input),
       compressSmoothTurn: async (input) => {
         captured.push({ op: "compressSmoothTurn", input: structuredClone(input) });
         return { ok: true, text: output };
       },
-      summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
     const sdk = sdkFor(callbacks);

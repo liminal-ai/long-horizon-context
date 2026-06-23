@@ -74,9 +74,7 @@ function observeOnlyInferenceCallbacks(): InferenceCallbacks {
   return {
     smoothPrompt: notConfigured,
     summarizeToolResult: notConfigured,
-    composeTurnRendering: notConfigured,
     compressSmoothTurn: notConfigured,
-    summarizeChunkDetailed: notConfigured,
     summarizeChunkBrief: notConfigured,
   };
 }

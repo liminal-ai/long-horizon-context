@@ -14,78 +14,19 @@ import type {
   InferenceCallbacks,
   InferenceResult,
   Lhc,
-  SubjectKind,
   WorkHandler,
   WorkKind,
 } from "../../src/index.js";
-import { applyDerivationSuccess, registerTestingWork } from "../../src/index.js";
+import { applyDerivationSuccess, deterministicText, registerTestingWork } from "../../src/index.js";
 import type { DerivationType } from "./model-call.js";
 
-interface FormSpec {
-  subjectKind: SubjectKind;
-  derivationType: DerivationType;
-  call: (inferenceCallbacks: InferenceCallbacks, sourceId: string) => Promise<InferenceResult>;
-}
-
-const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
-  prompt_smoothing: [
-    {
-      subjectKind: "message",
-      derivationType: "smoothed_prompt",
-      call: (p, id) => p.smoothPrompt({ text: `prompt:${id}` }),
-    },
-  ],
-  tool_result_summary: [
-    {
-      subjectKind: "message",
-      derivationType: "tool_result_summary",
-      call: (p, id) => p.summarizeToolResult({ toolName: "fixture", content: `result:${id}` }),
-    },
-  ],
-  turn_derivation: [
-    {
-      subjectKind: "turn",
-      derivationType: "turn_rendering",
-      call: (p, id) =>
-        p.composeTurnRendering({
-          parts: [{ messageId: id, kind: "user_prompt", text: `turn:${id}`, fallback: false }],
-        }),
-    },
-    {
-      subjectKind: "turn",
-      derivationType: "smooth_turn_compression",
-      call: (p, id) =>
-        p.compressSmoothTurn({
-          rendering: `turn:${id}`,
-          inputTokens: 10,
-          targetMinTokens: 4,
-          targetAimTokens: 5,
-          targetMaxTokens: 7,
-        }),
-    },
-  ],
-  chunk_summary_detailed: [
-    {
-      subjectKind: "chunk",
-      derivationType: "chunk_summary_detailed",
-      call: (p, id) => p.summarizeChunkDetailed({ memberProjections: [`chunk:${id}`] }),
-    },
-  ],
-  chunk_summary_brief: [
-    {
-      subjectKind: "chunk",
-      derivationType: "chunk_summary_brief",
-      call: (p, id) =>
-        p.summarizeChunkBrief({
-          text: `chunk:${id}`,
-          inputTokens: 10,
-          targetMinTokens: 1,
-          targetAimTokens: 2,
-          targetMaxTokens: 3,
-        }),
-    },
-  ],
-};
+const WORK_KINDS: readonly WorkKind[] = [
+  "prompt_smoothing",
+  "tool_result_summary",
+  "turn_derivation",
+  "chunk_summary_detailed",
+  "chunk_summary_brief",
+];
 
 export interface TestHandlerHooks {
   // Fires when a handler begins running an item — i.e. after the item's
@@ -99,30 +40,117 @@ export function testWorkHandlers(
   hooks: TestHandlerHooks = {},
 ): Partial<Record<WorkKind, WorkHandler>> {
   const map: Partial<Record<WorkKind, WorkHandler>> = {};
-  for (const [kind, specs] of Object.entries(KIND_SPECS) as Array<[WorkKind, FormSpec[]]>) {
+  for (const kind of WORK_KINDS) {
     map[kind] = async (_run, item) => {
       await hooks.onHandlerStart?.(item);
       const sourceId = item.sourceRef["messageId"] ?? item.sourceRef["turnId"] ?? item.sourceRef["chunkId"];
       if (sourceId === undefined) {
         return { ok: false, retryable: false, reason: "test handler: unrecognized sourceRef" };
       }
-      const derivations: HandlerDerivationWrite[] = [];
-      for (const spec of specs) {
-        const result = await spec.call(inferenceCallbacks, sourceId);
-        if (!result.ok) {
-          return { ok: false, retryable: result.retryable, reason: result.reason };
-        }
-        derivations.push({
-          subjectKind: spec.subjectKind,
-          subjectId: sourceId,
-          derivationType: spec.derivationType,
-          content: result.text,
-        });
+      const derived = await deriveForTestWork(kind, inferenceCallbacks, sourceId);
+      if (!derived.ok) {
+        return { ok: false, retryable: derived.retryable, reason: derived.reason };
       }
-      return { ok: true, derivations };
+      return { ok: true, derivations: derived.derivations };
     };
   }
   return map;
+}
+
+async function deriveForTestWork(
+  kind: WorkKind,
+  inferenceCallbacks: InferenceCallbacks,
+  sourceId: string,
+): Promise<{ ok: true; derivations: HandlerDerivationWrite[] } | { ok: false; retryable: boolean; reason: string }> {
+  if (kind === "prompt_smoothing") {
+    return inferenceWrite(
+      "message",
+      sourceId,
+      "smoothed_prompt",
+      await inferenceCallbacks.smoothPrompt({ text: `prompt:${sourceId}` }),
+    );
+  }
+  if (kind === "tool_result_summary") {
+    return inferenceWrite(
+      "message",
+      sourceId,
+      "tool_result_summary",
+      await inferenceCallbacks.summarizeToolResult({ toolName: "fixture", content: `result:${sourceId}` }),
+    );
+  }
+  if (kind === "turn_derivation") {
+    const renderingInput = {
+      parts: [{ messageId: sourceId, kind: "user_prompt", text: `turn:${sourceId}`, fallback: false }],
+    };
+    const renderingText = deterministicText("compressSmoothTurn", renderingInput, `turn:${sourceId}`);
+    const compression = await inferenceCallbacks.compressSmoothTurn({
+      rendering: `turn:${sourceId}`,
+      inputTokens: 10,
+      targetMinTokens: 4,
+      targetAimTokens: 5,
+      targetMaxTokens: 7,
+    });
+    if (!compression.ok) return compression;
+    return {
+      ok: true,
+      derivations: [
+        {
+          subjectKind: "turn",
+          subjectId: sourceId,
+          derivationType: "turn_rendering",
+          content: renderingText,
+        },
+        {
+          subjectKind: "turn",
+          subjectId: sourceId,
+          derivationType: "smooth_turn_compression",
+          content: compression.text,
+        },
+      ],
+    };
+  }
+  if (kind === "chunk_summary_detailed") {
+    const input = { memberProjections: [`chunk:${sourceId}`] };
+    return {
+      ok: true,
+      derivations: [
+        {
+          subjectKind: "chunk",
+          subjectId: sourceId,
+          derivationType: "chunk_summary_detailed",
+          content: deterministicText("summarizeChunkBrief", input, input.memberProjections.join(" | ")),
+        },
+      ],
+    };
+  }
+  if (kind === "chunk_summary_brief") {
+    return inferenceWrite(
+      "chunk",
+      sourceId,
+      "chunk_summary_brief",
+      await inferenceCallbacks.summarizeChunkBrief({
+        text: `chunk:${sourceId}`,
+        inputTokens: 10,
+        targetMinTokens: 1,
+        targetAimTokens: 2,
+        targetMaxTokens: 3,
+      }),
+    );
+  }
+  return { ok: false, retryable: false, reason: `test handler: unsupported work kind ${kind}` };
+}
+
+function inferenceWrite(
+  subjectKind: "message" | "chunk",
+  subjectId: string,
+  derivationType: DerivationType,
+  result: InferenceResult,
+): { ok: true; derivations: HandlerDerivationWrite[] } | { ok: false; retryable: boolean; reason: string } {
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    derivations: [{ subjectKind, subjectId, derivationType, content: result.text }],
+  };
 }
 
 export function testWorkDispatchers(

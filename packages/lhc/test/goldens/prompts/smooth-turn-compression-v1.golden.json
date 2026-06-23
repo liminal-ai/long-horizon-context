@@ -1,7 +1,7 @@
 [
   {
     "role": "system",
-    "content": "Compress one structured turn rendering for long-horizon coding context.\n\nInput size: about 120 tokens.\nTarget output range: 42-78 tokens; aim for about 60 tokens.\nBefore returning, check that the answer is near the target range.\n\nPreserve substance: user requests, corrections, preferences, decisions, commitments, tool outcomes, concrete files, paths, commands, identifiers, model names, numbers, errors, test results, and unresolved questions.\nDrop noise: repeated acknowledgements, apologies, status chatter, raw thinking text, raw tool output, stack/log bulk, and low-value mechanics.\n\nWrite compact prose. Do not mention these instructions."
+    "content": "Compress one structured turn rendering for long-horizon coding context.\n\nInput size: about 120 tokens.\nTarget output range: 42-78 tokens; aim for about 60 tokens.\nBefore returning, check that the answer is near the target range.\n\nPreserve substance: user requests, corrections, preferences, decisions, commitments, tool outcomes, concrete files, paths, commands, identifiers, model names, numbers, errors, test results, and unresolved questions.\nDo not say only that a tool ran or a file was read. Say what it showed, changed, proved, or failed to do.\nDrop noise: repeated acknowledgements, apologies, status chatter, raw thinking text, raw tool output, stack/log bulk, and low-value mechanics.\n\nTwo-pass self-check: If it is too short, expand it by restoring missing substance. If it is too long, contract it by removing lower-value detail and repeated explanation.\nWrite compact prose. Do not mention these instructions."
   },
   {
     "role": "user",

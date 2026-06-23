@@ -256,9 +256,7 @@ describe("architecture risk: health is inference-callback-free and surface-compo
       inferenceCallbacks: {
         smoothPrompt: refuse,
         summarizeToolResult: refuse,
-        composeTurnRendering: refuse,
         compressSmoothTurn: refuse,
-        summarizeChunkDetailed: refuse,
         summarizeChunkBrief: refuse,
       },
       mode: "manual",

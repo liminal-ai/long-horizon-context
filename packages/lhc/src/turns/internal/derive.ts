@@ -95,7 +95,7 @@ function renderingPartLabel(kind: RenderingPart["kind"]): string {
   }
 }
 
-function composeTurnRenderingText(parts: readonly RenderingPart[]): string {
+function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
   return parts
     .map((part, index) => {
       const annotations = [
@@ -365,7 +365,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     });
   }
 
-  const renderingText = composeTurnRenderingText(parts);
+  const renderingText = composeStructuredTurnText(parts);
   const inputTokens = estimateTokens(renderingText);
   const tinyTurnTokens = run.config.guards.smoothTurnCompression.tinyTurnTokens;
   const targetTokens = compressionTargetTokens(inputTokens, run.config.compressionTargets);

@@ -58,9 +58,7 @@ function withScriptedProjection(base: InferenceCallbacks, projection = FIXED_PRO
   return {
     smoothPrompt: (input) => base.smoothPrompt(input),
     summarizeToolResult: (input) => base.summarizeToolResult(input),
-    composeTurnRendering: (input) => base.composeTurnRendering(input),
     compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: projection }),
-    summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
     summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
   };
 }
@@ -158,7 +156,6 @@ function setCompressionState(
 describe("Story 4: chunk_summary_detailed concatenation format", () => {
   it("derives marker-separated member text in order without a detailed model call", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
     const projectedTokens = estimateTokens(FIXED_PROJECTION);
     const sdk = sdkFor(withScriptedProjection(double), {
       chunkPolicy: { targetProjectedTokens: 4 * projectedTokens, maxProjectedTokens: 999999 },
@@ -173,7 +170,6 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
 
     const detailedText = formOf(filePath, "c1", "chunk_summary_detailed")?.content;
 
-    expect(captured.some((entry) => entry.op === "summarizeChunkDetailed")).toBe(false);
     expect(detailedText).toBe(
       `[turn 0001]\n${FIXED_PROJECTION}\n\n[turn 0002]\n${FIXED_PROJECTION}\n\n[turn 0003]\n${FIXED_PROJECTION}`,
     );

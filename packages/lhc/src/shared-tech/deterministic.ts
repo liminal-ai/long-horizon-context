@@ -6,29 +6,19 @@
 import type {
   InferenceCallbacks,
   InferenceResult,
-  RenderingPart,
   ToolOutcome,
   ToolResultFacts,
   ToolResultOperationClass,
   ToolResultPromptMode,
   ToolResultResponseShape,
-  ToolRunReceipt,
 } from "./derivation.js";
 
-export type DeterministicOpName =
-  | "smoothPrompt"
-  | "summarizeToolResult"
-  | "composeTurnRendering"
-  | "compressSmoothTurn"
-  | "summarizeChunkDetailed"
-  | "summarizeChunkBrief";
+export type DeterministicOpName = "smoothPrompt" | "summarizeToolResult" | "compressSmoothTurn" | "summarizeChunkBrief";
 
 export const DETERMINISTIC_MARKERS: Record<DeterministicOpName, string> = {
   smoothPrompt: "smoothed",
   summarizeToolResult: "toolresult",
-  composeTurnRendering: "rendering",
   compressSmoothTurn: "projection",
-  summarizeChunkDetailed: "detailed",
   summarizeChunkBrief: "brief",
 };
 
@@ -52,11 +42,11 @@ function ok(op: DeterministicOpName, input: unknown, text: string): Promise<Infe
   return Promise.resolve({ ok: true, text: deterministicText(op, input, text) });
 }
 
-// The detailed summary's artifact carries the members' tool-run receipts —
-// account and outcome — verbatim. Pure suffixes over the input fields are
-// shared with the test double so in-process and spawned artifacts stay
-// byte-identical.
-export function deterministicReceiptsSuffix(memberReceipts?: ToolRunReceipt[][]): string {
+// Test helper for locally assembled detailed artifacts that need stable
+// receipt text without crossing the inference boundary.
+export function deterministicReceiptsSuffix(
+  memberReceipts?: Array<Array<{ account: string; outcome: ToolOutcome }>>,
+): string {
   const receipts = (memberReceipts ?? []).flat();
   if (receipts.length === 0) return "";
   return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
@@ -81,8 +71,6 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       promptMode?: ToolResultPromptMode;
       facts?: ToolResultFacts;
     }) => ok("summarizeToolResult", i, i.content),
-    composeTurnRendering: (i: { parts: RenderingPart[] }) =>
-      ok("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | ")),
     compressSmoothTurn: (i: {
       rendering: string;
       inputTokens: number;
@@ -90,11 +78,6 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       targetAimTokens: number;
       targetMaxTokens: number;
     }) => ok("compressSmoothTurn", i, i.rendering),
-    summarizeChunkDetailed: async (i: { memberProjections: string[]; memberReceipts?: ToolRunReceipt[][] }) => {
-      const base = await ok("summarizeChunkDetailed", i, i.memberProjections.join(" | "));
-      if (!base.ok) return base;
-      return { ok: true, text: base.text + deterministicReceiptsSuffix(i.memberReceipts) };
-    },
     summarizeChunkBrief: (i: {
       text: string;
       inputTokens: number;

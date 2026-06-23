@@ -218,9 +218,7 @@ describe("Story 3: turn construction recovery cascade", () => {
         return { ok: true, text: `recovered:${input.text}` };
       },
       summarizeToolResult: (input) => double.summarizeToolResult(input),
-      composeTurnRendering: (input) => double.composeTurnRendering(input),
       compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
     const sdk = sdkFor(callbacks);
@@ -272,9 +270,7 @@ describe("Story 3: turn construction recovery cascade", () => {
         return { ok: false, retryable: true, reason: "recovery unavailable" };
       },
       summarizeToolResult: (input) => double.summarizeToolResult(input),
-      composeTurnRendering: (input) => double.composeTurnRendering(input),
       compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
     const sdk = sdkFor(callbacks);

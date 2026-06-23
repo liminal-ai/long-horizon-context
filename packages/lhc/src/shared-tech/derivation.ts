@@ -135,23 +135,12 @@ export interface InferenceCallbacks {
     promptMode?: ToolResultPromptMode;
     facts?: ToolResultFacts;
   }): Promise<InferenceResult>;
-  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult>;
   compressSmoothTurn(i: {
     rendering: string;
     inputTokens: number;
     targetMinTokens: number;
     targetAimTokens: number;
     targetMaxTokens: number;
-  }): Promise<InferenceResult>;
-  // The two summary inputs differ by contract (AC-3.8): detailed receives
-  // the members' tool-run receipts (what changed, outcome) alongside the
-  // projections; brief receives outcomes only — receipt text is stripped
-  // before inference is called, so brief structurally cannot leak it.
-  // The receipt fields are optional in the type for callers without member
-  // context (the production chunk handlers always pass them).
-  summarizeChunkDetailed(i: {
-    memberProjections: string[];
-    memberReceipts?: ToolRunReceipt[][];
   }): Promise<InferenceResult>;
   summarizeChunkBrief(i: {
     text: string;
@@ -214,9 +203,7 @@ export interface ToolResultClassification {
 export const INFERENCE_CALLBACK_OPERATIONS = [
   "smoothPrompt",
   "summarizeToolResult",
-  "composeTurnRendering",
   "compressSmoothTurn",
-  "summarizeChunkDetailed",
   "summarizeChunkBrief",
 ] as const;
 

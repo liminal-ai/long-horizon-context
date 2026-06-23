@@ -42,9 +42,7 @@ function throwingProvider(): InferenceCallbacks {
   return {
     smoothPrompt: refuse,
     summarizeToolResult: refuse,
-    composeTurnRendering: refuse,
     compressSmoothTurn: refuse,
-    summarizeChunkDetailed: refuse,
     summarizeChunkBrief: refuse,
   };
 }

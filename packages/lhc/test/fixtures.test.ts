@@ -123,15 +123,12 @@ import {
   threadWithToolRun,
 } from "./fixtures/index.js";
 
-// One call per operation with a fixed, distinct input — the operation sweep
+// One call per inference-backed operation with a fixed, distinct input — the operation sweep
 // FC-0.1/FC-0.2 iterate.
 function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceResult>> {
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
-    double.composeTurnRendering({
-      parts: [{ messageId: "m1", kind: "user_prompt", text: "smoothed prompt", fallback: false }],
-    }),
     double.compressSmoothTurn({
       rendering: "the rendering text",
       inputTokens: 10,
@@ -139,7 +136,6 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
       targetAimTokens: 5,
       targetMaxTokens: 7,
     }),
-    double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
     double.summarizeChunkBrief({
       text: "detailed projection text",
       inputTokens: 10,
@@ -150,7 +146,7 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
   ];
 }
 
-const OPERATION_MARKERS = ["smoothed", "toolresult", "rendering", "projection", "detailed", "brief"] as const;
+const OPERATION_MARKERS = ["smoothed", "toolresult", "projection", "brief"] as const;
 
 describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
   it("FC-0.1: implements all operations with marked, input-derived output", async () => {
@@ -175,7 +171,7 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     const second = await Promise.all(callAllOperations(createInferenceCallbacksDouble()));
     expect(first).toEqual(second);
     const texts = first.map((r) => (r.ok ? r.text : ""));
-    expect(new Set(texts).size).toBe(6);
+    expect(new Set(texts).size).toBe(4);
     expect(texts.map((t) => t.slice(0, t.indexOf("(")))).toEqual([...OPERATION_MARKERS]);
   });
 
@@ -211,9 +207,15 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
 
   it("FC-0.2: delayKind injects latency on the scripted operation", async () => {
     const double = createInferenceCallbacksDouble();
-    double.delayKind("chunk_summary_detailed", 40);
+    double.delayKind("chunk_summary_brief", 40);
     const before = Date.now();
-    const result = await double.summarizeChunkDetailed({ memberProjections: ["p"] });
+    const result = await double.summarizeChunkBrief({
+      text: "p",
+      inputTokens: 10,
+      targetMinTokens: 1,
+      targetAimTokens: 2,
+      targetMaxTokens: 3,
+    });
     const elapsed = Date.now() - before;
     expect(result.ok).toBe(true);
     expect(elapsed).toBeGreaterThanOrEqual(35);

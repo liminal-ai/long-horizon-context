@@ -173,9 +173,7 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
         return Promise.resolve({ ok: true, text: `Please fix this.\n${fenced}\nThanks.` });
       },
       summarizeToolResult: (i) => double.summarizeToolResult(i),
-      composeTurnRendering: (i) => double.composeTurnRendering(i),
       compressSmoothTurn: (i) => double.compressSmoothTurn(i),
-      summarizeChunkDetailed: (i) => double.summarizeChunkDetailed(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };
     const sdk = sdkFor(callbacks);

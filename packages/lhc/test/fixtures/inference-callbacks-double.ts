@@ -8,25 +8,20 @@
 // captureInputs) is per-instance state and never leaks across tests that
 // construct their own double.
 import {
-  deterministicReceiptsSuffix,
   deterministicText,
   type InferenceCallbacks,
   type InferenceResult,
-  type RenderingPart,
   type ToolOutcome,
   type ToolResultFacts,
   type ToolResultOperationClass,
   type ToolResultPromptMode,
   type ToolResultResponseShape,
-  type ToolRunReceipt,
 } from "../../src/index.js";
 
 export type InferenceCallbackOpName =
   | "smoothPrompt"
   | "summarizeToolResult"
-  | "composeTurnRendering"
   | "compressSmoothTurn"
-  | "summarizeChunkDetailed"
   | "summarizeChunkBrief";
 
 // Tests script by work-kind / form-kind vocabulary (the test plan writes
@@ -35,16 +30,12 @@ export type InferenceCallbackOpName =
 const KIND_ALIASES: Record<string, InferenceCallbackOpName> = {
   smoothPrompt: "smoothPrompt",
   summarizeToolResult: "summarizeToolResult",
-  composeTurnRendering: "composeTurnRendering",
   compressSmoothTurn: "compressSmoothTurn",
-  summarizeChunkDetailed: "summarizeChunkDetailed",
   summarizeChunkBrief: "summarizeChunkBrief",
   prompt_smoothing: "smoothPrompt",
   smoothed_prompt: "smoothPrompt",
   tool_result_summary: "summarizeToolResult",
-  turn_rendering: "composeTurnRendering",
   smooth_turn_compression: "compressSmoothTurn",
-  chunk_summary_detailed: "summarizeChunkDetailed",
   chunk_summary_brief: "summarizeChunkBrief",
 };
 
@@ -117,8 +108,8 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     }
     // Output format shared with src/shared-tech/deterministic.ts so this double
     // and deterministic inference callbacks produce byte-identical artifacts;
-    // the chunk-summary
-    // receipt/outcome suffixes (AC-3.8) come from the same shared helpers.
+    // the chunk-summary receipt/outcome suffixes (AC-3.8) come from the same
+    // shared helpers where deterministic test handlers assemble them locally.
     return { ok: true, text: deterministicText(op, input, text) + suffix };
   }
 
@@ -139,10 +130,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     return this.run("summarizeToolResult", i, i.content);
   }
 
-  composeTurnRendering(i: { parts: RenderingPart[] }): Promise<InferenceResult> {
-    return this.run("composeTurnRendering", i, i.parts.map((p) => p.text).join(" | "));
-  }
-
   compressSmoothTurn(i: {
     rendering: string;
     inputTokens: number;
@@ -151,18 +138,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     targetMaxTokens: number;
   }): Promise<InferenceResult> {
     return this.run("compressSmoothTurn", i, i.rendering);
-  }
-
-  summarizeChunkDetailed(i: {
-    memberProjections: string[];
-    memberReceipts?: ToolRunReceipt[][];
-  }): Promise<InferenceResult> {
-    return this.run(
-      "summarizeChunkDetailed",
-      i,
-      i.memberProjections.join(" | "),
-      deterministicReceiptsSuffix(i.memberReceipts),
-    );
   }
 
   summarizeChunkBrief(i: {

@@ -269,9 +269,7 @@ describe("smoothed_prompt guard config", () => {
         return Promise.resolve({ ok: true, text: shortModelText });
       },
       summarizeToolResult: (input) => double.summarizeToolResult(input),
-      composeTurnRendering: (input) => double.composeTurnRendering(input),
       compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => double.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
     };
     const sdk = initLhc({

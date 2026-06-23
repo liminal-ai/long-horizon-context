@@ -1064,7 +1064,7 @@ describe("completion exactness", () => {
       db.close();
     }
 
-    double.failKind("turn_rendering", 1, { retryable: false, reason: "partial terminal failure" });
+    double.failKind("smooth_turn_compression", 1, { retryable: false, reason: "partial terminal failure" });
     const failed = await sdk.work.drain({ filePath });
     expect(failed.ok).toBe(false);
     if (failed.ok) return;
@@ -1379,9 +1379,7 @@ describe("sync derive collision policy", () => {
         return { ok: true, text: "stale prompt completion" };
       },
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      composeTurnRendering: (input) => base.composeTurnRendering(input),
       compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
@@ -1521,9 +1519,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      composeTurnRendering: (input) => base.composeTurnRendering(input),
       compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1570,9 +1566,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => base.smoothPrompt(input),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      composeTurnRendering: (input) => base.composeTurnRendering(input),
       compressSmoothTurn: () => new Promise((resolve) => compressionCalls.push({ resolve })),
-      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1614,9 +1608,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => base.smoothPrompt(input),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      composeTurnRendering: (input) => base.composeTurnRendering(input),
       compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
       summarizeChunkBrief: () => new Promise((resolve) => briefCalls.push({ resolve })),
     };
     const sdk = manualSdk(callbacks);
@@ -1670,9 +1662,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      composeTurnRendering: (input) => base.composeTurnRendering(input),
       compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkDetailed: (input) => base.summarizeChunkDetailed(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });

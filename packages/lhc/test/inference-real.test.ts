@@ -70,6 +70,7 @@ emitRealSuiteAccounting(suiteEnv);
 // anywhere" sweeps over served views and materialized files.
 const MARKER_AT_START = /^(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;
 const MARKER_ANYWHERE = /(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\([0-9a-f]{8}:/;
+const SIZE_DISPOSITIONS = ["in_range", "under_min", "over_max"] as const;
 
 function ok<T>(result: OpResult<T>): T {
   if (!result.ok) {
@@ -231,6 +232,19 @@ function renderedPrompt(input: ModelCallInput): string {
   return input.messages.map((message) => message.content).join("\n---\n");
 }
 
+function systemPrompt(input: ModelCallInput): string {
+  return input.messages.find((message) => message.role === "system")?.content ?? "";
+}
+
+function countCallsWithSystemPrefix(log: readonly ModelCallInput[], prefix: string): number {
+  return log.filter((input) => systemPrompt(input).startsWith(prefix)).length;
+}
+
+function expectSizeDisposition(derivation: Derivation): void {
+  expect(derivation.metadata?.sizeDisposition).toBeDefined();
+  expect(SIZE_DISPOSITIONS).toContain(derivation.metadata?.sizeDisposition as (typeof SIZE_DISPOSITIONS)[number]);
+}
+
 describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seams", () => {
   let store: TempStore;
 
@@ -363,6 +377,98 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
       prompt: assignmentsForKind("tool_result_summary").prompt,
     });
   }, 300_000);
+
+  it("smooth turn compression uses the real prompt above the tiny threshold and passthrough below it", async () => {
+    if (realKey === undefined) throw new Error("keyed leg started without a key");
+    const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
+    const sdk = initLhc({
+      inference: { call: recorded.call, assignments: realAssignments(realModel) },
+      mode: "manual",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      guards: { smoothTurnCompression: { tinyTurnTokens: 500 } },
+    });
+    const filePath = await newRealThread(sdk, store, "real-smooth-compression");
+
+    ok(
+      await sdk.intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "compress this larger turn" } }),
+        validEvent("assistant_text", { payload: { text: tokenText(850, "compressible-detail") } }),
+        validEvent("tool_call", {
+          payload: { toolCallId: "compress-read", toolName: "read_file", arguments: { path: "notes/large.md" } },
+        }),
+        validEvent("tool_result", {
+          payload: {
+            toolCallId: "compress-read",
+            content: "notes/large.md showed the threshold path and preserved detail anchors.",
+            isError: false,
+          },
+        }),
+        validEvent("turn_end"),
+        validEvent("user_prompt", { payload: { text: "tiny check" } }),
+        validEvent("assistant_text", { payload: { text: "done" } }),
+        validEvent("turn_end"),
+      ]),
+    );
+    await drainRealWork(sdk, filePath);
+
+    const largeCompression = findDerivation(filePath, "t1", "smooth_turn_compression");
+    expect(largeCompression.state).toBe("ready");
+    expect((largeCompression.content ?? "").trim()).not.toBe("");
+    expect(largeCompression.metadata?.provenance).toEqual({
+      provider: "openrouter",
+      model: realModel,
+      prompt: "smooth-turn-compression-v1",
+    });
+    expectSizeDisposition(largeCompression);
+
+    const tinyRendering = findDerivation(filePath, "t2", "turn_rendering");
+    const tinyCompression = findDerivation(filePath, "t2", "smooth_turn_compression");
+    expect(tinyCompression.state).toBe("ready");
+    expect(tinyCompression.content).toBe(tinyRendering.content);
+    expect(tinyCompression.metadata?.sizeDisposition).toBeUndefined();
+    expect(tinyCompression.metadata?.provenance).toBeUndefined();
+    expect(countCallsWithSystemPrefix(recorded.log, "Compress one structured turn rendering")).toBe(1);
+  }, 300_000);
+
+  it("chunk brief derives from deterministic detailed text through the real adapter", async () => {
+    if (realKey === undefined) throw new Error("keyed leg started without a key");
+    const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
+    const sdk = initLhc({
+      inference: { call: recorded.call, assignments: realAssignments(realModel) },
+      mode: "manual",
+      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
+      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
+    });
+    const filePath = await newRealThread(sdk, store, "real-brief-from-detailed");
+
+    ok(
+      await sdk.intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "close a chunk for brief derivation" } }),
+        validEvent("assistant_text", { payload: { text: tokenText(160, "chunk-detail") } }),
+        validEvent("turn_end"),
+      ]),
+    );
+    await drainRealWork(sdk, filePath);
+
+    const detailed = findDerivation(filePath, "c1", "chunk_summary_detailed");
+    const brief = findDerivation(filePath, "c1", "chunk_summary_brief");
+    expect(detailed.state).toBe("ready");
+    expect(detailed.metadata?.provenance).toBeUndefined();
+    expect(detailed.content).toContain("[turn ");
+    expect(brief.state).toBe("ready");
+    expect((brief.content ?? "").trim()).not.toBe("");
+    expect(brief.metadata?.provenance).toEqual({
+      provider: "openrouter",
+      model: realModel,
+      prompt: "chunk-brief-v2",
+    });
+    expectSizeDisposition(brief);
+    expect(
+      countCallsWithSystemPrefix(recorded.log, "You will receive conversation text between a user and an agent."),
+    ).toBe(1);
+    expect(renderedPrompt(recorded.log.at(-1)!)).toContain(detailed.content ?? "");
+  }, 300_000);
 });
 
 function assignmentsForKind(kind: InferenceDerivationType) {
@@ -376,17 +482,19 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   let run: LifecycleRun;
   let preEditForms: Derivation[] = [];
   let finalForms: Derivation[] = [];
+  let callLog: ModelCallInput[] = [];
 
   beforeAll(async () => {
     store = tempStore();
     if ("notRan" in suiteEnv) throw new Error("keyed leg started without a key");
-    const call = createOpenRouterCall(suiteEnv.key, realModel);
+    const recorded = recordRealCall(createOpenRouterCall(suiteEnv.key, realModel));
+    callLog = recorded.log;
     // The Epic 04 sequence verbatim — intake, drain, compact, model context, inspect,
     // edit, rebuild, drain, compact, materialize — with the inference
     // adapter in the inference-callback slot (the one swap point).
     run = await runLifecycle(store, {
       name: "real-capstone",
-      inference: { call, assignments: realAssignments(realModel) },
+      inference: { call: recorded.call, assignments: realAssignments(realModel) },
       guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
       onCheckpoint: (checkpoint, ctx) => {
         // Pre-mutation snapshot: the regeneration assertion compares each
@@ -434,7 +542,39 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
       }
       expect(form.metadata?.provenance?.provider).toBe("openrouter");
       expect(form.metadata?.provenance?.model).toBe(realModel);
+      expect(form.metadata?.provenance?.prompt).toBe(
+        assignmentsForKind(form.derivationType as InferenceDerivationType).prompt,
+      );
     }
+  });
+
+  it("turn and chunk inference derivations carry size disposition metadata", () => {
+    for (const form of finalForms) {
+      if (form.state !== "ready") continue;
+      if (form.derivationType === "smooth_turn_compression" || form.derivationType === "chunk_summary_brief") {
+        expectSizeDisposition(form);
+      }
+    }
+  });
+
+  it("detailed chunk summaries use the turn marker format", () => {
+    const detailed = finalForms.filter(
+      (form) => form.derivationType === "chunk_summary_detailed" && form.state === "ready",
+    );
+    expect(detailed.length).toBeGreaterThan(0);
+    for (const form of detailed) {
+      expect(form.content).toContain("[turn ");
+    }
+  });
+
+  it("all model calls are inference-backed prompt templates", () => {
+    const knownCallCount =
+      countCallsWithSystemPrefix(callLog, "You smooth user prompts for long-horizon coding context.") +
+      countCallsWithSystemPrefix(callLog, "Summarize this tool response for long-horizon coding context.") +
+      countCallsWithSystemPrefix(callLog, "Compress one structured turn rendering") +
+      countCallsWithSystemPrefix(callLog, "You will receive conversation text between a user and an agent.");
+    expect(callLog.length).toBeGreaterThan(0);
+    expect(callLog).toHaveLength(knownCallCount);
   });
 
   it("mutation-cleared forms went cleared-then-ready and regenerated with different content", () => {

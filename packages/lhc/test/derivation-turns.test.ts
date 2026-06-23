@@ -140,9 +140,7 @@ function withScriptedProjections(base: InferenceCallbacks, next: () => string): 
   return {
     smoothPrompt: (i) => base.smoothPrompt(i),
     summarizeToolResult: (i) => base.summarizeToolResult(i),
-    composeTurnRendering: (i) => base.composeTurnRendering(i),
     compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: next() }),
-    summarizeChunkDetailed: (i) => base.summarizeChunkDetailed(i),
     summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
   };
 }
@@ -571,7 +569,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // Seam evidence: only the brief call crosses the inference boundary, and
     // it receives the detailed chunk text rather than raw member projections.
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
-    expect(captured.some((entry) => entry.op === "summarizeChunkDetailed")).toBe(false);
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
     const detailedText = detailed?.content ?? "";
     expect(briefInput).toMatchObject({ text: detailedText });

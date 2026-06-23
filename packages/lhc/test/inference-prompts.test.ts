@@ -63,7 +63,13 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
       targetAimTokens: 60,
       targetMaxTokens: 78,
     },
-    embedded: ["notes/plan.md", "42-78", "Preserve substance"],
+    embedded: [
+      "notes/plan.md",
+      "42-78",
+      "Preserve substance",
+      "Do not say only that a tool ran or a file was read. Say what it showed, changed, proved, or failed to do.",
+      "If it is too short, expand it by restoring missing substance. If it is too long, contract it by removing lower-value detail and repeated explanation.",
+    ],
   },
   "chunk-brief-v1": {
     input: {
@@ -177,6 +183,35 @@ describe("TC-2.2: registry completeness (AC-2.3)", () => {
     }
     // One distinct template per inference kind — no kind shares another's prompt.
     expect(defaultNames.size).toBe(inferenceKinds.length);
+  });
+});
+
+describe("TC-6.P1: chunk-brief-v2 golden pins the tested reference content", () => {
+  it("contains framing, examples, self-check, and anti-pattern guidance", () => {
+    const golden = JSON.parse(
+      readFileSync(path.join(goldensDir, "chunk-brief-v2.golden.json"), "utf8"),
+    ) as ModelCallInput["messages"];
+    const content = golden.map((message) => message.content).join("\n");
+    for (const needle of [
+      "historical memory",
+      "The target is a guide, not permission to lose essential meaning.",
+      "Usually preserve:",
+      "Compress by moving up one level:",
+      "Old context must not sound like live instructions.",
+      "<good-example-1-input>",
+      "<good-example-1-output>",
+      "<bad-example-1-input>",
+      "<bad-example-1-output>",
+      "<bad-example-2-input>",
+      "<bad-example-2-output>",
+      "Why this example matters:",
+      "Before returning, check your draft:",
+      "Avoid empty compression",
+      "Avoid over-preserving local detail",
+      "Avoid exhaustive checklists",
+    ]) {
+      expect(content).toContain(needle);
+    }
   });
 });
 
