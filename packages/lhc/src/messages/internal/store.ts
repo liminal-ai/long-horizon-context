@@ -1,8 +1,7 @@
 // Message and block row operations. Writes run on the caller's handle inside
 // the batch transaction (insert failures propagate so the pipeline rejects
-// the whole batch); reads run on a fresh handle per operation. The mutation
-// half (Epic 02 Story 5) — the edit's validation read and content apply —
-// also lives here: row-level mechanics, no policy.
+// the whole batch); reads run on a fresh handle per operation. Edit/delete
+// validation and row applies also live here: row-level mechanics, no policy.
 import type { DatabaseSync } from "node:sqlite";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { Block, MessageRecord } from "../index.js";
@@ -36,15 +35,14 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   }
 }
 
-// The mutation operations' validation read (Flows 5/6): the live
-// (deleted-filtered) message joined to its turn's status. A deleted target
-// misses here and refuses as message_not_found — the filtered view is the
-// refusal's read by design (never a distinct error for deleted; double
-// delete reads the same way, AC-6.7). turnStatus is null only for legacy or
-// below-SDK records without membership; the closed-turn target boundary
-// refuses it the same as an open turn. initiatesTurn carries the prompt-
-// protection fact (AC-6.3): with initial empty turns, the initiator is the
-// first live member of a turn, not necessarily the turn's open event.
+// Mutation validation reads the live (deleted-filtered) message joined to its
+// turn's status. A deleted target misses here and refuses as message_not_found:
+// the filtered view is the refusal read by design, including double delete.
+// turnStatus is null only for legacy or below-SDK records without membership;
+// the closed-turn target boundary refuses it the same as an open turn.
+// initiatesTurn carries the prompt-protection fact: with initial empty turns,
+// the initiator is the first live member of a turn, not necessarily the turn's
+// open event.
 export interface MutableMessageView {
   messageId: string;
   kind: string;
@@ -87,20 +85,17 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
   };
 }
 
-// The delete's record apply (Flow 6): a projection-level tombstone — the
-// deleted_at stamp every read filters on. The source events are never
-// touched (record-never-destroyed, DD-12); event read-back keeps showing
-// them.
+// Delete applies the message-record tombstone: the deleted_at stamp every
+// normal message read filters on. Source events are never touched; event
+// read-back keeps showing them.
 export function markMessageDeleted(db: DatabaseSync, messageId: string, deletedAt: string): void {
   db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(deletedAt, messageId);
 }
 
-// The edit's record apply (AC-5.1): the new content lands in each block's
-// content-bearing field — the same field per block type the projection wrote
-// and counted (internal/project.ts) — and the token estimate re-stamps from
-// the same estimator, so placement arithmetic stays current after edits.
-// Events are untouched: this is projection-level mutation; the log keeps the
-// original (DD-12).
+// Edit applies new content to each block's content-bearing field — the same
+// field per block type that internal/project.ts wrote and counted — and the
+// token estimate re-stamps from the same estimator, so placement arithmetic
+// stays current after edits. Events are untouched; the log keeps the original.
 export function applyMessageEdit(db: DatabaseSync, messageId: string, content: string): void {
   const blocks = db
     .prepare(
@@ -125,7 +120,7 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
         break;
       case "tool_call":
         // Arguments are the call's counted content; the edit's string lands
-        // verbatim as the new arguments value, mirroring projection's
+        // verbatim as the new arguments value, mirroring projectEvent's
         // serialized-arguments estimate.
         parsed["arguments"] = content;
         tokenEstimate = estimateTokens(JSON.stringify(content));
@@ -177,16 +172,16 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
     recordedAt: row.recorded_at,
   };
   if (row.turn_id !== null) record.turnId = row.turn_id;
-  // The deleted marker (Epic 04 AC-3.3): present only on deleted rows, which
-  // only the includeDeleted read surfaces — never silently mixed in.
+  // The deleted marker is present only on deleted rows, which only the
+  // includeDeleted read surfaces. It is never silently mixed into default reads.
   if (row.deleted_at !== null) record.deleted = true;
   return record;
 }
 
-// Bounds in source-event-order coordinates (Epic 04 DD-3): the coordinate
-// the reports name, so drill-down uses what the operator already holds.
-// limit caps the count after bounds. Defaults preserve every existing
-// caller: visible messages, unbounded, record order.
+// Bounds are in source-event-order coordinates: the coordinate the reports
+// name, so drill-down uses what the operator already holds. limit caps the
+// count after bounds. Defaults preserve visible messages, unbounded, in record
+// order.
 export interface MessageReadOptions {
   from?: number;
   to?: number;
@@ -195,15 +190,14 @@ export interface MessageReadOptions {
 }
 
 export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): MessageRecord[] {
-  // Bounds before content (AC-3.1 no-load-everything): the message query
-  // carries the deleted filter, the source-order window, and the limit, so a
-  // bounded list resolves its window from the message table first — never
-  // reading a row, or (below) parsing a block, outside that window.
+  // Bounds before content: the message query carries the deleted filter, the
+  // source-order window, and the limit, so a bounded list resolves its window
+  // from the message table first. It never reads a row, or parses a block
+  // below, outside that window.
   //
-  // The deleted-read filter (tech design §Mechanics): message reads surface
-  // live projection rows only; a deleted message's source events stay
-  // readable through the Epic 01 event read-back, the one unfiltered surface.
-  // includeDeleted is the Epic 04 audit opt-in: deleted rows return flagged.
+  // The deleted-read filter keeps default message reads to live rows only. A
+  // deleted message's source events stay readable through event read-back, the
+  // unfiltered audit surface. includeDeleted returns deleted rows flagged.
   const conditions: string[] = [];
   const params: number[] = [];
   if (opts.includeDeleted !== true) conditions.push("m.deleted_at IS NULL");
@@ -249,10 +243,10 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   return messageRows.map((row) => recordFromRow(row, blocksByMessage.get(row.message_id) ?? []));
 }
 
-// The show operation's by-id read (Epic 04 Flow 3): the canonical record —
-// full blocks verbatim, never view-shortened — with the deleted flag honest.
-// Deliberately unfiltered on deleted_at: show on a deleted message is the
-// audit read (AC-3.3), never a not-found.
+// The show operation's by-id read returns the canonical record: full blocks
+// verbatim, never view-shortened, with the deleted flag honest. It is
+// deliberately unfiltered on deleted_at: show on a deleted message is the audit
+// read, never not-found.
 export function readMessageById(
   db: DatabaseSync,
   messageId: string,

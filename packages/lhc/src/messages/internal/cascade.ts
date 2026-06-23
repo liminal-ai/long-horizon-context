@@ -1,21 +1,17 @@
-// The mutation cascade (DD-8, Flows 5/6): walk the derivation chain upward
-// from the mutated subject — the message's own derivations, its turn's rendering
-// and projection, the containing chunk's two summaries — clearing each to
-// `pending` at the next source version and enqueueing replacement work, all
-// inside the caller's mutation transaction. The clear-set is derived from
-// the record's structure (the message → turn → chunk walk over the rows that
-// actually exist), never from a hardcoded derivation list: a future derivation on any
-// subject in the chain cascades without this module changing. Still-queued
-// old-version items are supersede-deleted (tech design issue 1) and reported
-// on the MutationResult; claimed items are deliberately left to the
-// source-version check (DD-3) — their stale completions discard. The two
-// close paths share one core walk parameterized drop-vs-clear: edit clears
-// the whole chain, delete *drops* the deleted subject's own derivations (state
-// rows removed — a deleted source has nothing to rebuild) and clears
-// everything upward for minus-one composition. Turn delete enters at the
-// turn level, dropping the turn's and all live members' derivations; a chunk left
-// with no live members drops its summary derivations too — dropped, never failed,
-// and no rebuild queued (AC-6.6).
+// The mutation cascade walks the derivation chain upward from the mutated
+// subject: the message's own derivations, its turn derivations, and the
+// containing chunk summaries. Each cleared row moves to `pending` at the next
+// source version and replacement work is enqueued inside the caller's mutation
+// transaction. The clear-set is derived from record structure, never from a
+// hardcoded derivation list, so future derivations on subjects in the chain
+// cascade without this module changing. Still-queued old-version items are
+// supersede-deleted and reported on MutationResult; claimed items are left to
+// the source-version check, where stale completions discard. Edit clears the
+// whole chain. Delete drops the deleted subject's own derivations and clears
+// everything upward for minus-one composition. Turn delete enters at the turn
+// level, dropping the turn's and all live members' derivations; a chunk left
+// with no live members drops its summary derivations too, with no rebuild
+// queued.
 import type { DatabaseSync } from "node:sqlite";
 import type { DbWriteTransaction, SubjectKind } from "../../shared-tech/index.js";
 import {
@@ -93,19 +89,16 @@ function chainSubjects(db: DatabaseSync, messageId: string): ChainSubject[] {
   return subjects;
 }
 
-// The call/result pair as a source dependency (AC-2.8's pair-as-source model,
-// impl-lead ruling epic-fix-001): a tool summary derives from its message AND
-// the paired counterpart, so mutating one half is a source change for the
-// counterpart's summary. Find the live counterpart of a mutated tool message —
-// the opposite block type sharing its toolCallId — as a clear subject, so the
-// cascade clears and re-queues that summary alongside the rest of the chain.
-// Returns nothing when the mutated message carries no tool block, or the
-// counterpart is deleted or absent. The rebuilt summary derives from the live
-// record only: with the deleted-read filter (epic-fix-001), a gone result
-// reverts the call summary's outcome to `unknown`. AC-6.2's "nothing else
-// changes" still bounds the cascade across other turns and chunks — only the
-// counterpart message itself, inside the dependency graph, is in scope, so its
-// own turn and chunk are deliberately not walked.
+// A tool summary derives from its message and paired counterpart, so mutating
+// one half is a source change for the counterpart's summary. Find the live
+// counterpart of a mutated tool message — the opposite block type sharing its
+// toolCallId — as a clear subject, so the cascade clears and re-queues that
+// summary alongside the rest of the chain. Returns nothing when the mutated
+// message carries no tool block, or the counterpart is deleted or absent. The
+// rebuilt summary derives from the live record only: with the deleted-read
+// filter, a gone result reverts the call summary's outcome to `unknown`. Only
+// the counterpart message itself is in scope; its own turn and chunk are not
+// walked.
 function pairedCounterpartSubject(db: DatabaseSync, messageId: string): ChainSubject | undefined {
   const own = db
     .prepare(
@@ -146,12 +139,11 @@ function rebuildKindFor(derivationType: string): WorkKind {
   return kind;
 }
 
-// The shared core (DD-8's one cascade, parameterized): drop subjects lose
-// their derivation rows outright; clear subjects go pending at the next source
-// version with replacement work enqueued. Supersede-deletes land before the
-// replacement enqueues so a tidied id can never collide, and queued items
-// against dropped subjects are tidied with no replacement — dead work for a
-// source that no longer reads.
+// Shared cascade core: drop subjects lose their derivation rows outright; clear
+// subjects go pending at the next source version with replacement work
+// enqueued. Supersede-deletes land before replacement enqueues so a tidied id
+// can never collide, and queued items against dropped subjects are tidied with
+// no replacement: dead work for a source that no longer reads.
 function runCascade(
   transaction: DbWriteTransaction,
   dropSubjects: readonly ChainSubject[],
@@ -228,8 +220,8 @@ function runCascade(
 
 // Edit's close path: clear-and-requeue for the full chain above (and
 // including) the edited message, inside the mutation's ambient transaction.
-// A call/result pair counterpart (epic-fix-001) joins the clear set: editing
-// one half is a source change for the other's summary.
+// A call/result pair counterpart joins the clear set: editing one half is a
+// source change for the other's summary.
 export function cascadeFromMessage(transaction: DbWriteTransaction, messageId: string): CascadeOutcome {
   const clear = chainSubjects(transaction.db, messageId);
   const counterpart = pairedCounterpartSubject(transaction.db, messageId);
@@ -237,15 +229,15 @@ export function cascadeFromMessage(transaction: DbWriteTransaction, messageId: s
   return runCascade(transaction, [], clear);
 }
 
-// Message delete's close path (Flow 6): the deleted message's own derivations
-// drop; its turn and chunk clear and re-queue for minus-one composition.
-// The message-delete validation refuses turn-initiating prompts, so the turn
-// always keeps members and never empties through this path.
+// Message delete drops the deleted message's own derivations; its turn and
+// chunk clear and re-queue for minus-one composition. Message-delete validation
+// refuses turn-initiating prompts, so the turn always keeps members and never
+// empties through this path.
 export function cascadeMessageDelete(transaction: DbWriteTransaction, messageId: string): CascadeOutcome {
   const [own, ...upward] = chainSubjects(transaction.db, messageId);
   // The deleted half's live pair counterpart re-derives from the live record
-  // (epic-fix-001): its summary clears and re-queues, reverting outcome to
-  // `unknown` for a call whose result is now gone.
+  // only: its summary clears and re-queues, reverting outcome to `unknown` for
+  // a call whose result is now gone.
   const counterpart = pairedCounterpartSubject(transaction.db, messageId);
   if (counterpart !== undefined) upward.push(counterpart);
   return runCascade(transaction, own === undefined ? [] : [own], upward);
