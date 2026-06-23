@@ -6,16 +6,14 @@
 // close's summary enqueues all ride one commit.
 
 import type { DatabaseSync } from "node:sqlite";
-import { deriveSmoothedPrompt, deriveToolResultSummary, findPairedToolCall } from "../../messages/recovery.js";
+import { deriveMessageInThread, writeMessageDerivationFloorInThread } from "../../messages/internal/derive.js";
 import type {
   DerivationMetadata,
   ErrorResult,
   HandlerOutcome,
   HandlerRunContext,
-  InferenceResult,
   RenderingPart,
   ResolvedSdkConfig,
-  ToolOutcome,
   ToolRunReceipt,
   WorkHandler,
 } from "../../shared-tech/index.js";
@@ -41,12 +39,7 @@ import {
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
-import {
-  type ComposeDerivationRow,
-  type ComposeMessage,
-  composeDerivationKey,
-  composeRenderingInput,
-} from "./compose.js";
+import { type ComposeDerivationRow, composeRenderingInput } from "./compose.js";
 import {
   chunkExists,
   readChunkSummaryDerivation,
@@ -56,7 +49,6 @@ import {
   readTurnDerivationRow,
   readTurnSource,
 } from "./derivations.js";
-import { hasLiveRecoveryWork, recoverDerivation } from "./recovery.js";
 import { selectOpenTurnIds } from "./store.js";
 
 function sourceDamaged(reason: string): Extract<HandlerOutcome, { ok: false }> {
@@ -150,17 +142,6 @@ function sizeDisposition(
   return "in_range";
 }
 
-function readThreadIdFromDb(db: DatabaseSync): string {
-  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-    | { thread_id: string }
-    | undefined;
-  return row?.thread_id ?? "";
-}
-
-function readThreadId(run: HandlerRunContext): string {
-  return readThreadIdFromDb(run.openDb());
-}
-
 function pokeThreadScheduler(db: DatabaseSync): void {
   const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
     | { thread_id: string }
@@ -181,8 +162,8 @@ function logFallback(
   writeLog(
     {
       db,
-      threadId: readThreadId(run),
-      filePath: "",
+      threadId: run.threadId,
+      filePath: run.filePath,
     },
     {
       level: "warning",
@@ -195,115 +176,20 @@ function logFallback(
   );
 }
 
-function toolOutcomeFromMessage(message: ComposeMessage): ToolOutcome {
-  const block = message.blocks[0]?.content ?? {};
-  return block["isError"] === true ? "failed" : "succeeded";
-}
-
-function pairedToolCall(
-  run: HandlerRunContext,
-  messages: readonly ComposeMessage[],
-  toolCallId: unknown,
-): { toolName: string; toolInput?: Record<string, unknown> } {
-  if (typeof toolCallId !== "string") return { toolName: "unknown_tool" };
-  const sameTurnCall = messages.find((message) => {
-    if (message.kind !== "tool_call") return false;
-    return message.blocks[0]?.content["toolCallId"] === toolCallId;
-  });
-  const sameTurnToolName = sameTurnCall?.blocks[0]?.content["toolName"];
-  const sameTurnToolInput = sameTurnCall?.blocks[0]?.content["arguments"];
-  if (typeof sameTurnToolName === "string") {
-    return {
-      toolName: sameTurnToolName,
-      ...(sameTurnToolInput !== null && typeof sameTurnToolInput === "object" && !Array.isArray(sameTurnToolInput)
-        ? { toolInput: sameTurnToolInput as Record<string, unknown> }
-        : {}),
-    };
-  }
-  return findPairedToolCall(run.openDb(), toolCallId) ?? { toolName: "unknown_tool" };
-}
-
 async function recoverMessageDerivations(
   run: HandlerRunContext,
-  messages: readonly ComposeMessage[],
   derivations: Map<string, ComposeDerivationRow>,
 ): Promise<void> {
-  for (const message of messages) {
-    const plan =
-      message.kind === "user_prompt"
-        ? { derivationType: "smoothed_prompt" as const }
-        : message.kind === "tool_result"
-          ? { derivationType: "tool_result_summary" as const }
-          : undefined;
-    if (plan === undefined) continue;
-    const key = composeDerivationKey(message.messageId, plan.derivationType);
+  for (const key of [...derivations.keys()]) {
+    const [messageId, derivationType] = key.split("/") as [string, string];
+    if (derivationType !== "smoothed_prompt" && derivationType !== "tool_result_summary") continue;
     const row = derivations.get(key);
     if (row === undefined || row.state === "ready") continue;
-    const live = hasLiveRecoveryWork(run.openDb(), {
-      subjectKind: "message",
-      subjectId: message.messageId,
-      derivationType: plan.derivationType,
-      sourceVersion: row.sourceVersion,
-    });
-    if (live) continue;
-
-    const block = message.blocks[0]?.content ?? {};
-    const content = typeof block["content"] === "string" ? block["content"] : "";
-    let result: InferenceResult;
-    let promptMetadata: DerivationMetadata | undefined;
-    let promptWarningLog: LogEntry | undefined;
-    if (message.kind === "user_prompt") {
-      const text = typeof block["text"] === "string" ? block["text"] : "";
-      const derived = await deriveSmoothedPrompt(run, message.messageId, text);
-      if ("write" in derived) {
-        result = { ok: true, text: derived.write.content };
-        promptMetadata = derived.write.metadata;
-        promptWarningLog = derived.warningLog;
-      } else {
-        result = derived;
-      }
-    } else {
-      const outcome = toolOutcomeFromMessage(message);
-      const pairedCall = pairedToolCall(run, messages, block["toolCallId"]);
-      const derived = await deriveToolResultSummary(run, message.messageId, {
-        toolName: pairedCall.toolName,
-        ...(pairedCall.toolInput === undefined ? {} : { toolInput: pairedCall.toolInput }),
-        content,
-        outcome,
-      });
-      if ("write" in derived) {
-        result = { ok: true, text: derived.write.content };
-        promptMetadata = derived.write.metadata;
-      } else {
-        result = derived;
-      }
-    }
-    if (!result.ok) continue;
-
-    const metadata: DerivationMetadata | undefined =
-      message.kind === "tool_result"
-        ? promptMetadata
-        : result.provenance === undefined
-          ? promptMetadata
-          : { ...(promptMetadata ?? {}), provenance: result.provenance };
-    const recovered: ComposeDerivationRow = {
-      state: "ready",
-      content: result.text,
-      sourceVersion: row.sourceVersion,
-      ...(metadata === undefined ? {} : { metadata }),
-    };
-    derivations.set(key, recovered);
-    const recovery = recoverDerivation(run.openDb(), {
-      subjectKind: "message",
-      subjectId: message.messageId,
-      derivationType: plan.derivationType,
-      content: result.text,
-      ...(recovered.metadata === undefined ? {} : { metadata: recovered.metadata }),
-      sourceVersion: row.sourceVersion,
-      derivedAt: run.clock().toISOString(),
-    });
-    if (recovery.persisted && promptWarningLog !== undefined) {
-      writeLog({ db: run.openDb(), threadId: readThreadId(run), filePath: "" }, promptWarningLog);
+    const result = await deriveMessageInThread(run, messageId, { sourceVersion: row.sourceVersion });
+    if (result.outcome !== "derived") continue;
+    const refreshed = readMessageDerivationRows(run.openDb(), [messageId]).get(key);
+    if (refreshed !== undefined) {
+      derivations.set(key, refreshed);
     }
   }
 }
@@ -342,7 +228,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     db,
     messages.map((message) => message.messageId),
   );
-  await recoverMessageDerivations(run, messages, derivations);
+  await recoverMessageDerivations(run, derivations);
   const { parts, receipts, recoveries } = composeRenderingInput(messages, derivations);
   for (const recovery of recoveries) {
     logFallback(run, {
@@ -351,13 +237,11 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
       reason: recovery.reason,
       floorUsed: recovery.floorUsed,
     });
-    recoverDerivation(run.openDb(), {
-      subjectKind: recovery.subjectKind,
-      subjectId: recovery.subjectId,
-      derivationType: recovery.derivationType,
+    writeMessageDerivationFloorInThread(run, {
+      messageId: recovery.subjectId,
+      derivationType: recovery.derivationType as "smoothed_prompt" | "tool_result_summary",
       content: recovery.content,
       sourceVersion: recovery.sourceVersion,
-      derivedAt: run.clock().toISOString(),
     });
   }
 
@@ -374,7 +258,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   // The compression token count is estimated exactly once, here, as the
   // artifact lands; placement reads this stored arithmetic and never re-counts.
   const projectedTokens = estimateTokens(compressionResult.text);
-  const threadId = readThreadId(run);
+  const threadId = run.threadId;
   // Tool-run receipts ride the rendering's metadata, mechanically restated from
   // the composition input. Chunk summaries read them from here, never from
   // inference prose.
@@ -415,7 +299,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
             db: transaction.db,
             clock: run.clock,
             threadId,
-            filePath: "",
+            filePath: run.filePath,
             postCommitHook: { add: transaction.onCommit },
             poke: resolveInstancePoke(),
           },
@@ -502,8 +386,8 @@ function chunkDetailedHandler(): WorkHandler {
               const logTransaction = {
                 db: transaction.db,
                 clock: run.clock,
-                threadId: readThreadIdFromDb(transaction.db),
-                filePath: "",
+                threadId: run.threadId,
+                filePath: run.filePath,
                 postCommitHook: { add: transaction.onCommit },
                 poke: resolveInstancePoke(),
               };
@@ -533,14 +417,14 @@ function chunkBriefHandler(): WorkHandler {
         deferred: true,
         reason: `chunk_summary_detailed_not_ready: chunk ${chunkId} chunk_summary_detailed is ${detailed?.state ?? "missing"}`,
         onDeferred: (transaction) => {
-          const threadId = readThreadIdFromDb(transaction.db);
+          const threadId = run.threadId;
           if (!hasLiveItem(transaction.db, "chunk_summary_detailed", { chunkId }, sourceVersion)) {
             enqueue(
               {
                 db: transaction.db,
                 clock: run.clock,
                 threadId,
-                filePath: "",
+                filePath: run.filePath,
                 postCommitHook: { add: transaction.onCommit },
                 poke: resolveInstancePoke(),
               },
@@ -558,7 +442,7 @@ function chunkBriefHandler(): WorkHandler {
               db: transaction.db,
               clock: run.clock,
               threadId,
-              filePath: "",
+              filePath: run.filePath,
               postCommitHook: { add: transaction.onCommit },
               poke: resolveInstancePoke(),
             },
@@ -820,8 +704,7 @@ export async function deriveTurnOwnedInOpenDb(
 }
 
 export async function dispatchTurnOwnedWork(
-  db: DatabaseSync,
-  config: ResolvedSdkConfig,
+  run: HandlerRunContext,
   item: {
     workItemId: string;
     claimEpoch: number;
@@ -831,13 +714,20 @@ export async function dispatchTurnOwnedWork(
     derivations: readonly EnqueueDerivationTarget[];
   },
 ): Promise<DurableWorkDispatchResult> {
+  const db = run.openDb();
   const handler = turnWorkHandlers[item.kind];
   if (handler === undefined) return { disposition: "failed", retryable: false, reason: "unknown_work_kind" };
-  const outcome = await runWorkHandler(db, config, handler, {
-    workItemId: item.workItemId,
-    kind: item.kind,
-    sourceRef: item.sourceRef,
-  });
+  const outcome = await runWorkHandler(
+    db,
+    run.config,
+    handler,
+    {
+      workItemId: item.workItemId,
+      kind: item.kind,
+      sourceRef: item.sourceRef,
+    },
+    run,
+  );
   if (outcome.ok) {
     const disposition = applyDerivationSuccess(
       db,
@@ -848,7 +738,7 @@ export async function dispatchTurnOwnedWork(
         claimEpoch: item.claimEpoch,
       },
       outcome.derivations ?? [],
-      config.clock().toISOString(),
+      run.config.clock().toISOString(),
       outcome.onApplied,
     );
     return { disposition };

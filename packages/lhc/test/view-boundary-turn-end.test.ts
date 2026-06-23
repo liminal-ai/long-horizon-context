@@ -133,6 +133,35 @@ async function intakeRaw(
 }
 
 describe("TC-5.1 (AC-5.1, AC-5.2): the advance runs only at turn close; eviction is whole-turn, oldest-first", () => {
+  it("advances when a new user prompt closes the previous populated turn", async () => {
+    const sdk = visSdk();
+    const filePath = await newThread(sdk);
+    const advances = countAdvances();
+
+    await seedTurnedToolResults(sdk, filePath, [{ results: [30, 30] }]);
+    expect(advances.count()).toBe(1);
+    expect(await boundaryOf(filePath)).toBe(0);
+
+    await intakeRaw(sdk, filePath, turnedToolResultEvents([{ results: [40, 40], close: false }]));
+    expect(advances.count()).toBe(1);
+    expect(await zoneTokensOf(sdk, filePath)).toBe(140);
+
+    const closedByPrompt = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "next prompt closes the prior turn" } }),
+    ]);
+    expect(closedByPrompt.ok).toBe(true);
+    if (!closedByPrompt.ok) return;
+    expect(closedByPrompt.value.turnTransitions.map((transition) => transition.action)).toEqual(["closed", "opened"]);
+    expect(advances.count()).toBe(2);
+
+    const results = await toolResults(sdk, filePath);
+    expect(results).toHaveLength(4);
+    const position = await boundaryOf(filePath);
+    expect(position).toBe(results[1]?.sourceEventOrder);
+    expect(await zoneTokensOf(sdk, filePath)).toBe(80);
+    expectNoPartialTurn(results, position);
+  });
+
   it("holds position and bytes through mid-turn batches past max, advances exactly once at close, flips whole oldest turns", async () => {
     const sdk = visSdk();
     const filePath = await newThread(sdk);

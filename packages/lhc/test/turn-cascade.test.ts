@@ -491,7 +491,10 @@ describe("Story 3: turn construction recovery cascade", () => {
         floorUsed: "rowless output",
       }),
     ]);
-    expect(formOf(filePath, "m3", "tool_result_summary")).toBeUndefined();
+    expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
+      state: "ready",
+      content: "rowless output",
+    });
   });
 
   it("constructs a turn with every component present when multiple derivations are not ready", async () => {

@@ -86,15 +86,6 @@ export function openRaw(path: string): DatabaseSync {
   return openDatabase(path);
 }
 
-// The sweep's classification table, re-exported for the Story 3 unit legs:
-// fixtures are the one sanctioned bridge across the no-internal-imports
-// boundary, and the
-// table is exported from sweep.ts for tests by story contract.
-export {
-  classifyFailureReason,
-  REASON_CLASS_TABLE,
-  type ReasonClass,
-} from "../../src/thread-view/internal/sweep.js";
 export {
   corruptTwoOpenTurns,
   poisonMessageBlockJson,
@@ -157,7 +148,6 @@ export {
   type ObservableState,
   observableState,
 } from "./read-only-delta.js";
-export { assertSweepReceiptShape } from "./receipt-schema.js";
 export {
   assertModelCallContract,
   assertRoutingThroughSdk,

@@ -1,6 +1,8 @@
 # Epic 06: Derivation Recovery and Observability
 
 **Status:** Draft for review
+
+**Current implementation note:** The readiness-sweep repair scheduler described in this draft was retired. Current compact behavior is deterministic assembly only: it uses ready material where available, falls back locally when derivations are missing or failed, and does not schedule async repair work.
 **PRD:** `../00-prd.md` — Feature 6 (backfill pending)
 **Tech Arch:** `../01-tech-arch.md`
 **Domain model:** `../../onboard/01-core-concepts.md`, `../../onboard/02-domain-design.md`
@@ -46,7 +48,7 @@ Two things stay clean, one thing stays honest. The **canonical subject** (the me
 
 **Mental Model:** "My thread always renders something usable. If a summary isn't ready, the system falls back to a cruder-but-honest rendering and tells me it did — it never blocks my work or quietly drops history. Only real source corruption stops me, and it says so."
 
-**Key Constraint:** Three rules. **Intake and context-serving** (recording events, the context hook returning the active view) make **no provider calls at all** — they read or assemble already-derived material. **Smart compact** makes **no provider calls either** — it assembles stored artifacts, falling back to deterministic stored-member concatenation when a summary is not ready; healing happens through the separate readiness sweep and background drain. Only **turn-close recovery** may make a bounded provider call to re-derive a not-ready component — and never inside a DB write transaction, with deterministic floors always available so recovery never depends on a provider succeeding.
+**Key Constraint:** Three rules. **Intake and context-serving** (recording events, the context hook returning the active view) make **no provider calls at all** — they read or assemble already-derived material. **Smart compact** makes **no provider calls either** — it assembles stored artifacts, falling back to deterministic stored-member concatenation when a summary is not ready; it does not schedule repair work. Only **turn-close recovery** may make a bounded provider call to re-derive a not-ready component — and never inside a DB write transaction, with deterministic floors always available so recovery never depends on a provider succeeding.
 
 ---
 
@@ -354,12 +356,12 @@ A turn is constructed by composing its components into the turn renderings. Each
 
 ### 4. Chunk Derivation and Compact Recovery
 
-A closed chunk derives two independent summaries — `chunk_summary_detailed` and `chunk_summary_brief` — each with its own state, from the chunk's member turns (via `lower_band_projection`). Smart compact assembles a view from band materials and **never calls a model**. When a needed chunk summary is not ready at compact time, compact does not re-derive it; it falls back to a **deterministic concatenation** of the member content uncompressed — more detail, never a hole. Healing of the summary itself happens out-of-band: the readiness sweep (which runs before compact) requeues transient failures, the background drain produces the real summary, and the next compact uses it. Compact surfaces warnings the user can see and can stop. Only canonical source corruption blocks a compact; missing derivations degrade.
+A closed chunk derives two independent summaries — `chunk_summary_detailed` and `chunk_summary_brief` — each with its own state, from the chunk's member turns (via `lower_band_projection`). Smart compact assembles a view from band materials and **never calls a model**. When a needed chunk summary is not ready at compact time, compact does not re-derive it; it falls back to a **deterministic concatenation** of the member content uncompressed — more detail, never a hole. Failed derivations remain observable as failed; compact does not reopen them or schedule repair. Compact surfaces warnings the user can see and can stop. Only canonical source corruption blocks a compact; missing derivations degrade.
 
 1. A chunk closes; detailed and brief summaries are queued as independent work items
 2. Smart compact assembles bands from chunk summaries and turn renderings
 3. For each not-ready summary needed, compact uses deterministic stored-member concatenation (no model call) and warns
-5. Source corruption (not missing derivation) is the only thing that blocks
+4. Source corruption (not missing derivation) is the only thing that blocks
 
 #### Acceptance Criteria
 

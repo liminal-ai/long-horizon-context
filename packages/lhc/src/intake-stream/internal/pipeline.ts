@@ -143,10 +143,7 @@ export async function runMessageEvents(
               recordedAt,
             };
             const turnOutcome = createTurn(transaction, recordedEvent);
-            if (
-              event.eventKind === "turn_end" &&
-              turnOutcome.transitions.some((transition) => transition.action === "closed")
-            ) {
+            if (turnOutcome.transitions.some((transition) => transition.action === "closed")) {
               batchCommittedTurnEnd = true;
             }
             turnTransitions.push(...turnOutcome.transitions);

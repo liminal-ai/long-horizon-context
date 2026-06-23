@@ -177,32 +177,6 @@ function deleteWorkItem(filePath: string, workItemId: string): void {
   }
 }
 
-function expireWorkItemClaim(filePath: string, workItemId: string, expiresAt: string): void {
-  const db = openRaw(filePath);
-  try {
-    const changed = db
-      .prepare(`UPDATE work_item SET claim_expires_at = ? WHERE work_item_id = ? AND status = 'claimed'`)
-      .run(expiresAt, workItemId);
-    if (Number(changed.changes) !== 1) {
-      throw new Error(`expected to expire one claimed work item, changed ${String(changed.changes)}`);
-    }
-  } finally {
-    db.close();
-  }
-}
-
-function setWorkItemAttempts(filePath: string, workItemId: string, attempts: number): void {
-  const db = openRaw(filePath);
-  try {
-    const changed = db.prepare(`UPDATE work_item SET attempts = ? WHERE work_item_id = ?`).run(attempts, workItemId);
-    if (Number(changed.changes) !== 1) {
-      throw new Error(`expected to update one work item, changed ${String(changed.changes)}`);
-    }
-  } finally {
-    db.close();
-  }
-}
-
 function setReadyDerivation(
   filePath: string,
   target: { subjectKind: "message" | "turn" | "chunk"; subjectId: string; derivationType: string },
@@ -417,44 +391,6 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
       ["smooth_turn_compression", "ready"],
       ["turn_rendering", "ready"],
     ]);
-  });
-
-  it("sync derive retry work wakes the background scheduler", async () => {
-    const double = createInferenceCallbacksDouble();
-    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: sync retry wake" });
-    const background = initLhc({
-      inferenceCallbacks: double,
-      mode: "background",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-      lease: { durationMs: 1000 },
-    });
-    registerTestWorkHandlers(background, double);
-    const manual = manualSdk(double);
-    const { filePath } = await newThread();
-
-    const touched = await background.logging.write({ filePath }, { level: "info", message: "touch empty thread" });
-    expect(touched.ok).toBe(true);
-    await background.drainSettled({ filePath });
-
-    await send(manual, filePath, [validEvent("user_prompt", { payload: { text: "retry prompt" } })]);
-
-    const retried = await background.messages.derive({ filePath }, ["m1"]);
-    expect(retried.ok).toBe(true);
-    if (!retried.ok) return;
-    expect(retried.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: sync retry wake" },
-    });
-
-    await background.drainSettled({ filePath });
-
-    expect(liveCount(filePath)).toBe(0);
-    expect(readDerivedForms(filePath)[0]).toMatchObject({
-      subjectId: "m1",
-      derivationType: "smoothed_prompt",
-      state: "ready",
-    });
   });
 
   it("reopening a thread with leftover queued rows recovers them when the process engages — message reads stay pure (Epic 04 DD-6)", async () => {
@@ -1149,145 +1085,120 @@ describe("completion exactness", () => {
 });
 
 describe("sync derive collision policy", () => {
-  it("messages.derive claims an exact queued head and refuses an unexpired exact claim", async () => {
+  it("messages.derive is a bounded inline attempt and does not consume queued work", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
+    const sdk = manualSdk(double);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
 
-    const claimedQueued = await sdk.messages.derive({ filePath }, ["m1"]);
-    expect(claimedQueued.ok).toBe(true);
-    if (!claimedQueued.ok) return;
-    expect(claimedQueued.value).toEqual([
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
+    });
+    expect(liveDetail(filePath)).toEqual([
+      expect.objectContaining({ workItemId: "w-m1-prompt_smoothing-v1", status: "queued", attempts: 0 }),
+    ]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "pending", sourceVersion: 1 });
+  });
+
+  it("messages.derive attempts once and does not schedule retry work on retryable failure", async () => {
+    const double = createInferenceCallbacksDouble();
+    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: inline attempt" });
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value[0]).toMatchObject({
+      messageId: "m1",
+      outcome: "failed",
+      error: { errorClass: "system_error", code: "provider_failure", reason: "timeout: inline attempt" },
+    });
+    expect(liveDetail(filePath)).toEqual([]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "pending", sourceVersion: 1 });
+  });
+
+  it("messages.derive writes ready when no live work owns the derivation", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual([
       { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
     ]);
     expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "ready" });
     expect(liveCount(filePath)).toBe(0);
-
-    const claimedThread = await newThread();
-    await send(sdk, claimedThread.filePath, [validEvent("user_prompt")]);
-    claimHeadWorkItem(claimedThread.filePath, "2026-06-10T12:05:00.000Z");
-
-    const refusedClaimed = await sdk.messages.derive({ filePath: claimedThread.filePath }, ["m1"]);
-    expect(refusedClaimed.ok).toBe(true);
-    if (!refusedClaimed.ok) return;
-    expect(refusedClaimed.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: {
-        errorClass: "caller_error",
-        code: "derivation_work_in_flight",
-        reason: expect.stringContaining("prompt_smoothing work for message m1 at sourceVersion 1 is already live"),
-      },
-    });
-
-    expireWorkItemClaim(claimedThread.filePath, "w-m1-prompt_smoothing-v1", "2026-06-10T11:59:59.000Z");
-    const reclaimed = await sdk.messages.derive({ filePath: claimedThread.filePath }, ["m1"]);
-    expect(reclaimed.ok).toBe(true);
-    if (!reclaimed.ok) return;
-    expect(reclaimed.value).toEqual([
-      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
-    ]);
-    expect(readDerivedForms(claimedThread.filePath)[0]).toMatchObject({ state: "ready" });
-    expect(liveCount(claimedThread.filePath)).toBe(0);
   });
 
-  it("messages.derive preserves retry policy when it claims an existing queued item", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double, {
-      clock: () => new Date("2026-06-10T12:00:00.000Z"),
-      retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 60_000 },
-    });
-    const { filePath } = await newThread();
-    await send(sdk, filePath, [validEvent("user_prompt")]);
-    setWorkItemAttempts(filePath, "w-m1-prompt_smoothing-v1", 1);
-    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: sync takeover retry" });
-
-    const result = await sdk.messages.derive({ filePath }, ["m1"]);
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: sync takeover retry" },
-    });
-    expect(liveDetail(filePath)).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-prompt_smoothing-v1",
-        status: "queued",
-        attempts: 2,
-        lastError: "timeout: sync takeover retry",
-        eligibleAt: "2026-06-10T12:00:04.000Z",
-      }),
-    ]);
-    expect(readDerivedForms(filePath)[0]).toMatchObject({
-      subjectId: "m1",
-      derivationType: "smoothed_prompt",
-      state: "pending",
-      sourceVersion: 1,
-    });
-  });
-
-  it("messages.derive retry after expired-claim recovery preserves claim_epoch and attempt accounting", async () => {
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double, {
-      clock: () => new Date("2026-06-10T12:00:00.000Z"),
-      retry: { budget: 5, backoffBaseMs: 0, backoffCapMs: 0 },
-    });
-    const { filePath } = await newThread();
-    await send(sdk, filePath, [validEvent("user_prompt")]);
-    claimHeadWorkItem(filePath, "2026-06-10T11:59:59.000Z");
-    double.failKind("prompt_smoothing", 1, { retryable: true, reason: "timeout: expired claim retry" });
-
-    const result = await sdk.messages.derive({ filePath }, ["m1"]);
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: { errorClass: "system_error", code: "derivation_retry_scheduled", reason: "timeout: expired claim retry" },
-    });
-    expect(liveDetail(filePath)).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-prompt_smoothing-v1",
-        status: "queued",
-        attempts: 2,
-        claimEpoch: 2,
-        lastError: "timeout: expired claim retry",
-        eligibleAt: "2026-06-10T12:00:00.000Z",
-      }),
-    ]);
-  });
-
-  it("messages.derive refuses when the derivation advances after its initial read", async () => {
-    let advanceOnClock = false;
+  it("messages.derive accepts same-version ready races without overwriting them", async () => {
     let filePath = "";
-    const double = createInferenceCallbacksDouble();
-    const sdk = manualSdk(double, {
-      clock: () => {
-        if (advanceOnClock) {
-          advanceOnClock = false;
-          const db = openRaw(filePath);
-          try {
-            db.prepare(
-              `UPDATE derivation
-               SET state = 'ready', content = 'newer completion', source_version = 2
-               WHERE subject_kind = 'message' AND subject_id = 'm1' AND derivation_type = 'smoothed_prompt'`,
-            ).run();
-          } finally {
-            db.close();
-          }
-        }
-        return new Date("2026-06-10T12:00:00.000Z");
+    const base = createInferenceCallbacksDouble();
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: async () => {
+        setReadyDerivation(
+          filePath,
+          { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
+          "competing ready value",
+          1,
+        );
+        return { ok: true, text: "late inline value" };
       },
-    });
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks);
     ({ filePath } = await newThread());
     await send(sdk, filePath, [validEvent("user_prompt")]);
     deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
 
-    advanceOnClock = true;
+    const result = await sdk.messages.derive({ filePath }, ["m1"]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual([
+      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
+    ]);
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "ready", content: "competing ready value" });
+  });
+
+  it("messages.derive refuses when the derivation advances after its initial read", async () => {
+    let filePath = "";
+    const base = createInferenceCallbacksDouble();
+    const callbacks: InferenceCallbacks = {
+      smoothPrompt: async () => {
+        setReadyDerivation(
+          filePath,
+          { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
+          "newer completion",
+          2,
+        );
+        return { ok: true, text: "stale inline completion" };
+      },
+      summarizeToolResult: (input) => base.summarizeToolResult(input),
+      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
+    };
+    const sdk = manualSdk(callbacks);
+    ({ filePath } = await newThread());
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+
     const raced = await sdk.messages.derive({ filePath }, ["m1"]);
 
     expect(raced.ok).toBe(true);
@@ -1312,97 +1223,6 @@ describe("sync derive collision policy", () => {
       }),
     ]);
     expect(liveDetail(filePath).map((item) => item.workItemId)).toEqual([]);
-  });
-
-  it("messages.derive refuses an exact expired head if the derivation boundary advanced before claim", async () => {
-    let advanceOnClock = false;
-    let filePath = "";
-    const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
-    const sdk = manualSdk(double, {
-      clock: () => {
-        if (advanceOnClock) {
-          advanceOnClock = false;
-          setReadyDerivation(
-            filePath,
-            { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
-            "newer prompt",
-            2,
-          );
-        }
-        return new Date("2026-06-10T12:00:00.000Z");
-      },
-    });
-    ({ filePath } = await newThread());
-    await send(sdk, filePath, [validEvent("user_prompt")]);
-    claimHeadWorkItem(filePath, "2026-06-10T11:59:59.000Z");
-
-    advanceOnClock = true;
-    const raced = await sdk.messages.derive({ filePath }, ["m1"]);
-
-    expect(raced.ok).toBe(true);
-    if (!raced.ok) return;
-    expect(raced.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
-    });
-    expect(captured).toHaveLength(0);
-    expect(readDerivedForms(filePath)[0]).toMatchObject({
-      subjectId: "m1",
-      derivationType: "smoothed_prompt",
-      state: "ready",
-      content: "newer prompt",
-      sourceVersion: 2,
-    });
-    expect(liveDetail(filePath)).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-prompt_smoothing-v1",
-        status: "claimed",
-        attempts: 0,
-        claimEpoch: 1,
-      }),
-    ]);
-  });
-
-  it("messages.derive reports stale_discarded completion as in-flight instead of derived", async () => {
-    let filePath = "";
-    const base = createInferenceCallbacksDouble();
-    const callbacks: InferenceCallbacks = {
-      smoothPrompt: async () => {
-        setReadyDerivation(
-          filePath,
-          { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
-          "newer prompt while handler ran",
-          2,
-        );
-        return { ok: true, text: "stale prompt completion" };
-      },
-      summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
-    };
-    const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
-    ({ filePath } = await newThread());
-    await send(sdk, filePath, [validEvent("user_prompt")]);
-
-    const raced = await sdk.messages.derive({ filePath }, ["m1"]);
-
-    expect(raced.ok).toBe(true);
-    if (!raced.ok) return;
-    expect(raced.value[0]).toMatchObject({
-      messageId: "m1",
-      outcome: "failed",
-      error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
-    });
-    expect(readDerivedForms(filePath)[0]).toMatchObject({
-      subjectId: "m1",
-      derivationType: "smoothed_prompt",
-      state: "ready",
-      content: "newer prompt while handler ran",
-      sourceVersion: 2,
-    });
-    expect(liveCount(filePath)).toBe(0);
   });
 
   it("turns.deriveTurn refuses an abandoned later turn while older turn_derivation work is queued", async () => {
@@ -1513,7 +1333,7 @@ describe("sync derive collision policy", () => {
     ]);
   });
 
-  it("two concurrent messages.derive calls share the durable claim", async () => {
+  it("two concurrent messages.derive calls are inline attempts fenced by the derivation row", async () => {
     const base = createInferenceCallbacksDouble();
     const smoothCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
     const callbacks: InferenceCallbacks = {
@@ -1528,25 +1348,21 @@ describe("sync derive collision policy", () => {
     deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
 
     const first = sdk.messages.derive({ filePath }, ["m1"]);
-    await until(() => smoothCalls.length === 1, "first sync message derive claim");
-    const second = await sdk.messages.derive({ filePath }, ["m1"]);
-    smoothCalls[0]?.resolve({ ok: true, text: "owned message completion" });
-    const owned = await first;
+    await until(() => smoothCalls.length === 1, "first inline message derive attempt");
+    const second = sdk.messages.derive({ filePath }, ["m1"]);
+    await until(() => smoothCalls.length === 2, "second inline message derive attempt");
+    smoothCalls[0]?.resolve({ ok: true, text: "first inline completion" });
+    const firstResult = await first;
+    smoothCalls[1]?.resolve({ ok: true, text: "second inline completion" });
+    const secondResult = await second;
 
-    expect(second.ok).toBe(true);
-    expect(owned.ok).toBe(true);
-    if (!second.ok || !owned.ok) return;
-    expect(second.value).toEqual([
-      {
-        messageId: "m1",
-        outcome: "failed",
-        error: expect.objectContaining({
-          errorClass: "caller_error",
-          code: "derivation_work_in_flight",
-        }),
-      },
+    expect(firstResult.ok).toBe(true);
+    expect(secondResult.ok).toBe(true);
+    if (!firstResult.ok || !secondResult.ok) return;
+    expect(firstResult.value).toEqual([
+      { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
     ]);
-    expect(owned.value).toEqual([
+    expect(secondResult.value).toEqual([
       { messageId: "m1", outcome: "derived", derivationType: "smoothed_prompt", sourceVersion: 1 },
     ]);
     expect(readDerivedForms(filePath)).toEqual([
@@ -1554,7 +1370,7 @@ describe("sync derive collision policy", () => {
         subjectId: "m1",
         derivationType: "smoothed_prompt",
         state: "ready",
-        content: "owned message completion",
+        content: "first inline completion",
       }),
     ]);
     expect(liveCount(filePath)).toBe(0);
@@ -1653,79 +1469,6 @@ describe("sync derive collision policy", () => {
         content: "owned chunk brief",
       }),
     ]);
-    expect(liveCount(filePath)).toBe(0);
-  });
-
-  it("sync derive success is fenced by claim_epoch after a competing claim completes", async () => {
-    const base = createInferenceCallbacksDouble();
-    const smoothCalls: Array<{ resolve: (result: InferenceResult) => void }> = [];
-    const callbacks: InferenceCallbacks = {
-      smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
-      summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
-      summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
-    };
-    const sdk = manualSdk(callbacks, { clock: () => new Date("2026-06-10T12:00:00.000Z") });
-    const { filePath } = await newThread();
-    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "stale owner" } })]);
-    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
-
-    const staleOwner = sdk.messages.derive({ filePath }, ["m1"]);
-    await until(() => smoothCalls.length === 1, "first sync message derive claim");
-    expect(liveDetail(filePath)).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-prompt_smoothing-v1",
-        status: "claimed",
-        claimEpoch: 1,
-      }),
-    ]);
-
-    expireWorkItemClaim(filePath, "w-m1-prompt_smoothing-v1", "2026-06-10T11:59:59.000Z");
-    claimHeadWorkItem(filePath, "2026-06-10T12:05:00.000Z");
-    const competingClaim = liveDetail(filePath)[0];
-    expect(competingClaim).toMatchObject({ workItemId: "w-m1-prompt_smoothing-v1", claimEpoch: 2 });
-    const db = openRaw(filePath);
-    try {
-      applyDerivationSuccess(
-        db,
-        {
-          sourceVersion: 1,
-          derivations: [{ subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" }],
-          workItemId: "w-m1-prompt_smoothing-v1",
-          claimEpoch: 2,
-        },
-        [
-          {
-            subjectKind: "message",
-            subjectId: "m1",
-            derivationType: "smoothed_prompt",
-            content: "competing completion",
-          },
-        ],
-        "2026-06-10T12:00:01.000Z",
-      );
-    } finally {
-      db.close();
-    }
-
-    smoothCalls[0]?.resolve({ ok: true, text: "stale completion" });
-    const result = await staleOwner;
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value).toEqual([
-      {
-        messageId: "m1",
-        outcome: "failed",
-        error: expect.objectContaining({
-          errorClass: "caller_error",
-          code: "derivation_work_in_flight",
-        }),
-      },
-    ]);
-    expect(readDerivedForms(filePath)[0]).toMatchObject({
-      state: "ready",
-      content: "competing completion",
-    });
     expect(liveCount(filePath)).toBe(0);
   });
 });

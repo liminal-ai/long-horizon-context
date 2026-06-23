@@ -288,7 +288,7 @@ A closed chunk gets two derivations, queued in the completion transaction:
 
 - **`chunk_summary_brief`** — an inference-backed summary that keeps outcomes only. What ages out first is the activity's texture, never its result.
 
-Both carry derivation state and can be checked and re-queued through the `turns` surface. Chunk summaries wait on their member turn compressions: if a member's `smooth_turn_compression` is not ready, the chunk summary handler requeues; if it is blocked, the chunk summary lands blocked.
+Both carry derivation state and can be checked through the `turns` surface. Chunk summaries wait on their member turn compressions: if a member's `smooth_turn_compression` is not ready, the chunk summary handler requeues; if it is blocked, the chunk summary lands blocked.
 
 ### Reading turns and chunks
 
@@ -310,7 +310,7 @@ sequenceDiagram
 
 ## Thread view
 
-A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter representations. The `thread-view` domain stores compact snapshots and serves them with the live tail. Its operations are `getLlmRequestContext`, `status`, `describe`, `compact`, `sweep`, and `materialize`. A harness either loads a view that LHC has written to a file or asks LHC for the current `LlmRequestContext` directly.
+A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter representations. The `thread-view` domain stores compact snapshots and serves them with the live tail. Its operations are `getLlmRequestContext`, `status`, `describe`, `compact`, and `materialize`. A harness either loads a view that LHC has written to a file or asks LHC for the current `LlmRequestContext` directly.
 
 A view is a rendering, not a second copy of the conversation. It is assembled from records the other domains already own: messages, turns, chunks, and the derivations derived from them. Producing a view never changes the canonical history; it selects and arranges what already exists.
 
@@ -333,7 +333,7 @@ Generating a view — the operation a user or host invokes as a **smart compact*
 
 Compact is an explicit operation, invoked by the host or caller. It does not run on a timer or automatically after turns close. The `threadView.status` operation reports whether a compact is recommended based on the tail's token count against a configured threshold, but nothing triggers compact automatically.
 
-Before assembly, compact optionally runs a readiness sweep (on by default) that walks all derivation reports, schedules pending derivations that have no live work, and re-queues transiently failed derivations through the owning domains. If canonical record damage is detected — such as a turn referencing a missing chunk member — compact refuses before writing, leaving the prior view intact.
+Before assembly, compact reads record and derivation state as it stands. It does not call providers, schedule repair work, or re-queue failed derivations. If canonical record damage is detected — such as a turn referencing a missing chunk member — compact refuses before writing, leaving the prior view intact.
 
 When a band entry depends on a derivation that is not ready, compact does not stop. It walks a fallback ladder: the smooth band tries `turn_rendering`, then `smooth_turn_compression`, then a deterministic excerpt of the turn's messages, then a gap. The detailed and brief bands try their primary chunk summary, then a concatenation of stored member material, then a gap. A gap is always the last resort, never the first response to a missing derivation. Chunk stored-member fallbacks are warning-logged; all degraded entries and gaps are recorded in the compact receipt and the stored view metadata.
 
@@ -373,14 +373,6 @@ sequenceDiagram
   V-->>H: model context
 ```
 
-### Readiness sweep
-
-The readiness sweep walks all message and turn derivation reports, schedules pending derivations that have no live work item, and re-queues derivations that failed transiently. It reads derivation states through each owning domain's report surface and asks those domains to schedule their own work — the sweep never claims work, calls inference, or writes derivations itself.
-
-Failed derivations are classified by their reason code: transient failures (rate limit, timeout, provider unavailable) are requeued; permanent failures (content refusal, validation, unknown work kind) are reported but not retried. Blocked derivations (source damage) are reported with their reasons. The classification is a lookup table in the sweep code; expanding it is a code change, not external configuration.
-
-The sweep runs embedded in compact by default (before the assembly step), and can be run standalone through `threadView.sweep`.
-
 ### Tool results in the model context
 
 Tool results in the tail move through fidelity on a shorter cycle than the bands. Recent tool results show in full, because the agent is likely still working with them; older ones show as a deterministic truncation with a pointer back to the full record, because their full output is rarely needed once the work has moved on.
@@ -401,7 +393,7 @@ Inspect answers questions about a thread without changing it. The `inspect` doma
 
 - **view** — the stored view snapshot from `threadView.describe` (arrangement, gaps, config, per-band stored token counts, source-state provenance) plus the serving cost measured by running `threadView.getLlmRequestContext` and counting its output with the shared estimator. This makes the reported cost structurally identical to what an agent would receive.
 
-Inspect is read-only and reads through the other domains' surfaces. It never writes, repairs, or derives. That is also the line between inspect and thread-view's readiness sweep: the sweep walks derivation health and schedules repair through the owning domains; inspect reports on whatever a person or agent asks and changes nothing.
+Inspect is read-only and reads through the other domains' surfaces. It never writes, repairs, derives, or schedules work. It reports on whatever a person or agent asks and changes nothing.
 
 ```mermaid
 sequenceDiagram

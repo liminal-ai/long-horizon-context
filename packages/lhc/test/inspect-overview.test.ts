@@ -185,9 +185,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
   it("compacted tool-heavy fixture: exact counts in every section", async () => {
     const fixture = await derivedThreadFixture(store);
     const { filePath, sdk } = fixture;
-    // sweep: false keeps the two manufactured failed states failed — the
-    // default sweep would requeue the transient one and move the counts.
-    const compacted = await sdk.threadView.compact({ filePath }, { sweep: false });
+    const compacted = await sdk.threadView.compact({ filePath }, {});
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 

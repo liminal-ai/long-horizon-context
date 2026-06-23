@@ -26,12 +26,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type DerivationReportEntry,
   estimateTokens,
-  type HealthReport,
   type LlmRequestContext,
   type LlmRequestContextMessage,
   type MutationResult,
   type OpResult,
-  type SweepReceipt,
 } from "../src/index.js";
 import {
   DELETED_MESSAGE_TEXT,
@@ -97,11 +95,6 @@ function pendingKeys(...reports: Array<readonly DerivationReportEntry[]>): strin
     .filter((entry) => entry.state === "pending")
     .map((entry) => `${entry.subjectKind}:${entry.subjectId}:${entry.derivationType}`)
     .sort();
-}
-
-type SweepLine = SweepReceipt["owners"][number];
-function byOwnerKind(rows: readonly SweepLine[]): SweepLine[] {
-  return [...rows].sort((a, b) => `${a.owner}/${a.kind}`.localeCompare(`${b.owner}/${b.kind}`));
 }
 
 // The materialized file with the run's own thread id substituted — the one
@@ -240,30 +233,6 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     ).toBe(true);
     expect(llmContext2.messages.some((m) => messageText(m).includes(DELETED_MESSAGE_TEXT))).toBe(false);
     expect(llmContext2.messages.some((m) => messageText(m) === "turn 12: please investigate area 12")).toBe(false);
-  });
-
-  it("the second compact receipt's sweep section agrees with the health report taken immediately before it", () => {
-    const receipt = ok(run.phases.compact2);
-    const health: HealthReport = ok(run.phases.health2);
-    expect("owners" in receipt.sweep).toBe(true);
-    const sweep = receipt.sweep as SweepReceipt;
-
-    // Field-level agreement per owner/kind: the sweep saw exactly the state
-    // health reported — same ready counts, in-flight = pending + retrying,
-    // and the failed/requeued/blocked sets empty on both sides.
-    const expectedFromHealth = health.owners
-      .filter((row): row is (typeof health.owners)[number] & { owner: "messages" | "turns" } => row.owner !== "capture")
-      .map((row) => ({
-        owner: row.owner,
-        kind: row.kind,
-        ready: row.counts.ready,
-        inFlight: row.counts.pending + row.counts.retrying,
-        requeued: [],
-        blocked: [],
-        permanentFailed: [],
-      }));
-    expect(byOwnerKind(sweep.owners)).toEqual(byOwnerKind(expectedFromHealth));
-    expect(health.failures).toEqual([]);
   });
 });
 

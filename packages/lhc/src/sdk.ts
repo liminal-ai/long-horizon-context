@@ -17,7 +17,6 @@ import type {
   LlmRequestContext,
   OpResult,
   StoredView,
-  SweepReceipt,
   ViewCompactParams,
   ViewStatus,
 } from "./shared-tech/index.js";
@@ -119,7 +118,6 @@ export type {
   SdkViewConfig,
   StoredView,
   SubjectKind,
-  SweepReceipt,
   ToolOutcome,
   ToolResultClassification,
   ToolResultFacts,
@@ -245,9 +243,8 @@ export interface ThreadViewSurface {
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   compact(
     ref: threadsDomain.ThreadRef,
-    opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
+    opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
   ): Promise<OpResult<CompactReceipt>>;
-  sweep(ref: threadsDomain.ThreadRef): Promise<OpResult<SweepReceipt>>;
   materialize(
     ref: threadsDomain.ThreadRef,
     opts: { path: string; format?: "pi-session" },
@@ -580,13 +577,10 @@ export function initLhc(config: SdkConfig): Lhc {
   // Handler maps merge from per-domain contributions at construction.
   const workHandlers = mapWorkQHandlers([messageWorkHandlers, turnWorkHandlers]);
   const workDispatchers: DurableWorkDispatcherMap = {
-    "messages.derive": (run, item) => dispatchMessageDeriveWork(run.openDb(), run.config, item),
-    "turns.deriveTurn": (run, item) =>
-      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "turn_derivation" }),
-    "turns.deriveDetailedChunk": (run, item) =>
-      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "chunk_summary_detailed" }),
-    "turns.deriveBriefChunk": (run, item) =>
-      dispatchTurnOwnedWork(run.openDb(), run.config, { ...item, kind: "chunk_summary_brief" }),
+    "messages.derive": (run, item) => dispatchMessageDeriveWork(run, item),
+    "turns.deriveTurn": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "turn_derivation" }),
+    "turns.deriveDetailedChunk": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "chunk_summary_detailed" }),
+    "turns.deriveBriefChunk": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "chunk_summary_brief" }),
   };
 
   const drainDeps: DrainDeps = {
@@ -680,7 +674,6 @@ export function initLhc(config: SdkConfig): Lhc {
         status: threadViewDomain.status,
         describe: threadViewDomain.describe,
         compact: threadViewDomain.compact,
-        sweep: threadViewDomain.sweep,
         materialize: threadViewDomain.materialize,
       },
       seam,

@@ -266,6 +266,8 @@ export interface ResolvedSdkConfig {
 
 // ── handler contract ─────────────────────────────────────────────
 export interface HandlerRunContext {
+  threadId: string;
+  filePath: string;
   openDb(): DatabaseSync; // short-txn access; NEVER held across inference calls
   inferenceCallbacks: InferenceCallbacks;
   clock: () => Date;

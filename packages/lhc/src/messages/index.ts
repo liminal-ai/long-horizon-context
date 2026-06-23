@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
-import type { Derivation, DerivationReportEntry } from "../shared-tech/index.js";
+import type { Derivation, DerivationReportEntry, HandlerRunContext } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
   createDbWriteTransaction,
@@ -11,10 +11,10 @@ import {
   resolveInstanceConfig,
   storageFailure,
 } from "../shared-tech/index.js";
-import { enqueue, hasLiveItem, type WorkItemRecord, type WorkKind } from "../shared-tech/work-queue/index.js";
+import { enqueue, type WorkItemRecord, type WorkKind } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
-import { readMessageDerivationRow, readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
-import { deriveMessageInOpenDb, type MessageDeriveResult } from "./internal/derive.js";
+import { readMessageDerivations, reportMessageDerivations } from "./internal/derivations.js";
+import { deriveMessageInThread, type MessageDeriveResult } from "./internal/derive.js";
 import { MESSAGE_WORK_DERIVATIONS, MESSAGE_WORK_KINDS } from "./internal/work.js";
 
 export { cleanPrompt } from "./internal/smoothing.js";
@@ -306,9 +306,21 @@ export async function derive(threadRef: ThreadRef, messageIds: string[]): Promis
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
+    const threadId = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
+      | { thread_id: string }
+      | undefined;
+    if (threadId === undefined) return storageFailure(`thread file at ${filePath} lost its metadata row`);
+    const run: HandlerRunContext = {
+      threadId: threadId.thread_id,
+      filePath,
+      openDb: () => db,
+      inferenceCallbacks: config.inferenceCallbacks,
+      clock: config.clock,
+      config,
+    };
     const results: MessageDeriveResult[] = [];
     for (const messageId of messageIds) {
-      results.push(await deriveMessageInOpenDb(db, config, messageId));
+      results.push(await deriveMessageInThread(run, messageId));
     }
     return { ok: true, value: results };
   } catch (cause) {
@@ -316,104 +328,6 @@ export async function derive(threadRef: ThreadRef, messageIds: string[]): Promis
     return storageFailure(`derive failed: ${reason}`);
   } finally {
     db.close();
-  }
-}
-
-export type MessageDerivationRepairScheduleResult =
-  | {
-      messageId: string;
-      outcome: "scheduled";
-      derivationType: "smoothed_prompt" | "tool_result_summary";
-      sourceVersion: number;
-    }
-  | {
-      messageId: string;
-      outcome: "in_flight";
-      derivationType: "smoothed_prompt" | "tool_result_summary";
-      sourceVersion: number;
-    }
-  | { messageId: string; outcome: "not_derivable" }
-  | { messageId: string; outcome: "failed"; error: ErrorResult };
-
-function failedScheduleRepair(messageId: string, error: ErrorResult): MessageDerivationRepairScheduleResult {
-  return { messageId, outcome: "failed", error };
-}
-
-function messageDerivationForKind(
-  kind: Exclude<EventKind, "turn_end">,
-): { workKind: WorkKind; derivationType: "smoothed_prompt" | "tool_result_summary" } | undefined {
-  const workKind = MESSAGE_WORK_KINDS[kind];
-  if (workKind === undefined) return undefined;
-  const derivationType = MESSAGE_WORK_DERIVATIONS[workKind];
-  if (derivationType === undefined) {
-    throw new Error(`no derived derivation mapped for message work kind ${workKind}`);
-  }
-  return { workKind, derivationType };
-}
-
-function nextSourceVersion(row: { sourceVersion: number; state: string } | undefined): number {
-  if (row === undefined) return 1;
-  return row.state === "pending" ? row.sourceVersion : row.sourceVersion + 1;
-}
-
-// Owner repair scheduling for callers that must not run inference. The
-// derivation row is reset to pending and the durable work item is enqueued in
-// one write transaction; the normal post-commit poke wakes background mode.
-export async function scheduleDerivationRepair(
-  threadRef: ThreadRef,
-  messageIds: string[],
-): Promise<OpResult<MessageDerivationRepairScheduleResult[]>> {
-  try {
-    return await createDbWriteTransaction(threadRef, (transaction) => {
-      const results: MessageDerivationRepairScheduleResult[] = [];
-      for (const messageId of messageIds) {
-        const record = readMessageById(transaction.db, messageId);
-        if (record === undefined || record.deleted === true) {
-          results.push(
-            failedScheduleRepair(messageId, {
-              errorClass: "caller_error",
-              code: "message_not_found",
-              reason: `no message ${messageId} exists in this thread`,
-            }),
-          );
-          continue;
-        }
-        const mapped = messageDerivationForKind(record.kind);
-        if (mapped === undefined) {
-          results.push({ messageId, outcome: "not_derivable" });
-          continue;
-        }
-        const row = readMessageDerivationRow(transaction.db, messageId, mapped.derivationType);
-        if (row?.state === "blocked") {
-          results.push(
-            failedScheduleRepair(messageId, {
-              errorClass: "state_corruption",
-              code: "source_damaged",
-              reason: row.reason ?? `derivation ${mapped.derivationType} for message ${messageId} is blocked`,
-            }),
-          );
-          continue;
-        }
-        const sourceVersion = nextSourceVersion(row);
-        const sourceRef = { messageId };
-        if (hasLiveItem(transaction.db, mapped.workKind, sourceRef, sourceVersion)) {
-          results.push({ messageId, outcome: "in_flight", derivationType: mapped.derivationType, sourceVersion });
-          continue;
-        }
-        enqueue(transaction, {
-          owner: "messages",
-          kind: mapped.workKind,
-          sourceRef,
-          sourceVersion,
-          derivations: [{ subjectKind: "message", subjectId: messageId, derivationType: mapped.derivationType }],
-        });
-        results.push({ messageId, outcome: "scheduled", derivationType: mapped.derivationType, sourceVersion });
-      }
-      return results;
-    });
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    return storageFailure(`schedule derivation repair failed: ${reason}`);
   }
 }
 

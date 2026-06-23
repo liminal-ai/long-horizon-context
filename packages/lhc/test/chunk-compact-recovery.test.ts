@@ -183,7 +183,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const compacted = await compactSdk.threadView.compact(
       { filePath },
       {
-        sweep: false,
         params: {
           lowerBound: 120,
           percentages: { full: 10, smooth: 10, detailed: 70, brief: 10 },
@@ -234,7 +233,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const stopped = await sdk.threadView.compact(
       { filePath },
       {
-        sweep: false,
         signal: { aborted: true },
         params: {
           lowerBound: 120,
@@ -263,7 +261,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const compacted = await sdk.threadView.compact(
       { filePath },
       {
-        sweep: false,
         params: {
           lowerBound: 120,
           percentages: { full: 10, smooth: 10, detailed: 70, brief: 10 },

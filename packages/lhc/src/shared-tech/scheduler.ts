@@ -94,6 +94,7 @@ export async function drainOpenDb(
   db: DatabaseSync,
   deps: DrainDeps,
   opts?: { maxItems?: number },
+  identity?: { threadId: string; filePath: string },
 ): Promise<DrainReport> {
   const { clock, lease, retry, inferenceCallbacks } = deps.config;
   const ran: DrainReport["ran"] = [];
@@ -146,7 +147,14 @@ export async function drainOpenDb(
       continue;
     }
 
-    const run = { openDb: () => db, inferenceCallbacks, clock, config: deps.config };
+    const run = {
+      threadId: identity?.threadId ?? "",
+      filePath: identity?.filePath ?? "",
+      openDb: () => db,
+      inferenceCallbacks,
+      clock,
+      config: deps.config,
+    };
     const dispatchItem = item.operation === undefined ? undefined : { ...item, operation: item.operation };
     if (dispatchItem === undefined) {
       const terminal = applyDerivationTerminalFailure(
@@ -267,7 +275,9 @@ export async function runDrain(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    return { ok: true, value: await drainOpenDb(db, deps, opts) };
+    const threadId = readThreadId(db);
+    if (threadId === null) return storageFailure(`thread file at ${filePath} lost its metadata row`);
+    return { ok: true, value: await drainOpenDb(db, deps, opts, { threadId, filePath }) };
   } catch (cause) {
     if (cause instanceof DerivationCompletionError) {
       return {

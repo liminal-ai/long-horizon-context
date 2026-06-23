@@ -8,6 +8,7 @@ import type {
   SubjectKind,
 } from "../derivation.js";
 import { createPostCommitHookSet } from "../persist.js";
+import { databasePathFor } from "../storage.js";
 import type { EnqueueDerivationTarget, WorkKind, WorkSourceRef } from "../work-queue/index.js";
 
 export type DurableWorkOperation =
@@ -277,10 +278,23 @@ export async function runWorkHandler(
     item: { workItemId: string; kind: string; sourceRef: Record<string, string> },
   ) => Promise<HandlerOutcome>,
   item: { workItemId: string; kind: string; sourceRef: WorkSourceRef },
+  identity?: Pick<HandlerRunContext, "threadId" | "filePath">,
 ): Promise<HandlerOutcome> {
   try {
+    const threadId =
+      identity?.threadId ??
+      (db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as { thread_id: string } | undefined)
+        ?.thread_id ??
+      "";
     return await handler(
-      { openDb: () => db, inferenceCallbacks: config.inferenceCallbacks, clock: config.clock, config },
+      {
+        threadId,
+        filePath: identity?.filePath ?? databasePathFor(db) ?? "",
+        openDb: () => db,
+        inferenceCallbacks: config.inferenceCallbacks,
+        clock: config.clock,
+        config,
+      },
       {
         workItemId: item.workItemId,
         kind: item.kind,

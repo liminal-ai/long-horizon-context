@@ -301,7 +301,7 @@ describe("TC-4.4 (AC-4.6, AC-4.7): never backward within a window; compact reset
     // Compact: the boundary resets to the compact point (AC-4.7 — the reset
     // transaction landed in Story 2; this proves it end-to-end against a
     // boundary the production advance moved).
-    const receipt = await sdk.threadView.compact({ filePath }, { params: { lowerBound: 40 }, sweep: false });
+    const receipt = await sdk.threadView.compact({ filePath }, { params: { lowerBound: 40 } });
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
     const afterCompact = await sdk.threadView.getLlmRequestContext({ filePath });

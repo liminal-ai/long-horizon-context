@@ -128,20 +128,4 @@ export interface CompactReceipt {
     derivationType: "chunk_summary_detailed" | "chunk_summary_brief";
     reason: string;
   }>;
-  // The embedded sweep's receipt: sweep runs first by default and its full
-  // receipt embeds here; `sweep: false` records the skip. The receipt always
-  // says whether sweep ran.
-  sweep: SweepReceipt | { skipped: true };
-}
-
-export interface SweepReceipt {
-  owners: Array<{
-    owner: "messages" | "turns";
-    kind: string;
-    ready: number;
-    inFlight: number;
-    requeued: string[]; // subject ids
-    blocked: Array<{ subjectId: string; reason: string }>;
-    permanentFailed: Array<{ subjectId: string; reason: string }>;
-  }>;
 }

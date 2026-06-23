@@ -1,21 +1,12 @@
-import type { DatabaseSync } from "node:sqlite";
 import type { EventKind } from "../../intake-stream/index.js";
-import type { ErrorResult, ResolvedSdkConfig } from "../../shared-tech/index.js";
+import type { CompletionTx, ErrorResult, HandlerDerivationWrite, HandlerRunContext } from "../../shared-tech/index.js";
 import {
   applyDerivationSuccess,
-  applyDerivationTerminalFailure,
-  DerivationCompletionError,
+  createPostCommitHookSet,
   type DurableWorkDispatchResult,
-  resolveInstancePoke,
   runWorkHandler,
 } from "../../shared-tech/index.js";
-import {
-  createOrClaimImmediateWorkItem,
-  type EnqueueDerivationTarget,
-  type ImmediateDerivationBoundary,
-  retryClaimedItem,
-  type WorkKind,
-} from "../../shared-tech/work-queue/index.js";
+import { type EnqueueDerivationTarget, hasLiveItem, type WorkKind } from "../../shared-tech/work-queue/index.js";
 import { readMessageDerivationRow } from "./derivations.js";
 import { messageWorkHandlers } from "./handlers.js";
 import { readMessageById } from "./store.js";
@@ -60,21 +51,6 @@ function providerFailure(messageId: string, reason: string): MessageDeriveResult
   });
 }
 
-function retryScheduled(messageId: string, reason: string): MessageDeriveResult {
-  return failedDerive(messageId, {
-    errorClass: "system_error",
-    code: "derivation_retry_scheduled",
-    reason,
-  });
-}
-
-function pokeThreadScheduler(db: DatabaseSync): void {
-  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-    | { thread_id: string }
-    | undefined;
-  if (row !== undefined) resolveInstancePoke()(row.thread_id);
-}
-
 function workInFlight(messageId: string, workKind: WorkKind, sourceVersion: number): MessageDeriveResult {
   return failedDerive(messageId, {
     errorClass: "caller_error",
@@ -83,12 +59,84 @@ function workInFlight(messageId: string, workKind: WorkKind, sourceVersion: numb
   });
 }
 
-export async function deriveMessageInOpenDb(
-  db: DatabaseSync,
-  config: ResolvedSdkConfig,
+function applyRecoveredMessageWrite(
+  run: HandlerRunContext,
+  workKind: WorkKind,
+  messageId: string,
+  expected: { state: string; sourceVersion: number } | undefined,
+  sourceVersion: number,
+  write: HandlerDerivationWrite,
+  onApplied?: (transaction: CompletionTx) => void,
+): { applied: boolean; liveWork: boolean } {
+  const db = run.openDb();
+  const postCommitHook = createPostCommitHookSet();
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    if (hasLiveItem(db, workKind, { messageId }, sourceVersion)) {
+      db.exec("COMMIT;");
+      return { applied: false, liveWork: true };
+    }
+
+    const metadata = write.metadata === undefined ? null : JSON.stringify(write.metadata);
+    const gaps = write.gaps === undefined ? null : JSON.stringify(write.gaps);
+    const derivedAt = run.clock().toISOString();
+    let applied = false;
+    let wrote = false;
+    if (expected === undefined) {
+      const inserted = db
+        .prepare(
+          `INSERT OR IGNORE INTO derivation
+             (subject_kind, subject_id, derivation_type, state, content, metadata, gaps, source_version, derived_at)
+           VALUES ('message', ?, ?, 'ready', ?, ?, ?, ?, ?)`,
+        )
+        .run(messageId, write.derivationType, write.content, metadata, gaps, sourceVersion, derivedAt);
+      applied = Number(inserted.changes) > 0;
+      wrote = applied;
+    } else if (expected.state !== "pending" && expected.state !== "failed") {
+      applied = expected.state === "ready" && expected.sourceVersion === sourceVersion;
+    } else {
+      const changed = db
+        .prepare(
+          `UPDATE derivation
+           SET state = 'ready', content = ?, reason = NULL, metadata = ?,
+               gaps = ?, derived_at = ?, source_version = ?
+           WHERE subject_kind = 'message' AND subject_id = ? AND derivation_type = ?
+             AND state = ? AND source_version = ?`,
+        )
+        .run(
+          write.content,
+          metadata,
+          gaps,
+          derivedAt,
+          sourceVersion,
+          messageId,
+          write.derivationType,
+          expected.state,
+          expected.sourceVersion,
+        );
+      applied = Number(changed.changes) > 0;
+      wrote = applied;
+    }
+    if (!applied) {
+      const current = readMessageDerivationRow(db, messageId, write.derivationType);
+      applied = current?.state === "ready" && current.sourceVersion === sourceVersion;
+    }
+    if (wrote && onApplied !== undefined) onApplied({ db, onCommit: postCommitHook.add });
+    db.exec("COMMIT;");
+    if (wrote) postCommitHook.flush();
+    return { applied, liveWork: false };
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
+export async function deriveMessageInThread(
+  run: HandlerRunContext,
   messageId: string,
   opts?: { sourceVersion?: number },
 ): Promise<MessageDeriveResult> {
+  const db = run.openDb();
   const record = readMessageById(db, messageId);
   if (record === undefined || record.deleted === true) {
     return failedDerive(messageId, {
@@ -108,13 +156,9 @@ export async function deriveMessageInOpenDb(
     });
   }
   const sourceVersion = opts?.sourceVersion ?? sourceVersionForDerive(row);
-  const derivations = [
-    { subjectKind: "message" as const, subjectId: messageId, derivationType: mapped.derivationType },
-  ];
-  const expectedDerivations: ImmediateDerivationBoundary[] =
-    row === undefined
-      ? derivations.map((target) => ({ ...target, exists: false }))
-      : derivations.map((target) => ({ ...target, exists: true, state: row.state, sourceVersion: row.sourceVersion }));
+  if (hasLiveItem(db, mapped.workKind, { messageId }, sourceVersion)) {
+    return workInFlight(messageId, mapped.workKind, sourceVersion);
+  }
   const handler = messageWorkHandlers[mapped.workKind];
   if (handler === undefined) {
     return failedDerive(messageId, {
@@ -123,101 +167,73 @@ export async function deriveMessageInOpenDb(
       reason: `no handler registered for work kind "${mapped.workKind}"`,
     });
   }
-  const claim = createOrClaimImmediateWorkItem(
+  const outcome = await runWorkHandler(
     db,
-    {
-      owner: "messages",
-      kind: mapped.workKind,
-      sourceRef: { messageId },
-      sourceVersion,
-      derivations,
-      expectedDerivations,
-    },
-    { now: config.clock().toISOString(), leaseDurationMs: config.lease.durationMs },
+    run.config,
+    handler,
+    { workItemId: `inline-${messageId}-${mapped.workKind}`, kind: mapped.workKind, sourceRef: { messageId } },
+    run,
   );
-  if (claim.outcome !== "claimed") {
-    if (claim.outcome === "queued") pokeThreadScheduler(db);
-    return workInFlight(messageId, mapped.workKind, sourceVersion);
-  }
-  const outcome = await runWorkHandler(db, config, handler, {
-    workItemId: claim.item.workItemId,
-    kind: mapped.workKind,
-    sourceRef: { messageId },
-  });
-  const attempt = {
-    sourceVersion,
-    derivations,
-    workItemId: claim.item.workItemId,
-    claimEpoch: claim.item.claimEpoch,
-  };
-  if (outcome.ok) {
-    try {
-      const disposition = applyDerivationSuccess(
-        db,
-        attempt,
-        outcome.derivations ?? [],
-        config.clock().toISOString(),
-        outcome.onApplied,
-      );
-      if (disposition !== "done") {
-        return workInFlight(messageId, mapped.workKind, sourceVersion);
-      }
-    } catch (cause) {
-      if (cause instanceof DerivationCompletionError) {
-        return failedDerive(messageId, {
-          errorClass: cause.errorClass,
-          code: cause.code,
-          reason: cause.message,
-        });
-      }
-      throw cause;
-    }
-    return { messageId, outcome: "derived", derivationType: mapped.derivationType, sourceVersion };
-  }
-  if ("deferred" in outcome) {
-    return failedDerive(messageId, {
-      errorClass: "state_corruption",
-      code: "unknown_work_kind",
-      reason: "message derivation handler returned unsupported deferred outcome",
-    });
-  }
-  const reason = outcome.reason;
-  const attempts = claim.item.attempts + 1;
-  const now = config.clock().toISOString();
-  if (!("blocked" in outcome) && outcome.retryable && attempts < config.retry.budget) {
-    const backoffMs = Math.min(config.retry.backoffBaseMs * 2 ** attempts, config.retry.backoffCapMs);
-    const eligibleAt = new Date(Date.parse(now) + backoffMs).toISOString();
-    const owned = retryClaimedItem(db, claim.item, { reason, attempts, eligibleAt });
-    if (!owned) return workInFlight(messageId, mapped.workKind, sourceVersion);
-    pokeThreadScheduler(db);
-    return retryScheduled(messageId, reason);
-  }
-  try {
-    const disposition = applyDerivationTerminalFailure(db, attempt, {
-      reason,
-      state: "blocked" in outcome ? "blocked" : "failed",
-      attempts,
-      now,
-    });
-    if (disposition === "lost_lease") {
-      return workInFlight(messageId, mapped.workKind, sourceVersion);
-    }
-  } catch (cause) {
-    if (cause instanceof DerivationCompletionError) {
+  if (!outcome.ok) {
+    if ("deferred" in outcome) {
       return failedDerive(messageId, {
-        errorClass: cause.errorClass,
-        code: cause.code,
-        reason: cause.message,
+        errorClass: "state_corruption",
+        code: "unknown_work_kind",
+        reason: "message derivation handler returned unsupported deferred outcome",
       });
     }
-    throw cause;
+    if ("blocked" in outcome) {
+      return failedDerive(messageId, {
+        errorClass: "state_corruption",
+        code: "source_damaged",
+        reason: outcome.reason,
+      });
+    }
+    return providerFailure(messageId, outcome.reason);
   }
-  return providerFailure(messageId, reason);
+  const write = outcome.derivations?.[0];
+  if (write === undefined) return providerFailure(messageId, "message handler returned no derivation write");
+  const persisted = applyRecoveredMessageWrite(
+    run,
+    mapped.workKind,
+    messageId,
+    row,
+    sourceVersion,
+    write,
+    outcome.onApplied,
+  );
+  if (!persisted.applied) {
+    if (persisted.liveWork) return workInFlight(messageId, mapped.workKind, sourceVersion);
+    const current = readMessageDerivationRow(db, messageId, mapped.derivationType);
+    if (current?.state !== "ready" || current.sourceVersion !== sourceVersion) {
+      return workInFlight(messageId, mapped.workKind, sourceVersion);
+    }
+  }
+  return { messageId, outcome: "derived", derivationType: mapped.derivationType, sourceVersion };
+}
+
+export function writeMessageDerivationFloorInThread(
+  run: HandlerRunContext,
+  recovery: {
+    messageId: string;
+    derivationType: "smoothed_prompt" | "tool_result_summary";
+    content: string;
+    sourceVersion: number;
+  },
+): { persisted: boolean } {
+  const workKind = recovery.derivationType === "smoothed_prompt" ? "prompt_smoothing" : "tool_result_summary";
+  const row = readMessageDerivationRow(run.openDb(), recovery.messageId, recovery.derivationType);
+  const persisted = applyRecoveredMessageWrite(run, workKind, recovery.messageId, row, recovery.sourceVersion, {
+    subjectKind: "message",
+    subjectId: recovery.messageId,
+    derivationType: recovery.derivationType,
+    content: recovery.content,
+  });
+  return { persisted: persisted.applied };
 }
 
 export async function dispatchMessageDeriveWork(
-  db: DatabaseSync,
-  config: ResolvedSdkConfig,
+  run: HandlerRunContext,
   item: {
     workItemId: string;
     claimEpoch: number;
@@ -225,6 +241,7 @@ export async function dispatchMessageDeriveWork(
     derivations: readonly EnqueueDerivationTarget[];
   },
 ): Promise<DurableWorkDispatchResult> {
+  const db = run.openDb();
   const target = item.derivations[0];
   if (target === undefined) return { disposition: "failed", retryable: false, reason: "missing_derivation_target" };
   const record = readMessageById(db, target.subjectId);
@@ -235,11 +252,17 @@ export async function dispatchMessageDeriveWork(
   if (mapped === undefined) return { disposition: "failed", retryable: false, reason: "not_derivable" };
   const handler = messageWorkHandlers[mapped.workKind];
   if (handler === undefined) return { disposition: "failed", retryable: false, reason: "unknown_work_kind" };
-  const outcome = await runWorkHandler(db, config, handler, {
-    workItemId: item.workItemId,
-    kind: mapped.workKind,
-    sourceRef: { messageId: target.subjectId },
-  });
+  const outcome = await runWorkHandler(
+    db,
+    run.config,
+    handler,
+    {
+      workItemId: item.workItemId,
+      kind: mapped.workKind,
+      sourceRef: { messageId: target.subjectId },
+    },
+    run,
+  );
   if (outcome.ok) {
     const disposition = applyDerivationSuccess(
       db,
@@ -250,7 +273,7 @@ export async function dispatchMessageDeriveWork(
         claimEpoch: item.claimEpoch,
       },
       outcome.derivations ?? [],
-      config.clock().toISOString(),
+      run.config.clock().toISOString(),
       outcome.onApplied,
     );
     return { disposition };

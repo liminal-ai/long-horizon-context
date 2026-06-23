@@ -19,7 +19,7 @@ export type ErrorCode =
   | "source_damaged" // state_corruption — handler found corrupt source; derivation blocked
   | "inference_unavailable" // caller_error — synchronous derivation called outside an SDK inference seam
   | "derivation_work_in_flight" // caller_error — synchronous derive refused because equivalent queued work is live
-  | "derivation_retry_scheduled" // system_error — synchronous derive failed retryably and requeued durable work
+  | "derivation_retry_scheduled" // system_error — turn-owned synchronous derive failed retryably and requeued durable work
   | "derivation_completion_mismatch" // state_corruption — handler writes did not exactly match queued derivation targets
   // Surface-skeleton stub contract: machine-readable, never a throw on the
   // thread-view surface.

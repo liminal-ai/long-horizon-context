@@ -5,7 +5,6 @@
 // sources discard here exactly as everywhere else. Tool-activity outcomes come
 // from outcome.ts, never inference text, and land in derivation metadata apart
 // from content.
-import type { DatabaseSync } from "node:sqlite";
 import type {
   HandlerDerivationWrite,
   HandlerOutcome,
@@ -51,13 +50,6 @@ function loadSource(
     };
   }
   return { ok: true, messageId, source };
-}
-
-function readThreadId(db: DatabaseSync): string {
-  const row = db.prepare(`SELECT thread_id FROM thread_metadata WHERE id = 1`).get() as
-    | { thread_id: string }
-    | undefined;
-  return row?.thread_id ?? "";
 }
 
 export interface SmoothedPromptDerivation {
@@ -133,7 +125,7 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
   if (derived.warningLog !== undefined) {
     outcome.onApplied = (transaction) => {
       transaction.onCommit(() => {
-        writeLog({ db: transaction.db, threadId: readThreadId(transaction.db), filePath: "" }, derived.warningLog!);
+        writeLog({ db: transaction.db, threadId: run.threadId, filePath: run.filePath }, derived.warningLog!);
       });
     };
   }

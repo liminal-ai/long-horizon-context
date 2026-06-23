@@ -1,4 +1,4 @@
-// thread-view surface: model context, status, compact, sweep, materialize, and
+// thread-view surface: model context, status, compact, materialize, and
 // describe. Hot-path reads use local deterministic assembly only: no inference,
 // no network, no queue interaction, and no writes. Profile resolution consumed
 // by initLhc is re-exported at the bottom.
@@ -12,7 +12,6 @@ import type {
   LlmRequestContext,
   ResolvedViewConfig,
   StoredView,
-  SweepReceipt,
   ViewCompactParams,
   ViewProfile,
   ViewStatus,
@@ -50,7 +49,6 @@ import {
   replaceViewSnapshot,
   tailTokenSum,
 } from "./internal/snapshot.js";
-import { runSweep } from "./internal/sweep.js";
 
 // Config resolution for the operation in hand: the SDK instance's resolved
 // view config rides the per-instance seam; below-SDK direct domain calls fall
@@ -249,16 +247,14 @@ function compactStopped(signal: { aborted: boolean } | undefined): boolean {
 }
 
 // Compact runs only when invoked through this surface; no core path calls it.
-// Order: validate profile/params before IO, run the default-on sweep
-// unless `sweep: false`, read record + derivations with corruption checks before
-// the write transaction, run selection, render bands, replace the view and reset
-// the boundary in one BEGIN IMMEDIATE, then return a receipt.
-// Assembly is entirely from stored artifacts: nothing here can reach a
-// inference. The sweep step schedules repair through owner surfaces and calls
-// no inference itself.
+// Order: validate profile/params before IO, read record + derivations with
+// corruption checks before the write transaction, run selection, render bands,
+// replace the view and reset the boundary in one BEGIN IMMEDIATE, then return a
+// receipt. Assembly is entirely from stored artifacts: nothing here can reach
+// inference or schedule repair work.
 export async function compact(
   ref: ThreadRef,
-  opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
+  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
 ): Promise<OpResult<CompactReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -288,20 +284,6 @@ export async function compact(
   // config carries the resolved truth. A bare or profile-only call names its
   // profile.
   const profileName = opts.params === undefined ? baseName : null;
-
-  // The sweep step is on by default so every compact leaves the thread
-  // healthier than it found it; `sweep: false` skips with the skip recorded in
-  // the receipt. Runs before this operation opens its own handle, and before
-  // any view write, so a sweep failure aborts compact with the prior view
-  // intact.
-  let sweepOutcome: SweepReceipt | { skipped: true };
-  if (opts.sweep === false) {
-    sweepOutcome = { skipped: true };
-  } else {
-    const swept = await runSweep(filePath);
-    if (!swept.ok) return swept;
-    sweepOutcome = swept.value;
-  }
 
   const opened = openThreadDatabase(filePath);
   if (!opened.ok) return opened;
@@ -392,8 +374,8 @@ export async function compact(
     // by an intake-free recompact. The singleton row is replaced whole.
     const viewId = `v${inputs.maxEventOrder}`;
 
-    // Test injection point for a crash between the sweep and the view-write
-    // transaction. An installed hook's throw aborts here before BEGIN, so the
+    // Test injection point before the view-write transaction. An installed
+    // hook's throw aborts here before BEGIN, so the
     // previous view keeps serving.
     fireViewInjection("compact-write");
 
@@ -467,7 +449,6 @@ export async function compact(
             subjectId: entry.subjectId,
             reason: entry.reason ?? "unknown",
           })),
-        sweep: sweepOutcome,
         warnings,
       },
     };
@@ -475,26 +456,6 @@ export async function compact(
     return storageFailure(`view compact failed: ${detail(cause)}`);
   } finally {
     db.close();
-  }
-}
-
-// ── sweep ────────────────────────────────────────────────────────
-
-// The standalone readiness sweep: walk the owners' reports, repair the
-// transiently-failed derivations through the owner surfaces, return the
-// per-owner/kind receipt. The walk itself lives in internal/sweep.ts; the
-// compact embeds the same walk, so standalone and embedded receipts share one
-// shape by construction. Returns without waiting on any queued work: requeues
-// are row writes, and background mode's drain heals later.
-export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-  try {
-    return await runSweep(filePath);
-  } catch (cause) {
-    return storageFailure(`view sweep failed: ${detail(cause)}`);
   }
 }
 
