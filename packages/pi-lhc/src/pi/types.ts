@@ -5,15 +5,13 @@
 // headless + interactive recon, June 12 2026). The PI packages are not yet a
 // build-time dependency of this workspace, so the connector declares the slice
 // of their contract it touches and swaps to the real imports when the
-// dependency lands (Spec Deviation, recorded in the story payload). Keeping the
-// surface here — rather than scattered `any` — means later stories get real
-// type-checking against the contract PI actually fires.
+// dependency lands. Keeping the surface here rather than scattered `any` means
+// connector code gets real type-checking against the contract PI actually fires.
 
 // ── Hook vocabulary ──────────────────────────────────────────────────
 
-/** Hooks the connector knows about. Epic 1 registers the observe-only rail;
- *  `context` is fired by PI but Epic 1 registers no handler for it — context
- *  serving is Epic 2. */
+/** Hooks the connector knows about. `context` is fired by PI but this connector
+ *  registers no handler for it. */
 export type PiHookName =
   | "session_start"
   | "message_end"
@@ -39,7 +37,7 @@ export interface MessageEndEvent {
   message: AgentMessage;
 }
 /** PI fires one turn_end per agent STEP (turnIndex resets to 0 each run); the
- *  converter must NOT map it 1:1 to an LHC turn_end (tech design Flow 2). */
+ *  converter must not map it 1:1 to an LHC turn_end. */
 export interface TurnEndEvent {
   turnIndex: number;
   message: AgentMessage;
@@ -71,7 +69,7 @@ export interface SessionShutdownEvent {
   reason: SessionShutdownReason;
   targetSessionFile?: string;
 }
-/** Declared for completeness; Epic 1 registers no handler (observe-only). */
+/** Declared for completeness; the connector registers no handler for it. */
 export interface ContextEvent {
   messages: AgentMessage[];
 }
@@ -92,7 +90,7 @@ export interface PiHookEventMap {
 
 /** A per-hook handler receives a FRESH `ctx` from PI on every call; the
  *  connector must never retain it across calls (PI replaces session objects on
- *  new/resume/fork and a stale reference throws). Tech design Flow 1. */
+ *  new/resume/fork and a stale reference throws). */
 export type PiHookHandler<N extends PiHookName> = (
   ctx: ExtensionContext,
   event: PiHookEventMap[N],
@@ -111,9 +109,9 @@ export interface PiToolSpec {
 }
 
 /** The factory-time API. Hook registration and command/tool registration take
- *  `pi: ExtensionAPI`; per-hook handlers take the fresh `ctx` (tech design
- *  I-7). `registerCommand`/`registerTool`/`appendEntry` are declared because PI
- *  exposes them, but Epic 1 (observe-only) registers only hooks. */
+ *  `pi: ExtensionAPI`; per-hook handlers take the fresh `ctx`.
+ *  `registerCommand`/`registerTool`/`appendEntry` are declared because PI
+ *  exposes them, though this connector registers only hooks. */
 export interface ExtensionAPI {
   registerHook<N extends PiHookName>(name: N, handler: PiHookHandler<N>): void;
   registerCommand(name: string, handler: PiCommandHandler): void;
@@ -128,8 +126,8 @@ export interface ModelDescriptor {
   id: string;
 }
 
-/** Opaque handle the model registry returns; it carries auth/runtime detail PI
- *  owns. The connector treats provider/model as opaque routing keys. */
+/** Host-owned handle the model registry returns; it carries auth/runtime detail
+ *  PI owns. The connector treats provider/model as host routing keys. */
 export interface ModelHandle extends ModelDescriptor {
   readonly [k: string]: unknown;
 }
@@ -159,7 +157,7 @@ export interface ExtensionContext {
   modelRegistry: ModelRegistry;
   ui: ExtensionUI;
   /** Guard UI surfacing on this — the extension must work in rpc/json/print
-   *  modes too (tech design I-9, reporting guards on headless not on ctx.ui). */
+   *  modes too; reporting guards on headless, not on ctx.ui. */
   hasUI: boolean;
   sessionManager: SessionManager;
   cwd: string;
@@ -174,8 +172,7 @@ export interface TextPart {
 export interface ThinkingPart {
   type: "thinking";
   thinking: string;
-  /** Opaque provider reasoning token — captured, not interpreted; dropped in
-   *  Epic 1 (tech design I-3). */
+  /** Provider reasoning token, captured but not interpreted. */
   thinkingSignature?: string;
 }
 export interface ToolCallPart {
@@ -185,11 +182,11 @@ export interface ToolCallPart {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  /** Opaque; captured, not interpreted (tech design I-3). */
+  /** Provider reasoning token, captured but not interpreted. */
   thoughtSignature?: string;
 }
 /** Unsupported in the text-only intake schema — degrades to a runtime_note in
- *  the converter (tech design I-6), never silently dropped. */
+ *  the converter, never silently dropped. */
 export interface ImagePart {
   type: "image";
   mimeType?: string;
@@ -213,7 +210,7 @@ export interface UserMessage {
   content: ContentPart[];
 }
 /** Also the shape pi-ai's `complete()` returns (research §3); the model-call
- *  host maps it to text or a classified failure (Epic 1 Story 5). */
+ *  host maps it to text or a classified failure. */
 export interface AssistantMessage {
   role: "assistant";
   content: ContentPart[];

@@ -36,9 +36,9 @@ export type ThreadDbOpener = (path: string) => OpResult<DatabaseSync>;
 
 export type SchedulerMode = "background" | "manual";
 
-// Report shape per tech design §Interfaces. `superseded` never appears here:
-// the cascade deletes superseded items and reports them on the mutation
-// result; a drain never sees them.
+// Drain report shape. `superseded` never appears here: the cascade deletes
+// superseded items and reports them on the mutation result; a drain never sees
+// them.
 export interface DrainReport {
   ran: Array<{
     workItemId: string;

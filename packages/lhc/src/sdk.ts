@@ -618,7 +618,7 @@ export function initLhc(config: SdkConfig): Lhc {
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the
-  // single-background "production path" — still reaches the one installed
+  // single-background default path — still reaches the one installed
   // scheduler. The per-instance scoping above overrides this for every sdk.*
   // call, so the default can never auto-drain a manual SDK's work. Manual mode
   // leaves the default alone (pokes stay no-ops by contract).

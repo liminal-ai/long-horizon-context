@@ -419,10 +419,10 @@ export async function scheduleDerivationRepair(
 
 // ── mutations ────────────────────────────────────────────────────
 
-// The mutation result contract (tech design §Interfaces): what changed in
-// the record, which dependent derivations cleared, which dropped (delete only),
-// what replacement work queued, and which still-queued old items the cascade
-// tidied away. Shared by edit and delete.
+// The mutation result contract: what changed in the record, which dependent
+// derivations cleared, which dropped (delete only), what replacement work
+// queued, and which still-queued old items the cascade tidied away. Shared by
+// edit and delete.
 export interface MutationResult {
   changed: { messageIds: string[]; turnIds: string[] };
   cleared: CascadeClear[];
