@@ -1,12 +1,7 @@
-// thread-view surface (Epic 03): model context, status, compact, sweep, materialize;
-// Epic 04 Story 3 adds describe (the stored-snapshot read inspect composes).
-// Story 1 landed the hot-path reads (`getLlmRequestContext`, `status`): local reads and
-// deterministic string assembly only, no inference, no network, no queue
-// interaction, no writes (AC-1.1, AC-2.8). Story 2 landed `compact`;
-// Story 3 landed `sweep` (standalone and embedded default-on in compact);
-// Story 5 lands `materialize` (the PI session-file render target over the
-// same serving-view assembly). Story 0's substrate (profile resolution, consumed by
-// initLhc) re-exports at the bottom.
+// thread-view surface: model context, status, compact, sweep, materialize, and
+// describe. Hot-path reads use local deterministic assembly only: no inference,
+// no network, no queue interaction, and no writes. Profile resolution consumed
+// by initLhc is re-exported at the bottom.
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import * as messagesDomain from "../messages/index.js";
@@ -58,9 +53,9 @@ import {
 import { runSweep } from "./internal/sweep.js";
 
 // Config resolution for the operation in hand: the SDK instance's resolved
-// view config rides the per-instance seam (epic-fix-001 pattern, tech design
-// Flow 4); below-SDK direct domain calls fall back to the built-in defaults
-// through the same one resolution path initLhc uses.
+// view config rides the per-instance seam; below-SDK direct domain calls fall
+// back to the built-in defaults through the same one resolution path initLhc
+// uses.
 const DEFAULT_VIEW_CONFIG: ResolvedViewConfig = resolveViewConfig();
 
 function viewConfig(): ResolvedViewConfig {
@@ -82,20 +77,19 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-// ── model context (Flow 1: AC-1.1–1.3, 1.5 default-boundary leg, 1.7) ─────
+// ── model context ────────────────────────────────────────────────
 
 // The hot-path read: view header + bands (if any), tail messages after the
 // compact point (deleted-filtered, record order), boundary position; then
 // format — band messages first, tail per the mapping table, tool results
 // at-or-behind the boundary in short form. No view row ⇒ the whole record is
-// tail from event 1 (AC-1.3) through this same code path with the compact
-// point at its zero origin — snapshot-absent, never a separate branch.
+// tail from event 1 through this same code path with the compact point at its
+// zero origin: snapshot-absent, never a separate branch.
 //
 // Reads-only is structural, not disciplined: the whole operation runs in the
 // touch-suppressed scope, so the open announcement that would let a
 // background SDK's scheduler hang a first-touch catch-up drain off this read
-// (openThreadDatabase → fireThreadTouch → scheduler.touch) never fires —
-// AC-1.1's no-queue-interaction holds in both host modes.
+// (openThreadDatabase → fireThreadTouch → scheduler.touch) never fires.
 export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<LlmRequestContext>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => {
@@ -114,7 +108,7 @@ export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<Llm
   }
 }
 
-// ── status (AC-2.8) ───────────────────────────────────────────────
+// ── status ───────────────────────────────────────────────────────
 
 // Derivation counts bucket from one report entry the way the report's own
 // vocabulary reads (shared/derivation.ts): never-attempted or first-flight
@@ -145,13 +139,12 @@ function bucketDerivation(entries: readonly DerivationReportEntry[], counts: Vie
 // by state read through the OWNERS' report surfaces (must-not-own: never a
 // direct derivation read here), the active view's health or null
 // pre-compact, and the visibility zone's sum against its max — computed live
-// by the same query the Story 4 advance will use, so "visible in status" is
+// by the same query boundary advance uses, so "visible in status" is
 // structural, not stored.
 //
 // Like model context, the whole read — including the owners' report surfaces it
 // consumes — runs in the touch-suppressed scope, so a background SDK's
-// status can never schedule a catch-up drain (AC-2.8 reads-only, both
-// host modes).
+// status can never schedule a catch-up drain.
 export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -219,13 +212,13 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   };
 }
 
-// ── describe (Epic 04 Story 3: AC-2.1, AC-2.5) ───────────────────
+// ── describe ─────────────────────────────────────────────────────
 
 // The stored active view row, exposed read-only so inspect never reads
-// thread-view tables directly (DD-1). Everything is the snapshot verbatim —
+// thread-view tables directly. Everything is the snapshot verbatim:
 // arrangement, gaps, config, source-state provenance, per-band stored token
 // counts; nothing is recomputed, repaired, or read from the record. Absent
-// view ⇒ ok with null, mirroring status's never-compacted behavior. Like the
+// view means ok with null, mirroring status's never-compacted behavior. Like the
 // other reads, the whole operation runs touch-suppressed: a background SDK's
 // describe can never schedule a catch-up drain.
 export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
@@ -236,11 +229,10 @@ export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | nu
   }
 }
 
-// ── compact (Flow 2: AC-2.1–2.7, 2.9, 2.10) ──────────────────────
+// ── compact ──────────────────────────────────────────────────────
 
 // The default base when no profile is named: the first built-in, matching
-// the epic's primary user (the PI continuation harness). Explicit params
-// override the base field-wise (AC-2.2).
+// the PI continuation harness. Explicit params override the base field-wise.
 const DEFAULT_PROFILE_NAME = "continuation";
 
 function callerError(
@@ -256,16 +248,14 @@ function compactStopped(signal: { aborted: boolean } | undefined): boolean {
   return signal?.aborted === true;
 }
 
-// Compact runs only when invoked through this surface (AC-2.1: no code path
-// in core calls it). Flow, in order: validate profile/params (pre-IO, so a
-// rejection provably touches nothing) → sweep, on by default, `sweep: false`
-// skips (AC-3.6; the receipt records which) → read record + derivations with the
-// corruption check in the reads (pre-transaction, prior view trivially
-// intact on refusal) → selection walk → band rendering → one BEGIN
-// IMMEDIATE replacing the view and resetting the boundary → receipt.
+// Compact runs only when invoked through this surface; no core path calls it.
+// Order: validate profile/params before IO, run the default-on sweep
+// unless `sweep: false`, read record + derivations with corruption checks before
+// the write transaction, run selection, render bands, replace the view and reset
+// the boundary in one BEGIN IMMEDIATE, then return a receipt.
 // Assembly is entirely from stored artifacts: nothing here can reach a
-// inference (AC-2.4 zero-inference is structural — the sweep step schedules
-// repair through owner surfaces and calls no inference itself).
+// inference. The sweep step schedules repair through owner surfaces and calls
+// no inference itself.
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; sweep?: boolean; signal?: { aborted: boolean } },
@@ -293,17 +283,17 @@ export async function compact(
   };
   const violation = profileViolation(merged);
   if (violation !== null) return callerError("invalid_view_config", violation);
-  // Receipt provenance: "null when explicit params" (tech design §Storage) —
-  // any param override means the config is no longer a named profile's mix,
-  // even when one served as the merge base; the receipt's config carries the
-  // resolved truth. A bare or profile-only call names its profile.
+  // Receipt provenance: any param override means the config is no longer a
+  // named profile's mix, even when one served as the merge base; the receipt's
+  // config carries the resolved truth. A bare or profile-only call names its
+  // profile.
   const profileName = opts.params === undefined ? baseName : null;
 
-  // The sweep step (Flow 2 / Flow 3, AC-3.6): on by default so every compact
-  // leaves the thread healthier than it found it; `sweep: false` skips with
-  // the skip recorded in the receipt. Runs before this operation opens its
-  // own handle (the owners' surfaces open theirs), and before any view
-  // write — a sweep failure aborts the compact with the prior view intact.
+  // The sweep step is on by default so every compact leaves the thread
+  // healthier than it found it; `sweep: false` skips with the skip recorded in
+  // the receipt. Runs before this operation opens its own handle, and before
+  // any view write, so a sweep failure aborts compact with the prior view
+  // intact.
   let sweepOutcome: SweepReceipt | { skipped: true };
   if (opts.sweep === false) {
     sweepOutcome = { skipped: true };
@@ -325,8 +315,8 @@ export async function compact(
       inputs = readSelectionInputs(db);
     } catch (cause) {
       if (cause instanceof CanonicalCorruptionError) {
-        // Pre-transaction refusal: nothing was written, the prior view and
-        // the record are untouched (AC-2.5).
+        // Pre-transaction refusal: nothing was written, the prior view and the
+        // record are untouched.
         return {
           ok: false,
           error: { errorClass: "state_corruption", code: cause.code, reason: cause.message },
@@ -398,14 +388,13 @@ export async function compact(
     });
 
     const createdAt = new Date().toISOString();
-    // view_id is v<compact event order> — deterministic, and deliberately
-    // reused by an intake-free recompact (tech design L395: do not "fix"
-    // into a uniqueness scheme; the singleton row is replaced whole).
+    // view_id is v<compact event order>: deterministic, and deliberately reused
+    // by an intake-free recompact. The singleton row is replaced whole.
     const viewId = `v${inputs.maxEventOrder}`;
 
-    // Story-0 injection point: TC-2.4's crash between the sweep and the
-    // view-write transaction. An installed hook's throw aborts here —
-    // before BEGIN — so the previous view keeps serving.
+    // Test injection point for a crash between the sweep and the view-write
+    // transaction. An installed hook's throw aborts here before BEGIN, so the
+    // previous view keeps serving.
     fireViewInjection("compact-write");
 
     replaceViewSnapshot(db, {
@@ -460,7 +449,7 @@ export async function compact(
         config: { ...merged.percentages, lowerBound: merged.lowerBound },
         bands: bandReport,
         tailTokens,
-        // Actual assembled total vs the bound (target, not cap — AC-2.4).
+        // Actual assembled total vs the bound: target, not cap.
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
         coveredFrom: selection.coveredFrom,
         compactPoint: selection.compactPoint,
@@ -489,15 +478,14 @@ export async function compact(
   }
 }
 
-// ── sweep (Flow 3: AC-3.1–3.5, 3.7) ──────────────────────────────
+// ── sweep ────────────────────────────────────────────────────────
 
 // The standalone readiness sweep: walk the owners' reports, repair the
 // transiently-failed derivations through the owner surfaces, return the
 // per-owner/kind receipt. The walk itself lives in internal/sweep.ts; the
-// compact embeds the same walk (AC-3.6), so standalone and embedded receipts
-// share one shape by construction (AC-3.7's SDK leg; the CLI leg rides
-// Story 5's process suite). Returns without waiting on any queued work
-// (AC-3.2): requeues are row writes; background mode's drain heals later.
+// compact embeds the same walk, so standalone and embedded receipts share one
+// shape by construction. Returns without waiting on any queued work: requeues
+// are row writes, and background mode's drain heals later.
 export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -510,43 +498,40 @@ export async function sweep(ref: ThreadRef): Promise<OpResult<SweepReceipt>> {
   }
 }
 
-// ── boundary advance (Flow 4: AC-4.3–4.6, 4.9) ───────────────────
+// ── boundary advance ─────────────────────────────────────────────
 
-// The post-commit advance, Story 4. NOT a host operation: no public advance
-// surface exists (story Anti-Shim Requirements) — the SDK's ThreadViewSurface
-// carries only the five operations, and this function's one production caller
-// is intake-stream's post-commit hook registration (the sanctioned
-// intake→thread-view surface import, tech design §Module Boundaries). It
-// runs at post-commit hook flush in BOTH host modes — unlike the queue poke it is cheap and
-// deterministic, and a CLI intake must advance too or CLI-driven threads
-// bloat. Budgets resolve through the per-instance seam exactly as the poke
-// does (the flush runs synchronously inside the SDK operation's seam scope),
-// falling back to the built-in defaults for direct domain calls.
+// The post-commit advance is not a host operation: no public advance surface
+// exists. This function's one production caller is intake-stream's post-commit
+// hook registration. It runs at post-commit hook flush in both host modes;
+// unlike the queue poke it is cheap and deterministic, and a CLI intake must
+// advance too or CLI-driven threads bloat. Budgets resolve through the
+// per-instance seam exactly as the poke does, falling back to the built-in
+// defaults for direct domain calls.
 //
 // Synchronous and throw-permitted by contract: the registering site wraps it
 // (catch + diagnose) so a failure never reaches intake's caller and never
 // eats the queue poke; the boundary is then simply unchanged and the
 // over-budget condition stays visible because status computes the same zone
-// sum live (AC-4.9).
+// sum live.
 export function runPostCommitBoundaryAdvance(transaction: DbWriteTransaction): void {
-  // Story-0 injection point (TC-4.6): fired before the advance computes; an
-  // installed hook's throw stands in for an advance failure.
+  // Test injection point: fired before the advance computes; an installed
+  // hook's throw stands in for an advance failure.
   fireViewInjection("post-commit-advance");
   executeBoundaryAdvance(transaction.db, viewConfig().visibility, transaction.clock);
 }
 
-// ── materialize (Flow 5: AC-5.2–5.5) ─────────────────────────────
+// ── materialize ──────────────────────────────────────────────────
 
 // PI session-file materialization: run the serving assembly internally, hand
 // the same entry array to the JSONL writer, return the written path. No
 // thread state changes (reads + a file write outside the thread file), and
 // every generated field derives from view/record metadata, never write-time
 // clocks — repeating after no thread changes produces a byte-identical file
-// (AC-5.2). Parity with model context is by construction: one assembly, two shapes
-// (AC-5.3). A never-compacted thread materializes its tail-only model context with
-// the header timestamp from the thread's created-at (AC-5.4). Like model context,
-// the whole operation runs touch-suppressed: a background SDK's materialize
-// can never schedule a catch-up drain.
+// Parity with model context is by construction: one assembly, two shapes. A
+// never-compacted thread materializes its tail-only model context with the
+// header timestamp from the thread's created-at. Like model context, the whole
+// operation runs touch-suppressed: a background SDK's materialize can never
+// schedule a catch-up drain.
 export async function materialize(
   ref: ThreadRef,
   opts: { path: string; format?: "pi-session" },
@@ -587,7 +572,7 @@ export async function materialize(
   }
 }
 
-// ── Story 0 substrate (consumed by initLhc at construction) ─────
+// ── initLhc substrate ────────────────────────────────────────────
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,
