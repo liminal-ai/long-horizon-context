@@ -1,9 +1,7 @@
-// Overview composition (Flow 1): one read-only call assembling thread
-// identity, record counts, derivation states, view summary, and visibility
-// from the other domains' SURFACES — list reads counted here, never table
-// reads (Spec Validation #2). Every thread shape falls out of this one
-// composition path: absent pieces normalize to zeros/nulls, no
-// shape-specific branch.
+// Overview composition is one read-only call assembling thread identity, record
+// counts, derivation states, view summary, and visibility from other public
+// surfaces. Every thread shape falls out of this one composition path: absent
+// pieces normalize to zeros/nulls, no shape-specific branch.
 
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
@@ -15,7 +13,7 @@ import * as turns from "../../turns/index.js";
 
 // One report entry's operational bucket, matching the vocabulary status
 // reads (shared/derivation.ts): pending with attempts spent is retrying.
-// Unlike ViewStatus, overview counts ready too (AC-1.1).
+// Unlike ViewStatus, overview counts ready too.
 export function bucketEntries(entries: readonly DerivationReportEntry[], counts: InspectOverview["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
@@ -61,9 +59,9 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
     span: first === undefined || last === undefined ? null : { first: first.eventOrder, last: last.eventOrder },
   };
 
-  // Deleted contract (AC-1.2): the audit listing carries everything; deleted
-  // records count only in `deleted` — visible, byKind, and the token sum are
-  // computed over the unflagged records alone.
+  // The audit listing carries everything; deleted records count only in
+  // `deleted`. Visible, byKind, and the token sum are computed over unflagged
+  // records alone.
   const listed = await messages.list(ref, { includeDeleted: true });
   if (!listed.ok) return listed;
   const messageSection: InspectOverview["messages"] = {
@@ -109,8 +107,8 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   bucketEntries(messageReport.value, derivation);
   bucketEntries(turnReport.value, derivation);
 
-  // View summary and visibility (DD-5): visibility from status; view
-  // identity from describe — the stored snapshot fields verbatim.
+  // View summary and visibility: visibility from status; view identity from
+  // describe, with stored snapshot fields returned verbatim.
   const status = await threadView.status(ref);
   if (!status.ok) return status;
   const described = await threadView.describe(ref);
