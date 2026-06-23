@@ -1,9 +1,7 @@
-// The report row mapper shared by both owners' report queries (Flow 4).
-// Each domain's forms.ts owns its one-query join (owner scoping and the
-// derivation_type→kind mapping are the owner's knowledge); the raw-row → DerivationReportEntry
-// mapping is owner-blind and lives here so the two owners cannot drift on
-// how state, metadata, gaps, and queue detail read back (DD-2: one table,
-// one vocabulary).
+// The report row mapper shared by owner report queries. Each domain owns its
+// one-query join and derivation_type→kind mapping; the raw-row →
+// DerivationReportEntry mapping is owner-blind and lives here so owners cannot
+// drift on how state, metadata, gaps, and queue detail read back.
 import type {
   DependencyGap,
   DerivationMetadata,

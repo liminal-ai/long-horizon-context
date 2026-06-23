@@ -9,34 +9,31 @@ export type ErrorCode =
   | "empty_batch"
   | "turn_state_corrupt"
   | "storage_failure"
-  // Epic 02 (tech design §Interfaces, issue 4):
+  // Message/turn mutation and derivation errors:
   | "turn_open" // caller_error — mutation against an open turn
   | "message_initiates_turn" // caller_error — delete refused toward turns.delete
   | "message_not_found" // caller_error
   | "turn_not_found" // caller_error
   | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
-  | "provider_failure" // system_error — exhausted retries; form.reason carries detail
-  | "source_damaged" // state_corruption — handler found corrupt source; form blocked
+  | "provider_failure" // system_error — exhausted retries; derivation.reason carries detail
+  | "source_damaged" // state_corruption — handler found corrupt source; derivation blocked
   | "inference_unavailable" // caller_error — synchronous derivation called outside an SDK inference seam
   | "derivation_work_in_flight" // caller_error — synchronous derive refused because equivalent queued work is live
   | "derivation_retry_scheduled" // system_error — synchronous derive failed retryably and requeued durable work
   | "derivation_completion_mismatch" // state_corruption — handler writes did not exactly match queued derivation targets
-  // Epic 03 (tech design §Interface Definitions): the surface-skeleton stub
-  // contract — machine-readable, never a throw on the thread-view surface.
+  // Surface-skeleton stub contract: machine-readable, never a throw on the
+  // thread-view surface.
   | "not_implemented" // system_error — operation's story has not landed yet
-  // Epic 03 Story 2 (AC-2.2/2.3): compact-time config rejection — unlike SDK
-  // construction (programmer error, throws), a bad compact invocation is an
-  // operational caller error returned as a result.
+  // Compact-time config rejection: unlike SDK construction, a bad compact
+  // invocation is an operational caller error returned as a result.
   | "unknown_profile" // caller_error — named profile not configured
   | "invalid_view_config" // caller_error — band sum / bound violation, named
   | "compact_stopped" // caller_error — caller stopped compact before it wrote a view
-  // Epic 03 Story 5: materialize accepts pi-session only; an unknown format
-  // is a caller error naming the accepted values (story Scope).
+  // materialize accepts pi-session only; an unknown format is a caller error
+  // naming the accepted values.
   | "unknown_format" // caller_error — materialize format not supported
-  // Epic 04 Story 1: bounded listing — a bad bounds option (from > to,
-  // limit < 1, non-integer) is an operational caller error returned as a
-  // result, mirroring the compact-params precedent (additive code, the
-  // Epic 03 deviation pattern).
+  // Bounded listing: a bad bounds option is an operational caller error
+  // returned as a result, mirroring the compact-params precedent.
   | "invalid_bounds"; // caller_error — list bounds option rejected
 
 export interface ErrorResult {
