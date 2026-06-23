@@ -153,7 +153,13 @@ export interface InferenceCallbacks {
     memberProjections: string[];
     memberReceipts?: ToolRunReceipt[][];
   }): Promise<InferenceResult>;
-  summarizeChunkBrief(i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }): Promise<InferenceResult>;
+  summarizeChunkBrief(i: {
+    text: string;
+    inputTokens: number;
+    targetMinTokens: number;
+    targetAimTokens: number;
+    targetMaxTokens: number;
+  }): Promise<InferenceResult>;
 }
 
 /** @deprecated Use InferenceCallbacks. */
@@ -260,6 +266,11 @@ export interface ResolvedSdkConfig {
     aimRatio: number;
     maxRatio: number;
   };
+  briefTargets: {
+    minRatio: number;
+    aimRatio: number;
+    maxRatio: number;
+  };
   toolResult: {
     smallTierTokens: number;
     smallTargetRatio: number;
@@ -308,6 +319,7 @@ export interface CompletionTx {
 
 export type HandlerOutcome =
   | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (transaction: CompletionTx) => void }
+  | { ok: false; deferred: true; reason: string; onDeferred: (transaction: CompletionTx) => void }
   | { ok: false; retryable: boolean; reason: string }
   | { ok: false; blocked: true; reason: string }; // source damage → derivation blocked, item terminal
 

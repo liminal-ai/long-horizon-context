@@ -25,6 +25,7 @@ import type {
 import {
   applyDerivationSuccess,
   applyDerivationTerminalFailure,
+  createPostCommitHookSet,
   DerivationCompletionError,
   type DurableWorkDispatchResult,
   resolveInstancePoke,
@@ -35,6 +36,8 @@ import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import {
   createOrClaimImmediateWorkItem,
   type EnqueueDerivationTarget,
+  enqueue,
+  hasLiveItem,
   type ImmediateDerivationBoundary,
   retryClaimedItem,
   type WorkKind,
@@ -49,6 +52,7 @@ import {
 } from "./compose.js";
 import {
   chunkExists,
+  readChunkSummaryDerivation,
   readMemberMessages,
   readMemberProjections,
   readMessageDerivationRows,
@@ -58,15 +62,15 @@ import {
 import { hasLiveRecoveryWork, recoverDerivation } from "./recovery.js";
 import { selectOpenTurnIds } from "./store.js";
 
-function sourceDamaged(reason: string): HandlerOutcome {
+function sourceDamaged(reason: string): Extract<HandlerOutcome, { ok: false }> {
   return { ok: false, blocked: true, reason: `source_damaged: ${reason}` };
 }
 
-function inferenceFailed(result: { retryable: boolean; reason: string }): HandlerOutcome {
+function inferenceFailed(result: { retryable: boolean; reason: string }): Extract<HandlerOutcome, { ok: false }> {
   return { ok: false, retryable: result.retryable, reason: result.reason };
 }
 
-function dependencyNotReady(reason: string): HandlerOutcome {
+function dependencyNotReady(reason: string): Extract<HandlerOutcome, { ok: false }> {
   return { ok: false, retryable: true, reason };
 }
 
@@ -125,7 +129,7 @@ function composeDetailedChunkSummary(
 
 function compressionTargetTokens(
   inputTokens: number,
-  targets: ResolvedSdkConfig["compressionTargets"],
+  targets: ResolvedSdkConfig["compressionTargets"] | ResolvedSdkConfig["briefTargets"],
 ): {
   inputTokens: number;
   targetMinTokens: number;
@@ -427,71 +431,64 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   };
 };
 
-// One read for both summary kinds — member projections in turn order. Detailed
-// is deterministic material assembly from member projections plus full
-// tool-run receipts. Brief is still inference-backed and receives outcomes
-// only, the receipt text stripped here so the brief inference call structurally
-// cannot carry it. Two work items, two handlers' runs, independent retry and
-// states. A member whose projection is not ready waits: chunk summary
-// derivation is background work, so it requeues until the member lower-band
-// input lands.
-function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_brief"): WorkHandler {
+// Detailed is deterministic material assembly from member projections plus
+// per-turn tool-run receipts. Brief is inference-backed and consumes the stored
+// detailed summary for the same chunk.
+type DetailedChunkComposition =
+  | Extract<HandlerOutcome, { ok: false }>
+  | { ok: true; text: string; fallbackLogs: LogEntry[] };
+
+function composeDetailedChunkFromMembers(db: DatabaseSync, chunkId: string): DetailedChunkComposition {
+  const members = readMemberProjections(db, chunkId);
+  const memberProjections: string[] = [];
+  const fallbackLogs: LogEntry[] = [];
+  for (const member of members) {
+    if (member.sourceCorruptionReason !== undefined) {
+      return sourceDamaged(member.sourceCorruptionReason);
+    }
+    if (member.state === "ready" && member.content !== undefined) {
+      memberProjections.push(member.content);
+      continue;
+    }
+    if (member.state === "blocked") {
+      return sourceDamaged(
+        `member ${member.turnId} smooth_turn_compression blocked while deriving chunk_summary_detailed`,
+      );
+    }
+    if (member.state === "failed" && member.renderingState === "ready" && member.renderingContent !== undefined) {
+      memberProjections.push(member.renderingContent);
+      fallbackLogs.push({
+        level: "warning",
+        message: "derivation fallback used",
+        derivationType: "chunk_summary_detailed",
+        subjectId: chunkId,
+        reason: "failed_floor",
+        floorUsed: member.turnId,
+      });
+      continue;
+    }
+    return dependencyNotReady(
+      `member_projection_not_ready: member ${member.turnId} smooth_turn_compression is ${member.state ?? "missing"}`,
+    );
+  }
+  return {
+    ok: true,
+    text: composeDetailedChunkSummary(
+      memberProjections,
+      members.map((member) => member.receipts),
+    ),
+    fallbackLogs,
+  };
+}
+
+function chunkDetailedHandler(): WorkHandler {
   return async (run, item) => {
     const chunkId = item.sourceRef["chunkId"];
     if (chunkId === undefined) return sourceDamaged("work item carries no chunkId");
     const db = run.openDb();
     if (!chunkExists(db, chunkId)) return sourceDamaged(`chunk ${chunkId} not found`);
-
-    const members = readMemberProjections(db, chunkId);
-    const memberProjections: string[] = [];
-    const fallbackLogs: LogEntry[] = [];
-    for (const member of members) {
-      if (member.sourceCorruptionReason !== undefined) {
-        return sourceDamaged(member.sourceCorruptionReason);
-      }
-      if (member.state === "ready" && member.content !== undefined) {
-        memberProjections.push(member.content);
-        continue;
-      }
-      if (member.state === "blocked") {
-        return sourceDamaged(`member ${member.turnId} smooth_turn_compression blocked while deriving ${kind}`);
-      }
-      if (
-        kind === "chunk_summary_detailed" &&
-        member.state === "failed" &&
-        member.renderingState === "ready" &&
-        member.renderingContent !== undefined
-      ) {
-        memberProjections.push(member.renderingContent);
-        fallbackLogs.push({
-          level: "warning",
-          message: "derivation fallback used",
-          derivationType: "chunk_summary_detailed",
-          subjectId: chunkId,
-          reason: "failed_floor",
-          floorUsed: member.turnId,
-        });
-        continue;
-      }
-      return dependencyNotReady(
-        `member_projection_not_ready: member ${member.turnId} smooth_turn_compression is ${member.state ?? "missing"}`,
-      );
-    }
-
-    const result =
-      kind === "chunk_summary_detailed"
-        ? {
-            ok: true as const,
-            text: composeDetailedChunkSummary(
-              memberProjections,
-              members.map((member) => member.receipts),
-            ),
-          }
-        : await run.inferenceCallbacks.summarizeChunkBrief({
-            memberProjections,
-            memberOutcomes: members.map((member) => member.receipts.map((receipt) => receipt.outcome)),
-          });
-    if (!result.ok) return inferenceFailed(result);
+    const composition = composeDetailedChunkFromMembers(db, chunkId);
+    if (!composition.ok) return composition;
 
     return {
       ok: true,
@@ -499,12 +496,11 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
         {
           subjectKind: "chunk",
           subjectId: chunkId,
-          derivationType: kind,
-          content: result.text,
-          ...(result.provenance === undefined ? {} : { metadata: { provenance: result.provenance } }),
+          derivationType: "chunk_summary_detailed",
+          content: composition.text,
         },
       ],
-      ...(fallbackLogs.length === 0
+      ...(composition.fallbackLogs.length === 0
         ? {}
         : {
             onApplied: (transaction) => {
@@ -516,9 +512,99 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
                 postCommitHook: { add: transaction.onCommit },
                 poke: resolveInstancePoke(),
               };
-              for (const entry of fallbackLogs) writeLog(logTransaction, entry);
+              for (const entry of composition.fallbackLogs) writeLog(logTransaction, entry);
             },
           }),
+    };
+  };
+}
+
+function chunkBriefHandler(): WorkHandler {
+  return async (run, item) => {
+    const chunkId = item.sourceRef["chunkId"];
+    if (chunkId === undefined) return sourceDamaged("work item carries no chunkId");
+    const db = run.openDb();
+    if (!chunkExists(db, chunkId)) return sourceDamaged(`chunk ${chunkId} not found`);
+
+    const detailed = readChunkSummaryDerivation(db, chunkId, "chunk_summary_detailed");
+    const brief = readChunkSummaryDerivation(db, chunkId, "chunk_summary_brief");
+    if (detailed === undefined || detailed.state === "pending") {
+      const sourceVersion = detailed?.sourceVersion ?? brief?.sourceVersion;
+      if (sourceVersion === undefined) {
+        return sourceDamaged(`chunk ${chunkId} has no chunk_summary_detailed or chunk_summary_brief derivation row`);
+      }
+      return {
+        ok: false,
+        deferred: true,
+        reason: `chunk_summary_detailed_not_ready: chunk ${chunkId} chunk_summary_detailed is ${detailed?.state ?? "missing"}`,
+        onDeferred: (transaction) => {
+          const threadId = readThreadIdFromDb(transaction.db);
+          if (!hasLiveItem(transaction.db, "chunk_summary_detailed", { chunkId }, sourceVersion)) {
+            enqueue(
+              {
+                db: transaction.db,
+                clock: run.clock,
+                threadId,
+                filePath: "",
+                postCommitHook: { add: transaction.onCommit },
+                poke: resolveInstancePoke(),
+              },
+              {
+                owner: "turns",
+                kind: "chunk_summary_detailed",
+                sourceRef: { chunkId },
+                sourceVersion,
+                derivations: [{ subjectKind: "chunk", subjectId: chunkId, derivationType: "chunk_summary_detailed" }],
+              },
+            );
+          }
+          enqueue(
+            {
+              db: transaction.db,
+              clock: run.clock,
+              threadId,
+              filePath: "",
+              postCommitHook: { add: transaction.onCommit },
+              poke: resolveInstancePoke(),
+            },
+            {
+              owner: "turns",
+              kind: "chunk_summary_brief",
+              sourceRef: { chunkId },
+              sourceVersion,
+              derivations: [{ subjectKind: "chunk", subjectId: chunkId, derivationType: "chunk_summary_brief" }],
+            },
+          );
+        },
+      };
+    }
+    if (detailed.state === "blocked" || detailed.state === "failed") {
+      return sourceDamaged(
+        `chunk ${chunkId} chunk_summary_detailed is ${detailed.state}: ${detailed.reason ?? "no reason"}`,
+      );
+    }
+    if (detailed.content === undefined) {
+      return dependencyNotReady(`chunk_summary_detailed_not_ready: chunk ${chunkId} has no detailed content`);
+    }
+
+    const targetTokens = compressionTargetTokens(estimateTokens(detailed.content), run.config.briefTargets);
+    const result = await run.inferenceCallbacks.summarizeChunkBrief({ text: detailed.content, ...targetTokens });
+    if (!result.ok) return inferenceFailed(result);
+    const outputTokens = estimateTokens(result.text);
+    const metadata: DerivationMetadata = { sizeDisposition: sizeDisposition(outputTokens, targetTokens) };
+    if (result.provenance !== undefined) metadata.provenance = result.provenance;
+
+    return {
+      ok: true,
+      derivations: [
+        {
+          subjectKind: "chunk",
+          subjectId: chunkId,
+          derivationType: "chunk_summary_brief",
+          content: result.text,
+          metadata,
+        },
+      ],
     };
   };
 }
@@ -527,9 +613,38 @@ function chunkSummaryHandler(kind: "chunk_summary_detailed" | "chunk_summary_bri
 // construction (DD-6).
 export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   turn_derivation: turnDerivationHandler,
-  chunk_summary_detailed: chunkSummaryHandler("chunk_summary_detailed"),
-  chunk_summary_brief: chunkSummaryHandler("chunk_summary_brief"),
+  chunk_summary_detailed: chunkDetailedHandler(),
+  chunk_summary_brief: chunkBriefHandler(),
 };
+
+function deferClaimedTurnWork(
+  db: DatabaseSync,
+  item: { workItemId: string; claimEpoch: number },
+  onDeferred: (transaction: { db: DatabaseSync; onCommit: (fn: () => void) => void }) => void,
+): boolean {
+  const postCommitHook = createPostCommitHookSet();
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const owned = db
+      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
+      .get(item.workItemId, item.claimEpoch);
+    if (owned === undefined) {
+      db.exec("COMMIT;");
+      return false;
+    }
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
+      item.workItemId,
+      item.claimEpoch,
+    );
+    onDeferred({ db, onCommit: postCommitHook.add });
+    db.exec("COMMIT;");
+    postCommitHook.flush();
+    return true;
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
 
 function sourceVersionForDerive(rows: readonly { state: string; sourceVersion: number }[]): number {
   const versions = rows.map((row) => row.sourceVersion);
@@ -663,6 +778,16 @@ export async function deriveTurnOwnedInOpenDb(
     }
     return { outcome: "derived", sourceVersion };
   }
+  if ("deferred" in outcome) {
+    const deferred = deferClaimedTurnWork(
+      db,
+      { workItemId: claim.item.workItemId, claimEpoch: claim.item.claimEpoch },
+      outcome.onDeferred,
+    );
+    if (!deferred) return workInFlight(kind, sourceRef, sourceVersion);
+    pokeThreadScheduler(db);
+    return retryScheduled(outcome.reason);
+  }
   const attempts = claim.item.attempts + 1;
   const now = config.clock().toISOString();
   if (!("blocked" in outcome) && outcome.retryable && attempts < config.retry.budget) {
@@ -733,6 +858,10 @@ export async function dispatchTurnOwnedWork(
       outcome.onApplied,
     );
     return { disposition };
+  }
+  if ("deferred" in outcome) {
+    const deferred = deferClaimedTurnWork(db, item, outcome.onDeferred);
+    return deferred ? { disposition: "done" } : { disposition: "lost_lease" };
   }
   if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
   return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };

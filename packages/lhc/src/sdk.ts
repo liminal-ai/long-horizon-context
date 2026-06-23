@@ -372,15 +372,18 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   chunk_summary_brief: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v1",
+    prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v2",
     targetMinRatio: 0.08,
     targetMaxRatio: 0.2,
     targetAimRatio: 0.12,
   },
 };
 
-function resolveCompressionTargets(assignment?: ModelAssignment): ResolvedSdkConfig["compressionTargets"] {
-  const defaults = DEFAULT_INFERENCE_ASSIGNMENTS.smooth_turn_compression!;
+function resolveTargetRatios(
+  kind: "smooth_turn_compression" | "chunk_summary_brief",
+  assignment?: ModelAssignment,
+): ResolvedSdkConfig["compressionTargets"] {
+  const defaults = DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
   return {
     minRatio: assignment?.targetMinRatio ?? defaults.targetMinRatio!,
     aimRatio: assignment?.targetAimRatio ?? defaults.targetAimRatio!,
@@ -497,7 +500,11 @@ export function initLhc(config: SdkConfig): Lhc {
     );
   }
   const guards = resolveGuards(config.guards);
-  const compressionTargets = resolveCompressionTargets(config.inference?.assignments?.smooth_turn_compression);
+  const compressionTargets = resolveTargetRatios(
+    "smooth_turn_compression",
+    config.inference?.assignments?.smooth_turn_compression,
+  );
+  const briefTargets = resolveTargetRatios("chunk_summary_brief", config.inference?.assignments?.chunk_summary_brief);
 
   let inferenceCallbacks: InferenceCallbacks;
   if (config.inference !== undefined) {
@@ -522,6 +529,7 @@ export function initLhc(config: SdkConfig): Lhc {
     retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
     guards,
     compressionTargets,
+    briefTargets,
     toolResult: config.toolResult ?? {
       smallTierTokens: 1000,
       smallTargetRatio: 0.15,
@@ -554,6 +562,18 @@ export function initLhc(config: SdkConfig): Lhc {
     resolved.compressionTargets.aimRatio > resolved.compressionTargets.maxRatio
   ) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: compressionTargets.aimRatio must be between minRatio and maxRatio`);
+  }
+  requirePositive(resolved.briefTargets.minRatio, "briefTargets.minRatio");
+  requirePositive(resolved.briefTargets.aimRatio, "briefTargets.aimRatio");
+  requirePositive(resolved.briefTargets.maxRatio, "briefTargets.maxRatio");
+  if (resolved.briefTargets.maxRatio < resolved.briefTargets.minRatio) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: briefTargets.maxRatio must be >= minRatio`);
+  }
+  if (
+    resolved.briefTargets.aimRatio < resolved.briefTargets.minRatio ||
+    resolved.briefTargets.aimRatio > resolved.briefTargets.maxRatio
+  ) {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: briefTargets.aimRatio must be between minRatio and maxRatio`);
   }
   requirePositive(resolved.toolResult.smallTierTokens, "toolResult.smallTierTokens");
   requirePositive(resolved.toolResult.smallTargetRatio, "toolResult.smallTargetRatio");

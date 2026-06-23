@@ -52,12 +52,10 @@ function ok(op: DeterministicOpName, input: unknown, text: string): Promise<Infe
   return Promise.resolve({ ok: true, text: deterministicText(op, input, text) });
 }
 
-// The chunk-summary contract made visible in deterministic output (AC-3.8):
-// the detailed summary's artifact carries the members' tool-run receipts —
-// account and outcome — verbatim; the brief summary's carries outcomes
-// only. Pure suffixes over the input fields, shared with the test double so
-// in-process and spawned artifacts stay byte-identical; empty receipt sets
-// add nothing, keeping receipt-less output unchanged.
+// The detailed summary's artifact carries the members' tool-run receipts —
+// account and outcome — verbatim. Pure suffixes over the input fields are
+// shared with the test double so in-process and spawned artifacts stay
+// byte-identical.
 export function deterministicReceiptsSuffix(memberReceipts?: ToolRunReceipt[][]): string {
   const receipts = (memberReceipts ?? []).flat();
   if (receipts.length === 0) return "";
@@ -97,11 +95,13 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       if (!base.ok) return base;
       return { ok: true, text: base.text + deterministicReceiptsSuffix(i.memberReceipts) };
     },
-    summarizeChunkBrief: async (i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }) => {
-      const base = await ok("summarizeChunkBrief", i, i.memberProjections.join(" | "));
-      if (!base.ok) return base;
-      return { ok: true, text: base.text + deterministicOutcomesSuffix(i.memberOutcomes) };
-    },
+    summarizeChunkBrief: (i: {
+      text: string;
+      inputTokens: number;
+      targetMinTokens: number;
+      targetAimTokens: number;
+      targetMaxTokens: number;
+    }) => ok("summarizeChunkBrief", i, i.text),
   };
 }
 

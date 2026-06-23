@@ -508,17 +508,21 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // its own inference operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
     expect(detailed?.content).toBe(`[turn 0001]\n${memberProjections[0]}`);
-    expect(brief?.content).toBe(
-      deterministicText(
-        "summarizeChunkBrief",
-        { memberProjections, memberOutcomes: [[]] },
-        memberProjections.join(" | "),
-      ),
-    );
+    const briefInputText = detailed?.content ?? "";
+    const briefInputTokens = estimateTokens(briefInputText);
+    const briefInput = {
+      text: briefInputText,
+      inputTokens: briefInputTokens,
+      targetMinTokens: Math.max(1, Math.round(briefInputTokens * 0.08)),
+      targetAimTokens: Math.max(1, Math.round(briefInputTokens * 0.12)),
+      targetMaxTokens: Math.max(1, Math.round(briefInputTokens * 0.2)),
+    };
+    expect(brief?.content).toBe(deterministicText("summarizeChunkBrief", briefInput, briefInputText));
+    expect(brief?.metadata?.sizeDisposition).toBeDefined();
     expect(detailed?.content).not.toBe(brief?.content);
   });
 
-  it("detailed preserves the tool-run receipts; brief strips them to outcomes only (SV-3.8-001)", async () => {
+  it("detailed preserves the tool-run receipts; brief consumes the detailed text", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double, SELF_CHUNK);
@@ -565,30 +569,24 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(account).toContain(`${resultB} ⇒ failed`);
 
     // Seam evidence: only the brief call crosses the inference boundary, and
-    // receives the run outcome only — no receipt account text anywhere in its
-    // input, so brief structurally cannot preserve more.
+    // it receives the detailed chunk text rather than raw member projections.
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
     expect(captured.some((entry) => entry.op === "summarizeChunkDetailed")).toBe(false);
-    expect(briefInput).toEqual({
-      memberProjections: [formOf(filePath, "t1", "smooth_turn_compression")?.content],
-      memberOutcomes: [["failed"]],
-    });
-    for (const summary of [callA, resultA, callB, resultB]) {
-      expect(JSON.stringify(briefInput)).not.toContain(summary as string);
-    }
-
-    // Artifact evidence: the detailed summary carries the run receipt's
-    // account and outcome; the brief summary carries the run outcome and none
-    // of the receipt content.
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
+    const detailedText = detailed?.content ?? "";
+    expect(briefInput).toMatchObject({ text: detailedText });
+    expect(JSON.stringify(briefInput)).not.toContain(formOf(filePath, "t1", "smooth_turn_compression")?.content ?? "");
+    expect(detailedText).toContain(`${account}=>failed`);
+    for (const summary of [callA, resultA, callB, resultB]) expect(detailedText).toContain(summary as string);
+
+    // Artifact evidence: detailed carries the run receipt's account and
+    // outcome; brief is produced from detailed and carries size metadata.
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
     expect(detailed?.content).toContain(`${account}=>failed`);
     expect(detailed?.content).toContain("[turn 0001]");
-    expect(brief?.content).toContain("[outcomes failed]");
-    expect(brief?.content).not.toContain("toolcall(");
-    expect(brief?.content).not.toContain("toolresult(");
+    expect(brief?.metadata?.sizeDisposition).toBeDefined();
   });
 
   it("the brief item fails past budget alone: detailed ready, brief failed, brief re-queueable by itself", async () => {

@@ -75,7 +75,14 @@ const KIND_SPECS: Record<WorkKind, FormSpec[]> = {
     {
       subjectKind: "chunk",
       derivationType: "chunk_summary_brief",
-      call: (p, id) => p.summarizeChunkBrief({ memberProjections: [`chunk:${id}`] }),
+      call: (p, id) =>
+        p.summarizeChunkBrief({
+          text: `chunk:${id}`,
+          inputTokens: 10,
+          targetMinTokens: 1,
+          targetAimTokens: 2,
+          targetMaxTokens: 3,
+        }),
     },
   ],
 };
@@ -147,6 +154,9 @@ export function testWorkDispatchers(
           outcome.onApplied,
         );
         return { disposition };
+      }
+      if ("deferred" in outcome) {
+        return { disposition: "failed", retryable: false, reason: "unsupported_deferred_test_handler" };
       }
       if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
       return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };

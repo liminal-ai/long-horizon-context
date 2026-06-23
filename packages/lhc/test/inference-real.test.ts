@@ -177,6 +177,10 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): six real derivation kinds throug
             model: realModel,
             prompt: assignments[kind].prompt,
           });
+          if (kind === "chunk_summary_brief") {
+            expect(form.metadata?.provenance?.prompt).toBe("chunk-brief-v2");
+            expect(form.metadata?.sizeDisposition).toBeDefined();
+          }
         } else {
           expect(form.metadata?.provenance).toBeUndefined();
         }

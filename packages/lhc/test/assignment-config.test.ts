@@ -48,7 +48,14 @@ const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> 
   },
   {
     kind: "chunk_summary_brief",
-    run: (p) => p.config.inferenceCallbacks.summarizeChunkBrief({ memberProjections: ["m"] }),
+    run: (p) =>
+      p.config.inferenceCallbacks.summarizeChunkBrief({
+        text: "m",
+        inputTokens: 10,
+        targetMinTokens: 1,
+        targetAimTokens: 2,
+        targetMaxTokens: 3,
+      }),
   },
 ];
 
@@ -58,7 +65,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
       smoothed_prompt: { provider: "p", model: "m", prompt: "smoothing-v1" },
       tool_result_summary: { provider: "p", model: "m", prompt: "tool-result-v1" },
       smooth_turn_compression: { provider: "p", model: "m", prompt: "smooth-turn-compression-v1" },
-      chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v1" },
+      chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v2" },
     };
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
   });
@@ -96,7 +103,7 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
       chunk_summary_brief: {
         provider: "p",
         model: "m",
-        prompt: "chunk-brief-v1",
+        prompt: "chunk-brief-v2",
         targetMinRatio: 0.08,
         targetAimRatio: 0.12,
         targetMaxRatio: 0.2,
@@ -118,6 +125,22 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
     };
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).toThrow(
       /compressionTargets\.aimRatio must be between minRatio and maxRatio/,
+    );
+  });
+
+  it("rejects chunk_summary_brief target aim outside min/max", () => {
+    const assignments: Record<string, ModelAssignment> = {
+      chunk_summary_brief: {
+        provider: "p",
+        model: "m",
+        prompt: "chunk-brief-v2",
+        targetMinRatio: 0.08,
+        targetAimRatio: 0.3,
+        targetMaxRatio: 0.2,
+      },
+    };
+    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).toThrow(
+      /briefTargets\.aimRatio must be between minRatio and maxRatio/,
     );
   });
 });

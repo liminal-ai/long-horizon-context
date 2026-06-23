@@ -174,6 +174,13 @@ export async function deriveMessageInOpenDb(
     }
     return { messageId, outcome: "derived", derivationType: mapped.derivationType, sourceVersion };
   }
+  if ("deferred" in outcome) {
+    return failedDerive(messageId, {
+      errorClass: "state_corruption",
+      code: "unknown_work_kind",
+      reason: "message derivation handler returned unsupported deferred outcome",
+    });
+  }
   const reason = outcome.reason;
   const attempts = claim.item.attempts + 1;
   const now = config.clock().toISOString();
@@ -247,6 +254,9 @@ export async function dispatchMessageDeriveWork(
       outcome.onApplied,
     );
     return { disposition };
+  }
+  if ("deferred" in outcome) {
+    return { disposition: "failed", retryable: false, reason: "unsupported_deferred_message_derivation" };
   }
   if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
   return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };

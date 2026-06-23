@@ -4,6 +4,7 @@
 // changes. Versioning is in the name (`smoothing-v1`).
 import type { ModelCallInput } from "../inference-types.js";
 import { chunkBriefV1 } from "./chunk-brief-v1.js";
+import { chunkBriefV2 } from "./chunk-brief-v2.js";
 import { lowerBandV1 } from "./lower-band-v1.js";
 import { smoothTurnCompressionV1 } from "./smooth-turn-compression-v1.js";
 import { smoothingV1 } from "./smoothing-v1.js";
@@ -25,6 +26,7 @@ export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [lowerBandV1.name]: lowerBandV1,
   [smoothTurnCompressionV1.name]: smoothTurnCompressionV1,
   [chunkBriefV1.name]: chunkBriefV1,
+  [chunkBriefV2.name]: chunkBriefV2,
 };
 
 // Every config-selectable prompt name — the catalog an operator's assignment
@@ -38,5 +40,5 @@ export const DEFAULT_PROMPT_NAMES: Record<string, string> = {
   smoothed_prompt: smoothingV1.name,
   tool_result_summary: toolResultV2.name,
   smooth_turn_compression: smoothTurnCompressionV1.name,
-  chunk_summary_brief: chunkBriefV1.name,
+  chunk_summary_brief: chunkBriefV2.name,
 };

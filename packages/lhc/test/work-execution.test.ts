@@ -1622,6 +1622,15 @@ describe("sync derive collision policy", () => {
     const sdk = manualSdk(callbacks);
     const { filePath } = await newThread();
     insertAbandonedChunkSummary(filePath, "c1", "chunk_summary_brief");
+    const db = openRaw(filePath);
+    try {
+      db.prepare(
+        `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content, source_version)
+         VALUES ('chunk', 'c1', 'chunk_summary_detailed', 'ready', 'owned detailed input', 1)`,
+      ).run();
+    } finally {
+      db.close();
+    }
 
     const first = sdk.turns.deriveBriefChunk({ filePath }, "c1");
     await until(() => briefCalls.length === 1, "first sync chunk derive claim");
@@ -1643,7 +1652,7 @@ describe("sync derive collision policy", () => {
       derivationType: "chunk_summary_brief",
       sourceVersion: 1,
     });
-    expect(readDerivedForms(filePath)).toEqual([
+    expect(readDerivedForms(filePath).filter((form) => form.derivationType === "chunk_summary_brief")).toEqual([
       expect.objectContaining({
         subjectKind: "chunk",
         subjectId: "c1",

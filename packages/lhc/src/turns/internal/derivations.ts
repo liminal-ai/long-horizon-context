@@ -284,6 +284,29 @@ export function readTurnDerivationRow(
   return view;
 }
 
+export function readChunkSummaryDerivation(
+  db: DatabaseSync,
+  chunkId: string,
+  derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
+): { state: DerivationState; content?: string; reason?: string; sourceVersion: number } | undefined {
+  const row = db
+    .prepare(
+      `SELECT state, content, reason, source_version FROM derivation
+       WHERE subject_kind = 'chunk' AND subject_id = ? AND derivation_type = ?`,
+    )
+    .get(chunkId, derivationType) as unknown as
+    | { state: string; content: string | null; reason: string | null; source_version: number | bigint }
+    | undefined;
+  if (row === undefined) return undefined;
+  const view: { state: DerivationState; content?: string; reason?: string; sourceVersion: number } = {
+    state: row.state as DerivationState,
+    sourceVersion: Number(row.source_version),
+  };
+  if (row.content !== null) view.content = row.content;
+  if (row.reason !== null) view.reason = row.reason;
+  return view;
+}
+
 // The turns owner's report (Flow 4): one query over turn- and chunk-owned
 // derivation rows LEFT JOINed with the live work_item targeting each derivation at its
 // current source version. Both turn derivations map to the one turn_derivation

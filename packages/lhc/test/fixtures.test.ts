@@ -140,7 +140,13 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
       targetMaxTokens: 7,
     }),
     double.summarizeChunkDetailed({ memberProjections: ["projection one", "projection two"] }),
-    double.summarizeChunkBrief({ memberProjections: ["projection one", "projection two"] }),
+    double.summarizeChunkBrief({
+      text: "detailed projection text",
+      inputTokens: 10,
+      targetMinTokens: 1,
+      targetAimTokens: 2,
+      targetMaxTokens: 3,
+    }),
   ];
 }
 
@@ -177,7 +183,13 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     const double = createInferenceCallbacksDouble();
     double.failNext(2, { retryable: true });
     const r1 = await double.smoothPrompt({ text: "x" });
-    const r2 = await double.summarizeChunkBrief({ memberProjections: ["y"] });
+    const r2 = await double.summarizeChunkBrief({
+      text: "y",
+      inputTokens: 10,
+      targetMinTokens: 1,
+      targetAimTokens: 2,
+      targetMaxTokens: 3,
+    });
     const r3 = await double.smoothPrompt({ text: "x" });
     expect(r1).toMatchObject({ ok: false, retryable: true });
     expect(r2).toMatchObject({ ok: false, retryable: true });

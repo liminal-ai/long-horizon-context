@@ -8,7 +8,6 @@
 // captureInputs) is per-instance state and never leaks across tests that
 // construct their own double.
 import {
-  deterministicOutcomesSuffix,
   deterministicReceiptsSuffix,
   deterministicText,
   type InferenceCallbacks,
@@ -166,13 +165,14 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     );
   }
 
-  summarizeChunkBrief(i: { memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }): Promise<InferenceResult> {
-    return this.run(
-      "summarizeChunkBrief",
-      i,
-      i.memberProjections.join(" | "),
-      deterministicOutcomesSuffix(i.memberOutcomes),
-    );
+  summarizeChunkBrief(i: {
+    text: string;
+    inputTokens: number;
+    targetMinTokens: number;
+    targetAimTokens: number;
+    targetMaxTokens: number;
+  }): Promise<InferenceResult> {
+    return this.run("summarizeChunkBrief", i, i.text);
   }
 }
 

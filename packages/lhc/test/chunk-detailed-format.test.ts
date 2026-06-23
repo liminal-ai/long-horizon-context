@@ -287,7 +287,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     });
   });
 
-  it("does not use the failed-member floor for brief summaries", async () => {
+  it("brief consumes the detailed summary when detailed uses a failed-member floor", async () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await sendPromptTurn(sdk, filePath, "brief floor prompt", "brief floor answer");
@@ -302,11 +302,9 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     await drain(sdk, filePath, { maxItems: 2 });
 
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("ready");
-    expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
-    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_brief-v1")).toMatchObject({
-      attempts: 1,
-      lastError: expect.stringContaining("member_projection_not_ready"),
-    });
+    expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("ready");
+    expect(formOf(filePath, "c1", "chunk_summary_brief")?.metadata?.sizeDisposition).toBeDefined();
+    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_brief-v1")).toBeUndefined();
   });
 
   it("produces byte-identical detailed output for identical input", async () => {

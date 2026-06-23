@@ -1,4 +1,4 @@
-import type { ToolOutcome, ToolResultFacts, ToolResultPromptMode } from "../derivation.js";
+import type { ToolOutcome, ToolResultFacts, ToolResultPromptMode, ToolResultResponseShape } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 
 const MODE_GUIDANCE: Record<ToolResultPromptMode, string> = {
@@ -30,6 +30,7 @@ export const toolResultV2: PromptTemplate<{
   outcome: ToolOutcome;
   targetTokens: number;
   promptMode: ToolResultPromptMode;
+  responseShape: ToolResultResponseShape;
   facts: ToolResultFacts;
 }> = {
   name: "tool-result-v2",
@@ -59,6 +60,7 @@ export const toolResultV2: PromptTemplate<{
         role: "user",
         content: `Tool: ${i.toolName}\nOutcome: ${i.outcome}\n\nRaw tool response excerpt:\n\`\`\`text\n${rawOutputForPrompt(
           i.content,
+          i.responseShape,
         )}\n\`\`\`\n\nReturn only the summary.`,
       },
     ];
@@ -70,7 +72,15 @@ function factsForPrompt(facts: ToolResultFacts): Record<string, unknown> {
   return Object.fromEntries(Object.entries(facts).filter(([key]) => !excluded.has(key)));
 }
 
-function rawOutputForPrompt(rawOutput: string): string {
+function rawOutputForPrompt(rawOutput: string, responseShape: ToolResultResponseShape): string {
+  const lines = rawOutput.split(/\r?\n/);
+  if (responseShape === "search_result" && lines.length > 60) {
+    return [
+      ...lines.slice(0, 60),
+      "",
+      `[omitted ${lines.length - 60} additional search-result lines; use parsed searchMatchCount/searchMatches as authoritative]`,
+    ].join("\n");
+  }
   if (rawOutput.length > 20000) {
     const head = rawOutput.slice(0, 12000);
     const tail = rawOutput.slice(-4000);

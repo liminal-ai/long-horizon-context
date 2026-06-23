@@ -72,6 +72,23 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     },
     embedded: ["turn two: edited src/app.ts", "Tool outcomes, in order: succeeded"],
   },
+  "chunk-brief-v2": {
+    input: {
+      text: "[turn 0001]\nUser inspected notes/plan.md and found 3 open items.",
+      inputTokens: 2000,
+      targetMinTokens: 160,
+      targetAimTokens: 240,
+      targetMaxTokens: 400,
+    },
+    embedded: [
+      "historical memory",
+      "160–400",
+      "Aim for about 240",
+      "<good-example-1-input>",
+      "<bad-example-1-input>",
+      "<bad-example-2-input>",
+    ],
+  },
 };
 
 function renderByName(name: string, input: unknown): ModelCallInput["messages"] {
@@ -190,18 +207,45 @@ describe("TC-2.6: tool-result prompt excludes diagnostic routing fields", () => 
     expect(joined).toContain('"exitCode": 127');
     expect(joined).toContain('"failureType": "command_not_found"');
   });
+
+  it("truncates long search-result raw output by line count before prompt rendering", () => {
+    const content = Array.from({ length: 65 }, (_unused, index) => `match line ${String(index + 1)}`).join("\n");
+    const rendered = renderByName("tool-result-v2", {
+      toolName: "rg",
+      content,
+      outcome: "succeeded",
+      targetTokens: 80,
+      responseShape: "search_result",
+      promptMode: "search_summary",
+      facts: {
+        toolName: "rg",
+        outcome: "succeeded",
+        responseShape: "search_result",
+        searchMatchCount: 65,
+      },
+    });
+    const bounded = rawToolResponseExcerpt({ provider: "p", model: "m", messages: rendered });
+    expect(bounded).toContain("match line 60");
+    expect(bounded).not.toContain("match line 61");
+    expect(bounded).toContain(
+      "[omitted 5 additional search-result lines; use parsed searchMatchCount/searchMatches as authoritative]",
+    );
+  });
 });
 
 describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", () => {
   const RECEIPT_ACCOUNT = "read_file fetched notes/plan.md and rewrote temp/out.txt";
 
-  it("the brief rendering carries outcome tokens but no receipt text from its input", async () => {
+  it("the brief rendering receives detailed text and target tokens through the adapter", async () => {
     const { call, log } = recordingCall(cannedResponses());
     const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call }));
 
     const brief = await inferenceCallbacks.summarizeChunkBrief({
-      memberProjections: ["turn one: planning work"],
-      memberOutcomes: [["succeeded"]],
+      text: `turn one: planning work without ${RECEIPT_ACCOUNT}`,
+      inputTokens: 2000,
+      targetMinTokens: 160,
+      targetAimTokens: 240,
+      targetMaxTokens: 400,
     });
     expect(brief.ok).toBe(true);
 
@@ -209,9 +253,10 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
     expect(briefCall).toBeDefined();
     if (briefCall === undefined) return;
 
-    expect(userContent(briefCall)).toContain("succeeded");
-    expect(userContent(briefCall)).not.toContain(RECEIPT_ACCOUNT);
-    expect(userContent(briefCall)).not.toContain("rewrote");
+    expect(userContent(briefCall)).toContain("turn one: planning work");
+    expect(userContent(briefCall)).toContain("Input size: about 2000 tokens");
+    expect(userContent(briefCall)).toContain("Output target: 160–400 tokens");
+    expect(userContent(briefCall)).toContain(RECEIPT_ACCOUNT);
   });
 });
 

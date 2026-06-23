@@ -25,7 +25,7 @@ Change `chunk_summary_brief` to consume `chunk_summary_detailed` text instead of
 - The handler reads member `smooth_turn_compression` projections directly — it does NOT read `chunk_summary_detailed`.
 - `summarizeChunkBrief` signature: `{ memberProjections: string[]; memberOutcomes?: ToolOutcome[][] }`.
 - The current prompt `chunk-brief-v1` expects `memberProjections` array and renders numbered member texts with a trailing outcomes section.
-- The handler shares `chunkSummaryHandler` with detailed, iterating over `readMemberProjections` to collect member content. After Story 4, the detailed branch uses a floor fallback for failed members — brief still requeues on failed members.
+- The handler shares `chunkSummaryHandler` with detailed, iterating over `readMemberProjections` to collect member content. After Story 4, the detailed branch uses a floor fallback for failed members — Story 5 will split brief away from the member loop and make it depend on the stored detailed derivation.
 - Detailed and brief are queued as independent work items at chunk close (in `enqueueChunkSummaries`). Brief can legitimately run before detailed is ready and must handle that case.
 - No `sizeDisposition` metadata is written for brief.
 - Default target ratios for `chunk_summary_brief` are `targetMinRatio: 0.08`, `targetMaxRatio: 0.20`, `targetAimRatio: 0.12`.
@@ -47,12 +47,12 @@ A tested brief-compression prompt with good/bad examples exists at `derivation-t
   - When: `chunk_summary_brief` derives
   - Then: the model call input contains the detailed text and does NOT contain the individual member projection strings
 
-**AC-5.2:** When `chunk_summary_detailed` is not ready, brief requeues and waits. When detailed is `blocked` or `failed`, brief lands accordingly.
+**AC-5.2:** When `chunk_summary_detailed` is not ready, brief defers behind detailed work without consuming retry budget. When detailed is `blocked` or `failed`, brief lands accordingly.
 
-- **TC-5.2a:** Brief requeues when detailed is pending
+- **TC-5.2a:** Brief defers when detailed is pending
   - Given: `chunk_summary_brief` derives while `chunk_summary_detailed` is `pending`
   - When: background derivation runs
-  - Then: brief requeues with `dependencyNotReady`
+  - Then: the claimed brief item is replaced by queued detailed work followed by fresh brief work, and the brief derivation row remains `pending` without incrementing retry attempts
 - **TC-5.2b:** Brief blocks when detailed is blocked
   - Given: `chunk_summary_detailed` is `blocked`
   - When: `chunk_summary_brief` derives
@@ -61,10 +61,10 @@ A tested brief-compression prompt with good/bad examples exists at `derivation-t
   - Given: `chunk_summary_detailed` is `failed` (set directly — this is rare; requires floor-unavailable per Story 4)
   - When: `chunk_summary_brief` derives
   - Then: brief lands with `sourceDamaged` (the detailed material it needs is terminal)
-- **TC-5.2d:** Brief ensures detailed has live work before requeueing
+- **TC-5.2d:** Brief schedules detailed before fresh brief when detailed has no live work
   - Given: both `chunk_summary_detailed` and `chunk_summary_brief` are pending with no live work (simulating a sweep-repair scenario where brief is scheduled first)
   - When: brief's handler runs and finds detailed not ready with no live detailed work
-  - Then: the handler enqueues detailed work before requeueing brief. After draining, both detailed and brief land `ready`. Brief does not consume a retry attempt waiting on an absent detailed work item.
+  - Then: the handler enqueues detailed work before a fresh brief item. After draining, both detailed and brief land `ready`. Brief does not consume a retry attempt waiting on absent detailed work.
 
 **AC-5.3:** The brief prompt includes the input token count, a target output range (from assignment ratios), and concrete examples of good and bad brief output.
 
@@ -122,7 +122,7 @@ The brief handler needs to read `chunk_summary_detailed` for the same chunk. Thi
 
 States:
 - `ready` with content → use as brief input
-- `pending` or missing → requeue as `dependencyNotReady`
+- `pending` or missing → defer the claimed brief work behind detailed work, preserving source version
 - `blocked` → brief lands `sourceDamaged` (the input it needs is terminal)
 - `failed` → brief lands `sourceDamaged` (the detailed material is terminal; brief cannot produce a useful summary from nothing)
 
@@ -158,15 +158,15 @@ The current `chunk-brief-v1` renders numbered member projections with outcomes. 
 
 #### Enqueue Ordering and Dependency Protection
 
-Detailed and brief are currently queued as independent work items at chunk close. This story does NOT change the enqueue ordering — both are still queued in parallel. Brief handles the case where detailed isn't ready by requeueing as `dependencyNotReady`.
+Detailed and brief are currently queued as independent work items at chunk close. This story does NOT change the normal enqueue ordering — both are still queued in parallel. Brief handles the case where detailed isn't ready by deferring itself behind detailed work rather than burning a retry attempt.
 
 The normal path (chunk close → drain) is safe: `enqueueChunkSummaries` enqueues detailed first (lower rowid), so detailed claims first, completes (deterministic, fast), and brief finds detailed ready on its claim.
 
-The sweep/repair risk: `turns.report` orders by derivation type alphabetically, so `chunk_summary_brief` appears before `chunk_summary_detailed`. If sweep schedules both with no live work, brief could claim first and find detailed not ready. A naive requeue would consume a retry attempt — making correctness depend on the retry budget, which is the kind of implicit coupling the work queue hardening was meant to remove.
+The sweep/repair risk: `turns.report` orders by derivation type alphabetically, so `chunk_summary_brief` appears before `chunk_summary_detailed`. If sweep schedules both with no live work, brief could claim first and find detailed not ready. A naive retry would either consume a retry attempt or sit ahead of the detailed item in the strict FIFO queue. That would make correctness depend on retry budget or queue timing, which is the kind of implicit coupling the work queue hardening was meant to remove.
 
-The fix is in the brief handler: when it finds detailed not ready, before requeueing, it checks whether detailed has a live work item (using the existing `hasLiveItem` query). If detailed has live work, brief requeues normally (detailed will complete soon — at most 1 retry attempt consumed). If detailed has NO live work (sweep-repair scenario), the brief handler enqueues detailed work first, then requeues itself. This ensures detailed is always in flight when brief requeues, so the dependency is explicit and the retry budget is never consumed by a stale wait.
+The fix is a deferred handler outcome on the turn-owned work path. When the brief handler finds detailed not ready, it returns a deferred outcome. The dispatcher handles that in one short transaction: delete the claimed brief item, enqueue `chunk_summary_detailed` if no live detailed work exists at the chosen source version, then enqueue a fresh `chunk_summary_brief` item behind it. If the detailed row is missing, the source version comes from the current brief derivation row; if both rows are missing, the handler treats the source as damaged instead of defaulting to version 1. This keeps the dependency explicit, preserves FIFO ordering, and avoids retry-budget consumption.
 
-This keeps the dependency rule in the owning domain handler, doesn't require sweep/repair surface changes, and doesn't rely on SQL ordering or retry-budget headroom for correctness.
+This keeps the dependency rule in the owning domain handler, doesn't require sweep/repair surface changes, and doesn't rely on retry-budget headroom for correctness.
 
 #### Build Strategy
 
@@ -176,7 +176,7 @@ Reason:
 - The main risk is subtle input drift: the handler uses the wrong source and still produces plausible output. Tests must assert the exact model call input and the dependency behavior.
 
 Risk Reminders:
-- Brief must NOT fall back to raw member projections when detailed isn't ready — it must requeue.
+- Brief must NOT fall back to raw member projections when detailed isn't ready — it must defer behind detailed work.
 - The `summarizeChunkBrief` signature change breaks every test double and direct callback. All call sites must be updated.
 - The prompt is example-heavy — keep the examples in the template, not in a separate file.
 
@@ -184,7 +184,8 @@ Risk Reminders:
 
 | Area | Files / Modules |
 |------|-----------------|
-| Brief handler | `src/turns/internal/derive.ts` — split or branch the brief path to read `chunk_summary_detailed` row instead of iterating member projections. When detailed is not ready and has no live work item, enqueue detailed work before requeueing brief. When scheduling missing detailed work, use the existing turns/domain work-enqueue path that creates or resets the detailed derivation row and enqueues the work item with the correct source version. Do not manually insert a `work_item` row or bypass the owner-domain scheduling helper. |
+| Brief handler | `src/turns/internal/derive.ts` — split the brief path to read `chunk_summary_detailed` row instead of iterating member projections. When detailed is not ready, return a deferred outcome that deletes the claimed brief work item and enqueues detailed work (if missing) before fresh brief work using the normal `enqueue(...)` path. When detailed row is missing, use the current brief row's source version; if both are missing, return `sourceDamaged`. Do not manually insert a `work_item` row or write detailed derivation content from the brief handler. |
+| Deferred outcome contract | `src/shared-tech/derivation.ts`, `src/turns/internal/derive.ts`, `src/messages/internal/derive.ts` — add a narrow `HandlerOutcome` variant for turn-owned deferred work. The turns dispatcher owns deleting the claimed brief item and running the deferred enqueue transaction. Message-owned dispatchers reject deferred outcomes as unsupported. |
 | Detailed row read | `src/turns/internal/derivations.ts` — add a function to read the detailed derivation row for a chunk (state + content) |
 | Brief target ratios | `src/shared-tech/derivation.ts` — add `briefTargets: { minRatio, aimRatio, maxRatio }` to `ResolvedSdkConfig` |
 | SDK construction | `src/sdk.ts` — resolve brief targets from `chunk_summary_brief` assignment ratios (0.08/0.12/0.20 defaults) |
@@ -211,10 +212,10 @@ Risk Reminders:
 |----|-------------------|------------------|
 | TC-5.1a | `chunk-brief-from-detailed.test.ts` | Model spy receives detailed text as the `text` field, not member projection strings. |
 | TC-5.1b | `chunk-brief-from-detailed.test.ts` | Model spy input does not contain individual member projection content strings. |
-| TC-5.2a | `chunk-brief-from-detailed.test.ts` | Pending `chunk_summary_detailed`: brief requeues with `dependencyNotReady`. |
+| TC-5.2a | `chunk-brief-from-detailed.test.ts` | Pending `chunk_summary_detailed`: brief defers, leaving detailed and brief pending and a fresh brief item queued with zero attempts. |
 | TC-5.2b | `chunk-brief-from-detailed.test.ts` | Blocked `chunk_summary_detailed`: brief lands `sourceDamaged`. |
 | TC-5.2c | `chunk-brief-from-detailed.test.ts` | Failed `chunk_summary_detailed` (set directly): brief lands `sourceDamaged`. |
-| TC-5.2d | `chunk-brief-from-detailed.test.ts` | Brief pending, detailed pending with no live work: brief handler enqueues detailed work before requeueing. Drain settles both to `ready`. |
+| TC-5.2d | `chunk-brief-from-detailed.test.ts` | Brief pending, detailed pending/missing with no live detailed work: brief defers, enqueues detailed work before fresh brief work, and drain settles both to `ready`. Missing detailed uses the current brief source version. |
 | TC-5.3a | `chunk-brief-from-detailed.test.ts` | 2000-token detailed text with default ratios: model input includes `inputTokens`, `targetMinTokens`, `targetAimTokens`, `targetMaxTokens`. |
 | TC-5.3b | `chunk-brief-from-detailed.test.ts` | Rendered prompt contains good/bad example blocks. |
 | TC-5.3c | `chunk-brief-from-detailed.test.ts` | Rendered prompt contains historical-narration instruction. |
@@ -226,7 +227,7 @@ Risk Reminders:
 | Risk | Test File / Check | Test Description | Why AC/TC Mapping Alone Would Miss It |
 |------|-------------------|------------------|---------------------------------------|
 | Handler falls back to raw member projections | `chunk-brief-from-detailed.test.ts` | Seed distinct detailed text and distinct member compression texts. Assert only detailed text reaches the model, not member texts. | A canned output can pass while the wrong input source is silently used. |
-| Brief bypasses detailed dependency | `chunk-brief-from-detailed.test.ts` | Detailed is pending: brief requeues, not falls back to raw smooth input. | Recovery shortcuts are easy to introduce and hard to catch with happy-path tests. |
+| Brief bypasses detailed dependency | `chunk-brief-from-detailed.test.ts` | Detailed is pending/missing: brief defers through detailed work, not raw smooth input or direct detailed writes. | Recovery shortcuts are easy to introduce and hard to catch with happy-path tests. |
 | Signature change breaks existing test doubles | Full test suite | `pnpm run verify` passes — all test doubles and deterministic callbacks compile and run with the new signature. | A compile error in an unused double would not surface in focused tests. |
 
 #### Technical Notes
@@ -235,7 +236,7 @@ Risk Reminders:
 - Default brief target ratios are `targetMinRatio: 0.08`, `targetAimRatio: 0.12`, `targetMaxRatio: 0.20` (from `DEFAULT_INFERENCE_ASSIGNMENTS.chunk_summary_brief`). These compress aggressively — a 2000-token detailed input targets 160-400 tokens of brief output.
 - The prompt from `derivation-testing/chunk_summary_brief/brief-prompt.md` is example-heavy (~225 lines). The examples and commentary should be embedded in the template file directly, not loaded from external files at runtime.
 - `sizeDisposition` uses the same computation as Story 3: compare `estimateTokens(output)` against the concrete target range.
-- The enqueue ordering doesn't change. The brief handler's dependency protection (check for live detailed work, enqueue if missing) ensures brief never requeues against an absent detailed work item. See the Enqueue Ordering section for the full mechanism.
+- The normal chunk-close enqueue ordering doesn't change. The brief handler's dependency protection is the deferred outcome: delete the claimed brief item, ensure detailed work is queued, then queue fresh brief work behind it. See the Enqueue Ordering section for the full mechanism.
 - `briefTargets` construction should validate: finite positive ratios, `min <= aim <= max`, same pattern as Story 3's `compressionTargets` validation. Direct-callback hosts get defaults.
 - Target token rounding should use `Math.round` (same as Story 3's `compressionTargetTokens`).
 - Thread-view compact fallback ladders remain unchanged — brief fallback still uses detailed material when brief is missing. This story does not alter the compact fallback behavior.
@@ -245,15 +246,15 @@ Risk Reminders:
 
 - Assert the model spy receives the detailed text (not member projections) as the `text` field.
 - Assert the model spy receives concrete target token numbers.
-- Assert pending/blocked/failed detailed leads to requeue/sourceDamaged, never raw-input fallback.
+- Assert pending/blocked/failed detailed leads to deferred/sourceDamaged, never raw-input fallback or direct detailed writes from the brief handler.
 - Assert `sizeDisposition` is persisted in derivation metadata.
-- Assert the dependency-protection path schedules detailed through the owner-domain enqueue/repair path, not by direct `work_item` insertion.
+- Assert the dependency-protection path schedules detailed through the owner-domain enqueue path and keeps source versions aligned, not by direct `work_item` insertion or direct derivation update.
 - Assert the rendered prompt contains example blocks and historical-narration instruction.
 
 #### Production Path Proof
 
 - Entrypoint: queued `chunk_summary_brief` derivation handled by `turns/internal/derive.ts`.
-- Dependency: handler reads `chunk_summary_detailed` for the same chunk. If ready, uses as input. If not, requeues.
+- Dependency: handler reads `chunk_summary_detailed` for the same chunk. If ready, uses as input. If pending or missing, defers the current brief item behind detailed work using the turn-owned dispatcher.
 - Inference: `summarizeChunkBrief({ text, inputTokens, targetMinTokens, targetAimTokens, targetMaxTokens })` → adapter → prompt template → model call.
 - Evidence: `chunk-brief-from-detailed.test.ts` uses real handler wiring, real temp SQLite, and model call spy.
 
@@ -279,7 +280,7 @@ Add to the real-inference suite in `inference-real.test.ts`:
 
 - **Numbering:** ACs renumbered from 3.x to 5.x. This is Story 5 in the updated sequence.
 - **Dependency handling:** The original story mentioned compact-time recovery for pending detailed. That's already handled by the compact fallback ladders (existing behavior, unchanged by this story). This story specifies the background handler's behavior only.
-- **Enqueue ordering unchanged:** The original analysis identified this as "highest-risk." The brief handler's dependency protection (check for live detailed work, enqueue if missing) makes the dependency explicit without changing enqueue ordering or sweep surface. No sweep-ordering change or retry-budget dependency needed.
+- **Deferred dependency handling:** The original analysis identified enqueue ordering as "highest-risk." The implemented mechanism adds a narrow turn-owned deferred outcome so brief can delete its claimed item and enqueue detailed before fresh brief work. This changes the handler/dispatcher contract but keeps sweep and repair surfaces unchanged and avoids retry-budget dependency.
 - **Brief target ratios on config:** Follows the Story 3 pattern (`compressionTargets`). Adds `briefTargets` in parallel.
 - **Verification scripts:** Story gate is `pnpm run verify`. Epic gate is `pnpm run verify:all`.
 
@@ -291,9 +292,9 @@ Add to the real-inference suite in `inference-real.test.ts`:
 - `ResolvedSdkConfig.briefTargets` carries resolved brief target ratios for both config paths. Construction validates positive ratios and `min <= aim <= max`.
 - Prompt includes input count, target range, good/bad examples with commentary, and historical-narration instruction.
 - Prompt is based on `derivation-testing/chunk_summary_brief/brief-prompt.md`.
-- Pending detailed requeues. Blocked/failed detailed lands `sourceDamaged`.
+- Pending/missing detailed defers behind detailed work. Blocked/failed detailed lands `sourceDamaged`.
 - Brief does not fall back to raw member projections under any circumstance.
-- Brief handler enqueues detailed work when detailed has no live work item (TC-5.2d) — dependency is explicit, not retry-budget-dependent.
+- Brief handler defers behind detailed work when detailed is pending or missing (TC-5.2a/5.2d) — dependency is explicit, FIFO-safe, and not retry-budget-dependent.
 - `sizeDisposition` persisted in derivation metadata.
 - Thread-view compact fallback ladders unchanged.
 - All test doubles and deterministic callbacks updated to new signature.
