@@ -1,8 +1,7 @@
-// Flow 2 (recording half) + Flow 5: the batch transaction. The pipeline order
-// is load-bearing: validate (pure, no lock) → BEGIN IMMEDIATE → per event in
-// array order [dedup-check → record] → walk-time result assembly → COMMIT.
-// Stories 3–5 extend the same per-event walk with projection, turn
-// transitions, and work queueing.
+// Batch transaction pipeline. The order is load-bearing: validate (pure, no
+// lock) → BEGIN IMMEDIATE → per event in array order [dedup-check → record] →
+// walk-time result assembly → COMMIT. The same per-event walk performs message
+// creation, turn transitions, and work queueing.
 import type { DatabaseSync } from "node:sqlite";
 import { create as createMessage } from "../../messages/index.js";
 import {
@@ -12,8 +11,8 @@ import {
   storageFailure,
 } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
-// The sanctioned intake→thread-view surface import (Epic 03 Flow 4, named in
-// the boundary-advance registration below, nothing else.
+// The sanctioned intake→thread-view surface import, used only by the
+// boundary-advance registration below.
 // This is the domain graph's first surface-level cycle (intake → thread-view
 // → messages ← intake) — runtime-safe because thread-view never imports
 // intake-stream at runtime and the registration executes only at flush.
@@ -35,7 +34,7 @@ export function setIntakeWalkHook(hook: IntakeWalkHook | null): void {
 
 // Test seam (set only through test/fixtures): replaces the wall clock so
 // recordedAt is sourced deterministically for the public SDK contract proof —
-// TC-1.4 records the same batch through both reference forms and reads it back
+// tests record the same batch through both reference shapes and read it back
 // field-for-field, recordedAt included, with nothing stripped. Unset in
 // production: recording stamps real wall time. An explicit clock argument to
 // runMessageEvents still wins over the seam.
@@ -49,7 +48,7 @@ function detail(cause: unknown): string {
 }
 
 // The skip set is read at transaction start and reads only the key column:
-// key-wins-over-content is the absence of a content comparison (AC-5.5).
+// key-wins-over-content is the absence of a content comparison.
 // Chunked to stay under SQLite's bound-parameter limit.
 function recordedKeys(db: DatabaseSync, keys: readonly string[]): Set<string> {
   const found = new Set<string>();

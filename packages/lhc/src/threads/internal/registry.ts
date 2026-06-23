@@ -23,10 +23,10 @@ const REGISTRY_MIGRATIONS: readonly Migration[] = [
     ],
   },
   {
-    // A-8 (Epic 02 pi-lhc Story 1): the cwd a thread was created in, so the
-    // `--resume` picker can scope its list to the current directory. Added as
-    // its own version (not folded into v1) so a registry created under v1
-    // upgrades lazily on next open rather than silently lacking the column.
+    // The cwd a thread was created in, so the resume picker can scope its list
+    // to the current directory. Added as its own version so a registry created
+    // under v1 upgrades lazily on next open rather than silently lacking the
+    // column.
     version: 2,
     statements: [`ALTER TABLE threads ADD COLUMN cwd TEXT;`],
   },

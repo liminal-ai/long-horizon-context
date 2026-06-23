@@ -1,8 +1,8 @@
-// Flow 4: pure, whole-batch, three-layer closed validation. Strictness falls
-// out of schema construction: every layer is a closed Effect Schema struct
-// decoded under onExcessProperty: "error", so unknown-field rejection is a
-// property of the definitions, not a remembered rule. Validation never touches
-// a database; a rejected batch costs no write lock.
+// Pure, whole-batch, three-layer closed validation. Strictness falls out of
+// schema construction: every layer is a closed Effect Schema struct decoded
+// under onExcessProperty: "error", so unknown-field rejection is a property of
+// the definitions, not a remembered rule. Validation never touches a database;
+// a rejected batch costs no write lock.
 import { Either, ParseResult, Schema } from "effect";
 import type { ErrorResult } from "../../shared-tech/index.js";
 
@@ -102,8 +102,8 @@ export function validateThreadRef(ref: unknown): ErrorResult | undefined {
   return undefined;
 }
 
-// Whole-batch validation: array order, first failure wins (AC-4.5). Returns
-// undefined when every event is valid.
+// Whole-batch validation: array order, first failure wins. Returns undefined
+// when every event is valid.
 export function validateEvents(events: unknown): ErrorResult | undefined {
   if (!Array.isArray(events)) {
     return callerError("envelope: events must be a JSON array");

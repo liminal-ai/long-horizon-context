@@ -4,8 +4,8 @@ import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailur
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
 // Re-exported for the other domain surfaces: opening a thread file through
-// the threads domain is what guarantees its schema is current (a pre-Story-3
-// file gains the message tables here before any write or read touches them).
+// the threads domain is what guarantees its schema is current before any write
+// or read touches it.
 export { openThreadDatabase };
 
 import {
@@ -60,7 +60,7 @@ function threadNotFound(threadId: string): { ok: false; error: ErrorResult } {
 
 // A partial id that matches more than one thread is a caller error, not a
 // silent pick: resolution names the collision and the caller must disambiguate
-// (AC-1.6 — an ambiguous id fails loud, never resolves arbitrarily).
+// An ambiguous id fails loud, never resolves arbitrarily.
 function ambiguousThreadId(prefix: string, matchIds: readonly string[]): { ok: false; error: ErrorResult } {
   return {
     ok: false,
@@ -182,13 +182,11 @@ export async function listThreads(input?: { cwd?: string; registryPath?: string 
   }
 }
 
-// The thread file's own identity header (Epic 04): thread_metadata is this
-// domain's table — creation writes it (internal/create.ts) and only this
-// surface reads it back. Added for inspect's overview, which must report
-// thread identity for ANY resolvable ref — including a { filePath } ref that
-// no registry knows — without reading tables itself (inspect's must-not-own
-// rule). A pure read: the whole operation runs touch-suppressed (DD-6), so a
-// background SDK can never hang a first-touch catch-up drain off it.
+// The thread file's own identity header: thread_metadata is this domain's table.
+// Creation writes it and only this surface reads it back. Inspect overview can
+// report thread identity for any resolvable ref, including a { filePath } ref
+// no registry knows, without reading tables itself. This is a pure read under
+// touch suppression, so a background SDK cannot hang catch-up work off it.
 export interface ThreadFileInfo {
   threadId: string;
   createdAt: string;

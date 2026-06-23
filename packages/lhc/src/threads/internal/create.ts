@@ -24,10 +24,9 @@ export function generateThreadId(): string {
 }
 
 // The thread-file schema as a versioned history, never rewritten in place:
-// v1 is the Story 2 schema exactly as accepted (thread_metadata + event), and
-// each later story appends a version. Existing files upgrade lazily through
-// openThreadDatabase, so a file recorded under an earlier story is always
-// usable by a later one (F-03-001).
+// v1 starts with thread_metadata + event, and each later schema addition appends
+// a version. Existing files upgrade lazily through openThreadDatabase, so older
+// thread files stay usable by newer code.
 //
 // Creation-time metadata values are interpolated through buildThreadMigrations
 // for new files only; existing files already hold their metadata row and the
@@ -65,7 +64,7 @@ function buildThreadMigrations(metadata?: { threadId: string; createdAt: string 
       ],
     },
     {
-      version: 2, // Story 3: message projection
+      version: 2, // message tables
       statements: [
         `CREATE TABLE message (
           message_id TEXT PRIMARY KEY,
@@ -86,7 +85,7 @@ function buildThreadMigrations(metadata?: { threadId: string; createdAt: string 
       ],
     },
     {
-      version: 3, // Story 4: turn state machine
+      version: 3, // turn state machine
       statements: [
         `CREATE TABLE turns (
           turn_id TEXT PRIMARY KEY,
@@ -98,12 +97,12 @@ function buildThreadMigrations(metadata?: { threadId: string; createdAt: string 
       ],
     },
     {
-      version: 4, // Story 5: derivation work queueing
+      version: 4, // derivation work queueing
       statements: [
         // Work items live in the thread file and commit with the batch —
         // not a separate database, not a separate transaction. status is
-        // unconstrained TEXT: this epic only ever writes 'queued'; the
-        // claim/lease statuses are Epic 02's to add.
+        // unconstrained TEXT: this schema version only writes 'queued'; later
+        // claim/lease mechanics add their statuses.
         `CREATE TABLE work_item (
           work_item_id TEXT PRIMARY KEY,
           owner TEXT NOT NULL,
@@ -115,30 +114,26 @@ function buildThreadMigrations(metadata?: { threadId: string; createdAt: string 
       ],
     },
     {
-      version: 5, // Epic 02 Story 0: queue mechanical fields, derivation,
-      // chunk tables, deleted_at stamps, F-02 pending-row backfill — the
-      // epic's single migration (tech design §Storage), statements owned by
-      // shared/storage.ts.
+      version: 5, // queue mechanics, derivation, chunks, delete stamps
+      // and pending-row backfill, with statements owned by shared/storage.ts.
       statements: MIGRATION_V5_STATEMENTS,
     },
     {
-      version: 6, // Epic 03 Story 0: thread-view snapshot tables and the
-      // visibility boundary (seeded at position 0) — the epic's single
-      // migration (tech design §Storage), statements owned by
-      // shared/storage.ts.
+      version: 6, // thread-view snapshot tables and visibility boundary
+      // seeded at position 0, with statements owned by shared/storage.ts.
       statements: MIGRATION_V6_STATEMENTS,
     },
     {
-      version: 7, // Epic 06 Story 0: derivation vocabulary rename and log table.
+      version: 7, // derivation vocabulary rename and log table
       statements: MIGRATION_V7_STATEMENTS,
     },
     {
-      version: 8, // Epic 06 Story 2: remove tool_call_summary rows/work.
+      version: 8, // remove tool_call_summary rows/work
       statements: MIGRATION_V8_STATEMENTS,
     },
     {
-      version: 9, // Epic 07 Story 0: delete stale pre-rename work items left
-      // behind by the rename to smooth_turn_compression (AC-0.4 §Rename Migration).
+      version: 9, // delete stale pre-rename work items left behind by the
+      // rename to smooth_turn_compression.
       statements: MIGRATION_V9_STATEMENTS,
     },
     {
@@ -200,11 +195,10 @@ function validateThreadFile(filePath: string): { ok: true } | { ok: false; error
 
 // Opens a thread file and brings its schema to the current version before
 // returning the handle. Every SDK operation on an existing thread file goes
-// through here, so a pre-Story-3 file gains the message tables on its first
-// open by newer code — but only after the file proves it is a thread file;
-// migration never creates lhc schema on an arbitrary existing file. Each
-// migration runs in its own transaction (storage helper), completing before
-// any caller transaction begins.
+// through here, so older thread files gain later tables on first open by newer
+// code, but only after the file proves it is a thread file. Migration never
+// creates LHC schema on an arbitrary existing file. Each migration runs in its
+// own transaction, completing before any caller transaction begins.
 export function openThreadDatabase(filePath: string): OpResult<DatabaseSync> {
   const valid = validateThreadFile(filePath);
   if (!valid.ok) return valid;
@@ -220,9 +214,9 @@ export function openThreadDatabase(filePath: string): OpResult<DatabaseSync> {
     db.close();
     return storageFailure(`thread schema migration failed: ${errorDetail(cause)}`);
   }
-  // Announce the open (DD-10): the background scheduler's first-touch
-  // catch-up hangs off this seam. Fired before any caller transaction
-  // begins; a no-op unless a listener is installed.
+  // Announce the open: the background scheduler's first-touch catch-up hangs
+  // off this seam. Fired before any caller transaction begins; a no-op unless a
+  // listener is installed.
   fireThreadTouch(filePath, db);
   return { ok: true, value: db };
 }
