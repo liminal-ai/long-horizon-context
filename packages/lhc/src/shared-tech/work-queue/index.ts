@@ -1,13 +1,9 @@
 // Durable work-item mechanics: recording, ordered listing, and the enqueue
-// wrapper that makes "queueing is what schedules processing" structural
-// (DD-5). The util is domain-blind by the tech-arch capability rule — it
-// knows the item vocabulary (owner, kind, sourceRef) but nothing about what
-// a turn or a summary is; which kinds queue for which sources, and which
-// derivations a kind produces, is the owning domains' business (callers
-// pass the derivation targets in). Writes run on the caller's handle inside the
-// ambient transaction, so items commit (or roll back) with the batch. No
-// public SDK surface: read-back reaches here through shared-tech inspection
-// helpers and owner repair reports.
+// wrapper that makes scheduling structural. The util is domain-blind: it
+// knows item mechanics (owner, kind, sourceRef), while each owning domain
+// supplies the derivation targets and handler meaning. Writes run on the
+// caller's handle inside the ambient transaction, so items commit or roll back
+// with the change that caused them.
 import type { DatabaseSync } from "node:sqlite";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
 import type { DurableWorkOperation } from "../durable-work/index.js";
@@ -24,9 +20,8 @@ export type WorkKind =
 export type WorkSourceRef = { messageId: string } | { turnId: string } | { chunkId: string };
 export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
 
-// The work-kind registry: owner and sourceRef semantics per the epic's Work
-// Item contract. Mechanical metadata only — what a kind *means* stays with
-// the owning domain's handler (registered at SDK construction, DD-6).
+// Mechanical metadata only; what a kind means stays with the owning domain's
+// handler.
 export const WORK_KIND_REGISTRY: Readonly<
   Record<WorkKind, { owner: WorkOwner; sourceRefKey: "messageId" | "turnId" | "chunkId" }>
 > = {
@@ -58,7 +53,7 @@ export interface WorkItemRecord {
   owner: WorkOwner;
   kind: WorkKind;
   sourceRef: WorkSourceRef;
-  status: "queued"; // the only status written before a drain claims (Epic 02 Story 1)
+  status: "queued"; // the only status written before a drain claims it
   queuedAt: string;
 }
 
@@ -91,11 +86,9 @@ function targetKey(target: Pick<EnqueueDerivationTarget, "subjectKind" | "subjec
   return `${target.subjectKind}/${target.subjectId}/${target.derivationType}`;
 }
 
-// Deterministic id scoped to the source version (DD-1/DD-3): re-queueing the
-// same kind for the same source *at the same version* is the same id —
-// natural idempotency for the repair path — while a post-mutation
-// replacement (next version) never collides with an in-flight pre-mutation
-// item.
+// Deterministic id scoped to source version: re-queueing the same kind for
+// the same source at the same version is the same id, while a post-mutation
+// replacement at the next version never collides with older in-flight work.
 export function recordItem(db: DatabaseSync, input: WorkItemInput, queuedAt: string): WorkItemRecord {
   const sourceVersion = input.sourceVersion ?? 1;
   const workItemId = `w-${sourceIdOf(input.sourceRef)}-${input.kind}-v${sourceVersion}`;
@@ -141,8 +134,8 @@ export type ImmediateClaimOutcome =
   | { outcome: "queued"; workItemId: string }
   | { outcome: "in_flight"; workItemId: string };
 
-// The one way work is scheduled (DD-5): the work row, the derivation's `pending`
-// state row, and the scheduler poke all ride the ambient transaction — they
+// The one way work is scheduled: the work row, the derivation's `pending`
+// state row, and the scheduler poke all ride the ambient transaction. They
 // commit together or vanish together. Enqueue is the *only* place a
 // derivation row is created (completion is UPDATE-only); re-enqueueing
 // resets an existing row to pending at the enqueued source version.
@@ -318,15 +311,15 @@ interface RawWorkItemRow {
   queued_at: string;
 }
 
-// ── claim mechanics (Epic 02 Story 1, tech design §Mechanics) ─────
+// ── claim mechanics ───────────────────────────────────────────────
 // All pure SQL against the caller's open handle, domain-blind. Claim,
 // complete, and the terminal half of failAttempt each own one short
 // BEGIN IMMEDIATE; the handler in between runs with no open transaction.
 
 // The claimed row as the drain holds it: mechanical fields plus the payload's
-// source version and form targets. `kind` is a plain string here — a raw row
+// source version and derivation targets. `kind` is a plain string here — a raw row
 // with an unregistered kind must still be claimable so the drain can land it
-// failed_terminal instead of skipping it (AC-1.8).
+// failed_terminal instead of skipping it.
 export interface ClaimedWorkItem {
   workItemId: string;
   claimEpoch: number;
@@ -357,12 +350,9 @@ interface RawClaimRow {
   payload: string | null;
 }
 
-// Form targets for pre-v5 rows, whose payload is NULL (Epic 01 wrote no
-// payload column). Exactly the F-02 backfill's kind→form mapping (migration
-// v5, shared/storage.ts): the backfill created pending derivation rows at
-// source version 1 for these kinds, and a terminal failure must find them —
-// otherwise exhaustion would delete the work row and strand the backfilled
-// form as pending forever, breaking AC-1.9/DD-1 for upgraded threads.
+// Derivation targets for pre-v5 rows whose payload is NULL. The storage
+// migration created pending derivation rows at source version 1 for these
+// kinds, and terminal failures must still find those rows.
 const LEGACY_KIND_DERIVATIONS: Partial<
   Record<string, ReadonlyArray<{ subjectKind: SubjectKind; derivationType: string }>>
 > = {
@@ -489,9 +479,9 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
       return { outcome: "claimed", item: toClaimedItem(claimed) };
     }
     // No row claimable: re-read the head inside the same transaction to
-    // classify the stop. A claimed head with a live lease gates the queue
-    // (in_flight, AC-1.4); a queued head still backing off gates it too
-    // (waiting) — strict ordering, never reordered around the head.
+    // classify the stop. A claimed head with a live lease, or a queued head
+    // still backing off, gates the queue. Work is never reordered around the
+    // head.
     const head = db
       .prepare(
         `SELECT status, eligible_at, claim_expires_at
@@ -511,15 +501,12 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
   }
 }
 
-// Completion: the version-checked derivation writes and the item row's deletion in
-// one short transaction (DD-1: terminal transition deletes the row; the
-// disposition is reported in-memory, never stored). UPDATE-only, never
-// upsert — the pending row exists from enqueue; a write that finds no row at
-// the item's source version is discarded as stale (DD-3 truth table). The
-// optional onApplied hook (Story 3) runs inside this same transaction, after
-// the derivation writes and only when they landed — chunk placement and the
-// close→summary enqueues ride the completion commit; its onCommit
-// registrations (the enqueue pokes) flush after COMMIT and drop on rollback.
+// Completion writes derivations and deletes the item row in one short
+// transaction. UPDATE-only, never upsert: enqueue created the pending row, and
+// completions for older source versions are discarded as stale. The optional
+// onApplied hook runs after successful writes inside the same transaction, so
+// follow-on chunk placement and summary enqueues commit or roll back with the
+// completion.
 export function complete(
   db: DatabaseSync,
   item: ClaimedWorkItem,
@@ -599,7 +586,7 @@ export type FailAttemptResult =
 
 // Terminal failure: the derivation rows land `failed` (or `blocked` for source
 // damage) carrying the final reason plus attempts/last-error copied onto the
-// derivation's metadata, and the item row is deleted — one transaction (DD-1).
+// derivation's metadata, and the item row is deleted in the same transaction.
 // Derivation writes stay version-checked: if a mutation moved the source since this
 // item was queued, the stale failure must not stamp the rebuilt derivation.
 export function failTerminal(
@@ -664,9 +651,9 @@ export function failTerminal(
 
 // A failed run counts itself. Under budget and retryable: the row goes back
 // to `queued` with attempts incremented and eligibility pushed out by backoff
-// (min(base × 2^attempts, cap)) — retry is not a status (DD-1). At budget, or
-// on a non-retryable failure, the item is terminal: derivation `failed` with the
-// final reason, row deleted (AC-1.9).
+// (min(base × 2^attempts, cap)). Retry is not a status. At budget, or on a
+// non-retryable failure, the item is terminal: derivation `failed` with the
+// final reason, row deleted.
 export function failAttempt(
   db: DatabaseSync,
   item: ClaimedWorkItem,
@@ -699,13 +686,10 @@ export function failAttempt(
   return { terminal: true, attempts };
 }
 
-// Cascade tidy (tech design issue 1): delete still-queued items for the given
-// (kind, sourceRef) targets, returning the deleted ids for the mutation
-// result's `superseded` list. Runs inside the caller's ambient transaction —
-// the cascade owns the BEGIN/COMMIT — so no transaction is opened here.
-// Claimed items are deliberately left alone: the source-version check (DD-3)
-// discards their stale completions. Ships here as mechanics; its only caller
-// is Story 5's cascade.
+// Delete still-queued items for the given (kind, sourceRef) targets, returning
+// the deleted ids for mutation results. Runs inside the caller's ambient
+// transaction. Claimed items are deliberately left alone: source-version
+// checks discard their stale completions.
 export function supersedeQueued(
   db: DatabaseSync,
   targets: ReadonlyArray<{ kind: WorkKind; sourceRef: WorkSourceRef }>,
@@ -724,13 +708,10 @@ export function supersedeQueued(
   return ids;
 }
 
-// The requeue no-op rule's EXISTS check (AC-4.5): is there a live item —
-// queued or in flight — for this kind and source at this source version?
-// Runs inside the caller's requeue transaction so the check and the enqueue
-// commit together (anti-shim: a check-then-enqueue split across transactions
-// reintroduces the duplicate-work race). Version-scoped on purpose: a
-// claimed pre-mutation item at an older version is dying work whose
-// completion DD-3 will discard — it must not block the repair.
+// Is there a live item, queued or in flight, for this kind and source at this
+// source version? Runs inside the caller's repair transaction so the check and
+// enqueue commit together. Version-scoped on purpose: older claimed work is
+// already fenced by source version and must not block repair.
 export function hasLiveItem(
   db: DatabaseSync,
   kind: WorkKind,
@@ -748,8 +729,7 @@ export function hasLiveItem(
   return row !== undefined;
 }
 
-// Live items left in the queue — the drain report's `remaining` and the
-// repair report's join source (Story 4).
+// Live items left in the queue; used by drain reporting and owner repair reports.
 export function countLiveItems(db: DatabaseSync): number {
   const row = db
     .prepare(`SELECT COUNT(*) AS n FROM work_item WHERE status IN ('queued', 'claimed')`)
@@ -773,9 +753,8 @@ export interface QueueDetailRow {
   sourceVersion: number;
 }
 
-// Mechanical detail of every live row in queue order — what the repair
-// report joins against derivation (Flow 4) and what tests read to assert
-// lease/backoff state without raw SQL at every call site.
+// Mechanical detail of every live row in queue order. Owner reports join this
+// against derivations; tests use it for lease/backoff assertions.
 export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
   const rows = db
     .prepare(

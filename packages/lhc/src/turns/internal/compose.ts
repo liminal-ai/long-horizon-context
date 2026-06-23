@@ -1,19 +1,13 @@
-// Rendering composition (Flow 3, AC-3.2–3.4): message-level derivations become the
-// ordered RenderingPart input for deterministic turn rendering, with fallbacks and
-// gap records where a derivation is not ready. Pure by anti-shim requirement —
-// `(messages, derivations) → { parts, gaps }` with no DB handle, no inference, no
-// clock in the signature: determinism is structural, not disciplined.
+// Rendering composition: message-level derivations become ordered
+// RenderingParts for deterministic turn rendering, with fallbacks and gap
+// records where a derivation is not ready. The function stays pure:
+// `(messages, derivations) -> { parts, gaps }` with no DB handle, inference,
+// or clock in the signature.
 //
-// Tool activity stays in message order and groups into runs (AC-3.4, Fix 2):
-// a maximal stretch of consecutive tool_call/tool_result messages folds into
-// ONE RenderingPart and ONE receipt — a run-level account naming the tools,
-// the call count, and the per-call mechanical outcomes, so a run containing a
-// state-changing call structurally cannot lose its outcome and mixed outcomes
-// stay explicit, never collapsed into a vague success. Prompts and assistant
-// text break a run; thinking and runtime notes do not (interior ones ride the
-// run account inline, edge ones stand alone) — a story-deviation decision.
-// Runs are never reordered to make accounts tidier; the outcome rides the
-// part, not the prose.
+// Tool activity stays in message order and groups into maximal runs. A run
+// becomes one RenderingPart and one receipt: the account names tools, call
+// count, and per-call mechanical outcomes. Prompts and assistant text break a
+// run; thinking and runtime notes do not. Runs are never reordered.
 
 import { cleanPrompt } from "../../messages/index.js";
 import type {
@@ -53,10 +47,8 @@ export interface CompositionInput {
   parts: RenderingPart[];
   gaps: DependencyGap[];
   recoveries: RecoveryReceipt[];
-  // The turn's tool-run receipts (AC-3.8): the tool parts restated as
-  // account + outcome, in message order — pure restatement of the
-  // composition input, stamped on the rendering so chunk summaries read
-  // receipts without re-deriving anything.
+  // Tool parts restated as account + outcome in message order, stamped on
+  // the rendering so chunk summaries read receipts without re-deriving them.
   receipts: ToolRunReceipt[];
 }
 
@@ -99,9 +91,8 @@ function promptFallbackText(message: ComposeMessage): string {
   return floor.length === 0 && original.length > 0 ? original : floor;
 }
 
-// Mechanical outcome from the record alone (the AC-2.4 rule carried into
-// composition): a tool call's outcome comes from its paired result among the
-// turn's messages — present and clean, present and isError, or absent.
+// Mechanical outcome from the record alone: a tool call's outcome comes from
+// its paired result among the turn's messages.
 function recordOutcomes(messages: readonly ComposeMessage[]): Map<string, boolean> {
   const byCallId = new Map<string, boolean>();
   for (const message of messages) {
@@ -125,9 +116,9 @@ interface PartPlan {
   fallbackText: (message: ComposeMessage) => string;
 }
 
-// The fallback rules table (story Technical Notes): prompt → raw text; tool
-// call → recorded args; result → deterministic truncation; text/thinking/note → raw, no derivation
-// to fall back from and therefore never a gap.
+// Fallback rules: prompt -> cleaned text; tool call -> recorded args; tool
+// result -> deterministic truncation; text/thinking/note -> raw, no
+// derivation to fall back from and therefore never a gap.
 const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
   user_prompt: { derivation: "smoothed_prompt", fallbackText: promptFallbackText },
   assistant_text: { fallbackText: textOf },
@@ -169,8 +160,8 @@ const TOOL_KINDS: ReadonlySet<RenderingPartKind> = new Set(["tool_call", "tool_r
 // One message → its composed part (ready derivation verbatim, else raw/truncated
 // fallback) plus a gap when a derivable derivation was not ready. Gaps stay
 // per-message — precise to the source record — regardless of run grouping
-// (AC-3.2/3.3): the caller lands them on the rendering and they hold until an
-// explicit rebuild recomposes from current states.
+// The caller lands gaps on the rendering and they hold until an explicit
+// rebuild recomposes from current states.
 function buildAtom(
   message: ComposeMessage,
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
@@ -269,12 +260,10 @@ function runTallyText(counts: Record<ToolOutcome, number>): string {
   return segs.length > 0 ? segs.join(", ") : "no outcomes";
 }
 
-// One RenderingPart and one ToolRunReceipt for a maximal tool run (AC-3.4): a
-// run-level header (tools, call count, outcome tally) over the members'
-// composed accounts in record order — each tool member stating its own
-// outcome so a state-changing call cannot lose it, interior thinking/notes
-// riding inline. The receipt restates the same account + run outcome for the
-// chunk summaries (AC-3.8).
+// One RenderingPart and one ToolRunReceipt for a maximal tool run: a run-level
+// header over member accounts in record order, each tool member stating its
+// own outcome. The receipt restates the same account and run outcome for
+// chunk summaries.
 function composeRun(members: readonly ComposeAtom[]): {
   part: RenderingPart;
   receipt: ToolRunReceipt;
@@ -308,8 +297,8 @@ function composeRun(members: readonly ComposeAtom[]): {
 // Compose the ordered RenderingParts and tool-run receipts. Per-message atoms
 // build first (derivations verbatim or fallbacks, per-message gaps); then maximal
 // runs of consecutive tool activity fold into one run part + one receipt each
-// (AC-3.4), with prompts/assistant text breaking runs and thinking/runtime
-// notes transparent to them.
+// with prompts/assistant text breaking runs and thinking/runtime notes
+// transparent to them.
 export function composeRenderingInput(
   messages: readonly ComposeMessage[],
   derivations: ReadonlyMap<string, ComposeDerivationRow>,

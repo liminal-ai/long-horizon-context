@@ -1,7 +1,7 @@
 // Turn row operations. Writes run on the caller's handle inside the batch
 // transaction; reads run on a fresh handle per operation. A closed turn has
-// no writer anywhere in this module — frozenness (AC-3.7) is the absence of
-// any UPDATE that touches a closed row.
+// no writer anywhere in this module: its membership and boundaries are stable
+// because no UPDATE touches closed rows.
 import type { DatabaseSync } from "node:sqlite";
 import type { TurnRecord } from "../index.js";
 import { readPlacements } from "./chunks.js";
@@ -77,8 +77,7 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
-  // Chunk placement rides the turn read-back (Epic 02 AC-3.5): stored
-  // chunk_member values, absent until the turn's derivation placed it.
+  // Chunk placement is stored in chunk_member once derivation places the turn.
   const placements = readPlacements(db);
   return turnRows.map((row) => {
     const record: TurnRecord = {

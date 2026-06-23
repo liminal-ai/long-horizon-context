@@ -50,21 +50,15 @@ export interface TurnRecord {
   memberMessageIds: string[];
   openedAtEventOrder: number;
   closedAtEventOrder?: number;
-  // Chunk placement (Epic 02 Story 3, AC-3.5): present once the turn's
-  // derivation placed it — stored values read back, never recomputed.
+  // Present once the turn's derivation placed it in a chunk. Stored values
+  // read back; reads never recompute placement.
   chunkId?: string;
   memberIdx?: number;
-  // The turn's derived derivations as stored (Epic 02 Story 4, AC-4.7 ruling 012):
-  // present only when rows exist — a closed turn carries them from the
-  // moment its derivation queues. Stored state returned verbatim, mirroring
-  // the message read's derivations key; reads degrade, never block.
+  // Stored turn-owned derivations, attached only when rows exist. Reads
+  // return stored state verbatim and never block on derivation readiness.
   derivations?: Derivation[];
 }
 
-// Chunk read-back (Epic 02 Story 4, AC-4.7 ruling 012): the stored chunk
-// record with live membership and its summary derivations' states attached —
-// the chunk leg of "reading a message, turn, or chunk returns the record
-// with derivation states".
 export interface ChunkRecord {
   chunkId: string;
   chunkOrder: number;
@@ -82,7 +76,7 @@ export interface TurnTransitionOutcome {
   // message-producing events.
   turnId: string;
   // Work queued by this transition: one turn_derivation item per closed
-  // turn, by either close path (AC-3.6). Empty when nothing closed.
+  // turn. Empty when nothing closed.
   queuedWork: WorkItemRecord[];
 }
 
@@ -101,14 +95,11 @@ function currentOpenTurnId(transaction: DbWriteTransaction): string {
   return openTurnIds[0]!;
 }
 
-// Closing a turn — by either close path — durably queues that turn's
-// derivation work in the same transaction (AC-3.6): the close update and the
-// work item commit or roll back together.
+// Closing a turn durably queues that turn's derivation work in the same
+// transaction: the close update and the work item commit or roll back together.
 function closeTurnAndQueueWork(transaction: DbWriteTransaction, turnId: string, eventOrder: number): WorkItemRecord {
   closeTurn(transaction.db, turnId, eventOrder);
-  // One work item, two derived derivations: the turn_derivation handler (Story 3)
-  // lands the rendering and smooth turn compression as independent rows;
-  // both go pending with the enqueue (DD-5).
+  // One work item backs two independent turn-owned derivation rows.
   return enqueue(transaction, {
     owner: "turns",
     kind: "turn_derivation",
@@ -170,9 +161,6 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
 export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[]>> {
   try {
     return await createDbReadTransaction(thread, (transaction) => {
-      // Derivation read-back rides the turn read (AC-4.7): each record carries its
-      // stored derived derivations, attached from one grouped query — mirroring the
-      // message read's production path for "readable alongside the record".
       const derivationsByTurn = readOwnedDerivations(transaction.db, "turn");
       return readTurns(transaction.db).map((record) => {
         const derivations = derivationsByTurn.get(record.turnId);
@@ -185,10 +173,8 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
   }
 }
 
-// Chunk read-back with summary-derivation states attached (AC-4.7 ruling 012):
-// returns stored records whatever the derivations' states — reads degrade, never
-// block. Derivations attach only where rows exist (a freshly opened chunk has no
-// summary rows until close queues them).
+// Returns stored chunk records whatever their derivation states. Derivations
+// attach only where rows exist; freshly opened chunks have none.
 export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
   try {
     return await createDbReadTransaction(thread, (transaction) => {
@@ -228,7 +214,7 @@ export function readTurnChunkStructure(db: DatabaseSync): TurnChunkStructure {
   return { turns: readTurnStructure(db), chunks: readChunkStructure(db) };
 }
 
-// ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
+// ── report and repair ─────────────────────────────────────────────
 
 // This owner's repair report: every turn- and chunk-owned derivation's durable
 // state joined with live queue detail in one query. Needs no inference;
