@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import type { EventKind } from "lhc";
 
-// AC-2.6: a stable per-event key so re-delivery dedups and crash-replay is
-// safe. Pure, deterministic — identical across re-delivery of the same logical
-// event, distinct across different events. Construction precedence (from the
-// POC mapper, carried forward): PI entry id, else provider responseId /
-// toolCallId, else a content fingerprint as last resort. `blockIndex` and
-// `kind` ride every tier so one message's fan-out (thinking → text →
-// tool_call×N) stays distinct under a single shared id.
+// Stable per-event key so re-delivery dedups and crash-replay is safe. Pure,
+// deterministic: identical across re-delivery of the same logical event,
+// distinct across different events. Construction precedence: PI entry id, else
+// provider responseId/toolCallId, else a content fingerprint as last resort.
+// `blockIndex` and `kind` ride every tier so one message's fan-out stays
+// distinct under a single shared id.
 
 export interface EventKeyInput {
   piSessionId: string;

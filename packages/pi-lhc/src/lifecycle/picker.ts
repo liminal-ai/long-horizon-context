@@ -1,8 +1,6 @@
 import { type OpResult, type ThreadRef, threads } from "lhc";
 import { registryArg, threadRefById } from "./thread-resolution.js";
 
-// AC-1.7.
-
 /** One row the picker offers: enough to show the operator what they are
  *  resuming — its title (when set) and creation time — keyed by the id the
  *  selection resolves. */

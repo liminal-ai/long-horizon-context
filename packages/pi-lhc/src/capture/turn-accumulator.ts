@@ -1,8 +1,8 @@
 import type { MessageEventInput } from "lhc";
 import { eventKey } from "./idempotency.js";
 
-// AC-2.2: track the open LHC turn; emit exactly one `turn_end` at `agent_end`;
-// ignore PI's per-step `turn_end` as a boundary signal. Pure state machine.
+// Track the open LHC turn; emit exactly one `turn_end` at `agent_end`; ignore
+// PI's per-step `turn_end` as a boundary signal. Pure state machine.
 //
 // An LHC turn opens on a `user_prompt` and stays open across every agent step.
 // The converter never feeds PI's per-step `turn_end` here, so it can never close

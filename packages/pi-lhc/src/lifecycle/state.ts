@@ -1,14 +1,14 @@
 import type { ThreadRef } from "lhc";
 import type { ValidationReport } from "../shared/diagnostics.js";
 
-// AC-1.3 / AC-2.7. This module is COMPLETE, not stubbed (story Technical
-// Notes): its shape is what prevents stale PI-context retention later. The
+// This module is complete, not stubbed: its shape is what prevents stale
+// PI-context retention later. The
 // holder has no slot for a PI ctx/session object, so retaining one across hooks
 // is impossible in normal use — the structural enforcement the tech arch's
 // plain-data-only rule calls for.
 
 /** Recorded when a writable-thread capture fails: the failure degrades to a
- *  durable, queryable gap rather than throwing into a PI hook (AC-2.7). */
+ *  durable, queryable gap rather than throwing into a PI hook. */
 export interface CaptureFailureDiagnostic {
   code: string;
   eventKey?: string;

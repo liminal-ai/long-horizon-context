@@ -20,18 +20,16 @@ import { TurnAccumulator } from "../capture/turn-accumulator.js";
 import type { AgentMessage } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
 
-// AC-6.1, AC-6.2 (Flow 6, Story 3). Capture correctness is proven WITHOUT
-// serving anything to a model: a recorded PI corpus replays through the REAL
+// Capture correctness is proven without serving anything to a model: a recorded
+// PI corpus replays through the real
 // converter and intake path into a temp thread, and the thread's read-back —
 // events, messages, and turns — is compared to the fixture's expectation. The
 // same corpus replayed twice yields identical read-back because the converter's
 // mapping and the SDK's deterministic ids make replay reproducible.
 //
-// Anti-shim (story §Anti-Shim Requirements): this drives Story 2's converter
-// (`mapMessage` → `TurnAccumulator` → `capture`) exactly as live capture does —
-// it never writes the fixture's expected events to the thread, and it compares
-// events/messages/turns/order, never just counts. inspect's overview/health are
-// the live read-back surfaces a Story-3 test asserts on for AC-6.3.
+// This drives the converter (`mapMessage` → `TurnAccumulator` → `capture`)
+// exactly as live capture does. It never writes fixture-expected events to the
+// thread, and it compares events/messages/turns/order, never just counts.
 
 export type RecordedPiHookEvent =
   | { recordType: "pi_hook"; hook: "message_end"; entryId: string; position?: number; message: AgentMessage }
@@ -46,8 +44,8 @@ export interface Corpus {
   expected: MessageEventInput[];
 }
 
-/** A structured compare result with a readable diff (tech design §Technical
- *  Notes). `matches` is true only when events, messages, AND turns all line up
+/** A structured compare result with a readable diff. `matches` is true only
+ *  when events, messages, and turns all line up
  *  with the fixture; `diff` names every divergence when they do not. */
 export interface ReplayResult {
   matches: boolean;
@@ -59,10 +57,10 @@ function detail(cause: unknown): string {
 }
 
 /** Construction-valid, fail-closed inference callbacks — the same observe-only
- *  shape the live Epic-1 session runs on (index.ts). Replay never serves context
+ *  shape the live connector runs on. Replay never serves context
  *  to a model, so every derivation operation fails closed (non-retryable) rather
  *  than fabricating derived text; the resulting failed derivations are exactly
- *  what inspect health must surface (AC-6.3), so the harness mirrors production
+ *  what inspect health must surface, so the harness mirrors the connector path
  *  rather than hiding them behind a succeeding fake. */
 function observeOnlyInferenceCallbacks(): InferenceCallbacks {
   const notConfigured = (): Promise<InferenceResult> =>
@@ -103,14 +101,14 @@ function buildReplayInstance(threadRef: ThreadRef): LhcInstance {
 
 /** A deterministic per-replay session id derived from the CORPUS, not the
  *  thread: it scopes every idempotency key, so the same corpus replayed into two
- *  different temp threads produces byte-identical keys (AC-6.2), while different
+ *  different temp threads produces byte-identical keys, while different
  *  corpora never collide. */
 function replaySessionId(corpus: Corpus): string {
   return `replay:${corpus.name}`;
 }
 
 /** Drive one recorded PI hook/lifecycle corpus through the real converter into
- *  the thread. `message_end` records map through Story 2's mapper; `agent_end`
+ *  the thread. `message_end` records map through the mapper; `agent_end`
  *  records close turns through the same accumulator operation used live. */
 async function driveCorpus(corpus: Corpus, instance: LhcInstance): Promise<void> {
   const piSessionId = replaySessionId(corpus);
@@ -146,7 +144,7 @@ async function flush(events: MessageEventInput[], instance: LhcInstance): Promis
 
 /** Strip the server-stamped order/timestamp so the comparison is over the
  *  logical intake shape the converter produced — including the real, stable
- *  idempotency keys (kept so AC-6.2's determinism is checkable on the read-back),
+ *  idempotency keys (kept so determinism is checkable on the read-back),
  *  excluding `recordedAt` (a wall-clock value that legitimately differs run to
  *  run). */
 function logicalEvents(records: readonly EventRecord[]): MessageEventInput[] {
@@ -197,7 +195,7 @@ type ComparableTurnRecord = Pick<
 >;
 
 /** The message read-back the fixture implies: each non-`turn_end` event projects
- *  to exactly one message of its kind (LHC's projection, verified 1:1), so the
+ *  to exactly one message of its kind, so the
  *  expected `messages.visible` and `messages.byKind` fall straight out of the
  *  expected event list. */
 function expectedMessages(expected: readonly MessageEventInput[]): MessageProjection {
@@ -403,8 +401,8 @@ function compareReadback(
 /** Replay a recorded corpus through the converter into the temp thread, then
  *  compare the durable read-back (events, messages, turns) to the fixture's
  *  expectation. The thread is left populated so a caller can read inspect's
- *  overview/health off it (AC-6.3). Deterministic: the same corpus yields the
- *  same recorded read-back every time (AC-6.2). */
+ *  overview/health off it. Deterministic: the same corpus yields the same
+ *  recorded read-back every time. */
 export async function replayCorpus(corpus: Corpus, threadRef: ThreadRef): Promise<ReplayResult> {
   const instance = buildReplayInstance(threadRef);
   const problems: string[] = [];

@@ -2,12 +2,11 @@ import type { MessageEventInput } from "lhc";
 import { eventKey } from "./idempotency.js";
 import type { MapCtx } from "./map-message.js";
 
-// AC-2.8: model_select / thinking_level_select hooks → runtime_note events, in
+// model_select / thinking_level_select hooks become runtime_note events in
 // order relative to surrounding messages. PI fires these only in-stream and no
 // durable record holds them otherwise, so they are captured the moment they
-// fire. They ride the existing `runtime_note` kind (no new intake kind), with
-// text structured enough to recover the change — the new value and the previous
-// one — which is what later epics use to attribute a turn to its model.
+// fire. They ride the existing `runtime_note` kind, with text structured enough
+// to recover the change.
 
 const HARNESS = "pi";
 

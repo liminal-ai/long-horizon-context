@@ -1,12 +1,9 @@
 import { createSdk, type Lhc, type OpResult, type SdkConfig, type ThreadRef, threads } from "lhc";
 import type { LhcInstance } from "../shared/instance.js";
 
-// AC-1.1, AC-1.4, AC-1.5.
-
 /** The connector's name for SDK construction — the agreed rename of LHC's
- *  `createSdk` (tech design A-4; the rename lands in lhc later, mechanical
- *  either way). One instance per PI session in background scheduler mode; the
- *  connector never drives the queue (Flow 1). */
+ *  `createSdk`. One instance per PI thread in background scheduler mode; the
+ *  connector never drives the queue directly. */
 export function initLhc(config: SdkConfig): Lhc {
   return createSdk(config);
 }
@@ -36,7 +33,7 @@ async function disposeSdk(sdk: Lhc, threadRef: ThreadRef): Promise<OpResult<void
 }
 
 /** Construct one LHC instance against a resolved thread in background scheduler
- *  mode (AC-1.1). The thread is validated first so an unresolvable ref returns a
+ *  mode. The thread is validated first so an unresolvable ref returns a
  *  typed result rather than a half-built instance; background mode is forced
  *  regardless of the caller's config so the connector cannot accidentally drive
  *  the queue. A malformed inference/provider config is a programmer error and
@@ -55,7 +52,7 @@ export async function initInstance(threadRef: ThreadRef, config: SdkConfig): Pro
   return { ok: true, value: instance };
 }
 
-/** Dispose an instance on shutdown/switch with flush (AC-1.4). Null-safe: a
+/** Dispose an instance on shutdown/switch with flush. Null-safe: a
  *  shutdown with no live instance is a successful no-op, never an error. */
 export function disposeInstance(instance: LhcInstance | null): Promise<OpResult<void>> {
   if (instance === null) return Promise.resolve({ ok: true, value: undefined });

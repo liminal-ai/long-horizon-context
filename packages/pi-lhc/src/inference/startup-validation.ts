@@ -1,14 +1,14 @@
-// AC-5.1, AC-5.2, AC-5.3. Startup validation: probe inference assignments
-// against PI's registry, report unreachable lanes, leave capture running.
+// Startup validation probes inference assignments against PI's registry,
+// reports unreachable lanes, and leaves capture running.
 //
 // This layer runs AFTER shape validation (which LHC's createSdk enforces at
 // construction). It adds a reachability probe on top: for each assignment,
 // check that the provider/model pair exists in PI's registry and that auth is
 // configured. This surfaces misconfigurations before the first derivation use,
-// rather than as a silent derivation failure later (AC-5.1).
+// rather than as a silent derivation failure later.
 //
-// Reporting must not assume a TUI (AC-5.2). The report surfaces through ctx.ui
-// when available and always persists to SessionState.health for headless modes.
+// Reporting must not assume a TUI. The report surfaces through ctx.ui when
+// available and always persists to SessionState.health for headless modes.
 
 import { writeSync } from "node:fs";
 import type { ModelAssignment } from "lhc";
@@ -46,7 +46,7 @@ export function defaultStartupValidationReporter({ message, ctx }: StartupValida
   }
 }
 
-/** Probe each assignment; classify unreachable lanes (AC-5.1, AC-5.2).
+/** Probe each assignment and classify unreachable lanes.
  *
  *  For each inference derivation kind:
  *  1. Call ctx.modelRegistry.find(provider, model) to check if the lane exists.
@@ -57,7 +57,7 @@ export function defaultStartupValidationReporter({ message, ctx }: StartupValida
  *
  *  Returns a structured report listing all unreachable lanes with their fixes.
  *  Reachable lanes are not listed; an empty `unreachable` array means all lanes
- *  are reachable (AC-5.1). */
+ *  are reachable. */
 export function validateReachable(
   assignments: Record<string, ModelAssignment> | undefined,
   ctx: ExtensionContext,
@@ -102,14 +102,14 @@ export function validateReachable(
 
 /** Surface unreachable lanes via ctx.ui when available + structured diagnostic.
  *
- *  Reporting is headless-safe (AC-5.2):
+ *  Reporting is headless-safe:
  *  - If ctx.hasUI is true, surface through ctx.ui.notify with a formatted report.
  *  - Always persist the structured ValidationReport to SessionState.health.
- *  - Capture continues running even when validation fails (AC-5.3).
+ *  - Capture continues running even when validation fails.
  *
  *  This function never throws; validation failures are diagnostic, not fatal.
  *  The affected lane's derivations will fail classified and queryable through
- *  health (AC-5.3), but the session itself remains functional for capture. */
+ *  health, but the thread itself remains functional for capture. */
 export function report(r: ValidationReport, ctx: ExtensionContext, state: SessionState, deps: ReportDeps = {}): void {
   // Mark that we've reported startup validation (avoids duplicate reporting)
   state.flags.startupValidationReported = true;

@@ -10,14 +10,14 @@ import type {
 } from "../pi/types.js";
 import { eventKey } from "./idempotency.js";
 
-// AC-2.1, AC-2.3, AC-2.4, AC-2.5. Pure (no I/O): one PI `AgentMessage` → the
-// ordered LHC events for it. A user message → one `user_prompt`; an assistant
+// Pure mapping: one PI `AgentMessage` to the ordered LHC events for it. A user
+// message → one `user_prompt`; an assistant
 // message fans out `assistant_thinking` (if present) → `assistant_text` (if
 // present) → one `tool_call` per call, in that order; a tool result → one
 // `tool_result` correlated by `toolCallId`, carrying `isError`. Unsupported
 // parts and a wholly-empty message degrade to a `runtime_note` (never a silent
-// drop, tech design I-6). A graceful interrupt carries its disposition through
-// on a trailing `runtime_note` (research §5b).
+// drop). A graceful interrupt carries its disposition through on a trailing
+// `runtime_note`.
 
 export interface MapCtx {
   piSessionId: string;
@@ -259,8 +259,8 @@ function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[]
   const entryId = entryIdOf(msg);
   const content = textOf(msg.content);
   const isError = msg.isError === true;
-  // Correlation is by toolCallId, not arrival order (AC-2.3); the error flag
-  // and content are always captured, even on failure (AC-2.4).
+  // Correlation is by toolCallId, not arrival order; the error flag and content
+  // are always captured, even on failure.
   events.push(
     toolResultEvent(
       msg.toolCallId,

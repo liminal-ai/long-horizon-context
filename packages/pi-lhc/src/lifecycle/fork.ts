@@ -1,5 +1,4 @@
-// AC-3.1, AC-3.2, AC-3.3. A fork produces a NEW thread seeded by replay and
-// never writes the source (tech design Flow 3). Story 4.
+// A fork produces a new thread seeded by replay and never writes the source.
 
 import { readFileSync } from "node:fs";
 import type { MessageEventInput, OpResult, ThreadRef } from "lhc";
@@ -12,8 +11,8 @@ export interface ForkInfo {
 }
 
 /** Detect a fork from PI's session tree when the session_before_fork hook is
- *  absent (Epic 1 fallback evidence). This function is called during
- *  session_start when we have a previousSessionFile but no pending fork from the
+ *  absent. This function is called during thread start when we have a
+ *  previousSessionFile but no pending fork from the
  *  hook. Returns fork info if the session tree indicates a fork, null otherwise.
  *
  * The fallback uses the previousSessionFile as evidence that we're starting a
@@ -113,13 +112,13 @@ export function forkInfoFromHook(entryId: string, _position?: number): Omit<Fork
 
 /** Seed a forked thread by replaying the source's recorded events up to the
  *  fork point, through the normal intake path. The source receives NO writes
- *  (AC-3.1). Derived forms requeue rather than copy (AC-3.3).
+ *  Derived derivations requeue rather than copy.
  *
  * Replay reads events from the source thread, filters to those up to and
  * including the fork point (by entryId match on idempotency key), and writes
  * them through the instance's intake path. This preserves event order, dedup
  * keys, and all logical content — the seeded thread's read-back matches the
- * source's read-back through the fork point (AC-3.2).
+ * source's read-back through the fork point.
  *
  * The forkEntryId is PI's entry identifier for the session entry at the fork
  * point. During capture, this entryId was encoded into idempotency keys as

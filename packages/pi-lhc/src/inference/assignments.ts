@@ -1,5 +1,5 @@
-// AC-5.4, AC-5.5. Load inference assignment config; fail loud on
-// missing/unknown/placeholder.
+// Load inference assignment config; fail loud on missing, unknown, or
+// placeholder values.
 //
 // Assignments provide provider, model, and prompt for LHC's inference-backed
 // derivation kinds. LHC validates assignment shape at construction
@@ -18,7 +18,7 @@ import { ASSIGNMENT_KINDS, type AssignmentKind, defaultAssignments } from "./mod
  *
  *  Each key is optional; missing kinds use the shipped default. Values override
  *  provider, model, or prompt for that kind. An assignment is incomplete if it
- *  omits any of provider, model, or prompt (fails loud at load, per AC-5.5).
+ *  omits any of provider, model, or prompt and fails loud at load.
  *
  *  Example:
  *  {
@@ -31,8 +31,7 @@ export interface AssignmentConfig {
 }
 
 /** Error thrown when an assignment is incomplete or references an unknown prompt.
- *  Carries the kind and the specific validation problem for actionable error
- *  reporting (AC-5.5: "fails loudly at initialization with an actionable error"). */
+ *  Carries the kind and specific validation problem for actionable reporting. */
 export class AssignmentValidationError extends Error {
   readonly kind: AssignmentKind;
   readonly problem: "incomplete" | "unknown_prompt" | "placeholder";
@@ -90,12 +89,12 @@ function validateAssignment(kind: AssignmentKind, assignment: Partial<ModelAssig
     throw new AssignmentValidationError(kind, "incomplete");
   }
 
-  // Check for placeholder values (AC-5.6: placeholder fails loud)
+  // Check for placeholder values; placeholders fail loud.
   if (hasPlaceholder(assignment)) {
     throw new AssignmentValidationError(kind, "placeholder");
   }
 
-  // Check that the prompt is registered (AC-5.4: prompt must name a registered prompt)
+  // Check that the prompt names a registered prompt.
   if (!isPromptRegistered(assignment.prompt)) {
     throw new AssignmentValidationError(kind, "unknown_prompt");
   }
@@ -105,17 +104,17 @@ function validateAssignment(kind: AssignmentKind, assignment: Partial<ModelAssig
 
 /** Load + shape-validate inference derivation assignments from operator config.
  *
- *  - Merges operator config over shipped defaults (AC-5.4).
- *  - Falls back to defaults when config is missing or undefined (AC-5.4).
- *  - User overrides take effect on next session start with no code change (AC-5.5).
- *  - Incomplete assignments fail loud at initialization (AC-5.5, TC-5.6).
- *  - Unknown prompts fail loud at initialization (TC-5.6).
- *  - Placeholder values fail loud at initialization (TC-5.6).
+ *  - Merges operator config over shipped defaults.
+ *  - Falls back to defaults when config is missing or undefined.
+ *  - User overrides take effect on next thread start with no code change.
+ *  - Incomplete assignments fail loud at initialization.
+ *  - Unknown prompts fail loud at initialization.
+ *  - Placeholder values fail loud at initialization.
  *
  *  This function throws `AssignmentValidationError` on any validation failure;
  *  the caller (typically the session_start hook) catches and surfaces the error
  *  as an actionable diagnostic. It never returns an incomplete or placeholder map
- *  that would mask a misconfiguration (story §Anti-Shim Requirements). */
+ *  that would mask a misconfiguration. */
 export function loadAssignments(config: unknown): Record<AssignmentKind, ModelAssignment> {
   const baseAssignments = defaultAssignments();
   const mergedAssignments: Partial<Record<AssignmentKind, ModelAssignment>> = {};

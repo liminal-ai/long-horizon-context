@@ -1,10 +1,10 @@
-// AC-4.1..4.4. The host-supplied ModelCall function.
+// Host-supplied ModelCall function.
 //
 // Resolves (provider,model) via ctx.modelRegistry.find, completes through
 // a production-valid boundary, and classifies failures into the LHC contract.
-// Provider/model are opaque routing keys — the connector does not interpret them.
+// Provider/model are host routing keys; the connector does not interpret them.
 //
-// PRODUCTION BOUNDARY: the function validates provider/model through PI's
+// Host boundary: the function validates provider/model through PI's
 // registry and completes through @earendil-works/pi-ai when that package is
 // available in the host runtime. If the runtime does not provide pi-ai, the host
 // returns a classified failure; it never fabricates completion text.
@@ -135,7 +135,7 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
       // Extract text from the response
       const text = extractAssistantText(response);
 
-      // NOTE: We do NOT check for empty text here. AC-4.4 specifies that
+      // NOTE: empty text is accepted here and classified by LHC's adapter.
       // empty_output is classified by LHC's adapter, not by the host function.
       // The host function returns text-or-failure only, even if the text is empty.
       return { ok: true, text };
@@ -167,14 +167,14 @@ export const DEFAULT_ASSIGNMENT_PROMPTS: Record<AssignmentKind, string> = {
 /**
  * Default assignments for the inference-backed LHC derivations.
  *
- * Story 6 implements config loading; these defaults use a real PI registry
- * lane, so the shipped production path can resolve through createModelCall().
+ * These defaults use a real PI registry lane, so the shipped connector path can
+ * resolve through createModelCall().
  */
 // PI v0.79.2 ships openai-codex/gpt-5.4 in its built-in catalog and records it
 // as the default openai-codex model (pi-coding-agent CHANGELOG: GPT-5.4 support
 // across openai/openai-codex, with gpt-5.4 now the default). This is the
-// production-reachable dial-in default Story 6 requires; unavailable auth is
-// still reported by startup validation rather than hidden behind a test provider.
+// reachable dial-in default. Unavailable auth is still reported by startup
+// validation rather than hidden behind a test provider.
 export const DEFAULT_PI_MODEL = { provider: "openai-codex", id: "gpt-5.4" } as const;
 
 export function defaultAssignments(

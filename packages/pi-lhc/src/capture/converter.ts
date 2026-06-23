@@ -2,9 +2,9 @@ import type { BatchResult, MessageEventInput, OpResult } from "lhc";
 import type { LhcInstance } from "../shared/instance.js";
 import { fingerprint } from "./idempotency.js";
 
-// AC-2.1, AC-2.7: flush a mapped batch through `intakeStream.messageEvents`,
-// isolating capture failure so it never throws back into a PI hook. The two
-// failure shapes the AC distinguishes key off the SDK's error code:
+// Flush a mapped batch through `intakeStream.messageEvents`, isolating capture
+// failure so it never throws back into a PI hook. Failure handling keys off the
+// SDK's error code:
 //   - `invalid_event` (a malformed/unmappable event on a WRITABLE thread):
 //     record a durable, queryable gap (a `runtime_note`) so nothing is silently
 //     dropped, then surface the original failure so the caller marks the gap.
