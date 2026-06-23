@@ -1,49 +1,44 @@
-// Epic 03 shared vocabulary: the thread-view types (tech design §Interface
-// Definitions). Shared so cli/sdk/tests import one home; the thread-view
-// domain owns the behavior, this module owns only the shapes.
+// Shared thread-view vocabulary. Shared so CLI, SDK, and tests import one
+// home; the thread-view domain owns behavior, this module owns only shapes.
 
 export type Band = "brief" | "detailed" | "smooth";
 
 export interface ViewProfile {
   name: string;
-  // Target assembled size; whole-entry fills may land under or over (epic
-  // Data Contracts — the bound is a target, not a cap).
+  // Target assembled size; whole-entry fills may land under or over because
+  // the bound is a target, not a cap.
   lowerBound: number;
-  // Band shares of the lower bound; must sum to 100 (AC-2.3).
+  // Band shares of the lower bound; must sum to 100.
   percentages: { full: number; smooth: number; detailed: number; brief: number };
 }
 
 // A user profile entry as configured: a full profile under a new name, or a
-// field-wise override of a built-in (merged by name, AC-2.2). A partial entry
+// field-wise override of a built-in merged by name. A partial entry
 // whose name matches no built-in has nothing to merge over and is rejected at
-// construction (FC-0.2's unknown-override violation).
+// construction.
 export interface ViewProfileOverride {
   name: string;
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
 }
 
-// Compact-time explicit parameters (AC-2.2): field-wise overrides of the
-// base profile, down to single band percentages — the same depth the CLI's
-// per-band flags override at. A nested-partial deepening of the tech
-// design's `Partial<ViewProfile>` sketch, which could not express a
-// single-band override.
+// Compact-time explicit parameters: field-wise overrides of the base profile,
+// down to single band percentages — the same depth the CLI's per-band flags
+// override at.
 export interface ViewCompactParams {
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
 }
 
-// Visibility-boundary budgets (Epic 03 AC-4.x as patched by Epic 05 AC-5.4):
-// max > target, both positive. The floor budget is retired — its job is done
-// structurally by the turn-end trigger (the open turn is untouchable) and the
-// never-evicted newest closed turn (Epic 05 DD-11).
+// Visibility-boundary budgets: max > target, both positive. The floor budget is
+// retired because the turn-end trigger and never-evicted newest closed turn
+// provide that protection structurally.
 export interface VisibilityBudgets {
   maxTokens: number;
   targetTokens: number;
 }
 
-// ── SDK assembly config (validated at construction, throws on nonsense
-// per the Epic 02 rule) ───────────────────────────────────────────
+// ── SDK assembly config ──────────────────────────────────────────
 export interface SdkViewConfig {
   profiles?: ViewProfileOverride[]; // merged over built-ins by name
   visibility?: Partial<VisibilityBudgets>; // defaults: 64000 / 32000
@@ -74,11 +69,10 @@ export interface LlmRequestContext {
   messages: LlmRequestContextMessage[];
 }
 
-// The stored active view row as `threadView.describe` exposes it (Epic 04
-// Story 3): the snapshot verbatim — arrangement, gaps, config, source-state
-// provenance, per-band stored token counts — never recomputed, never
-// repaired. Absent view ⇒ describe returns ok/null, mirroring status's
-// never-compacted behavior (DD-1).
+// The stored active view row as `threadView.describe` exposes it: snapshot
+// fields verbatim — arrangement, gaps, config, source-state provenance, and
+// per-band stored token counts — never recomputed, never repaired. Absent view
+// means describe returns ok/null, mirroring status's never-compacted behavior.
 export interface StoredView {
   viewId: string;
   createdAt: string;
@@ -98,7 +92,7 @@ export interface StoredView {
     degraded: boolean;
   }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
-  // What the compact saw (AC-2.5 provenance, stored verbatim).
+  // What the compact saw, stored verbatim.
   sourceState: { maxEventOrder: number; derivationCounts: Record<string, number> };
   // Non-empty bands in gradient order with their stored token counts.
   bands: Array<{ band: Band; storedTokens: number }>;
@@ -113,7 +107,7 @@ export interface ViewStatus {
   visibility: { boundaryPosition: number; zoneTokens: number; maxTokens: number };
 }
 
-// ── receipts (AC-2.7, AC-3.x) ─────────────────────────────────────
+// ── receipts ─────────────────────────────────────────────────────
 export interface CompactReceipt {
   viewId: string;
   profile: string | null;
@@ -122,7 +116,7 @@ export interface CompactReceipt {
   tailTokens: number;
   // The assembled view's actual total (band tokens + tail tokens) against
   // the configured lower bound — a target, not a cap: whole-entry fills may
-  // land under it, indivisible entries over it (AC-2.4; ruling 013).
+  // land under it, indivisible entries over it.
   totalTokens: number;
   coveredFrom: number;
   compactPoint: number;
@@ -134,10 +128,9 @@ export interface CompactReceipt {
     derivationType: "chunk_summary_detailed" | "chunk_summary_brief";
     reason: string;
   }>;
-  // The embedded sweep's receipt (AC-3.6): the sweep runs first by default
-  // and its full receipt embeds here; `sweep: false` records the skip — the
-  // receipt always says whether the sweep ran (Story 3 closed Story 2's
-  // "absent" placeholder).
+  // The embedded sweep's receipt: sweep runs first by default and its full
+  // receipt embeds here; `sweep: false` records the skip. The receipt always
+  // says whether sweep ran.
   sweep: SweepReceipt | { skipped: true };
 }
 

@@ -1,12 +1,11 @@
-// SDK-internal scheduler and drain (DD-4): the one component holding
-// cross-operation in-memory state. The drain loop lives here per the tech
-// design's placement — claim under BEGIN IMMEDIATE, dispatch through the
-// handler map with no open transaction (the inference call lives there),
-// complete in a second short transaction. Background mode adds per-thread
-// single-flight with pending-flag coalescing, post-commit pokes, first-touch
-// catch-up (DD-10), and drainSettled (issue 3). The in-memory state is
-// advisory only: cross-process safety comes from the durable lease alone, so
-// a fresh handle sees identical drain behavior — the queue is the rows.
+// SDK-internal scheduler and drain: the one component holding cross-operation
+// in-memory state. The drain loop lives here: claim under BEGIN IMMEDIATE,
+// dispatch through the handler map with no open transaction, and complete in a
+// second short transaction. Background mode adds per-thread single-flight with
+// pending-flag coalescing, post-commit pokes, first-touch catch-up, and
+// drainSettled. The in-memory state is advisory only: cross-process safety
+// comes from the durable lease alone, so a fresh handle sees identical drain
+// behavior because the queue is the rows.
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -32,7 +31,7 @@ import {
 } from "./work-queue/index.js";
 
 // The type of the thread DB opener function, injected by SDK wiring to avoid
-// importing from the threads domain (AC-0.6: shared-tech may not import domains).
+// importing from the threads domain.
 export type ThreadDbOpener = (path: string) => OpResult<DatabaseSync>;
 
 export type SchedulerMode = "background" | "manual";
@@ -61,11 +60,11 @@ export interface DrainDeps {
   // on this, fail-closed: with an empty map a background drain could only
   // turn queued rows into failed_terminal — destruction, not processing — so
   // pokes and catch-up stay inert until a handler table is populated
-  // (Stories 2–3 in production; explicit registration in tests).
+  // explicitly.
   hasAnyHandler: () => boolean;
   config: ResolvedSdkConfig;
   // The thread DB opener, injected by SDK wiring to avoid importing from the
-  // threads domain (AC-0.6: shared-tech may not import domains).
+  // threads domain.
   openThreadDatabase: ThreadDbOpener;
 }
 
@@ -127,8 +126,8 @@ export async function drainOpenDb(
     const lookedUp = deps.lookupDispatcher(item.operation, item.kind);
     if (!lookedUp.ok) {
       // Unregistered kind: the normal terminal transaction, not a try/catch
-      // skip — failed_terminal with the stable code, form (if resolvable
-      // from the payload) lands failed, and the drain continues (AC-1.8).
+      // skip. failed_terminal with the stable code lands failed derivations
+      // when resolvable from the payload, and the drain continues.
       const terminal = applyDerivationTerminalFailure(
         db,
         { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
@@ -302,13 +301,13 @@ const WAKE_MIN_DELAY_MS = 5;
 
 export interface Scheduler {
   readonly mode: SchedulerMode;
-  // Post-commit nudge that work was queued for a thread (DD-5). Manual mode:
-  // no-op by contract. Background mode: starts a drain, or coalesces into
-  // the pending flag if one is already running for the thread (AC-1.2).
+  // Post-commit nudge that work was queued for a thread. Manual mode is no-op
+  // by contract. Background mode starts a drain, or coalesces into the pending
+  // flag if one is already running for the thread.
   poke(threadId: string): void;
-  // Thread-file open announcement (DD-10): learns threadId → filePath and,
-  // on the first touch of a thread this process lifetime, schedules a
-  // catch-up drain if the queue has leftover live work (AC-1.6).
+  // Thread-file open announcement: learns threadId → filePath and, on the first
+  // touch of a thread this process lifetime, schedules catch-up if the queue
+  // has leftover live work.
   touch(filePath: string, db: DatabaseSync): void;
   // Resolves when the scheduler has no running or pending drain for the
   // thread (issue 3). Manual mode resolves immediately.
@@ -429,7 +428,7 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
     clearWake(st);
     if (st.filePath === "") return; // never touched here: no path to drain
     if (st.running) {
-      st.pending = true; // burst coalesce: at most one further pass (AC-1.2)
+      st.pending = true; // burst coalesce: at most one further pass
       return;
     }
     st.running = true;
@@ -451,8 +450,8 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
       st.filePath = filePath;
       if (seen.has(threadId)) return;
       seen.add(threadId);
-      // Catch-up (DD-10): leftover live work from a previous process runs on
-      // first touch. One indexed query on the already-open handle keeps the
+      // Catch-up: leftover live work from a previous process runs on first
+      // touch. One indexed query on the already-open handle keeps the
       // empty-queue case cheap.
       if (deps.hasAnyHandler() && countLiveItems(db) > 0) schedule(threadId);
     },
