@@ -72,26 +72,24 @@ function maxEventOrder(db: DatabaseSync): number {
 }
 
 export async function runMessageEvents(
-  thread: ThreadRef,
+  threadRef: ThreadRef,
   events: readonly MessageEventInput[],
   clock: () => Date = injectedClock ?? (() => new Date()),
 ): Promise<OpResult<BatchResult>> {
   // Pure validation first: a rejected batch never opens the file, never takes
   // the write lock, and a duplicate key on a malformed event is a rejection,
   // not a skip (validation-before-idempotency precedence).
-  const refFailure = validateThreadRef(thread);
+  const refFailure = validateThreadRef(threadRef);
   if (refFailure !== undefined) return { ok: false, error: refFailure };
   const batchFailure = validateEvents(events);
   if (batchFailure !== undefined) return { ok: false, error: batchFailure };
 
   try {
     const result = await createDbWriteTransaction(
-      thread,
+      threadRef,
       (transaction): OpResult<BatchResult> => {
-        // The boundary-advance registration (Epic 03 Flow 4, AC-4.9; trigger
-        // gated by Epic 05 AC-5.1): registered FIRST so the flush runs it before
-        // any queue poke the walk's enqueues register — advance first, poke
-        // second, the pinned order.
+        // Register boundary advancement first so post-commit flush advances
+        // visibility before any queued-work poke from this intake batch.
         let batchCommittedTurnEnd = false;
         transaction.postCommitHook.add(() => {
           if (!batchCommittedTurnEnd) return;
@@ -209,11 +207,11 @@ interface RawEventRow {
   recorded_at: string;
 }
 
-export async function runListEvents(thread: ThreadRef): Promise<OpResult<EventRecord[]>> {
-  const refFailure = validateThreadRef(thread);
+export async function runListEvents(threadRef: ThreadRef): Promise<OpResult<EventRecord[]>> {
+  const refFailure = validateThreadRef(threadRef);
   if (refFailure !== undefined) return { ok: false, error: refFailure };
   try {
-    return await createDbReadTransaction(thread, (transaction) => {
+    return await createDbReadTransaction(threadRef, (transaction) => {
       const rows = transaction.db
         .prepare(
           `SELECT event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at

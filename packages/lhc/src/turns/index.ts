@@ -158,9 +158,9 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
   };
 }
 
-export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[]>> {
+export async function listTurns(threadRef: ThreadRef): Promise<OpResult<TurnRecord[]>> {
   try {
-    return await createDbReadTransaction(thread, (transaction) => {
+    return await createDbReadTransaction(threadRef, (transaction) => {
       const derivationsByTurn = readOwnedDerivations(transaction.db, "turn");
       return readTurns(transaction.db).map((record) => {
         const derivations = derivationsByTurn.get(record.turnId);
@@ -175,9 +175,9 @@ export async function listTurns(thread: ThreadRef): Promise<OpResult<TurnRecord[
 
 // Returns stored chunk records whatever their derivation states. Derivations
 // attach only where rows exist; freshly opened chunks have none.
-export async function listChunks(thread: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
+export async function listChunks(threadRef: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
   try {
-    return await createDbReadTransaction(thread, (transaction) => {
+    return await createDbReadTransaction(threadRef, (transaction) => {
       const derivationsByChunk = readOwnedDerivations(transaction.db, "chunk");
       return readChunkRows(transaction.db).map((row) => {
         const derivations = derivationsByChunk.get(row.chunkId);
@@ -220,11 +220,11 @@ export function readTurnChunkStructure(db: DatabaseSync): TurnChunkStructure {
 // state joined with live queue detail in one query. Needs no inference;
 // reads degrade, never block.
 export async function report(
-  thread: ThreadRef,
+  threadRef: ThreadRef,
   opts?: { notReady?: boolean; turnId?: string; chunkId?: string },
 ): Promise<OpResult<DerivationReportEntry[]>> {
   try {
-    return await createDbReadTransaction(thread, (transaction) => reportTurnDerivations(transaction.db, opts ?? {}));
+    return await createDbReadTransaction(threadRef, (transaction) => reportTurnDerivations(transaction.db, opts ?? {}));
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return storageFailure(`report read failed: ${reason}`);
@@ -256,10 +256,10 @@ function configRequired(operation: string): ResolvedSdkConfig | { error: ErrorRe
   };
 }
 
-export async function deriveTurn(thread: ThreadRef, turnId: string): Promise<OpResult<TurnDeriveResult>> {
+export async function deriveTurn(threadRef: ThreadRef, turnId: string): Promise<OpResult<TurnDeriveResult>> {
   const config = configRequired("turns.deriveTurn");
   if ("error" in config) return { ok: false, error: config.error };
-  const resolved = await resolveThreadRef(thread);
+  const resolved = await resolveThreadRef(threadRef);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return threadNotFound(filePath);
@@ -282,7 +282,7 @@ export async function deriveTurn(thread: ThreadRef, turnId: string): Promise<OpR
 }
 
 async function deriveChunk(
-  thread: ThreadRef,
+  threadRef: ThreadRef,
   chunkId: string,
   derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
 ): Promise<OpResult<ChunkDeriveResult>> {
@@ -290,7 +290,7 @@ async function deriveChunk(
     `turns.${derivationType === "chunk_summary_detailed" ? "deriveDetailedChunk" : "deriveBriefChunk"}`,
   );
   if ("error" in config) return { ok: false, error: config.error };
-  const resolved = await resolveThreadRef(thread);
+  const resolved = await resolveThreadRef(threadRef);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return threadNotFound(filePath);
@@ -311,12 +311,12 @@ async function deriveChunk(
   }
 }
 
-export function deriveDetailedChunk(thread: ThreadRef, chunkId: string): Promise<OpResult<ChunkDeriveResult>> {
-  return deriveChunk(thread, chunkId, "chunk_summary_detailed");
+export function deriveDetailedChunk(threadRef: ThreadRef, chunkId: string): Promise<OpResult<ChunkDeriveResult>> {
+  return deriveChunk(threadRef, chunkId, "chunk_summary_detailed");
 }
 
-export function deriveBriefChunk(thread: ThreadRef, chunkId: string): Promise<OpResult<ChunkDeriveResult>> {
-  return deriveChunk(thread, chunkId, "chunk_summary_brief");
+export function deriveBriefChunk(threadRef: ThreadRef, chunkId: string): Promise<OpResult<ChunkDeriveResult>> {
+  return deriveChunk(threadRef, chunkId, "chunk_summary_brief");
 }
 
 export type TurnDerivationRepairScheduleResult =

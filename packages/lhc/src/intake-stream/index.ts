@@ -51,12 +51,12 @@ export type EventRecord = MessageEventInput & {
 };
 
 export async function messageEvents(
-  thread: ThreadRef,
+  threadRef: ThreadRef,
   events: readonly MessageEventInput[],
 ): Promise<OpResult<BatchResult>> {
-  return runMessageEvents(thread, events);
+  return runMessageEvents(threadRef, events);
 }
 
-export async function listEvents(thread: ThreadRef): Promise<OpResult<EventRecord[]>> {
-  return runListEvents(thread);
+export async function listEvents(threadRef: ThreadRef): Promise<OpResult<EventRecord[]>> {
+  return runListEvents(threadRef);
 }
