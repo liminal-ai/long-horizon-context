@@ -1,11 +1,10 @@
-// Chunk mechanics (Flow 3, DD-9): open-chunk append, the accumulated close
-// policy, and the close→summary enqueues. Placement is pure arithmetic over
-// stored projected token counts — the caller hands in the incoming turn's
-// count, the open chunk carries its accumulated count durably — so identical
-// streams re-chunk identically (AC-3.9): no clock, no inference, no
-// re-estimation at placement time. Everything here runs inside the
-// turn-derivation completion transaction; a crash leaves either a placed
-// turn (with any close's summary enqueues) or nothing.
+// Chunk mechanics: open-chunk append, the accumulated close policy, and the
+// close-to-summary enqueues. Placement is pure arithmetic over stored projected
+// token counts. The caller hands in the incoming turn's count, the open chunk
+// carries its accumulated count durably, and placement never uses clock,
+// inference, or token re-estimation. Everything here runs inside the
+// turn-derivation completion transaction; a crash leaves either a placed turn
+// with any close's summary enqueues or nothing.
 import type { DatabaseSync } from "node:sqlite";
 import type { DbWriteTransaction } from "../../shared-tech/index.js";
 import { enqueue, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
@@ -22,9 +21,8 @@ export interface PlacementResult {
   // open chunk (accumulation rule) and then the incoming turn's own chunk
   // (max rule) — a turn ≥ max arriving behind an open chunk closes both.
   closedChunkIds: string[];
-  // An explicitly rebuilt turn keeps its placement (membership shrinks only
-  // through Story 6's sanctioned mutation, never re-cuts): a turn already a
-  // member is left exactly where it is and nothing closes.
+  // An explicitly rebuilt turn keeps its placement. Sanctioned delete rebuilds
+  // chunk summaries from surviving members without changing chunk membership.
   alreadyPlaced: boolean;
 }
 
@@ -57,12 +55,11 @@ function openNextChunk(db: DatabaseSync): string {
   return chunkId;
 }
 
-// The close policy, golden cases exact (DD-9): when the open chunk's
-// accumulated count plus the incoming turn's would reach the target
-// (inclusive — equality closes), the chunk closes holding its current
-// members and the incoming turn opens the next chunk; a single projection
-// ≥ max closes its own chunk immediately. An empty open chunk always accepts
-// the incoming turn — a chunk never closes empty.
+// The close policy: when the open chunk's accumulated count plus the incoming
+// turn's count would reach the target, equality included, the chunk closes
+// holding its current members and the incoming turn opens the next chunk. A
+// single turn at or above max closes its own chunk immediately. An empty open
+// chunk always accepts the incoming turn; a chunk never closes empty.
 export function placeTurn(
   db: DatabaseSync,
   turnId: string,
@@ -94,9 +91,8 @@ export function placeTurn(
     memberCount(db, open.chunk_id) > 0 &&
     Number(open.accumulated_projected_tokens) + projectedTokens >= policy.targetProjectedTokens
   ) {
-    // Crossing closes *without* the incoming turn — the v1 bug's fix: the
-    // decision weighs accumulated + incoming, and the incoming turn starts
-    // the next chunk (AC-3.6).
+    // Crossing closes without the incoming turn: the decision weighs
+    // accumulated + incoming, and the incoming turn starts the next chunk.
     closeChunk(db, open.chunk_id);
     closedChunkIds.push(open.chunk_id);
     open = undefined;
@@ -115,8 +111,8 @@ export function placeTurn(
   ).run(projectedTokens, chunkId);
 
   if (projectedTokens >= policy.maxProjectedTokens) {
-    // Max rule (AC-3.7): the projection alone meets the maximum, so the
-    // turn's chunk closes immediately, whatever it holds.
+    // Max rule: the incoming turn alone meets the maximum, so its chunk closes
+    // immediately, whatever it holds.
     closeChunk(db, chunkId);
     closedChunkIds.push(chunkId);
   }
@@ -124,9 +120,8 @@ export function placeTurn(
   return { chunkId, memberIdx, closedChunkIds, alreadyPlaced: false };
 }
 
-// Closing queues the two summary kinds as two work items with independent
-// retry, states, and re-queue (AC-3.8); both enqueues ride the caller's
-// ambient transaction — the completion commit — per DD-5.
+// Closing queues the two summary kinds as independent work items. Both enqueues
+// ride the caller's ambient completion transaction.
 export function enqueueChunkSummaries(transaction: DbWriteTransaction, chunkId: string): WorkItemRecord[] {
   return (["chunk_summary_detailed", "chunk_summary_brief"] as const).map((kind) =>
     enqueue(transaction, {
@@ -176,8 +171,8 @@ export function readChunkStructure(db: DatabaseSync): ChunkStructureRow[] {
   }));
 }
 
-// Placement read-back for the turns surface (AC-3.5): chunkId + memberIdx by
-// turn, one query, stored values only.
+// Placement read-back for the turns surface: chunkId + memberIdx by turn, one
+// query, stored values only.
 export function readPlacements(db: DatabaseSync): Map<string, { chunkId: string; memberIdx: number }> {
   const rows = db.prepare(`SELECT turn_id, chunk_id, member_idx FROM chunk_member`).all() as unknown as Array<{
     turn_id: string;

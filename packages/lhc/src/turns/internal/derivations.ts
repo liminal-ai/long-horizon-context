@@ -1,10 +1,8 @@
-// Turn-domain reads for derivation (Flow 3): the turn handler's view of its
-// source turn, the member messages it composes (deleted-filtered — the
-// shared read-filter rule lives here, once for this domain), the
-// message-level derivation rows composition consumes, and the member projections
-// the chunk summaries read. Completion writes for turn- and chunk-owned
-// derivations ride the work-queue util's `complete` (UPDATE-only, version-checked)
-// — no write path here.
+// Turn-domain reads for derivation: the turn handler's source turn, its
+// deleted-filtered member messages, the message-level derivation rows used for
+// composition, and the stored member material chunk summaries consume.
+// Completion writes for turn- and chunk-owned derivations ride the work-queue
+// util's version-checked completion path; this module has no write path.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   DependencyGap,
@@ -38,9 +36,8 @@ export function readTurnSource(db: DatabaseSync, turnId: string): TurnSource | u
   };
 }
 
-// Member messages in message order, blocks attached, deleted messages
-// filtered (tech design §Mechanics: composition's member enumeration reads
-// the live projection only).
+// Member messages in message order, blocks attached, deleted messages filtered.
+// Composition always reads the live member set.
 export function readMemberMessages(db: DatabaseSync, turnId: string): ComposeMessage[] {
   const messages = db
     .prepare(
@@ -69,9 +66,8 @@ export function readMemberMessages(db: DatabaseSync, turnId: string): ComposeMes
 }
 
 // The message-owned derivation rows for a set of member messages, keyed for
-// composition. A cross-owner *read* by design: composition consumes message
-// derivations; only message handlers ever write them (DD-2 ownership is a write
-// rule).
+// composition. This is a cross-owner read only; message handlers remain the
+// only writers for message derivations.
 export function readMessageDerivationRows(
   db: DatabaseSync,
   messageIds: readonly string[],
@@ -109,17 +105,16 @@ export function readMessageDerivationRows(
   return rows;
 }
 
-// Member projections in turn order for the chunk summaries: every
-// chunk_member row by member_idx, each joined to its canonical turn, stored
-// smooth_turn_compression row (state + content as landed — never re-derived),
-// and turn_rendering's mechanically stamped tool-run receipts (AC-3.8: the
-// detailed summary's receipt material, read not re-derived). Missing turns
-// are returned as source corruption so background summaries block instead of
-// silently summarizing a shortened member list; SDK soft-deleted turns stay
-// filtered because sanctioned delete rebuilds chunk summaries from survivors.
+// Stored member material in turn order for chunk summaries: every chunk_member
+// row by member_idx, joined to its canonical turn, stored
+// smooth_turn_compression row, and turn_rendering's stamped tool-run receipts.
+// Missing turns are returned as source corruption so background summaries
+// block instead of silently summarizing a shortened member list; SDK
+// soft-deleted turns stay filtered because sanctioned delete rebuilds chunk
+// summaries from survivors.
 export interface MemberProjection {
   turnId: string;
-  state?: string; // undefined: no projection row exists for the member
+  state?: string; // undefined: no compression row exists for the member
   content?: string;
   renderingState?: string;
   renderingContent?: string;
@@ -158,18 +153,18 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
       row.rendering_metadata === null
         ? undefined
         : (JSON.parse(row.rendering_metadata) as { receipts?: ToolRunReceipt[] });
-    const projection: MemberProjection = {
+    const memberProjection: MemberProjection = {
       turnId: row.turn_id,
       receipts: metadata?.receipts ?? [],
     };
     if (row.existing_turn_id === null) {
-      projection.sourceCorruptionReason = `canonical record corrupt: chunk ${chunkId} member ${row.turn_id} references missing turn`;
+      memberProjection.sourceCorruptionReason = `canonical record corrupt: chunk ${chunkId} member ${row.turn_id} references missing turn`;
     }
-    if (row.state !== null) projection.state = row.state;
-    if (row.content !== null) projection.content = row.content;
-    if (row.rendering_state !== null) projection.renderingState = row.rendering_state;
-    if (row.rendering_content !== null) projection.renderingContent = row.rendering_content;
-    return [projection];
+    if (row.state !== null) memberProjection.state = row.state;
+    if (row.content !== null) memberProjection.content = row.content;
+    if (row.rendering_state !== null) memberProjection.renderingState = row.rendering_state;
+    if (row.rendering_content !== null) memberProjection.renderingContent = row.rendering_content;
+    return [memberProjection];
   });
 }
 
@@ -186,9 +181,8 @@ interface RawOwnedDerivationRow {
 }
 
 // Every derivation row this owner holds for one subject kind, grouped by subject
-// id — the derivation read-back joined onto turn and chunk reads (AC-4.7's
-// "record with derivation states", mirroring messages.readMessageDerivations). Rows come
-// back exactly as the pipeline landed them; nothing is derived at read time.
+// id. Rows come back exactly as the pipeline landed them; nothing is derived at
+// read time.
 export function readOwnedDerivations(db: DatabaseSync, subjectKind: "turn" | "chunk"): Map<string, Derivation[]> {
   const rows = db
     .prepare(
@@ -307,11 +301,11 @@ export function readChunkSummaryDerivation(
   return view;
 }
 
-// The turns owner's report (Flow 4): one query over turn- and chunk-owned
-// derivation rows LEFT JOINed with the live work_item targeting each derivation at its
-// current source version. Both turn derivations map to the one turn_derivation
-// kind; the chunk summary derivations map to their same-named kinds — the CASE is
-// this owner's queue-site mapping inverted, mirroring the messages report.
+// The turns owner's report: one query over turn- and chunk-owned derivation rows
+// LEFT JOINed with the live work_item targeting each derivation at its current
+// source version. Both turn derivations map to the one turn_derivation kind;
+// the chunk summary derivations map to their same-named kinds. The CASE mirrors
+// the owner's enqueue mapping.
 export function reportTurnDerivations(
   db: DatabaseSync,
   opts: { notReady?: boolean; turnId?: string; chunkId?: string } = {},

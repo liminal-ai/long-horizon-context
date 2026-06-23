@@ -1,12 +1,9 @@
-// The turns derivation handlers (Flow 3): turn_derivation — the epic's
-// biggest single handler — and the two chunk summaries. turn_derivation
-// composes the rendering from message-level derivations (compose.ts), sends the
-// deterministic rendering through compressSmoothTurn, hands both derivations back
-// for the version-checked completion write, and runs placement in that same
-// completion transaction via the onApplied hook: open-chunk append, the
-// accumulated close policy, and any close's summary enqueues all ride the
-// one commit (anti-shim: a crash leaves either a placed turn with queued
-// summaries or an open chunk — nothing between).
+// The turns derivation handlers: turn_derivation and the two chunk summaries.
+// turn_derivation composes rendering from message-level derivations, sends that
+// deterministic rendering through compressSmoothTurn, hands both derivations
+// back for the version-checked completion write, and runs placement in the same
+// completion transaction. Open-chunk append, accumulated close policy, and any
+// close's summary enqueues all ride one commit.
 
 import type { DatabaseSync } from "node:sqlite";
 import { deriveSmoothedPrompt, deriveToolResultSummary, findPairedToolCall } from "../../messages/recovery.js";
@@ -118,9 +115,9 @@ function composeDetailedChunkSummary(
   memberReceipts: readonly (readonly ToolRunReceipt[])[],
 ): string {
   return memberProjections
-    .map((projection, index) => {
+    .map((memberText, index) => {
       const receiptBlock = detailedReceiptBlock(memberReceipts[index] ?? []);
-      const section = [`[turn ${String(index + 1).padStart(4, "0")}]`, projection];
+      const section = [`[turn ${String(index + 1).padStart(4, "0")}]`, memberText];
       if (receiptBlock !== "") section.push(receiptBlock);
       return section.join("\n");
     })
@@ -327,20 +324,19 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     // means the record was interfered with.
     return sourceDamaged(`turn ${turnId} is open under a derivation item`);
   }
-  // Epic 01's corruption definition (AC-3.9 there, TC-4.6 here): only the
-  // batch pipeline writes turn state and it never leaves two turns open, so
-  // more than one open turn means the record was damaged below the SDK. A
-  // handler must not compose against a membership it cannot trust; the derivation
-  // lands blocked naming the damage, and later derive attempts refuse with
-  // that reason until the source reads clean (Story 4).
+  // Only the batch pipeline writes turn state, and it never leaves two turns
+  // open. More than one open turn means the record was damaged below the SDK.
+  // A handler must not compose against a membership it cannot trust; the
+  // derivation lands blocked naming the damage, and later derive attempts
+  // refuse with that reason until the source reads clean.
   const openTurnIds = selectOpenTurnIds(db);
   if (openTurnIds.length > 1) {
     return sourceDamaged(`turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`);
   }
 
   // Compose from current message-derivation states: ready derivations verbatim,
-  // non-ready fall back with one gap each (AC-3.2). Pure — both reads land
-  // before any inference call, and no transaction is held across them.
+  // non-ready derivations fall back with one gap each. Both reads land before
+  // any inference call, and no transaction is held across them.
   const messages = readMemberMessages(db, turnId);
   const derivations = readMessageDerivationRows(
     db,
@@ -369,26 +365,25 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const inputTokens = estimateTokens(renderingText);
   const tinyTurnTokens = run.config.guards.smoothTurnCompression.tinyTurnTokens;
   const targetTokens = compressionTargetTokens(inputTokens, run.config.compressionTargets);
-  const projection =
+  const compressionResult =
     inputTokens < tinyTurnTokens
       ? ({ ok: true, text: renderingText } as const)
       : await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText, ...targetTokens });
-  if (!projection.ok) return inferenceFailed(projection);
+  if (!compressionResult.ok) return inferenceFailed(compressionResult);
 
-  // The projection's token count is estimated exactly once, here, as the
-  // artifact lands; placement reads this stored arithmetic and never
-  // re-counts (AC-3.9's determinism input).
-  const projectedTokens = estimateTokens(projection.text);
+  // The compression token count is estimated exactly once, here, as the
+  // artifact lands; placement reads this stored arithmetic and never re-counts.
+  const projectedTokens = estimateTokens(compressionResult.text);
   const threadId = readThreadId(run);
-  // Tool-run receipts ride the rendering's metadata, mechanically restated
-  // from the composition input (AC-3.8) — the chunk summaries read them from
-  // here, never from inference prose.
+  // Tool-run receipts ride the rendering's metadata, mechanically restated from
+  // the composition input. Chunk summaries read them from here, never from
+  // inference prose.
   const renderingMetadata: DerivationMetadata = {
     ...(receipts.length > 0 ? { receipts } : {}),
   };
   const compressionMetadata: DerivationMetadata = {};
-  if ("provenance" in projection && projection.provenance !== undefined) {
-    compressionMetadata.provenance = projection.provenance;
+  if ("provenance" in compressionResult && compressionResult.provenance !== undefined) {
+    compressionMetadata.provenance = compressionResult.provenance;
   }
   if (inputTokens >= tinyTurnTokens) {
     compressionMetadata.sizeDisposition = sizeDisposition(projectedTokens, targetTokens);
@@ -408,7 +403,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectKind: "turn",
         subjectId: turnId,
         derivationType: "smooth_turn_compression",
-        content: projection.text,
+        content: compressionResult.text,
         ...(Object.keys(compressionMetadata).length > 0 ? { metadata: compressionMetadata } : {}),
       },
     ],
@@ -431,9 +426,9 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   };
 };
 
-// Detailed is deterministic material assembly from member projections plus
-// per-turn tool-run receipts. Brief is inference-backed and consumes the stored
-// detailed summary for the same chunk.
+// Detailed is deterministic material assembly from stored member compressions
+// plus per-turn tool-run receipts. Brief is inference-backed and consumes the
+// stored detailed summary for the same chunk.
 type DetailedChunkComposition =
   | Extract<HandlerOutcome, { ok: false }>
   | { ok: true; text: string; fallbackLogs: LogEntry[] };
@@ -609,8 +604,7 @@ function chunkBriefHandler(): WorkHandler {
   };
 }
 
-// The domain's handler table, merged into the SDK dispatch map at
-// construction (DD-6).
+// The domain's handler table, merged into the SDK dispatch map at construction.
 export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   turn_derivation: turnDerivationHandler,
   chunk_summary_detailed: chunkDetailedHandler(),
