@@ -69,7 +69,7 @@ export type MessageCreated = {
   messageId: string;
   kind: Exclude<EventKind, "turn_end">;
   // Carried for tool activity only: the pairing key the queue sites need —
-  // tool_result projection runs late-result lookup against it.
+  // tool_result handling runs late-result lookup against it.
   toolCallId?: string;
 } | null;
 
@@ -79,10 +79,10 @@ export interface MessageCreateResult {
 }
 
 // Cross-domain surface, called by intake-stream inside the batch transaction.
-// Synchronous and throwing by design: a
-// projection failure propagates to the pipeline's catch and rejects the
-// whole batch — recorded events without messages is the stranded state the
-// transaction exists to prevent. Returns null for turn_end (no message).
+// Synchronous and throwing by design: message creation failure propagates to the
+// pipeline's catch and rejects the whole batch. Recorded events without
+// messages is the stranded state the transaction exists to prevent. Returns
+// null for turn_end (no message).
 // turnId is the membership stamp, settled by the pipeline before this call:
 // the current open turn after this event's turn intake. Written once, never
 // updated.
@@ -501,7 +501,7 @@ export async function edit(
 
 // ── delete ───────────────────────────────────────────────────────
 
-// Delete is projection-level: the deleted_at stamp plus the delete cascade
+// Delete is message-record level: the deleted_at stamp plus the delete cascade
 // (own derivations dropped, turn and chunk cleared and re-queued for minus-one
 // composition) land in one transaction. The source events are never touched;
 // event read-back keeps returning them. Validation reads the same filtered view

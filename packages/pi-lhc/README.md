@@ -1,16 +1,16 @@
 # pi-lhc
 
 The PI ↔ LHC connector: a [PI](https://github.com/earendil-works) coding-agent
-extension that records a live session into a [LHC](../lhc) thread. **Epic 1
-(Connector Core) is observe-only** — the extension captures everything PI does
-and changes nothing the model sees. Context serving is Epic 2.
+extension that records a live PI thread into an [LHC](../lhc) thread. The
+connector captures lifecycle events, messages, tool activity, runtime changes,
+forks, and replay verification without changing what the model sees.
 
-## Status: Story 0 — Extension Foundation
+## Status: Connector Core
 
-This is the walking skeleton. It loads as a PI extension, registers the Epic 1
-observe-only hook rail, and exposes typed module boundaries — but every behavior
-stub is **fail-closed** until its owning story lands (no stub reports successful
-capture, derivation, validation, fork seeding, or replay).
+The extension loads as a PI extension, resolves or creates the backing LHC
+thread, captures PI hook activity into LHC intake events, supports fork seeding
+through replay, validates inference assignment config at startup, and provides a
+replay verifier for captured corpora.
 
 ## Layout
 

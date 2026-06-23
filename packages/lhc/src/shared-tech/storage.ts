@@ -21,9 +21,9 @@ export function databasePathFor(db: DatabaseSync): string | undefined {
   return databasePaths.get(db);
 }
 
-// Adds queue mechanics, derivation state, chunk tables, and projection-level
-// delete stamps to the thread-file schema. Assembled into the migration history
-// by threads/internal/create.ts.
+// Adds queue mechanics, derivation state, chunk tables, and record-level delete
+// stamps to the thread-file schema. Assembled into the migration history by
+// threads/internal/create.ts.
 export const MIGRATION_V5_STATEMENTS: readonly string[] = [
   // Queue rows are live work only; terminal rows are deleted and durable
   // outcome state lives on derivation rows.
@@ -66,7 +66,7 @@ export const MIGRATION_V5_STATEMENTS: readonly string[] = [
     member_idx INTEGER NOT NULL,
     PRIMARY KEY (chunk_id, member_idx)
   );`,
-  // projection-level delete (the record keeps everything; reads filter)
+  // Record-level delete: the record keeps everything and reads filter.
   `ALTER TABLE message ADD COLUMN deleted_at TEXT;`,
   `ALTER TABLE turns   ADD COLUMN deleted_at TEXT;`,
   // Backfill pending derivation rows for already-queued work so UPDATE-only
