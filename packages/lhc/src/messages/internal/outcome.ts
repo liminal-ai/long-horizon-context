@@ -1,7 +1,6 @@
-// Mechanical ToolOutcome stamping (AC-2.4): the outcome on a tool-activity
-// summary is a pure function of the record — paired-result presence and its
-// isError flag — and nothing else. The signature takes no inference text on
-// purpose (anti-shim: the violation is unrepresentable); the handler stamps
+// Mechanical ToolOutcome stamping: the outcome on a tool-activity summary is a
+// pure function of the record — paired-result presence and its isError flag —
+// and nothing else. The signature takes no inference text; the handler stamps
 // the returned value into derivation.metadata, apart from inference prose.
 import type { ToolOutcome } from "../../shared-tech/index.js";
 

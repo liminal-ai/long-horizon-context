@@ -1,12 +1,10 @@
-// The message-level derivation handlers (Flow 2): prompt smoothing and
-// tool-result summary. One shape throughout — read the
-// source message (a tool-activity handler additionally joins its call-id
-// pair, nothing more: AC-2.5), call exactly one inference operation, hand the
-// derivation content back through HandlerOutcome. The drain's completion
-// transaction does the version-checked UPDATE-only write (Story 1), so a
-// stale or deleted source discards here exactly as everywhere else. Outcomes
-// on tool-activity summaries come from outcome.ts — the record, never the
-// inference text (AC-2.4) — and land in derivation metadata apart from content.
+// Message-level derivation handlers share one shape: read the source message,
+// optionally join its call-id pair, call exactly one inference operation, and
+// return derivation content through HandlerOutcome. The drain's completion
+// transaction does the version-checked UPDATE-only write, so stale or deleted
+// sources discard here exactly as everywhere else. Tool-activity outcomes come
+// from outcome.ts, never inference text, and land in derivation metadata apart
+// from content.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   HandlerDerivationWrite,
@@ -218,8 +216,8 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   const toolCallId = block["toolCallId"];
   const pairedCall = typeof toolCallId === "string" ? findPairedToolCall(run.openDb(), toolCallId) : undefined;
   // The summary abbreviates; the full result content stays untouched in the
-  // record (AC-2.3) — nothing here writes back to message_block. The result
-  // is tool activity, so its outcome is stamped from its own isError flag.
+  // record. Nothing here writes back to message_block. The result is tool
+  // activity, so its outcome is stamped from its own isError flag.
   const outcome = deriveToolOutcome({ isError: block["isError"] === true });
   const derived = await deriveToolResultSummary(run, loaded.messageId, {
     toolName: pairedCall?.toolName ?? "unknown_tool",
@@ -231,8 +229,8 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   return { ok: true, derivations: [derived.write] };
 };
 
-// The domain's handler table, merged into the SDK dispatch map at
-// construction (DD-6). Turn-owned kinds stay with the turns domain.
+// The domain's handler table is merged into the SDK dispatch map at
+// construction. Turn-owned kinds stay with the turns domain.
 export const messageWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   prompt_smoothing: smoothPromptHandler,
   tool_result_summary: toolResultSummaryHandler,
