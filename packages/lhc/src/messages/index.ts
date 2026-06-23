@@ -51,14 +51,13 @@ export interface MessageRecord {
   // read-time clock.
   recordedAt: string;
   turnId?: string;
-  // The message's derived derivations as stored (Epic 02 Story 2): present only
-  // for messages that are derivation sources — kinds with no derivable derivation
-  // carry no rows and no key (AC-2.7). Stored state returned verbatim,
-  // never re-derived on read.
+  // Stored derivations for messages that are derivation sources. Kinds with no
+  // derivable output carry no rows and no key. Stored state is returned
+  // verbatim, never re-derived on read.
   derivations?: Derivation[];
-  // The deleted-audit marker (Epic 04 AC-3.3): present (true) only on
-  // deleted records, which only the includeDeleted listing and the show
-  // read ever surface — a default list never carries the key.
+  // The deleted-audit marker is present only on deleted records, which only
+  // the includeDeleted listing and show read ever surface. A default list never
+  // carries the key.
   deleted?: boolean;
 }
 
@@ -70,7 +69,7 @@ export type MessageCreated = {
   messageId: string;
   kind: Exclude<EventKind, "turn_end">;
   // Carried for tool activity only: the pairing key the queue sites need —
-  // tool_result projection runs the AC-2.8 late-result lookup against it.
+  // tool_result projection runs late-result lookup against it.
   toolCallId?: string;
 } | null;
 
@@ -115,10 +114,9 @@ export function create(
 
 // The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
 // result queues tool_result_summary, nothing else queues anything —
-// text, thinking, and note messages are not derivation sources (Epic 01
-// AC-2.8/TC-2.9; Epic 02 AC-2.2/AC-2.7). Cross-domain surface, called by
-// intake-stream inside the batch transaction for every recorded message, so
-// the item commits (or rolls back) with the batch.
+// text, thinking, and note messages are not derivation sources. Cross-domain
+// surface, called by intake-stream inside the batch transaction for every
+// recorded message, so the item commits (or rolls back) with the batch.
 function queueMessageWork(transaction: DbWriteTransaction, message: MessageCreated): WorkItemRecord[] {
   if (message === null) return [];
   const items: WorkItemRecord[] = [];
@@ -152,10 +150,9 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
   };
 }
 
-// Bounded-listing options (Epic 04 Story 1, DD-3): from/to are
-// source-event-order bounds, limit caps the count after bounds,
-// includeDeleted is the audit opt-in. All optional — existing callers see
-// identical results (visible messages, unbounded, record order).
+// Bounded-listing options: from/to are source-event-order bounds, limit caps
+// the count after bounds, includeDeleted is the audit opt-in. All optional:
+// existing callers see visible messages, unbounded, in record order.
 export interface MessageListOptions {
   from?: number;
   to?: number;
@@ -167,9 +164,8 @@ function invalidBounds(reason: string): ErrorResult {
   return { errorClass: "caller_error", code: "invalid_bounds", reason };
 }
 
-// Bounds mistakes are operational caller errors returned as results (tech
-// design §Interface Definitions: from > to, limit < 1) — never a silent
-// empty list a caller could mistake for an empty window.
+// Bounds mistakes are operational caller errors returned as results, never a
+// silent empty list a caller could mistake for an empty window.
 function validateListOptions(opts: MessageListOptions): ErrorResult | undefined {
   const integers: ReadonlyArray<readonly [string, number | undefined]> = [
     ["from", opts.from],
@@ -197,10 +193,10 @@ export async function list(threadRef: ThreadRef, filter?: MessageListOptions): P
   }
   try {
     return await createDbReadTransaction(threadRef, (transaction) => {
-      // Bounds resolve the window first (AC-3.1 no-load-everything), then the
-      // derivation read-back rides only that window (AC-2.1): each record carries its
-      // stored derived derivations, attached from one grouped query scoped to the
-      // listed ids — never every message-owned derivation in a large thread.
+      // Bounds resolve the window first, then derivation read-back rides only
+      // that window: each record carries its stored derivations, attached from
+      // one grouped query scoped to the listed ids, never every message-owned
+      // derivation in a large thread.
       const records = readMessages(transaction.db, filter ?? {});
       const derivationsByMessage = readMessageDerivations(
         transaction.db,
@@ -227,16 +223,16 @@ export function readLiveMessages(db: DatabaseSync): MessageRecord[] {
   return readMessages(db, {});
 }
 
-// The single-message view (Epic 04 AC-3.2): the canonical record — every
-// block with complete content, full tool results, never the view-shortened
-// derivations — plus the message's derivation derivations with their states and
-// mechanically stamped metadata, joined from the owner's report read.
+// The single-message view returns the canonical record: every block with
+// complete content, full tool results, never view-shortened derivations. It
+// also joins message derivations with their states and mechanically stamped
+// metadata from the owner's report read.
 export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
-  // Always present and honest (AC-3.3): show on a deleted message returns
-  // the record flagged — audit is the point — never a not-found.
+  // Always present and honest: show on a deleted message returns the record
+  // flagged, never not-found.
   deleted: boolean;
-  // The owner report's queue-joined entries (DD-2), never synthesized here:
-  // the same `reportMessageDerivations` read messages.report serves, scoped by id.
+  // The owner report's queue-joined entries, never synthesized here: the same
+  // `reportMessageDerivations` read messages.report serves, scoped by id.
   derivations: DerivationReportEntry[];
 }
 
@@ -264,7 +260,7 @@ export async function show(threadRef: ThreadRef, messageId: string): Promise<OpR
   }
 }
 
-// ── report and repair (Epic 02 Story 4, Flow 4) ──────────────────
+// ── report and repair ────────────────────────────────────────────
 
 // This owner's repair report: every message-owned derivation's durable state
 // joined with live queue detail in one query — the five operational
@@ -421,12 +417,12 @@ export async function scheduleDerivationRepair(
   }
 }
 
-// ── mutations (Epic 02 Story 5, Flow 5) ──────────────────────────
+// ── mutations ────────────────────────────────────────────────────
 
 // The mutation result contract (tech design §Interfaces): what changed in
 // the record, which dependent derivations cleared, which dropped (delete only),
 // what replacement work queued, and which still-queued old items the cascade
-// tidied away (issue 1). Shared by edit and the Story 6 deletes.
+// tidied away. Shared by edit and delete.
 export interface MutationResult {
   changed: { messageIds: string[]; turnIds: string[] };
   cleared: CascadeClear[];
@@ -435,15 +431,15 @@ export interface MutationResult {
   superseded: string[];
 }
 
-// The record's first sanctioned mutation (AC-5.1–5.5): change a closed-turn
-// message's content and blocks, re-stamp the token estimate, and walk the
-// full dependent chain — clear to pending, supersede queued old work,
-// enqueue replacements at the next source version — in one transaction.
+// Editing changes a closed-turn message's content and blocks, re-stamps the
+// token estimate, and walks the full dependent chain: clear to pending,
+// supersede queued old work, and enqueue replacements at the next source
+// version in one transaction.
 // Synchronous and local by contract: everything above commits before this
 // returns; the re-queued rebuilds run through the normal drain (background
 // mode needs no further call — the enqueue pokes ride the commit). Events
-// are never touched (projection-level mutation, DD-12), and no generated
-// thread-view is either — visibility arrives at the next compact/rebuild.
+// are never touched, and no generated thread-view is either — visibility
+// arrives at the next compact/rebuild.
 // Refusals read through the deleted-filtered view and enforce the closed-turn
 // target boundary: only a message in a closed turn is editable, so an
 // open-turn *or* a turnless (no-membership) gap target is refused turn_open —
@@ -466,12 +462,10 @@ export async function edit(
           },
         };
       }
-      // The closed-turn target boundary (story scope; AC-5.1): the edit's
-      // editable class is a message in a *closed* turn. Both failing cases —
-      // an open turn and a turnless gap message (no membership) — refuse under
-      // the one stable code; the reason distinguishes them so the open-turn
-      // message reads exactly as before. A deleted/missing target never gets
-      // here (it misses the filtered read above as message_not_found).
+      // The editable class is a message in a closed turn. Both failing cases,
+      // an open turn and a turnless gap message, refuse under one stable code;
+      // the reason distinguishes them. A deleted/missing target never gets here
+      // because it misses the filtered read above as message_not_found.
       if (target.turnStatus !== "closed") {
         return {
           ok: false,
@@ -505,18 +499,16 @@ export async function edit(
   }
 }
 
-// ── delete (Epic 02 Story 6, Flow 6) ─────────────────────────────
+// ── delete ───────────────────────────────────────────────────────
 
-// The record's removal mutation for one message (AC-6.1–6.3, 6.7):
-// projection-level delete — the deleted_at stamp plus the delete cascade
+// Delete is projection-level: the deleted_at stamp plus the delete cascade
 // (own derivations dropped, turn and chunk cleared and re-queued for minus-one
-// composition) in one transaction. The source events are never touched;
-// event read-back keeps returning them (the audit surface). Validation
-// reads the same filtered view as edit, so a missing, deleted, or
-// double-deleted target is message_not_found and an open-turn or turnless
-// gap target is turn_open. The one delete-specific refusal is prompt
-// protection: deleting the turn's initiating prompt is refused because
-// initiating-prompt and whole-turn delete are unsupported in this slice.
+// composition) land in one transaction. The source events are never touched;
+// event read-back keeps returning them. Validation reads the same filtered view
+// as edit, so a missing, deleted, or double-deleted target is message_not_found
+// and an open-turn or turnless gap target is turn_open. The delete-specific
+// refusal is prompt protection: deleting the turn's initiating prompt is
+// refused because initiating-prompt and whole-turn delete are unsupported.
 export async function remove(threadRef: ThreadRef, removal: { messageId: string }): Promise<OpResult<MutationResult>> {
   try {
     const result = await createDbWriteTransaction(threadRef, (transaction): OpResult<MutationResult> => {
