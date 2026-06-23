@@ -1,8 +1,7 @@
-// Event → message + typed blocks (Flow 2, projection half). Verbatim means
-// verbatim: payload fields are copied into block content untouched — nothing
-// here trims, normalizes, splits, or summarizes (AC-2.5 is the absence of
-// such a code path). Token estimates come from the one counting util, called
-// directly: it is pure and deterministic, so golden counts beat stubs.
+// Event to message + typed blocks. Verbatim means payload fields are copied
+// into block content untouched: nothing here trims, normalizes, splits, or
+// summarizes. Token estimates come from the one counting util, called directly:
+// it is pure and deterministic, so golden counts beat stubs.
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { Block, RecordedEvent } from "../index.js";
 
@@ -11,7 +10,7 @@ export interface ProjectedMessage {
   tokenEstimate: number;
 }
 
-// turn_end is recorded in the event order but produces no message (AC-2.3).
+// turn_end is recorded in the event order but produces no message.
 export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
   switch (event.eventKind) {
     case "user_prompt":
@@ -60,7 +59,7 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
             },
           },
         ],
-        // Tool calls count their serialized arguments (design: Flow 2).
+        // Tool calls count their serialized arguments.
         tokenEstimate: estimateTokens(JSON.stringify(event.payload.arguments)),
       };
     case "tool_result":

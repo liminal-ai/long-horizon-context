@@ -1,7 +1,7 @@
-// Health composition (Flow 4): owners' report surfaces joined into state
-// counts, actionable failure detail, a repair preview, and live queue
-// visibility. Message/turn derivation health comes from DerivationReportEntry rows;
-// capture gaps come from durable source-event markers recorded by capture.
+// Health composition joins owners' report surfaces into state counts,
+// actionable failure detail, a repair preview, and live queue visibility.
+// Message/turn derivation health comes from DerivationReportEntry rows; capture
+// gaps come from durable source-event markers recorded by capture.
 
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
@@ -20,10 +20,10 @@ function captureGapText(event: intakeStream.EventRecord): string | null {
   return event.payload.text.startsWith("capture gap:") ? event.payload.text : null;
 }
 
-// Failure detail (AC-4.2): attempts and last error read from wherever the
-// mechanics durably put them — retry exhaustion copies them onto the form's
-// metadata before the queue row is deleted; a still-live item carries them
-// on the queue join. Never synthesized.
+// Failure detail reads attempts and last error from wherever mechanics durably
+// put them: retry exhaustion copies them onto derivation metadata before the
+// queue row is deleted; a still-live item carries them on the queue join.
+// Never synthesized.
 function failureOf(owner: Owner, entry: DerivationReportEntry): HealthReport["failures"][number] {
   const failure: HealthReport["failures"][number] = {
     owner,
@@ -110,12 +110,11 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
           failures.push(failureOf(owner, entry));
           break;
       }
-      // Live queue visibility (AC-4.5), per report entry: every pending or
-      // retrying entry rides a live item, so queued + claimed here equals
-      // pending + retrying above by construction. Counts are per form-report
-      // entry by ratified contract (Epic 04 fix-batch-001): one work item
-      // (e.g. a turn_derivation) may back multiple form entries, so a raw
-      // Work-item count would break that identity.
+      // Live queue visibility, per report entry: every pending or retrying
+      // entry rides a live item, so queued + claimed here equals pending +
+      // retrying above by construction. Counts are per derivation-report entry:
+      // one work item may back multiple entries, so a raw work-item count would
+      // break that identity.
       if (entry.queue !== undefined) {
         if (entry.queue.status === "queued") queue.queued += 1;
         else queue.claimed += 1;

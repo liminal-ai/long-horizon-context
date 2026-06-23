@@ -21,28 +21,24 @@ export function databasePathFor(db: DatabaseSync): string | undefined {
   return databasePaths.get(db);
 }
 
-// Epic 02's single migration (tech design §Storage): queue mechanical fields
-// on the existing work_item table, the derivation state table, the chunk
-// tables, and the projection-level delete stamps. The whole epic's schema
-// lands in one version — behavior arrives story by story. Assembled into the
-// thread-file migration history by threads/internal/create.ts.
+// Adds queue mechanics, derivation state, chunk tables, and projection-level
+// delete stamps to the thread-file schema. Assembled into the migration history
+// by threads/internal/create.ts.
 export const MIGRATION_V5_STATEMENTS: readonly string[] = [
-  // claim mechanics on the existing table (DD-1: no disposition column —
-  // queue rows are live work only; terminal rows are deleted and their
-  // outcomes reported in-memory; durable outcome state lives on derivation)
+  // Queue rows are live work only; terminal rows are deleted and durable
+  // outcome state lives on derivation rows.
   `ALTER TABLE work_item ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;`,
   `ALTER TABLE work_item ADD COLUMN last_error TEXT;`,
   `ALTER TABLE work_item ADD COLUMN claimed_at TEXT;`,
   `ALTER TABLE work_item ADD COLUMN claim_expires_at TEXT;`,
   `ALTER TABLE work_item ADD COLUMN eligible_at TEXT;`, // backoff gate; NULL = immediately eligible
-  `ALTER TABLE work_item ADD COLUMN payload TEXT;`, // JSON: { sourceVersion?, form? }; id format includes sourceVersion
+  `ALTER TABLE work_item ADD COLUMN payload TEXT;`, // JSON payload for source-versioned work inputs
   // Tech design sketches (status, eligible_at, rowid); SQLite forbids rowid
   // inside an index definition, so the index covers the two real columns and
   // claimNext's ORDER BY rowid walks the head as before.
   `CREATE INDEX idx_work_item_queue ON work_item (status, eligible_at);`,
-  // Call-id pairing index (Story 2): the tool-activity handlers' paired-read
-  // and intake's AC-2.8 late-result lookup are each one indexed query by
-  // call id — never a block scan (anti-shim requirement).
+  // Call/result pairing and late-result lookup are indexed by tool call id,
+  // never by scanning message blocks.
   `CREATE INDEX idx_message_block_tool_call_id
      ON message_block (block_type, json_extract(content, '$.toolCallId'));`,
   `CREATE TABLE derived_form (
@@ -73,8 +69,8 @@ export const MIGRATION_V5_STATEMENTS: readonly string[] = [
   // projection-level delete (the record keeps everything; reads filter)
   `ALTER TABLE message ADD COLUMN deleted_at TEXT;`,
   `ALTER TABLE turns   ADD COLUMN deleted_at TEXT;`,
-  // F-02 backfill: pending form rows for work queued before v5 existed, so
-  // UPDATE-only completion finds them (row missing must mean deleted).
+  // Backfill pending derivation rows for already-queued work so UPDATE-only
+  // completion can continue treating missing rows as deleted subjects.
   `INSERT INTO derived_form (subject_kind, subject_id, form, state, source_version)
     SELECT 'message', json_extract(source_ref, '$.messageId'), 'smoothed_prompt', 'pending', 1
     FROM work_item WHERE status = 'queued' AND kind = 'prompt_smoothing';`,
@@ -89,12 +85,10 @@ export const MIGRATION_V5_STATEMENTS: readonly string[] = [
     FROM work_item WHERE status = 'queued' AND kind = 'turn_derivation';`,
 ];
 
-// Epic 03's single migration (tech design §Storage): the thread-view
-// snapshot tables and the visibility boundary, living beside the record they
-// render so a thread file stays self-contained and snapshot-portable.
-// Singletons are CHECK-enforced structurally: one active view, one boundary
-// row per thread. Assembled into the thread-file migration history by
-// threads/internal/create.ts, like v5.
+// Adds thread-view snapshot tables and the visibility boundary beside the
+// records they render, so a thread file stays self-contained and
+// snapshot-portable. Singletons are CHECK-enforced structurally: one active
+// view, one boundary row per thread.
 export const MIGRATION_V6_STATEMENTS: readonly string[] = [
   `CREATE TABLE thread_view (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),  -- one active view, enforced structurally
@@ -126,14 +120,10 @@ export const MIGRATION_V6_STATEMENTS: readonly string[] = [
     VALUES (1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`,
 ];
 
-// Epic 06 Story 0's single migration (tech design §DD-1, §DD-5):
-// 1. Rename derived_form table to derivation and column 'form' to 'derivation_type'
-// 2. Create the log table for fallback events and diagnostics
-// Singletons are CHECK-enforced structurally: one log entry per recorded event.
-// Assembled into the thread-file migration history by threads/internal/create.ts,
-// like v5 and v6.
+// Renames the original derived_form schema to derivation vocabulary and adds
+// the log table for fallback events and diagnostics.
 export const MIGRATION_V7_STATEMENTS: readonly string[] = [
-  // Rename table and column for derivation vocabulary (DD-1)
+  // Rename table and column for derivation vocabulary.
   `ALTER TABLE derived_form RENAME TO derivation;`,
   // SQLite doesn't support ALTER COLUMN directly, so we recreate the table
   `CREATE TABLE derivation_new (
@@ -158,7 +148,7 @@ export const MIGRATION_V7_STATEMENTS: readonly string[] = [
   `UPDATE thread_view
      SET source_state_json = replace(source_state_json, '"formCounts"', '"derivationCounts"')
      WHERE source_state_json LIKE '%"formCounts"%';`,
-  // Create log table (DD-5)
+  // Durable diagnostics for fallback events and repair visibility.
   `CREATE TABLE log (
     log_id INTEGER PRIMARY KEY AUTOINCREMENT,
     level TEXT NOT NULL CHECK (level IN ('info','warning','error')),
@@ -176,22 +166,20 @@ export const MIGRATION_V7_STATEMENTS: readonly string[] = [
   `CREATE INDEX idx_log_reason ON log (reason);`,
 ];
 
-// Epic 06 Story 2: tool calls render as recorded, so the old
-// tool_call_summary derivation/work rows are no longer valid work.
+// Tool calls render as recorded, so old tool_call_summary derivation/work rows
+// are no longer valid work.
 export const MIGRATION_V8_STATEMENTS: readonly string[] = [
   `DELETE FROM work_item WHERE kind = 'tool_call_summary';`,
   `DELETE FROM derivation WHERE subject_kind = 'message' AND derivation_type = 'tool_call_summary';`,
 ];
 
-// Epic 07 Story 0's migration (tech design §Rename Migration point 6): the
-// rename lower_band_projection → smooth_turn_compression leaves queued work
-// items whose payload still names the old derivation type. After the rename no
-// path produces that type, so such an item would either strand or stamp a
-// derivation row under a type no query reads. They are safe to delete: the
-// derivation they would have produced is superseded by the next turn-close or
-// recovery pass under smooth_turn_compression. A warning is recorded in the log
-// table iff any such item existed, so the cleanup is observable, not silent.
-// Assembled into the thread-file migration history by threads/internal/create.ts.
+// The rename lower_band_projection → smooth_turn_compression leaves queued
+// work items whose payload still names the old derivation type. After the
+// rename no path produces that type, so such an item would either strand or
+// stamp a derivation row under a type no query reads. They are safe to delete:
+// the derivation they would have produced is superseded by the next turn-close
+// or recovery pass under smooth_turn_compression. A warning is recorded in the
+// log table iff any such item existed, so the cleanup is observable, not silent.
 export const MIGRATION_V9_STATEMENTS: readonly string[] = [
   `INSERT INTO log (level, message, derivation_type, reason, recorded_at)
      SELECT 'warning',
