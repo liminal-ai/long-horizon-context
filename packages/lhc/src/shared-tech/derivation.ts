@@ -1,8 +1,7 @@
-// Epic 02 shared vocabulary: the derivation state machine's types, the
-// inference callback seam, and the handler contract. Both owning domains
-// (messages, turns) consume these; neither owns them — the repair report, the
-// mutation cascade, and the drain all speak this vocabulary across domain
-// lines, so it lives in shared-tech/ (tech design §Interfaces, DD-2/DD-7).
+// Shared derivation vocabulary: state machine types, the inference callback
+// boundary, and the handler contract. Both owning domains consume these;
+// neither owns them. Repair reports, mutation cascade, and drain all speak this
+// vocabulary across domain lines, so it lives in shared-tech.
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationGuards, InferenceConfig, ResolvedDerivationGuards } from "./inference-types.js";
 import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
@@ -12,18 +11,18 @@ export type SubjectKind = "message" | "turn" | "chunk";
 export type DerivationState = "pending" | "ready" | "failed" | "blocked";
 
 // Outcome on tool-activity summaries — mechanically stamped from the record
-// (isError/presence), never authored by model text (AC-2.4).
+// (isError/presence), never authored by model text.
 export type ToolOutcome = "succeeded" | "failed" | "unknown";
 
 // A composed derivation's record of a dependency that fell back during composition:
-// names the source record and the derivation type that was not ready (AC-3.2/3.3).
+// names the source record and the derivation type that was not ready.
 export interface DependencyGap {
   subjectKind: SubjectKind;
   subjectId: string;
   derivationType: string;
 }
 
-// The read shape for one derivation's state row (DD-2, DD-3).
+// The read shape for one derivation's state row.
 export interface Derivation {
   subjectKind: SubjectKind;
   subjectId: string;
@@ -31,17 +30,16 @@ export interface Derivation {
   state: DerivationState;
   content?: string; // ready only
   reason?: string; // failed | blocked
-  sourceVersion: number; // which version of the source this derivation derives from (DD-3)
+  sourceVersion: number; // which version of the source this derivation derives from
   gaps?: DependencyGap[]; // composed derivations; landed-with-fallback record
   metadata?: DerivationMetadata; // mechanically stamped fields; never model-authored
   derivedAt?: string;
 }
 
-// One tool call's or result's receipt within a turn's composed account
-// (AC-3.8): the account text — what changed, as composed — plus the
-// mechanically derived outcome. Derived from the composition input, never
-// from model prose; stamped on the turn_rendering form so the chunk
-// summaries can read receipts machine-readably in turn order.
+// One tool call's or result's receipt within a turn's composed account: the
+// account text, as composed, plus the mechanically derived outcome. Derived
+// from composition input, never from model prose; stamped on turn_rendering so
+// chunk summaries can read receipts machine-readably in turn order.
 export interface ToolRunReceipt {
   messageId: string;
   activity: "tool_call" | "tool_result";
@@ -49,11 +47,10 @@ export interface ToolRunReceipt {
   outcome: ToolOutcome;
 }
 
-// Mechanically stamped derivation metadata: tool outcomes (AC-2.4), the turn
-// rendering's tool-run receipts (AC-3.8), plus — at retry exhaustion — the
-// final attempts/last-error copied from the work item before its row is
-// deleted (DD-1: the queue is not an audit table; durable outcome detail
-// lives here).
+// Mechanically stamped derivation metadata: tool outcomes, turn rendering's
+// tool-run receipts, and retry-exhaustion attempts/last-error copied from the
+// work item before its row is deleted. The queue is not an audit table; durable
+// outcome detail lives here.
 export interface DerivationMetadata {
   outcome?: ToolOutcome;
   receipts?: ToolRunReceipt[];
@@ -61,18 +58,17 @@ export interface DerivationMetadata {
   lastError?: string;
   discardReason?: string;
   sizeDisposition?: "in_range" | "under_min" | "over_max";
-  // Epic 05 (DD-4): which provider/model/prompt produced the content —
-  // copied from the InferenceResult's config-known strings, never authored
-  // from model output. Deterministic domain assembly never sets it.
+  // Which provider/model/prompt produced the content, copied from the
+  // InferenceResult's config-known strings, never authored from model output.
+  // Deterministic domain assembly never sets it.
   provenance?: ProviderProvenance;
 }
 
-// One row of an owner's repair report (Flow 4): the derivation's durable state
-// joined with the queue's mechanical detail for the live item still working
-// toward it, if any. The five operational situations read from this one row:
-// never-attempted (pending, no queue), retrying (pending + queue with
-// attempts > 0), ready, failed (+ reason), blocked (+ reason) — no caller
-// ever needs a queue API.
+// One row of an owner's repair report: the derivation's durable state joined
+// with the queue's mechanical detail for the live item still working toward it,
+// if any. The five operational situations read from this one row:
+// never-attempted, retrying, ready, failed, blocked. No caller ever needs a
+// queue API.
 export interface DerivationReportEntry extends Derivation {
   queue?: {
     status: "queued" | "claimed";
@@ -82,12 +78,12 @@ export interface DerivationReportEntry extends Derivation {
   };
 }
 
-// ── inference callback seam (DD-7) ───────────────────────────────
+// ── inference callback boundary ──────────────────────────────────
 // Every operation returns content or a structured failure carrying
 // retryable-or-not; classification is the adapter's duty.
 // Provenance: the three config-known assignment strings, stamped by the
 // inference adapter (it alone knows the assignment) and copied by handlers
-// into derivation metadata (Epic 05 DD-4). Never derived from model output.
+// into derivation metadata. Never derived from model output.
 export interface ProviderProvenance {
   provider: string;
   model: string;
@@ -215,11 +211,11 @@ export const PROVIDER_OPERATIONS = INFERENCE_CALLBACK_OPERATIONS;
 /** @deprecated Use InferenceCallbackName. */
 export type ProviderOperationName = InferenceCallbackName;
 
-// ── LHC initialization config (tech design §Interfaces) ──────────
+// ── LHC initialization config ────────────────────────────────────
 // Inference callbacks arrive exactly one way: direct callback injection
 // (`inferenceCallbacks`) or `inference` (host model-call function + per-kind
-// assignments, Epic 05 DD-5). `provider` remains only as a deprecated spelling
-// for direct callbacks.
+// assignments). `provider` remains only as a deprecated spelling for direct
+// callbacks.
 export interface SdkConfig {
   inferenceCallbacks?: InferenceCallbacks;
   /** @deprecated Use inferenceCallbacks. */
@@ -236,7 +232,7 @@ export interface SdkConfig {
   }; // 1000 / 0.15 / 0.04
   lease?: { durationMs: number }; // 120000
   chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
-  view?: SdkViewConfig; // Epic 03: profiles, visibility budgets, compact threshold
+  view?: SdkViewConfig; // profiles, visibility budgets, compact threshold
 }
 
 // Every optional filled by initLhc's central defaults.
@@ -268,7 +264,7 @@ export interface ResolvedSdkConfig {
   view: ResolvedViewConfig;
 }
 
-// ── handler contract (DD-6; the map's value type) ────────────────
+// ── handler contract ─────────────────────────────────────────────
 export interface HandlerRunContext {
   openDb(): DatabaseSync; // short-txn access; NEVER held across inference calls
   inferenceCallbacks: InferenceCallbacks;
@@ -278,10 +274,9 @@ export interface HandlerRunContext {
 
 // A successful handler hands its derivation content back as data; the
 // drain's completion transaction performs the version-checked UPDATE and the
-// item-row deletion atomically (tech design §Mechanics: completion is one
-// short BEGIN IMMEDIATE doing the derivation write and the delete). The handler
-// never opens that transaction itself, so the version check and the
-// done/stale_discarded disposition stay in one place — the queue util.
+// item-row deletion atomically. The handler never opens that transaction
+// itself, so the version check and the done/stale_discarded disposition stay in
+// one place: the queue util.
 export interface HandlerDerivationWrite {
   subjectKind: SubjectKind;
   subjectId: string;
@@ -291,14 +286,13 @@ export interface HandlerDerivationWrite {
   gaps?: DependencyGap[];
 }
 
-// The completion-transaction hook (Story 3): work that must land atomically
-// with the version-checked derivation writes — chunk placement and the
-// close→summary enqueues above all. The queue util invokes it inside the
-// completion's BEGIN IMMEDIATE, after the derivation writes and only when they hit
-// (a stale completion must not place a turn or enqueue summaries); onCommit
-// registrations flush after that COMMIT succeeds and drop on rollback, so a
-// crash leaves either a placed turn with its enqueues or nothing — never a
-// derived-but-unplaced turn.
+// Completion-transaction hook for work that must land atomically with
+// version-checked derivation writes: chunk placement and close→summary enqueues
+// above all. The queue util invokes it inside completion's BEGIN IMMEDIATE,
+// after derivation writes and only when they hit. A stale completion must not
+// place a turn or enqueue summaries. onCommit registrations flush after that
+// COMMIT succeeds and drop on rollback, so a crash leaves either a placed turn
+// with its enqueues or nothing, never a derived-but-unplaced turn.
 export interface CompletionTx {
   db: DatabaseSync;
   onCommit: (fn: () => void) => void;
