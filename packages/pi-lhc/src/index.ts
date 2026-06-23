@@ -1,8 +1,8 @@
 // Extension entry. PI loads this module and calls `activate(pi)`; it registers
-// the Epic 1 observe-only hook rail and routes each hook to a fail-closed
-// handler. The connector owns only plain-data `SessionState` plus the live
-// `LhcInstance` it constructs per session — never a PI `ctx`/session object,
-// which PI replaces on new/resume/fork (tech design Flow 1, plain-data rule).
+// the observe-only hook rail and routes each hook to a fail-closed handler. The
+// connector owns only plain-data `SessionState` plus the live `LhcInstance` it
+// constructs per PI session, never a PI `ctx` or session object, which PI
+// replaces on new, resume, and fork.
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -36,9 +36,9 @@ import type { LhcInstance } from "./shared/instance.js";
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
 export type { LhcInstance } from "./shared/instance.js";
 
-/** The Epic 1 observe-only hook rail: every PI hook the connector consumes.
- *  Deliberately NOT `context` — context serving is Epic 2 and this epic
- *  registers no handler for it (story Scope Out). */
+/** The observe-only hook rail: every PI hook the connector consumes.
+ *  Deliberately not `context`; this connector does not serve context through a
+ *  PI hook. */
 export const EPIC_1_HOOKS = [
   "session_start",
   "message_end",
@@ -55,12 +55,12 @@ export type Epic1Hook = (typeof EPIC_1_HOOKS)[number];
 
 /** What the connector needs from the host to run a session. Every dependency
  *  has a working production default; the overrides exist for test isolation
- *  (temp registry/thread, scripted launch/selection) and for Stories 5/6 to swap
- *  in the PI-auth-backed inference config.
+ *  (temp registry/thread, scripted launch/selection) and for swapping in
+ *  PI-auth-backed inference config.
  *
  *  `buildSdkConfig` returns the SdkConfig the instance is constructed from. Its
- *  default is the observe-only config below (a real, construction-valid SDK);
- *  Stories 5/6 inject the PI-model-registry-backed `ModelCall` + assignments. */
+ *  default is the real PI inference config below, with assignment overrides
+ *  layered over shipped defaults. */
 export interface ConnectorDeps {
   buildSdkConfig?: (ctx: ExtensionContext) => OpResult<SdkConfig>;
   registryPath?: string;
@@ -68,8 +68,8 @@ export interface ConnectorDeps {
   parseLaunch?: () => LaunchFlags;
   selectThread?: (choices: readonly ThreadChoice[], ctx: ExtensionContext) => Promise<string | null>;
   startupValidationReporter?: StartupValidationReporter;
-  /** Assignment config for Story 6: operator overrides for provider/model/prompt
-   *  per derivation kind. Uses loadAssignments to merge over shipped defaults. */
+  /** Operator overrides for provider/model/prompt per derivation kind. Uses
+   *  loadAssignments to merge over shipped defaults. */
   assignmentConfig?: unknown;
 }
 
@@ -152,12 +152,10 @@ function readDurableThreadId(ctx: ExtensionContext): string | null {
 
 const DEFAULT_LHC_DIR = join(homedir(), ".lhc");
 
-/** The production SDK config for Story 5+: injects the host ModelCall function
- *  that resolves provider/model through PI's registry and completes through
- *  pi-ai when available. Story 6 loads assignments from config with shipped
- *  defaults. */
+/** The default SDK config injects the host ModelCall function that resolves
+ *  provider/model through PI's registry and completes through pi-ai when
+ *  available. Assignment config is merged over shipped defaults. */
 function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown = undefined): OpResult<SdkConfig> {
-  // Load assignments from config (Story 6: AC-5.4, AC-5.5)
   const assignments = loadAssignmentsImpl(assignmentConfig);
 
   return {
@@ -173,8 +171,7 @@ function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown 
 }
 
 /** Render the cwd-scoped `--resume` candidates as an operator-facing list, each
- *  line carrying the title, creation time, and id AC-1.7 requires the picker to
- *  show. */
+ *  line carrying the title, creation time, and id. */
 function renderResumeCandidates(choices: readonly ThreadChoice[]): string {
   const lines = choices.map((choice, i) => {
     const title = choice.title ?? "(untitled)";
@@ -230,7 +227,7 @@ function defaultNewThreadFilePath(): string {
  *  even when `activate` discards the returned object. The connector holds NO
  *  module-level state of its own — reload reconstructs the thread from the
  *  durable PI session entry and resolves that threadId through the LHC registry,
- *  so a fresh connector with an empty closure reattaches correctly (AC-1.5). */
+ *  so a fresh connector with an empty closure reattaches correctly. */
 export function createConnector(deps: ConnectorDeps = {}): Connector {
   // The connector's retained state. `state` is plain data (the durable thread
   // reference + flags); `instance` is the live SDK engine (rebuilt on reload);
@@ -243,7 +240,6 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let pendingFork: PendingFork | null = null;
   let appendThreadEntry: ((entry: DurableThreadEntry) => void) | null = null;
 
-  // Build SDK config with assignment config if provided (Story 6)
   const buildSdkConfig =
     deps.buildSdkConfig ?? ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
   const newThreadFilePath = deps.newThreadFilePath ?? defaultNewThreadFilePath;
@@ -278,8 +274,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     return resolveThread(launch, buildResolveDeps(ctx));
   }
 
-  // Reload resolution (AC-1.5): read the exact prior threadId PI durably
-  // replayed in the current session entries. No cwd-most-recent fallback.
+  // Reload resolution: read the exact prior threadId PI durably replayed in
+  // the current session entries. No cwd-most-recent fallback.
   async function resolveReloadFor(ctx: ExtensionContext): Promise<OpResult<ThreadRef | null>> {
     return resolveReloadThread(readDurableThreadId(ctx), buildResolveDeps(ctx));
   }
@@ -289,7 +285,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // inference config resolves/creates nothing (no orphan thread). On reload the
   // thread is re-resolved from the durable registry (reattach, never create);
   // every other reason runs the normal launch resolution. Fork creates a new
-  // thread and seeds it from the source thread (Story 4).
+  // thread and seeds it from the source thread.
   const onSessionStart: PiHookHandler<"session_start"> = async (ctx, event) => {
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
@@ -300,9 +296,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     let resolved: OpResult<ThreadRef | null> | undefined;
     let forkAttempted = false;
 
-    // Fork path (Story 4): create a new thread and seed it from the source.
+    // Fork path: create a new thread and seed it from the source.
     // Detection relies on pendingFork from session_before_fork hook, with PI's
-    // session tree as Epic 1 fallback evidence. NOT dependent on event.reason.
+    // session tree as fallback evidence. Not dependent on event.reason.
     if (pendingFork !== null) {
       forkAttempted = true;
       // Hook-based fork detection: session_before_fork fired.
@@ -340,10 +336,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           instance = built.value;
 
           // Seed the fork by replaying source events up to the fork point.
-          // Seeding must succeed for AC-3.2 - an unseeded fork violates requirements.
           const seeded = await seedFork(sourceThreadRef, targetThreadRef, forkEntryId, instance);
           if (!seeded.ok) {
-            // Seed failure is fatal - AC-3.2 requires seeded read-back to match source.
+            // Seed failure is fatal because the forked thread would be incomplete.
             lastDiagnostic = diag("fork_seed_failed", seeded.error.reason);
             pendingFork = null;
             await disposeInstance(instance);
@@ -360,13 +355,13 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       }
     }
 
-    // Epic 1 fallback: PI session-tree evidence when hook was absent.
+    // PI session-tree fallback when session_before_fork was absent.
     // If pendingFork is null but we have a previous session, detect fork from session tree.
     if (resolved === undefined && !forkAttempted && state !== null && event.previousSessionFile !== undefined) {
       const forkFromTree = detectForkFromSessionTree(ctx, event, state.threadRef);
       if (forkFromTree !== null) {
         forkAttempted = true;
-        // Session tree indicates a fork - create and seed as above.
+        // Session tree indicates a fork; create and seed as above.
         const { sourceThreadRef, forkEntryId } = forkFromTree;
 
         const resolveDeps = buildResolveDeps(ctx);
@@ -451,9 +446,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       sourceSeq: 0,
     };
 
-    // Story 6: Startup validation - probe inference assignments before first use
-    // This runs after instance creation but before capture begins (AC-5.1).
-    // Validation failures are reported but do NOT stop capture (AC-5.3).
+    // Probe inference assignments before first use. Validation failures are
+    // reported but do not stop capture.
     if (config.value.inference === undefined) {
       lastDiagnostic = diag("inference_config_missing", "SDK config missing inference block");
       return;
@@ -478,10 +472,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     captureSession = null;
   };
 
-  // Record a capture failure as a plain-data health diagnostic (AC-2.7). The
-  // converter already recorded a durable gap for a writable-thread malformed
-  // event (`invalid_event`); a store-unavailable failure could not, so it
-  // surfaces as an extension health signal with no gap. Neither path throws.
+  // Record a capture failure as a plain-data health diagnostic. The converter
+  // already recorded a durable gap for a writable-thread malformed event
+  // (`invalid_event`); a store-unavailable failure could not, so it surfaces as
+  // an extension health signal with no gap. Neither path throws.
   function recordCaptureOutcome(result: OpResult<BatchResult>, events: readonly MessageEventInput[]): void {
     if (result.ok) return;
     const recordedGap = result.error.code === "invalid_event";
@@ -532,7 +526,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   }
 
   // message_end: map the finalized PI message to ordered LHC events, track the
-  // open turn, and flush through the converter (AC-2.1).
+  // open turn, and flush through the converter.
   const onMessageEnd: PiHookHandler<"message_end"> = async (_ctx, event) => {
     if (instance === null || captureSession === null) return;
     const sourceSeq = nextSourceSeq(captureSession);
@@ -555,8 +549,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     recordCaptureOutcome(await capture(events, instance), events);
   };
 
-  // model_select / thinking_level_select fire only in-stream — capture each as
-  // an ordered runtime_note the moment it fires (AC-2.8).
+  // model_select / thinking_level_select fire only in-stream; capture each as
+  // an ordered runtime_note the moment it fires.
   const onModelSelect: PiHookHandler<"model_select"> = async (_ctx, event) => {
     if (instance === null || captureSession === null) return;
     const sourceSeq = nextSourceSeq(captureSession);
@@ -579,7 +573,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     recordCaptureOutcome(await capture([note], instance), [note]);
   };
 
-  // agent_end closes the LHC turn — exactly one turn_end per agent run (AC-2.2).
+  // agent_end closes the LHC turn exactly once per agent run.
   // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
   const onAgentEnd: PiHookHandler<"agent_end"> = async () => {
     if (instance === null || captureSession === null) return;
@@ -605,9 +599,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
-  // Observe-only foundation: the remaining capture-bearing hooks (PI's per-step
-  // turn_end) stay no-ops here — turn_end is deliberately ignored as an
-  // LHC turn boundary (AC-2.2). Each receives a FRESH ctx and retains none of it.
+  // Observe-only foundation: the remaining capture-bearing hook (PI's per-step
+  // turn_end) stays a no-op here. Each receives a fresh ctx and retains none of
+  // it.
   const noop: PiHookHandler<Epic1Hook> = () => {
     // Intentionally empty — turn_end is ignored as a boundary.
   };
@@ -615,7 +609,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // session_before_fork: capture the fork point for use on the next session_start{fork}.
   // The source thread ref is captured from the current session state; the hook
   // provides entryId/position identifying the fork point. No writes to the source
-  // thread occur — the fork happens on the next session_start (Story 4).
+  // thread occur; the fork happens on the next session_start.
   const onBeforeFork: PiHookHandler<"session_before_fork"> = async (_ctx, event) => {
     if (state === null) return;
     const forkInfo = forkInfoFromHook(event.entryId, event.position);
@@ -626,8 +620,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
-  // Bodies per hook: session lifecycle (Story 1) and event capture (Story 2)
-  // are live; fork handling (Story 4) is wired.
+  // Bodies per hook: session lifecycle, event capture, and fork handling.
   const bodies: Record<Epic1Hook, PiHookHandler<Epic1Hook>> = {
     session_start: onSessionStart as PiHookHandler<Epic1Hook>,
     session_before_switch: onDispose,
@@ -666,12 +659,11 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 /** PI entry point: PI calls this with the ExtensionAPI when the extension
  *  loads (and again on `/reload`). Registers the observe-only hook rail with the
  *  production defaults — the `~/.lhc` registry, `process.argv` launch flags, the
- *  observe-only SDK config, and the `--resume` selector that presents the
+ *  PI inference SDK config, and the `--resume` selector that presents the
  *  cwd-scoped titled candidates through `ctx.ui.notify` — so a live session_start
  *  resolves/creates and initializes for real. On `/reload` the connector
  *  re-resolves the same thread from PI's durable `pi-lhc.thread` session entry
- *  and the LHC registry (it keeps no module-level handoff state). Stories 5/6
- *  swap in the PI-auth-backed inference config. */
+ *  and the LHC registry (it keeps no module-level handoff state). */
 export function activate(pi: ExtensionAPI): void {
   createConnector().register(pi);
 }
