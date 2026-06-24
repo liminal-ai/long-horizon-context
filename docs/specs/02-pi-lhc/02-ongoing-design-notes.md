@@ -15,7 +15,7 @@ Features 2 and 3 in the PRD are a useful boundary for that core work:
 - Feature 2 is the serving transition: PI model calls should receive LHC-owned thread-view context rather than relying on PI's native transcript as the source of context.
 - Feature 3 is the usability layer around that transition: commands, agent read tools, health, compact receipts, and operator-visible status.
 
-The current intent is to treat those features as one broad core-integration area, then implement it in short, dogfoodable slices. The goal is not to wait for one large epic to be fully specified before Lee can interact with it.
+The current intent is to treat those features as one broad core-integration area, then implement it in short, dogfoodable slices. The goal is not to wait for one large epic to be fully specified before Lee can interact with it. Slice 1 has landed: `pi-lhc` registers PI's current `context` hook, serves a minimal replacement from active LHC state, records a context-serving diagnostic, and keeps capture working. Slice 2 has landed: the context hook now serves LHC text messages in order and records a bounded preview for inspection.
 
 ## Problems We Are Trying To Solve
 
@@ -61,33 +61,52 @@ This is not meant to turn `pi-lhc` into a large launcher that owns every variant
 
 These are working slices, not commitments. The exact boundaries should change if current PI behavior or Lee's dogfooding points somewhere better.
 
-### Slice 1: Context Hook Smoke Path
+### Slice 1: Context Hook Smoke Path - Landed
 
 Purpose: prove PI can receive context from the extension and that the current PI context hook is the right serving seam.
 
-Likely delivery:
+Delivered:
 
 - register the current PI `context` hook
 - return a minimal deterministic message array derived from LHC/thread-view state
 - keep existing capture behavior running
-- add enough logging or debug output to know the hook served
+- add a plain-data diagnostic seam for the last context-serving attempt
+- degrade by returning `undefined` when there is no active LHC session or the context event is malformed, which keeps PI's original messages
 
-Lee should be able to run PI and verify that the model is seeing extension-served context.
+This slice is intentionally text-only and narrow. It proves the PI hook and LHC read seam before trying to preserve full PI-native tool semantics.
 
-### Slice 2: Served Tail Correctness
+### Slice 2: Text-Only Served Tail Correctness - Landed
 
-Purpose: make the live tail feel usable in real coding turns.
+Purpose: make the live tail readable, ordered, current, and useful in real coding turns while still serving text-only PI messages.
+
+Delivered:
+
+- keep LHC `LlmRequestContext` as the serving source
+- preserve message order exactly as LHC serves it
+- map user messages to PI user string content
+- map assistant/context material to PI assistant text parts
+- include text renderings of tool calls, tool results, runtime notes, and other material only as LHC already renders them into text
+- add a bounded diagnostic preview of the last served context
+- test normal, tool-heavy, multi-step, and fallback cases
+
+This slice does not attempt native PI `toolCall` parts. It is meant to make normal coding and first dogfooding possible while keeping the next fidelity question isolated.
+
+### Slice 3: Native Tool Call/Result Serving
+
+Purpose: preserve PI-native tool semantics where LHC exposes enough structure to do so safely.
 
 Likely delivery:
 
-- serve recent user prompts, assistant text, thinking where appropriate, tool calls, tool results, and runtime notes in order
-- preserve multi-step tool-turn coherence
-- handle abort and retry shapes without dropping material
-- add a simple way to inspect the last served context
+- inspect what LHC currently exposes for tool-call/tool-result identity in served context
+- add a narrow LHC serving shape or metadata if needed
+- map tool calls to PI `toolCall` parts
+- map tool results to PI `toolResult` messages
+- preserve correlation by `toolCallId`
+- test multi-tool and parallel-tool ordering
 
-Lee should be able to try normal coding, tool-heavy turns, and abort/retry paths.
+This slice should be driven by evidence from Slice 2 dogfooding and current LHC serving shapes. It may stay small if text-only serving works well enough for early use.
 
-### Slice 3: Banded Thread-View Serving
+### Slice 4: Banded Thread-View Serving
 
 Purpose: serve the real LHC thread-view rather than only a minimal or tail-only shape.
 
@@ -101,7 +120,7 @@ Likely delivery:
 
 Lee should be able to inspect whether older context appears at the intended fidelity and whether seams are understandable to the model.
 
-### Slice 4: Manual Smart Compact Path
+### Slice 5: Manual Smart Compact Path
 
 Purpose: make LHC compact behavior usable during a live PI run.
 
@@ -113,7 +132,7 @@ Likely delivery:
 
 Lee should be able to compact mid-session and continue without restarting.
 
-### Slice 5: PI Compaction Redirect
+### Slice 6: PI Compaction Redirect
 
 Purpose: prevent PI's native compaction behavior from competing with LHC.
 
@@ -125,7 +144,7 @@ Likely delivery:
 
 Lee should be able to use PI without native compaction summaries entering the LHC-served context.
 
-### Slice 6: Core Surfaces
+### Slice 7: Core Surfaces
 
 Purpose: make daily use comfortable enough for longer dogfooding.
 

@@ -35,18 +35,21 @@ describe("Story 4: fork as new thread", () => {
     const user = makeUserMessage("current PI source prompt");
     const assistant = makeAssistantMessage({ text: "current PI source response" });
 
-    await connector.handlers.message_end(ctx, { type: "message_end", message: user });
+    await connector.handlers.message_end({ type: "message_end", message: user }, ctx);
     appendPiMessage(ctx, forkEntryId, user);
-    await connector.handlers.message_end(ctx, { type: "message_end", message: assistant });
+    await connector.handlers.message_end({ type: "message_end", message: assistant }, ctx);
     appendPiMessage(ctx, "pi-current-assistant-entry", assistant);
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
-    await connector.handlers.session_before_fork(ctx, {
-      type: "session_before_fork",
-      entryId: forkEntryId,
-      position: "at",
-    });
-    await connector.handlers.session_start(ctx, { type: "session_start", reason: "fork" });
+    await connector.handlers.session_before_fork(
+      {
+        type: "session_before_fork",
+        entryId: forkEntryId,
+        position: "at",
+      },
+      ctx,
+    );
+    await connector.handlers.session_start({ type: "session_start", reason: "fork" }, ctx);
 
     const state = connector.getState();
     expect(state).not.toBeNull();
@@ -59,7 +62,7 @@ describe("Story 4: fork as new thread", () => {
       expect(forkedEvents.value[0]!.idempotencyKey).toContain(encodeURIComponent(forkEntryId));
     }
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
   });
 
   it("TC-3.1 (risk: source-vs-derived): fork creates a new thread; source receives no writes", async () => {
@@ -68,9 +71,8 @@ describe("Story 4: fork as new thread", () => {
 
     // Capture some events in the source thread with deterministic entryIds.
     const forkEntryId = "entry-fork-point";
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("source prompt"), forkEntryId));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("source prompt"), forkEntryId), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({
           text: "source response",
@@ -78,21 +80,25 @@ describe("Story 4: fork as new thread", () => {
         }),
         forkEntryId,
       ),
+      ctx,
     );
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(makeToolResult({ id: "call-1", content: "file content" })),
+      ctx,
     );
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     // Record the source thread's event count for comparison.
     const sourceEventsBefore = await eventsAfterShutdown(started);
 
     // Simulate a fork: fire session_before_fork with the fork entryId.
-    await connector.handlers.session_before_fork(ctx, { entryId: forkEntryId, position: "at" });
+    await connector.handlers.session_before_fork(
+      { type: "session_before_fork", entryId: forkEntryId, position: "at" },
+      ctx,
+    );
 
     // print-mode --fork can report reason=startup; detection comes from the hook data.
-    await connector.handlers.session_start(ctx, { reason: "startup" });
+    await connector.handlers.session_start({ type: "session_start", reason: "startup" }, ctx);
 
     // The connector state should now point to a NEW thread (different from source).
     const state = connector.getState();
@@ -114,7 +120,7 @@ describe("Story 4: fork as new thread", () => {
     }
 
     // Shut down the forked session.
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
   });
 
   it("TC-3.1 fallback: detects fork from PI session tree parentId chain when hook is absent", async () => {
@@ -122,12 +128,12 @@ describe("Story 4: fork as new thread", () => {
     const { connector, ctx, threadRef: sourceRef } = started;
 
     const forkEntryId = "pi-entry-source-user";
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("tree fallback prompt"), forkEntryId));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("tree fallback prompt"), forkEntryId), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(makeAssistantMessage({ text: "tree fallback response" }), forkEntryId),
+      ctx,
     );
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const previousSessionFile = join(store.dir, "source-session.jsonl");
     writeFileSync(
@@ -145,7 +151,7 @@ describe("Story 4: fork as new thread", () => {
       ],
     };
 
-    await connector.handlers.session_start(ctx, { reason: "startup", previousSessionFile });
+    await connector.handlers.session_start({ type: "session_start", reason: "startup", previousSessionFile }, ctx);
 
     const state = connector.getState();
     expect(state).not.toBeNull();
@@ -158,7 +164,7 @@ describe("Story 4: fork as new thread", () => {
       expect(kindsOf(forkedEvents.value)).toEqual(["user_prompt", "assistant_text", "turn_end"]);
     }
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
   });
 
   it("TC-3.2: fork seeded by replay; read-back matches source through fork point", async () => {
@@ -167,12 +173,12 @@ describe("Story 4: fork as new thread", () => {
 
     // Capture events in the source thread. Use deterministic entryIds for testing.
     const sourceEntryId = "entry-fork-point";
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("prompt before fork"), sourceEntryId, 1));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("prompt before fork"), sourceEntryId, 1), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(makeAssistantMessage({ text: "response before fork" }), sourceEntryId, 2),
+      ctx,
     );
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     // Record the source thread's events as the expected fork seed.
     const sourceEvents = await intakeStream.listEvents(sourceRef);
@@ -181,10 +187,13 @@ describe("Story 4: fork as new thread", () => {
     const expectedSeed = kindsOf(sourceEvents.value);
 
     // Simulate fork at the current position.
-    await connector.handlers.session_before_fork(ctx, { entryId: sourceEntryId, position: "at" });
+    await connector.handlers.session_before_fork(
+      { type: "session_before_fork", entryId: sourceEntryId, position: "at" },
+      ctx,
+    );
 
     // Start the forked session.
-    await connector.handlers.session_start(ctx, { reason: "fork" });
+    await connector.handlers.session_start({ type: "session_start", reason: "fork" }, ctx);
 
     // The forked thread should be seeded with the source events up to the fork point.
     const state = connector.getState();
@@ -202,7 +211,7 @@ describe("Story 4: fork as new thread", () => {
       expect(forkedKinds).toEqual(expectedSeed);
     }
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
   });
 
   it("TC-3.3: forms requeue on fork (v1: no copy)", async () => {
@@ -235,7 +244,7 @@ describe("Story 4: fork as new thread", () => {
       },
     };
 
-    await connector.handlers.session_start(ctx, { reason: "new" });
+    await connector.handlers.session_start({ type: "session_start", reason: "new" }, ctx);
     const sourceState = connector.getState();
     expect(sourceState).not.toBeNull();
     if (sourceState === null) return;
@@ -243,8 +252,8 @@ describe("Story 4: fork as new thread", () => {
     // Capture a prompt with matching entryId (for fork seeding) which queues
     // prompt_smoothing derivation.
     const forkEntryId = "source-entry-1";
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("queue some derivation"), forkEntryId));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("queue some derivation"), forkEntryId), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     // Drain to let derivations settle.
     const sourceInstance = connector.getInstance();
@@ -264,8 +273,11 @@ describe("Story 4: fork as new thread", () => {
 
     // Fork the session using the same entryId used for capture.
     sdkMode = "manual";
-    await connector.handlers.session_before_fork(ctx, { entryId: forkEntryId });
-    await connector.handlers.session_start(ctx, { reason: "fork" });
+    await connector.handlers.session_before_fork(
+      { type: "session_before_fork", entryId: forkEntryId, position: "at" },
+      ctx,
+    );
+    await connector.handlers.session_start({ type: "session_start", reason: "fork" }, ctx);
 
     const forkState = connector.getState();
     expect(forkState).not.toBeNull();
@@ -287,7 +299,7 @@ describe("Story 4: fork as new thread", () => {
     const forkInstance = connector.getInstance();
     if (forkInstance) await forkInstance.dispose();
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
 
     // Final verification: source and forked threads have different forms.
     // The forked thread's forms were derived fresh, not copied.

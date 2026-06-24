@@ -18,15 +18,15 @@ import { validEvent } from "../fixtures/synthetic.js";
 import { tempStore } from "../fixtures/thread.js";
 
 const INPUT: ModelCallInput = {
-  provider: "openai",
-  model: "gpt-4o-mini",
+  provider: "openai-codex",
+  model: "gpt-5.4",
   messages: [{ role: "user", content: "hi" }],
 };
 
 describe("Story 5: Inference Host Routing", () => {
   describe("TC-4.1: ModelCall resolves provider/model and returns text", () => {
     it("resolves a known model with configured auth and returns completion text", async () => {
-      const mockHandle: ModelHandle = { provider: "openai", id: "gpt-4o-mini" };
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4" };
       const ctx: ExtensionContext = {
         cwd: "/test",
         hasUI: false,
@@ -48,7 +48,7 @@ describe("Story 5: Inference Host Routing", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.text).toBe("real completion from openai/gpt-4o-mini");
+        expect(result.text).toBe("real completion from openai-codex/gpt-5.4");
       }
       expect(complete).toHaveBeenCalledWith(mockHandle, { messages: INPUT.messages });
     });
@@ -57,7 +57,7 @@ describe("Story 5: Inference Host Routing", () => {
   describe("TC-4.2: Multi-lane routing — different kinds route to different pairs", () => {
     it("routes each call by its provider/model keys independently", async () => {
       const handles: ModelHandle[] = [
-        { provider: "openai", id: "gpt-4o-mini" },
+        { provider: "openai-codex", id: "gpt-5.4" },
         { provider: "anthropic", id: "claude-3-opus" },
         { provider: "openai", id: "gpt-4o" },
       ];
@@ -88,8 +88,8 @@ describe("Story 5: Inference Host Routing", () => {
       // Call with different provider/model pairs
       const result1 = await modelCall({
         ...INPUT,
-        provider: "openai",
-        model: "gpt-4o-mini",
+        provider: "openai-codex",
+        model: "gpt-5.4",
       });
       const result2 = await modelCall({
         ...INPUT,
@@ -108,7 +108,7 @@ describe("Story 5: Inference Host Routing", () => {
       expect(result3.ok).toBe(true);
 
       // Verify find was called with the correct keys
-      expect(findMock).toHaveBeenCalledWith("openai", "gpt-4o-mini");
+      expect(findMock).toHaveBeenCalledWith("openai-codex", "gpt-5.4");
       expect(findMock).toHaveBeenCalledWith("anthropic", "claude-3-opus");
       expect(findMock).toHaveBeenCalledWith("openai", "gpt-4o");
     });
@@ -121,7 +121,7 @@ describe("Story 5: Inference Host Routing", () => {
           cwd: "/test",
           hasUI: false,
           modelRegistry: {
-            find: () => ({ provider: "openai", id: "gpt-4o-mini" }),
+            find: () => ({ provider: "openai-codex", id: "gpt-5.4" }),
             hasConfiguredAuth: () => false, // No auth configured
             getAvailable: () => [],
           },
@@ -239,7 +239,7 @@ describe("Story 5: Inference Host Routing", () => {
         cwd: "/test",
         hasUI: false,
         modelRegistry: {
-          find: () => ({ provider: "openai", id: "gpt-4o-mini" }),
+          find: () => ({ provider: "openai-codex", id: "gpt-5.4" }),
           hasConfiguredAuth: () => true,
           getAvailable: () => [],
         },
@@ -264,7 +264,7 @@ describe("Story 5: Inference Host Routing", () => {
         const sdk = initLhc({
           inference: {
             call: async () => ({ ok: true, text: "" }),
-            assignments: defaultAssignments({ provider: "openai", id: "gpt-4o-mini" }),
+            assignments: defaultAssignments({ provider: "openai-codex", id: "gpt-5.4" }),
           },
           mode: "manual",
           retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },

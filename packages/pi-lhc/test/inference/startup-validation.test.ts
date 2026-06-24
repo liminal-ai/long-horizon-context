@@ -385,7 +385,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         });
 
         // Start session - validation runs and reports unreachable lane
-        await connector.handlers.session_start(ctx, { reason: "new" });
+        await connector.handlers.session_start({ type: "session_start", reason: "new" }, ctx);
         const instance = connector.getInstance();
         const state = connector.getState();
 
@@ -402,17 +402,18 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         expect(smoothEntry?.reason).toBe("unknown_model");
 
         // Capture continues despite validation failure
-        await connector.handlers.message_end(ctx, {
-          message: makeUserMessage("test prompt"),
-          entryId: "test-user",
-        });
-        await connector.handlers.message_end(ctx, {
-          message: makeAssistantMessage({ text: "test response" }),
-          entryId: "test-assistant",
-        });
-        await connector.handlers.agent_end(ctx, {
-          messages: [makeUserMessage("test prompt"), makeAssistantMessage({ text: "test response" })],
-        });
+        await connector.handlers.message_end({ type: "message_end", message: makeUserMessage("test prompt") }, ctx);
+        await connector.handlers.message_end(
+          { type: "message_end", message: makeAssistantMessage({ text: "test response" }) },
+          ctx,
+        );
+        await connector.handlers.agent_end(
+          {
+            type: "agent_end",
+            messages: [makeUserMessage("test prompt"), makeAssistantMessage({ text: "test response" })],
+          },
+          ctx,
+        );
 
         // Drain the scheduler to run derivations
         const threadRef = state.threadRef;
@@ -436,7 +437,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         expect(compressionFailure?.reason).toContain("invalid_request");
         expect(compressionFailure?.lastError).toContain("unreachable assignment lane");
 
-        await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+        await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
       } finally {
         store.cleanup();
       }

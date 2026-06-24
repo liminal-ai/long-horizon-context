@@ -42,9 +42,8 @@ describe("Story 2: parallel tool calls (TC-2.4)", () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("read both files")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("read both files")), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({
           toolCalls: [
@@ -53,12 +52,13 @@ describe("Story 2: parallel tool calls (TC-2.4)", () => {
           ],
         }),
       ),
+      ctx,
     );
     // Results complete out of arrival order: b before a.
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_b", content: "b body" })));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_a", content: "a body" })));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "read both" })));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeToolResult({ id: "call_b", content: "b body" })), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeToolResult({ id: "call_a", content: "a body" })), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "read both" })), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     const results = events.filter((event) => event.eventKind === "tool_result");
@@ -83,19 +83,19 @@ describe("Story 2: error tool result (TC-2.5)", () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("read missing.txt")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("read missing.txt")), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({ toolCalls: [{ id: "call_a", name: "read_file", arguments: { path: "missing.txt" } }] }),
       ),
+      ctx,
     );
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(makeToolResult({ id: "call_a", isError: true, content: "ENOENT: no such file" })),
+      ctx,
     );
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "it does not exist" })));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "it does not exist" })), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     // Nothing dropped because the tool failed.

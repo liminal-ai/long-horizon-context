@@ -1,8 +1,8 @@
 // Extension entry. PI loads this module and calls `activate(pi)`; it registers
-// the observe-only hook rail and routes each hook to a fail-closed handler. The
-// connector owns only plain-data `SessionState` plus the live `LhcInstance` it
-// constructs per PI session, never a PI `ctx` or session object, which PI
-// replaces on new, resume, and fork.
+// the PI hook rail and routes each hook to a fail-closed handler. The connector
+// owns only plain-data `SessionState` plus the live `LhcInstance` it constructs
+// per PI session, never a PI `ctx` or session object, which PI replaces on new,
+// resume, and fork.
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -44,7 +44,15 @@ import { type ContextServeDiagnostic, serveContextFromLhc } from "./serving/cont
 import type { LhcInstance } from "./shared/instance.js";
 
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
-export { type ContextServeDiagnostic, mapLlmMessagesToPi, serveContextFromLhc } from "./serving/context.js";
+export {
+  buildContextServePreview,
+  CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
+  CONTEXT_SERVE_PREVIEW_MAX_TEXT,
+  type ContextServeDiagnostic,
+  type ContextServeMessagePreview,
+  mapLlmMessagesToPi,
+  serveContextFromLhc,
+} from "./serving/context.js";
 export type { LhcInstance } from "./shared/instance.js";
 
 /** Capture-bearing hooks from Epic 1 (observe + record). */
@@ -101,7 +109,7 @@ export interface ConnectorSnapshot {
 }
 
 export interface Connector {
-  /** Register the observe-only hook rail on the PI extension API. */
+  /** Register the PI hook rail on the PI extension API. */
   register(pi: ExtensionAPI): void;
   /** The plain-data state retained across hooks. `null` until a session
    *  resolves a thread; never holds a PI ctx. */
@@ -115,19 +123,8 @@ export interface Connector {
   getLastContextServe(): ContextServeDiagnostic | null;
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
-  readonly handlers: Readonly<
-    Record<Epic1Hook, TestablePiHookHandler<Epic1Hook>> & {
-      context: TestablePiContextHookHandler;
-    }
-  >;
+  readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>> & { context: PiContextHookHandler }>;
 }
-
-type LegacyHookHandler<_N extends PiHookName> = (ctx: ExtensionContext, event: unknown) => void | Promise<void>;
-
-type TestablePiHookHandler<N extends PiHookName> = PiHookHandler<N> & LegacyHookHandler<N>;
-
-type TestablePiContextHookHandler = PiContextHookHandler &
-  ((ctx: ExtensionContext, event: unknown) => ContextEventResult | undefined | Promise<ContextEventResult | undefined>);
 
 /** The connector's live capture state for one session: the open-turn
  *  accumulator plus the stable PI session id used to scope idempotency keys.
@@ -746,16 +743,19 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   // context: serve LHC thread-view on each model call when a session is active.
   // Returns void to keep PI's original messages when inactive or on read failure.
-  const onContext: PiContextHookHandler = async (event, _ctx) => {
+  const onContext: PiContextHookHandler = async (event, ctx) => {
     const originalCount = event.messages.length;
     if (instance === null || state === null) {
       lastContextServe = {
         served: false,
         reason: "no_active_session",
         messageCount: originalCount,
+        preview: [],
       };
       return;
     }
+
+    await flushPendingMessages(ctx);
 
     const served = await serveContextFromLhc(instance, state.threadRef, originalCount);
     lastContextServe = served.diagnostic;
@@ -766,20 +766,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
-  function looksLikeCtx(value: unknown): value is ExtensionContext {
-    return (
-      typeof value === "object" &&
-      value !== null &&
-      "sessionManager" in value &&
-      "modelRegistry" in value &&
-      "cwd" in value
-    );
-  }
-
-  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): TestablePiHookHandler<Epic1Hook> => {
-    return (async (first: unknown, second: unknown): Promise<void> => {
-      const event = (looksLikeCtx(first) ? second : first) as Parameters<PiHookHandler<Epic1Hook>>[0];
-      const ctx = (looksLikeCtx(first) ? first : second) as ExtensionContext;
+  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): PiHookHandler<Epic1Hook> => {
+    return async (event, ctx): Promise<void> => {
       try {
         await body(event, ctx);
       } catch (err) {
@@ -789,7 +777,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           recordedGap: false,
         };
       }
-    }) as TestablePiHookHandler<Epic1Hook>;
+    };
   };
 
   function contextMessageCount(event: unknown): number {
@@ -803,15 +791,14 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     return Array.isArray((event as { messages?: unknown }).messages);
   }
 
-  const guardContext = (body: PiContextHookHandler): TestablePiContextHookHandler => {
-    return (async (first: unknown, second: unknown): Promise<ContextEventResult | undefined> => {
-      const event = looksLikeCtx(first) ? second : first;
-      const ctx = (looksLikeCtx(first) ? first : second) as ExtensionContext;
+  const guardContext = (body: PiContextHookHandler): PiContextHookHandler => {
+    return async (event, ctx): Promise<ContextEventResult | undefined> => {
       if (!isContextEvent(event)) {
         lastContextServe = {
           served: false,
           reason: "malformed_context_event",
           messageCount: 0,
+          preview: [],
         };
         return;
       }
@@ -827,10 +814,11 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           served: false,
           reason: `handler_error:${err instanceof Error ? err.message : String(err)}`,
           messageCount: contextMessageCount(event),
+          preview: [],
         };
         return;
       }
-    }) as TestablePiContextHookHandler;
+    };
   };
 
   // Observe-only foundation: the remaining capture-bearing hook (PI's per-step
@@ -868,9 +856,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     session_before_fork: onBeforeFork as PiHookHandler<Epic1Hook>,
   };
 
-  const handlers = {} as Record<Epic1Hook, TestablePiHookHandler<Epic1Hook>> & {
-    context: TestablePiContextHookHandler;
-  };
+  const handlers = {} as Record<Epic1Hook, PiHookHandler<Epic1Hook>> & { context: PiContextHookHandler };
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
   handlers.context = guardContext(onContext);
 

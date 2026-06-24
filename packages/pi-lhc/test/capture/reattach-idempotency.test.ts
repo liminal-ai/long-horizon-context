@@ -40,17 +40,17 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
   it("(1) a fresh connector resuming an existing thread records a new finalized event instead of skipping it", async () => {
     // Session A records one exchange, then shuts down.
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("first")));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first")), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "quit" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, a.ctx);
 
     // A brand-new connector attaches to the SAME thread by id and records a new
     // message — it must NOT be skipped as a prior-key collision.
     const b = await attachCapture(store, { session: threadId }, "resume");
     expect(b.connector.snapshot().lastDiagnostic).toBeNull();
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("second after resume")));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second after resume")), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
     expect(b.connector.snapshot().lastDiagnostic).toBeNull();
 
     const events = await eventsAfterShutdown(b);
@@ -61,14 +61,14 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
   it("(2) a reload onto an existing thread also continues recording new finalized events", async () => {
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("first")));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first")), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "reload" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
     const b = await attachCapture(store, { session: threadId }, "reload");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("second after reload")));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second after reload")), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["first", "second after reload"]);
@@ -78,14 +78,14 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
   it("(2b) a reload re-delivering the same logical events skips them instead of recording duplicates", async () => {
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("first"), "entry-user-1"));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first"), "entry-user-1"), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "reload" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
     const b = await attachCapture(store, { session: threadId }, "reload");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("first"), "entry-user-1"));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first"), "entry-user-1"), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);
@@ -129,18 +129,18 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
   it("(3) normal resume records new messages and does not duplicate the prior session's history", async () => {
     // Session A: one complete turn.
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("first")));
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeAssistantMessage({ text: "answer one" })));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first")), a.ctx);
+    await a.connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "answer one" })), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "quit" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, a.ctx);
 
     // Resume: PI does not re-fire history, so the connector sees only the new
     // turn — which must record, leaving the prior turn intact and un-duplicated.
     const b = await attachCapture(store, { session: threadId }, "resume");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("second")));
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeAssistantMessage({ text: "answer two" })));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second")), b.ctx);
+    await b.connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "answer two" })), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(kindsOf(events)).toEqual([
@@ -194,15 +194,15 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const started = await startCapture(store);
 
     await started.connector.handlers.message_end(
-      started.ctx,
       makeMessageEnd(makeUserMessage("repeatable prompt"), "entry-repeat-1"),
-    );
-    await started.connector.handlers.agent_end(started.ctx, makeAgentEnd([]));
-    await started.connector.handlers.message_end(
       started.ctx,
-      makeMessageEnd(makeUserMessage("repeatable prompt"), "entry-repeat-2"),
     );
-    await started.connector.handlers.agent_end(started.ctx, makeAgentEnd([]));
+    await started.connector.handlers.agent_end(makeAgentEnd([]), started.ctx);
+    await started.connector.handlers.message_end(
+      makeMessageEnd(makeUserMessage("repeatable prompt"), "entry-repeat-2"),
+      started.ctx,
+    );
+    await started.connector.handlers.agent_end(makeAgentEnd([]), started.ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(userTexts(events)).toEqual(["repeatable prompt", "repeatable prompt"]);
@@ -216,14 +216,14 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
   it("(6) skips a same-entry re-delivery after reload by duplicate_idempotency_key", async () => {
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("reload replay"), "entry-replay-1"));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("reload replay"), "entry-replay-1"), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "reload" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
     const b = await attachCapture(store, { session: threadId }, "reload");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("reload replay"), "entry-replay-1"));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("reload replay"), "entry-replay-1"), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["reload replay"]);
@@ -252,16 +252,16 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
   it("(7) records distinct same-content no-entry prompts by PI source position, and skips reload re-delivery of the same position", async () => {
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("same text"), undefined, 40));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("same text"), undefined, 41));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text"), undefined, 40), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text"), undefined, 41), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "reload" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
     const b = await attachCapture(store, { session: threadId }, "reload");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("same text"), undefined, 40));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text"), undefined, 40), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["same text", "same text"]);
@@ -274,14 +274,14 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
   it("(8) skips reload re-delivery of the same no-entry/no-position prompt by connector source order", async () => {
     const a = await startCapture(store);
-    await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("source-order replay")));
-    await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
+    await a.connector.handlers.message_end(makeMessageEnd(makeUserMessage("source-order replay")), a.ctx);
+    await a.connector.handlers.agent_end(makeAgentEnd([]), a.ctx);
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "reload" });
+    await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
     const b = await attachCapture(store, { session: threadId }, "reload");
-    await b.connector.handlers.message_end(b.ctx, makeMessageEnd(makeUserMessage("source-order replay")));
-    await b.connector.handlers.agent_end(b.ctx, makeAgentEnd([]));
+    await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("source-order replay")), b.ctx);
+    await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
     const events = await eventsAfterShutdown(b);
     expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);

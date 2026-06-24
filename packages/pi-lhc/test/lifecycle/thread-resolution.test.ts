@@ -250,7 +250,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     const before = await threadCount();
 
     const connector = productionConnector(() => ({ session: existingId }));
-    await connector.handlers.session_start(syntheticCtx("/work/a"), makeSessionStart("startup"));
+    await connector.handlers.session_start(makeSessionStart("startup"), syntheticCtx("/work/a"));
 
     const state = connector.getState();
     expect(state).not.toBeNull();
@@ -284,7 +284,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     };
 
     const connector = productionConnector(() => ({ resume: true }));
-    await connector.handlers.session_start(ctx, makeSessionStart("resume"));
+    await connector.handlers.session_start(makeSessionStart("resume"), ctx);
 
     expect(selectTitle).toBe("pi-lhc --resume: select a thread");
     expect(selectOptions.some((option) => option.includes("older") && option.includes(older))).toBe(true);
@@ -317,7 +317,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     };
 
     const connector = productionConnector(() => ({ resume: true }));
-    await connector.handlers.session_start(ctx, makeSessionStart("resume"));
+    await connector.handlers.session_start(makeSessionStart("resume"), ctx);
 
     expect(connector.getState()).toBeNull();
     expect(connector.getInstance()).toBeNull();
@@ -330,7 +330,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     const before = await threadCount();
 
     const connector = productionConnector(() => ({ resume: true }));
-    await connector.handlers.session_start(syntheticCtx("/work/headless-many"), makeSessionStart("resume"));
+    await connector.handlers.session_start(makeSessionStart("resume"), syntheticCtx("/work/headless-many"));
 
     expect(connector.getState()).toBeNull();
     expect(connector.getInstance()).toBeNull();
@@ -344,7 +344,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     const connector = productionConnector(() => ({ resume: true }));
     // syntheticCtx has hasUI:false and a no-op notify; the picker must not assume
     // a UI (tech design I-9: guard on headless, not on ctx.ui absence).
-    await connector.handlers.session_start(syntheticCtx("/work/headless"), makeSessionStart("resume"));
+    await connector.handlers.session_start(makeSessionStart("resume"), syntheticCtx("/work/headless"));
 
     const state = connector.getState();
     expect(state).not.toBeNull();
@@ -359,7 +359,7 @@ describe("Story 1: plain-data state across hooks", () => {
     const connector = productionConnector(() => ({})); // no flag → new thread, default config
 
     // session_start with a ctx carrying methods.
-    await connector.handlers.session_start(syntheticCtx("/work/a"), makeSessionStart("new"));
+    await connector.handlers.session_start(makeSessionStart("new"), syntheticCtx("/work/a"));
     expect(connector.getState()).not.toBeNull();
     expect(connector.getInstance()).not.toBeNull(); // a live instance is held...
     // ...but the snapshot is plain data only — it survives structuredClone even
@@ -369,7 +369,7 @@ describe("Story 1: plain-data state across hooks", () => {
 
     // A later hook receives a DIFFERENT ctx object; capture is not broken and the
     // holder still references no prior ctx.
-    await connector.handlers.message_end(syntheticCtx("/work/a"), makeMessageEnd(makeUserMessage("hi")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("hi")), syntheticCtx("/work/a"));
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
     expect(connector.getState()?.threadRef).toEqual(threadRefBefore); // same plain-data thread ref
   });
@@ -383,7 +383,7 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     // Connector A: a no-flag session creates the thread (cwd + default title).
     const connectorA = productionConnector(() => ({}));
     registerConnector(connectorA, entries);
-    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("new"));
+    await connectorA.handlers.session_start(makeSessionStart("new"), syntheticCtx(cwd, entries));
     const stateA = connectorA.getState();
     expect(stateA).not.toBeNull();
     if (stateA === null) return;
@@ -406,11 +406,14 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     // referenced again. PI replays the durable pi-lhc.thread entry through
     // ctx.sessionManager.getEntries(); the fresh connector uses that exact id
     // even though the launch is still no-flag.
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
+    await connectorA.handlers.session_shutdown(
+      { type: "session_shutdown", reason: "reload" },
+      syntheticCtx(cwd, entries),
+    );
 
     const connectorB = productionConnector(() => ({}));
     registerConnector(connectorB, entries);
-    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
+    await connectorB.handlers.session_start(makeSessionStart("reload"), syntheticCtx(cwd, entries));
 
     const stateB = connectorB.getState();
     expect(stateB).not.toBeNull();
@@ -426,16 +429,19 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
 
     const connectorA = productionConnector(() => ({}));
     registerConnector(connectorA, entries);
-    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("new"));
+    await connectorA.handlers.session_start(makeSessionStart("new"), syntheticCtx(cwd, entries));
     const priorId = idOf(connectorA.getState()!.threadRef);
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
+    await connectorA.handlers.session_shutdown(
+      { type: "session_shutdown", reason: "reload" },
+      syntheticCtx(cwd, entries),
+    );
 
     const newerId = await makeThread({ cwd, title: "newer same cwd" });
     expect(newerId).not.toBe(priorId);
 
     const connectorB = productionConnector(() => ({}));
     registerConnector(connectorB, entries);
-    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
+    await connectorB.handlers.session_start(makeSessionStart("reload"), syntheticCtx(cwd, entries));
 
     expect(idOf(connectorB.getState()!.threadRef)).toBe(priorId);
     expect(idOf(connectorB.getState()!.threadRef)).not.toBe(newerId);
@@ -451,12 +457,15 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     // durable registry, independent of any in-memory state.
     const connectorA = productionConnector(() => ({ session: existing }));
     registerConnector(connectorA, entries);
-    await connectorA.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("startup"));
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd, entries), { reason: "reload" });
+    await connectorA.handlers.session_start(makeSessionStart("startup"), syntheticCtx(cwd, entries));
+    await connectorA.handlers.session_shutdown(
+      { type: "session_shutdown", reason: "reload" },
+      syntheticCtx(cwd, entries),
+    );
 
     const connectorB = productionConnector(() => ({ session: existing }));
     registerConnector(connectorB, entries);
-    await connectorB.handlers.session_start(syntheticCtx(cwd, entries), makeSessionStart("reload"));
+    await connectorB.handlers.session_start(makeSessionStart("reload"), syntheticCtx(cwd, entries));
     expect(idOf(connectorB.getState()!.threadRef)).toBe(existing);
     expect(await threadCount()).toBe(before); // no thread created on reload
   });
@@ -467,7 +476,7 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     const before = await threadCount();
 
     const connector = productionConnector(() => ({}));
-    await connector.handlers.session_start(syntheticCtx(cwd), makeSessionStart("reload"));
+    await connector.handlers.session_start(makeSessionStart("reload"), syntheticCtx(cwd));
 
     expect(connector.getState()).toBeNull();
     expect(connector.getInstance()).toBeNull();
@@ -477,13 +486,13 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
   it("a no-flag 'new' session always creates a new thread — reattach is reload-only, keyed on the start reason, not on retained memory", async () => {
     const cwd = "/work/fresh";
     const connectorA = productionConnector(() => ({}));
-    await connectorA.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));
+    await connectorA.handlers.session_start(makeSessionStart("new"), syntheticCtx(cwd));
     const firstId = idOf(connectorA.getState()!.threadRef);
 
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd), { reason: "quit" });
+    await connectorA.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, syntheticCtx(cwd));
 
     const connectorB = productionConnector(() => ({}));
-    await connectorB.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));
+    await connectorB.handlers.session_start(makeSessionStart("new"), syntheticCtx(cwd));
     const secondId = idOf(connectorB.getState()!.threadRef);
 
     expect(secondId).not.toBe(firstId); // a genuinely new session → a new thread

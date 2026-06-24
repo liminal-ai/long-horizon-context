@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "./model-call.js";
 
 const INPUT: ModelCallInput = {
-  provider: "openai",
-  model: "gpt-4o-mini",
+  provider: "openai-codex",
+  model: "gpt-5.4",
   messages: [{ role: "user", content: "hi" }],
 };
 
@@ -25,10 +25,10 @@ describe("model-call fakes", () => {
 
   it("fakeModelCallRouter routes by provider/model and fails closed on an unrouted key", async () => {
     const router = fakeModelCallRouter({
-      "openai/gpt-4o-mini": fakeModelCallText("from openai"),
+      "openai-codex/gpt-5.4": fakeModelCallText("from openai-codex"),
       "anthropic/claude-3": fakeModelCallText("from anthropic"),
     });
-    expect(await router(INPUT)).toEqual({ ok: true, text: "from openai" });
+    expect(await router(INPUT)).toEqual({ ok: true, text: "from openai-codex" });
     expect(await router({ ...INPUT, provider: "anthropic", model: "claude-3" })).toEqual({
       ok: true,
       text: "from anthropic",

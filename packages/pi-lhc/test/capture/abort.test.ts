@@ -27,14 +27,14 @@ describe("Story 2: graceful interrupt (TC-2.6)", () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("write a long essay")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("write a long essay")), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({ thinking: "starting the essay", text: "Once upon a", stopReason: "aborted" }),
       ),
+      ctx,
     );
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     // A graceful interrupt is not a capture failure.
     expect(connector.snapshot().lastDiagnostic).toBeNull();

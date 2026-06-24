@@ -106,7 +106,7 @@
   - artifacts/05-real-inference-suite-and-capstone/005-verify.json (pass after keyed-run evidence; follow-up retained session)
 - Story Gate: cd packages/lhc && pnpm run verify — pass
 - Completion Gate: pnpm run verify-all — pass (40 files / 377 passed, 9 env-gated keyed legs skipped with visible NOT-RAN accounting)
-- KEYED RUN RECEIPT (DoD): date 2026-06-12, model openai/gpt-4o-mini (fixture default, LHC_OPENROUTER_MODEL unset), 13/13 pass, exactly one accounting line "RAN: real-inference (model openai/gpt-4o-mini)"; ran twice (19:39 and 19:51 local); verbose log /tmp/lbuild-run/keyed-run-verbose.txt; key sourced from /Users/leemoore/.lhc/openrouter.env, never echoed or committed
+- KEYED RUN RECEIPT (DoD): date 2026-06-12, model openai/gpt-5.4-mini (fixture default, LHC_OPENROUTER_MODEL unset), 13/13 pass, exactly one accounting line "RAN: real-inference (model openai/gpt-5.4-mini)"; ran twice (19:39 and 19:51 local); verbose log /tmp/lbuild-run/keyed-run-verbose.txt; key sourced from /Users/leemoore/.lhc/openrouter.env, never echoed or committed
 - Dispositions: none open
 - Open Risks: none
 - Baseline Before: 365
@@ -139,7 +139,7 @@
 - Epic Review Status: pass (both reviewers pass, zero blocking findings; ruling-020 ratified; 5 non-blocking findings)
 - Epic Fix Status: cleaned (fix batch artifacts/fix/001-epic-fix-batch.md applied: E05-NB-1 verify-all delegates to verify, E05-NB-2 PROMPT_NAMES/DEFAULT_PROMPT_NAMES exported via SDK with retirement snapshot updated, E05-NB-5 epic.md status + AC-5.3 ruling-020 qualifier; epic-fix envelope itself hit PROVIDER_OUTPUT_INVALID after edits were applied — fixes verified by impl-lead via diff + gate)
 - Epic Reverify Status: ready-for-closeout (artifacts/epic/ reverify envelope)
-- Final Gate Status: pass — 2026-06-12, pnpm run verify-all exit 0, 40 files, 377 passed + 9 env-gated keyed legs (keyed path separately proven 13/13 on 2026-06-12 with openai/gpt-4o-mini)
+- Final Gate Status: pass — 2026-06-12, pnpm run verify-all exit 0, 40 files, 377 passed + 9 env-gated keyed legs (keyed path separately proven 13/13 on 2026-06-12 with openai/gpt-5.4-mini)
 - Deferred non-blocking findings: E05-NB-3 (turn-derivation work item re-runs rendering when only projection fails — optimization, backlog), E05-NB-4 (describe.runIf skips alongside single accounting line — cosmetic, accepted)
 
 ## Open Risks / Accepted Risks

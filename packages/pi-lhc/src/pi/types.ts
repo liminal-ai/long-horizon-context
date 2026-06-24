@@ -13,8 +13,7 @@
 
 // ── Hook vocabulary ──────────────────────────────────────────────────
 
-/** Hooks the connector knows about. `context` is fired by PI but this connector
- *  registers no handler for it. */
+/** Hooks the connector knows about. */
 export type PiHookName =
   | "session_start"
   | "message_end"

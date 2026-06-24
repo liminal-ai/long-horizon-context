@@ -57,7 +57,7 @@ describe("Story 1: instance lifecycle", () => {
       startupValidationReporter: () => {},
     });
 
-    await connector.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));
+    await connector.handlers.session_start(makeSessionStart("new"), syntheticCtx(cwd));
 
     // A real instance was constructed in background scheduler mode (no
     // fail-closed early return).
@@ -92,7 +92,7 @@ describe("Story 1: instance lifecycle", () => {
     if (overview.ok) expect(overview.value.events.count).toBe(0);
 
     // Shutdown disposes the live instance.
-    await connector.handlers.session_shutdown(syntheticCtx(cwd), { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, syntheticCtx(cwd));
     expect(connector.getInstance()).toBeNull();
   });
 

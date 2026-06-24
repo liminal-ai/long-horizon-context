@@ -42,9 +42,8 @@ describe("Story 2: converter — capture and fan-out (TC-2.1)", () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("read the file")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("read the file")), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({
           thinking: "I should open it",
@@ -52,9 +51,10 @@ describe("Story 2: converter — capture and fan-out (TC-2.1)", () => {
           toolCalls: [{ id: "call_x", name: "read_file", arguments: { path: "notes.txt" } }],
         }),
       ),
+      ctx,
     );
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_x", content: "file body" })));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeToolResult({ id: "call_x", content: "file body" })), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     // No silent capture failure on the happy path.
     expect(connector.snapshot().lastDiagnostic).toBeNull();
@@ -88,27 +88,33 @@ describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
     const user = makeUserMessage("go");
     const assistant = makeAssistantMessage({ text: "done" });
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(user));
+    await connector.handlers.message_end(makeMessageEnd(user), ctx);
     appendPiMessage(ctx, "pi-user-1", user);
     ctx.sessionManager
       .getEntries()
       .push({ type: "model_change", id: "pi-model-1", parentId: "pi-user-1", provider: "openai", modelId: "gpt-4o" });
-    await connector.handlers.model_select(ctx, {
-      type: "model_select",
-      model: { provider: "openai", id: "gpt-4o" },
-      previousModel: { provider: "anthropic", id: "claude-3" },
-    });
+    await connector.handlers.model_select(
+      {
+        type: "model_select",
+        model: { provider: "openai", id: "gpt-4o" },
+        previousModel: { provider: "anthropic", id: "claude-3" },
+      },
+      ctx,
+    );
     ctx.sessionManager
       .getEntries()
       .push({ type: "thinking_level_change", id: "pi-thinking-1", parentId: "pi-model-1", thinkingLevel: "high" });
-    await connector.handlers.thinking_level_select(ctx, {
-      type: "thinking_level_select",
-      level: "high",
-      previousLevel: "low",
-    });
-    await connector.handlers.message_end(ctx, makeMessageEnd(assistant));
+    await connector.handlers.thinking_level_select(
+      {
+        type: "thinking_level_select",
+        level: "high",
+        previousLevel: "low",
+      },
+      ctx,
+    );
+    await connector.handlers.message_end(makeMessageEnd(assistant), ctx);
     appendPiMessage(ctx, "pi-assistant-1", assistant);
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     // Ordering relative to the surrounding messages is preserved.
@@ -131,11 +137,11 @@ describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
     ctx.sessionManager
       .getEntries()
       .push({ type: "model_change", id: "pi-model-a", parentId: null, provider: "openai", modelId: "gpt-4o" });
-    await connector.handlers.model_select(ctx, event);
+    await connector.handlers.model_select(event, ctx);
     ctx.sessionManager
       .getEntries()
       .push({ type: "model_change", id: "pi-model-b", parentId: "pi-model-a", provider: "openai", modelId: "gpt-4o" });
-    await connector.handlers.model_select(ctx, event);
+    await connector.handlers.model_select(event, ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual(["model_change", "model_change"]);
@@ -149,8 +155,8 @@ describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
     const { connector, ctx } = started;
     const event = { type: "model_select" as const, model: { provider: "openai", id: "gpt-4o" } };
 
-    await connector.handlers.model_select(ctx, event);
-    await connector.handlers.model_select(ctx, event);
+    await connector.handlers.model_select(event, ctx);
+    await connector.handlers.model_select(event, ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual(["model_change", "model_change"]);
@@ -166,9 +172,9 @@ describe("Story 2: converter — connector fallback idempotency", () => {
     const { connector, ctx } = started;
     const message = { role: "user" as const, content: "plain string prompt" };
 
-    await connector.handlers.message_end(ctx, { type: "message_end", message });
+    await connector.handlers.message_end({ type: "message_end", message }, ctx);
     appendPiMessage(ctx, "pi-string-user", message);
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);
@@ -182,11 +188,11 @@ describe("Story 2: converter — connector fallback idempotency", () => {
     const first = { role: "user" as const, content: "same text" };
     const second = { role: "user" as const, content: "same text" };
 
-    await connector.handlers.message_end(ctx, { type: "message_end", message: first });
+    await connector.handlers.message_end({ type: "message_end", message: first }, ctx);
     appendPiMessage(ctx, "pi-user-1", first);
-    await connector.handlers.message_end(ctx, { type: "message_end", message: second });
+    await connector.handlers.message_end({ type: "message_end", message: second }, ctx);
     appendPiMessage(ctx, "pi-user-2", second);
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     const promptKeys = events.filter((event) => event.eventKind === "user_prompt").map((event) => event.idempotencyKey);
@@ -199,17 +205,17 @@ describe("Story 2: converter — connector fallback idempotency", () => {
     const { connector, ctx, threadRef } = started;
     const message = { role: "user" as const, content: "reload replay" };
 
-    await connector.handlers.message_end(ctx, { type: "message_end", message });
+    await connector.handlers.message_end({ type: "message_end", message }, ctx);
     appendPiMessage(ctx, "pi-replay-user", message);
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const before = await intakeStream.listEvents(threadRef);
     expect(before.ok).toBe(true);
     if (!before.ok) return;
     expect(kindsOf(before.value)).toEqual(["user_prompt", "turn_end"]);
 
-    await connector.handlers.message_end(ctx, { type: "message_end", message });
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end({ type: "message_end", message }, ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const after = await intakeStream.listEvents(threadRef);
     expect(after.ok).toBe(true);
@@ -220,8 +226,8 @@ describe("Story 2: converter — connector fallback idempotency", () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("same text")));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("same text")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text")), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text")), ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual(["user_prompt", "user_prompt"]);
@@ -316,15 +322,15 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
 
     // The hook must not throw despite the dead store.
     await expect(
-      connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("after the store died"))),
+      connector.handlers.message_end(makeMessageEnd(makeUserMessage("after the store died")), ctx),
     ).resolves.toBeUndefined();
-    await expect(connector.handlers.agent_end(ctx, makeAgentEnd([]))).resolves.toBeUndefined();
+    await expect(connector.handlers.agent_end(makeAgentEnd([]), ctx)).resolves.toBeUndefined();
 
     const health = connector.getState()?.health.lastCaptureFailure;
     expect(health).toBeDefined();
     expect(health?.recordedGap).toBe(false);
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
   });
 
   it("(c) an unmappable hook input on a writable thread records a durable gap, surfaces in health, and does not throw", async () => {
@@ -332,12 +338,9 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     const { connector, ctx, threadRef } = started;
 
     await expect(
-      connector.handlers.message_end(ctx, {
-        position: "at",
-        message: { role: "badRole", content: [] } as never,
-      }),
+      connector.handlers.message_end({ type: "message_end", message: { role: "badRole", content: [] } as never }, ctx),
     ).resolves.toBeUndefined();
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("session continues"), undefined, 72));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("session continues"), undefined, 72), ctx);
 
     const read = await intakeStream.listEvents(threadRef);
     expect(read.ok).toBe(true);
@@ -360,7 +363,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
       attempts: 0,
     });
 
-    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+    await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
     const events = await intakeStream.listEvents(threadRef);
     expect(events.ok).toBe(true);
     if (events.ok) expect(events.value.some((event) => textOf(event) === "session continues")).toBe(true);

@@ -34,7 +34,7 @@ function textOf(event: MessageEventInput): string {
 
 // A PI per-step turn_end payload (ignored by the converter as a boundary).
 function piTurnEnd(turnIndex: number) {
-  return { turnIndex, message: makeAssistantMessage({ text: "step" }), toolResults: [] };
+  return { type: "turn_end" as const, turnIndex, message: makeAssistantMessage({ text: "step" }), toolResults: [] };
 }
 
 describe("Story 2: turn derivation — worked example (TC-2.2)", () => {
@@ -42,9 +42,8 @@ describe("Story 2: turn derivation — worked example (TC-2.2)", () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("ask one question")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("ask one question")), ctx);
     await connector.handlers.message_end(
-      ctx,
       makeMessageEnd(
         makeAssistantMessage({
           thinking: "two tools needed",
@@ -54,14 +53,15 @@ describe("Story 2: turn derivation — worked example (TC-2.2)", () => {
           ],
         }),
       ),
+      ctx,
     );
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_b", content: "b" })));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeToolResult({ id: "call_a", content: "a" })));
+    await connector.handlers.message_end(makeMessageEnd(makeToolResult({ id: "call_b", content: "b" })), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeToolResult({ id: "call_a", content: "a" })), ctx);
     // PI fires a per-step turn_end here — it must NOT become an LHC turn_end.
-    await connector.handlers.turn_end(ctx, piTurnEnd(0));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "the answer" })));
-    await connector.handlers.turn_end(ctx, piTurnEnd(1));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.turn_end(piTurnEnd(0), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "the answer" })), ctx);
+    await connector.handlers.turn_end(piTurnEnd(1), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual([
@@ -90,15 +90,15 @@ describe("Story 2: turn derivation — source order, not turnIndex (TC-2.3)", ()
     const { connector, ctx, threadRef } = started;
 
     // Run 1 (PI turnIndex 0)
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("first prompt")));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "first answer" })));
-    await connector.handlers.turn_end(ctx, piTurnEnd(0));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("first prompt")), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "first answer" })), ctx);
+    await connector.handlers.turn_end(piTurnEnd(0), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
     // Run 2 (PI turnIndex 0 AGAIN — the reset-per-run counter)
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("second prompt")));
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "second answer" })));
-    await connector.handlers.turn_end(ctx, piTurnEnd(0));
-    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("second prompt")), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "second answer" })), ctx);
+    await connector.handlers.turn_end(piTurnEnd(0), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
 
     const events = await eventsAfterShutdown(started);
     expect(kindsOf(events)).toEqual([
@@ -155,7 +155,7 @@ describe("Story 2: turn derivation — hard-kill golden", () => {
 
     // Hard kill: a user message lands, then the process dies — no assistant
     // close, no agent_end.
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("dangling prompt")));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("dangling prompt")), ctx);
     await connector.getInstance()?.sdk.drainSettled(threadRef);
 
     const counts = await turnCounts(threadRef);

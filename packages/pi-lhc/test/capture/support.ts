@@ -100,7 +100,7 @@ export async function attachCapture(
   const entries = entriesFor(store);
   registerConnector(connector, entries);
   const ctx = syntheticCtx(cwd, entries);
-  await connector.handlers.session_start(ctx, makeSessionStart(reason));
+  await connector.handlers.session_start(makeSessionStart(reason), ctx);
   const state = connector.getState();
   if (state === null) throw new Error("attachCapture: session_start did not resolve a thread");
   return { connector, ctx, threadRef: state.threadRef };
@@ -116,7 +116,7 @@ export async function startCapture(store: TempStore, cwd = "/work/capture"): Pro
  *  recorded order — capture's product is the stored thread, so tests assert on
  *  this. */
 export async function eventsAfterShutdown(started: StartedCapture): Promise<MessageEventInput[]> {
-  await started.connector.handlers.session_shutdown(started.ctx, { reason: "shutdown" });
+  await started.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, started.ctx);
   const read = await intakeStream.listEvents(started.threadRef);
   if (!read.ok) throw new Error(`listEvents failed: ${read.error.reason}`);
   // Strip the server-stamped fields so the comparison is over the logical

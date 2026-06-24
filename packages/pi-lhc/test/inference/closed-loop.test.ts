@@ -40,22 +40,29 @@ async function captureClosedTurn(
 ): Promise<void> {
   const user = makeUserMessage(userText);
   const assistant = makeAssistantMessage({ text: assistantText });
-  await connector.handlers.message_end(ctx, {
-    type: "message_end",
-    message: user,
-    entryId: `${userText}-user`,
-  });
+  await connector.handlers.message_end(
+    {
+      type: "message_end",
+      message: user,
+    },
+    ctx,
+  );
   entries.push({ type: "message", id: `${userText}-user`, parentId: null, message: user });
-  await connector.handlers.message_end(ctx, {
-    type: "message_end",
-    message: assistant,
-    entryId: `${userText}-assistant`,
-  });
+  await connector.handlers.message_end(
+    {
+      type: "message_end",
+      message: assistant,
+    },
+    ctx,
+  );
   entries.push({ type: "message", id: `${userText}-assistant`, parentId: `${userText}-user`, message: assistant });
-  await connector.handlers.agent_end(ctx, {
-    type: "agent_end",
-    messages: [user, assistant],
-  });
+  await connector.handlers.agent_end(
+    {
+      type: "agent_end",
+      messages: [user, assistant],
+    },
+    ctx,
+  );
 }
 
 describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
@@ -84,7 +91,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
 
   afterEach(async () => {
     if (threadRef !== null) {
-      await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+      await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
     }
     store.cleanup();
   });
@@ -110,7 +117,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       buildSdkConfig: () => ({ ok: true, value: sdkConfig }),
       startupValidationReporter: () => {},
     });
-    await connector.handlers.session_start(ctx, { reason: "new" });
+    await connector.handlers.session_start({ type: "session_start", reason: "new" }, ctx);
     const instance = connector.getInstance();
     const state = connector.getState();
     expect(instance).not.toBeNull();
@@ -178,7 +185,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       buildSdkConfig: () => ({ ok: true, value: sdkConfig }),
       startupValidationReporter: () => {},
     });
-    await connector.handlers.session_start(ctx, { reason: "new" });
+    await connector.handlers.session_start({ type: "session_start", reason: "new" }, ctx);
     const instance = connector.getInstance();
     const state = connector.getState();
     expect(instance).not.toBeNull();
@@ -188,23 +195,30 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
 
     const user = makeUserMessage("first prompt");
     const assistant = makeAssistantMessage({ text: "first response" });
-    await connector.handlers.message_end(ctx, {
-      type: "message_end",
-      message: user,
-      entryId: "stale-user",
-    });
+    await connector.handlers.message_end(
+      {
+        type: "message_end",
+        message: user,
+      },
+      ctx,
+    );
     entries.push({ type: "message", id: "stale-user", parentId: null, message: user });
-    await connector.handlers.message_end(ctx, {
-      type: "message_end",
-      message: assistant,
-      entryId: "stale-assistant",
-    });
+    await connector.handlers.message_end(
+      {
+        type: "message_end",
+        message: assistant,
+      },
+      ctx,
+    );
     await firstStarted.promise;
     entries.push({ type: "message", id: "stale-assistant", parentId: "stale-user", message: assistant });
-    await connector.handlers.agent_end(ctx, {
-      type: "agent_end",
-      messages: [user, assistant],
-    });
+    await connector.handlers.agent_end(
+      {
+        type: "agent_end",
+        messages: [user, assistant],
+      },
+      ctx,
+    );
 
     const beforeEdit = await instance.sdk.messages.list(threadRef);
     expect(beforeEdit.ok).toBe(true);
