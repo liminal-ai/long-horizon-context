@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { activate, createConnector, disposeInstance, EPIC_1_HOOKS, initInstance } from "../../src/index.js";
+import {
+  activate,
+  CONNECTOR_HOOKS,
+  createConnector,
+  disposeInstance,
+  EPIC_1_HOOKS,
+  initInstance,
+} from "../../src/index.js";
 import { createSessionState } from "../../src/lifecycle/state.js";
 import type { ExtensionAPI, ExtensionContext, PiHookName } from "../../src/pi/types.js";
 import { makeAgentEnd, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
@@ -25,19 +32,19 @@ function recordingPi(): {
   const handlers: Partial<Record<PiHookName, (...args: unknown[]) => unknown>> = {};
   const commands: string[] = [];
   const tools: string[] = [];
-  const pi: ExtensionAPI = {
-    on(name, handler) {
+  const pi = {
+    on(name: PiHookName, handler: (...args: unknown[]) => unknown) {
       registered.push(name);
-      handlers[name] = handler as (...args: unknown[]) => unknown;
+      handlers[name] = handler;
     },
-    registerCommand(name) {
+    registerCommand(name: string) {
       commands.push(name);
     },
-    registerTool(tool) {
+    registerTool(tool: { name: string }) {
       tools.push(tool.name);
     },
     appendEntry() {},
-  };
+  } as ExtensionAPI;
   return { pi, registered, handlers, commands, tools };
 }
 
@@ -58,14 +65,14 @@ function syntheticCtx(marker: string): ExtensionContext {
 }
 
 describe("extension load + hook rail", () => {
-  it("registers exactly the Epic 1 observe-only hook rail and not the context hook", () => {
+  it("registers Epic 1 capture hooks plus the context hook", () => {
     const { pi, registered, commands, tools } = recordingPi();
     activate(pi);
 
-    expect(new Set(registered)).toEqual(new Set(EPIC_1_HOOKS));
-    expect(registered).toHaveLength(9);
-    expect(registered).not.toContain("context"); // context serving is Epic 2
-    // observe-only: no operator commands / agent tools registered yet (Epic 3)
+    expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
+    expect(registered).toHaveLength(EPIC_1_HOOKS.length + 1);
+    expect(registered).toContain("context");
+    // no operator commands / agent tools registered yet (Feature 3)
     expect(commands).toEqual([]);
     expect(tools).toEqual([]);
   });
@@ -105,6 +112,7 @@ describe("extension load + hook rail", () => {
     // retained state is plain data: structuredClone throws on a stored PI ctx (it
     // has methods); the live LhcInstance is held but excluded from the snapshot.
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
+    expect(connector.snapshot().lastContextServe).toBeNull();
   });
 
   it("keeps SessionState plain-data-only — it survives structuredClone with every field populated", () => {

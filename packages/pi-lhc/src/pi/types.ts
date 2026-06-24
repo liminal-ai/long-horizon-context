@@ -77,10 +77,14 @@ export interface SessionShutdownEvent {
   reason: SessionShutdownReason;
   targetSessionFile?: string;
 }
-/** Declared for completeness; the connector registers no handler for it. */
 export interface ContextEvent {
   type: "context";
   messages: AgentMessage[];
+}
+
+/** Return shape PI's `context` hook expects when replacing messages. */
+export interface ContextEventResult {
+  messages?: AgentMessage[];
 }
 
 /** Maps each hook to the payload PI delivers with it. */
@@ -105,6 +109,12 @@ export type PiHookHandler<N extends PiHookName> = (
   ctx: ExtensionContext,
 ) => void | Promise<void>;
 
+/** The `context` hook may return replacement messages; void/undefined keeps PI's input. */
+export type PiContextHookHandler = (
+  event: ContextEvent,
+  ctx: ExtensionContext,
+) => ContextEventResult | undefined | Promise<ContextEventResult | undefined>;
+
 // ── Registration-time API (the `pi` object, ExtensionAPI) ────────────
 
 export type PiCommandHandler = (args: string[], ctx: ExtensionContext) => void | Promise<void>;
@@ -122,7 +132,8 @@ export interface PiToolSpec {
  *  `registerCommand`/`registerTool`/`appendEntry` are declared because PI
  *  exposes them, though this connector registers only hooks. */
 export interface ExtensionAPI {
-  on<N extends PiHookName>(name: N, handler: PiHookHandler<N>): void;
+  on<N extends Exclude<PiHookName, "context">>(name: N, handler: PiHookHandler<N>): void;
+  on(name: "context", handler: PiContextHookHandler): void;
   registerCommand(name: string, options: { handler: PiCommandHandler; description?: string }): void;
   registerTool(tool: PiToolSpec): void;
   appendEntry(customType: string, data: unknown): void;
