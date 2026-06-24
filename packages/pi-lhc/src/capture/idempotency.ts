@@ -39,16 +39,16 @@ export function eventKey(input: EventKeyInput): string {
   // Tier 1 — PI entry id: the most stable identity, present on real
   // finalized message; disambiguated by block + kind for the fan-out.
   if (entryId !== undefined && entryId !== "") {
-    return `pi:${piSessionId}:${entryId}:${blockIndex}:${kind}`;
+    return `pi:${piSessionId}:entry:${encodeURIComponent(entryId)}:block:${blockIndex}:kind:${kind}`;
   }
   // Tier 2 — tool-call id: stable across re-delivery and independent of arrival
   // order; kind separates the call from its result under the same id.
   if (toolCallId !== undefined && toolCallId !== "") {
-    return `pi:${piSessionId}:tool:${toolCallId}:${kind}`;
+    return `pi:${piSessionId}:tool:${encodeURIComponent(toolCallId)}:kind:${kind}`;
   }
   // Tier 3 — provider response id: stable per assistant response.
   if (responseId !== undefined && responseId !== "") {
-    return `pi:${piSessionId}:resp:${responseId}:${blockIndex}:${kind}`;
+    return `pi:${piSessionId}:resp:${encodeURIComponent(responseId)}:block:${blockIndex}:kind:${kind}`;
   }
   // Tier 4 — content fingerprint: last resort for an event with no id at all.
   // Include any caller-supplied stable discriminator; content alone is never
@@ -57,4 +57,40 @@ export function eventKey(input: EventKeyInput): string {
   const fallbackId = input.fallbackId ?? "no-stable-id";
   const fp = fingerprint(fallbackId, role, kind, input.content ?? "");
   return `pi:${piSessionId}:fp:${fallbackId}:${blockIndex}:${role}:${kind}:${fp}`;
+}
+
+export interface ParsedEventKeySource {
+  entryId?: string;
+  toolCallId?: string;
+  responseId?: string;
+}
+
+function decode(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+export function parseEventKeySource(key: string): ParsedEventKeySource | null {
+  const entry = /^pi:.*:entry:([^:]+):block:\d+:kind:[^:]+$/.exec(key);
+  if (entry?.[1] !== undefined) {
+    const entryId = decode(entry[1]);
+    return entryId === null ? null : { entryId };
+  }
+
+  const tool = /^pi:.*:tool:([^:]+):kind:[^:]+$/.exec(key);
+  if (tool?.[1] !== undefined) {
+    const toolCallId = decode(tool[1]);
+    return toolCallId === null ? null : { toolCallId };
+  }
+
+  const response = /^pi:.*:resp:([^:]+):block:\d+:kind:[^:]+$/.exec(key);
+  if (response?.[1] !== undefined) {
+    const responseId = decode(response[1]);
+    return responseId === null ? null : { responseId };
+  }
+
+  return null;
 }

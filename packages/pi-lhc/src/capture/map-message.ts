@@ -35,6 +35,16 @@ export const ABORTED_DISPOSITION_TEXT = "turn aborted (stopReason: aborted) — 
 
 const EMPTY_MESSAGE_NOTE = "message omitted: no mappable content parts";
 
+function partsOf(msg: AgentMessage): ContentPart[] {
+  switch (msg.role) {
+    case "user":
+      return typeof msg.content === "string" ? [{ type: "text", text: msg.content }] : msg.content;
+    case "assistant":
+    case "toolResult":
+      return msg.content;
+  }
+}
+
 function textOf(parts: ContentPart[]): string {
   return parts
     .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
@@ -90,10 +100,6 @@ function stringField(value: unknown, field: string): string | undefined {
   return typeof candidate === "string" && candidate !== "" ? candidate : undefined;
 }
 
-function entryIdOf(msg: AgentMessage): string | undefined {
-  return stringField(msg, "entryId");
-}
-
 function responseIdOf(msg: AgentMessage): string | undefined {
   return stringField(msg, "responseId") ?? stringField(msg, "id");
 }
@@ -136,24 +142,17 @@ function toolResultEvent(toolCallId: string, content: string, isError: boolean, 
 
 function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
   const events: MessageEventInput[] = [];
-  const entryId = entryIdOf(msg);
+  const parts = partsOf(msg);
   let block = 0;
-  if (msg.content.some((p) => p.type === "text")) {
-    const text = textOf(msg.content);
-    events.push(
-      textEvent("user_prompt", text, "user", buildKey(ctx, "user", "user_prompt", block, { entryId, content: text })),
-    );
+  if (parts.some((p) => p.type === "text")) {
+    const text = textOf(parts);
+    events.push(textEvent("user_prompt", text, "user", buildKey(ctx, "user", "user_prompt", block, { content: text })));
     block += 1;
   }
-  for (const part of unsupportedOf(msg.content)) {
+  for (const part of unsupportedOf(parts)) {
     const text = omissionText(part);
     events.push(
-      textEvent(
-        "runtime_note",
-        text,
-        "system",
-        buildKey(ctx, "user", "runtime_note", block, { entryId, content: text }),
-      ),
+      textEvent("runtime_note", text, "system", buildKey(ctx, "user", "runtime_note", block, { content: text })),
     );
     block += 1;
   }
@@ -163,7 +162,7 @@ function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
         "runtime_note",
         EMPTY_MESSAGE_NOTE,
         "system",
-        buildKey(ctx, "user", "runtime_note", block, { entryId, content: "empty:user" }),
+        buildKey(ctx, "user", "runtime_note", block, { content: "empty:user" }),
       ),
     );
   }
@@ -172,35 +171,35 @@ function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
 
 function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   const events: MessageEventInput[] = [];
-  const entryId = entryIdOf(msg);
   const responseId = responseIdOf(msg);
+  const parts = partsOf(msg);
   let block = 0;
   // PI's confirmed part order: thinking → text → tool calls (research §5a).
-  if (msg.content.some((p) => p.type === "thinking")) {
-    const text = thinkingOf(msg.content);
+  if (parts.some((p) => p.type === "thinking")) {
+    const text = thinkingOf(parts);
     events.push(
       textEvent(
         "assistant_thinking",
         text,
         "assistant",
-        buildKey(ctx, "assistant", "assistant_thinking", block, { entryId, responseId, content: text }),
+        buildKey(ctx, "assistant", "assistant_thinking", block, { responseId, content: text }),
       ),
     );
     block += 1;
   }
-  if (msg.content.some((p) => p.type === "text")) {
-    const text = textOf(msg.content);
+  if (parts.some((p) => p.type === "text")) {
+    const text = textOf(parts);
     events.push(
       textEvent(
         "assistant_text",
         text,
         "assistant",
-        buildKey(ctx, "assistant", "assistant_text", block, { entryId, responseId, content: text }),
+        buildKey(ctx, "assistant", "assistant_text", block, { responseId, content: text }),
       ),
     );
     block += 1;
   }
-  for (const part of msg.content) {
+  for (const part of parts) {
     if (part.type !== "toolCall") continue;
     events.push(
       toolCallEvent(
@@ -208,7 +207,6 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
         part.name,
         part.arguments,
         buildKey(ctx, "assistant", "tool_call", block, {
-          entryId,
           responseId,
           toolCallId: part.id,
           content: part.name,
@@ -217,14 +215,14 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
     );
     block += 1;
   }
-  for (const part of unsupportedOf(msg.content)) {
+  for (const part of unsupportedOf(parts)) {
     const text = omissionText(part);
     events.push(
       textEvent(
         "runtime_note",
         text,
         "system",
-        buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: text }),
+        buildKey(ctx, "assistant", "runtime_note", block, { responseId, content: text }),
       ),
     );
     block += 1;
@@ -236,7 +234,7 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
         "runtime_note",
         ABORTED_DISPOSITION_TEXT,
         "system",
-        buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: ABORTED_DISPOSITION_TEXT }),
+        buildKey(ctx, "assistant", "runtime_note", block, { responseId, content: ABORTED_DISPOSITION_TEXT }),
       ),
     );
     block += 1;
@@ -247,7 +245,7 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
         "runtime_note",
         EMPTY_MESSAGE_NOTE,
         "system",
-        buildKey(ctx, "assistant", "runtime_note", block, { entryId, responseId, content: "empty:assistant" }),
+        buildKey(ctx, "assistant", "runtime_note", block, { responseId, content: "empty:assistant" }),
       ),
     );
   }
@@ -256,8 +254,8 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
 
 function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[] {
   const events: MessageEventInput[] = [];
-  const entryId = entryIdOf(msg);
-  const content = textOf(msg.content);
+  const parts = partsOf(msg);
+  const content = textOf(parts);
   const isError = msg.isError === true;
   // Correlation is by toolCallId, not arrival order; the error flag and content
   // are always captured, even on failure.
@@ -266,11 +264,11 @@ function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[]
       msg.toolCallId,
       content,
       isError,
-      buildKey(ctx, "toolResult", "tool_result", 0, { entryId, toolCallId: msg.toolCallId, content }),
+      buildKey(ctx, "toolResult", "tool_result", 0, { toolCallId: msg.toolCallId, content }),
     ),
   );
   let block = 1;
-  for (const [partIndex, part] of unsupportedOf(msg.content).entries()) {
+  for (const [partIndex, part] of unsupportedOf(parts).entries()) {
     const text = omissionText(part);
     events.push(
       textEvent(
@@ -278,7 +276,6 @@ function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[]
         text,
         "system",
         buildKey(ctx, "toolResult", "runtime_note", block, {
-          entryId,
           toolCallId: `${msg.toolCallId}:omission:${partIndex}`,
           content: text,
         }),

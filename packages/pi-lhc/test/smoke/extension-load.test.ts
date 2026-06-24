@@ -17,15 +17,18 @@ afterEach(() => {
 function recordingPi(): {
   pi: ExtensionAPI;
   registered: PiHookName[];
+  handlers: Partial<Record<PiHookName, (...args: unknown[]) => unknown>>;
   commands: string[];
   tools: string[];
 } {
   const registered: PiHookName[] = [];
+  const handlers: Partial<Record<PiHookName, (...args: unknown[]) => unknown>> = {};
   const commands: string[] = [];
   const tools: string[] = [];
   const pi: ExtensionAPI = {
-    registerHook(name) {
+    on(name, handler) {
       registered.push(name);
+      handlers[name] = handler as (...args: unknown[]) => unknown;
     },
     registerCommand(name) {
       commands.push(name);
@@ -35,7 +38,7 @@ function recordingPi(): {
     },
     appendEntry() {},
   };
-  return { pi, registered, commands, tools };
+  return { pi, registered, handlers, commands, tools };
 }
 
 // A synthetic per-hook ctx carrying METHODS (not plain data) and a unique
@@ -67,6 +70,23 @@ describe("extension load + hook rail", () => {
     expect(tools).toEqual([]);
   });
 
+  it("registers current PI-shape on(event, handler) handlers and accepts event before ctx", async () => {
+    const { pi, handlers } = recordingPi();
+    const connector = createConnector({
+      registryPath: store.registryPath,
+      newThreadFilePath: () => store.threadPath(),
+      parseLaunch: () => ({}),
+      startupValidationReporter: () => {},
+    });
+    connector.register(pi);
+
+    const ctx = syntheticCtx("current-pi-order");
+    await handlers.session_start?.(makeSessionStart("startup"), ctx);
+    await handlers.message_end?.(makeMessageEnd(makeUserMessage("hi")), ctx);
+
+    expect(connector.getState()).not.toBeNull();
+  });
+
   it("routes every hook to a guarded handler that never throws into PI and retains only plain data", async () => {
     // Production defaults, but the registry/thread-file are redirected to a temp
     // store so the smoke test never writes the real ~/.lhc.
@@ -77,9 +97,9 @@ describe("extension load + hook rail", () => {
       startupValidationReporter: () => {},
     });
     // fire several hooks with DISTINCT ctx objects carrying methods
-    await connector.handlers.session_start(syntheticCtx("ctx-1"), makeSessionStart("startup"));
-    await connector.handlers.message_end(syntheticCtx("ctx-2"), makeMessageEnd(makeUserMessage("hi")));
-    await connector.handlers.agent_end(syntheticCtx("ctx-3"), makeAgentEnd([]));
+    await connector.handlers.session_start(makeSessionStart("startup"), syntheticCtx("ctx-1"));
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("hi")), syntheticCtx("ctx-2"));
+    await connector.handlers.agent_end(makeAgentEnd([]), syntheticCtx("ctx-3"));
 
     // (the awaits above completing is the "never throws into PI" assertion)
     // retained state is plain data: structuredClone throws on a stored PI ctx (it

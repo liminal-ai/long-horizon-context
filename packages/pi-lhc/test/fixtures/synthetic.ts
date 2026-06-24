@@ -106,18 +106,18 @@ export function makeSessionStart(
   reason: SessionStartReason = "startup",
   previousSessionFile?: string,
 ): SessionStartEvent {
-  const ev: SessionStartEvent = { reason };
+  const ev: SessionStartEvent = { type: "session_start", reason };
   if (previousSessionFile !== undefined) ev.previousSessionFile = previousSessionFile;
   return ev;
 }
 
-export function makeMessageEnd(message: AgentMessage, entryId?: string, position?: number): MessageEndEvent {
-  const ev: MessageEndEvent = { message };
-  if (entryId !== undefined) ev.entryId = entryId;
-  if (position !== undefined) ev.position = position;
-  return ev;
+export function makeMessageEnd(message: AgentMessage, _entryId?: string, _position?: number): MessageEndEvent {
+  const event = { type: "message_end", message } as MessageEndEvent & { entryId?: string; position?: number };
+  if (_entryId !== undefined) event.entryId = _entryId;
+  if (_position !== undefined) event.position = _position;
+  return event;
 }
 
 export function makeAgentEnd(messages: AgentMessage[]): AgentEndEvent {
-  return { messages };
+  return { type: "agent_end", messages };
 }

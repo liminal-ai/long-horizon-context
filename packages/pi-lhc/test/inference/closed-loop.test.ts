@@ -4,7 +4,7 @@ import type { ModelAssignment, ModelCall, ModelCallResult, SdkConfig, ThreadRef 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Connector, createConnector } from "../../src/index.js";
 import { type AssignmentKind, defaultAssignments } from "../../src/inference/model-call.js";
-import type { ExtensionContext } from "../../src/pi/types.js";
+import type { ExtensionContext, SessionEntry } from "../../src/pi/types.js";
 import { fakeModelCallFailure, fakeModelCallRouter, fakeModelCallText } from "../fixtures/model-call.js";
 import { makeAssistantMessage, makeUserMessage } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
@@ -34,19 +34,27 @@ function assignments(
 async function captureClosedTurn(
   connector: Connector,
   ctx: ExtensionContext,
+  entries: SessionEntry[],
   userText: string,
   assistantText: string,
 ): Promise<void> {
+  const user = makeUserMessage(userText);
+  const assistant = makeAssistantMessage({ text: assistantText });
   await connector.handlers.message_end(ctx, {
-    message: makeUserMessage(userText),
+    type: "message_end",
+    message: user,
     entryId: `${userText}-user`,
   });
+  entries.push({ type: "message", id: `${userText}-user`, parentId: null, message: user });
   await connector.handlers.message_end(ctx, {
-    message: makeAssistantMessage({ text: assistantText }),
+    type: "message_end",
+    message: assistant,
     entryId: `${userText}-assistant`,
   });
+  entries.push({ type: "message", id: `${userText}-assistant`, parentId: `${userText}-user`, message: assistant });
   await connector.handlers.agent_end(ctx, {
-    messages: [makeUserMessage(userText), makeAssistantMessage({ text: assistantText })],
+    type: "agent_end",
+    messages: [user, assistant],
   });
 }
 
@@ -54,11 +62,13 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
   let store: TempStore;
   let connector: Connector;
   let ctx: ExtensionContext;
+  let entries: SessionEntry[];
   let threadRef: ThreadRef | null;
 
   beforeEach(() => {
     store = tempStore();
     threadRef = null;
+    entries = [];
     ctx = {
       cwd: "/test/closed-loop",
       hasUI: false,
@@ -68,13 +78,13 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
         getAvailable: () => [{ provider: "openai", id: "good" }],
       },
       ui: { notify: () => {} },
-      sessionManager: { getEntries: () => [] },
+      sessionManager: { getEntries: () => entries },
     };
   });
 
   afterEach(async () => {
     if (threadRef !== null) {
-      await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+      await connector.handlers.session_shutdown(ctx, { reason: "quit" });
     }
     store.cleanup();
   });
@@ -108,7 +118,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     if (instance === null || state === null) return;
     threadRef = state.threadRef;
 
-    await captureClosedTurn(connector, ctx, "please summarize this file", "here is the summary");
+    await captureClosedTurn(connector, ctx, entries, "please summarize this file", "here is the summary");
     await instance.sdk.drainSettled(threadRef);
 
     const health = await instance.sdk.inspect.health(threadRef);
@@ -176,24 +186,31 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     if (instance === null || state === null) return;
     threadRef = state.threadRef;
 
+    const user = makeUserMessage("first prompt");
+    const assistant = makeAssistantMessage({ text: "first response" });
     await connector.handlers.message_end(ctx, {
-      message: makeUserMessage("first prompt"),
+      type: "message_end",
+      message: user,
       entryId: "stale-user",
     });
-    await firstStarted.promise;
+    entries.push({ type: "message", id: "stale-user", parentId: null, message: user });
     await connector.handlers.message_end(ctx, {
-      message: makeAssistantMessage({ text: "first response" }),
+      type: "message_end",
+      message: assistant,
       entryId: "stale-assistant",
     });
+    await firstStarted.promise;
+    entries.push({ type: "message", id: "stale-assistant", parentId: "stale-user", message: assistant });
     await connector.handlers.agent_end(ctx, {
-      messages: [makeUserMessage("first prompt"), makeAssistantMessage({ text: "first response" })],
+      type: "agent_end",
+      messages: [user, assistant],
     });
 
     const beforeEdit = await instance.sdk.messages.list(threadRef);
     expect(beforeEdit.ok).toBe(true);
     if (!beforeEdit.ok) return;
-    const user = beforeEdit.value.find((message) => message.kind === "user_prompt");
-    expect(user?.messageId).toBe("m1");
+    const userMessage = beforeEdit.value.find((message) => message.kind === "user_prompt");
+    expect(userMessage?.messageId).toBe("m1");
 
     const editedText = "edited prompt wins";
     const edit = await instance.sdk.messages.edit(threadRef, {

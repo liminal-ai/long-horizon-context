@@ -92,7 +92,7 @@ describe("Story 1: instance lifecycle", () => {
     if (overview.ok) expect(overview.value.events.count).toBe(0);
 
     // Shutdown disposes the live instance.
-    await connector.handlers.session_shutdown(syntheticCtx(cwd), { reason: "shutdown" });
+    await connector.handlers.session_shutdown(syntheticCtx(cwd), { reason: "quit" });
     expect(connector.getInstance()).toBeNull();
   });
 

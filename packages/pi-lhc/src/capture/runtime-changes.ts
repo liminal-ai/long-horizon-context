@@ -2,11 +2,11 @@ import type { MessageEventInput } from "lhc";
 import { eventKey } from "./idempotency.js";
 import type { MapCtx } from "./map-message.js";
 
-// model_select / thinking_level_select hooks become runtime_note events in
-// order relative to surrounding messages. PI fires these only in-stream and no
-// durable record holds them otherwise, so they are captured the moment they
-// fire. They ride the existing `runtime_note` kind, with text structured enough
-// to recover the change.
+// model_select / thinking_level_select hooks become typed LHC runtime-change
+// events in order relative to surrounding messages. Current PI persists the
+// change entry before emitting the hook; index.ts supplies that entry id when
+// available so repeated same-value changes remain distinct and redelivery
+// dedupes.
 
 const HARNESS = "pi";
 
@@ -19,45 +19,49 @@ function describeModel(model: ModelDescriptor): string {
   return `${model.provider}/${model.id}`;
 }
 
-/** Note text for a model change — carries the new and previous model. */
-export function formatModelChange(ev: { model: ModelDescriptor; previousModel?: ModelDescriptor }): string {
-  const to = describeModel(ev.model);
-  const from = ev.previousModel !== undefined ? describeModel(ev.previousModel) : "(none)";
-  return `model changed: ${from} → ${to}`;
+function runtimeKey(kind: "model_change" | "thinking_level_change", ctx: MapCtx, content: string): string {
+  return eventKey({
+    piSessionId: ctx.piSessionId,
+    entryId: ctx.entryId,
+    fallbackId: ctx.fallbackId,
+    blockIndex: 0,
+    kind,
+    role: "system",
+    content,
+  });
 }
 
-/** Note text for a thinking-level change — carries the new and previous level. */
-export function formatThinkingLevelChange(ev: { level: string; previousLevel: string }): string {
-  return `thinking level changed: ${ev.previousLevel} → ${ev.level}`;
-}
-
-function runtimeNote(text: string, ctx: MapCtx): MessageEventInput {
+function modelChange(previousModel: string, newModel: string, ctx: MapCtx): MessageEventInput {
   return {
-    eventKind: "runtime_note",
-    idempotencyKey: eventKey({
-      piSessionId: ctx.piSessionId,
-      entryId: ctx.entryId,
-      fallbackId: ctx.fallbackId,
-      blockIndex: 0,
-      kind: "runtime_note",
-      role: "system",
-      content: text,
-    }),
+    eventKind: "model_change",
+    idempotencyKey: runtimeKey("model_change", ctx, `${previousModel}->${newModel}`),
     actor: "system",
     harness: HARNESS,
-    payload: { text },
+    payload: { previousModel, newModel },
   };
 }
 
-/** One `runtime_note` recording the new + previous model. */
+function thinkingLevelChange(previousLevel: string, newLevel: string, ctx: MapCtx): MessageEventInput {
+  return {
+    eventKind: "thinking_level_change",
+    idempotencyKey: runtimeKey("thinking_level_change", ctx, `${previousLevel}->${newLevel}`),
+    actor: "system",
+    harness: HARNESS,
+    payload: { previousLevel, newLevel },
+  };
+}
+
+/** One typed `model_change` recording the new + previous model. */
 export function mapModelSelect(
   ev: { model: ModelDescriptor; previousModel?: ModelDescriptor },
   ctx: MapCtx,
 ): MessageEventInput {
-  return runtimeNote(formatModelChange(ev), ctx);
+  const newModel = describeModel(ev.model);
+  const previousModel = ev.previousModel !== undefined ? describeModel(ev.previousModel) : "(none)";
+  return modelChange(previousModel, newModel, ctx);
 }
 
-/** One `runtime_note` recording the new + previous thinking level. */
+/** One typed `thinking_level_change` recording the new + previous thinking level. */
 export function mapThinkingLevelSelect(ev: { level: string; previousLevel: string }, ctx: MapCtx): MessageEventInput {
-  return runtimeNote(formatThinkingLevelChange(ev), ctx);
+  return thinkingLevelChange(ev.previousLevel, ev.level, ctx);
 }

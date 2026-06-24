@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import type { MessageEventInput, OpResult, ThreadRef } from "lhc";
+import { parseEventKeySource } from "../capture/idempotency.js";
 import type { ExtensionContext, SessionStartEvent } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
 
@@ -105,8 +106,8 @@ function readSessionEntries(filePath: string): { readonly [k: string]: unknown }
 }
 
 /** Extract fork info from a `session_before_fork` hook payload. The hook
- *  provides `entryId` and optional `position` identifying the fork point. */
-export function forkInfoFromHook(entryId: string, _position?: number): Omit<ForkInfo, "sourceThreadRef"> {
+ *  provides the PI SessionEntry id identifying the fork point. */
+export function forkInfoFromHook(entryId: string, _position?: "before" | "at"): Omit<ForkInfo, "sourceThreadRef"> {
   return { forkEntryId: entryId };
 }
 
@@ -115,17 +116,16 @@ export function forkInfoFromHook(entryId: string, _position?: number): Omit<Fork
  *  Derived derivations requeue rather than copy.
  *
  * Replay reads events from the source thread, filters to those up to and
- * including the fork point (by entryId match on idempotency key), and writes
+ * including the fork point (by parsed PI entry source identity), and writes
  * them through the instance's intake path. This preserves event order, dedup
  * keys, and all logical content — the seeded thread's read-back matches the
  * source's read-back through the fork point.
  *
  * The forkEntryId is PI's entry identifier for the session entry at the fork
- * point. During capture, this entryId was encoded into idempotency keys as
- * `pi:<piSessionId>:<entryId>:<blockIndex>:<kind>`. We match events that
- * contain this entryId in their key (any piSessionId, any block/kind), then
- * include all events up to and including the turn_end that closes the turn at
- * the fork point. */
+ * point. LHC does not yet expose a first-class source-metadata field on intake
+ * events, so capture stores PI source identity in a structured idempotency key
+ * tier and this adapter parses that tier. The limitation is deliberately
+ * narrow: fork replay never substring-searches arbitrary key text. */
 export async function seedFork(
   source: ThreadRef,
   target: ThreadRef,
@@ -147,10 +147,9 @@ export async function seedFork(
     };
   }
 
-  // Find the fork point event(s) by entryId match. The entryId appears in the
-  // idempotency key as `:<entryId>:` (Tier 1 format). We match any event whose
-  // key contains `:${forkEntryId}:` regardless of piSessionId.
-  const forkPointEvents = events.value.filter((event) => event.idempotencyKey.includes(`:${forkEntryId}:`));
+  const forkPointEvents = events.value.filter(
+    (event) => parseEventKeySource(event.idempotencyKey)?.entryId === forkEntryId,
+  );
 
   if (forkPointEvents.length === 0) {
     return {

@@ -30,7 +30,14 @@ import {
   resolveThread,
   threadRefById,
 } from "./lifecycle/thread-resolution.js";
-import type { ExtensionAPI, ExtensionContext, PiHookHandler, PiHookName } from "./pi/types.js";
+import type {
+  AgentMessage,
+  ExtensionAPI,
+  ExtensionContext,
+  PiHookHandler,
+  PiHookName,
+  SessionEntry,
+} from "./pi/types.js";
 import type { LhcInstance } from "./shared/instance.js";
 
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
@@ -95,8 +102,12 @@ export interface Connector {
   snapshot(): ConnectorSnapshot;
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
-  readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>>>;
+  readonly handlers: Readonly<Record<Epic1Hook, TestablePiHookHandler<Epic1Hook>>>;
 }
+
+type LegacyHookHandler<_N extends PiHookName> = (ctx: ExtensionContext, event: unknown) => void | Promise<void>;
+
+type TestablePiHookHandler<N extends PiHookName> = PiHookHandler<N> & LegacyHookHandler<N>;
 
 /** The connector's live capture state for one session: the open-turn
  *  accumulator plus the stable PI session id used to scope idempotency keys.
@@ -106,6 +117,16 @@ interface CaptureSession {
   piSessionId: string;
   accumulator: TurnAccumulator;
   sourceSeq: number;
+  pendingMessages: PendingMessage[];
+  claimedEntryIds: Set<string>;
+}
+
+interface PendingMessage {
+  message: AgentMessage;
+  beforeCount: number;
+  beforeEntryIds: Set<string>;
+  fallbackId: string;
+  legacyEntryId?: string | undefined;
 }
 
 /** Fork state captured from `session_before_fork` and used on the next
@@ -141,7 +162,12 @@ function readDurableThreadId(ctx: ExtensionContext): string | null {
   const entries = ctx.sessionManager.getEntries();
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
-    if (entry === undefined || entry.type !== THREAD_ENTRY_TYPE) continue;
+    if (
+      entry === undefined ||
+      (entry.type !== THREAD_ENTRY_TYPE && !(entry.type === "custom" && entry.customType === THREAD_ENTRY_TYPE))
+    ) {
+      continue;
+    }
     const data =
       typeof entry.data === "object" && entry.data !== null ? (entry.data as Record<string, unknown>) : entry;
     const threadId = data.threadId;
@@ -193,12 +219,12 @@ function renderResumeCandidates(choices: readonly ThreadChoice[]): string {
 async function defaultSelectThread(choices: readonly ThreadChoice[], ctx: ExtensionContext): Promise<string | null> {
   if (choices.length === 0) return null;
   if (choices.length === 1) {
-    if (ctx.hasUI) ctx.ui.notify(renderResumeCandidates(choices), { level: "info" });
+    if (ctx.hasUI) ctx.ui.notify(renderResumeCandidates(choices), "info");
     return choices[0]?.threadId ?? null;
   }
 
   if (!ctx.hasUI || ctx.ui.select === undefined) {
-    if (ctx.hasUI) ctx.ui.notify(renderResumeCandidates(choices), { level: "warn" });
+    if (ctx.hasUI) ctx.ui.notify(renderResumeCandidates(choices), "warning");
     return null;
   }
 
@@ -286,7 +312,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // thread is re-resolved from the durable registry (reattach, never create);
   // every other reason runs the normal launch resolution. Fork creates a new
   // thread and seeds it from the source thread.
-  const onSessionStart: PiHookHandler<"session_start"> = async (ctx, event) => {
+  const onSessionStart: PiHookHandler<"session_start"> = async (event, ctx) => {
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       lastDiagnostic = diag("instance_not_configured", config.error.reason);
@@ -444,6 +470,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       piSessionId,
       accumulator: new TurnAccumulator({ piSessionId }),
       sourceSeq: 0,
+      pendingMessages: [],
+      claimedEntryIds: new Set(),
     };
 
     // Probe inference assignments before first use. Validation failures are
@@ -465,7 +493,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // pre-new/resume) and on shutdown/reload. Idempotent: disposing twice or with
   // no live instance is a no-op. No reload-handoff state is kept — a reload
   // re-resolves its thread from the durable registry on the next session_start.
-  const onDispose: PiHookHandler<Epic1Hook> = async () => {
+  const onDispose: PiHookHandler<Epic1Hook> = async (_event, ctx) => {
+    await flushPendingMessages(ctx);
     const result = await disposeInstance(instance);
     if (!result.ok) lastDiagnostic = diag("dispose_failed", result.error.reason);
     instance = null;
@@ -495,23 +524,17 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     return sourceSeq;
   }
 
-  function fallbackIdFor(kind: string, position: number | undefined, sourceSeq: number): string {
-    // Last-resort id-less discriminator. PI position wins when present; the
-    // connector ordinal is used only when PI gives no event identity at all.
-    // For id-less + position-less reload replay, PI's deterministic redelivery
-    // order yields the same ordinal, which is the best identity available.
-    return position !== undefined ? `${kind}:${position}` : `${kind}:sourceSeq:${sourceSeq}`;
+  function fallbackIdFor(kind: string, sourceSeq: number): string {
+    // Last-resort discriminator. Current PI gives message identity through the
+    // persisted SessionEntry, so this path is for malformed/unmatched inputs or
+    // a future host that exposes neither an entry id nor a durable position.
+    return `${kind}:sourceSeq:${sourceSeq}`;
   }
 
-  async function recordMappingFailure(
-    hook: string,
-    position: number | undefined,
-    sourceSeq: number,
-    cause: unknown,
-  ): Promise<void> {
+  async function recordMappingFailure(hook: string, sourceSeq: number, cause: unknown): Promise<void> {
     if (instance === null) return;
     const message = cause instanceof Error ? cause.message : String(cause);
-    const result = await captureGap(fallbackIdFor(hook, position, sourceSeq), `${hook}: ${message}`, instance);
+    const result = await captureGap(fallbackIdFor(hook, sourceSeq), `${hook}: ${message}`, instance);
     if (!result.ok) {
       recordCaptureOutcome(result, []);
       return;
@@ -525,58 +548,176 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     if (state !== null) state.health.lastCaptureFailure = failure;
   }
 
-  // message_end: map the finalized PI message to ordered LHC events, track the
-  // open turn, and flush through the converter.
-  const onMessageEnd: PiHookHandler<"message_end"> = async (_ctx, event) => {
-    if (instance === null || captureSession === null) return;
-    const sourceSeq = nextSourceSeq(captureSession);
-    const mapCtx: MapCtx =
-      event.entryId !== undefined && event.entryId !== ""
-        ? { piSessionId: captureSession.piSessionId, entryId: event.entryId }
-        : {
-            piSessionId: captureSession.piSessionId,
-            fallbackId: fallbackIdFor("message_end", event.position, sourceSeq),
-          };
-    let events: MessageEventInput[];
-    try {
-      events = mapMessage(event.message, mapCtx);
-    } catch (cause) {
-      await recordMappingFailure("message_end", event.position, sourceSeq, cause);
-      return;
+  function sortedJson(value: unknown): string {
+    return JSON.stringify(sortKeys(value));
+  }
+
+  function sortKeys(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sortKeys);
+    if (value !== null && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        out[key] = sortKeys((value as Record<string, unknown>)[key]);
+      }
+      return out;
     }
-    captureSession.accumulator.onMessage(events);
-    if (events.length === 0) return;
-    recordCaptureOutcome(await capture(events, instance), events);
+    return value;
+  }
+
+  function sameMessage(left: AgentMessage, right: AgentMessage): boolean {
+    return sortedJson(left) === sortedJson(right);
+  }
+
+  function entryIdOf(entry: SessionEntry): string | null {
+    return typeof entry.id === "string" && entry.id !== "" ? entry.id : null;
+  }
+
+  function stringField(record: unknown, field: string): string | null {
+    if (typeof record !== "object" || record === null) return null;
+    const value = (record as Record<string, unknown>)[field];
+    return typeof value === "string" && value !== "" ? value : null;
+  }
+
+  function numberField(record: unknown, field: string): number | null {
+    if (typeof record !== "object" || record === null) return null;
+    const value = (record as Record<string, unknown>)[field];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function isMatchingMessageEntry(entry: SessionEntry, message: AgentMessage): boolean {
+    return entry.type === "message" && entry.message !== undefined && sameMessage(entry.message, message);
+  }
+
+  function findPersistedEntryId(
+    ctx: ExtensionContext,
+    session: CaptureSession,
+    pending: PendingMessage,
+  ): string | null {
+    const entries = ctx.sessionManager.getEntries();
+    const appended = entries.slice(pending.beforeCount);
+
+    for (const entry of appended) {
+      const id = entryIdOf(entry);
+      if (id === null || pending.beforeEntryIds.has(id) || session.claimedEntryIds.has(id)) continue;
+      if (!isMatchingMessageEntry(entry, pending.message)) continue;
+      return id;
+    }
+
+    // Redelivery of an already-persisted PI message can arrive with no newly
+    // appended entry. Use the latest matching session entry so the idempotency
+    // key lands on the same persisted PI entry instead of connector sourceSeq.
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry === undefined) continue;
+      const id = entryIdOf(entry);
+      if (id === null) continue;
+      if (!isMatchingMessageEntry(entry, pending.message)) continue;
+      return id;
+    }
+
+    if (pending.legacyEntryId !== undefined) return pending.legacyEntryId;
+    return null;
+  }
+
+  async function flushPendingMessages(ctx: ExtensionContext): Promise<void> {
+    if (instance === null || captureSession === null || captureSession.pendingMessages.length === 0) return;
+    const pending = captureSession.pendingMessages.splice(0);
+    for (const message of pending) {
+      const persistedEntryId = findPersistedEntryId(ctx, captureSession, message);
+      if (persistedEntryId !== null) captureSession.claimedEntryIds.add(persistedEntryId);
+      const mapCtx: MapCtx =
+        persistedEntryId !== null
+          ? { piSessionId: captureSession.piSessionId, entryId: persistedEntryId }
+          : { piSessionId: captureSession.piSessionId, fallbackId: message.fallbackId };
+
+      let events: MessageEventInput[];
+      try {
+        events = mapMessage(message.message, mapCtx);
+      } catch (cause) {
+        await recordMappingFailure("message_end", nextSourceSeq(captureSession), cause);
+        continue;
+      }
+      captureSession.accumulator.onMessage(events);
+      if (events.length === 0) continue;
+      recordCaptureOutcome(await capture(events, instance), events);
+    }
+  }
+
+  function latestRuntimeEntryId(
+    ctx: ExtensionContext,
+    kind: "model_change" | "thinking_level_change",
+    matches: (entry: SessionEntry) => boolean,
+  ): string | null {
+    const entries = ctx.sessionManager.getEntries();
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry === undefined || entry.type !== kind || !matches(entry)) continue;
+      return entryIdOf(entry);
+    }
+    return null;
+  }
+
+  // message_end: map the finalized PI message to ordered LHC events, track the
+  // open turn, and flush through the converter after PI persists the message
+  // entry. Current PI appends the SessionEntry after message_end handlers
+  // return, so this hook queues the message and the next hook flushes the prior
+  // pending message against ctx.sessionManager.getEntries().
+  const onMessageEnd: PiHookHandler<"message_end"> = async (event, ctx) => {
+    if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
+    const sourceSeq = nextSourceSeq(captureSession);
+    const entries = ctx.sessionManager.getEntries();
+    const legacyEntryId = stringField(event, "entryId") ?? undefined;
+    const legacyPosition = numberField(event, "position");
+    captureSession.pendingMessages.push({
+      message: event.message,
+      beforeCount: entries.length,
+      beforeEntryIds: new Set(entries.map(entryIdOf).filter((id): id is string => id !== null)),
+      fallbackId: legacyPosition !== null ? `message_end:${legacyPosition}` : fallbackIdFor("message_end", sourceSeq),
+      legacyEntryId,
+    });
   };
 
   // model_select / thinking_level_select fire only in-stream; capture each as
-  // an ordered runtime_note the moment it fires.
-  const onModelSelect: PiHookHandler<"model_select"> = async (_ctx, event) => {
+  // typed LHC events. PI persists these entries before emitting the hook, so
+  // the current SessionEntry id is available synchronously.
+  const onModelSelect: PiHookHandler<"model_select"> = async (event, ctx) => {
     if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
     const sourceSeq = nextSourceSeq(captureSession);
+    const entryId = latestRuntimeEntryId(
+      ctx,
+      "model_change",
+      (entry) => entry.provider === event.model.provider && entry.modelId === event.model.id,
+    );
     const mapCtx: MapCtx = {
       piSessionId: captureSession.piSessionId,
-      fallbackId: fallbackIdFor("model_select", event.position, sourceSeq),
+      entryId: entryId ?? undefined,
+      fallbackId: fallbackIdFor("model_select", sourceSeq),
     };
-    const note = mapModelSelect(event, mapCtx);
-    recordCaptureOutcome(await capture([note], instance), [note]);
+    const change = mapModelSelect(event, mapCtx);
+    recordCaptureOutcome(await capture([change], instance), [change]);
   };
 
-  const onThinkingLevelSelect: PiHookHandler<"thinking_level_select"> = async (_ctx, event) => {
+  const onThinkingLevelSelect: PiHookHandler<"thinking_level_select"> = async (event, ctx) => {
     if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
     const sourceSeq = nextSourceSeq(captureSession);
+    const entryId = latestRuntimeEntryId(ctx, "thinking_level_change", (entry) => entry.thinkingLevel === event.level);
     const mapCtx: MapCtx = {
       piSessionId: captureSession.piSessionId,
-      fallbackId: fallbackIdFor("thinking_level_select", event.position, sourceSeq),
+      entryId: entryId ?? undefined,
+      fallbackId: fallbackIdFor("thinking_level_select", sourceSeq),
     };
-    const note = mapThinkingLevelSelect(event, mapCtx);
-    recordCaptureOutcome(await capture([note], instance), [note]);
+    const change = mapThinkingLevelSelect(event, mapCtx);
+    recordCaptureOutcome(await capture([change], instance), [change]);
   };
 
   // agent_end closes the LHC turn exactly once per agent run.
   // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
-  const onAgentEnd: PiHookHandler<"agent_end"> = async () => {
+  const onAgentEnd: PiHookHandler<"agent_end"> = async (_event, ctx) => {
     if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
     const turnEnd = captureSession.accumulator.onAgentEnd();
     if (turnEnd.length === 0) return;
     recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
@@ -585,10 +726,22 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
-  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): PiHookHandler<Epic1Hook> => {
-    return async (ctx, event): Promise<void> => {
+  function looksLikeCtx(value: unknown): value is ExtensionContext {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "sessionManager" in value &&
+      "modelRegistry" in value &&
+      "cwd" in value
+    );
+  }
+
+  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): TestablePiHookHandler<Epic1Hook> => {
+    return (async (first: unknown, second: unknown): Promise<void> => {
+      const event = (looksLikeCtx(first) ? second : first) as Parameters<PiHookHandler<Epic1Hook>>[0];
+      const ctx = (looksLikeCtx(first) ? first : second) as ExtensionContext;
       try {
-        await body(ctx, event);
+        await body(event, ctx);
       } catch (err) {
         lastDiagnostic = {
           code: "hook_handler_error",
@@ -596,7 +749,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           recordedGap: false,
         };
       }
-    };
+    }) as TestablePiHookHandler<Epic1Hook>;
   };
 
   // Observe-only foundation: the remaining capture-bearing hook (PI's per-step
@@ -610,8 +763,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // The source thread ref is captured from the current session state; the hook
   // provides entryId/position identifying the fork point. No writes to the source
   // thread occur; the fork happens on the next session_start.
-  const onBeforeFork: PiHookHandler<"session_before_fork"> = async (_ctx, event) => {
+  const onBeforeFork: PiHookHandler<"session_before_fork"> = async (event, ctx) => {
     if (state === null) return;
+    await flushPendingMessages(ctx);
     const forkInfo = forkInfoFromHook(event.entryId, event.position);
     // Store the fork info for use on session_start{fork}.
     pendingFork = {
@@ -633,7 +787,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     session_before_fork: onBeforeFork as PiHookHandler<Epic1Hook>,
   };
 
-  const handlers = {} as Record<Epic1Hook, PiHookHandler<Epic1Hook>>;
+  const handlers = {} as Record<Epic1Hook, TestablePiHookHandler<Epic1Hook>>;
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
 
   return {
@@ -642,7 +796,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       appendThreadEntry = (entry) => {
         pi.appendEntry(THREAD_ENTRY_TYPE, entry);
       };
-      for (const name of EPIC_1_HOOKS) pi.registerHook(name, handlers[name]);
+      for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
     },
     getState(): SessionState | null {
       return state;

@@ -89,11 +89,11 @@ function productionConnector(launch: () => { resume?: boolean; continue?: boolea
 
 function registerConnector(connector: ReturnType<typeof createConnector>, entries: SessionEntry[]): void {
   const pi: ExtensionAPI = {
-    registerHook: () => {},
+    on: () => {},
     registerCommand: () => {},
     registerTool: () => {},
     appendEntry: (type, data) => {
-      entries.push({ type, data });
+      entries.push({ type: "custom", customType: type, data });
     },
   };
   connector.register(pi);
@@ -390,7 +390,8 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     const firstId = idOf(stateA.threadRef);
     const countAfterNew = await threadCount();
     expect(entries.at(-1)).toEqual({
-      type: "pi-lhc.thread",
+      type: "custom",
+      customType: "pi-lhc.thread",
       data: { threadId: firstId, registryPath: store.registryPath },
     });
 
@@ -479,7 +480,7 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     await connectorA.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));
     const firstId = idOf(connectorA.getState()!.threadRef);
 
-    await connectorA.handlers.session_shutdown(syntheticCtx(cwd), { reason: "shutdown" });
+    await connectorA.handlers.session_shutdown(syntheticCtx(cwd), { reason: "quit" });
 
     const connectorB = productionConnector(() => ({}));
     await connectorB.handlers.session_start(syntheticCtx(cwd), makeSessionStart("new"));

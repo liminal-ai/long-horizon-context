@@ -23,7 +23,45 @@ afterEach(() => {
   store.cleanup();
 });
 
+function appendPiMessage(ctx: { sessionManager: { getEntries(): unknown[] } }, id: string, message: unknown): void {
+  ctx.sessionManager.getEntries().push({ type: "message", id, parentId: null, message });
+}
+
 describe("Story 4: fork as new thread", () => {
+  it("finds the fork cutoff from current PI persisted entry identity, not idempotency string search", async () => {
+    const started = await startCapture(store, "/work/fork-current-pi");
+    const { connector, ctx } = started;
+    const forkEntryId = "pi-current-fork-entry";
+    const user = makeUserMessage("current PI source prompt");
+    const assistant = makeAssistantMessage({ text: "current PI source response" });
+
+    await connector.handlers.message_end(ctx, { type: "message_end", message: user });
+    appendPiMessage(ctx, forkEntryId, user);
+    await connector.handlers.message_end(ctx, { type: "message_end", message: assistant });
+    appendPiMessage(ctx, "pi-current-assistant-entry", assistant);
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    await connector.handlers.session_before_fork(ctx, {
+      type: "session_before_fork",
+      entryId: forkEntryId,
+      position: "at",
+    });
+    await connector.handlers.session_start(ctx, { type: "session_start", reason: "fork" });
+
+    const state = connector.getState();
+    expect(state).not.toBeNull();
+    if (state === null) return;
+
+    const forkedEvents = await intakeStream.listEvents(state.threadRef);
+    expect(forkedEvents.ok).toBe(true);
+    if (forkedEvents.ok) {
+      expect(kindsOf(forkedEvents.value)).toEqual(["user_prompt", "assistant_text", "turn_end"]);
+      expect(forkedEvents.value[0]!.idempotencyKey).toContain(encodeURIComponent(forkEntryId));
+    }
+
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
+  });
+
   it("TC-3.1 (risk: source-vs-derived): fork creates a new thread; source receives no writes", async () => {
     const started = await startCapture(store, "/work/fork-source");
     const { connector, ctx, threadRef: sourceRef } = started;
@@ -51,7 +89,7 @@ describe("Story 4: fork as new thread", () => {
     const sourceEventsBefore = await eventsAfterShutdown(started);
 
     // Simulate a fork: fire session_before_fork with the fork entryId.
-    await connector.handlers.session_before_fork(ctx, { entryId: forkEntryId, position: 10 });
+    await connector.handlers.session_before_fork(ctx, { entryId: forkEntryId, position: "at" });
 
     // print-mode --fork can report reason=startup; detection comes from the hook data.
     await connector.handlers.session_start(ctx, { reason: "startup" });
@@ -76,7 +114,7 @@ describe("Story 4: fork as new thread", () => {
     }
 
     // Shut down the forked session.
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
   });
 
   it("TC-3.1 fallback: detects fork from PI session tree parentId chain when hook is absent", async () => {
@@ -120,7 +158,7 @@ describe("Story 4: fork as new thread", () => {
       expect(kindsOf(forkedEvents.value)).toEqual(["user_prompt", "assistant_text", "turn_end"]);
     }
 
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
   });
 
   it("TC-3.2: fork seeded by replay; read-back matches source through fork point", async () => {
@@ -143,7 +181,7 @@ describe("Story 4: fork as new thread", () => {
     const expectedSeed = kindsOf(sourceEvents.value);
 
     // Simulate fork at the current position.
-    await connector.handlers.session_before_fork(ctx, { entryId: sourceEntryId, position: 3 });
+    await connector.handlers.session_before_fork(ctx, { entryId: sourceEntryId, position: "at" });
 
     // Start the forked session.
     await connector.handlers.session_start(ctx, { reason: "fork" });
@@ -164,7 +202,7 @@ describe("Story 4: fork as new thread", () => {
       expect(forkedKinds).toEqual(expectedSeed);
     }
 
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
   });
 
   it("TC-3.3: forms requeue on fork (v1: no copy)", async () => {
@@ -193,7 +231,7 @@ describe("Story 4: fork as new thread", () => {
       ui: { notify: () => {} },
       sessionManager: {
         // Provide session entries with entryId for fallback fork detection.
-        getEntries: () => [{ type: "message_end", entryId: "source-entry-1", position: 1 }],
+        getEntries: () => [{ type: "message_end", entryId: "source-entry-1", position: "at" }],
       },
     };
 
@@ -249,7 +287,7 @@ describe("Story 4: fork as new thread", () => {
     const forkInstance = connector.getInstance();
     if (forkInstance) await forkInstance.dispose();
 
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
 
     // Final verification: source and forked threads have different forms.
     // The forked thread's forms were derived fresh, not copied.

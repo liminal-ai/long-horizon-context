@@ -33,6 +33,10 @@ function textOf(event: MessageEventInput): string {
   return (event.payload as { text?: string }).text ?? "";
 }
 
+function appendPiMessage(ctx: { sessionManager: { getEntries(): unknown[] } }, id: string, message: unknown): void {
+  ctx.sessionManager.getEntries().push({ type: "message", id, parentId: null, message });
+}
+
 describe("Story 2: converter — capture and fan-out (TC-2.1)", () => {
   it("records a user/assistant/toolResult sequence in source order, fanning the assistant out thinking → text → tool_call", async () => {
     const started = await startCapture(store);
@@ -78,58 +82,78 @@ describe("Story 2: converter — capture and fan-out (TC-2.1)", () => {
 });
 
 describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
-  it("captures model_select and thinking_level_select as ordered runtime_notes carrying new + previous values", async () => {
+  it("captures model_select and thinking_level_select as ordered typed events carrying new + previous values", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
+    const user = makeUserMessage("go");
+    const assistant = makeAssistantMessage({ text: "done" });
 
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("go")));
+    await connector.handlers.message_end(ctx, makeMessageEnd(user));
+    appendPiMessage(ctx, "pi-user-1", user);
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "model_change", id: "pi-model-1", parentId: "pi-user-1", provider: "openai", modelId: "gpt-4o" });
     await connector.handlers.model_select(ctx, {
+      type: "model_select",
       model: { provider: "openai", id: "gpt-4o" },
       previousModel: { provider: "anthropic", id: "claude-3" },
     });
-    await connector.handlers.thinking_level_select(ctx, { level: "high", previousLevel: "low" });
-    await connector.handlers.message_end(ctx, makeMessageEnd(makeAssistantMessage({ text: "done" })));
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "thinking_level_change", id: "pi-thinking-1", parentId: "pi-model-1", thinkingLevel: "high" });
+    await connector.handlers.thinking_level_select(ctx, {
+      type: "thinking_level_select",
+      level: "high",
+      previousLevel: "low",
+    });
+    await connector.handlers.message_end(ctx, makeMessageEnd(assistant));
+    appendPiMessage(ctx, "pi-assistant-1", assistant);
     await connector.handlers.agent_end(ctx, makeAgentEnd([]));
 
     const events = await eventsAfterShutdown(started);
     // Ordering relative to the surrounding messages is preserved.
-    expect(kindsOf(events)).toEqual(["user_prompt", "runtime_note", "runtime_note", "assistant_text", "turn_end"]);
-
-    const modelNote = textOf(events[1]!);
-    expect(modelNote).toContain("anthropic/claude-3");
-    expect(modelNote).toContain("openai/gpt-4o");
-
-    const levelNote = textOf(events[2]!);
-    expect(levelNote).toContain("low");
-    expect(levelNote).toContain("high");
+    expect(kindsOf(events)).toEqual([
+      "user_prompt",
+      "model_change",
+      "thinking_level_change",
+      "assistant_text",
+      "turn_end",
+    ]);
+    expect(events[1]!.payload).toEqual({ previousModel: "anthropic/claude-3", newModel: "openai/gpt-4o" });
+    expect(events[2]!.payload).toEqual({ previousLevel: "low", newLevel: "high" });
   });
 
-  it("records repeated identical model_select hooks as distinct source-position events", async () => {
+  it("records repeated identical model_select hooks as distinct persisted PI entry events", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
-    const event = { model: { provider: "openai", id: "gpt-4o" }, position: 12 };
+    const event = { type: "model_select" as const, model: { provider: "openai", id: "gpt-4o" } };
 
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "model_change", id: "pi-model-a", parentId: null, provider: "openai", modelId: "gpt-4o" });
     await connector.handlers.model_select(ctx, event);
-    await connector.handlers.model_select(ctx, { ...event, position: 13 });
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "model_change", id: "pi-model-b", parentId: "pi-model-a", provider: "openai", modelId: "gpt-4o" });
     await connector.handlers.model_select(ctx, event);
 
     const events = await eventsAfterShutdown(started);
-    expect(kindsOf(events)).toEqual(["runtime_note", "runtime_note"]);
-    expect(events[0]!.idempotencyKey).toContain("model_select:12");
-    expect(events[1]!.idempotencyKey).toContain("model_select:13");
+    expect(kindsOf(events)).toEqual(["model_change", "model_change"]);
+    expect(events[0]!.idempotencyKey).toContain("pi-model-a");
+    expect(events[1]!.idempotencyKey).toContain("pi-model-b");
     expect(events[0]!.idempotencyKey).not.toBe(events[1]!.idempotencyKey);
   });
 
-  it("records repeated identical no-position model_select hooks as distinct connector-source events", async () => {
+  it("records repeated identical model_select hooks with no PI entry via documented fallback", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
-    const event = { model: { provider: "openai", id: "gpt-4o" } };
+    const event = { type: "model_select" as const, model: { provider: "openai", id: "gpt-4o" } };
 
     await connector.handlers.model_select(ctx, event);
     await connector.handlers.model_select(ctx, event);
 
     const events = await eventsAfterShutdown(started);
-    expect(kindsOf(events)).toEqual(["runtime_note", "runtime_note"]);
+    expect(kindsOf(events)).toEqual(["model_change", "model_change"]);
     expect(events[0]!.idempotencyKey).toContain("model_select:sourceSeq:0");
     expect(events[1]!.idempotencyKey).toContain("model_select:sourceSeq:1");
     expect(events[0]!.idempotencyKey).not.toBe(events[1]!.idempotencyKey);
@@ -137,6 +161,61 @@ describe("Story 2: converter — runtime-change capture (TC-2.9)", () => {
 });
 
 describe("Story 2: converter — connector fallback idempotency", () => {
+  it("captures current PI string user content as one user_prompt", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx } = started;
+    const message = { role: "user" as const, content: "plain string prompt" };
+
+    await connector.handlers.message_end(ctx, { type: "message_end", message });
+    appendPiMessage(ctx, "pi-string-user", message);
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    const events = await eventsAfterShutdown(started);
+    expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);
+    expect(textOf(events[0]!)).toBe("plain string prompt");
+    expect(events[0]!.idempotencyKey).toContain("pi-string-user");
+  });
+
+  it("records repeated same-text current PI prompts as distinct persisted entry events", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx } = started;
+    const first = { role: "user" as const, content: "same text" };
+    const second = { role: "user" as const, content: "same text" };
+
+    await connector.handlers.message_end(ctx, { type: "message_end", message: first });
+    appendPiMessage(ctx, "pi-user-1", first);
+    await connector.handlers.message_end(ctx, { type: "message_end", message: second });
+    appendPiMessage(ctx, "pi-user-2", second);
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    const events = await eventsAfterShutdown(started);
+    const promptKeys = events.filter((event) => event.eventKind === "user_prompt").map((event) => event.idempotencyKey);
+    expect(promptKeys).toEqual([expect.stringContaining("pi-user-1"), expect.stringContaining("pi-user-2")]);
+    expect(promptKeys[0]).not.toBe(promptKeys[1]);
+  });
+
+  it("redelivery of the same current PI persisted message dedupes by session entry id", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx, threadRef } = started;
+    const message = { role: "user" as const, content: "reload replay" };
+
+    await connector.handlers.message_end(ctx, { type: "message_end", message });
+    appendPiMessage(ctx, "pi-replay-user", message);
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    const before = await intakeStream.listEvents(threadRef);
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    expect(kindsOf(before.value)).toEqual(["user_prompt", "turn_end"]);
+
+    await connector.handlers.message_end(ctx, { type: "message_end", message });
+    await connector.handlers.agent_end(ctx, makeAgentEnd([]));
+
+    const after = await intakeStream.listEvents(threadRef);
+    expect(after.ok).toBe(true);
+    if (after.ok) expect(kindsOf(after.value)).toEqual(["user_prompt", "turn_end"]);
+  });
+
   it("records repeated same-content no-entry/no-position messages as distinct connector-source events", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
@@ -239,12 +318,13 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     await expect(
       connector.handlers.message_end(ctx, makeMessageEnd(makeUserMessage("after the store died"))),
     ).resolves.toBeUndefined();
+    await expect(connector.handlers.agent_end(ctx, makeAgentEnd([]))).resolves.toBeUndefined();
 
     const health = connector.getState()?.health.lastCaptureFailure;
     expect(health).toBeDefined();
     expect(health?.recordedGap).toBe(false);
 
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
   });
 
   it("(c) an unmappable hook input on a writable thread records a durable gap, surfaces in health, and does not throw", async () => {
@@ -253,7 +333,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
 
     await expect(
       connector.handlers.message_end(ctx, {
-        position: 71,
+        position: "at",
         message: { role: "badRole", content: [] } as never,
       }),
     ).resolves.toBeUndefined();
@@ -280,7 +360,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
       attempts: 0,
     });
 
-    await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+    await connector.handlers.session_shutdown(ctx, { reason: "quit" });
     const events = await intakeStream.listEvents(threadRef);
     expect(events.ok).toBe(true);
     if (events.ok) expect(events.value.some((event) => textOf(event) === "session continues")).toBe(true);

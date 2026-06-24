@@ -140,8 +140,8 @@ describe("Story 2: error tool result (TC-2.5)", () => {
 
     expect(kindsOf(events)).toEqual(["tool_result", "runtime_note", "runtime_note"]);
     expect(events[1]!.idempotencyKey).not.toBe(events[2]!.idempotencyKey);
-    expect(events[1]!.idempotencyKey).toContain("call_file:omission:0");
-    expect(events[2]!.idempotencyKey).toContain("call_file:omission:1");
+    expect(events[1]!.idempotencyKey).toContain("call_file%3Aomission%3A0");
+    expect(events[2]!.idempotencyKey).toContain("call_file%3Aomission%3A1");
   });
 });
 

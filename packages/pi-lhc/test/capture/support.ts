@@ -38,11 +38,11 @@ function entriesFor(store: TempStore): SessionEntry[] {
 
 function registerConnector(connector: Connector, entries: SessionEntry[]): void {
   const pi: ExtensionAPI = {
-    registerHook: () => {},
+    on: () => {},
     registerCommand: () => {},
     registerTool: () => {},
     appendEntry: (type, data) => {
-      entries.push({ type, data });
+      entries.push({ type: "custom", customType: type, data });
     },
   };
   connector.register(pi);

@@ -259,6 +259,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       // UI should be notified with a formatted report
       expect(notifySpy).toHaveBeenCalledTimes(1);
+      expect(notifySpy.mock.calls[0]?.[1]).toBe("warning");
       const notifyMessage = (notifySpy.mock.calls[0]?.[0] ?? "") as string;
       expect(notifyMessage).toContain("unreachable derivation lanes");
       expect(notifyMessage).toContain("smoothed_prompt");
@@ -435,7 +436,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         expect(compressionFailure?.reason).toContain("invalid_request");
         expect(compressionFailure?.lastError).toContain("unreachable assignment lane");
 
-        await connector.handlers.session_shutdown(ctx, { reason: "shutdown" });
+        await connector.handlers.session_shutdown(ctx, { reason: "quit" });
       } finally {
         store.cleanup();
       }

@@ -43,7 +43,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeUserMessage("first")));
     await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "shutdown" });
+    await a.connector.handlers.session_shutdown(a.ctx, { reason: "quit" });
 
     // A brand-new connector attaches to the SAME thread by id and records a new
     // message — it must NOT be skipped as a prior-key collision.
@@ -133,7 +133,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     await a.connector.handlers.message_end(a.ctx, makeMessageEnd(makeAssistantMessage({ text: "answer one" })));
     await a.connector.handlers.agent_end(a.ctx, makeAgentEnd([]));
     const threadId = threadIdOf(a.threadRef);
-    await a.connector.handlers.session_shutdown(a.ctx, { reason: "shutdown" });
+    await a.connector.handlers.session_shutdown(a.ctx, { reason: "quit" });
 
     // Resume: PI does not re-fire history, so the connector sees only the new
     // turn — which must record, leaving the prior turn intact and un-duplicated.

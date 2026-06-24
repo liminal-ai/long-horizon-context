@@ -40,7 +40,7 @@ export type StartupValidationReporter = (input: StartupValidationReporterInput) 
 
 export function defaultStartupValidationReporter({ message, ctx }: StartupValidationReporterInput): void {
   if (ctx.hasUI) {
-    ctx.ui.notify(message, { level: "warn" });
+    ctx.ui.notify(message, "warning");
   } else {
     defaultHeadlessLog(message);
   }

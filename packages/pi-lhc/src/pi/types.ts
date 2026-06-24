@@ -1,6 +1,9 @@
 // Local declarations of the PI extension surface the connector consumes.
 //
-// These mirror `@earendil-works/pi-coding-agent` v0.79.2 as verified by the
+// These mirror the current `@earendil-works/pi-coding-agent` extension API as
+// verified from repo-ref/pi. The original Epic 1 implementation targeted
+// v0.79.2 research; PI's public registration surface is now `pi.on(...)`, and
+// handlers receive `(event, ctx)`.
 // wiring research (docs/specs/02-pi-lhc/notes/pi-ext-integration-research.md,
 // headless + interactive recon, June 12 2026). The PI packages are not yet a
 // build-time dependency of this workspace, so the connector declares the slice
@@ -25,52 +28,58 @@ export type PiHookName =
   | "context";
 
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
-export type SessionShutdownReason = "shutdown" | "reload" | "new" | "resume";
+export type SessionShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 export interface SessionStartEvent {
+  type: "session_start";
   reason: SessionStartReason;
   previousSessionFile?: string;
 }
 export interface MessageEndEvent {
-  entryId?: string;
-  position?: number;
+  type: "message_end";
   message: AgentMessage;
 }
 /** PI fires one turn_end per agent STEP (turnIndex resets to 0 each run); the
  *  converter must not map it 1:1 to an LHC turn_end. */
 export interface TurnEndEvent {
+  type: "turn_end";
   turnIndex: number;
   message: AgentMessage;
   toolResults: ToolResultMessage[];
-  stopReason?: PiStopReason;
 }
 export interface AgentEndEvent {
+  type: "agent_end";
   messages: AgentMessage[];
 }
 export interface ModelSelectEvent {
+  type: "model_select";
   model: ModelDescriptor;
   previousModel?: ModelDescriptor;
-  position?: number;
   source?: string;
 }
 export interface ThinkingLevelSelectEvent {
+  type: "thinking_level_select";
   level: string;
   previousLevel: string;
-  position?: number;
 }
 export interface SessionBeforeForkEvent {
+  type: "session_before_fork";
   entryId: string;
-  position?: number;
+  position: "before" | "at";
 }
 export interface SessionBeforeSwitchEvent {
-  intent: "new" | "resume";
+  type: "session_before_switch";
+  reason: "new" | "resume";
+  targetSessionFile?: string;
 }
 export interface SessionShutdownEvent {
+  type: "session_shutdown";
   reason: SessionShutdownReason;
   targetSessionFile?: string;
 }
 /** Declared for completeness; the connector registers no handler for it. */
 export interface ContextEvent {
+  type: "context";
   messages: AgentMessage[];
 }
 
@@ -92,8 +101,8 @@ export interface PiHookEventMap {
  *  connector must never retain it across calls (PI replaces session objects on
  *  new/resume/fork and a stale reference throws). */
 export type PiHookHandler<N extends PiHookName> = (
-  ctx: ExtensionContext,
   event: PiHookEventMap[N],
+  ctx: ExtensionContext,
 ) => void | Promise<void>;
 
 // ── Registration-time API (the `pi` object, ExtensionAPI) ────────────
@@ -113,8 +122,8 @@ export interface PiToolSpec {
  *  `registerCommand`/`registerTool`/`appendEntry` are declared because PI
  *  exposes them, though this connector registers only hooks. */
 export interface ExtensionAPI {
-  registerHook<N extends PiHookName>(name: N, handler: PiHookHandler<N>): void;
-  registerCommand(name: string, handler: PiCommandHandler): void;
+  on<N extends PiHookName>(name: N, handler: PiHookHandler<N>): void;
+  registerCommand(name: string, options: { handler: PiCommandHandler; description?: string }): void;
   registerTool(tool: PiToolSpec): void;
   appendEntry(customType: string, data: unknown): void;
 }
@@ -139,12 +148,16 @@ export interface ModelRegistry {
 }
 
 export interface ExtensionUI {
-  notify(message: string, options?: { level?: "info" | "warn" | "error" }): void;
-  select?(title: string, options: readonly string[]): Promise<string | undefined>;
+  notify(message: string, type?: "info" | "warning" | "error"): void;
+  select?(title: string, options: string[]): Promise<string | undefined>;
 }
 
 export interface SessionEntry {
   type: string;
+  id?: string;
+  parentId?: string | null;
+  customType?: string;
+  message?: AgentMessage;
   data?: unknown;
   readonly [k: string]: unknown;
 }
@@ -207,7 +220,7 @@ export interface TokenUsage {
 
 export interface UserMessage {
   role: "user";
-  content: ContentPart[];
+  content: string | ContentPart[];
 }
 /** Also the shape pi-ai's `complete()` returns (research §3); the model-call
  *  host maps it to text or a classified failure. */
