@@ -69,17 +69,29 @@ function renderToolCall(message: TailMessageRow): AssembledContextMessage {
   return { role: "assistant", content: `[tool call · ${name}] ${args}` };
 }
 
+function toolResultRawContent(message: TailMessageRow): string {
+  const content = blockContent(message)["content"];
+  return typeof content === "string" ? content : "";
+}
+
+/** Tool-result body for session loading: full ahead of the boundary, truncated at-or-behind. */
+export function toolResultSessionContent(message: TailMessageRow, ctx: TailRenderContext): string {
+  const content = toolResultRawContent(message);
+  if (message.sourceEventOrder > ctx.boundaryPosition) {
+    return content;
+  }
+  const short = deterministicTruncation(content);
+  return `${short} [full content in record §${message.messageId}]`;
+}
+
 function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {
   const block = blockContent(message);
   const callId = block["toolCallId"];
   const name = (typeof callId === "string" ? ctx.toolNameByCallId.get(callId) : undefined) ?? "unknown_tool";
-  const content = typeof block["content"] === "string" ? block["content"] : "";
   if (message.sourceEventOrder > ctx.boundaryPosition) {
-    return { role: "user", content: `[tool result · ${name}]\n${content}` };
+    return { role: "user", content: `[tool result · ${name}]\n${toolResultRawContent(message)}` };
   }
-  // At-or-behind the boundary: the full-band floor is always deterministic
-  // truncation of the raw tool result, never inference summary content.
-  const short = deterministicTruncation(content);
+  const short = deterministicTruncation(toolResultRawContent(message));
   return {
     role: "user",
     content: `[tool result · ${name} · abridged]\n${short} [full content in record §${message.messageId}]`,

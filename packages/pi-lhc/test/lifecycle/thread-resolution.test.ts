@@ -9,13 +9,14 @@ import { createDeterministicInferenceCallbacks, inspect, type SdkConfig, type Th
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
-import { pickThread, type ThreadChoice } from "../../src/lifecycle/picker.js";
 import {
-  defaultThreadTitle,
-  parseLaunchFlags,
-  type ResolveDeps,
-  resolveThread,
-} from "../../src/lifecycle/thread-resolution.js";
+  getFlagFromValues,
+  LHC_FLAG_RESUME,
+  LHC_FLAG_THREAD,
+  readLhcLaunchFlags,
+} from "../../src/lifecycle/lhc-launch-flags.js";
+import { pickThread, type ThreadChoice } from "../../src/lifecycle/picker.js";
+import { defaultThreadTitle, type ResolveDeps, resolveThread } from "../../src/lifecycle/thread-resolution.js";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "../../src/pi/types.js";
 import { eventBatch, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
@@ -78,11 +79,11 @@ function syntheticCtx(cwd: string, entries: SessionEntry[] = []): ExtensionConte
 // A connector wired with production defaults (real SDK config + selector) and
 // only environment overrides — the activate() path, minus the global registry
 // and process.argv.
-function productionConnector(launch: () => { resume?: boolean; continue?: boolean; session?: string }) {
+function productionConnector(launch: () => { resume?: boolean; continue?: boolean; thread?: string }) {
   return createConnector({
     registryPath: store.registryPath,
     newThreadFilePath: () => store.threadPath(),
-    parseLaunch: launch,
+    readLaunchFlags: () => ({ ok: true, value: launch() }),
     startupValidationReporter: () => {},
   });
 }
@@ -92,9 +93,14 @@ function registerConnector(connector: ReturnType<typeof createConnector>, entrie
     on: () => {},
     registerCommand: () => {},
     registerTool: () => {},
+    registerFlag: () => {},
+    getFlag: () => undefined,
     appendEntry: (type, data) => {
       entries.push({ type: "custom", customType: type, data });
     },
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    setModel: async () => true,
   };
   connector.register(pi);
 }
@@ -112,17 +118,17 @@ describe("Story 1: launch-driven thread resolution (resolver/picker)", () => {
     if (!first.ok) return;
     const firstId = idOf(first.value);
 
-    // --session full id → the same thread
-    const byFull = await resolveThread({ session: firstId }, deps());
+    // --lhc-thread full id → the same thread
+    const byFull = await resolveThread({ thread: firstId }, deps());
     expect(byFull.ok).toBe(true);
     if (byFull.ok) expect(idOf(byFull.value)).toBe(firstId);
 
-    // --session partial id → the same thread
-    const byPartial = await resolveThread({ session: firstId.slice(0, 8) }, deps());
+    // --lhc-thread partial id → the same thread
+    const byPartial = await resolveThread({ thread: firstId.slice(0, 8) }, deps());
     expect(byPartial.ok).toBe(true);
     if (byPartial.ok) expect(idOf(byPartial.value)).toBe(firstId);
 
-    // a second thread, then --continue → the most recently created
+    // a second thread, then --lhc-continue → the most recently created
     const second = await resolveThread({}, deps());
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -133,26 +139,49 @@ describe("Story 1: launch-driven thread resolution (resolver/picker)", () => {
 
     // unresolvable id → actionable error, no thread created
     const before = await threadCount();
-    const bad = await resolveThread({ session: "th_zzzzzzzzzzzzzzzz" }, deps());
+    const bad = await resolveThread({ thread: "th_zzzzzzzzzzzzzzzz" }, deps());
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.error.code).toBe("thread_not_found");
     expect(await threadCount()).toBe(before);
 
     // ambiguous prefix (matches both threads) → actionable error, no thread created
-    const ambiguous = await resolveThread({ session: "th_" }, deps());
+    const ambiguous = await resolveThread({ thread: "th_" }, deps());
     expect(ambiguous.ok).toBe(false);
     if (!ambiguous.ok) expect(ambiguous.error.code).toBe("ambiguous_thread_id");
     expect(await threadCount()).toBe(before);
   });
 
-  it("parseLaunchFlags maps the launch argv (the production launch source) to launch modes", () => {
-    expect(parseLaunchFlags(["node", "pi"])).toEqual({});
-    expect(parseLaunchFlags(["node", "pi", "--resume"])).toEqual({ resume: true });
-    expect(parseLaunchFlags(["node", "pi", "-r"])).toEqual({ resume: true });
-    expect(parseLaunchFlags(["node", "pi", "--continue"])).toEqual({ continue: true });
-    expect(parseLaunchFlags(["node", "pi", "-c"])).toEqual({ continue: true });
-    expect(parseLaunchFlags(["node", "pi", "--session", "th_abc"])).toEqual({ session: "th_abc" });
-    expect(parseLaunchFlags(["node", "pi", "--session=th_xyz"])).toEqual({ session: "th_xyz" });
+  it("production connector fails loud on conflicting LHC launch flags", async () => {
+    const connector = createConnector({
+      registryPath: store.registryPath,
+      newThreadFilePath: () => store.threadPath(),
+      readLaunchFlags: () =>
+        readLhcLaunchFlags(
+          getFlagFromValues({
+            [LHC_FLAG_THREAD]: "th_abc",
+            [LHC_FLAG_RESUME]: true,
+          }),
+        ),
+      startupValidationReporter: () => {},
+    });
+    await connector.handlers.session_start(makeSessionStart("startup"), syntheticCtx("/work/conflict"));
+
+    expect(connector.getState()).toBeNull();
+    expect(connector.getInstance()).toBeNull();
+    expect(connector.snapshot().lastDiagnostic?.code).toBe("thread_resolution_failed");
+    expect(connector.snapshot().lastDiagnostic?.message).toContain("conflicting LHC launch flags");
+  });
+
+  it("readLhcLaunchFlags maps explicit extension flags to launch modes", () => {
+    expect(readLhcLaunchFlags(getFlagFromValues({}))).toEqual({ ok: true, value: {} });
+    expect(readLhcLaunchFlags(getFlagFromValues({ [LHC_FLAG_RESUME]: true }))).toEqual({
+      ok: true,
+      value: { resume: true },
+    });
+    expect(readLhcLaunchFlags(getFlagFromValues({ [LHC_FLAG_THREAD]: "th_abc" }))).toEqual({
+      ok: true,
+      value: { thread: "th_abc" },
+    });
   });
 
   it("no-flag resolution titles the new thread with the cwd leaf (A-8 title metadata)", async () => {
@@ -225,7 +254,7 @@ describe("Story 1: launch-driven thread resolution (resolver/picker)", () => {
 
     // Discard ALL in-memory state. Only the durable id survives (as a relaunch
     // flag would across process death). Reconstruct purely from it.
-    const reattached = await resolveThread({ session: threadId }, deps(cwd));
+    const reattached = await resolveThread({ thread: threadId }, deps(cwd));
     expect(reattached.ok).toBe(true);
     if (!reattached.ok) return;
     expect(idOf(reattached.value)).toBe(threadId);
@@ -249,7 +278,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     const existingId = await makeThread({ cwd: "/work/a", title: "existing" });
     const before = await threadCount();
 
-    const connector = productionConnector(() => ({ session: existingId }));
+    const connector = productionConnector(() => ({ thread: existingId }));
     await connector.handlers.session_start(makeSessionStart("startup"), syntheticCtx("/work/a"));
 
     const state = connector.getState();
@@ -286,7 +315,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     const connector = productionConnector(() => ({ resume: true }));
     await connector.handlers.session_start(makeSessionStart("resume"), ctx);
 
-    expect(selectTitle).toBe("pi-lhc --resume: select a thread");
+    expect(selectTitle).toBe("pi-lhc --lhc-resume: select a thread");
     expect(selectOptions.some((option) => option.includes("older") && option.includes(older))).toBe(true);
     expect(selectOptions.some((option) => option.includes("newer") && option.includes(newer))).toBe(true);
     expect(selectOptions.some((option) => option.includes("different cwd"))).toBe(false);
@@ -324,7 +353,7 @@ describe("Story 1: launch-driven thread resolution (production connector path)",
     expect(await threadCount()).toBe(before);
   });
 
-  it("TC-1.7: headless --resume with multiple candidates fails closed and requires --session", async () => {
+  it("TC-1.7: headless --lhc-resume with multiple candidates fails closed and requires --lhc-thread", async () => {
     await makeThread({ cwd: "/work/headless-many", title: "older" });
     await makeThread({ cwd: "/work/headless-many", title: "newer" });
     const before = await threadCount();
@@ -447,15 +476,15 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
     expect(idOf(connectorB.getState()!.threadRef)).not.toBe(newerId);
   });
 
-  it("reload reattaches by re-resolving --session from the registry (durable id evidence), creating nothing", async () => {
+  it("reload reattaches by re-resolving --lhc-thread from the registry (durable id evidence), creating nothing", async () => {
     const cwd = "/work/reload-session";
     const existing = await makeThread({ cwd, title: "carried" });
     const before = await threadCount();
     const entries: SessionEntry[] = [];
 
-    // Launched with --session <id>: reload re-resolves the SAME id from the
+    // Launched with --lhc-thread <id>: reload re-resolves the SAME id from the
     // durable registry, independent of any in-memory state.
-    const connectorA = productionConnector(() => ({ session: existing }));
+    const connectorA = productionConnector(() => ({ thread: existing }));
     registerConnector(connectorA, entries);
     await connectorA.handlers.session_start(makeSessionStart("startup"), syntheticCtx(cwd, entries));
     await connectorA.handlers.session_shutdown(
@@ -463,7 +492,7 @@ describe("Story 1: reload reconstruction from durable registry state (AC-1.5)", 
       syntheticCtx(cwd, entries),
     );
 
-    const connectorB = productionConnector(() => ({ session: existing }));
+    const connectorB = productionConnector(() => ({ thread: existing }));
     registerConnector(connectorB, entries);
     await connectorB.handlers.session_start(makeSessionStart("reload"), syntheticCtx(cwd, entries));
     expect(idOf(connectorB.getState()!.threadRef)).toBe(existing);

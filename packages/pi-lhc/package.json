@@ -6,6 +6,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "pi-lhc": "./dist/bin.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -32,6 +35,8 @@
     "node": ">=24.17.0 <25"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "file:../../../repo-ref/pi/packages/agent",
+    "@earendil-works/pi-coding-agent": "file:../../../repo-ref/pi/packages/coding-agent",
     "lhc": "workspace:*"
   },
   "devDependencies": {

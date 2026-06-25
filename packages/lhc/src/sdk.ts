@@ -16,6 +16,7 @@ import type {
   ErrorResult,
   LlmRequestContext,
   OpResult,
+  SessionThreadView,
   StoredView,
   ViewCompactParams,
   ViewStatus,
@@ -115,6 +116,15 @@ export type {
   SchedulerMode,
   SdkConfig,
   SdkViewConfig,
+  SessionAssistantMessage,
+  SessionAssistantPart,
+  SessionModelChangeEntry,
+  SessionThinkingLevelChangeEntry,
+  SessionThreadView,
+  SessionThreadViewEntry,
+  SessionThreadViewMessage,
+  SessionToolResultMessage,
+  SessionUserMessage,
   StoredView,
   SubjectKind,
   ToolOutcome,
@@ -237,6 +247,7 @@ export interface WorkSurface {
 // stored-snapshot read the inspect domain composes.
 export interface ThreadViewSurface {
   getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
+  getSessionThreadView(ref: threadsDomain.ThreadRef): Promise<OpResult<SessionThreadView>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   compact(
@@ -656,6 +667,7 @@ export function initLhc(config: SdkConfig): Lhc {
     threadView: scopeSurface<ThreadViewSurface>(
       {
         getLlmRequestContext: threadViewDomain.getLlmRequestContext,
+        getSessionThreadView: threadViewDomain.getSessionThreadView,
         status: threadViewDomain.status,
         describe: threadViewDomain.describe,
         compact: threadViewDomain.compact,

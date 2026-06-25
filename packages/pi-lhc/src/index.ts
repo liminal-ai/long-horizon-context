@@ -19,12 +19,22 @@ import { createModelCall } from "./inference/model-call.js";
 import { report, type StartupValidationReporter, validateReachable } from "./inference/startup-validation.js";
 import { detectForkFromSessionTree, forkInfoFromHook, seedFork } from "./lifecycle/fork.js";
 import { disposeInstance, initInstance } from "./lifecycle/instance.js";
+import { takeLauncherOwnedStartup } from "./lifecycle/launcher-startup.js";
+import { readLhcLaunchFlags, registerLhcFlags } from "./lifecycle/lhc-launch-flags.js";
 import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
+import {
+  clearPendingRehydrate,
+  LHC_REHYDRATE_COMMAND,
+  rehydratePiSessionFromLhc,
+  setPendingRehydrate,
+  takePendingRehydrateModelPrefs,
+  takePendingRehydrateSetup,
+} from "./lifecycle/rehydrate.js";
 import type { CaptureFailureDiagnostic, SessionState } from "./lifecycle/state.js";
 import { createSessionState } from "./lifecycle/state.js";
+import { type DurableThreadEntry, durableThreadEntryOf, LHC_THREAD_ENTRY_TYPE } from "./lifecycle/thread-entry.js";
 import {
   type LaunchFlags,
-  parseLaunchFlags,
   type ResolveDeps,
   resolveReloadThread,
   resolveThread,
@@ -32,26 +42,60 @@ import {
 } from "./lifecycle/thread-resolution.js";
 import type {
   AgentMessage,
-  ContextEventResult,
   ExtensionAPI,
   ExtensionContext,
-  PiContextHookHandler,
+  PiCommandHandler,
   PiHookHandler,
   PiHookName,
+  ReplacedSessionContext,
   SessionEntry,
 } from "./pi/types.js";
-import { type ContextServeDiagnostic, serveContextFromLhc } from "./serving/context.js";
 import type { LhcInstance } from "./shared/instance.js";
 
+export {
+  extensionFlagValuesFromLaunch,
+  launcherHelpText,
+  type ParsedLauncherArgv,
+  parseLauncherArgv,
+  piSessionFlagsConflict,
+} from "./launcher/parse-args.js";
+export { resolveStartupThread } from "./launcher/resolve-startup.js";
+export { piLhcExtensionEntryPath, type RunPiLhcLauncherDeps, runPiLhcLauncher } from "./launcher/run.js";
+export { createLauncherRuntimeFactory, type LauncherRuntimeFactoryOptions } from "./launcher/runtime-factory.js";
+export { seedPiSessionFromLhc } from "./launcher/seed-session.js";
+export { type LhcLauncherStartup, type LhcLauncherStartupDeps, prepareLhcLauncherStartup } from "./launcher/startup.js";
 export { disposeInstance, initInstance, initLhc } from "./lifecycle/instance.js";
 export {
+  clearLauncherOwnedStartup,
+  type LauncherOwnedStartup,
+  setLauncherOwnedStartup,
+  takeLauncherOwnedStartup,
+} from "./lifecycle/launcher-startup.js";
+export {
+  getFlagFromValues,
+  LHC_EXTENSION_FLAG_SPECS,
+  LHC_FLAG_CONTINUE,
+  LHC_FLAG_RESUME,
+  LHC_FLAG_THREAD,
+  readLhcLaunchFlags,
+  registerLhcFlags,
+} from "./lifecycle/lhc-launch-flags.js";
+export {
+  clearPendingRehydrate,
+  LHC_REHYDRATE_COMMAND,
+  type RehydrateModelPrefs,
+  rehydratePiSessionFromLhc,
+  setPendingRehydrate,
+  takePendingRehydrateModelPrefs,
+  takePendingRehydrateSetup,
+} from "./lifecycle/rehydrate.js";
+export { durableThreadEntryOf, LHC_THREAD_ENTRY_TYPE } from "./lifecycle/thread-entry.js";
+export {
+  applySessionThreadViewToSessionManager,
   buildContextServePreview,
   CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
   CONTEXT_SERVE_PREVIEW_MAX_TEXT,
-  type ContextServeDiagnostic,
   type ContextServeMessagePreview,
-  mapLlmMessagesToPi,
-  serveContextFromLhc,
 } from "./serving/context.js";
 export type { LhcInstance } from "./shared/instance.js";
 
@@ -68,14 +112,11 @@ export const EPIC_1_HOOKS = [
   "session_shutdown",
 ] as const satisfies readonly PiHookName[];
 
-/** Context hook registered in the smoke-serving slice (Feature 2 entry). */
-export const CONTEXT_HOOK = "context" as const satisfies PiHookName;
-
-/** Full hook rail: Epic 1 capture + context serving. */
-export const CONNECTOR_HOOKS = [...EPIC_1_HOOKS, CONTEXT_HOOK] as const satisfies readonly PiHookName[];
+/** Hooks registered by the connector. Context is loaded via SessionManager seeding, not the context hook. */
+export const CONNECTOR_HOOKS = [...EPIC_1_HOOKS] as const satisfies readonly PiHookName[];
 
 export type Epic1Hook = (typeof EPIC_1_HOOKS)[number];
-export type ContextHook = typeof CONTEXT_HOOK;
+
 export type ConnectorHook = (typeof CONNECTOR_HOOKS)[number];
 
 /** What the connector needs from the host to run a session. Every dependency
@@ -90,7 +131,8 @@ export interface ConnectorDeps {
   buildSdkConfig?: (ctx: ExtensionContext) => OpResult<SdkConfig>;
   registryPath?: string;
   newThreadFilePath?: () => string;
-  parseLaunch?: () => LaunchFlags;
+  /** Override launch-flag read for test isolation. Production reads pi.getFlag. */
+  readLaunchFlags?: () => OpResult<LaunchFlags>;
   selectThread?: (choices: readonly ThreadChoice[], ctx: ExtensionContext) => Promise<string | null>;
   startupValidationReporter?: StartupValidationReporter;
   /** Operator overrides for provider/model/prompt per derivation kind. Uses
@@ -105,7 +147,6 @@ export interface ConnectorDeps {
 export interface ConnectorSnapshot {
   state: SessionState | null;
   lastDiagnostic: CaptureFailureDiagnostic | null;
-  lastContextServe: ContextServeDiagnostic | null;
 }
 
 export interface Connector {
@@ -119,11 +160,9 @@ export interface Connector {
   getInstance(): LhcInstance | null;
   /** Plain-data snapshot of all retained state (inspection/test seam). */
   snapshot(): ConnectorSnapshot;
-  /** Last context-serving attempt (inspection/test seam). */
-  getLastContextServe(): ContextServeDiagnostic | null;
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
-  readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>> & { context: PiContextHookHandler }>;
+  readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>>>;
 }
 
 /** The connector's live capture state for one session: the open-turn
@@ -154,25 +193,11 @@ interface PendingFork {
   forkEntryId: string;
 }
 
-const THREAD_ENTRY_TYPE = "pi-lhc.thread";
-
-interface DurableThreadEntry {
-  threadId: string;
-  registryPath?: string;
-}
-
 /** A stable per-session id for idempotency-key scoping — the resolved thread's
  *  identity, which survives reload/replay (the same thread re-resolves to the
  *  same id). */
 function sessionIdOf(ref: ThreadRef): string {
   return "threadId" in ref ? ref.threadId : ref.filePath;
-}
-
-function durableThreadEntryOf(ref: ThreadRef): DurableThreadEntry | null {
-  if (!("threadId" in ref)) return null;
-  const entry: DurableThreadEntry = { threadId: ref.threadId };
-  if (ref.registryPath !== undefined) entry.registryPath = ref.registryPath;
-  return entry;
 }
 
 function readDurableThreadId(ctx: ExtensionContext): string | null {
@@ -181,7 +206,7 @@ function readDurableThreadId(ctx: ExtensionContext): string | null {
     const entry = entries[i];
     if (
       entry === undefined ||
-      (entry.type !== THREAD_ENTRY_TYPE && !(entry.type === "custom" && entry.customType === THREAD_ENTRY_TYPE))
+      (entry.type !== LHC_THREAD_ENTRY_TYPE && !(entry.type === "custom" && entry.customType === LHC_THREAD_ENTRY_TYPE))
     ) {
       continue;
     }
@@ -213,7 +238,7 @@ function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown 
   };
 }
 
-/** Render the cwd-scoped `--resume` candidates as an operator-facing list, each
+/** Render the cwd-scoped `--lhc-resume` candidates as an operator-facing list, each
  *  line carrying the title, creation time, and id. */
 function renderResumeCandidates(choices: readonly ThreadChoice[]): string {
   const lines = choices.map((choice, i) => {
@@ -221,18 +246,18 @@ function renderResumeCandidates(choices: readonly ThreadChoice[]): string {
     return `  ${i + 1}. ${title}  ·  created ${choice.createdAt}  ·  ${choice.threadId}`;
   });
   return [
-    `pi-lhc --resume: ${choices.length} thread(s) in this directory:`,
+    `pi-lhc --lhc-resume: ${choices.length} thread(s) in this directory:`,
     ...lines,
     choices.length === 1
       ? "One candidate found; resuming it."
-      : "Select a thread from the picker, or relaunch with --session <id> in headless mode.",
+      : "Select a thread from the picker, or relaunch with --lhc-thread <id> in headless mode.",
   ].join("\n");
 }
 
-/** Default `--resume` selection. The PI extension UI exposes an async
+/** Default `--lhc-resume` selection. The PI extension UI exposes an async
  *  selector in interactive/RPC modes, so multiple candidates are resolved by
  *  operator choice. Headless mode has no input surface, so ambiguous resume
- *  fails closed and the operator can use `--session <id>` for explicit attach. */
+ *  fails closed and the operator can use `--lhc-thread <id>` for explicit attach. */
 async function defaultSelectThread(choices: readonly ThreadChoice[], ctx: ExtensionContext): Promise<string | null> {
   if (choices.length === 0) return null;
   if (choices.length === 1) {
@@ -249,7 +274,7 @@ async function defaultSelectThread(choices: readonly ThreadChoice[], ctx: Extens
     const title = choice.title ?? "(untitled)";
     return `${i + 1}. ${title} · created ${choice.createdAt} · ${choice.threadId}`;
   });
-  const selected = await ctx.ui.select("pi-lhc --resume: select a thread", labels);
+  const selected = await ctx.ui.select("pi-lhc --lhc-resume: select a thread", labels);
   if (selected === undefined) return null;
   const index = labels.indexOf(selected);
   return index >= 0 ? (choices[index]?.threadId ?? null) : null;
@@ -279,15 +304,17 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let state: SessionState | null = null;
   let instance: LhcInstance | null = null;
   let lastDiagnostic: CaptureFailureDiagnostic | null = null;
-  let lastContextServe: ContextServeDiagnostic | null = null;
   let captureSession: CaptureSession | null = null;
   let pendingFork: PendingFork | null = null;
   let appendThreadEntry: ((entry: DurableThreadEntry) => void) | null = null;
+  let readLaunchFromPi: (() => OpResult<LaunchFlags>) | null = null;
+  let extensionPi: ExtensionAPI | null = null;
 
   const buildSdkConfig =
     deps.buildSdkConfig ?? ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
   const newThreadFilePath = deps.newThreadFilePath ?? defaultNewThreadFilePath;
-  const parseLaunch = deps.parseLaunch ?? (() => parseLaunchFlags(process.argv));
+  const readLaunchFlags =
+    deps.readLaunchFlags ?? (() => (readLaunchFromPi === null ? { ok: true, value: {} } : readLaunchFromPi()));
   const selectThread = deps.selectThread ?? defaultSelectThread;
 
   function diag(code: string, message: string): CaptureFailureDiagnostic {
@@ -303,8 +330,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     return resolveDeps;
   }
 
-  // Normal launch resolution: `--resume` runs the cwd-scoped operator picker;
-  // `--session` / `--continue` / no-flag go through the registry resolver (only
+  // Normal launch resolution: `--lhc-resume` runs the cwd-scoped operator picker;
+  // `--lhc-thread` / `--lhc-continue` / no-flag go through the registry resolver (only
   // no-flag creates).
   async function resolveForLaunch(launch: LaunchFlags, ctx: ExtensionContext): Promise<OpResult<ThreadRef | null>> {
     if (launch.resume === true) {
@@ -451,9 +478,31 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       }
     }
 
-    // Normal launch resolution (if not resolved by fork paths above).
+    // Launcher-owned startup: thread was resolved and context seeded before PI
+    // session creation; do not re-resolve or create a different LHC thread here.
     if (resolved === undefined) {
-      const launch = parseLaunch();
+      const launcherStartup = takeLauncherOwnedStartup();
+      if (launcherStartup !== null) {
+        resolved = { ok: true, value: launcherStartup.threadRef };
+      }
+    }
+
+    // Pre-attached pi-lhc.thread entry (launcher seeds this into in-memory sessions).
+    if (resolved === undefined) {
+      const preattachedId = readDurableThreadId(ctx);
+      if (preattachedId !== null) {
+        resolved = await resolveReloadThread(preattachedId, buildResolveDeps(ctx));
+      }
+    }
+
+    // Normal launch resolution (if not resolved by fork or launcher paths above).
+    if (resolved === undefined) {
+      const launchRead = readLaunchFlags();
+      if (!launchRead.ok) {
+        lastDiagnostic = diag("thread_resolution_failed", launchRead.error.reason);
+        return;
+      }
+      const launch = launchRead.value;
       const isReload = event.reason === "reload";
       resolved = isReload ? await resolveReloadFor(ctx) : await resolveForLaunch(launch, ctx);
     }
@@ -466,7 +515,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       const isReload = event.reason === "reload";
       lastDiagnostic = isReload
         ? diag("no_thread_to_reattach", "reload found no thread to reattach for this cwd")
-        : diag("no_thread_selected", "--resume resolved no thread");
+        : diag("no_thread_selected", "--lhc-resume resolved no thread");
       return;
     }
 
@@ -482,7 +531,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
     state = createSessionState(resolved.value);
     const durableEntry = durableThreadEntryOf(resolved.value);
-    if (durableEntry !== null) appendThreadEntry?.(durableEntry);
+    if (durableEntry !== null && readDurableThreadId(ctx) === null) {
+      appendThreadEntry?.(durableEntry);
+    }
     const piSessionId = sessionIdOf(resolved.value);
     captureSession = {
       piSessionId,
@@ -491,6 +542,17 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       pendingMessages: [],
       claimedEntryIds: new Set(),
     };
+
+    const rehydrateModelPrefs = takePendingRehydrateModelPrefs();
+    if (rehydrateModelPrefs !== null && extensionPi !== null) {
+      if (rehydrateModelPrefs.model !== null) {
+        const model = ctx.modelRegistry.find(rehydrateModelPrefs.model.provider, rehydrateModelPrefs.model.id);
+        if (model !== undefined) {
+          await extensionPi.setModel(model);
+        }
+      }
+      extensionPi.setThinkingLevel(rehydrateModelPrefs.thinkingLevel);
+    }
 
     // Probe inference assignments before first use. Validation failures are
     // reported but do not stop capture.
@@ -508,12 +570,15 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   };
 
   // Dispose with flush before any session swap (session_before_switch fires
-  // pre-new/resume) and on shutdown/reload. Idempotent: disposing twice or with
-  // no live instance is a no-op. No reload-handoff state is kept — a reload
-  // re-resolves its thread from the durable registry on the next session_start.
-  const onDispose: PiHookHandler<Epic1Hook> = async (_event, ctx) => {
+  // pre-new/resume) and on shutdown/reload. Non-UI `quit` paths (print/json)
+  // skip drain-settling so one-shot commands return promptly; intake is already
+  // durable at that point. Idempotent: disposing twice or with no live instance
+  // is a no-op. No reload-handoff state is kept — a reload re-resolves its
+  // thread from the durable registry on the next session_start.
+  const onDispose: PiHookHandler<Epic1Hook> = async (event, ctx) => {
     await flushPendingMessages(ctx);
-    const result = await disposeInstance(instance);
+    const settle = !(event.type === "session_shutdown" && event.reason === "quit" && ctx.hasUI === false);
+    const result = await disposeInstance(instance, { settle });
     if (!result.ok) lastDiagnostic = diag("dispose_failed", result.error.reason);
     instance = null;
     captureSession = null;
@@ -741,28 +806,6 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
   };
 
-  // context: serve LHC thread-view on each model call when a session is active.
-  // Returns void to keep PI's original messages when inactive or on read failure.
-  const onContext: PiContextHookHandler = async (event, ctx) => {
-    const originalCount = event.messages.length;
-    if (instance === null || state === null) {
-      lastContextServe = {
-        served: false,
-        reason: "no_active_session",
-        messageCount: originalCount,
-        preview: [],
-      };
-      return;
-    }
-
-    await flushPendingMessages(ctx);
-
-    const served = await serveContextFromLhc(instance, state.threadRef, originalCount);
-    lastContextServe = served.diagnostic;
-    if (!served.ok) return;
-    return { messages: served.messages };
-  };
-
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
@@ -776,47 +819,6 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           message: `${name}: ${err instanceof Error ? err.message : String(err)}`,
           recordedGap: false,
         };
-      }
-    };
-  };
-
-  function contextMessageCount(event: unknown): number {
-    if (typeof event !== "object" || event === null) return 0;
-    const messages = (event as { messages?: unknown }).messages;
-    return Array.isArray(messages) ? messages.length : 0;
-  }
-
-  function isContextEvent(event: unknown): event is Parameters<PiContextHookHandler>[0] {
-    if (typeof event !== "object" || event === null) return false;
-    return Array.isArray((event as { messages?: unknown }).messages);
-  }
-
-  const guardContext = (body: PiContextHookHandler): PiContextHookHandler => {
-    return async (event, ctx): Promise<ContextEventResult | undefined> => {
-      if (!isContextEvent(event)) {
-        lastContextServe = {
-          served: false,
-          reason: "malformed_context_event",
-          messageCount: 0,
-          preview: [],
-        };
-        return;
-      }
-      try {
-        return await body(event, ctx);
-      } catch (err) {
-        lastDiagnostic = {
-          code: "hook_handler_error",
-          message: `context: ${err instanceof Error ? err.message : String(err)}`,
-          recordedGap: false,
-        };
-        lastContextServe = {
-          served: false,
-          reason: `handler_error:${err instanceof Error ? err.message : String(err)}`,
-          messageCount: contextMessageCount(event),
-          preview: [],
-        };
-        return;
       }
     };
   };
@@ -856,18 +858,92 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     session_before_fork: onBeforeFork as PiHookHandler<Epic1Hook>,
   };
 
-  const handlers = {} as Record<Epic1Hook, PiHookHandler<Epic1Hook>> & { context: PiContextHookHandler };
+  const handlers = {} as Record<Epic1Hook, PiHookHandler<Epic1Hook>>;
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
-  handlers.context = guardContext(onContext);
+
+  const onRehydrate: PiCommandHandler = async (_args, ctx) => {
+    if (state === null) {
+      ctx.ui.notify("pi-lhc: no LHC thread attached — rehydrate requires an active thread", "error");
+      return;
+    }
+
+    const config = buildSdkConfig(ctx);
+    if (!config.ok) {
+      ctx.ui.notify(`pi-lhc: rehydrate failed — ${config.error.reason}`, "error");
+      return;
+    }
+
+    await ctx.waitForIdle();
+    await flushPendingMessages(ctx);
+
+    const modelPrefs = {
+      model:
+        ctx.model === undefined
+          ? null
+          : {
+              provider: ctx.model.provider,
+              id: ctx.model.id,
+            },
+      thinkingLevel: extensionPi?.getThinkingLevel() ?? "medium",
+    };
+
+    setPendingRehydrate({
+      threadRef: state.threadRef,
+      sdkConfig: config.value,
+      modelPrefs,
+    });
+
+    const result = await ctx.newSession({
+      setup: async (sessionManager) => {
+        const setupPrefs = takePendingRehydrateSetup();
+        if (setupPrefs === null) {
+          throw new Error("pi-lhc rehydrate setup handoff missing");
+        }
+        const built = await initInstance(setupPrefs.threadRef, setupPrefs.sdkConfig);
+        if (!built.ok) {
+          clearPendingRehydrate();
+          throw new Error(built.error.reason);
+        }
+        try {
+          const rehydrated = await rehydratePiSessionFromLhc(
+            built.value,
+            setupPrefs.threadRef,
+            sessionManager as unknown as import("@earendil-works/pi-coding-agent").SessionManager,
+          );
+          if (!rehydrated.ok) {
+            clearPendingRehydrate();
+            throw new Error(rehydrated.error.reason);
+          }
+        } finally {
+          await disposeInstance(built.value);
+        }
+      },
+      withSession: async (replacementCtx: ReplacedSessionContext) => {
+        replacementCtx.ui.notify("pi-lhc: rehydrated PI session from latest LHC thread-view", "info");
+      },
+    });
+
+    if (result.cancelled) {
+      clearPendingRehydrate();
+      ctx.ui.notify("pi-lhc: rehydrate cancelled", "warning");
+    }
+  };
 
   return {
     handlers,
     register(pi: ExtensionAPI): void {
+      registerLhcFlags(pi);
+      extensionPi = pi;
+      readLaunchFromPi = () => readLhcLaunchFlags(pi.getFlag.bind(pi));
       appendThreadEntry = (entry) => {
-        pi.appendEntry(THREAD_ENTRY_TYPE, entry);
+        pi.appendEntry(LHC_THREAD_ENTRY_TYPE, entry);
       };
+      pi.registerCommand(LHC_REHYDRATE_COMMAND, {
+        description:
+          "Replace the live PI session with a fresh in-memory session hydrated from the latest LHC thread-view",
+        handler: onRehydrate,
+      });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
-      pi.on(CONTEXT_HOOK, handlers.context);
     },
     getState(): SessionState | null {
       return state;
@@ -875,24 +951,20 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     getInstance(): LhcInstance | null {
       return instance;
     },
-    getLastContextServe(): ContextServeDiagnostic | null {
-      return lastContextServe;
-    },
     snapshot(): ConnectorSnapshot {
-      return { state, lastDiagnostic, lastContextServe };
+      return { state, lastDiagnostic };
     },
   };
 }
 
 /** PI entry point: PI calls this with the ExtensionAPI when the extension
- *  loads (and again on `/reload`). Registers the capture hook rail plus the
- *  context-serving hook with production defaults — the `~/.lhc` registry,
- *  `process.argv` launch flags, the PI inference SDK config, and the
- *  `--resume` selector that presents the cwd-scoped titled candidates through
- *  `ctx.ui.notify` — so a live session_start resolves/creates and initializes
- *  for real. On `/reload` the connector re-resolves the same thread from PI's
- *  durable `pi-lhc.thread` session entry and the LHC registry (it keeps no
- *  module-level handoff state). */
+ *  loads (and again on `/reload`). Registers explicit LHC launch flags and the
+ *  capture hook rail with production defaults — the `~/.lhc` registry, `pi.getFlag` launch control, the PI inference SDK
+ *  config, and the `--lhc-resume` selector that presents cwd-scoped titled
+ *  candidates through `ctx.ui.notify` — so a live session_start resolves/creates
+ *  and initializes for real. On `/reload` the connector re-resolves the same
+ *  thread from PI's durable `pi-lhc.thread` session entry and the LHC registry
+ *  (it keeps no module-level handoff state). */
 export function activate(pi: ExtensionAPI): void {
   createConnector().register(pi);
 }

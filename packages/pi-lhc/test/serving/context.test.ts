@@ -2,19 +2,21 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildContextServePreview,
   CONNECTOR_HOOKS,
-  CONTEXT_HOOK,
   CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
   CONTEXT_SERVE_PREVIEW_MAX_TEXT,
   createConnector,
   EPIC_1_HOOKS,
-  mapLlmMessagesToPi,
+  rehydratePiSessionFromLhc,
+  seedPiSessionFromLhc,
 } from "../../src/index.js";
-import type { AgentMessage, ContextEvent, ExtensionAPI, ExtensionContext } from "../../src/pi/types.js";
-import { eventsAfterShutdown, kindsOf, startCapture } from "../capture/support.js";
+import type { ExtensionAPI } from "../../src/pi/types.js";
+import { startCapture } from "../capture/support.js";
 import {
   makeAgentEnd,
   makeAssistantMessage,
   makeMessageEnd,
+  makeModelSelect,
+  makeThinkingLevelSelect,
   makeToolResult,
   makeUserMessage,
 } from "../fixtures/synthetic.js";
@@ -28,235 +30,42 @@ afterEach(() => {
   store.cleanup();
 });
 
-function recordingPi(): {
-  pi: ExtensionAPI;
-  registered: string[];
-  handlers: Partial<Record<string, (...args: unknown[]) => unknown>>;
-} {
+function recordingPi(): { pi: ExtensionAPI; registered: string[] } {
   const registered: string[] = [];
-  const handlers: Partial<Record<string, (...args: unknown[]) => unknown>> = {};
   const pi = {
-    on(name: string, handler: (...args: unknown[]) => unknown) {
+    on(name: string) {
       registered.push(name);
-      handlers[name] = handler;
     },
     registerCommand: () => {},
     registerTool: () => {},
+    registerFlag: () => {},
+    getFlag: () => undefined,
     appendEntry: () => {},
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    setModel: async () => true,
   } as ExtensionAPI;
-  return { pi, registered, handlers };
+  return { pi, registered };
 }
 
-function syntheticCtx(): ExtensionContext {
-  return {
-    cwd: "/work/context",
-    hasUI: false,
-    modelRegistry: { find: () => undefined, hasConfiguredAuth: () => false, getAvailable: () => [] },
-    ui: { notify: () => {} },
-    sessionManager: { getEntries: () => [] },
-  };
-}
-
-function contextEvent(messages: ContextEvent["messages"]): ContextEvent {
-  return { type: "context", messages };
-}
-
-function userText(message: AgentMessage): string {
-  if (message.role !== "user") throw new Error("expected user");
-  if (typeof message.content === "string") return message.content;
-  return message.content
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-}
-
-function assistantText(message: AgentMessage): string {
-  if (message.role !== "assistant") throw new Error("expected assistant");
-  return message.content
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-}
-
-function hasNativeToolParts(messages: readonly AgentMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === "assistant" &&
-      message.content.some((part) => part.type === "toolCall" || part.type === "thinking"),
-  );
-}
-
-function appendPiMessage(ctx: ExtensionContext, id: string, message: AgentMessage): void {
-  ctx.sessionManager.getEntries().push({ type: "message", id, parentId: null, message });
-}
-
-function eventText(event: { payload: unknown }): string {
-  return (event.payload as { text?: string }).text ?? "";
-}
-
-describe("context hook smoke path", () => {
-  it("registers the context hook alongside Epic 1 capture hooks", () => {
+describe("connector hook rail", () => {
+  it("registers Epic 1 capture hooks without the context hook", () => {
     const { pi, registered } = recordingPi();
     createConnector({
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
     }).register(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
-    expect(registered).toHaveLength(EPIC_1_HOOKS.length + 1);
-    expect(registered).toContain(CONTEXT_HOOK);
-  });
-
-  it("accepts current PI handler argument order (event before ctx) and returns replacement messages", async () => {
-    const started = await startCapture(store);
-    const { connector: active, ctx } = started;
-    await active.handlers.message_end(makeMessageEnd(makeUserMessage("capture me")), ctx);
-    await active.handlers.agent_end(makeAgentEnd([]), ctx);
-
-    const original = [makeUserMessage("pi original"), makeAssistantMessage({ text: "pi tail" })];
-    const result = await active.handlers.context(contextEvent(original), syntheticCtx());
-
-    expect(result).toBeDefined();
-    expect(result?.messages).toBeDefined();
-    expect(result?.messages?.length).toBeGreaterThan(0);
-    expect(result?.messages).not.toEqual(original);
-
-    const diagnostic = active.getLastContextServe();
-    expect(diagnostic?.served).toBe(true);
-    expect(diagnostic?.reason).toBe("thread_view");
-    expect(diagnostic?.threadId).toMatch(/^th_/);
-    expect(diagnostic?.messageCount).toBeGreaterThan(0);
-    expect(diagnostic?.preview.length).toBeGreaterThan(0);
-    expect(diagnostic?.preview[0]?.textPreview).toContain("capture me");
-  });
-
-  it("degrades without throwing when no active session (returns void, records fallback)", async () => {
-    const connector = createConnector({
-      registryPath: store.registryPath,
-      newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
-      startupValidationReporter: () => {},
-    });
-    const original = [makeUserMessage("unchanged")];
-
-    const result = await connector.handlers.context(contextEvent(original), syntheticCtx());
-
-    expect(result).toBeUndefined();
-    expect(connector.getLastContextServe()).toEqual({
-      served: false,
-      reason: "no_active_session",
-      messageCount: 1,
-      preview: [],
-    });
-  });
-
-  it("malformed context input does not throw and records fallback diagnostic", async () => {
-    const connector = createConnector({
-      registryPath: store.registryPath,
-      newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
-      startupValidationReporter: () => {},
-    });
-
-    const result = await connector.handlers.context({ type: "context" } as unknown as ContextEvent, syntheticCtx());
-
-    expect(result).toBeUndefined();
-    expect(connector.getLastContextServe()).toEqual({
-      served: false,
-      reason: "malformed_context_event",
-      messageCount: 0,
-      preview: [],
-    });
-  });
-
-  it("serves a user prompt queued by message_end when context runs before agent_end", async () => {
-    const started = await startCapture(store);
-    const { connector, ctx } = started;
-    const prompt = "fresh prompt before context";
-    const userMessage = makeUserMessage(prompt);
-    const entryId = "pi-fresh-user";
-
-    await connector.handlers.message_end(makeMessageEnd(userMessage, entryId, 0), ctx);
-    appendPiMessage(ctx, entryId, userMessage);
-
-    const result = await connector.handlers.context(contextEvent([makeUserMessage("pi original")]), ctx);
-
-    expect(result?.messages?.some((message) => message.role === "user" && userText(message) === prompt)).toBe(true);
-
-    const diagnostic = connector.getLastContextServe();
-    expect(diagnostic).toMatchObject({ served: true, reason: "thread_view" });
-    expect(diagnostic?.preview.some((entry) => entry.textPreview === prompt)).toBe(true);
-
-    const events = await eventsAfterShutdown(started);
-    expect(kindsOf(events)).toContain("user_prompt");
-    expect(events.some((event) => event.eventKind === "user_prompt" && eventText(event) === prompt)).toBe(true);
-  });
-
-  it("serves a tool result queued by message_end when context runs before agent_end", async () => {
-    const started = await startCapture(store);
-    const { connector, ctx } = started;
-    const toolBody = "fresh tool body before context";
-
-    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("read notes.txt")), ctx);
-    appendPiMessage(ctx, "pi-user", makeUserMessage("read notes.txt"));
-    await connector.handlers.message_end(
-      makeMessageEnd(
-        makeAssistantMessage({
-          toolCalls: [{ id: "call_ctx", name: "read_file", arguments: { path: "notes.txt" } }],
-        }),
-      ),
-      ctx,
-    );
-    appendPiMessage(
-      ctx,
-      "pi-assistant",
-      makeAssistantMessage({
-        toolCalls: [{ id: "call_ctx", name: "read_file", arguments: { path: "notes.txt" } }],
-      }),
-    );
-    const toolResult = makeToolResult({ id: "call_ctx", content: toolBody });
-    await connector.handlers.message_end(makeMessageEnd(toolResult), ctx);
-    appendPiMessage(ctx, "pi-tool-result", toolResult);
-
-    const result = await connector.handlers.context(contextEvent([makeUserMessage("pi original")]), ctx);
-
-    expect(result?.messages?.some((message) => message.role === "user" && userText(message).includes(toolBody))).toBe(
-      true,
-    );
-
-    const diagnostic = connector.getLastContextServe();
-    expect(diagnostic).toMatchObject({ served: true, reason: "thread_view" });
-    expect(diagnostic?.preview.some((entry) => entry.textPreview.includes(toolBody))).toBe(true);
-
-    const events = await eventsAfterShutdown(started);
-    expect(kindsOf(events)).toContain("tool_result");
-    expect(
-      events.some(
-        (event) =>
-          event.eventKind === "tool_result" && (event.payload as { content?: string }).content?.includes(toolBody),
-      ),
-    ).toBe(true);
-  });
-
-  it("keeps capture working while context serving is registered", async () => {
-    const started = await startCapture(store);
-    const { connector, ctx } = started;
-
-    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("still captured")), ctx);
-    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
-
-    const contextResult = await connector.handlers.context(contextEvent([makeUserMessage("pi side")]), ctx);
-    expect(contextResult?.messages?.length).toBeGreaterThan(0);
-
-    const events = await eventsAfterShutdown(started);
-    expect(events.map((event) => event.eventKind)).toEqual(["user_prompt", "turn_end"]);
+    expect(registered).toHaveLength(EPIC_1_HOOKS.length);
+    expect(registered).not.toContain("context");
   });
 });
 
-describe("text-only served tail correctness", () => {
-  it("serves a captured user/assistant tail in LHC order as text-only PI messages", async () => {
+describe("session thread view seeding", () => {
+  it("seeds captured user/assistant tail into PI session message order", async () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
 
@@ -268,30 +77,35 @@ describe("text-only served tail correctness", () => {
 
     const instance = connector.getInstance();
     expect(instance).not.toBeNull();
-    const lhcContext = await instance!.sdk.threadView.getLlmRequestContext(threadRef);
-    expect(lhcContext.ok).toBe(true);
-    if (!lhcContext.ok) return;
+    if (instance === null) return;
 
-    const result = await connector.handlers.context(contextEvent([makeUserMessage("pi original")]), ctx);
-    expect(result?.messages).toEqual(mapLlmMessagesToPi(lhcContext.value.messages));
-    expect(result?.messages?.map((message) => message.role)).toEqual(lhcContext.value.messages.map((m) => m.role));
-    expect(
-      result?.messages?.map((message) => (message.role === "user" ? userText(message) : assistantText(message))),
-    ).toEqual(lhcContext.value.messages.map((message) => message.content.map((part) => part.text).join("")));
-    expect(hasNativeToolParts(result?.messages ?? [])).toBe(false);
+    const sessionView = await instance.sdk.threadView.getSessionThreadView(threadRef);
+    expect(sessionView.ok).toBe(true);
+    if (!sessionView.ok) return;
 
-    const diagnostic = connector.getLastContextServe();
-    expect(diagnostic).toMatchObject({
-      served: true,
-      reason: "thread_view",
-      messageCount: lhcContext.value.messages.length,
-    });
-    expect(diagnostic?.preview.map((entry) => entry.textPreview)).toEqual(
-      lhcContext.value.messages.map((message) => message.content.map((part) => part.text).join("")),
-    );
+    const sessionManager = {
+      messages: [] as unknown[],
+      appendMessage(message: unknown) {
+        this.messages.push(message);
+        return "m1";
+      },
+    };
+
+    const messageEntries = sessionView.value.entries.filter((entry) => "role" in entry);
+    const seeded = await seedPiSessionFromLhc(instance, threadRef, sessionManager as never);
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) return;
+    expect(seeded.value.messageCount).toBe(messageEntries.length);
+    expect(sessionManager.messages).toHaveLength(4);
+    expect(sessionManager.messages.map((message) => (message as { role: string }).role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
   });
 
-  it("serves tool-heavy captured turns as LHC-rendered text in order without native tool parts", async () => {
+  it("restores native assistant and toolResult shapes for tool-heavy turns", async () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
 
@@ -312,28 +126,103 @@ describe("text-only served tail correctness", () => {
 
     const instance = connector.getInstance();
     expect(instance).not.toBeNull();
-    const lhcContext = await instance!.sdk.threadView.getLlmRequestContext(threadRef);
-    expect(lhcContext.ok).toBe(true);
-    if (!lhcContext.ok) return;
+    if (instance === null) return;
 
-    const rendered = lhcContext.value.messages.map((message) => message.content.map((part) => part.text).join(""));
-    expect(rendered.some((text) => text.includes("[tool call · read_file]"))).toBe(true);
-    expect(rendered.some((text) => text.includes("[tool result · read_file]"))).toBe(true);
-    expect(rendered.some((text) => text.includes("file body"))).toBe(true);
+    const sessionView = await instance.sdk.threadView.getSessionThreadView(threadRef);
+    expect(sessionView.ok).toBe(true);
+    if (!sessionView.ok) return;
 
-    const result = await connector.handlers.context(contextEvent([makeUserMessage("pi side")]), ctx);
-    expect(result?.messages).toEqual(mapLlmMessagesToPi(lhcContext.value.messages));
-    expect(hasNativeToolParts(result?.messages ?? [])).toBe(false);
     expect(
-      result?.messages?.map((message) => (message.role === "user" ? userText(message) : assistantText(message))),
-    ).toEqual(rendered);
+      sessionView.value.entries.filter((entry) => "role" in entry).map((entry) => ("role" in entry ? entry.role : "")),
+    ).toEqual(["user", "assistant", "toolResult", "assistant"]);
 
-    const diagnostic = connector.getLastContextServe();
-    expect(diagnostic?.preview.some((entry) => entry.textPreview.includes("[tool call · read_file]"))).toBe(true);
-    expect(diagnostic?.preview.some((entry) => entry.textPreview.includes("[tool result · read_file]"))).toBe(true);
+    const assistant = sessionView.value.entries[1];
+    expect(assistant !== undefined && "role" in assistant && assistant.role).toBe("assistant");
+    if (assistant === undefined || !("role" in assistant) || assistant.role !== "assistant") return;
+    expect(assistant.content.map((part) => part.type)).toEqual(["thinking", "text", "toolCall"]);
+
+    const sessionManager = {
+      messages: [] as Array<{ role: string; content?: unknown; toolCallId?: string }>,
+      customEntries: [] as unknown[],
+      appendMessage(message: { role: string; content?: unknown; toolCallId?: string }) {
+        this.messages.push(message);
+        return "m1";
+      },
+      appendCustomEntry() {
+        return "c1";
+      },
+    };
+
+    const rehydrated = await rehydratePiSessionFromLhc(instance, threadRef, sessionManager as never);
+    expect(rehydrated.ok).toBe(true);
+    if (!rehydrated.ok) return;
+
+    expect(sessionManager.messages[1]?.role).toBe("assistant");
+    const piAssistant = sessionManager.messages[1];
+    expect(Array.isArray(piAssistant?.content)).toBe(true);
+    expect((piAssistant?.content as Array<{ type: string }>).map((part) => part.type)).toEqual([
+      "thinking",
+      "text",
+      "toolCall",
+    ]);
+    expect(sessionManager.messages[2]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call_x",
+    });
   });
 
-  it("buildContextServePreview is bounded, deterministic, and plain-data serializable", () => {
+  it("restores model and thinking-level changes through SessionManager entries", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx, threadRef } = started;
+
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "model_change", id: "pi-model-1", parentId: null, provider: "openai", modelId: "gpt-4o" });
+    await connector.handlers.model_select(
+      makeModelSelect({ provider: "openai", id: "gpt-4o" }, { provider: "anthropic", id: "claude-3" }),
+      ctx,
+    );
+    ctx.sessionManager
+      .getEntries()
+      .push({ type: "thinking_level_change", id: "pi-thinking-1", parentId: "pi-model-1", thinkingLevel: "high" });
+    await connector.handlers.thinking_level_select(makeThinkingLevelSelect("high", "medium"), ctx);
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("after runtime changes")), ctx);
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
+
+    const instance = connector.getInstance();
+    expect(instance).not.toBeNull();
+    if (instance === null) return;
+
+    const sessionManager = {
+      modelChanges: [] as Array<{ provider: string; modelId: string }>,
+      thinkingChanges: [] as string[],
+      messages: [] as unknown[],
+      appendMessage(message: unknown) {
+        this.messages.push(message);
+        return "m1";
+      },
+      appendModelChange(provider: string, modelId: string) {
+        this.modelChanges.push({ provider, modelId });
+        return "mc1";
+      },
+      appendThinkingLevelChange(level: string) {
+        this.thinkingChanges.push(level);
+        return "tl1";
+      },
+    };
+
+    const seeded = await seedPiSessionFromLhc(instance, threadRef, sessionManager as never);
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) return;
+
+    expect(sessionManager.modelChanges).toEqual([{ provider: "openai", modelId: "gpt-4o" }]);
+    expect(sessionManager.thinkingChanges).toEqual(["high"]);
+    expect(sessionManager.messages).toHaveLength(1);
+  });
+});
+
+describe("buildContextServePreview", () => {
+  it("is bounded, deterministic, and plain-data serializable", () => {
     const longText = "x".repeat(CONTEXT_SERVE_PREVIEW_MAX_TEXT + 40);
     const messages = Array.from({ length: CONTEXT_SERVE_PREVIEW_MAX_MESSAGES + 3 }, (_, index) => ({
       role: (index % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
@@ -350,17 +239,5 @@ describe("text-only served tail correctness", () => {
     const clone = structuredClone(built);
     expect(clone).toEqual(built);
     expect(() => JSON.stringify(built)).not.toThrow();
-  });
-
-  it("records an empty preview on serve failure paths", async () => {
-    const connector = createConnector({
-      registryPath: store.registryPath,
-      newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
-      startupValidationReporter: () => {},
-    });
-
-    await connector.handlers.context(contextEvent([makeUserMessage("unchanged")]), syntheticCtx());
-    expect(connector.getLastContextServe()?.preview).toEqual([]);
   });
 });

@@ -6,6 +6,8 @@ import {
   disposeInstance,
   EPIC_1_HOOKS,
   initInstance,
+  LHC_EXTENSION_FLAG_SPECS,
+  registerLhcFlags,
 } from "../../src/index.js";
 import { createSessionState } from "../../src/lifecycle/state.js";
 import type { ExtensionAPI, ExtensionContext, PiHookName } from "../../src/pi/types.js";
@@ -43,7 +45,12 @@ function recordingPi(): {
     registerTool(tool: { name: string }) {
       tools.push(tool.name);
     },
+    registerFlag: () => {},
+    getFlag: () => undefined,
     appendEntry() {},
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    setModel: async () => true,
   } as ExtensionAPI;
   return { pi, registered, handlers, commands, tools };
 }
@@ -65,16 +72,45 @@ function syntheticCtx(marker: string): ExtensionContext {
 }
 
 describe("extension load + hook rail", () => {
-  it("registers Epic 1 capture hooks plus the context hook", () => {
+  it("registers Epic 1 capture hooks without the context hook", () => {
     const { pi, registered, commands, tools } = recordingPi();
     activate(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
-    expect(registered).toHaveLength(EPIC_1_HOOKS.length + 1);
-    expect(registered).toContain("context");
-    // no operator commands / agent tools registered yet (Feature 3)
-    expect(commands).toEqual([]);
+    expect(registered).toHaveLength(EPIC_1_HOOKS.length);
+    expect(registered).not.toContain("context");
+    expect(commands).toEqual(["lhc-rehydrate"]);
     expect(tools).toEqual([]);
+  });
+
+  it("registers explicit LHC launch flags for PI help and getFlag", () => {
+    const registered: string[] = [];
+    const pi = {
+      registerFlag(name: string) {
+        registered.push(name);
+      },
+    } as Pick<ExtensionAPI, "registerFlag">;
+    registerLhcFlags(pi as ExtensionAPI);
+    expect(registered).toEqual(LHC_EXTENSION_FLAG_SPECS.map((spec) => spec.name));
+  });
+
+  it("activate wires registerLhcFlags through connector.register", () => {
+    const registered: string[] = [];
+    const pi = {
+      on: () => {},
+      registerCommand: () => {},
+      registerTool: () => {},
+      registerFlag(name: string) {
+        registered.push(name);
+      },
+      getFlag: () => undefined,
+      appendEntry: () => {},
+      getThinkingLevel: () => "medium",
+      setThinkingLevel: () => {},
+      setModel: async () => true,
+    } as ExtensionAPI;
+    activate(pi);
+    expect(registered).toEqual(LHC_EXTENSION_FLAG_SPECS.map((spec) => spec.name));
   });
 
   it("registers current PI-shape on(event, handler) handlers and accepts event before ctx", async () => {
@@ -82,7 +118,7 @@ describe("extension load + hook rail", () => {
     const connector = createConnector({
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
     });
     connector.register(pi);
@@ -100,7 +136,7 @@ describe("extension load + hook rail", () => {
     const connector = createConnector({
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
     });
     // fire several hooks with DISTINCT ctx objects carrying methods
@@ -112,7 +148,6 @@ describe("extension load + hook rail", () => {
     // retained state is plain data: structuredClone throws on a stored PI ctx (it
     // has methods); the live LhcInstance is held but excluded from the snapshot.
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
-    expect(connector.snapshot().lastContextServe).toBeNull();
   });
 
   it("keeps SessionState plain-data-only — it survives structuredClone with every field populated", () => {

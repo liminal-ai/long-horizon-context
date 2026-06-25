@@ -69,6 +69,58 @@ export interface LlmRequestContext {
   messages: LlmRequestContextMessage[];
 }
 
+// PI SessionManager-friendly message shapes built from canonical LHC record
+// data. The host maps these to its session append API.
+export interface SessionAssistantPart {
+  type: "text" | "thinking" | "toolCall";
+  text?: string;
+  thinking?: string;
+  toolCallId?: string;
+  toolName?: string;
+  arguments?: Record<string, unknown>;
+}
+
+export interface SessionUserMessage {
+  role: "user";
+  content: string;
+}
+
+export interface SessionAssistantMessage {
+  role: "assistant";
+  content: SessionAssistantPart[];
+}
+
+export interface SessionToolResultMessage {
+  role: "toolResult";
+  toolCallId: string;
+  toolName?: string;
+  content: string;
+  isError?: boolean;
+}
+
+export interface SessionModelChangeEntry {
+  kind: "model_change";
+  provider: string;
+  modelId: string;
+}
+
+export interface SessionThinkingLevelChangeEntry {
+  kind: "thinking_level_change";
+  level: string;
+}
+
+export type SessionThreadViewMessage = SessionUserMessage | SessionAssistantMessage | SessionToolResultMessage;
+
+export type SessionThreadViewEntry =
+  | SessionThreadViewMessage
+  | SessionModelChangeEntry
+  | SessionThinkingLevelChangeEntry;
+
+export interface SessionThreadView {
+  threadId: string;
+  entries: SessionThreadViewEntry[];
+}
+
 // The stored active view row as `threadView.describe` exposes it: snapshot
 // fields verbatim — arrangement, gaps, config, source-state provenance, and
 // per-band stored token counts — never recomputed, never repaired. Absent view

@@ -4,12 +4,12 @@ import { type OpResult, type ThreadRef, threads } from "lhc";
 // Launch flags name the thread; the registry resolves it. PI's own session
 // file still exists, but it is not where thread identity lives.
 
-/** None set → new thread. (`--resume`/`-r` is owned by the picker, routed
+/** None set → new thread. (`--lhc-resume` is owned by the picker, routed
  *  before this resolver — see `picker.ts`.) */
 export interface LaunchFlags {
-  resume?: boolean; // --resume / -r : cwd-scoped picker (handled by picker.ts)
-  continue?: boolean; // --continue / -c : most recent
-  session?: string; // --session <id> : full or partial id
+  resume?: boolean; // --lhc-resume : cwd-scoped picker (handled by picker.ts)
+  continue?: boolean; // --lhc-continue : most recent
+  thread?: string; // --lhc-thread <id> : full or partial id
 }
 
 /** What the resolver needs from the host beyond the launch flags: the cwd a new
@@ -30,7 +30,7 @@ export interface ResolveDeps {
 
 /** The creation-time title for a new thread when the host supplies none. At
  *  session_start there is no first prompt yet, so the title is the cwd's leaf
- *  directory name — a real, non-empty project label the `--resume` picker shows
+ *  directory name — a real, non-empty project label the `--lhc-resume` picker shows
  *  alongside the creation time. Prompt-derived titles are the deferred TDQ Q4. */
 export function defaultThreadTitle(cwd: string): string {
   const leaf = basename(cwd);
@@ -54,17 +54,17 @@ export function registryArg(registryPath?: string): { registryPath?: string } {
 }
 
 /** Resolve the recording thread from the launch input:
- *  - `--session <id>`: a named thread by full or partial id; unresolvable or
+ *  - `--lhc-thread <id>`: a named thread by full or partial id; unresolvable or
  *    ambiguous fails loud (the registry returns `thread_not_found` /
  *    `ambiguous_thread_id`) and never silently creates a thread.
- *  - `--continue`: the most recently created thread.
+ *  - `--lhc-continue`: the most recently created thread.
  *  - no flag: a new thread, registered with its cwd.
- *  Reload reuses this via `{ session: <resolved id> }`, reconstructing from the
+ *  Reload reuses this via `{ thread: <resolved id> }`, reconstructing from the
  *  durable id rather than a retained object. */
 export async function resolveThread(launch: LaunchFlags, deps: ResolveDeps): Promise<OpResult<ThreadRef>> {
-  if (launch.session !== undefined) {
+  if (launch.thread !== undefined) {
     const resolved = await threads.resolve({
-      threadId: launch.session,
+      threadId: launch.thread,
       ...registryArg(deps.registryPath),
     });
     if (!resolved.ok) return resolved;
@@ -83,7 +83,7 @@ export async function resolveThread(launch: LaunchFlags, deps: ResolveDeps): Pro
         error: {
           errorClass: "caller_error",
           code: "thread_not_found",
-          reason: "--continue: no threads exist to continue",
+          reason: "--lhc-continue: no threads exist to continue",
         },
       };
     }
@@ -108,32 +108,5 @@ export async function resolveReloadThread(
   deps: ResolveDeps,
 ): Promise<OpResult<ThreadRef | null>> {
   if (threadId === null) return { ok: true, value: null };
-  return resolveThread({ session: threadId }, deps);
-}
-
-/** Map a launch argv to `LaunchFlags`. The connector runs in-process inside PI,
- *  so PI's launch arguments are visible on `process.argv`; this is the
- *  production source of the launch mode. Supports `--session <id>`,
- *  `--session=<id>`, `--continue`/`-c`, and `--resume`/`-r`. (The exact PI flag
- *  spelling for the named-thread mode is a PI integration detail.) */
-export function parseLaunchFlags(argv: readonly string[]): LaunchFlags {
-  const flags: LaunchFlags = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === undefined) continue;
-    if (arg === "--resume" || arg === "-r") {
-      flags.resume = true;
-    } else if (arg === "--continue" || arg === "-c") {
-      flags.continue = true;
-    } else if (arg === "--session") {
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("-")) {
-        flags.session = next;
-        i += 1;
-      }
-    } else if (arg.startsWith("--session=")) {
-      flags.session = arg.slice("--session=".length);
-    }
-  }
-  return flags;
+  return resolveThread({ thread: threadId }, deps);
 }

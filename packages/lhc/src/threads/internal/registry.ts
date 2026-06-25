@@ -2,10 +2,9 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { getSchemaVersion, openDatabase } from "../../shared-tech/storage.js";
+import { openDatabase } from "../../shared-tech/storage.js";
 
 export const DEFAULT_REGISTRY_PATH = join(homedir(), ".lhc", "registry.sqlite");
-const CURRENT_REGISTRY_SCHEMA_VERSION = 1;
 
 export function resolveRegistryPath(registryPath?: string): string {
   return registryPath ?? DEFAULT_REGISTRY_PATH;
@@ -19,18 +18,11 @@ const REGISTRY_SCHEMA_STATEMENTS: readonly string[] = [
     cwd TEXT,
     created_at TEXT NOT NULL
   );`,
-  `PRAGMA user_version = ${CURRENT_REGISTRY_SCHEMA_VERSION};`,
 ];
 
 function hasNoSchema(db: DatabaseSync): boolean {
   const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 1").get();
-  return row === undefined && getSchemaVersion(db) === 0;
-}
-
-function ensureCurrentRegistry(db: DatabaseSync): void {
-  const version = getSchemaVersion(db);
-  if (version === CURRENT_REGISTRY_SCHEMA_VERSION) return;
-  throw new Error(`registry schema version ${version}, expected ${CURRENT_REGISTRY_SCHEMA_VERSION}`);
+  return row === undefined;
 }
 
 // First write creates the current registry file and schema lazily.
@@ -47,8 +39,6 @@ export function openRegistryForWrite(registryPath: string): DatabaseSync {
         db.exec("ROLLBACK;");
         throw cause;
       }
-    } else {
-      ensureCurrentRegistry(db);
     }
   } catch (cause) {
     db.close();
@@ -62,14 +52,7 @@ export function openRegistryForWrite(registryPath: string): DatabaseSync {
 // openDatabase would create the file.
 export function openRegistryForRead(registryPath: string): DatabaseSync | null {
   if (!existsSync(registryPath)) return null;
-  const db = openDatabase(registryPath);
-  try {
-    ensureCurrentRegistry(db);
-  } catch (cause) {
-    db.close();
-    throw cause;
-  }
-  return db;
+  return openDatabase(registryPath);
 }
 
 export interface RegistryRow {

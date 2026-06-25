@@ -41,9 +41,14 @@ function registerConnector(connector: Connector, entries: SessionEntry[]): void 
     on: () => {},
     registerCommand: () => {},
     registerTool: () => {},
+    registerFlag: () => {},
+    getFlag: () => undefined,
     appendEntry: (type, data) => {
       entries.push({ type: "custom", customType: type, data });
     },
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    setModel: async () => true,
   };
   connector.register(pi);
 }
@@ -82,7 +87,7 @@ export interface StartedCapture {
 
 /** Start a connector against a temp store under the given launch flags and fire
  *  `session_start{reason}`. The driver for existing-thread reattach: pass
- *  `{ session: threadId }` with reason `"resume"`/`"reload"` to attach a fresh
+ *  `{ thread: threadId }` with reason `"resume"`/`"reload"` to attach a fresh
  *  connector to a thread a prior connector created. */
 export async function attachCapture(
   store: TempStore,
@@ -93,7 +98,7 @@ export async function attachCapture(
   const connector = createConnector({
     registryPath: store.registryPath,
     newThreadFilePath: () => store.threadPath(),
-    parseLaunch: () => launch,
+    readLaunchFlags: () => ({ ok: true, value: launch }),
     buildSdkConfig: () => captureConfig(),
     startupValidationReporter: () => {},
   });

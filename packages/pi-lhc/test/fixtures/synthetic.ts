@@ -10,9 +10,11 @@ import type {
   AssistantMessage,
   ContentPart,
   MessageEndEvent,
+  ModelSelectEvent,
   PiStopReason,
   SessionStartEvent,
   SessionStartReason,
+  ThinkingLevelSelectEvent,
   ToolResultMessage,
   UserMessage,
 } from "../../src/pi/types.js";
@@ -120,4 +122,17 @@ export function makeMessageEnd(message: AgentMessage, _entryId?: string, _positi
 
 export function makeAgentEnd(messages: AgentMessage[]): AgentEndEvent {
   return { type: "agent_end", messages };
+}
+
+export function makeModelSelect(
+  model: { provider: string; id: string },
+  previousModel?: { provider: string; id: string },
+): ModelSelectEvent {
+  const event: ModelSelectEvent = { type: "model_select", model };
+  if (previousModel !== undefined) event.previousModel = previousModel;
+  return event;
+}
+
+export function makeThinkingLevelSelect(level: string, previousLevel: string): ThinkingLevelSelectEvent {
+  return { type: "thinking_level_select", level, previousLevel };
 }

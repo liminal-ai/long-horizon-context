@@ -4,6 +4,7 @@ export type ErrorCode =
   | "path_exists"
   | "thread_not_found"
   | "ambiguous_thread_id" // caller_error — a partial thread id matched more than one thread (A-8 partial-id resolve)
+  | "conflicting_lhc_launch_flags" // caller_error — mutually exclusive pi-lhc extension launch flags set together
   | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
   | "invalid_event"
   | "empty_batch"

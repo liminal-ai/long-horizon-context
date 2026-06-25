@@ -19,7 +19,7 @@ export interface PickerDeps {
   select: (choices: readonly ThreadChoice[]) => Promise<string | null>;
 }
 
-/** `--resume`/`-r`: list the current cwd's threads (title + creation time) and
+/** `--lhc-resume`: list the current cwd's threads (title + creation time) and
  *  resolve the operator's selection. The cwd scope is the registry query, not a
  *  filter over an unscoped list (anti-shim). With no threads for the cwd the
  *  picker reports an empty list (`null`) rather than failing; a cancelled

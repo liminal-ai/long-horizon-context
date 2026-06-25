@@ -11,6 +11,7 @@ import type {
   DerivationReportEntry,
   LlmRequestContext,
   ResolvedViewConfig,
+  SessionThreadView,
   StoredView,
   ViewCompactParams,
   ViewProfile,
@@ -42,6 +43,7 @@ import {
   type SelectionInputs,
   selectArrangement,
 } from "./internal/select.js";
+import { buildSessionThreadView } from "./internal/session-view.js";
 import {
   readStoredView,
   readThreadMetadata,
@@ -103,6 +105,17 @@ export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<Llm
     });
   } catch (cause) {
     return storageFailure(`view getLlmRequestContext failed: ${detail(cause)}`);
+  }
+}
+
+// SessionManager-friendly materialization from canonical record data: compacted
+// bands as user context lines, tail messages regrouped into user / assistant /
+// toolResult shapes. Reads-only, touch-suppressed like getLlmRequestContext.
+export async function getSessionThreadView(ref: ThreadRef): Promise<OpResult<SessionThreadView>> {
+  try {
+    return await createDbReadTransaction(ref, (transaction) => buildSessionThreadView(transaction.db));
+  } catch (cause) {
+    return storageFailure(`view getSessionThreadView failed: ${detail(cause)}`);
   }
 }
 

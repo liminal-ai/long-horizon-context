@@ -53,7 +53,7 @@ describe("Story 1: instance lifecycle", () => {
     const connector = createConnector({
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
     });
 
@@ -122,7 +122,7 @@ describe("Story 1: instance lifecycle", () => {
     // Reattach: resolve the same thread by id (no retained instance) and read
     // back — every pre-shutdown event is present, no trailing loss.
     const reattached = await resolveThread(
-      { session: threadId },
+      { thread: threadId },
       { cwd: "/work/tc-1-4", registryPath: store.registryPath, newThreadFilePath: () => store.threadPath() },
     );
     expect(reattached.ok).toBe(true);

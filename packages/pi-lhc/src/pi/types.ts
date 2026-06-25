@@ -116,7 +116,11 @@ export type PiContextHookHandler = (
 
 // ── Registration-time API (the `pi` object, ExtensionAPI) ────────────
 
-export type PiCommandHandler = (args: string[], ctx: ExtensionContext) => void | Promise<void>;
+export type PiCommandHandler = (args: string[], ctx: ExtensionCommandContext) => void | Promise<void>;
+
+export interface ReplacedSessionContext extends ExtensionCommandContext {
+  sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): Promise<void>;
+}
 
 export interface PiToolSpec {
   name: string;
@@ -136,6 +140,18 @@ export interface ExtensionAPI {
   registerCommand(name: string, options: { handler: PiCommandHandler; description?: string }): void;
   registerTool(tool: PiToolSpec): void;
   appendEntry(customType: string, data: unknown): void;
+  registerFlag(
+    name: string,
+    options: {
+      description?: string;
+      type: "boolean" | "string";
+      default?: boolean | string;
+    },
+  ): void;
+  getFlag(name: string): boolean | string | undefined;
+  getThinkingLevel(): string;
+  setThinkingLevel(level: string): void;
+  setModel(model: ModelHandle): Promise<boolean>;
 }
 
 // ── Per-hook context (the `ctx` object, ExtensionContext) ────────────
@@ -184,6 +200,16 @@ export interface ExtensionContext {
   hasUI: boolean;
   sessionManager: SessionManager;
   cwd: string;
+  model?: ModelDescriptor;
+}
+
+/** Command handlers receive session-control methods on ctx. */
+export interface ExtensionCommandContext extends ExtensionContext {
+  waitForIdle(): Promise<void>;
+  newSession(options?: {
+    setup?: (sessionManager: unknown) => Promise<void>;
+    withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+  }): Promise<{ cancelled: boolean }>;
 }
 
 // ── Message vocabulary (AgentMessage and its parts) ──────────────────

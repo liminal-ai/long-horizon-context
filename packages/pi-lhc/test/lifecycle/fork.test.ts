@@ -225,7 +225,7 @@ describe("Story 4: fork as new thread", () => {
     const connector = createConnector({
       registryPath: store.registryPath,
       newThreadFilePath: () => store.threadPath(),
-      parseLaunch: () => ({}),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
       buildSdkConfig: () => ({
         ok: true,

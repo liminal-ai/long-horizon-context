@@ -8,3 +8,4 @@ coverage/
 .context-steward/
 temp/
 tmp/
+repo-ref/

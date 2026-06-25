@@ -15,7 +15,10 @@ function detail(cause: unknown): string {
  *  then release the instance. Captured intake is already durable (intake writes
  *  commit synchronously), so the flush is about letting in-flight background
  *  work settle before shutdown — never a throw back into a PI hook. */
-async function disposeSdk(sdk: Lhc, threadRef: ThreadRef): Promise<OpResult<void>> {
+async function disposeSdk(sdk: Lhc, threadRef: ThreadRef, settle: boolean): Promise<OpResult<void>> {
+  if (settle !== true) {
+    return { ok: true, value: undefined };
+  }
   try {
     await sdk.drainSettled(threadRef);
   } catch (cause) {
@@ -46,14 +49,14 @@ export async function initInstance(threadRef: ThreadRef, config: SdkConfig): Pro
   const instance: LhcInstance = {
     sdk,
     threadRef,
-    dispose: () => disposeSdk(sdk, threadRef),
+    dispose: () => disposeSdk(sdk, threadRef, true),
   };
   return { ok: true, value: instance };
 }
 
 /** Dispose an instance on shutdown/switch with flush. Null-safe: a
  *  shutdown with no live instance is a successful no-op, never an error. */
-export function disposeInstance(instance: LhcInstance | null): Promise<OpResult<void>> {
+export function disposeInstance(instance: LhcInstance | null, options: { settle?: boolean } = {}): Promise<OpResult<void>> {
   if (instance === null) return Promise.resolve({ ok: true, value: undefined });
-  return instance.dispose();
+  return disposeSdk(instance.sdk, instance.threadRef, options.settle !== false);
 }

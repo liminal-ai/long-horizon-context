@@ -47,7 +47,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
     // A brand-new connector attaches to the SAME thread by id and records a new
     // message — it must NOT be skipped as a prior-key collision.
-    const b = await attachCapture(store, { session: threadId }, "resume");
+    const b = await attachCapture(store, { thread: threadId }, "resume");
     expect(b.connector.snapshot().lastDiagnostic).toBeNull();
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second after resume")), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
@@ -66,7 +66,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const threadId = threadIdOf(a.threadRef);
     await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
-    const b = await attachCapture(store, { session: threadId }, "reload");
+    const b = await attachCapture(store, { thread: threadId }, "reload");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second after reload")), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
@@ -83,7 +83,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const threadId = threadIdOf(a.threadRef);
     await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
-    const b = await attachCapture(store, { session: threadId }, "reload");
+    const b = await attachCapture(store, { thread: threadId }, "reload");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("first"), "entry-user-1"), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
@@ -137,7 +137,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
     // Resume: PI does not re-fire history, so the connector sees only the new
     // turn — which must record, leaving the prior turn intact and un-duplicated.
-    const b = await attachCapture(store, { session: threadId }, "resume");
+    const b = await attachCapture(store, { thread: threadId }, "resume");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("second")), b.ctx);
     await b.connector.handlers.message_end(makeMessageEnd(makeAssistantMessage({ text: "answer two" })), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
@@ -221,7 +221,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const threadId = threadIdOf(a.threadRef);
     await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
-    const b = await attachCapture(store, { session: threadId }, "reload");
+    const b = await attachCapture(store, { thread: threadId }, "reload");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("reload replay"), "entry-replay-1"), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
@@ -259,7 +259,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const threadId = threadIdOf(a.threadRef);
     await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
-    const b = await attachCapture(store, { session: threadId }, "reload");
+    const b = await attachCapture(store, { thread: threadId }, "reload");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("same text"), undefined, 40), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
@@ -279,7 +279,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const threadId = threadIdOf(a.threadRef);
     await a.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, a.ctx);
 
-    const b = await attachCapture(store, { session: threadId }, "reload");
+    const b = await attachCapture(store, { thread: threadId }, "reload");
     await b.connector.handlers.message_end(makeMessageEnd(makeUserMessage("source-order replay")), b.ctx);
     await b.connector.handlers.agent_end(makeAgentEnd([]), b.ctx);
 
