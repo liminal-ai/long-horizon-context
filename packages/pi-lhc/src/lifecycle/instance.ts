@@ -56,7 +56,10 @@ export async function initInstance(threadRef: ThreadRef, config: SdkConfig): Pro
 
 /** Dispose an instance on shutdown/switch with flush. Null-safe: a
  *  shutdown with no live instance is a successful no-op, never an error. */
-export function disposeInstance(instance: LhcInstance | null, options: { settle?: boolean } = {}): Promise<OpResult<void>> {
+export function disposeInstance(
+  instance: LhcInstance | null,
+  options: { settle?: boolean } = {},
+): Promise<OpResult<void>> {
   if (instance === null) return Promise.resolve({ ok: true, value: undefined });
   return disposeSdk(instance.sdk, instance.threadRef, options.settle !== false);
 }

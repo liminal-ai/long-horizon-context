@@ -10,6 +10,7 @@ import {
   SettingsManager,
   VERSION,
 } from "@earendil-works/pi-coding-agent";
+import type { ThreadRef } from "lhc";
 import { createDeterministicInferenceCallbacks, type SdkConfig } from "lhc";
 import activate from "../index.js";
 import { setLauncherOwnedStartup } from "../lifecycle/launcher-startup.js";
@@ -25,7 +26,6 @@ import {
 import { createLauncherRuntimeFactory } from "./runtime-factory.js";
 import { prepareLhcLauncherStartup } from "./startup.js";
 import { unsupportedLauncherFlagError } from "./unsupported-flags.js";
-import type { ThreadRef } from "lhc";
 
 export { unsupportedLauncherFlagError as deferredUnsupportedLauncherOptions } from "./unsupported-flags.js";
 
