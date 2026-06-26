@@ -1,9 +1,0 @@
-# architecture
-- Remove backward-compatibility shims, fallbacks, migration scaffolding, and regression tombstones when there are zero users, zero databases, and zero releases that depend on the old code; do not hide test signal behind compatibility noise. Confidence: 0.90
-- Domain derive surfaces (messages.derive, turns.deriveTurn, turns.deriveDetailedChunk, turns.deriveBriefChunk) must be synchronous: they perform the work and land derivation state/content directly; callers that need asynchrony use the durable work queue themselves. Confidence: 0.85
-- Remove unused operations and dead code rather than keeping them "just in case" something needs them later. Confidence: 0.80
-- Thread-view must read cross-domain data through domain owner surfaces (messages, turns), not through direct SQL queries or internal table access across domain boundaries. Confidence: 0.70
-- Read-only SDK surface operations (pull, status) must wrap in a scope that suppresses thread-touch/scheduler side effects to prevent read-triggered drain work, provider calls, or state mutations. Confidence: 0.75
-- HandlerRunContext must carry resolved thread identity (threadId, filePath) so work handlers and internal domain services can reference the thread without reopening DB handles or passing ThreadRef through durable work items. Confidence: 0.85
-- Reusable domain operations need two layers: a public wrapper (takes ThreadRef, opens/resolves DB, returns OpResult) and an open-thread core (takes existing DB/config context, does the domain behavior, callable by work handlers). Do not overload the public surface with ThreadRef|DbContext unions — keep them as separate named functions. Confidence: 0.80
-- Do not embed repair scheduling, requeueing, or async healing logic inside compact or thread-view operations; compact is deterministic assembly/fallback only, and repair scheduling belongs in the work queue or explicit operator surfaces. Confidence: 0.85
