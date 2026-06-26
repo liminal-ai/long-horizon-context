@@ -64,7 +64,35 @@ pnpm run verify:all  # pass (includes lhc real-inference)
 - Orchestration note: implementation will run through Cursor Composer 2.5 in a captured session. Verification will run separately with a built-in GPT 5.5 high subagent and route feedback back to the same implementor session until convergence.
 - Process requirement carried into prompts: implementor should use package scripts while working, especially `pnpm run verify`, and must run `pnpm run verify:all` before declaring the story done. Verifier must perform a full code review against Story 1, the smart compact specs, project patterns, and `bad-code-log.md`.
 
-### Implementation notes
+## Story 2: Trigger Configuration
+
+- Started from a clean git worktree after Story 1 commit `7e005ef`.
+- Orchestration note: implementation will run through Cursor Composer 2.5 in a captured session. Verification will run separately with a built-in GPT 5.5 high subagent and route feedback back to the same implementor session until convergence.
+- Process requirement carried into prompts: this story should stay config/documentation/test-only unless the existing code proves otherwise. Implementor should use `pnpm run verify` while working and must run `pnpm run verify:all` before declaring the story done.
+
+### Story 2 implementation notes
+
+- `docs/specs/02-pi-lhc/02-smart-compact/models.example.json` — `modelOverrides` for `openai-codex/gpt-5.4` with `contextWindow: 250000` (native catalog window is 272000 in PI v0.80.x; effective threshold ~233616 at default `reserveTokens` 16384).
+- `docs/specs/02-pi-lhc/02-smart-compact/trigger-config.md` — operator doc: override semantics, install steps, tuning tradeoffs, effective trigger formula.
+- `packages/pi-lhc/test/compact/config.test.ts` — sample accepted via `ModelRegistry` load path; JSON asserts only `contextWindow` key; merged model differs only in `contextWindow` vs built-in.
+- No runtime pi-lhc changes.
+
+### Tests added (Story 2)
+
+- `packages/pi-lhc/test/compact/config.test.ts` — schema acceptance + scoped override.
+
+### Verification (Story 2)
+
+```bash
+pnpm run verify      # pass (431 lhc + 238 pi-lhc tests)
+pnpm run verify:all  # pass (includes lhc real-inference: openai/gpt-5.4-mini, 20 tests)
+```
+
+### Friction (Story 2)
+
+- PI's `ModelsConfigSchema` / `ModelOverrideSchema` are not exported from `@earendil-works/pi-coding-agent`; validation uses `ModelRegistry` constructor + `getError()` (same internal `validateModelsConfig` path PI uses at runtime).
+
+### Implementation notes (Story 1 — misplaced under Story 2 header)
 
 - `packages/pi-lhc/src/compact/handler.ts` — `handleSessionBeforeCompact`: flush → preview → map → compact → assemble; always returns `{ compaction }` or `{ cancel: true }`; cancel codes recorded via `recordCompactCancel` (buffer + LHC warning log + optional UI notify).
 - `packages/pi-lhc/src/compact/result-mapping.ts` — three-tier `mapFirstKeptToEntryId` (live idempotency key → seed-entry-map → fail-closed) and `assembleCompactionResult` with `[context · band]` summary from `renderedBands`; `tokensBefore` from `event.preparation.tokensBefore`.
