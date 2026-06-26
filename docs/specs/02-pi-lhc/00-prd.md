@@ -19,7 +19,7 @@ The pieces this product connects, and the vocabulary the rest of the document us
 - A conversation is a **thread**: a durable, append-only record of every prompt, response, tool call, and result, in one SQLite file. PI calls its unit of work a *session*; a session's traffic feeds a thread as **intake events**.
 - Thread content is organized into **turns** (one user prompt and everything the agent did in response) and **chunks** (consecutive turns grouped for summarization).
 - LHC runs background **derivations** over the record — prompt smoothing, tool-result summaries, turn renderings and compressions, and chunk summaries at two depths. v1 has **six derivation types**. Each inference-backed derivation carries a **model assignment** — which provider and model runs it. A failed derivation is recorded with a classified reason and can be **requeued**.
-- The model sees a **thread-view**: a rendering where older history appears in **bands** of graduated fidelity (oldest as brief summaries, then detailed summaries, then lightly-smoothed content) followed by the **tail** — the recent stretch at full fidelity. Within the tail, a **visibility boundary** marks how much raw tool output stays full versus summarized; it advances in batches so the prompt prefix stays stable for provider caching.
+- The model sees a **thread-view**: a rendering where older history appears in **bands** of graduated fidelity (oldest as brief summaries, then detailed summaries, then lightly-smoothed content) followed by the **tail** — the recent stretch at full fidelity. Before an explicit **smart compact**, resume and session-view keep full tool results in the tail. A **visibility boundary** can shorten at-or-behind tool results after compact resets it; intake does not advance it automatically.
 - **Smart compact** rebuilds the bands: it redistributes accumulated tail material into the gradient and writes a new view snapshot. It is explicit — invoked by an operator or host, never self-triggering — and returns a **receipt** listing what was built, requeued, and gapped. A **sweep** is the pre-compact pass that requeues recoverable derivation failures.
 - Thread state is read through **inspect** surfaces: an overview, a **health report** (derivation states, failures with reasons, repair preview), and view-contents reports.
 
@@ -88,7 +88,7 @@ The core `pi-lhc` connector extension (capture, thread lifecycle across PI sessi
 ## Non-Functional Requirements
 
 - **Hot-path latency:** capture adds no perceptible delay; context serving completes without visibly delaying turn start. No model calls, derivation work, or compaction in any hook path.
-- **Prompt stability:** the served message payload is byte-stable between LHC's change points (visibility-boundary advance, mutation, compact) — scoped to the served messages, not provider/runtime metadata. Provider cache economics depend on this.
+- **Prompt stability:** the served message payload is byte-stable between LHC's change points (mutation and compact) — scoped to the served messages, not provider/runtime metadata. Before compact, tail growth appends new full-fidelity messages; intake does not auto-trim tool results.
 - **Auth root:** the install path uses PI's normal global agent auth/model resolution; the runner reuses it. No project-local PI auth root unless the user opts in.
 - **Crash and restart safety:** the thread record is the source of truth. A killed PI process loses no captured data; the next run resolves the same thread (by launch choice) and resumes cleanly, including after a mid-turn kill (which leaves a turn open with no agent response — capture tolerates it). There is no separate session-file mapping that an early crash could lose.
 - **Headless conformance:** every capability that doesn't require a terminal works in `rpc`, `json`, and `print` modes. UI surfacing degrades to logs, never to silent skips.
@@ -214,7 +214,7 @@ The user converses normally. On every model call the extension serves the curren
 
 **AC-2.1:** Every model call receives the active thread-view rendered as PI messages: bands in gradient order, then tail messages in record order with visibility-boundary rules applied. The newest events — the prompt that started the turn and mid-turn tool results — are present and current.
 
-**AC-2.2:** The served payload is byte-stable between LHC change points (compact, boundary advance, mutation). Across a session, prompt-prefix changes occur at those points and nowhere else, verified against cache-read behavior.
+**AC-2.2:** The served payload is byte-stable between LHC change points (compact and mutation). Before compact, the tail grows with new full-fidelity messages; prompt-prefix changes occur at those points and nowhere else, verified against cache-read behavior.
 
 **AC-2.3:** When derived content is missing or failed, the served view degrades per LHC's rules (fallback content, never an omitted region, never a blocked turn). Serving never waits on derivation work.
 

@@ -1,7 +1,4 @@
-// Boundary-test helpers (Epic 05 Story 6): scripted turned tool results for
-// the turn-end advance suite. Every seeded turn flows through a REAL
-// `intake.messageEvents` commit — no advance surface is invented and no
-// boundary is hand-set (Epic 03's anti-shim rule, inherited).
+// Scripted turns for visibility-boundary intake and rendering tests.
 import type { Lhc, MessageEventInput } from "../../src/index.js";
 import { validEvent } from "./index.js";
 
@@ -50,9 +47,7 @@ export function turnedToolResultEvents(turns: readonly TurnedToolResultsSpec[]):
   return events;
 }
 
-// Seed the scripted turns through one real intake batch (one commit, so at
-// most one advance check runs — the shape goldens G2 and the multi-turn
-// eviction legs need).
+// Seed scripted turns through intake.
 export async function seedTurnedToolResults(
   sdk: Lhc,
   filePath: string,

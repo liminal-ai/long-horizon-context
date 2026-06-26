@@ -375,9 +375,9 @@ sequenceDiagram
 
 ### Tool results in the model context
 
-Tool results in the tail move through fidelity on a shorter cycle than the bands. Recent tool results show in full, because the agent is likely still working with them; older ones show as a deterministic truncation with a pointer back to the full record, because their full output is rarely needed once the work has moved on.
+Before an explicit smart compact, tail tool results render in full so resume and session-view stay faithful to the record. Smart compact is the planned reduction point for older material (via bands).
 
-The **visibility boundary** controls this transition. It is a source event order; tool results at or behind it render short, tool results ahead of it render full. The boundary advances when a turn closes (triggered at post-commit flush) and the total tokens of full-rendered tool results in the zone exceed a configured maximum. It evicts whole turns at a time, oldest first, stopping when the remaining total is at or above a configured target. The newest closed turn is never evicted. The open turn's tool results count in the zone total but are never evictable. The boundary resets at compact.
+The **visibility boundary** controls at-or-behind shortening when it is set: tool results at or behind it render short, tool results ahead of it render full. Intake does not advance it automatically. Compact resets the boundary to the compact point.
 
 ### Rendering for a harness
 

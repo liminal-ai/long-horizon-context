@@ -24,7 +24,6 @@ literal rules.
 | `g2-edge-inclusion.json` | G2a | entry exactly filling the remainder is included (≤) |
 | `g2-edge-exclusion.json` | G2b | one token under the exact fill → excluded, band stops |
 | `g3-oversized-loner.json` | G3 | oversized entry on an otherwise-empty band represents alone |
-| `boundary-g1-trajectory.json` | Boundary G1 (Epic 03 Story 4, re-cut by Epic 05 Story 6) | advance trajectory under the turn-end trigger: over-max check at turn close only, whole-turn oldest-first eviction with the peek-ahead stop, newest-closed-turn protection, mid-turn batches never move, never-backward across batches |
 
 ## Regeneration (only with a granted deviation)
 

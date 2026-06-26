@@ -266,37 +266,30 @@ describe("FC-0.5: corruption variant", () => {
   });
 });
 
-describe("FC-0.6: the injection facility's two named points", () => {
+describe("FC-0.6: the compact-write injection point", () => {
   afterEach(() => {
-    setViewInjectionHook("post-commit-advance", null);
     setViewInjectionHook("compact-write", null);
   });
 
-  it("uninstalled, both points are no-ops", () => {
-    expect(() => fireViewInjection("post-commit-advance")).not.toThrow();
+  it("uninstalled, the point is a no-op", () => {
     expect(() => fireViewInjection("compact-write")).not.toThrow();
   });
 
-  it("an installed hook fires at its point only, its throw propagates, and uninstalling restores the no-op", () => {
+  it("an installed hook fires, its throw propagates, and uninstalling restores the no-op", () => {
     const fired: string[] = [];
-    setViewInjectionHook("post-commit-advance", () => {
-      fired.push("advance");
+    setViewInjectionHook("compact-write", () => {
+      fired.push("compact");
     });
-    fireViewInjection("post-commit-advance");
-    fireViewInjection("compact-write"); // other point stays a no-op
-    expect(fired).toEqual(["advance"]);
+    fireViewInjection("compact-write");
+    expect(fired).toEqual(["compact"]);
 
-    // Crash injection (TC-2.4 / TC-4.6's mechanism): a throwing hook's
-    // failure reaches the production call site.
     setViewInjectionHook("compact-write", () => {
       throw new Error("injected crash between sweep and view write");
     });
     expect(() => fireViewInjection("compact-write")).toThrow(/injected crash/);
 
-    setViewInjectionHook("post-commit-advance", null);
     setViewInjectionHook("compact-write", null);
     fired.length = 0;
-    fireViewInjection("post-commit-advance");
     fireViewInjection("compact-write");
     expect(fired).toEqual([]);
   });

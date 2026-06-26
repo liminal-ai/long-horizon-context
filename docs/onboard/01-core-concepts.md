@@ -62,9 +62,9 @@ The working vocabulary of the project. Each entry says what the term means and, 
 
 The SDK ships built-in compact configurations that can be overridden or extended at construction, and callers can override individual percentages at compact time.
 
-**Compact point.** Where the most recent compact stopped. Everything after it is the **tail** (or live tail): recent activity served alongside the view. Most tail content renders directly, but tool results may be shortened by the visibility boundary.
+**Compact point.** Where the most recent compact stopped. Everything after it is the **tail** (or live tail): recent activity served alongside the view. Before an explicit smart compact, tail tool results render full. After compact, a visibility boundary may shorten at-or-behind tool results.
 
-**Visibility boundary.** A per-thread marker that controls how tool results appear in the model context: tool results at or behind it render as a deterministic truncation with a pointer back to the full record, tool results ahead of it render full. The boundary advances when a turn closes and the total tokens of full-rendered tool results exceed a configured maximum. It evicts whole turns at a time, oldest first, stopping when the remaining total is at or above a configured target. The newest closed turn is never evicted. The boundary resets at compact. It affects only tool results — prompts, assistant text, and thinking always render full.
+**Visibility boundary.** A per-thread marker that controls how tool results appear in the model context: tool results at or behind it render as a deterministic truncation with a pointer back to the full record, tool results ahead of it render full. Intake does not advance it automatically — pre-compact resume and session-view keep full tool results. Compact resets the boundary to the compact point. It affects only tool results — prompts, assistant text, and thinking always render full.
 
 **Inference callbacks.** The four-operation interface that sits at the boundary between LHC and the host's model access: `smoothPrompt`, `summarizeToolResult`, `compressSmoothTurn`, and `summarizeChunkBrief`. Any model call LHC makes goes through this interface. Deterministic derivations such as `turn_rendering` and `chunk_summary_detailed` stay inside their owning domain handlers and do not cross the inference boundary.
 

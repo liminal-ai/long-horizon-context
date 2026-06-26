@@ -3,9 +3,8 @@
 // exempt).
 //
 // The injection facility (FC-0.6): re-export of the thread-view seam so
-// tests install crash/failure hooks at the two named points — the
-// post-commit advance (TC-4.6) and compact's write path between sweep and
-// view write (TC-2.4). Uninstalled, production fires are no-ops.
+// tests install crash/failure hooks at compact's write path between sweep
+// and view write (TC-2.4). Uninstalled, production fires are no-ops.
 export {
   fireViewInjection,
   setViewInjectionHook,
@@ -16,11 +15,8 @@ export {
 import { DatabaseSync } from "node:sqlite";
 
 // Sanctioned below-SDK write (same sanctioning as corrupt.ts): seeds the
-// view_boundary row to an arbitrary position for TC-1.4's mid-tail context reads.
-// Boundary *mechanics* — how the position legally moves — are Story 4's to
-// prove; this helper only manufactures a position the model context read must respect.
-// UPDATE-only on purpose: migration v6 seeded the singleton row, mirroring
-// the production advance's write shape.
+// view_boundary row to an arbitrary position for mid-tail context reads.
+// UPDATE-only on purpose: thread creation seeded the singleton row.
 export function seedViewBoundary(filePath: string, position: number): void {
   const db = new DatabaseSync(filePath);
   try {
@@ -29,7 +25,7 @@ export function seedViewBoundary(filePath: string, position: number): void {
       .run(position, new Date().toISOString());
     if (Number(changed.changes) !== 1) {
       throw new Error(
-        `fixture seedViewBoundary hit ${String(changed.changes)} rows; expected the migration-seeded singleton`,
+        `fixture seedViewBoundary hit ${String(changed.changes)} rows; expected the thread-creation singleton`,
       );
     }
   } finally {

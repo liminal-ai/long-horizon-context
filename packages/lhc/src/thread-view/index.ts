@@ -20,7 +20,6 @@ import type {
 import {
   createDbReadTransaction,
   type DbReadTransaction,
-  type DbWriteTransaction,
   type ErrorResult,
   type OpResult,
   resolveInstanceViewConfig,
@@ -31,7 +30,7 @@ import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
-import { executeBoundaryAdvance, readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
+import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
@@ -150,8 +149,7 @@ function bucketDerivation(entries: readonly DerivationReportEntry[], counts: Vie
 // by state read through the OWNERS' report surfaces (must-not-own: never a
 // direct derivation read here), the active view's health or null
 // pre-compact, and the visibility zone's sum against its max — computed live
-// by the same query boundary advance uses, so "visible in status" is
-// structural, not stored.
+// by visibilityZoneTokens, so "visible in status" is structural, not stored.
 //
 // Like model context, the whole read — including the owners' report surfaces it
 // consumes — runs in the touch-suppressed scope, so a background SDK's
@@ -470,28 +468,6 @@ export async function compact(
   } finally {
     db.close();
   }
-}
-
-// ── boundary advance ─────────────────────────────────────────────
-
-// The post-commit advance is not a host operation: no public advance surface
-// exists. This function's one production caller is intake-stream's post-commit
-// hook registration. It runs at post-commit hook flush in both host modes;
-// unlike the queue poke it is cheap and deterministic, and a CLI intake must
-// advance too or CLI-driven threads bloat. Budgets resolve through the
-// per-instance seam exactly as the poke does, falling back to the built-in
-// defaults for direct domain calls.
-//
-// Synchronous and throw-permitted by contract: the registering site wraps it
-// (catch + diagnose) so a failure never reaches intake's caller and never
-// eats the queue poke; the boundary is then simply unchanged and the
-// over-budget condition stays visible because status computes the same zone
-// sum live.
-export function runPostCommitBoundaryAdvance(transaction: DbWriteTransaction): void {
-  // Test injection point: fired before the advance computes; an installed
-  // hook's throw stands in for an advance failure.
-  fireViewInjection("post-commit-advance");
-  executeBoundaryAdvance(transaction.db, viewConfig().visibility, transaction.clock);
 }
 
 // ── materialize ──────────────────────────────────────────────────

@@ -11,12 +11,6 @@ import {
   storageFailure,
 } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
-// The sanctioned intake→thread-view surface import, used only by the
-// boundary-advance registration below.
-// This is the domain graph's first surface-level cycle (intake → thread-view
-// → messages ← intake) — runtime-safe because thread-view never imports
-// intake-stream at runtime and the registration executes only at flush.
-import { runPostCommitBoundaryAdvance } from "../../thread-view/index.js";
 import type { ThreadRef } from "../../threads/index.js";
 import { create as createTurn, TurnStateCorruptionError } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
@@ -87,20 +81,6 @@ export async function runMessageEvents(
     const result = await createDbWriteTransaction(
       threadRef,
       (transaction): OpResult<BatchResult> => {
-        // Register boundary advancement first so post-commit flush advances
-        // visibility before any queued-work poke from this intake batch.
-        let batchCommittedTurnEnd = false;
-        transaction.postCommitHook.add(() => {
-          if (!batchCommittedTurnEnd) return;
-          try {
-            runPostCommitBoundaryAdvance(transaction);
-          } catch (cause) {
-            process.stderr.write(
-              `lhc: boundary advance failed after intake commit (boundary unchanged; condition visible in view status): ${detail(cause)}\n`,
-            );
-          }
-        });
-
         const skipSet = recordedKeys(
           transaction.db,
           events.map((event) => event.idempotencyKey),
@@ -143,9 +123,6 @@ export async function runMessageEvents(
               recordedAt,
             };
             const turnOutcome = createTurn(transaction, recordedEvent);
-            if (turnOutcome.transitions.some((transition) => transition.action === "closed")) {
-              batchCommittedTurnEnd = true;
-            }
             turnTransitions.push(...turnOutcome.transitions);
             queuedItems.push(...turnOutcome.queuedWork);
             const created = createMessage(transaction, recordedEvent, turnOutcome.turnId);

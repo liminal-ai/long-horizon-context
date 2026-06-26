@@ -4,7 +4,6 @@
 // composes describe + a measured context read so loadCost equals what model context serves
 // now (AC-2.3, parity by construction) — asserted here against an
 // INDEPENDENT context read re-measured with the same estimator, on a compacted
-// fixture, a boundary-advanced fixture (short forms costed short, AC-2.2),
 // and a never-compacted thread (meta null, tail-only, AC-2.4). Reads are
 // pure (AC-1.4 contract): read-only delta assert, zero model calls.
 import { DatabaseSync } from "node:sqlite";
@@ -24,6 +23,7 @@ import {
   type DerivedThreadFixture,
   derivedThreadFixture,
   expectReadOnly,
+  seedViewBoundary,
   type TempStore,
   tempStore,
   validEvent,
@@ -259,10 +259,8 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
   });
 });
 
-describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixture", () => {
+describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the tail", () => {
   it("tail costs short forms short and total equals an independent context read re-measured", async () => {
-    // Small budgets so a real intake post-commit advance moves the boundary
-    // into the tail (Epic 03 Story 4 mechanics — never a hand-set position).
     const sdk = initLhc({
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
@@ -291,10 +289,8 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 
-    // Two post-compact tool turns (80-token results). The second turn's
-    // close crosses max (zone 160 > 100): the advance flips the older turn
-    // behind the boundary; the newest closed turn is never evicted and
-    // stays full (Epic 05 turn-end semantics).
+    // Two post-compact tool turns (80-token results). Seed the boundary behind
+    // the older turn; the newer closed turn stays full.
     for (const run of [1, 2]) {
       const sent = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `post-compact tool run ${run}` } }),
@@ -308,6 +304,14 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity on a boundary-advanced fixtur
       ]);
       if (!sent.ok) throw new Error(`intake failed: ${sent.error.reason}`);
     }
+    const listed = await sdk.messages.list({ filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const tailResults = listed.value
+      .filter((message) => message.kind === "tool_result" && message.sourceEventOrder > compacted.value.compactPoint)
+      .sort((left, right) => left.sourceEventOrder - right.sourceEventOrder);
+    expect(tailResults).toHaveLength(2);
+    seedViewBoundary(filePath, tailResults[0]!.sourceEventOrder);
 
     const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
     const db = new DatabaseSync(filePath);

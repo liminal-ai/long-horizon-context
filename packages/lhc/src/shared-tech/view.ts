@@ -30,9 +30,9 @@ export interface ViewCompactParams {
   percentages?: Partial<ViewProfile["percentages"]>;
 }
 
-// Visibility-boundary budgets: max > target, both positive. The floor budget is
-// retired because the turn-end trigger and never-evicted newest closed turn
-// provide that protection structurally.
+// Visibility-boundary budgets: max > target, both positive. Intake no longer
+// advances the boundary automatically; the budgets still shape status and any
+// future explicit pressure policy that reads the visibility zone.
 export interface VisibilityBudgets {
   maxTokens: number;
   targetTokens: number;

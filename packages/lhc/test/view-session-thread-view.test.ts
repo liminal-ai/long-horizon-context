@@ -7,6 +7,7 @@ import {
   type SessionThreadViewMessage,
 } from "../src/index.js";
 import {
+  boundaryTokens,
   conversationTurn,
   eventBatch,
   seedViewBoundary,
@@ -140,6 +141,43 @@ describe("threadView.getSessionThreadView", () => {
     expect(entryKinds(view.value.entries)).toEqual(["user", "model_change", "thinking_level_change", "assistant"]);
     expect(view.value.entries[1]).toEqual({ kind: "model_change", provider: "openai", modelId: "gpt-4o" });
     expect(view.value.entries[2]).toEqual({ kind: "thinking_level_change", level: "high" });
+  });
+
+  it("serves full tool-result content before compact even when the zone exceeds visibility max", async () => {
+    const sdkWithBudgets = initLhc({
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      view: { visibility: { maxTokens: 10, targetTokens: 5 } },
+    });
+    const path = store.threadPath();
+    const created = await sdkWithBudgets.threads.newThread({ filePath: path, registryPath: store.registryPath });
+    if (!created.ok) throw new Error(created.error.reason);
+
+    const largeResult = boundaryTokens(40);
+    const captured = await sdkWithBudgets.intakeStream.messageEvents({ filePath: path }, [
+      validEvent("user_prompt", { payload: { text: "read a large file" } }),
+      validEvent("tool_call", {
+        payload: { toolCallId: "call-large", toolName: "read_file", arguments: { path: "big.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId: "call-large", content: largeResult, isError: false },
+      }),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdkWithBudgets.threadView.getSessionThreadView({ filePath: path });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    const toolResult = messageEntries(view.value.entries).find((entry) => entry.role === "toolResult");
+    expect(toolResult).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-large",
+      content: largeResult,
+    });
+    expect(toolResult?.content).not.toContain("abridged");
+    expect(toolResult?.content).not.toContain("[full content in record");
   });
 
   it("shortens at-or-behind-boundary tool results like getLlmRequestContext", async () => {

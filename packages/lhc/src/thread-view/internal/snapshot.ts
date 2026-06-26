@@ -218,7 +218,7 @@ export interface ViewReplaceInput {
 // drops its bands), insert the new header and bands, and reset the boundary
 // to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
 // rolls the whole replace back and the previous view keeps serving. Compact is
-// the only writer of these rows; the boundary's other writer is advance.
+// the writer of view rows and the boundary reset on compact.
 export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): void {
   db.exec("BEGIN IMMEDIATE;");
   try {

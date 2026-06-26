@@ -1,29 +1,23 @@
 // Visibility boundary. The boundary is a source event order shared with the
 // compact point's coordinate system; tool results at-or-behind it render short.
-// Its writers are exactly two: the post-commit advance below, gated by intake
-// to turn-end batches, and compact's reset, which lands inside compact's own
-// transaction.
+// Compact resets it inside compact's own transaction.
 import type { DatabaseSync } from "node:sqlite";
-import type { VisibilityBudgets } from "../../shared-tech/index.js";
 
-// The singleton row exists from migration v6 on (seeded at position 0,
-// everything full). A missing row is a damaged thread file, surfaced as a
-// throw for the operation boundary's storage_failure wrap.
+// The singleton row is seeded at thread creation (position 0, everything full).
+// A missing row is a damaged thread file, surfaced as a throw for the
+// operation boundary's storage_failure wrap.
 export function readBoundaryPosition(db: DatabaseSync): number {
   const row = db.prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`).get() as
     | { position: number | bigint }
     | undefined;
   if (row === undefined) {
-    throw new Error("view_boundary singleton row missing (migration v6 seeds it)");
+    throw new Error("view_boundary singleton row missing (thread creation seeds it)");
   }
   return Number(row.position);
 }
 
 // The visibility zone's token sum: live (deleted-filtered) tool results ahead
 // of both the boundary position and the compact point, one indexed query.
-// Parameterized by position on purpose: advance consumes this same function
-// instead of re-deriving the sum, so "the advance's sum equals what status
-// reports" is structural.
 export function visibilityZoneTokens(db: DatabaseSync, position: number, compactPoint: number): number {
   const row = db
     .prepare(
@@ -33,148 +27,4 @@ export function visibilityZoneTokens(db: DatabaseSync, position: number, compact
     )
     .get(position, compactPoint) as { zone: number | bigint };
   return Number(row.zone);
-}
-
-// ── the post-commit advance ──────────────────────────────────────
-
-// The compact point for the advance's zone predicate: the stored view's, or
-// the zero origin when the thread has never compacted — the same default the
-// serving assembly uses, read without dragging band bytes along.
-function readCompactPoint(db: DatabaseSync): number {
-  const row = db.prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`).get() as
-    | { compact_point: number | bigint }
-    | undefined;
-  return row === undefined ? 0 : Number(row.compact_point);
-}
-
-// One zone member as the decision walks it. Rows come back oldest-first by
-// source event order. turn_id carries the whole-turn grouping key.
-export interface ZoneToolResult {
-  sourceEventOrder: number;
-  tokenEstimate: number;
-  turnId: string;
-}
-
-// The zone's member rows: the same population visibilityZoneTokens sums —
-// identical WHERE clause on purpose, so the decision's arithmetic and the
-// status read's sum can never diverge.
-function readZoneToolResults(db: DatabaseSync, position: number, compactPoint: number): ZoneToolResult[] {
-  const rows = db
-    .prepare(
-      `SELECT source_event_order, token_estimate, turn_id FROM message
-       WHERE kind = 'tool_result' AND deleted_at IS NULL
-         AND source_event_order > ? AND source_event_order > ?
-       ORDER BY source_event_order`,
-    )
-    .all(position, compactPoint) as unknown as Array<{
-    source_event_order: number | bigint;
-    token_estimate: number | bigint;
-    turn_id: string;
-  }>;
-  return rows.map((row) => ({
-    sourceEventOrder: Number(row.source_event_order),
-    tokenEstimate: Number(row.token_estimate),
-    turnId: row.turn_id,
-  }));
-}
-
-// The open turn, if any, read for eviction candidacy: its tool results count
-// in the zone sum (status must show a mid-turn over-budget condition) but its
-// group can never be evicted. With the turn-end trigger this is normally
-// vacuous — the just-closed turn left nothing open — but a batch may legally
-// record a turn_end and then open a new turn with tool results before
-// committing, and that open turn must not be eaten.
-function readOpenTurnId(db: DatabaseSync): string | null {
-  const row = db.prepare(`SELECT turn_id FROM turns WHERE status = 'open' AND deleted_at IS NULL LIMIT 1`).get() as
-    | { turn_id: string }
-    | undefined;
-  return row?.turn_id ?? null;
-}
-
-// One whole-turn eviction unit: consecutive zone rows sharing a turn_id.
-export interface ZoneTurnGroup {
-  turnId: string;
-  tokenSum: number;
-  // Highest source_event_order in the group: the boundary position an
-  // eviction of this group lands on.
-  lastSourceEventOrder: number;
-}
-
-export function groupZone(zone: readonly ZoneToolResult[]): ZoneTurnGroup[] {
-  const groups: ZoneTurnGroup[] = [];
-  for (const result of zone) {
-    const current = groups[groups.length - 1];
-    if (current !== undefined && current.turnId === result.turnId) {
-      current.tokenSum += result.tokenEstimate;
-      current.lastSourceEventOrder = result.sourceEventOrder;
-    } else {
-      groups.push({
-        turnId: result.turnId,
-        tokenSum: result.tokenEstimate,
-        lastSourceEventOrder: result.sourceEventOrder,
-      });
-    }
-  }
-  return groups;
-}
-
-// The pure decision: token sums from stored per-message estimates, no
-// inference, no IO. Same inputs, same answer.
-//
-// Zone is the turn-grouped tool results oldest-first. Under-or-at max the
-// boundary does not move. Over max, walk candidate groups oldest-first — the
-// open turn's group (when one exists) is never a candidate, and the newest
-// remaining group is protected. A group is evicted only if the zone's sum after
-// evicting it remains at-or-above target. The advance therefore lands in
-// [target, target + one group), and the zone may legally sit above target or
-// even max until a newer turn closes or a compact creates room.
-export function advanceDecision(
-  groups: readonly ZoneTurnGroup[],
-  budgets: VisibilityBudgets,
-  openTurnId: string | null,
-): number | null {
-  let total = 0;
-  for (const group of groups) total += group.tokenSum;
-  if (total <= budgets.maxTokens) return null;
-
-  // The open turn's group is never evictable; its tokens still count in the sum.
-  const candidates = groups.filter((group) => group.turnId !== openTurnId);
-  const stop = candidates.length - 1;
-
-  let remaining = total;
-  let newPosition: number | null = null;
-  for (let i = 0; i < stop; i += 1) {
-    const group = candidates[i];
-    if (group === undefined) break;
-    if (remaining - group.tokenSum < budgets.targetTokens) break;
-    remaining -= group.tokenSum;
-    newPosition = group.lastSourceEventOrder;
-  }
-  return newPosition;
-}
-
-// The advance executor: indexed sum, over max, decide, then write the new
-// position in its own short transaction. It runs at flush, strictly after
-// intake's COMMIT. The position-forward guard in the UPDATE makes
-// never-backward a property of the write, not just of the decision's inputs.
-export function executeBoundaryAdvance(db: DatabaseSync, budgets: VisibilityBudgets, clock: () => Date): void {
-  const position = readBoundaryPosition(db);
-  const compactPoint = readCompactPoint(db);
-  if (visibilityZoneTokens(db, position, compactPoint) <= budgets.maxTokens) return;
-
-  const zone = readZoneToolResults(db, position, compactPoint);
-  const newPosition = advanceDecision(groupZone(zone), budgets, readOpenTurnId(db));
-  if (newPosition === null || newPosition <= position) return;
-
-  db.exec("BEGIN IMMEDIATE;");
-  try {
-    db.prepare(
-      `UPDATE view_boundary SET position = ?, updated_at = ?
-       WHERE thread_singleton = 1 AND position < ?`,
-    ).run(newPosition, clock().toISOString(), newPosition);
-    db.exec("COMMIT;");
-  } catch (cause) {
-    db.exec("ROLLBACK;");
-    throw cause;
-  }
 }
