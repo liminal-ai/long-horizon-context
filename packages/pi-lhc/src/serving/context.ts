@@ -5,8 +5,10 @@ import type {
   SessionModelChangeEntry,
   SessionThinkingLevelChangeEntry,
   SessionThreadViewEntry,
+  SessionThreadViewEntrySource,
   SessionThreadViewMessage,
 } from "lhc";
+import { LHC_SEED_ENTRY_MAP_TYPE, type LhcSeedEntryMapRow } from "../compact/seed-entry-map.js";
 
 /** One bounded message line in the last-serve diagnostic preview. */
 export interface ContextServeMessagePreview {
@@ -99,31 +101,54 @@ function mapMessageToPiSession(message: SessionThreadViewMessage, timestamp: num
   };
 }
 
+function collectSeedRows(
+  seedRows: LhcSeedEntryMapRow[],
+  piEntryId: string,
+  sourceMessages: readonly SessionThreadViewEntrySource[],
+): void {
+  for (const source of sourceMessages) {
+    seedRows.push({ lhcMessageId: source.messageId, piEntryId });
+  }
+}
+
 /** Append LHC session-thread-view entries to a PI SessionManager in record order. */
 export function applySessionThreadViewToSessionManager(
   sessionManager: SessionManager,
   entries: readonly SessionThreadViewEntry[],
-): { messageCount: number } {
+  threadId: string,
+): { messageCount: number; seedEntryMapRows: LhcSeedEntryMapRow[] } {
   let messageCount = 0;
   const baseTimestamp = Date.now();
   let messageIndex = 0;
+  const seedRows: LhcSeedEntryMapRow[] = [];
 
   for (const entry of entries) {
     if (isModelChangeEntry(entry)) {
-      sessionManager.appendModelChange(entry.provider, entry.modelId);
+      const piEntryId = sessionManager.appendModelChange(entry.provider, entry.modelId);
+      collectSeedRows(seedRows, piEntryId, entry.sourceMessages);
       continue;
     }
     if (isThinkingLevelChangeEntry(entry)) {
-      sessionManager.appendThinkingLevelChange(entry.level);
+      const piEntryId = sessionManager.appendThinkingLevelChange(entry.level);
+      collectSeedRows(seedRows, piEntryId, entry.sourceMessages);
       continue;
     }
     if (!isMessageEntry(entry)) continue;
-    sessionManager.appendMessage(
+    const piEntryId = sessionManager.appendMessage(
       mapMessageToPiSession(entry, baseTimestamp + messageIndex) as Parameters<SessionManager["appendMessage"]>[0],
     );
+    collectSeedRows(seedRows, piEntryId, entry.sourceMessages);
     messageIndex += 1;
     messageCount += 1;
   }
 
-  return { messageCount };
+  if (seedRows.length > 0 && typeof sessionManager.appendCustomEntry === "function") {
+    sessionManager.appendCustomEntry(LHC_SEED_ENTRY_MAP_TYPE, {
+      customType: LHC_SEED_ENTRY_MAP_TYPE,
+      threadId,
+      entries: seedRows,
+    } satisfies { customType: typeof LHC_SEED_ENTRY_MAP_TYPE; threadId: string; entries: LhcSeedEntryMapRow[] });
+  }
+
+  return { messageCount, seedEntryMapRows: seedRows };
 }

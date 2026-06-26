@@ -72,6 +72,17 @@ describe("rehydratePiSessionFromLhc", () => {
     expect(sessionManager.messages).toHaveLength(2);
     expect(sessionManager.customEntries).toEqual([
       {
+        type: "pi-lhc.seed-entry-map",
+        data: expect.objectContaining({
+          customType: "pi-lhc.seed-entry-map",
+          threadId: created.threadId,
+          entries: expect.arrayContaining([
+            expect.objectContaining({ lhcMessageId: "m1", piEntryId: "m1" }),
+            expect.objectContaining({ lhcMessageId: "m2", piEntryId: "m1" }),
+          ]),
+        }),
+      },
+      {
         type: LHC_THREAD_ENTRY_TYPE,
         data: { threadId: created.threadId, registryPath: store.registryPath },
       },

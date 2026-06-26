@@ -5,7 +5,6 @@ import {
   CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
   CONTEXT_SERVE_PREVIEW_MAX_TEXT,
   createConnector,
-  EPIC_1_HOOKS,
   rehydratePiSessionFromLhc,
   seedPiSessionFromLhc,
 } from "../../src/index.js";
@@ -49,7 +48,7 @@ function recordingPi(): { pi: ExtensionAPI; registered: string[] } {
 }
 
 describe("connector hook rail", () => {
-  it("registers Epic 1 capture hooks without the context hook", () => {
+  it("registers Epic 1 capture hooks and compact hooks without the context hook", () => {
     const { pi, registered } = recordingPi();
     createConnector({
       registryPath: store.registryPath,
@@ -59,7 +58,7 @@ describe("connector hook rail", () => {
     }).register(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
-    expect(registered).toHaveLength(EPIC_1_HOOKS.length);
+    expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
     expect(registered).not.toContain("context");
   });
 });
@@ -88,6 +87,9 @@ describe("session thread view seeding", () => {
       appendMessage(message: unknown) {
         this.messages.push(message);
         return "m1";
+      },
+      appendCustomEntry() {
+        return "seed_map";
       },
     };
 
@@ -208,6 +210,9 @@ describe("session thread view seeding", () => {
       appendThinkingLevelChange(level: string) {
         this.thinkingChanges.push(level);
         return "tl1";
+      },
+      appendCustomEntry() {
+        return "seed_map";
       },
     };
 

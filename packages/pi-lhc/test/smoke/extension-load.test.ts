@@ -4,7 +4,6 @@ import {
   CONNECTOR_HOOKS,
   createConnector,
   disposeInstance,
-  EPIC_1_HOOKS,
   initInstance,
   LHC_EXTENSION_FLAG_SPECS,
   registerLhcFlags,
@@ -77,7 +76,7 @@ describe("extension load + hook rail", () => {
     activate(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
-    expect(registered).toHaveLength(EPIC_1_HOOKS.length);
+    expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
     expect(registered).not.toContain("context");
     expect(commands).toEqual(["lhc-rehydrate"]);
     expect(tools).toEqual([]);

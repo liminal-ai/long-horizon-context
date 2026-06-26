@@ -14,6 +14,9 @@ import { capture, captureGap } from "./capture/converter.js";
 import { type MapCtx, mapMessage } from "./capture/map-message.js";
 import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
 import { TurnAccumulator } from "./capture/turn-accumulator.js";
+import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
+import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
+import { findSeedEntryMapInSession } from "./compact/seed-entry-map.js";
 import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
 import { createModelCall } from "./inference/model-call.js";
 import { report, type StartupValidationReporter, validateReachable } from "./inference/startup-validation.js";
@@ -53,6 +56,28 @@ import type {
 } from "./pi/types.js";
 import type { LhcInstance } from "./shared/instance.js";
 
+export {
+  type CompactCancelCode,
+  type CompactDiagnostic,
+  compactCancelLogMessage,
+  createCompactDiagnosticsBuffer,
+  recordCompactCancel,
+  writeCompactCancelLog,
+} from "./compact/diagnostics.js";
+export { handleSessionBeforeCompact } from "./compact/handler.js";
+export { DEFAULT_COMPACT_PROFILE } from "./compact/profile.js";
+export {
+  assembleCompactionResult,
+  assembleSummaryFromRenderedBands,
+  type FirstKeptMapping,
+  mapFirstKeptToEntryId,
+} from "./compact/result-mapping.js";
+export {
+  findSeedEntryMapInSession,
+  LHC_SEED_ENTRY_MAP_TYPE,
+  type LhcSeedEntryMap,
+  type LhcSeedEntryMapRow,
+} from "./compact/seed-entry-map.js";
 export {
   extensionFlagValuesFromLaunch,
   launcherHelpText,
@@ -113,8 +138,13 @@ export const EPIC_1_HOOKS = [
   "session_shutdown",
 ] as const satisfies readonly PiHookName[];
 
+/** Compact hooks for LHC smart compact (Story 1). */
+export const COMPACT_HOOKS = ["session_before_compact", "session_compact"] as const satisfies readonly PiHookName[];
+
 /** Hooks registered by the connector. Context is loaded via SessionManager seeding, not the context hook. */
-export const CONNECTOR_HOOKS = [...EPIC_1_HOOKS] as const satisfies readonly PiHookName[];
+export const CONNECTOR_HOOKS = [...EPIC_1_HOOKS, ...COMPACT_HOOKS] as const satisfies readonly PiHookName[];
+
+export type CompactHook = (typeof COMPACT_HOOKS)[number];
 
 export type Epic1Hook = (typeof EPIC_1_HOOKS)[number];
 
@@ -164,6 +194,14 @@ export interface Connector {
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
   readonly handlers: Readonly<Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>>;
+  readonly compactHandlers: Readonly<{
+    session_before_compact: PiHookHandler<"session_before_compact">;
+    session_compact: PiVoidHookHandler<"session_compact">;
+  }>;
+  /** Compact cancel diagnostics accumulated this PI session; cleared on session boundary and successful `session_compact`. */
+  getCompactDiagnostics(): readonly CompactDiagnostic[];
+  /** Most recent compact cancel diagnostic, if any. */
+  getLastCompactDiagnostic(): CompactDiagnostic | null;
 }
 
 /** The connector's live capture state for one session: the open-turn
@@ -307,6 +345,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let lastDiagnostic: CaptureFailureDiagnostic | null = null;
   let captureSession: CaptureSession | null = null;
   let pendingFork: PendingFork | null = null;
+  const compactDiagnostics = createCompactDiagnosticsBuffer();
   let appendThreadEntry: ((entry: DurableThreadEntry) => void) | null = null;
   let readLaunchFromPi: (() => OpResult<LaunchFlags>) | null = null;
   let extensionPi: ExtensionAPI | null = null;
@@ -359,6 +398,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // every other reason runs the normal launch resolution. Fork creates a new
   // thread and seeds it from the source thread.
   const onSessionStart: PiHookHandler<"session_start"> = async (event, ctx) => {
+    compactDiagnostics.clear();
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       lastDiagnostic = diag("instance_not_configured", config.error.reason);
@@ -583,6 +623,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     if (!result.ok) lastDiagnostic = diag("dispose_failed", result.error.reason);
     instance = null;
     captureSession = null;
+    compactDiagnostics.clear();
   };
 
   // Record a capture failure as a plain-data health diagnostic. The converter
@@ -846,6 +887,60 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
+  const onBeforeCompact: PiHookHandler<"session_before_compact"> = async (event, ctx) => {
+    try {
+      return (
+        (await handleSessionBeforeCompact(event, ctx, {
+          state,
+          instance,
+          piSessionId: captureSession?.piSessionId ?? null,
+          flushPendingCapture: flushPendingMessages,
+          getSessionView: async () => {
+            if (instance === null || state === null) {
+              return {
+                ok: false,
+                error: { code: "storage_failure", reason: "no active LHC thread", errorClass: "system_error" },
+              };
+            }
+            return instance.sdk.threadView.getSessionThreadView(state.threadRef);
+          },
+          findSeedEntryMap: findSeedEntryMapInSession,
+          recordCancel: async (diagnostic) => {
+            await recordCompactCancel({
+              diagnostic,
+              buffer: compactDiagnostics,
+              instance,
+              threadRef: state?.threadRef ?? null,
+              ctx,
+            });
+          },
+        })) ?? { cancel: true }
+      );
+    } catch (err) {
+      const diagnostic: CompactDiagnostic = {
+        code: "compact_error",
+        reason: err instanceof Error ? err.message : String(err),
+      };
+      await recordCompactCancel({
+        diagnostic,
+        buffer: compactDiagnostics,
+        instance,
+        threadRef: state?.threadRef ?? null,
+        ctx,
+      });
+      return { cancel: true };
+    }
+  };
+
+  const onAfterCompact: PiVoidHookHandler<"session_compact"> = async () => {
+    compactDiagnostics.clear();
+  };
+
+  const compactHandlers = {
+    session_before_compact: onBeforeCompact,
+    session_compact: onAfterCompact,
+  };
+
   // Bodies per hook: session lifecycle, event capture, and fork handling.
   const bodies: Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>> = {
     session_start: onSessionStart as PiVoidHookHandler<Epic1Hook>,
@@ -932,6 +1027,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   return {
     handlers,
+    compactHandlers,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
       extensionPi = pi;
@@ -945,6 +1041,19 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         handler: onRehydrate,
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
+      for (const name of COMPACT_HOOKS) {
+        if (name === "session_before_compact") {
+          pi.on(name, compactHandlers.session_before_compact);
+        } else {
+          pi.on(name, compactHandlers.session_compact);
+        }
+      }
+    },
+    getCompactDiagnostics(): readonly CompactDiagnostic[] {
+      return compactDiagnostics.snapshot();
+    },
+    getLastCompactDiagnostic(): CompactDiagnostic | null {
+      return compactDiagnostics.last();
     },
     getState(): SessionState | null {
       return state;

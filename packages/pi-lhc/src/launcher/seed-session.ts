@@ -12,6 +12,10 @@ export async function seedPiSessionFromLhc(
   const sessionView = await instance.sdk.threadView.getSessionThreadView(threadRef);
   if (!sessionView.ok) return sessionView;
 
-  const seeded = applySessionThreadViewToSessionManager(sessionManager, sessionView.value.entries);
-  return { ok: true, value: seeded };
+  const seeded = applySessionThreadViewToSessionManager(
+    sessionManager,
+    sessionView.value.entries,
+    sessionView.value.threadId,
+  );
+  return { ok: true, value: { messageCount: seeded.messageCount } };
 }
