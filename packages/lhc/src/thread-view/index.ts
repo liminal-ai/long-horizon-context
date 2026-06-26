@@ -10,6 +10,7 @@ import type {
   CompactReceipt,
   DerivationReportEntry,
   LlmRequestContext,
+  PreviewCompactOutcome,
   ResolvedViewConfig,
   SessionThreadView,
   StoredView,
@@ -31,17 +32,12 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
+import { computeArrangement, openTurnHasMembers } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
-import {
-  type ArrangementEntry,
-  CanonicalCorruptionError,
-  readSelectionInputs,
-  type SelectionInputs,
-  selectArrangement,
-} from "./internal/select.js";
+import type { ArrangementEntry } from "./internal/select.js";
 import { buildSessionThreadView } from "./internal/session-view.js";
 import {
   readStoredView,
@@ -251,27 +247,15 @@ function callerError(
   return { ok: false, error: { errorClass: "caller_error", code, reason } };
 }
 
-const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
-
-function compactStopped(signal: { aborted: boolean } | undefined): boolean {
-  return signal?.aborted === true;
+interface ResolvedCompactCall {
+  merged: ViewProfile;
+  profileName: string | null;
 }
 
-// Compact runs only when invoked through this surface; no core path calls it.
-// Order: validate profile/params before IO, read record + derivations with
-// corruption checks before the write transaction, run selection, render bands,
-// replace the view and reset the boundary in one BEGIN IMMEDIATE, then return a
-// receipt. Assembly is entirely from stored artifacts: nothing here can reach
-// inference or schedule repair work.
-export async function compact(
-  ref: ThreadRef,
-  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
-): Promise<OpResult<CompactReceipt>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
+function resolveCompactCall(opts: {
+  profile?: string;
+  params?: ViewCompactParams;
+}): { ok: true; value: ResolvedCompactCall } | { ok: false; error: ErrorResult } {
   const config = viewConfig();
   const baseName = opts.profile ?? DEFAULT_PROFILE_NAME;
   const base = config.profiles[baseName];
@@ -290,68 +274,108 @@ export async function compact(
   };
   const violation = profileViolation(merged);
   if (violation !== null) return callerError("invalid_view_config", violation);
-  // Receipt provenance: any param override means the config is no longer a
-  // named profile's mix, even when one served as the merge base; the receipt's
-  // config carries the resolved truth. A bare or profile-only call names its
-  // profile.
   const profileName = opts.params === undefined ? baseName : null;
+  return { ok: true, value: { merged, profileName } };
+}
+
+const BAND_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
+
+function buildRenderedBands(
+  selection: { entries: ArrangementEntry[] },
+  bands: Array<{ band: Band; renderedText: string; tokenCount: number }>,
+): CompactReceipt["renderedBands"] {
+  return BAND_ORDER.flatMap((band) => {
+    const entries = selection.entries.filter((entry) => entry.band === band);
+    if (entries.length === 0) return [];
+    const stored = bands.find((row) => row.band === band);
+    return [{ band, text: stored?.renderedText ?? assembleBandText(entries.map((entry) => entry.text)) }];
+  });
+}
+
+// Read-only compact preflight: same selection path as compact, no snapshot write.
+export async function previewCompact(
+  ref: ThreadRef,
+  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+): Promise<OpResult<PreviewCompactOutcome>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const call = resolveCompactCall(opts);
+  if (!call.ok) return call;
 
   const opened = openThreadDatabase(filePath);
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    if (compactStopped(opts.signal)) {
-      return callerError("compact_stopped", "compact stopped before assembly");
+    if (openTurnHasMembers(db)) {
+      return { ok: true, value: { kind: "turn_not_ready", openTurnHasMembers: true } };
     }
-    let inputs: SelectionInputs;
-    try {
-      inputs = readSelectionInputs(db);
-    } catch (cause) {
-      if (cause instanceof CanonicalCorruptionError) {
-        // Pre-transaction refusal: nothing was written, the prior view and the
-        // record are untouched.
-        return {
-          ok: false,
-          error: { errorClass: "state_corruption", code: cause.code, reason: cause.message },
-        };
-      }
-      throw cause;
-    }
+
     const threadId = readThreadMetadata(db).threadId;
-    const transaction: DbReadTransaction = {
-      db,
-      filePath,
-      threadId,
-    };
-    const compactChunkMaterials = new Map<
-      string,
-      { kind: "ready"; content: string } | { kind: "concat"; content: string; reason: string }
-    >();
-    for (const chunk of inputs.chunks) {
-      if (chunk.status !== "closed") continue;
-      for (const derivationType of ["chunk_summary_detailed", "chunk_summary_brief"] as const) {
-        if (compactStopped(opts.signal)) {
-          return callerError("compact_stopped", "compact stopped during fallback assembly");
-        }
-        const material = turnsDomain.getChunkText(transaction, chunk.chunkId, derivationType);
-        if (material.kind === "blocked") {
-          return {
-            ok: false,
-            error: {
-              errorClass: "state_corruption",
-              code: "source_damaged",
-              reason: material.reason,
-            },
-          };
-        }
-        compactChunkMaterials.set(`${chunk.chunkId}/${derivationType}`, material);
-      }
-    }
-    inputs = { ...inputs, compactChunkMaterials };
-    const selection = selectArrangement(inputs, {
-      lowerBound: merged.lowerBound,
-      percentages: merged.percentages,
+    const transaction: DbReadTransaction = { db, filePath, threadId };
+    const computed = computeArrangement(db, transaction, call.value.merged, {
+      signal: opts.signal,
+      includeChunkMaterials: false,
     });
+    if (!computed.ok) {
+      return { ok: true, value: { kind: "error", reason: computed.error.reason } };
+    }
+
+    const { selection } = computed.value;
+    const tailTokens = tailTokenSum(db, selection.compactPoint);
+    return {
+      ok: true,
+      value: {
+        kind: "ok",
+        preview: {
+          compactPoint: selection.compactPoint,
+          wouldProduceBands: selection.compactPoint > 0,
+          tailTokens,
+          firstKeptMessageId: computed.value.firstKeptMessageId,
+        },
+      },
+    };
+  } catch (cause) {
+    return storageFailure(`view previewCompact failed: ${detail(cause)}`);
+  } finally {
+    db.close();
+  }
+}
+
+// Compact runs only when invoked through this surface; no core path calls it.
+// Order: validate profile/params before IO, read record + derivations with
+// corruption checks before the write transaction, run selection, render bands,
+// replace the view and reset the boundary in one BEGIN IMMEDIATE, then return a
+// receipt. Assembly is entirely from stored artifacts: nothing here can reach
+// inference or schedule repair work.
+export async function compact(
+  ref: ThreadRef,
+  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+): Promise<OpResult<CompactReceipt>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const call = resolveCompactCall(opts);
+  if (!call.ok) return call;
+  const { merged, profileName } = call.value;
+
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const threadId = readThreadMetadata(db).threadId;
+    const transaction: DbReadTransaction = { db, filePath, threadId };
+    const computed = computeArrangement(db, transaction, merged, {
+      signal: opts.signal,
+      includeChunkMaterials: true,
+    });
+    if (!computed.ok) return computed;
+
+    const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
 
     const warnings: CompactReceipt["warnings"] = selection.entries
       .filter((entry) => entry.derivationUsed === "stored_member_concat")
@@ -381,13 +405,7 @@ export async function compact(
     });
 
     const createdAt = new Date().toISOString();
-    // view_id is v<compact event order>: deterministic, and deliberately reused
-    // by an intake-free recompact. The singleton row is replaced whole.
-    const viewId = `v${inputs.maxEventOrder}`;
 
-    // Test injection point before the view-write transaction. An installed
-    // hook's throw aborts here before BEGIN, so the
-    // previous view keeps serving.
     fireViewInjection("compact-write");
 
     replaceViewSnapshot(db, {
@@ -434,6 +452,7 @@ export async function compact(
       };
     }
     const tailTokens = tailTokenSum(db, selection.compactPoint);
+    const renderedBands = buildRenderedBands(selection, bands);
     return {
       ok: true,
       value: {
@@ -442,7 +461,6 @@ export async function compact(
         config: { ...merged.percentages, lowerBound: merged.lowerBound },
         bands: bandReport,
         tailTokens,
-        // Actual assembled total vs the bound: target, not cap.
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
         coveredFrom: selection.coveredFrom,
         compactPoint: selection.compactPoint,
@@ -461,6 +479,8 @@ export async function compact(
             reason: entry.reason ?? "unknown",
           })),
         warnings,
+        renderedBands,
+        firstKeptMessageId,
       },
     };
   } catch (cause) {

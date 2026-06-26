@@ -23,11 +23,14 @@ export type PiHookName =
   | "thinking_level_select"
   | "session_before_fork"
   | "session_before_switch"
+  | "session_before_compact"
+  | "session_compact"
   | "session_shutdown"
   | "context";
 
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 export type SessionShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
+export type SessionCompactReason = "manual" | "threshold" | "overflow";
 
 export interface SessionStartEvent {
   type: "session_start";
@@ -81,6 +84,52 @@ export interface ContextEvent {
   messages: AgentMessage[];
 }
 
+export interface CompactionPreparation {
+  firstKeptEntryId: string;
+  messagesToSummarize: AgentMessage[];
+  turnPrefixMessages: AgentMessage[];
+  isSplitTurn: boolean;
+  tokensBefore: number;
+  previousSummary?: string;
+  fileOps: {
+    readFiles: string[];
+    modifiedFiles: string[];
+  };
+  settings: {
+    enabled: boolean;
+    reserveTokens: number;
+    keepRecentTokens: number;
+  };
+}
+
+export interface CompactionResult<T = unknown> {
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  details?: T;
+}
+
+export interface SessionBeforeCompactEvent {
+  type: "session_before_compact";
+  reason: SessionCompactReason;
+  willRetry: boolean;
+  preparation: CompactionPreparation;
+  branchEntries: readonly SessionEntry[];
+  customInstructions?: string;
+  signal: AbortSignal;
+}
+
+export interface SessionBeforeCompactResult {
+  cancel?: boolean;
+  compaction?: CompactionResult;
+}
+
+export interface SessionCompactEvent {
+  type: "session_compact";
+  compactionEntry: SessionEntry;
+  fromExtension: boolean;
+}
+
 /** Return shape PI's `context` hook expects when replacing messages. */
 export interface ContextEventResult {
   messages?: AgentMessage[];
@@ -96,17 +145,31 @@ export interface PiHookEventMap {
   thinking_level_select: ThinkingLevelSelectEvent;
   session_before_fork: SessionBeforeForkEvent;
   session_before_switch: SessionBeforeSwitchEvent;
+  session_before_compact: SessionBeforeCompactEvent;
+  session_compact: SessionCompactEvent;
   session_shutdown: SessionShutdownEvent;
   context: ContextEvent;
 }
 
-/** A per-hook handler receives a FRESH `ctx` from PI on every call; the
- *  connector must never retain it across calls (PI replaces session objects on
- *  new/resume/fork and a stale reference throws). */
-export type PiHookHandler<N extends PiHookName> = (
+/** Void-returning hooks (all except `session_before_compact` and `context`). */
+export type PiVoidHookName = Exclude<PiHookName, "session_before_compact" | "context">;
+
+export type PiVoidHookHandler<N extends PiVoidHookName> = (
   event: PiHookEventMap[N],
   ctx: ExtensionContext,
 ) => void | Promise<void>;
+
+/** A per-hook handler receives a FRESH `ctx` from PI on every call; the
+ *  connector must never retain it across calls (PI replaces session objects on
+ *  new/resume/fork and a stale reference throws). */
+export type PiHookHandler<N extends PiHookName> = N extends "session_before_compact"
+  ? (
+      event: PiHookEventMap[N],
+      ctx: ExtensionContext,
+    ) => SessionBeforeCompactResult | undefined | Promise<SessionBeforeCompactResult | undefined>
+  : N extends PiVoidHookName
+    ? PiVoidHookHandler<N>
+    : never;
 
 /** The `context` hook may return replacement messages; void/undefined keeps PI's input. */
 export type PiContextHookHandler = (
@@ -135,7 +198,8 @@ export interface PiToolSpec {
  *  `registerCommand`/`registerTool`/`appendEntry` are declared because PI
  *  exposes them, though this connector registers only hooks. */
 export interface ExtensionAPI {
-  on<N extends Exclude<PiHookName, "context">>(name: N, handler: PiHookHandler<N>): void;
+  on<N extends PiVoidHookName>(name: N, handler: PiVoidHookHandler<N>): void;
+  on(name: "session_before_compact", handler: PiHookHandler<"session_before_compact">): void;
   on(name: "context", handler: PiContextHookHandler): void;
   registerCommand(name: string, options: { handler: PiCommandHandler; description?: string }): void;
   registerTool(tool: PiToolSpec): void;

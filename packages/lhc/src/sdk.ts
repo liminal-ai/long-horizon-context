@@ -16,6 +16,7 @@ import type {
   ErrorResult,
   LlmRequestContext,
   OpResult,
+  PreviewCompactOutcome,
   SessionThreadView,
   StoredView,
   ViewCompactParams,
@@ -109,6 +110,8 @@ export type {
   ModelCallInput,
   ModelCallResult,
   OpResult,
+  PreviewCompactOutcome,
+  PreviewCompactResult,
   RenderingPart,
   ResolvedSdkConfig,
   ResolvedViewConfig,
@@ -122,6 +125,7 @@ export type {
   SessionThinkingLevelChangeEntry,
   SessionThreadView,
   SessionThreadViewEntry,
+  SessionThreadViewEntrySource,
   SessionThreadViewMessage,
   SessionToolResultMessage,
   SessionUserMessage,
@@ -250,6 +254,10 @@ export interface ThreadViewSurface {
   getSessionThreadView(ref: threadsDomain.ThreadRef): Promise<OpResult<SessionThreadView>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
+  previewCompact(
+    ref: threadsDomain.ThreadRef,
+    opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+  ): Promise<OpResult<PreviewCompactOutcome>>;
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -670,6 +678,7 @@ export function initLhc(config: SdkConfig): Lhc {
         getSessionThreadView: threadViewDomain.getSessionThreadView,
         status: threadViewDomain.status,
         describe: threadViewDomain.describe,
+        previewCompact: threadViewDomain.previewCompact,
         compact: threadViewDomain.compact,
         materialize: threadViewDomain.materialize,
       },

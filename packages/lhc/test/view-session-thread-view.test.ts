@@ -52,6 +52,10 @@ function entryKinds(entries: readonly SessionThreadViewEntry[]): string[] {
   return entries.map((entry) => ("kind" in entry ? entry.kind : entry.role));
 }
 
+function idempotencyKeyPattern(): RegExp {
+  return /^fixture-key-\d+$/;
+}
+
 describe("threadView.getSessionThreadView", () => {
   it("returns user and assistant messages for a simple turn", async () => {
     const captured = await sdk.intakeStream.messageEvents({ filePath }, eventBatch(["user_prompt", "assistant_text"]));
@@ -62,8 +66,16 @@ describe("threadView.getSessionThreadView", () => {
     if (!view.ok) return;
 
     expect(messageEntries(view.value.entries)).toEqual([
-      { role: "user", content: "please read the file" },
-      { role: "assistant", content: [{ type: "text", text: "here is what I found" }] },
+      {
+        role: "user",
+        content: "please read the file",
+        sourceMessages: [{ messageId: "m1", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "here is what I found" }],
+        sourceMessages: [{ messageId: "m2", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) }],
+      },
     ]);
   });
 
@@ -89,6 +101,11 @@ describe("threadView.getSessionThreadView", () => {
       toolName: "read_file",
       arguments: { path: "notes.txt" },
     });
+    expect(assistant.sourceMessages).toEqual([
+      { messageId: "m2", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) },
+      { messageId: "m3", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) },
+      { messageId: "m4", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) },
+    ]);
   });
 
   it("emits toolResult after the assistant message and starts a new assistant after tool results", async () => {
@@ -139,8 +156,17 @@ describe("threadView.getSessionThreadView", () => {
     if (!view.ok) return;
 
     expect(entryKinds(view.value.entries)).toEqual(["user", "model_change", "thinking_level_change", "assistant"]);
-    expect(view.value.entries[1]).toEqual({ kind: "model_change", provider: "openai", modelId: "gpt-4o" });
-    expect(view.value.entries[2]).toEqual({ kind: "thinking_level_change", level: "high" });
+    expect(view.value.entries[1]).toEqual({
+      kind: "model_change",
+      provider: "openai",
+      modelId: "gpt-4o",
+      sourceMessages: [{ messageId: "m2", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) }],
+    });
+    expect(view.value.entries[2]).toEqual({
+      kind: "thinking_level_change",
+      level: "high",
+      sourceMessages: [{ messageId: "m3", idempotencyKey: expect.stringMatching(idempotencyKeyPattern()) }],
+    });
   });
 
   it("serves full tool-result content before compact even when the zone exceeds visibility max", async () => {

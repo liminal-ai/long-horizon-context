@@ -1,4 +1,10 @@
-import type { Band, SessionAssistantPart, SessionThreadView, SessionThreadViewEntry } from "../../shared-tech/index.js";
+import type {
+  Band,
+  SessionAssistantPart,
+  SessionThreadView,
+  SessionThreadViewEntry,
+  SessionThreadViewEntrySource,
+} from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 import { type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
 import type { TailMessageRow } from "./snapshot.js";
@@ -13,6 +19,10 @@ function textOf(message: TailMessageRow): string {
   return typeof text === "string" ? text : "";
 }
 
+function entrySource(message: TailMessageRow): SessionThreadViewEntrySource {
+  return { messageId: message.messageId, idempotencyKey: message.idempotencyKey };
+}
+
 function parseModelRef(model: string): { provider: string; modelId: string } | null {
   const slash = model.indexOf("/");
   if (slash <= 0 || slash === model.length - 1) return null;
@@ -20,7 +30,7 @@ function parseModelRef(model: string): { provider: string; modelId: string } | n
 }
 
 function bandUserMessage(band: Band, renderedText: string): SessionThreadViewEntry {
-  return { role: "user", content: `[context · ${band}]\n${renderedText}` };
+  return { role: "user", content: `[context · ${band}]\n${renderedText}`, sourceMessages: [] };
 }
 
 function assistantPartOf(message: TailMessageRow): SessionAssistantPart {
@@ -54,6 +64,7 @@ function toolResultOf(message: TailMessageRow, ctx: TailRenderContext): SessionT
     toolCallId,
     toolName: ctx.toolNameByCallId.get(toolCallId) ?? "unknown_tool",
     content: toolResultSessionContent(message, ctx),
+    sourceMessages: [entrySource(message)],
   };
   if (block["isError"] === true) {
     return { ...result, isError: true };
@@ -66,13 +77,18 @@ function modelChangeOf(message: TailMessageRow): SessionThreadViewEntry | null {
   const newModel = typeof block["newModel"] === "string" ? block["newModel"] : "";
   const parsed = parseModelRef(newModel);
   if (parsed === null) return null;
-  return { kind: "model_change", provider: parsed.provider, modelId: parsed.modelId };
+  return {
+    kind: "model_change",
+    provider: parsed.provider,
+    modelId: parsed.modelId,
+    sourceMessages: [entrySource(message)],
+  };
 }
 
 function thinkingLevelChangeOf(message: TailMessageRow): SessionThreadViewEntry {
   const block = blockContent(message);
   const level = typeof block["newLevel"] === "string" ? block["newLevel"] : "";
-  return { kind: "thinking_level_change", level };
+  return { kind: "thinking_level_change", level, sourceMessages: [entrySource(message)] };
 }
 
 function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number): SessionThreadViewEntry[] {
@@ -82,23 +98,26 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
   };
   const entries: SessionThreadViewEntry[] = [];
   let assistantParts: SessionAssistantPart[] = [];
+  let assistantSources: SessionThreadViewEntrySource[] = [];
 
   const flushAssistant = (): void => {
     if (assistantParts.length === 0) return;
-    entries.push({ role: "assistant", content: assistantParts });
+    entries.push({ role: "assistant", content: assistantParts, sourceMessages: assistantSources });
     assistantParts = [];
+    assistantSources = [];
   };
 
   for (const row of rows) {
     switch (row.kind) {
       case "user_prompt":
         flushAssistant();
-        entries.push({ role: "user", content: textOf(row) });
+        entries.push({ role: "user", content: textOf(row), sourceMessages: [entrySource(row)] });
         break;
       case "assistant_thinking":
       case "assistant_text":
       case "tool_call":
         assistantParts.push(assistantPartOf(row));
+        assistantSources.push(entrySource(row));
         break;
       case "tool_result":
         flushAssistant();

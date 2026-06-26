@@ -47,6 +47,7 @@ import type {
   PiCommandHandler,
   PiHookHandler,
   PiHookName,
+  PiVoidHookHandler,
   ReplacedSessionContext,
   SessionEntry,
 } from "./pi/types.js";
@@ -162,7 +163,7 @@ export interface Connector {
   snapshot(): ConnectorSnapshot;
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
-  readonly handlers: Readonly<Record<Epic1Hook, PiHookHandler<Epic1Hook>>>;
+  readonly handlers: Readonly<Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>>;
 }
 
 /** The connector's live capture state for one session: the open-turn
@@ -575,7 +576,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // durable at that point. Idempotent: disposing twice or with no live instance
   // is a no-op. No reload-handoff state is kept — a reload re-resolves its
   // thread from the durable registry on the next session_start.
-  const onDispose: PiHookHandler<Epic1Hook> = async (event, ctx) => {
+  const onDispose: PiVoidHookHandler<"session_before_switch" | "session_shutdown"> = async (event, ctx) => {
     await flushPendingMessages(ctx);
     const settle = !(event.type === "session_shutdown" && event.reason === "quit" && ctx.hasUI === false);
     const result = await disposeInstance(instance, { settle });
@@ -809,7 +810,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
-  const guard = (name: Epic1Hook, body: PiHookHandler<Epic1Hook>): PiHookHandler<Epic1Hook> => {
+  const guard = (name: Epic1Hook, body: PiVoidHookHandler<Epic1Hook>): PiVoidHookHandler<Epic1Hook> => {
     return async (event, ctx): Promise<void> => {
       try {
         await body(event, ctx);
@@ -826,7 +827,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Observe-only foundation: the remaining capture-bearing hook (PI's per-step
   // turn_end) stays a no-op here. Each receives a fresh ctx and retains none of
   // it.
-  const noop: PiHookHandler<Epic1Hook> = () => {
+  const noop: PiVoidHookHandler<Epic1Hook> = () => {
     // Intentionally empty — turn_end is ignored as a boundary.
   };
 
@@ -846,19 +847,19 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   };
 
   // Bodies per hook: session lifecycle, event capture, and fork handling.
-  const bodies: Record<Epic1Hook, PiHookHandler<Epic1Hook>> = {
-    session_start: onSessionStart as PiHookHandler<Epic1Hook>,
-    session_before_switch: onDispose,
-    session_shutdown: onDispose,
-    message_end: onMessageEnd as PiHookHandler<Epic1Hook>,
+  const bodies: Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>> = {
+    session_start: onSessionStart as PiVoidHookHandler<Epic1Hook>,
+    session_before_switch: onDispose as PiVoidHookHandler<Epic1Hook>,
+    session_shutdown: onDispose as PiVoidHookHandler<Epic1Hook>,
+    message_end: onMessageEnd as PiVoidHookHandler<Epic1Hook>,
     turn_end: noop,
-    agent_end: onAgentEnd as PiHookHandler<Epic1Hook>,
-    model_select: onModelSelect as PiHookHandler<Epic1Hook>,
-    thinking_level_select: onThinkingLevelSelect as PiHookHandler<Epic1Hook>,
-    session_before_fork: onBeforeFork as PiHookHandler<Epic1Hook>,
+    agent_end: onAgentEnd as PiVoidHookHandler<Epic1Hook>,
+    model_select: onModelSelect as PiVoidHookHandler<Epic1Hook>,
+    thinking_level_select: onThinkingLevelSelect as PiVoidHookHandler<Epic1Hook>,
+    session_before_fork: onBeforeFork as PiVoidHookHandler<Epic1Hook>,
   };
 
-  const handlers = {} as Record<Epic1Hook, PiHookHandler<Epic1Hook>>;
+  const handlers = {} as Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>;
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
 
   const onRehydrate: PiCommandHandler = async (_args, ctx) => {

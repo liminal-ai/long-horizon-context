@@ -80,14 +80,22 @@ export interface SessionAssistantPart {
   arguments?: Record<string, unknown>;
 }
 
+export interface SessionThreadViewEntrySource {
+  messageId: string;
+  idempotencyKey: string | null;
+}
+
 export interface SessionUserMessage {
   role: "user";
   content: string;
+  sourceMessages: SessionThreadViewEntrySource[];
 }
 
 export interface SessionAssistantMessage {
   role: "assistant";
   content: SessionAssistantPart[];
+  /** One row per grouped LHC message, in part order. */
+  sourceMessages: SessionThreadViewEntrySource[];
 }
 
 export interface SessionToolResultMessage {
@@ -96,17 +104,20 @@ export interface SessionToolResultMessage {
   toolName?: string;
   content: string;
   isError?: boolean;
+  sourceMessages: SessionThreadViewEntrySource[];
 }
 
 export interface SessionModelChangeEntry {
   kind: "model_change";
   provider: string;
   modelId: string;
+  sourceMessages: SessionThreadViewEntrySource[];
 }
 
 export interface SessionThinkingLevelChangeEntry {
   kind: "thinking_level_change";
   level: string;
+  sourceMessages: SessionThreadViewEntrySource[];
 }
 
 export type SessionThreadViewMessage = SessionUserMessage | SessionAssistantMessage | SessionToolResultMessage;
@@ -159,6 +170,18 @@ export interface ViewStatus {
   visibility: { boundaryPosition: number; zoneTokens: number; maxTokens: number };
 }
 
+export interface PreviewCompactResult {
+  compactPoint: number;
+  wouldProduceBands: boolean;
+  tailTokens: number;
+  firstKeptMessageId: string | null;
+}
+
+export type PreviewCompactOutcome =
+  | { kind: "ok"; preview: PreviewCompactResult }
+  | { kind: "turn_not_ready"; openTurnHasMembers: boolean }
+  | { kind: "error"; reason: string };
+
 // ── receipts ─────────────────────────────────────────────────────
 export interface CompactReceipt {
   viewId: string;
@@ -180,4 +203,6 @@ export interface CompactReceipt {
     derivationType: "chunk_summary_detailed" | "chunk_summary_brief";
     reason: string;
   }>;
+  renderedBands: Array<{ band: Band; text: string }>;
+  firstKeptMessageId: string | null;
 }

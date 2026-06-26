@@ -120,6 +120,7 @@ export function readStoredView(db: DatabaseSync): StoredView | null {
 export interface TailMessageRow {
   messageId: string;
   sourceEventOrder: number;
+  idempotencyKey: string | null;
   kind: RenderingPartKind;
   // The source event's recorded_at: materialize's entry timestamp. Generated
   // fields derive from record times, never write-time clocks.
@@ -133,7 +134,7 @@ export interface TailMessageRow {
 export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMessageRow[] {
   const messageRows = db
     .prepare(
-      `SELECT m.message_id, m.source_event_order, m.kind, e.recorded_at FROM message m
+      `SELECT m.message_id, m.source_event_order, m.kind, e.recorded_at, e.idempotency_key FROM message m
        JOIN event e ON e.event_order = m.source_event_order
        WHERE m.deleted_at IS NULL AND m.source_event_order > ?
        ORDER BY m.source_event_order`,
@@ -143,6 +144,7 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
     source_event_order: number | bigint;
     kind: string;
     recorded_at: string;
+    idempotency_key: string;
   }>;
   const blockRows = db
     .prepare(
@@ -168,6 +170,7 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
   return messageRows.map((row) => ({
     messageId: row.message_id,
     sourceEventOrder: Number(row.source_event_order),
+    idempotencyKey: row.idempotency_key,
     kind: row.kind as RenderingPartKind,
     recordedAt: row.recorded_at,
     blocks: blocksByMessage.get(row.message_id) ?? [],
