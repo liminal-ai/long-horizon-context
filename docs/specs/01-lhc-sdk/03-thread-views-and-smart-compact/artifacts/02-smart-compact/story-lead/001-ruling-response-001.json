@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "02-smart-compact-story-run-001-ruling-013",
-  "decision": "reject current selection interpretations and require literal story/design selection rules plus explicit totalTokens quick-fix",
-  "rationale": "The tech design pins selection rules 1-6 with tie-breakers and the story declares Spec Deviations: None; added interpretations (smooth-obligate beyond share, partial-chunk retreat, suppressed brief oversized-loner) are undesigned behavior and the committed goldens must encode the literal design rules. AC-2.4's text explicitly requires the receipt to report actual per-band and total token counts, so CompactReceipt must carry an explicit totalTokens field. Route both back to the retained implementor, regenerate goldens from the literal rules, and reverify.",
-  "source": "impl-lead"
-}

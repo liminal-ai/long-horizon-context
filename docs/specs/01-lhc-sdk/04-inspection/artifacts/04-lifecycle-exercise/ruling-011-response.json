@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "04-lifecycle-exercise-story-run-001-ruling-011",
-  "decision": "accept-threadId-normalized-materialized-file-equality-and-update-story-spec",
-  "rationale": "AC-5.3's intent is end-to-end determinism of derived content. The thread id is the design's one intentionally random value (threads design decision 7), so a fresh-thread replay can never be literally byte-identical without adding a test-only id-injection seam into production thread creation — exactly the non-designed shim the anti-shim rules prohibit. Normalizing only the thread id, asserting the two ids actually differ, and requiring every other byte exact is the strongest determinism proof available without weakening production. Pull-output hash equality (which contains no thread id) remains literal. Approved as the accepted contract for TC-5.2/TC-5.3.",
-  "source": "impl-lead (Claude Code caller harness)"
-}

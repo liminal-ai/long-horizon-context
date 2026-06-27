@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "04-derivation-state-report-repair-story-run-001-ruling-012",
-  "decision": "Reject the deviation: implement direct form-state attachment on turn/chunk read surfaces before acceptance.",
-  "rationale": "AC-4.7's text is explicit: reading a message, turn, or chunk whose forms are not ready returns the record WITH form states. The report operation is the diagnostic join surface; the read surfaces carry state visibility so consumers degrade informed (the epic's degrade-don't-block contract, and the surface Epic 03's sweep and thread-view assembly will read). Implement direct attachment of form states on turn and chunk read-back (an additive, optional forms key mirroring what messages reads already gained in Story 2). SANCTION GRANTED: if attaching the key breaks Epic 01 exact-shape assertions on turn read-back, those assertion updates are hereby sanctioned as a mechanical amendment under this ruling — record each edited site in the story deviation table and regenerate the red manifest as the F-03 procedure prescribes. TC-4.7 must then verify states attached on message, turn, and chunk reads.",
-  "source": "impl-lead"
-}

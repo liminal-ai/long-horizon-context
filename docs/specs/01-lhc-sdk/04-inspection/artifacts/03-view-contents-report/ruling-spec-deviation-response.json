@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "03-view-contents-report-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Both deviations already approved on the merits via ruling-011 (accepted public contract): measured pull-served bandTokens satisfies AC-2.3's governing loadCost-equals-pull equality where stored-count sums structurally cannot; nullable sourceState for never-compacted threads honors AC-2.5 recorded-provenance-verbatim and mirrors AC-2.4 meta:null. Recorded here for the spec-deviation gate as well.",
-  "source": "impl-lead (Claude Code caller harness)"
-}

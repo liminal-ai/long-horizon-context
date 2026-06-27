@@ -27,9 +27,7 @@ interface ModelCallDeps {
   complete?: PiAiComplete;
 }
 
-function completeOptionsForThinking(
-  thinking: ModelCallInput["thinking"],
-): CompleteOptions | undefined {
+function completeOptionsForThinking(thinking: ModelCallInput["thinking"]): CompleteOptions | undefined {
   if (thinking === undefined) return undefined;
   if (thinking === "none") return { reasoningEffort: "none" };
   return { reasoningEffort: thinking };

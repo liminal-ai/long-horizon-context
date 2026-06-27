@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "00-foundation-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Both surfaced spec deviations are approved. (1) Local PI extension types in src/pi/types.ts: independently verified that @earendil-works/pi-coding-agent and pi-ai are absent from this workspace (not in node_modules, not in pnpm-lock.yaml, not declared in any package.json), so importing them would fail typecheck. Declaring the PI v0.79.2 surface locally — faithfully mirrored from the verified wiring research (pi-ext-integration-research.md), strongly typed rather than `any`, and explicitly reversible to real imports when the dependency lands — is a justified environmental necessity, not a design change; it preserves real type-checking for later stories. Tracked follow-up: swap to real PI imports when the packages are installed (Epic 2 serving / Epic 4 packaging). (2) initLhc as a thin wrapper over createSdk: spec-anticipated by tech-arch A-4 and tech-design Open Question Q2 ('mechanical either way'); the rename rides the first LHC change batch. Impl-lead independently ran the story gate `pnpm --filter pi-lhc verify`: build, typecheck, lint, boundaries all OK; 6 test files / 19 tests pass; baseline 375 -> 381 (no regression).",
-  "source": "impl-lead (Claude Code orchestrator) per ls-impl story-cycle ruling"
-}

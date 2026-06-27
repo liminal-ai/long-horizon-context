@@ -1,3 +1,0 @@
-Turn-based banding is preferred over message-based banding because it preserves task intent, keeps provenance/auditability simpler, and makes chunk/smoothing behavior more stable and understandable. Message-level handling is only needed as a local pressure valve for pathological cases (e.g. huge tool outputs) so the core architecture can stay `turns -> chunks -> bands`. Live tool-result truncation should handle those spikes without changing the source-of-truth rule: full canonical storage, truncated prompt view.
-
-Current banding is conceptually clean and mostly turn/chunk based, but implementation is moderately complex due to token-count trust, stale counts, strict/prepare modes, chunk readiness, legacy placeholders, view states, retries, and prompt-visible truncation.

@@ -78,7 +78,12 @@ describe("Story 5: Inference Host Routing", () => {
 
     it("defaultAssignments use gpt-5.4-mini with thinking none for every inference kind", () => {
       const assignments = defaultAssignments();
-      for (const kind of ["smoothed_prompt", "tool_result_summary", "smooth_turn_compression", "chunk_summary_brief"] as const) {
+      for (const kind of [
+        "smoothed_prompt",
+        "tool_result_summary",
+        "smooth_turn_compression",
+        "chunk_summary_brief",
+      ] as const) {
         expect(assignments[kind]).toMatchObject({
           provider: "openai-codex",
           model: "gpt-5.4-mini",

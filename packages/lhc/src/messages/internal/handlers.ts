@@ -1,10 +1,9 @@
 // Message-level derivation handlers share one shape: read the source message,
-// optionally join its call-id pair, call exactly one inference operation, and
-// return derivation content through HandlerOutcome. The drain's completion
-// transaction does the version-checked UPDATE-only write, so stale or deleted
-// sources discard here exactly as everywhere else. Tool-activity outcomes come
-// from outcome.ts, never inference text, and land in derivation metadata apart
-// from content.
+// optionally join its call-id pair, and return derivation content through
+// HandlerOutcome. The drain's completion transaction does the version-checked
+// UPDATE-only write, so stale or deleted sources discard here exactly as
+// everywhere else. Tool-activity outcomes come from outcome.ts, never inference
+// text, and land in derivation metadata apart from content.
 import type {
   HandlerDerivationWrite,
   HandlerOutcome,
@@ -13,6 +12,7 @@ import type {
   ToolOutcome,
   WorkHandler,
 } from "../../shared-tech/index.js";
+import { truncateForFallback } from "../../shared-tech/index.js";
 import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
@@ -20,6 +20,8 @@ import { classifyToolResult } from "./classify-tool-result.js";
 import { findPairedToolCall, type MessageSource, readMessageSource } from "./derivations.js";
 import { deriveToolOutcome } from "./outcome.js";
 import { cleanPrompt } from "./smoothing.js";
+
+const FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true;
 
 // A handler that cannot read its source coherently has found source damage:
 // terminal, derivation blocked with the reason (never a retry loop against a
@@ -153,6 +155,17 @@ export async function deriveToolResultSummary(
   },
 ): Promise<ToolResultSummaryDerivation | Extract<InferenceResult, { ok: false }>> {
   const tokens = estimateTokens(input.content);
+  if (FORCE_TOOL_RESULT_SUMMARY_FALLBACK) {
+    return {
+      write: {
+        subjectKind: "message",
+        subjectId: messageId,
+        derivationType: "tool_result_summary",
+        content: truncateForFallback(input.content),
+        metadata: { outcome: input.outcome },
+      },
+    };
+  }
   if (tokens <= run.config.toolResult.smallTierTokens) {
     return {
       write: {

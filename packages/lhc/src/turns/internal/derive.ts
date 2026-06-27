@@ -39,7 +39,7 @@ import {
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
-import { type ComposeDerivationRow, composeRenderingInput } from "./compose.js";
+import { composeRenderingInput } from "./compose.js";
 import {
   chunkExists,
   readChunkSummaryDerivation,

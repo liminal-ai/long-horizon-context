@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "04-fork-as-new-thread-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Approve the Story 4 v1 spec deviation: fork targets requeue derived forms instead of copying/reusing ready derived forms because provenance-identity safety for reuse is not implemented yet. This preserves correctness and matches the verified v1 behavior in 011-verify.json. No source thread writes or copied ready forms are accepted.",
-  "source": "caller-orchestrator"
-}

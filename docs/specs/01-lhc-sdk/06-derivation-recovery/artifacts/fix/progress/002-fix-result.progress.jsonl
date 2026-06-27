@@ -1,7 +1,0 @@
-{"timestamp":"2026-06-15T07:44:30.589Z","command":"epic-fix","phase":"fix","event":"command-started","summary":"epic-fix started."}
-{"timestamp":"2026-06-15T07:44:30.615Z","command":"epic-fix","phase":"fix","event":"provider-spawned","summary":"Provider spawned with pid 57940.","metadata":{"pid":57940}}
-{"timestamp":"2026-06-15T07:44:30.714Z","command":"epic-fix","phase":"fix","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
-{"timestamp":"2026-06-15T07:45:04.292Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
-{"timestamp":"2026-06-15T07:45:36.463Z","command":"epic-fix","phase":"fix","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
-{"timestamp":"2026-06-15T07:45:47.872Z","command":"epic-fix","phase":"fix","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":77258,"configuredTimeoutMs":3600000}}
-{"timestamp":"2026-06-15T07:45:47.875Z","command":"epic-fix","phase":"finalizing","event":"completed","summary":"epic-fix completed with outcome cleaned.","metadata":{"outcome":"cleaned"}}

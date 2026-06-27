@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "01-cli-retirement-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Impl-lead approves all four declared deviations: (1) Epic 04 parity-gap note is required by the story DoD itself; (2) keeping provider as the typed required field until Story 2 matches the chunk dependency order, with the runtime XOR TypeError per TC-6.2 implemented now; (3) removing CLI-only ErrorCode members empty_stdin and provider_not_configured is consistent with AC-6.1 anti-shim (only consumers were deleted CLI code); (4) removing the 25 in-process CLI parity legs across 9 files plus twinThreads fixture follows the same retirement rationale as the twelve named spawned suites — parity-only coverage of a deleted surface, via the sanctioned red-manifest amendment path. AC-6.2 protection is enforced by retirement.test.ts coverage comparison and will be independently confirmed by the impl-lead story gate and cumulative baseline comparison before acceptance.",
-  "source": "impl-lead"
-}

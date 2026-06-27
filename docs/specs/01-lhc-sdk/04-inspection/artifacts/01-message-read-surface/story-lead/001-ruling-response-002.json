@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "01-message-read-surface-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Approved: the test plan pins 'from > to -> caller_error' (TC-3.1), so a named refusal code is required behavior; no existing ErrorCode covers bad bounds. The additive 'invalid_bounds' caller_error code follows the accepted Epic 03 additive-error-codes precedent and is comment-documented in shared/errors.ts. Tech-design's 'no additions' line yields to the test plan's pinned assertion.",
-  "source": "impl-lead (Claude Code caller harness)"
-}

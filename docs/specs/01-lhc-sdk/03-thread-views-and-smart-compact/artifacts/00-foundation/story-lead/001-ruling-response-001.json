@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "00-foundation-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Both declared deviations approved by impl-lead. (1) ViewProfileOverride[] widening of SdkViewConfig.profiles is required to express FC-0.2's unknown-built-in-override-target violation and keeps complete ViewProfile assignable. (2) strftime seed timestamp in static migration SQL is a one-time seed; deterministic-clock requirements apply to production advance/reset writers (Stories 2/4), which use the injected clock. No behavior or contract drift.",
-  "source": "impl-lead"
-}

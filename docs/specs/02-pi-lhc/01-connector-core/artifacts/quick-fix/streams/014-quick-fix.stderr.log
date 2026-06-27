@@ -1,4 +1,0 @@
-Reading additional input from stdin...
-2026-06-14T20:55:43.320829Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /Users/leemoore/code/pi-long-horizon/liminal-context/packages/pi-lhc/src/index.ts:
-        const created = await threads.newThread(newThreadInput);
-        if (!created.ok) {

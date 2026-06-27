@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "02-inspect-domain-overview-and-health-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "All three deviations approved by impl-lead: (1) overview composing view summary/boundary from threadView.pull().meta is correct at Story 2 time since threadView.describe lands in Story 3 per chunk sequencing; identical stored fields, Story 3 swaps with no shape change. (2) threads.info(ref) is an in-domain, touch-suppressed read of threads-owned metadata, needed for AC-1.1 thread identity on filePath refs while honoring inspect's no-table-reads rule. (3) Routing the inspect.view structured not_implemented stub while omitting it from --help until Story 3 avoids advertising an unbuilt surface.",
-  "source": "impl-lead (Claude Code caller harness)"
-}

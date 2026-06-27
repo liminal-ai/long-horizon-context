@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "00-foundation-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "source": "impl-lead",
-  "rationale": "All five recorded deviations reviewed and approved: (1) idx_work_item_queue without rowid is a SQLite syntax constraint with identical head-selection semantics enforced at query time; (2) versioned-id amendment is the pre-sanctioned test-plan amendment, executed with red-manifest regeneration; (3) schema-version 4→5 assertions already ratified under ruling-012; (4) poke seam in shared/context.ts preserves DD-5 transactional semantics while avoiding an import cycle; (5) DD-11 CLI provider resolution defers to Story 1 where the first provider-backed CLI command (work drain) lands — no Story 0 surface needs it. None alter epic contracts."
-}

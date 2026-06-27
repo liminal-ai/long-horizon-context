@@ -1,7 +1,0 @@
-{"timestamp":"2026-06-15T07:45:58.988Z","command":"epic-reverify","phase":"epic-reverify","event":"command-started","summary":"epic-reverify started."}
-{"timestamp":"2026-06-15T07:45:59.007Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-spawned","summary":"Provider spawned with pid 61662.","metadata":{"pid":61662}}
-{"timestamp":"2026-06-15T07:45:59.119Z","command":"epic-reverify","phase":"epic-reverify","event":"first-output-received","summary":"First provider stderr output received.","metadata":{"stream":"stderr"}}
-{"timestamp":"2026-06-15T07:46:36.861Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
-{"timestamp":"2026-06-15T07:47:08.587Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-output","summary":"Provider stdout output continues.","metadata":{"stream":"stdout"}}
-{"timestamp":"2026-06-15T07:47:20.972Z","command":"epic-reverify","phase":"epic-reverify","event":"provider-exit","summary":"Provider exited with code 0.","metadata":{"exitCode":0,"signal":null,"elapsedMs":81966,"configuredTimeoutMs":3600000}}
-{"timestamp":"2026-06-15T07:47:20.975Z","command":"epic-reverify","phase":"finalizing","event":"completed","summary":"epic-reverify completed with outcome ready-for-closeout.","metadata":{"outcome":"ready-for-closeout"}}

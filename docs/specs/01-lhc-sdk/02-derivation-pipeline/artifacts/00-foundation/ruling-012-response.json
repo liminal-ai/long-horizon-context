@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "00-foundation-story-run-001-ruling-012",
-  "decision": "ratify-schema-version-assertion-edits",
-  "source": "impl-lead",
-  "rationale": "Migration v5 is an explicit Story 0 deliverable (FC-0.5, tech-design §Storage names v5 as the epic's single migration). Updating thread-migration.test.ts schemaVersionOf assertions from 4 to 5 is the mechanical consequence of that deliverable, in the same spirit as the sanctioned versioned-id amendments. Verifier reports FC-0.1–0.7 evidence present and gates green (focused tests, green-verify, verify-all). Ratified by impl-lead under standing overnight authorization; recorded in team-impl-log.md story receipt and Story 0 deviation notes."
-}

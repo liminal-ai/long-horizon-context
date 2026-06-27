@@ -1,6 +1,0 @@
-{
-  "rulingRequestId": "02-inference-seam-and-model-assignment-story-run-001-ruling-spec-deviation",
-  "decision": "approve",
-  "rationale": "Approved: landing FAILURE_CLASSIFICATION in this story instead of Chunk 4 is a benign ordering deviation — the adapter result mapping needs the table, the table matches the AC-3.1 mapping exactly, and Story 4 (which owns AC-3.1) will assert it as data per its TC-3.1. No scope lost; Story 4 verification will still independently confirm the table.",
-  "source": "impl-lead"
-}
