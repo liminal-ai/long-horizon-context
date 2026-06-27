@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
   estimateTokens,
-  type InferenceCallbacks,
   initLhc,
   type Lhc,
   type ModelCall,
@@ -226,7 +225,7 @@ describe("smoothed_prompt guard config", () => {
     expect(derivation(filePath)).toMatchObject({ state: "ready", content: sdk.messages.cleanPrompt(prompt) });
   });
 
-  it("turn recovery also uses the guard cap for pending prompt smoothing", async () => {
+  it("turn construction uses the guard cap for pending prompt smoothing", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = initLhc({
@@ -248,44 +247,37 @@ describe("smoothed_prompt guard config", () => {
     expect(liveWorkCount(filePath)).toBe(0);
   });
 
-  it("turn recovery does not log suspicious output when the recovery write is stale", async () => {
+  it("turn construction preserves an already-ready smoothed_prompt without calling smoothing inference", async () => {
     const double = createInferenceCallbacksDouble();
-    const shortModelText = tokenText(50);
-    let filePath = "";
-    const callbacks: InferenceCallbacks = {
-      smoothPrompt: () => {
-        const db = openRaw(filePath);
-        try {
-          db.prepare(
-            `UPDATE derivation
-             SET state = 'ready', content = ?, reason = NULL, metadata = NULL, derived_at = ?
-             WHERE subject_kind = 'message'
-               AND subject_id = 'm1'
-               AND derivation_type = 'smoothed_prompt'`,
-          ).run("competing ready value", "2026-06-22T12:00:00.000Z");
-        } finally {
-          db.close();
-        }
-        return Promise.resolve({ ok: true, text: shortModelText });
-      },
-      summarizeToolResult: (input) => double.summarizeToolResult(input),
-      compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
-    };
+    const captured = double.captureInputs();
     const sdk = initLhc({
       mode: "manual",
-      inferenceCallbacks: callbacks,
+      inferenceCallbacks: double,
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
-    filePath = await newThread();
+    const filePath = await newThread();
     const prompt = tokenText(500);
 
     await sendClosedTurn(sdk, filePath, prompt);
     deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+    const db = openRaw(filePath);
+    try {
+      db.prepare(
+        `UPDATE derivation
+         SET state = 'ready', content = ?, reason = NULL, metadata = NULL, derived_at = ?
+         WHERE subject_kind = 'message'
+           AND subject_id = 'm1'
+           AND derivation_type = 'smoothed_prompt'`,
+      ).run("competing ready value", "2026-06-22T12:00:00.000Z");
+    } finally {
+      db.close();
+    }
+    const callsBeforeTurn = captured.length;
     const derived = await sdk.turns.deriveTurn({ filePath }, "t1");
 
     expect(derived.ok).toBe(true);
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
     expect(derivation(filePath)).toMatchObject({
       state: "ready",
       content: "competing ready value",

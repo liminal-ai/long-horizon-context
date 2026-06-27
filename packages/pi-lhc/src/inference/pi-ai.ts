@@ -13,8 +13,17 @@ export interface CompleteContext {
   messages: Array<{ role: "system" | "user"; content: string }>;
 }
 
+/** Provider options passed as pi-ai complete()'s third argument. */
+export interface CompleteOptions {
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+}
+
 /** The pi-ai complete() signature. */
-export type PiAiComplete = (model: ModelHandle, context: CompleteContext) => Promise<AssistantMessage>;
+export type PiAiComplete = (
+  model: ModelHandle,
+  context: CompleteContext,
+  options?: CompleteOptions,
+) => Promise<AssistantMessage>;
 
 /** Error shapes pi-ai's complete() may throw or return. */
 export interface PiAiError {

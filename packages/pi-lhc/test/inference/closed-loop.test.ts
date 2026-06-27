@@ -96,7 +96,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     store.cleanup();
   });
 
-  it("persists one ready form and one classified failed form queryable through inspect/health", async () => {
+  it("persists ready derivations with compression fallback queryable through inspect/health", async () => {
     const modelCall = fakeModelCallRouter({
       "openai/good": fakeModelCallText("ready derived text"),
       "openai/fail": fakeModelCallFailure("auth", "missing auth"),
@@ -136,22 +136,33 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
       expect.objectContaining({
         owner: "turns",
         kind: "smooth_turn_compression",
-        counts: expect.objectContaining({ failed: 1 }),
+        counts: expect.objectContaining({ ready: 1, failed: 0 }),
       }),
     );
-    expect(health.value.failures).toContainEqual(
-      expect.objectContaining({
-        owner: "turns",
-        derivationType: "smooth_turn_compression",
-        reason: expect.stringContaining("auth"),
-      }),
+    expect(health.value.failures.some((f) => f.derivationType === "smooth_turn_compression")).toBe(false);
+
+    const turnList = await instance.sdk.turns.listTurns(threadRef);
+    expect(turnList.ok).toBe(true);
+    if (!turnList.ok) return;
+    const compression = turnList.value[0]?.derivations?.find(
+      (form) => form.derivationType === "smooth_turn_compression",
     );
+    const rendering = turnList.value[0]?.derivations?.find((form) => form.derivationType === "turn_rendering");
+    expect(rendering).toMatchObject({ state: "ready" });
+    expect(compression).toMatchObject({
+      state: "ready",
+      content: rendering?.content,
+      metadata: expect.objectContaining({
+        fallbackFloor: "turn_rendering",
+        lastError: expect.stringContaining("auth"),
+      }),
+    });
 
     const overview = await instance.sdk.inspect.overview(threadRef);
     expect(overview.ok).toBe(true);
     if (overview.ok) {
       expect(overview.value.derivation.ready).toBeGreaterThan(0);
-      expect(overview.value.derivation.failed).toBeGreaterThan(0);
+      expect(overview.value.derivation.failed).toBe(0);
     }
   }, 30000);
 

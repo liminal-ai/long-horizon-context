@@ -14,6 +14,7 @@ import {
   intakeStream,
   type MessageEventInput,
   type ThreadRef,
+  turns,
 } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
@@ -125,7 +126,7 @@ describe("Story 3: deterministic re-replay (TC-6.2)", () => {
 
 // ── TC-6.3: inspect overview/health reflect the captured session ─────────────
 describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)", () => {
-  it("reports event/message counts, last recorded position, gaps, and failed derivations", async () => {
+  it("reports event/message counts, last recorded position, gaps, and ready derivations after healthy cascade", async () => {
     const corpus = loadToolHeavyCorpus(); // 6 events → 5 messages, 1 closed turn
     const thread = await makeTempThread(store);
 
@@ -153,13 +154,24 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     expect(overview1.value.turns.closed).toBe(1);
     expect(overview1.value.turns.open).toBe(1);
 
-    // Failed derivations are visible, not hidden: Epic-1 replay is observe-only
-    // (inference fails closed), so the queued derivations land failed.
-    expect(overview1.value.derivation.failed).toBeGreaterThan(0);
+    // Observe-only replay fails inference closed, but turn construction floors
+    // non-ready message derivations and compression falls back to rendering.
+    expect(overview1.value.derivation.ready).toBeGreaterThan(0);
+    expect(overview1.value.derivation.failed).toBe(0);
+    const turnList = await turns.listTurns(thread.threadRef);
+    expect(turnList.ok).toBe(true);
+    if (!turnList.ok) return;
+    const compression = turnList.value[0]?.derivations?.find(
+      (form) => form.derivationType === "smooth_turn_compression",
+    );
+    expect(compression).toMatchObject({
+      state: "ready",
+      metadata: { fallbackFloor: "turn_rendering" },
+    });
     const health1 = await inspect.health(thread.threadRef);
     expect(health1.ok).toBe(true);
     if (!health1.ok) return;
-    expect(health1.value.failures.length).toBeGreaterThan(0);
+    expect(health1.value.failures.length).toBe(0);
 
     // A capture gap is visible, not hidden — induce one through the Story-2
     // capture path (a turn_end with a non-empty payload is rejected as

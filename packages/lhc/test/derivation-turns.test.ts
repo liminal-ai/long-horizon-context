@@ -101,6 +101,15 @@ function liveCount(filePath: string): number {
   }
 }
 
+function deleteWorkItem(filePath: string, workItemId: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ?`).run(workItemId);
+  } finally {
+    db.close();
+  }
+}
+
 function structuredRendering(parts: readonly RenderingPart[]): string {
   const labels: Record<RenderingPart["kind"], string> = {
     user_prompt: "User prompt",
@@ -223,6 +232,26 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([["smoothed_prompt", "m1"]]);
     expect(formOf(filePath, "t1", "smooth_turn_compression")?.state).toBe("ready");
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
+  });
+
+  it("does not re-run message inference for pending or failed message derivations during turn construction", async () => {
+    const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
+    const sdk = manualSdk(double);
+    const filePath = await newThread();
+
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "  pending prompt  " } }),
+      validEvent("assistant_text", { payload: { text: "answer text" } }),
+      validEvent("turn_end"),
+    ]);
+    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+    const callsBeforeTurn = captured.length;
+    await drain(sdk, filePath);
+
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
+    expect(formOf(filePath, "t1", "turn_rendering")).toMatchObject({ state: "ready" });
+    expect(formOf(filePath, "t1", "smooth_turn_compression")).toMatchObject({ state: "ready" });
   });
 });
 

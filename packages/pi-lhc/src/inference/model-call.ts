@@ -17,13 +17,22 @@ import {
   type ModelAssignment,
   type ModelCall,
   type ModelCallFailureKind,
+  type ModelCallInput,
   type ModelCallResult,
 } from "lhc";
 import type { ExtensionContext } from "../pi/types.js";
-import type { PiAiComplete } from "./pi-ai.js";
+import type { CompleteOptions, PiAiComplete } from "./pi-ai.js";
 
 interface ModelCallDeps {
   complete?: PiAiComplete;
+}
+
+function completeOptionsForThinking(
+  thinking: ModelCallInput["thinking"],
+): CompleteOptions | undefined {
+  if (thinking === undefined) return undefined;
+  if (thinking === "none") return { reasoningEffort: "none" };
+  return { reasoningEffort: thinking };
 }
 
 /** Extract the text content from an AssistantMessage-like shape. */
@@ -103,7 +112,7 @@ async function importPiAiComplete(): Promise<PiAiComplete> {
  * when the host runtime provides it.
  */
 export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {}): ModelCall {
-  return async ({ provider, model, messages }): Promise<ModelCallResult> => {
+  return async ({ provider, model, messages, thinking }): Promise<ModelCallResult> => {
     // Resolve the model through PI's registry
     const resolved = ctx.modelRegistry.find(provider, model);
     if (resolved === undefined) {
@@ -130,7 +139,7 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
     // the host dependency is absent.
     try {
       const complete = deps.complete ?? (await importPiAiComplete());
-      const response = await complete(resolved, { messages });
+      const response = await complete(resolved, { messages }, completeOptionsForThinking(thinking));
 
       // Extract text from the response
       const text = extractAssistantText(response);
@@ -170,12 +179,12 @@ export const DEFAULT_ASSIGNMENT_PROMPTS: Record<AssignmentKind, string> = {
  * These defaults use a real PI registry lane, so the shipped connector path can
  * resolve through createModelCall().
  */
-// PI v0.79.2 ships openai-codex/gpt-5.4 in its built-in catalog and records it
-// as the default openai-codex model (pi-coding-agent CHANGELOG: GPT-5.4 support
-// across openai/openai-codex, with gpt-5.4 now the default). This is the
-// reachable dial-in default. Unavailable auth is still reported by startup
-// validation rather than hidden behind a test provider.
-export const DEFAULT_PI_MODEL = { provider: "openai-codex", id: "gpt-5.4" } as const;
+// PI ships openai-codex/gpt-5.4-mini in its built-in catalog for the lightweight
+// LHC inference lane. Unavailable auth is still reported by startup validation
+// rather than hidden behind a test provider.
+export const DEFAULT_PI_MODEL = { provider: "openai-codex", id: "gpt-5.4-mini" } as const;
+
+const DEFAULT_PI_THINKING = "none" as const;
 
 export function defaultAssignments(
   model: { provider: string; id: string } = DEFAULT_PI_MODEL,
@@ -184,6 +193,7 @@ export function defaultAssignments(
     provider: model.provider,
     model: model.id,
     prompt: DEFAULT_ASSIGNMENT_PROMPTS[kind],
+    thinking: DEFAULT_PI_THINKING,
   });
   return Object.fromEntries(ASSIGNMENT_KINDS.map((kind) => [kind, assignment(kind)])) as Record<
     AssignmentKind,

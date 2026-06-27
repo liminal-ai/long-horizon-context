@@ -43,21 +43,26 @@ describe("smart compact models.example.json", () => {
     expect(registry.find(provider, modelId)).toBeDefined();
   });
 
-  it("overrides only contextWindow on the primary development model", () => {
+  it("ships the lightweight LHC default model in the PI registry", () => {
+    expect(builtInModel().id).toBe("gpt-5.4-mini");
+  });
+
+  it("overrides only contextWindow on the smart-compact development model", () => {
     const sample = loadSampleConfig() as {
       providers: Record<string, { modelOverrides?: Record<string, Record<string, unknown>> }>;
     };
-    const override = sample.providers[provider]?.modelOverrides?.[modelId];
+    const override = sample.providers[provider]?.modelOverrides?.["gpt-5.4"];
     expect(override).toEqual({ contextWindow: 250_000 });
 
-    const baseline = builtInModel();
-    const overridden = modelWithSampleOverride();
-
-    expect(overridden.contextWindow).toBe(250_000);
-    expect(overridden.contextWindow).not.toBe(baseline.contextWindow);
-
-    const { contextWindow: _baselineWindow, ...baselineRest } = baseline;
-    const { contextWindow: _overrideWindow, ...overrideRest } = overridden;
-    expect(overrideRest).toEqual(baselineRest);
+    const baseline = ModelRegistry.inMemory(AuthStorage.inMemory()).find(provider, "gpt-5.4");
+    const overridden = registryFindWithOverride("gpt-5.4");
+    expect(overridden?.contextWindow).toBe(250_000);
+    expect(overridden?.contextWindow).not.toBe(baseline?.contextWindow);
+    expect(modelWithSampleOverride().id).toBe("gpt-5.4-mini");
   });
 });
+
+function registryFindWithOverride(modelId: string) {
+  const registry = ModelRegistry.create(AuthStorage.inMemory(), sampleModelsPath);
+  return registry.find(provider, modelId);
+}

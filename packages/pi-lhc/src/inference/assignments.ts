@@ -142,7 +142,7 @@ export function loadAssignments(config: unknown): Record<AssignmentKind, ModelAs
   for (const kind of ASSIGNMENT_KINDS) {
     const override = configObj[kind];
     if (override !== undefined) {
-      mergedAssignments[kind] = validateAssignment(kind, override);
+      mergedAssignments[kind] = validateAssignment(kind, { ...mergedAssignments[kind]!, ...override });
     }
   }
 

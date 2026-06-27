@@ -90,7 +90,12 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
     // both flow through the same classification below.
     const result = await safeCall(
       config.call,
-      { provider: assignment.provider, model: assignment.model, messages },
+      {
+        provider: assignment.provider,
+        model: assignment.model,
+        messages,
+        ...(assignment.thinking !== undefined ? { thinking: assignment.thinking } : {}),
+      },
       config.timeoutMs,
     );
     if (!result.ok) {

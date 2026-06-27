@@ -179,7 +179,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
 });
 
 describe("TC-6.4a: inference types resolve to a default provider lane and model (AC-6.4)", () => {
-  it("with no explicit overrides, every inference op routes to the default codex / gpt-5.4-mini lane", async () => {
+  it("with no explicit overrides, every inference op routes to the default codex / gpt-5.4-mini lane with thinking none", async () => {
     const { call, log } = recordingCall();
     const sdk = initLhc({ mode: "manual", inference: { call } });
     for (const op of INFERENCE_OPS) {
@@ -189,6 +189,61 @@ describe("TC-6.4a: inference types resolve to a default provider lane and model 
     for (const entry of log) {
       expect(entry.provider).toBe("codex");
       expect(entry.model).toBe("gpt-5.4-mini");
+      expect(entry.thinking).toBe("none");
     }
+  });
+});
+
+describe("partial assignment overrides merge defaults", () => {
+  it("preserves thinking none when override omits thinking", async () => {
+    const { call, log } = recordingCall();
+    const sdk = initLhc({
+      mode: "manual",
+      inference: {
+        call,
+        assignments: {
+          smoothed_prompt: { provider: "custom", model: "custom-model", prompt: "smoothing-v1" },
+        },
+      },
+    });
+    await sdk.config.inferenceCallbacks.smoothPrompt({ text: "x" });
+    expect(log[0]?.thinking).toBe("none");
+  });
+
+  it("preserves smooth_turn_compression target ratios when override omits them", () => {
+    const sdk = initLhc({
+      mode: "manual",
+      inference: {
+        call: recordingCall().call,
+        assignments: {
+          smooth_turn_compression: { provider: "p", model: "m", prompt: "smooth-turn-compression-v1" },
+        },
+      },
+    });
+    expect(sdk.config.compressionTargets).toEqual({
+      minRatio: 0.35,
+      aimRatio: 0.5,
+      maxRatio: 0.65,
+    });
+  });
+
+  it("allows explicit thinking override", async () => {
+    const { call, log } = recordingCall();
+    const sdk = initLhc({
+      mode: "manual",
+      inference: {
+        call,
+        assignments: {
+          smoothed_prompt: {
+            provider: "custom",
+            model: "custom-model",
+            prompt: "smoothing-v1",
+            thinking: "high",
+          },
+        },
+      },
+    });
+    await sdk.config.inferenceCallbacks.smoothPrompt({ text: "x" });
+    expect(log[0]?.thinking).toBe("high");
   });
 });

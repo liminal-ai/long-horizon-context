@@ -19,14 +19,14 @@ import { tempStore } from "../fixtures/thread.js";
 
 const INPUT: ModelCallInput = {
   provider: "openai-codex",
-  model: "gpt-5.4",
+  model: "gpt-5.4-mini",
   messages: [{ role: "user", content: "hi" }],
 };
 
 describe("Story 5: Inference Host Routing", () => {
   describe("TC-4.1: ModelCall resolves provider/model and returns text", () => {
     it("resolves a known model with configured auth and returns completion text", async () => {
-      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4" };
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
       const ctx: ExtensionContext = {
         cwd: "/test",
         hasUI: false,
@@ -48,9 +48,43 @@ describe("Story 5: Inference Host Routing", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.text).toBe("real completion from openai-codex/gpt-5.4");
+        expect(result.text).toBe("real completion from openai-codex/gpt-5.4-mini");
       }
-      expect(complete).toHaveBeenCalledWith(mockHandle, { messages: INPUT.messages });
+      expect(complete).toHaveBeenCalledWith(mockHandle, { messages: INPUT.messages }, undefined);
+    });
+    it("passes thinking none to pi-ai as reasoningEffort none", async () => {
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => mockHandle,
+          hasConfiguredAuth: () => true,
+          getAvailable: () => [mockHandle],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall({ ...INPUT, thinking: "none" });
+
+      expect(complete).toHaveBeenCalledWith(mockHandle, { messages: INPUT.messages }, { reasoningEffort: "none" });
+    });
+
+    it("defaultAssignments use gpt-5.4-mini with thinking none for every inference kind", () => {
+      const assignments = defaultAssignments();
+      for (const kind of ["smoothed_prompt", "tool_result_summary", "smooth_turn_compression", "chunk_summary_brief"] as const) {
+        expect(assignments[kind]).toMatchObject({
+          provider: "openai-codex",
+          model: "gpt-5.4-mini",
+          thinking: "none",
+        });
+      }
     });
   });
 

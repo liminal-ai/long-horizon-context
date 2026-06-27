@@ -419,23 +419,33 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         const threadRef = state.threadRef;
         await instance.sdk.drainSettled(threadRef);
 
-        // Inspect health to verify affected lane derivations failed
+        // Inspect health to verify compression lands ready with rendering fallback
         const health = await instance.sdk.inspect.health(threadRef);
         expect(health.ok).toBe(true);
         if (!health.ok) return;
 
-        // Verify that smooth_turn_compression derivations failed classified (unreachable lane)
-        const compressionFailed = health.value.owners.some(
-          (o) => o.kind === "smooth_turn_compression" && o.counts.failed > 0,
+        expect(health.value.owners).toContainEqual(
+          expect.objectContaining({
+            kind: "smooth_turn_compression",
+            counts: expect.objectContaining({ ready: 1, failed: 0 }),
+          }),
         );
-        expect(compressionFailed).toBe(true);
+        expect(health.value.failures.some((f) => f.derivationType === "smooth_turn_compression")).toBe(false);
 
-        // Verify failures are queryable through health
-        expect(health.value.failures.length).toBeGreaterThan(0);
-        const compressionFailure = health.value.failures.find((f) => f.derivationType === "smooth_turn_compression");
-        expect(compressionFailure).toBeDefined();
-        expect(compressionFailure?.reason).toContain("invalid_request");
-        expect(compressionFailure?.lastError).toContain("unreachable assignment lane");
+        const turnList = await instance.sdk.turns.listTurns(threadRef);
+        expect(turnList.ok).toBe(true);
+        if (!turnList.ok) return;
+        const compression = turnList.value[0]?.derivations?.find(
+          (form) => form.derivationType === "smooth_turn_compression",
+        );
+        expect(compression).toMatchObject({
+          state: "ready",
+          metadata: expect.objectContaining({
+            fallbackFloor: "turn_rendering",
+            lastError: expect.stringContaining("invalid_request"),
+          }),
+        });
+        expect(compression?.metadata?.lastError).toContain("unreachable assignment lane");
 
         await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
       } finally {

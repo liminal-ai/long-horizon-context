@@ -2,7 +2,6 @@ import type { SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  estimateTokens,
   type InferenceCallbacks,
   initLhc,
   type Lhc,
@@ -11,6 +10,7 @@ import {
   type SdkConfig,
   threads,
 } from "../src/index.js";
+import { truncateForFallback } from "../src/shared-tech/tool-result-rendering.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -201,28 +201,11 @@ describe("Story 3: turn construction recovery cascade", () => {
     });
   });
 
-  it("re-derives a failed component outside the completion write and persists plain ready", async () => {
-    let probeAcquired = false;
-    let filePath = "";
+  it("uses deterministic floors for failed message derivations without calling message inference", async () => {
     const double = createInferenceCallbacksDouble();
-    const callbacks: InferenceCallbacks = {
-      smoothPrompt: async (input) => {
-        const probe = openRaw(filePath);
-        try {
-          probe.exec("BEGIN IMMEDIATE;");
-          probeAcquired = true;
-          probe.exec("ROLLBACK;");
-        } finally {
-          probe.close();
-        }
-        return { ok: true, text: `recovered:${input.text}` };
-      },
-      summarizeToolResult: (input) => double.summarizeToolResult(input),
-      compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
-    };
-    const sdk = sdkFor(callbacks);
-    filePath = await newThread();
+    const captured = double.captureInputs();
+    const sdk = sdkFor(double);
+    const filePath = await newThread();
 
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "  recover    me  " } }),
@@ -236,57 +219,47 @@ describe("Story 3: turn construction recovery cascade", () => {
        WHERE subject_id = ? AND derivation_type = 'smoothed_prompt'`,
       "m1",
     );
+    const callsBeforeTurn = captured.length;
 
     await drain(sdk, filePath);
 
-    expect(probeAcquired).toBe(true);
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
+    expect(renderingBodies(filePath)[0]).toBe("recover me");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
-      content: "recovered:recover me",
+      content: "recover me",
     });
     expect(formOf(filePath, "m1", "smoothed_prompt")?.reason).toBeUndefined();
     const logs = await sdk.logging.query({ filePath }, { derivationType: "smoothed_prompt" });
     expect(logs.ok).toBe(true);
     if (!logs.ok) return;
-    expect(logs.value).toEqual([]);
+    expect(logs.value.map((entry) => [entry.subjectId, entry.reason])).toEqual([["m1", "failed_floor"]]);
   });
 
-  it("does not overwrite a ready row written before floor recovery persists", async () => {
-    let filePath = "";
-    let workerCompleted = false;
+  it("does not overwrite an already-ready message derivation when composing the turn", async () => {
     const double = createInferenceCallbacksDouble();
-    const callbacks: InferenceCallbacks = {
-      smoothPrompt: async () => {
-        execSql(
-          filePath,
-          `UPDATE derivation
-           SET state = 'ready', content = ?, reason = NULL, derived_at = ?
-           WHERE subject_id = ? AND derivation_type = 'smoothed_prompt'`,
-          "real worker output",
-          "2026-01-01T00:00:00.000Z",
-          "m1",
-        );
-        workerCompleted = true;
-        return { ok: false, retryable: true, reason: "recovery unavailable" };
-      },
-      summarizeToolResult: (input) => double.summarizeToolResult(input),
-      compressSmoothTurn: (input) => double.compressSmoothTurn(input),
-      summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
-    };
-    const sdk = sdkFor(callbacks);
-    filePath = await newThread();
+    const sdk = sdkFor(double);
+    const filePath = await newThread();
 
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "  race    prompt because i asked  " } }),
       validEvent("assistant_text", { payload: { text: "answer" } }),
       validEvent("turn_end"),
     ]);
-    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
+    await drain(sdk, filePath, { maxItems: 1 });
+    execSql(
+      filePath,
+      `UPDATE derivation
+       SET state = 'ready', content = ?, reason = NULL, derived_at = ?
+       WHERE subject_id = ? AND derivation_type = 'smoothed_prompt'`,
+      "real worker output",
+      "2026-01-01T00:00:00.000Z",
+      "m1",
+    );
 
-    await drain(sdk, filePath);
-
-    expect(workerCompleted).toBe(true);
-    expect(renderingBodies(filePath)[0]).toBe("race prompt because I asked");
+    const derived = await sdk.turns.deriveTurn({ filePath }, "t1");
+    expect(derived.ok).toBe(true);
+    expect(renderingBodies(filePath)[0]).toBe("real worker output");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
       content: "real worker output",
@@ -321,12 +294,12 @@ describe("Story 3: turn construction recovery cascade", () => {
     ]);
   });
 
-  it("recovers small tool-result summaries with passthrough content", async () => {
+  it("floors small tool-result summaries without calling message inference during turn construction", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("tool_result_summary", 1, { retryable: true, reason: "recovery unavailable" });
+    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
-    const content = "tool-output ".repeat(100);
+    const content = "tool-output";
 
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "summarize tool" } }),
@@ -337,17 +310,20 @@ describe("Story 3: turn construction recovery cascade", () => {
       validEvent("turn_end"),
     ]);
     deleteWorkItem(filePath, "w-m3-tool_result_summary-v1");
+    const callsBeforeTurn = captured.length;
 
     await drain(sdk, filePath);
 
-    expect(renderingContent(filePath)).toContain(content);
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "summarizeToolResult")).toEqual([]);
+    const floored = truncateForFallback(content);
+    expect(renderingContent(filePath)).toContain(floored);
     expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
       state: "ready",
-      content,
+      content: floored,
     });
   });
 
-  it("recovers over-large failed tool-result summaries through inference classification", async () => {
+  it("floors over-large failed tool-result summaries with deterministic truncation and no turn-time inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
@@ -371,31 +347,27 @@ describe("Story 3: turn construction recovery cascade", () => {
          AND derivation_type = 'tool_result_summary'`,
     );
     deleteWorkItem(filePath, "w-m3-tool_result_summary-v1");
+    const callsBeforeTurn = captured.length;
 
     await drain(sdk, filePath);
 
-    const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toMatchObject({
-      toolName: "read_file",
-      content,
-      outcome: "succeeded",
-      promptMode: "large_log",
-    });
-    expect(calls[0]?.input).not.toHaveProperty("guidance");
-    expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "summarizeToolResult")).toEqual([]);
+    const floored = formOf(filePath, "m3", "tool_result_summary");
+    expect(floored).toMatchObject({
       state: "ready",
-      metadata: { outcome: "succeeded" },
     });
+    expect(floored?.content).toContain("large-result-token");
+    expect(floored?.content?.length).toBeLessThan(content.length);
+    expect(renderingContent(filePath)).toContain(floored?.content ?? "");
+    expect(renderingContent(filePath)).toContain("[fallback; outcome: succeeded]");
   });
 
-  it("recovers tool-result summaries with paired classification and tier target", async () => {
+  it("floors failed tool-result summaries during turn construction without re-running classification inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const content = "search-hit ".repeat(1500);
-    const tokens = estimateTokens(content);
 
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "summarize search output" } }),
@@ -406,26 +378,19 @@ describe("Story 3: turn construction recovery cascade", () => {
       validEvent("turn_end"),
     ]);
     deleteWorkItem(filePath, "w-m3-tool_result_summary-v1");
+    const callsBeforeTurn = captured.length;
 
     await drain(sdk, filePath);
 
-    const calls = captured.filter((entry) => entry.op === "summarizeToolResult");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toMatchObject({
-      toolName: "bash",
-      content,
-      outcome: "failed",
-      targetTokens: Math.ceil(tokens * 0.04),
-      operationClass: "search_or_listing",
-      responseShape: "search_result",
-      promptMode: "search_summary",
-      facts: expect.objectContaining({ command: "rg TODO src" }),
-    });
-    expect(calls[0]?.input).not.toHaveProperty("guidance");
-    expect(formOf(filePath, "m3", "tool_result_summary")).toMatchObject({
+    expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "summarizeToolResult")).toEqual([]);
+    const floored = formOf(filePath, "m3", "tool_result_summary");
+    expect(floored).toMatchObject({
       state: "ready",
-      metadata: { outcome: "failed" },
     });
+    expect(floored?.content).toContain("search-hit");
+    expect(floored?.content?.length).toBeLessThan(content.length);
+    expect(renderingContent(filePath)).toContain(floored?.content ?? "");
+    expect(renderingContent(filePath)).toContain("[fallback; outcome: failed]");
   });
 
   it("recovers over-cap prompts with deterministic cleaned text and no smoothing model call", async () => {

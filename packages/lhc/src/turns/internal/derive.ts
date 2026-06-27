@@ -6,7 +6,7 @@
 // close's summary enqueues all ride one commit.
 
 import type { DatabaseSync } from "node:sqlite";
-import { deriveMessageInThread, writeMessageDerivationFloorInThread } from "../../messages/internal/derive.js";
+import { writeMessageDerivationFloorInThread } from "../../messages/internal/derive.js";
 import type {
   DerivationMetadata,
   ErrorResult,
@@ -176,22 +176,20 @@ function logFallback(
   );
 }
 
-async function recoverMessageDerivations(
-  run: HandlerRunContext,
-  derivations: Map<string, ComposeDerivationRow>,
-): Promise<void> {
-  for (const key of [...derivations.keys()]) {
-    const [messageId, derivationType] = key.split("/") as [string, string];
-    if (derivationType !== "smoothed_prompt" && derivationType !== "tool_result_summary") continue;
-    const row = derivations.get(key);
-    if (row === undefined || row.state === "ready") continue;
-    const result = await deriveMessageInThread(run, messageId, { sourceVersion: row.sourceVersion });
-    if (result.outcome !== "derived") continue;
-    const refreshed = readMessageDerivationRows(run.openDb(), [messageId]).get(key);
-    if (refreshed !== undefined) {
-      derivations.set(key, refreshed);
-    }
-  }
+function readClaimedWorkAttempts(db: DatabaseSync, workItemId: string): number {
+  const row = db
+    .prepare(`SELECT attempts FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
+    .get(workItemId) as { attempts: number } | undefined;
+  return row === undefined ? 0 : Number(row.attempts);
+}
+
+function compressionExhausted(
+  compressionResult: { ok: false; retryable: boolean; reason: string },
+  attempts: number,
+  retryBudget: number,
+): boolean {
+  const nextAttempt = attempts + 1;
+  return !compressionResult.retryable || nextAttempt >= retryBudget;
 }
 
 const turnDerivationHandler: WorkHandler = async (run, item) => {
@@ -228,7 +226,6 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     db,
     messages.map((message) => message.messageId),
   );
-  await recoverMessageDerivations(run, derivations);
   const { parts, receipts, recoveries } = composeRenderingInput(messages, derivations);
   for (const recovery of recoveries) {
     logFallback(run, {
@@ -253,11 +250,24 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     inputTokens < tinyTurnTokens
       ? ({ ok: true, text: renderingText } as const)
       : await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText, ...targetTokens });
-  if (!compressionResult.ok) return inferenceFailed(compressionResult);
+
+  const claimAttempts = readClaimedWorkAttempts(db, item.workItemId);
+  let compressionText = renderingText;
+  let compressionUsedFallback = false;
+  let compressionFailureReason: string | undefined;
+  if (!compressionResult.ok) {
+    if (!compressionExhausted(compressionResult, claimAttempts, run.config.retry.budget)) {
+      return inferenceFailed(compressionResult);
+    }
+    compressionUsedFallback = true;
+    compressionFailureReason = compressionResult.reason;
+  } else {
+    compressionText = compressionResult.text;
+  }
 
   // The compression token count is estimated exactly once, here, as the
   // artifact lands; placement reads this stored arithmetic and never re-counts.
-  const projectedTokens = estimateTokens(compressionResult.text);
+  const projectedTokens = estimateTokens(compressionText);
   const threadId = run.threadId;
   // Tool-run receipts ride the rendering's metadata, mechanically restated from
   // the composition input. Chunk summaries read them from here, never from
@@ -266,10 +276,16 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     ...(receipts.length > 0 ? { receipts } : {}),
   };
   const compressionMetadata: DerivationMetadata = {};
-  if ("provenance" in compressionResult && compressionResult.provenance !== undefined) {
+  if (!compressionUsedFallback && "provenance" in compressionResult && compressionResult.provenance !== undefined) {
     compressionMetadata.provenance = compressionResult.provenance;
   }
-  if (inputTokens >= tinyTurnTokens) {
+  if (compressionUsedFallback) {
+    compressionMetadata.attempts = claimAttempts + 1;
+    if (compressionFailureReason !== undefined) {
+      compressionMetadata.lastError = compressionFailureReason;
+    }
+    compressionMetadata.fallbackFloor = "turn_rendering";
+  } else if (inputTokens >= tinyTurnTokens) {
     compressionMetadata.sizeDisposition = sizeDisposition(projectedTokens, targetTokens);
   }
 
@@ -287,7 +303,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectKind: "turn",
         subjectId: turnId,
         derivationType: "smooth_turn_compression",
-        content: compressionResult.text,
+        content: compressionText,
         ...(Object.keys(compressionMetadata).length > 0 ? { metadata: compressionMetadata } : {}),
       },
     ],
@@ -304,6 +320,24 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
             poke: resolveInstancePoke(),
           },
           chunkId,
+        );
+      }
+      if (compressionUsedFallback) {
+        writeLog(
+          {
+            db: transaction.db,
+            threadId: run.threadId,
+            filePath: run.filePath,
+            postCommitHook: { add: transaction.onCommit },
+          },
+          {
+            level: "warning",
+            message: "turn compression fallback used",
+            derivationType: "smooth_turn_compression",
+            subjectId: turnId,
+            ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
+            floorUsed: "turn_rendering",
+          },
         );
       }
     },

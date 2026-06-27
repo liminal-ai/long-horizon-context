@@ -358,16 +358,20 @@ const DEFAULT_INFERENCE_LANE = { provider: "codex", model: "gpt-5.4-mini" } as c
 // compression/brief types. Deterministic derivations are not inference
 // assignments. Construction-internal: defaults are observable through routed
 // calls, not part of the public export surface.
+const DEFAULT_INFERENCE_THINKING = "none" as const;
+
 const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> = {
   smoothed_prompt: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
     prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
+    thinking: DEFAULT_INFERENCE_THINKING,
   },
   tool_result_summary: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
     prompt: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v2",
+    thinking: DEFAULT_INFERENCE_THINKING,
   },
   smooth_turn_compression: {
     provider: DEFAULT_INFERENCE_LANE.provider,
@@ -376,6 +380,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
     targetMinRatio: 0.35,
     targetMaxRatio: 0.65,
     targetAimRatio: 0.5,
+    thinking: DEFAULT_INFERENCE_THINKING,
   },
   chunk_summary_brief: {
     provider: DEFAULT_INFERENCE_LANE.provider,
@@ -384,6 +389,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
     targetMinRatio: 0.08,
     targetMaxRatio: 0.2,
     targetAimRatio: 0.12,
+    thinking: DEFAULT_INFERENCE_THINKING,
   },
 };
 
@@ -427,11 +433,15 @@ function resolveInferenceCallbacks(
     }
   }
 
-  // Validate every provided inference assignment: non-empty
+  // Validate every effective inference assignment after merging defaults: non-empty
   // provider/model/prompt, and prompt must name a registry template.
+  const merged: Record<string, ModelAssignment> = {};
   for (const kind of inferenceKeys) {
-    const assignment = provided[kind];
-    if (assignment === undefined) continue; // filled from defaults below
+    const override = provided[kind];
+    const assignment: ModelAssignment =
+      override === undefined
+        ? { ...DEFAULT_INFERENCE_ASSIGNMENTS[kind]! }
+        : { ...DEFAULT_INFERENCE_ASSIGNMENTS[kind]!, ...override };
     if (assignment === null || typeof assignment !== "object") {
       throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments.${kind} must be an object`);
     }
@@ -452,13 +462,7 @@ function resolveInferenceCallbacks(
         `${INIT_CONFIG_PREFIX}: inference.assignments.${kind}.prompt names unknown template "${assignment.prompt}"`,
       );
     }
-  }
-
-  // Merge with default-filled inference types.
-  const merged: Record<string, ModelAssignment> = {};
-  for (const kind of inferenceKeys) {
-    const assignment = provided[kind];
-    merged[kind] = assignment ?? DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
+    merged[kind] = assignment;
   }
 
   const timeoutMs = inference.timeoutMs ?? 60_000;

@@ -224,8 +224,9 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
     }
   });
 
-  it("pending smoothing is consumed through turn recovery and persisted ready when no live work remains", async () => {
+  it("pending smoothing uses a composition floor without re-running message inference", async () => {
     const double = createInferenceCallbacksDouble();
+    const captured = double.captureInputs();
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const text = "  raw     prompt because i asked  ";
@@ -240,12 +241,13 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
     await drain(sdk, filePath);
 
     const rendering = formOf(filePath, "t1", "turn_rendering");
-    expect(rendering?.content).toContain(deterministicText("smoothPrompt", { text: floor }, floor));
+    expect(rendering?.content).toContain(floor);
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
-      content: deterministicText("smoothPrompt", { text: floor }, floor),
+      content: floor,
     });
     expect(rendering?.state).toBe("ready");
+    expect(captured.filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
   });
 
   it("terminal smoothing failure lands failed with reason, then turn composition consumes the floor", async () => {

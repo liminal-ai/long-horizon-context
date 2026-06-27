@@ -12,6 +12,7 @@ export interface ModelCallInput {
   provider: string;
   model: string;
   messages: { role: "system" | "user"; content: string }[];
+  thinking?: ModelAssignment["thinking"];
 }
 
 export type ModelCallResult = { ok: true; text: string } | { ok: false; kind: ModelCallFailureKind; message: string };

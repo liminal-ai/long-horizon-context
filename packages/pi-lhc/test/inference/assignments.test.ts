@@ -76,25 +76,33 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
     });
 
-    it("applies partial override (provider only, keeps model/prompt from default)", () => {
+    it("applies partial override (provider only, keeps model/prompt/thinking from default)", () => {
       const config = {
         smooth_turn_compression: {
           provider: "openai",
-          // model and prompt omitted - should throw incomplete
         },
       };
 
-      // Partial overrides are not allowed - must specify all fields
-      expect(() => loadAssignments(config)).toThrow(AssignmentValidationError);
-      try {
-        loadAssignments(config);
-      } catch (e) {
-        expect(e).toBeInstanceOf(AssignmentValidationError);
-        if (e instanceof AssignmentValidationError) {
-          expect(e.kind).toBe("smooth_turn_compression");
-          expect(e.problem).toBe("incomplete");
-        }
-      }
+      const assignments = loadAssignments(config);
+
+      expect(assignments.smooth_turn_compression.provider).toBe("openai");
+      expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
+      expect(assignments.smooth_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.smooth_turn_compression);
+      expect(assignments.smooth_turn_compression.thinking).toBe("none");
+    });
+
+    it("preserves thinking none when override omits thinking", () => {
+      const config = {
+        smoothed_prompt: {
+          provider: "anthropic",
+          model: "claude-3-opus",
+          prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
+        },
+      };
+
+      const assignments = loadAssignments(config);
+
+      expect(assignments.smoothed_prompt.thinking).toBe("none");
     });
 
     it("applies multiple overrides in a single config", () => {
@@ -144,91 +152,66 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
   });
 
   describe("TC-5.6: Fails loud on incomplete/unknown/placeholder assignments", () => {
-    describe("incomplete assignment - missing required field", () => {
-      it("throws when provider is omitted", () => {
+    describe("partial override merges missing fields from defaults", () => {
+      it("fills provider from default when override omits it", () => {
         const config = {
           smoothed_prompt: {
-            // provider missing
             model: "claude-3-opus",
             prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
           },
         };
 
-        expect(() => loadAssignments(config)).toThrow(AssignmentValidationError);
-        try {
-          loadAssignments(config);
-        } catch (e) {
-          expect(e).toBeInstanceOf(AssignmentValidationError);
-          if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smoothed_prompt");
-            expect(e.problem).toBe("incomplete");
-          }
-        }
+        const assignments = loadAssignments(config);
+
+        expect(assignments.smoothed_prompt.provider).toBe(DEFAULT_PI_MODEL.provider);
+        expect(assignments.smoothed_prompt.model).toBe("claude-3-opus");
+        expect(assignments.smoothed_prompt.thinking).toBe("none");
       });
 
-      it("throws when model is omitted", () => {
+      it("fills model from default when override omits it", () => {
         const config = {
           smooth_turn_compression: {
             provider: "openai",
-            // model missing
             prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
           },
         };
 
-        expect(() => loadAssignments(config)).toThrow(AssignmentValidationError);
-        try {
-          loadAssignments(config);
-        } catch (e) {
-          expect(e).toBeInstanceOf(AssignmentValidationError);
-          if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smooth_turn_compression");
-            expect(e.problem).toBe("incomplete");
-          }
-        }
+        const assignments = loadAssignments(config);
+
+        expect(assignments.smooth_turn_compression.provider).toBe("openai");
+        expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
+        expect(assignments.smooth_turn_compression.thinking).toBe("none");
       });
 
-      it("throws when prompt is omitted", () => {
+      it("fills prompt from default when override omits it", () => {
         const config = {
           smooth_turn_compression: {
             provider: "google",
             model: "gemini-pro",
-            // prompt missing
           },
         };
 
-        expect(() => loadAssignments(config)).toThrow(AssignmentValidationError);
-        try {
-          loadAssignments(config);
-        } catch (e) {
-          expect(e).toBeInstanceOf(AssignmentValidationError);
-          if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smooth_turn_compression");
-            expect(e.problem).toBe("incomplete");
-          }
-        }
+        const assignments = loadAssignments(config);
+
+        expect(assignments.smooth_turn_compression.provider).toBe("google");
+        expect(assignments.smooth_turn_compression.model).toBe("gemini-pro");
+        expect(assignments.smooth_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.smooth_turn_compression);
+        expect(assignments.smooth_turn_compression.thinking).toBe("none");
       });
 
-      it("throws when partial override creates assignment with placeholder from base", () => {
-        // Override provider only, but default has "unconfigured" model which is a placeholder
-        // The merge should complete, but validation rejects the placeholder (AC-5.6)
+      it("merges partial override over defaults when base assignment is complete", () => {
         const config = {
           smoothed_prompt: {
             provider: "anthropic",
-            // model and prompt missing - but base has "unconfigured" model (placeholder)
           },
         };
 
-        // Should throw because partial override is incomplete (missing fields)
-        expect(() => loadAssignments(config)).toThrow(AssignmentValidationError);
-        try {
-          loadAssignments(config);
-        } catch (e) {
-          expect(e).toBeInstanceOf(AssignmentValidationError);
-          if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smoothed_prompt");
-            expect(e.problem).toBe("incomplete");
-          }
-        }
+        const assignments = loadAssignments(config);
+
+        expect(assignments.smoothed_prompt.provider).toBe("anthropic");
+        expect(assignments.smoothed_prompt.model).toBe(DEFAULT_PI_MODEL.id);
+        expect(assignments.smoothed_prompt.prompt).toBe(DEFAULT_PROMPT_NAMES.smoothed_prompt);
+        expect(assignments.smoothed_prompt.thinking).toBe("none");
       });
     });
 
@@ -383,13 +366,12 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         expect(() => loadAssignments(badConfig)).toThrow(/Unknown assignment key 'made_up_kind'/);
       });
 
-      it("does not silently substitute defaults for incomplete user config", () => {
-        // User provided config but it's incomplete - should throw, not use defaults
+      it("still fails loud when merged override references an unknown prompt", () => {
         const incompleteConfig = {
           smoothed_prompt: {
             provider: "anthropic",
-            // model missing
-            prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
+            model: "claude-3-opus",
+            prompt: "typo-prompt-name",
           },
         };
 

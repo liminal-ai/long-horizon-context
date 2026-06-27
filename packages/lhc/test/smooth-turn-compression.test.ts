@@ -14,6 +14,8 @@ import {
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  openRaw,
+  readChunks,
   readDerivedForms,
   type TempStore,
   tempStore,
@@ -67,9 +69,10 @@ async function sendTurn(sdk: Lhc, filePath: string, prompt: string, answer: stri
   ]);
 }
 
-async function drain(sdk: Lhc, filePath: string): Promise<void> {
-  const drained = await sdk.work.drain({ filePath });
-  if (!drained.ok) throw new Error(drained.error.reason);
+async function drain(sdk: Lhc, filePath: string, opts?: { maxItems?: number }) {
+  const result = await sdk.work.drain({ filePath }, opts);
+  if (!result.ok) throw new Error(result.error.reason);
+  return result.value;
 }
 
 function formOf(filePath: string, subjectId: string, derivationType: string) {
@@ -202,5 +205,91 @@ describe("Story 3: smooth turn compression", () => {
     const rendered = host.log.at(-1);
     expect(rendered?.messages.map((message) => message.content).join("\n")).toContain("Target output range:");
     expect(rendered?.messages.map((message) => message.content).join("\n")).toContain("Preserve substance:");
+  });
+
+  it("retries compression while budget remains and does not land fallback yet", async () => {
+    const double = createInferenceCallbacksDouble();
+    double.failKind("smooth_turn_compression", 99, {
+      retryable: true,
+      reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
+    });
+    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1 } } });
+    const filePath = await newThread();
+
+    await sendTurn(sdk, filePath, "retry compression", tokenText(120));
+    await drain(sdk, filePath, { maxItems: 1 });
+
+    const retrying = await sdk.turns.deriveTurn({ filePath }, "t1");
+    expect(retrying.ok).toBe(true);
+    if (!retrying.ok) return;
+    expect(retrying.value).toMatchObject({
+      outcome: "failed",
+      error: { code: "derivation_retry_scheduled" },
+    });
+
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    const compression = formOf(filePath, "t1", "smooth_turn_compression");
+    expect(rendering?.state).toBe("pending");
+    expect(compression?.state).toBe("pending");
+
+    const db = openRaw(filePath);
+    try {
+      const live = db
+        .prepare(`SELECT status, attempts FROM work_item WHERE work_item_id = 'w-t1-turn_derivation-v1'`)
+        .get() as { status: string; attempts: number } | undefined;
+      expect(live).toMatchObject({ status: "queued", attempts: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("terminal compression failure lands turn_rendering and smooth_turn_compression ready with rendering fallback", async () => {
+    const double = createInferenceCallbacksDouble();
+    double.failKind("smooth_turn_compression", 99, {
+      retryable: true,
+      reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
+    });
+    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1 } } });
+    const filePath = await newThread();
+
+    await sendTurn(sdk, filePath, "fallback compression", tokenText(120));
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok).toBe(true);
+    if (!drained.ok) return;
+    expect(drained.value.ran).toContainEqual(
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        disposition: "done",
+      }),
+    );
+
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    const compression = formOf(filePath, "t1", "smooth_turn_compression");
+    expect(rendering).toMatchObject({ state: "ready" });
+    expect(compression).toMatchObject({
+      state: "ready",
+      content: rendering?.content,
+      metadata: {
+        fallbackFloor: "turn_rendering",
+        lastError: "provider_failure: empty_output: model returned empty or whitespace-only text",
+      },
+    });
+
+    const chunks = readChunks(filePath);
+    expect(chunks.members.some((member) => member.turnId === "t1")).toBe(true);
+
+    const logs = await sdk.logging.query(
+      { filePath },
+      { derivationType: "smooth_turn_compression", subjectId: "t1", level: "warning" },
+    );
+    expect(logs.ok).toBe(true);
+    if (!logs.ok) return;
+    expect(logs.value).toEqual([
+      expect.objectContaining({
+        message: "turn compression fallback used",
+        reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
+        floorUsed: "turn_rendering",
+      }),
+    ]);
   });
 });
