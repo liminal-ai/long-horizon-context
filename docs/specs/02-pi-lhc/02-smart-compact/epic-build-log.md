@@ -70,6 +70,12 @@ pnpm run verify:all  # pass (includes lhc real-inference)
 - Orchestration note: implementation will run through Cursor Composer 2.5 in a captured session. Verification will run separately with a built-in GPT 5.5 high subagent and route feedback back to the same implementor session until convergence.
 - Process requirement carried into prompts: this story should stay config/documentation/test-only unless the existing code proves otherwise. Implementor should use `pnpm run verify` while working and must run `pnpm run verify:all` before declaring the story done.
 
+## Epic Review Fix Pass
+
+- Started from a clean git worktree after Story 2 commit `30d472c`.
+- Epic-level review used two independent reviewers: built-in GPT-5.5 xhigh and Cursor Opus 4.8 xhigh. The deduped accepted findings are being handled as one implementation pass.
+- Orchestration note: fresh Cursor Composer 2.5 implementor session will receive the inline epic-review-fix story. Fresh built-in GPT-5.5 xhigh verifier will review against the epic/tech design/test plan plus the accepted findings.
+
 ### Story 2 implementation notes
 
 - `docs/specs/02-pi-lhc/02-smart-compact/models.example.json` — `modelOverrides` for `openai-codex/gpt-5.4` with `contextWindow: 250000` (native catalog window is 272000 in PI v0.80.x; effective threshold ~233616 at default `reserveTokens` 16384).
@@ -155,3 +161,40 @@ pnpm run verify:all  # pass (includes lhc real-inference: openai/gpt-5.4-mini, 2
 pnpm run verify      # pass (431 lhc + 236 pi-lhc tests)
 pnpm run verify:all  # pass (includes lhc real-inference: openai/gpt-5.4-mini, 20 tests)
 ```
+
+### Implementation notes (epic review fix pass)
+
+1. **Resume stale-live → seed fallthrough** — `mapFirstKeptToEntryId` no longer fails when a current-session idempotency key parses but the entry id is absent from `branchEntries`; it falls through to seed-entry-map.
+2. **Branch-local seed map** — compact handler calls `findSeedEntryMapInBranch(event.branchEntries, sessionView.threadId)` instead of scanning all session entries; `threadId` must match the active LHC thread.
+3. **Read-only preview** — `previewCompact` runs inside `createDbReadTransaction` (touch-suppressed) instead of `openThreadDatabase` directly.
+4. **Abort before write** — `compact` checks `compactStopped(signal)` immediately before `replaceViewSnapshot`.
+5. **Capture diagnostics** — `flushPendingMessages` does not clear `lastCaptureFailure` on an empty flush; successful captures clear via `recordCaptureOutcome`, and a non-empty flush with no failures clears at flush end. `capture_incomplete` only fires when a failure survives into compact after flush.
+6. **Dead code removed** — `buildContextServePreview`, `ContextServeMessagePreview`, `CONTEXT_SERVE_PREVIEW_*` and dedicated test deleted.
+
+### Tests added/updated
+
+- `packages/pi-lhc/test/compact/result-mapping.test.ts` — stale-live seed fallthrough, stale branch seed tier, no seed map fail-closed.
+- `packages/pi-lhc/test/compact/seed-entry-map.test.ts` — `findSeedEntryMapInBranch` thread-id filter vs all-session newest.
+- `packages/pi-lhc/test/compact/handler.test.ts` — stale `lastCaptureFailure` does not relabel `open_turn`; connector tests for agent_end failure → `capture_incomplete` and stale failure cleared by successful pending flush.
+- `packages/lhc/test/view-compact-preview.test.ts` — background mode preview leaves pending queue and scheduler pass count unchanged.
+- `packages/lhc/test/view-compact.test.ts` — abort at compact-write injection leaves prior snapshot unchanged.
+
+### Verification (epic review fix pass)
+
+```bash
+pnpm run verify      # pass (433 lhc + 243 pi-lhc tests)
+pnpm run verify:all  # pass (includes lhc real-inference: openai/gpt-5.4-mini, 20 tests)
+```
+
+### Friction (epic review fix pass)
+
+- `exactOptionalPropertyTypes` required `delete state.health.lastCaptureFailure` instead of assigning `undefined`.
+- Seed-map branch test needed seed `piEntryId` present in `branchEntries` — fallthrough only helps when the seed row resolves on the branch.
+
+### Verifier feedback (capture diagnostics P1)
+
+**P1 — empty flush cleared current agent_end capture failures**
+
+- Finding: clearing `lastCaptureFailure` when `pendingMessages` was empty wiped failures recorded at `agent_end` turn-close (no pending messages left), so compact returned `open_turn` instead of `capture_incomplete`.
+- Fix: remove empty-flush clear; clear on successful `recordCaptureOutcome` and after a non-empty flush with no failures.
+- Tests: connector `handler.test.ts` — agent_end with dead store survives empty compact flush → `capture_incomplete`; stale mapping failure cleared by successful pending flush → `open_turn`.

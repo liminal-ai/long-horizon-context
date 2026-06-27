@@ -31,7 +31,7 @@ export interface CompactHandlerDeps {
   piSessionId: string | null;
   flushPendingCapture: (ctx: ExtensionContext) => Promise<void>;
   getSessionView: () => Promise<OpResult<SessionThreadView>>;
-  findSeedEntryMap: (entries: readonly SessionEntry[]) => LhcSeedEntryMap | null;
+  findSeedEntryMap: (branchEntries: readonly SessionEntry[], activeThreadId: string) => LhcSeedEntryMap | null;
   recordCancel?: (diagnostic: CompactDiagnostic) => void | Promise<void>;
 }
 
@@ -95,7 +95,7 @@ export async function handleSessionBeforeCompact(
     const mapping = mapFirstKeptToEntryId(
       preview.firstKeptMessageId,
       sessionView.value,
-      deps.findSeedEntryMap(ctx.sessionManager.getEntries()),
+      deps.findSeedEntryMap(event.branchEntries, sessionView.value.threadId),
       event.branchEntries,
       deps.piSessionId ?? "",
     );

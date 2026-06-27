@@ -1,7 +1,6 @@
 import type { AgentMessage as PiSessionMessage } from "@earendil-works/pi-agent-core";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import type {
-  LlmRequestContextMessage,
   SessionModelChangeEntry,
   SessionThinkingLevelChangeEntry,
   SessionThreadViewEntry,
@@ -9,39 +8,6 @@ import type {
   SessionThreadViewMessage,
 } from "lhc";
 import { LHC_SEED_ENTRY_MAP_TYPE, type LhcSeedEntryMapRow } from "../compact/seed-entry-map.js";
-
-/** One bounded message line in the last-serve diagnostic preview. */
-export interface ContextServeMessagePreview {
-  role: "user" | "assistant";
-  textPreview: string;
-}
-
-export const CONTEXT_SERVE_PREVIEW_MAX_MESSAGES = 8;
-export const CONTEXT_SERVE_PREVIEW_MAX_TEXT = 120;
-
-function truncatePreviewText(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen - 1)}…`;
-}
-
-function llmMessageText(message: LlmRequestContextMessage): string {
-  return message.content.map((part) => part.text).join("");
-}
-
-/** Build a bounded, deterministic preview of served LHC messages for diagnostics. */
-export function buildContextServePreview(messages: readonly LlmRequestContextMessage[]): {
-  preview: ContextServeMessagePreview[];
-  previewWindow?: "first" | "last";
-} {
-  const max = CONTEXT_SERVE_PREVIEW_MAX_MESSAGES;
-  const useLast = messages.length > max;
-  const selected = useLast ? messages.slice(-max) : messages;
-  const preview = selected.map((message) => ({
-    role: message.role,
-    textPreview: truncatePreviewText(llmMessageText(message), CONTEXT_SERVE_PREVIEW_MAX_TEXT),
-  }));
-  return useLast ? { preview, previewWindow: "last" } : { preview };
-}
 
 function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadViewMessage {
   return "role" in entry;

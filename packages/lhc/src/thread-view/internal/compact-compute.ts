@@ -31,7 +31,7 @@ export interface ArrangementComputeResult {
   firstKeptMessageId: string | null;
 }
 
-function compactStopped(signal: { aborted: boolean } | undefined): boolean {
+export function compactStopped(signal: { aborted: boolean } | undefined): boolean {
   return signal?.aborted === true;
 }
 

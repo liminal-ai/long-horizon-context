@@ -32,7 +32,7 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
-import { computeArrangement, openTurnHasMembers } from "./internal/compact-compute.js";
+import { compactStopped, computeArrangement, openTurnHasMembers } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
@@ -293,41 +293,32 @@ function buildRenderedBands(
 }
 
 // Read-only compact preflight: same selection path as compact, no snapshot write.
+// Runs touch-suppressed like getLlmRequestContext so background mode never
+// schedules catch-up drain from a preview read.
 export async function previewCompact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
 ): Promise<OpResult<PreviewCompactOutcome>> {
-  const resolved = await resolveThreadRef(ref);
-  if (!resolved.ok) return resolved;
-  const { filePath } = resolved.value;
-  if (!existsSync(filePath)) return threadNotFound(filePath);
-
   const call = resolveCompactCall(opts);
   if (!call.ok) return call;
 
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
   try {
-    if (openTurnHasMembers(db)) {
-      return { ok: true, value: { kind: "turn_not_ready", openTurnHasMembers: true } };
-    }
+    return await createDbReadTransaction(ref, (transaction) => {
+      if (openTurnHasMembers(transaction.db)) {
+        return { kind: "turn_not_ready", openTurnHasMembers: true };
+      }
 
-    const threadId = readThreadMetadata(db).threadId;
-    const transaction: DbReadTransaction = { db, filePath, threadId };
-    const computed = computeArrangement(db, transaction, call.value.merged, {
-      signal: opts.signal,
-      includeChunkMaterials: false,
-    });
-    if (!computed.ok) {
-      return { ok: true, value: { kind: "error", reason: computed.error.reason } };
-    }
+      const computed = computeArrangement(transaction.db, transaction, call.value.merged, {
+        signal: opts.signal,
+        includeChunkMaterials: false,
+      });
+      if (!computed.ok) {
+        return { kind: "error", reason: computed.error.reason };
+      }
 
-    const { selection } = computed.value;
-    const tailTokens = tailTokenSum(db, selection.compactPoint);
-    return {
-      ok: true,
-      value: {
+      const { selection } = computed.value;
+      const tailTokens = tailTokenSum(transaction.db, selection.compactPoint);
+      return {
         kind: "ok",
         preview: {
           compactPoint: selection.compactPoint,
@@ -335,12 +326,10 @@ export async function previewCompact(
           tailTokens,
           firstKeptMessageId: computed.value.firstKeptMessageId,
         },
-      },
-    };
+      };
+    });
   } catch (cause) {
     return storageFailure(`view previewCompact failed: ${detail(cause)}`);
-  } finally {
-    db.close();
   }
 }
 
@@ -407,6 +396,10 @@ export async function compact(
     const createdAt = new Date().toISOString();
 
     fireViewInjection("compact-write");
+
+    if (compactStopped(opts.signal)) {
+      return callerError("compact_stopped", "compact stopped before snapshot write");
+    }
 
     replaceViewSnapshot(db, {
       viewId,

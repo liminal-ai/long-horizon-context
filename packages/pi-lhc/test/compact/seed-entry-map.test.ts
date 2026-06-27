@@ -2,6 +2,7 @@ import type { SessionThreadViewEntry } from "lhc";
 import { describe, expect, it } from "vitest";
 import {
   applySessionThreadViewToSessionManager,
+  findSeedEntryMapInBranch,
   findSeedEntryMapInSession,
   LHC_SEED_ENTRY_MAP_TYPE,
   mapFirstKeptToEntryId,
@@ -103,6 +104,30 @@ describe("seed-entry-map", () => {
     };
     const found = findSeedEntryMapInSession([older, newer] as never);
     expect(found?.entries[0]?.piEntryId).toBe("new");
+  });
+
+  it("findSeedEntryMapInBranch ignores newer all-session sibling with wrong threadId", () => {
+    const branchLocal = {
+      type: "custom",
+      customType: LHC_SEED_ENTRY_MAP_TYPE,
+      data: {
+        customType: LHC_SEED_ENTRY_MAP_TYPE,
+        threadId: "th_active",
+        entries: [{ lhcMessageId: "m1", piEntryId: "branch_pi" }],
+      },
+    };
+    const siblingWrongThread = {
+      type: "custom",
+      customType: LHC_SEED_ENTRY_MAP_TYPE,
+      data: {
+        customType: LHC_SEED_ENTRY_MAP_TYPE,
+        threadId: "th_other",
+        entries: [{ lhcMessageId: "m1", piEntryId: "wrong" }],
+      },
+    };
+    const branchEntries = [branchLocal, siblingWrongThread] as never;
+    expect(findSeedEntryMapInBranch(branchEntries, "th_active")?.entries[0]?.piEntryId).toBe("branch_pi");
+    expect(findSeedEntryMapInSession(branchEntries)?.entries[0]?.piEntryId).toBe("wrong");
   });
 
   it("seed-map rows remain valid for mapping after compact within session", async () => {

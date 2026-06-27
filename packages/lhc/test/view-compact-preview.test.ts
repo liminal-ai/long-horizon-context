@@ -2,6 +2,7 @@
 // compactPoint agrees exactly; preview is read-only.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  countLiveItems,
   createDeterministicInferenceCallbacks,
   initLhc,
   type Lhc,
@@ -9,6 +10,7 @@ import {
   type PreviewCompactResult,
 } from "../src/index.js";
 import {
+  createInferenceCallbacksDouble,
   type DerivedThreadFixture,
   derivedThreadFixture,
   eventBatch,
@@ -46,6 +48,15 @@ function viewRowCount(filePath: string): number {
   try {
     const row = db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number | bigint };
     return Number(row.n);
+  } finally {
+    db.close();
+  }
+}
+
+function liveCount(filePath: string): number {
+  const db = openRaw(filePath);
+  try {
+    return countLiveItems(db);
   } finally {
     db.close();
   }
@@ -289,5 +300,23 @@ describe("previewCompact agreement with compact", () => {
       expect(stored.entries).toBeGreaterThan(0);
       expect(band.text.length).toBeGreaterThan(0);
     }
+  });
+
+  it("background mode preview does not schedule drain with pending work", async () => {
+    const sdk = initLhc({ mode: "background", inferenceCallbacks: createInferenceCallbacksDouble() });
+    const filePath = store.threadPath();
+    const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
+    if (!created.ok) throw new Error(created.error.reason);
+    const threadId = created.value.threadId;
+
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, eventBatch(["user_prompt"]));
+    expect(captured.ok).toBe(true);
+    expect(liveCount(filePath)).toBeGreaterThan(0);
+
+    const passesBefore = sdk.scheduler.testPassCount(threadId);
+    const preview = await sdk.threadView.previewCompact({ filePath }, { params: ALL_FITS_PARAMS });
+    expect(preview.ok).toBe(true);
+    expect(sdk.scheduler.testPassCount(threadId)).toBe(passesBefore);
+    expect(liveCount(filePath)).toBeGreaterThan(0);
   });
 });

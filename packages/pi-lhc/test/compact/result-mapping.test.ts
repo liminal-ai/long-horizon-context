@@ -76,9 +76,46 @@ describe("mapFirstKeptToEntryId", () => {
     expect(mapping).toMatchObject({ mappingFailed: true });
   });
 
-  it("stale branch: live entry id not in branchEntries fails closed", () => {
+  it("stale branch: live entry id not in branchEntries falls through to seed tier", () => {
+    const mapping = mapFirstKeptToEntryId(
+      "m14",
+      sessionView,
+      makeSeedEntryMap([{ lhcMessageId: "m14", piEntryId: "entry_1" }]),
+      makeBranchEntries(2),
+      PI_SESSION,
+    );
+    expect(mapping).toEqual({ firstKeptEntryId: "entry_1", origin: "seeded" });
+  });
+
+  it("stale live key with current session prefix but absent entry id resolves via seed map", () => {
+    const resumedView: SessionThreadView = {
+      threadId: PI_SESSION,
+      entries: [
+        {
+          role: "user",
+          content: "kept",
+          sourceMessages: [
+            {
+              messageId: "m14",
+              idempotencyKey: liveIdempotencyKey(PI_SESSION, "stale_old_entry"),
+            },
+          ],
+        },
+      ],
+    };
+    const mapping = mapFirstKeptToEntryId(
+      "m14",
+      resumedView,
+      makeSeedEntryMap([{ lhcMessageId: "m14", piEntryId: "entry_regenerated" }]),
+      [{ type: "message", id: "entry_regenerated", parentId: null, message: { role: "user", content: "kept" } }],
+      PI_SESSION,
+    );
+    expect(mapping).toEqual({ firstKeptEntryId: "entry_regenerated", origin: "seeded" });
+  });
+
+  it("stale branch with no seed map still fails closed", () => {
     const mapping = mapFirstKeptToEntryId("m14", sessionView, null, makeBranchEntries(2), PI_SESSION);
-    expect(mapping).toMatchObject({ mappingFailed: true, reason: expect.stringContaining("branch") });
+    expect(mapping).toMatchObject({ mappingFailed: true });
   });
 
   it("non-entry identity keys fail closed", () => {

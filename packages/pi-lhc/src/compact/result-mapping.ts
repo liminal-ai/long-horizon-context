@@ -55,10 +55,9 @@ export function mapFirstKeptToEntryId(
     if (parsed?.entryId === undefined) {
       return { mappingFailed: true, reason: "live idempotency key is not entry-scoped" };
     }
-    if (!branchIds.has(parsed.entryId)) {
-      return { mappingFailed: true, reason: "live entry id is not in branch entries" };
+    if (branchIds.has(parsed.entryId)) {
+      return { firstKeptEntryId: parsed.entryId, origin: "live" };
     }
-    return { firstKeptEntryId: parsed.entryId, origin: "live" };
   }
 
   const seededId = seedEntryMap?.entries.find((row) => row.lhcMessageId === firstKeptMessageId)?.piEntryId;

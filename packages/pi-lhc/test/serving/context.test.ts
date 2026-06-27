@@ -1,13 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  buildContextServePreview,
-  CONNECTOR_HOOKS,
-  CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
-  CONTEXT_SERVE_PREVIEW_MAX_TEXT,
-  createConnector,
-  rehydratePiSessionFromLhc,
-  seedPiSessionFromLhc,
-} from "../../src/index.js";
+import { CONNECTOR_HOOKS, createConnector, rehydratePiSessionFromLhc, seedPiSessionFromLhc } from "../../src/index.js";
 import type { ExtensionAPI } from "../../src/pi/types.js";
 import { startCapture } from "../capture/support.js";
 import {
@@ -223,26 +215,5 @@ describe("session thread view seeding", () => {
     expect(sessionManager.modelChanges).toEqual([{ provider: "openai", modelId: "gpt-4o" }]);
     expect(sessionManager.thinkingChanges).toEqual(["high"]);
     expect(sessionManager.messages).toHaveLength(1);
-  });
-});
-
-describe("buildContextServePreview", () => {
-  it("is bounded, deterministic, and plain-data serializable", () => {
-    const longText = "x".repeat(CONTEXT_SERVE_PREVIEW_MAX_TEXT + 40);
-    const messages = Array.from({ length: CONTEXT_SERVE_PREVIEW_MAX_MESSAGES + 3 }, (_, index) => ({
-      role: (index % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-      content: [{ type: "text" as const, text: `${index}:${longText}` }],
-    }));
-
-    const built = buildContextServePreview(messages);
-    expect(built.previewWindow).toBe("last");
-    expect(built.preview).toHaveLength(CONTEXT_SERVE_PREVIEW_MAX_MESSAGES);
-    expect(built.preview[0]?.textPreview).toMatch(/^3:x+…$/);
-    expect(built.preview[0]?.textPreview.length).toBe(CONTEXT_SERVE_PREVIEW_MAX_TEXT);
-    expect(built.preview.every((entry) => entry.textPreview.length <= CONTEXT_SERVE_PREVIEW_MAX_TEXT)).toBe(true);
-
-    const clone = structuredClone(built);
-    expect(clone).toEqual(built);
-    expect(() => JSON.stringify(built)).not.toThrow();
   });
 });

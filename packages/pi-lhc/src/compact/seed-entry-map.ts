@@ -39,19 +39,37 @@ function parseSeedEntryMapData(data: unknown): LhcSeedEntryMap | null {
   return { customType: LHC_SEED_ENTRY_MAP_TYPE, threadId, entries: rows };
 }
 
-/** Newest seed-entry-map in PI session entries is authoritative. */
+function parseSeedEntryMapFromEntry(entry: SessionEntry): LhcSeedEntryMap | null {
+  const matchesType =
+    entry.customType === LHC_SEED_ENTRY_MAP_TYPE ||
+    (entry.type === "custom" && isRecord(entry.data) && entry.data.customType === LHC_SEED_ENTRY_MAP_TYPE);
+  if (!matchesType) return null;
+  const fromData = parseSeedEntryMapData(entry.data);
+  if (fromData !== null) return fromData;
+  return parseSeedEntryMapData(entry);
+}
+
+/** Newest seed-entry-map on the compact branch is authoritative; threadId must match. */
+export function findSeedEntryMapInBranch(
+  branchEntries: readonly SessionEntry[],
+  activeThreadId: string,
+): LhcSeedEntryMap | null {
+  for (let index = branchEntries.length - 1; index >= 0; index -= 1) {
+    const entry = branchEntries[index];
+    if (entry === undefined) continue;
+    const parsed = parseSeedEntryMapFromEntry(entry);
+    if (parsed !== null && parsed.threadId === activeThreadId) return parsed;
+  }
+  return null;
+}
+
+/** Newest seed-entry-map in PI session entries is authoritative (no thread filter). */
 export function findSeedEntryMapInSession(entries: readonly SessionEntry[]): LhcSeedEntryMap | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry === undefined) continue;
-    const matchesType =
-      entry.customType === LHC_SEED_ENTRY_MAP_TYPE ||
-      (entry.type === "custom" && isRecord(entry.data) && entry.data.customType === LHC_SEED_ENTRY_MAP_TYPE);
-    if (!matchesType) continue;
-    const fromData = parseSeedEntryMapData(entry.data);
-    if (fromData !== null) return fromData;
-    const fromEntry = parseSeedEntryMapData(entry);
-    if (fromEntry !== null) return fromEntry;
+    const parsed = parseSeedEntryMapFromEntry(entry);
+    if (parsed !== null) return parsed;
   }
   return null;
 }

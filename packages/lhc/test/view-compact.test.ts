@@ -370,6 +370,46 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
     if (!rerunContext.ok) return;
     expect(JSON.stringify(rerunContext.value)).not.toBe(JSON.stringify(priorContext.value));
   });
+
+  it("abort immediately before snapshot write leaves the prior view unchanged", async () => {
+    const first = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
+    expect(first.ok).toBe(true);
+    const priorContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(priorContext.ok).toBe(true);
+    if (!priorContext.ok) return;
+    const priorCompactPoint = boundaryPosition(fixture.filePath);
+
+    const stop = { flag: false };
+    const signal = {
+      get aborted() {
+        return stop.flag;
+      },
+    };
+    setViewInjectionHook("compact-write", () => {
+      stop.flag = true;
+    });
+    try {
+      const stopped = await fixture.sdk.threadView.compact(
+        { filePath: fixture.filePath },
+        { params: EDGE_PARAMS, signal },
+      );
+      expect(stopped.ok).toBe(false);
+      if (stopped.ok) return;
+      expect(stopped.error).toMatchObject({
+        errorClass: "caller_error",
+        code: "compact_stopped",
+      });
+    } finally {
+      setViewInjectionHook("compact-write", null);
+    }
+
+    const afterStop = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(afterStop.ok).toBe(true);
+    if (!afterStop.ok) return;
+    expect(JSON.stringify(afterStop.value)).toBe(JSON.stringify(priorContext.value));
+    expect(viewRowCount(fixture.filePath)).toBe(1);
+    expect(boundaryPosition(fixture.filePath)).toBe(priorCompactPoint);
+  });
 });
 
 // ── degraded thread (TC-2.3 + the TC-2.5 view-health completion legs) ──

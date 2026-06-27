@@ -16,7 +16,7 @@ import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-change
 import { TurnAccumulator } from "./capture/turn-accumulator.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
-import { findSeedEntryMapInSession } from "./compact/seed-entry-map.js";
+import { findSeedEntryMapInBranch } from "./compact/seed-entry-map.js";
 import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
 import { createModelCall } from "./inference/model-call.js";
 import { report, type StartupValidationReporter, validateReachable } from "./inference/startup-validation.js";
@@ -73,6 +73,7 @@ export {
   mapFirstKeptToEntryId,
 } from "./compact/result-mapping.js";
 export {
+  findSeedEntryMapInBranch,
   findSeedEntryMapInSession,
   LHC_SEED_ENTRY_MAP_TYPE,
   type LhcSeedEntryMap,
@@ -116,13 +117,7 @@ export {
   takePendingRehydrateSetup,
 } from "./lifecycle/rehydrate.js";
 export { durableThreadEntryOf, LHC_THREAD_ENTRY_TYPE } from "./lifecycle/thread-entry.js";
-export {
-  applySessionThreadViewToSessionManager,
-  buildContextServePreview,
-  CONTEXT_SERVE_PREVIEW_MAX_MESSAGES,
-  CONTEXT_SERVE_PREVIEW_MAX_TEXT,
-  type ContextServeMessagePreview,
-} from "./serving/context.js";
+export { applySessionThreadViewToSessionManager } from "./serving/context.js";
 export type { LhcInstance } from "./shared/instance.js";
 
 /** Capture-bearing hooks from Epic 1 (observe + record). */
@@ -631,7 +626,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // (`invalid_event`); a store-unavailable failure could not, so it surfaces as
   // an extension health signal with no gap. Neither path throws.
   function recordCaptureOutcome(result: OpResult<BatchResult>, events: readonly MessageEventInput[]): void {
-    if (result.ok) return;
+    if (result.ok) {
+      if (state !== null) delete state.health.lastCaptureFailure;
+      return;
+    }
     const recordedGap = result.error.code === "invalid_event";
     const failure: CaptureFailureDiagnostic = {
       code: result.error.code,
@@ -745,8 +743,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   }
 
   async function flushPendingMessages(ctx: ExtensionContext): Promise<void> {
-    if (instance === null || captureSession === null || captureSession.pendingMessages.length === 0) return;
+    if (instance === null || captureSession === null) return;
+    if (captureSession.pendingMessages.length === 0) return;
     const pending = captureSession.pendingMessages.splice(0);
+    let hadFailure = false;
     for (const message of pending) {
       const persistedEntryId = findPersistedEntryId(ctx, captureSession, message);
       if (persistedEntryId !== null) captureSession.claimedEntryIds.add(persistedEntryId);
@@ -760,12 +760,16 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         events = mapMessage(message.message, mapCtx);
       } catch (cause) {
         await recordMappingFailure("message_end", nextSourceSeq(captureSession), cause);
+        hadFailure = true;
         continue;
       }
       captureSession.accumulator.onMessage(events);
       if (events.length === 0) continue;
-      recordCaptureOutcome(await capture(events, instance), events);
+      const result = await capture(events, instance);
+      recordCaptureOutcome(result, events);
+      if (!result.ok) hadFailure = true;
     }
+    if (!hadFailure && state !== null) delete state.health.lastCaptureFailure;
   }
 
   function latestRuntimeEntryId(
@@ -904,7 +908,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
             }
             return instance.sdk.threadView.getSessionThreadView(state.threadRef);
           },
-          findSeedEntryMap: findSeedEntryMapInSession,
+          findSeedEntryMap: findSeedEntryMapInBranch,
           recordCancel: async (diagnostic) => {
             await recordCompactCancel({
               diagnostic,
