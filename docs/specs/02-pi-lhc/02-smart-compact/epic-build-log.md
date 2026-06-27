@@ -76,6 +76,35 @@ pnpm run verify:all  # pass (includes lhc real-inference)
 - Epic-level review used two independent reviewers: built-in GPT-5.5 xhigh and Cursor Opus 4.8 xhigh. The deduped accepted findings are being handled as one implementation pass.
 - Orchestration note: fresh Cursor Composer 2.5 implementor session will receive the inline epic-review-fix story. Fresh built-in GPT-5.5 xhigh verifier will review against the epic/tech design/test plan plus the accepted findings.
 
+## Final Epic Polish Pass
+
+- Started from a clean git worktree after epic review fix commit `84dc603`.
+- Scope: compact-point monotonicity for subsequent compacts and a real-capture live identity-chain test. `runtime_note` was checked and rejected as a stale verifier claim because current `PI_MAPPABLE_MESSAGE_KINDS` already excludes it.
+- Orchestration note: fresh Cursor Composer 2.5 implementor session will receive this focused pass; fresh built-in GPT-5.5 xhigh verifier will review the result.
+
+### Implementation notes (final polish)
+
+1. **Compact-point monotonicity** — `readStoredCompactPoint`, `compactWouldWriteSnapshot`, and `wouldProduceBandsPreview` in `compact-compute.ts`. `compact()` refuses snapshot write when selection compact point is strictly lower than stored (`compact_unchanged`). `previewCompact` sets `wouldProduceBands` only when selection advances the stored point (or first compact with bands), so pi-lhc preflight cancels backward/no-advance attempts as `no_op` without calling `compact`. Equal compact point still allows direct `compact()` refresh (e.g. lifecycle compact2 after edits).
+2. **Identity-chain test** — `packages/pi-lhc/test/compact/identity-chain.test.ts` drives real capture (12 turns, explicit PI entry ids via `appendPiMessage`), compacts through LHC, and asserts live-tier `mapFirstKeptToEntryId` from real `firstKeptMessageId` / `sourceMessages` / captured idempotency keys.
+
+### Tests added/updated
+
+- `packages/lhc/test/view-compact-preview.test.ts` — TC-5.6b backward re-compact regression; re-compact golden expectations updated.
+- `packages/lhc/test/view-compact.test.ts` — isolated fixtures for crash/restart tests (shared fixture pollution after monotonicity).
+- `packages/pi-lhc/test/compact/identity-chain.test.ts` — live identity chain through capture + compact + mapper.
+- `packages/lhc/src/shared-tech/errors.ts` — `compact_unchanged` error code.
+
+### Verification (final polish)
+
+```bash
+pnpm run verify      # pass (434 lhc + 244 pi-lhc tests)
+pnpm run verify:all  # pass (includes lhc real-inference: openai/gpt-5.4-mini, 20 tests)
+```
+
+### Friction (final polish)
+
+- Shared `fixture` in `view-compact.test.ts` left later tests attempting backward compacts after earlier tests advanced the compact point; fixed by per-test `derivedThreadFixture` where needed.
+
 ### Story 2 implementation notes
 
 - `docs/specs/02-pi-lhc/02-smart-compact/models.example.json` — `modelOverrides` for `openai-codex/gpt-5.4` with `contextWindow: 250000` (native catalog window is 272000 in PI v0.80.x; effective threshold ~233616 at default `reserveTokens` 16384).

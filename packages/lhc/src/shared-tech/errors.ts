@@ -30,6 +30,7 @@ export type ErrorCode =
   | "unknown_profile" // caller_error — named profile not configured
   | "invalid_view_config" // caller_error — band sum / bound violation, named
   | "compact_stopped" // caller_error — caller stopped compact before it wrote a view
+  | "compact_unchanged" // caller_error — selection would not advance the stored compact point
   // materialize accepts pi-session only; an unknown format is a caller error
   // naming the accepted values.
   | "unknown_format" // caller_error — materialize format not supported

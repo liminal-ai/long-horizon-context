@@ -311,15 +311,16 @@ describe("architecture-risk: coverage edge accounting", () => {
 
 describe("architecture-risk: restart serves the snapshot (real-file durability)", () => {
   it("a fresh SDK on the same file serves byte-identical band content", async () => {
-    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
+    const local = await derivedThreadFixture(store);
+    const receipt = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
-    const before = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const before = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(before.ok).toBe(true);
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
     const fresh = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
-    const after = await fresh.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const after = await fresh.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
     expect(JSON.stringify(after.value)).toBe(JSON.stringify(before.value));
@@ -328,18 +329,19 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
 
 describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
   it("an injected crash leaves the previous view serving; the rerun lands clean with no partial state", async () => {
-    const first = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
+    const local = await derivedThreadFixture(store);
+    const first = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: GRADIENT_PARAMS });
     expect(first.ok).toBe(true);
-    const priorContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const priorContext = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(priorContext.ok).toBe(true);
     if (!priorContext.ok) return;
-    expect(boundaryPosition(fixture.filePath)).toBe(48);
+    expect(boundaryPosition(local.filePath)).toBe(48);
 
     setViewInjectionHook("compact-write", () => {
       throw new Error("injected crash between sweep and view write");
     });
     try {
-      const crashed = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: EDGE_PARAMS });
+      const crashed = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: EDGE_PARAMS });
       expect(crashed.ok).toBe(false);
       if (crashed.ok) return;
       expect(crashed.error.errorClass).toBe("system_error");
@@ -350,34 +352,35 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
 
     // The previous view still serves, byte-identical; no partial rows, no
     // boundary movement.
-    const afterCrash = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const afterCrash = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(afterCrash.ok).toBe(true);
     if (!afterCrash.ok) return;
     expect(JSON.stringify(afterCrash.value)).toBe(JSON.stringify(priorContext.value));
-    expect(viewRowCount(fixture.filePath)).toBe(1);
-    expect(boundaryPosition(fixture.filePath)).toBe(48);
+    expect(viewRowCount(local.filePath)).toBe(1);
+    expect(boundaryPosition(local.filePath)).toBe(48);
 
     // Rerun: the new view lands whole and the boundary resets to ITS compact
     // point (56) in the same transaction.
-    const rerun = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: EDGE_PARAMS });
+    const rerun = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: EDGE_PARAMS });
     expect(rerun.ok).toBe(true);
     if (!rerun.ok) return;
     expect(rerun.value.coveredFrom).toBe(13);
-    expect(viewRowCount(fixture.filePath)).toBe(1);
-    expect(boundaryPosition(fixture.filePath)).toBe(56);
-    const rerunContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    expect(viewRowCount(local.filePath)).toBe(1);
+    expect(boundaryPosition(local.filePath)).toBe(56);
+    const rerunContext = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(rerunContext.ok).toBe(true);
     if (!rerunContext.ok) return;
     expect(JSON.stringify(rerunContext.value)).not.toBe(JSON.stringify(priorContext.value));
   });
 
   it("abort immediately before snapshot write leaves the prior view unchanged", async () => {
-    const first = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
+    const local = await derivedThreadFixture(store);
+    const first = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: GRADIENT_PARAMS });
     expect(first.ok).toBe(true);
-    const priorContext = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const priorContext = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(priorContext.ok).toBe(true);
     if (!priorContext.ok) return;
-    const priorCompactPoint = boundaryPosition(fixture.filePath);
+    const priorCompactPoint = boundaryPosition(local.filePath);
 
     const stop = { flag: false };
     const signal = {
@@ -389,10 +392,7 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
       stop.flag = true;
     });
     try {
-      const stopped = await fixture.sdk.threadView.compact(
-        { filePath: fixture.filePath },
-        { params: EDGE_PARAMS, signal },
-      );
+      const stopped = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: EDGE_PARAMS, signal });
       expect(stopped.ok).toBe(false);
       if (stopped.ok) return;
       expect(stopped.error).toMatchObject({
@@ -403,12 +403,12 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
       setViewInjectionHook("compact-write", null);
     }
 
-    const afterStop = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
+    const afterStop = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(afterStop.ok).toBe(true);
     if (!afterStop.ok) return;
     expect(JSON.stringify(afterStop.value)).toBe(JSON.stringify(priorContext.value));
-    expect(viewRowCount(fixture.filePath)).toBe(1);
-    expect(boundaryPosition(fixture.filePath)).toBe(priorCompactPoint);
+    expect(viewRowCount(local.filePath)).toBe(1);
+    expect(boundaryPosition(local.filePath)).toBe(priorCompactPoint);
   });
 });
 
@@ -648,13 +648,8 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
   });
 
   it("control: a thread with only derived-material damage compacts successfully with gaps", async () => {
-    // The suite fixture carries two scripted FAILED tool_result_summary forms
-    // (derived damage only) and compacts clean throughout this file; the
-    // explicit control here is the degraded build: summaries pending/failed,
-    // zero usable forms on c2 — and the compact above completed with a gap
-    // rather than refusing. Re-assert the contrast directly on the main
-    // fixture: derived failures present, compact succeeds, no state_corruption.
-    const receipt = await fixture.sdk.threadView.compact({ filePath: fixture.filePath }, { params: GRADIENT_PARAMS });
+    const local = await derivedThreadFixture(store);
+    const receipt = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: GRADIENT_PARAMS });
     expect(receipt.ok).toBe(true);
   });
 });

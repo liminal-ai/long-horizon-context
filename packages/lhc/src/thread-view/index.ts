@@ -32,7 +32,14 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
-import { compactStopped, computeArrangement, openTurnHasMembers } from "./internal/compact-compute.js";
+import {
+  compactStopped,
+  compactWouldWriteSnapshot,
+  computeArrangement,
+  openTurnHasMembers,
+  readStoredCompactPoint,
+  wouldProduceBandsPreview,
+} from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
@@ -322,7 +329,7 @@ export async function previewCompact(
         kind: "ok",
         preview: {
           compactPoint: selection.compactPoint,
-          wouldProduceBands: selection.compactPoint > 0,
+          wouldProduceBands: wouldProduceBandsPreview(transaction.db, selection.compactPoint),
           tailTokens,
           firstKeptMessageId: computed.value.firstKeptMessageId,
         },
@@ -365,6 +372,18 @@ export async function compact(
     if (!computed.ok) return computed;
 
     const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
+
+    if (!compactWouldWriteSnapshot(db, selection.compactPoint)) {
+      const stored = readStoredCompactPoint(db);
+      return {
+        ok: false,
+        error: {
+          errorClass: "caller_error",
+          code: "compact_unchanged",
+          reason: `compact point ${selection.compactPoint} would not advance stored compact point ${stored}`,
+        },
+      };
+    }
 
     const warnings: CompactReceipt["warnings"] = selection.entries
       .filter((entry) => entry.derivationUsed === "stored_member_concat")

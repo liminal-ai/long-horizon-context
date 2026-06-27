@@ -192,6 +192,37 @@ describe("previewCompact agreement with compact", () => {
     expect(preview.value.preview.firstKeptMessageId).toBe(compact.value.firstKeptMessageId);
   });
 
+  it("TC-5.6b: permissive re-compact cannot move compact point backward; preview and compact stay coherent", async () => {
+    const local = await derivedThreadFixture(store);
+    const first = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: TARGET_PARAMS });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.compactPoint).toBe(48);
+    const viewBefore = viewRowCount(local.filePath);
+
+    const preview = await local.sdk.threadView.previewCompact(
+      { filePath: local.filePath },
+      { params: ALL_FITS_PARAMS },
+    );
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.value.kind).toBe("ok");
+    if (preview.value.kind !== "ok") return;
+    expect(preview.value.preview.compactPoint).toBe(0);
+    expect(preview.value.preview.wouldProduceBands).toBe(false);
+
+    const second = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: ALL_FITS_PARAMS });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("compact_unchanged");
+    expect(viewRowCount(local.filePath)).toBe(viewBefore);
+
+    const described = await local.sdk.threadView.describe({ filePath: local.filePath });
+    expect(described.ok).toBe(true);
+    if (!described.ok) return;
+    expect(described.value?.compactPoint).toBe(48);
+  });
+
   it("exactness golden: corpus sizes agree on compactPoint (no-op, banded, re-compact)", async () => {
     const cases = [
       {
@@ -211,15 +242,21 @@ describe("previewCompact agreement with compact", () => {
       expect(preview.value.kind, scenario.label).toBe("ok");
       if (preview.value.kind !== "ok") continue;
       expect(preview.value.preview.compactPoint, scenario.label).toBe(compact.value.compactPoint);
-      expect(preview.value.preview.wouldProduceBands, scenario.label).toBe(compact.value.compactPoint > 0);
+      expect(preview.value.preview.wouldProduceBands, scenario.label).toBe(
+        compact.ok && compact.value.compactPoint > 0,
+      );
 
       const second = await previewAndCompact(local.sdk, local.filePath, scenario.params);
       expect(second.preview.ok).toBe(true);
-      expect(second.compact.ok).toBe(true);
-      if (!second.preview.ok || !second.compact.ok) continue;
+      if (!second.preview.ok) continue;
       expect(second.preview.value.kind).toBe("ok");
       if (second.preview.value.kind !== "ok") continue;
-      expect(second.preview.value.preview.compactPoint).toBeGreaterThanOrEqual(compact.value.compactPoint);
+      if (second.compact.ok) {
+        expect(second.preview.value.preview.compactPoint).toBeGreaterThanOrEqual(compact.value.compactPoint);
+      } else {
+        expect(second.compact.error.code).toBe("compact_unchanged");
+        expect(second.preview.value.preview.wouldProduceBands).toBe(false);
+      }
     }
   });
 
