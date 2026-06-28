@@ -350,7 +350,10 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     expect(repaired?.content).toContain("smoothed(");
     // No failure residue: reason and the copied attempts/last-error are gone.
     expect(repaired?.reason).toBeUndefined();
-    expect(repaired?.metadata).toBeUndefined();
+    expect(repaired?.metadata).toMatchObject({
+      inferenceAttempted: true,
+      inferenceSucceeded: true,
+    });
     expect(liveCount(filePath)).toBe(0);
 
     const entries = await reportOf(sdk, filePath, "messages");

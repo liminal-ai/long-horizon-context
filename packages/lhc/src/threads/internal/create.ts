@@ -4,6 +4,12 @@ import { DatabaseSync } from "node:sqlite";
 import { fireThreadTouch } from "../../shared-tech/context.js";
 import { type ErrorResult, type OpResult, storageFailure } from "../../shared-tech/errors.js";
 import { CURRENT_THREAD_SCHEMA_VERSION, getSchemaVersion, openDatabase } from "../../shared-tech/storage.js";
+import {
+  derivationLogSchemaStatements,
+  isSupportedThreadSchemaVersion,
+  migrateThreadSchema,
+  THREAD_SCHEMA_VERSION_1,
+} from "../../shared-tech/thread-migrate.js";
 import { TOKEN_ESTIMATOR_ID } from "../../shared-tech/token-counting/index.js";
 
 // The one random id: its uniqueness scope is global across files and
@@ -141,6 +147,7 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
     `CREATE INDEX idx_log_derivation_type ON log (derivation_type);`,
     `CREATE INDEX idx_log_subject_id ON log (subject_id);`,
     `CREATE INDEX idx_log_reason ON log (reason);`,
+    ...derivationLogSchemaStatements(),
     `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
      VALUES ('t1', 1, 'open', 0);`,
     `PRAGMA user_version = ${CURRENT_THREAD_SCHEMA_VERSION};`,
@@ -174,8 +181,11 @@ function validateThreadFile(filePath: string): { ok: true } | { ok: false; error
     if (schemaVersion === 0) {
       return notAThreadFile(filePath, "no lhc schema version");
     }
-    if (schemaVersion !== CURRENT_THREAD_SCHEMA_VERSION) {
-      return notAThreadFile(filePath, `schema version ${schemaVersion}, expected ${CURRENT_THREAD_SCHEMA_VERSION}`);
+    if (!isSupportedThreadSchemaVersion(schemaVersion)) {
+      return notAThreadFile(
+        filePath,
+        `schema version ${schemaVersion}, expected ${THREAD_SCHEMA_VERSION_1}..${CURRENT_THREAD_SCHEMA_VERSION}`,
+      );
     }
     const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_metadata'").get();
     if (table === undefined) {
@@ -199,15 +209,17 @@ function validateThreadFile(filePath: string): { ok: true } | { ok: false; error
   }
 }
 
-// Opens a current thread file. This never creates or rewrites schema; callers
-// either pass a current LHC thread file or receive a caller error.
+// Opens a current thread file. Older supported schema versions are migrated on
+// open; callers pass an LHC thread file or receive a caller error.
 export function openThreadDatabase(filePath: string): OpResult<DatabaseSync> {
   const valid = validateThreadFile(filePath);
   if (!valid.ok) return valid;
-  let db: DatabaseSync;
+  let db: DatabaseSync | undefined;
   try {
     db = openDatabase(filePath);
+    migrateThreadSchema(db);
   } catch (cause) {
+    db?.close();
     return storageFailure(`could not open thread file: ${errorDetail(cause)}`);
   }
   // Announce the open: the background scheduler's first-touch catch-up hangs

@@ -638,6 +638,25 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(failedBrief?.state).toBe("failed");
     expect(failedBrief?.reason).toBe("scripted brief failure");
 
+    const derivationLog = await sdk.logging.queryDerivationLog(
+      { filePath },
+      { subjectId: "c1", derivationType: "chunk_summary_brief" },
+    );
+    expect(derivationLog.ok).toBe(true);
+    if (!derivationLog.ok) return;
+    expect(derivationLog.value).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventKind: "inference_failed",
+          payload: expect.objectContaining({ reason: "scripted brief failure" }),
+        }),
+        expect.objectContaining({
+          eventKind: "terminal_failed",
+          payload: expect.objectContaining({ reason: "scripted brief failure" }),
+        }),
+      ]),
+    );
+
     // Re-queue the brief alone through the queue util (Story 4 owns the
     // public surface); the detailed form must not move.
     await requeueDirect(filePath, {

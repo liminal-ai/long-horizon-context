@@ -13,7 +13,7 @@ import type {
   WorkHandler,
 } from "../../shared-tech/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
-import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
+import { appendDerivationLog, type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
 import { classifyToolResult } from "./classify-tool-result.js";
@@ -107,10 +107,12 @@ export async function deriveSmoothedPrompt(
     subjectId: messageId,
     derivationType: "smoothed_prompt",
     content: result.text,
+    metadata: {
+      inferenceAttempted: true,
+      inferenceSucceeded: true,
+      ...(result.provenance !== undefined ? { provenance: result.provenance } : {}),
+    },
   };
-  if (result.provenance !== undefined) {
-    write.metadata = { provenance: result.provenance };
-  }
   return { write };
 }
 
@@ -122,7 +124,21 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
     return sourceDamaged(`prompt ${loaded.messageId} has no text block`);
   }
   const derived = await deriveSmoothedPrompt(run, loaded.messageId, text);
-  if (!("write" in derived)) return { ok: false, retryable: derived.retryable, reason: derived.reason };
+  if (!("write" in derived)) {
+    appendDerivationLog(
+      { db: run.openDb(), threadId: run.threadId, filePath: run.filePath },
+      {
+        target: {
+          subjectKind: "message",
+          subjectId: loaded.messageId,
+          derivationType: "smoothed_prompt",
+        },
+        eventKind: "inference_failed",
+        payload: { reason: derived.reason },
+      },
+    );
+    return { ok: false, retryable: derived.retryable, reason: derived.reason };
+  }
   const outcome: HandlerOutcome = { ok: true, derivations: [derived.write] };
   if (derived.warningLog !== undefined) {
     outcome.onApplied = (transaction) => {
@@ -153,9 +169,11 @@ export async function deriveToolResultSummary(
     content: string;
     outcome: ToolOutcome;
   },
+  opts?: { useInference?: boolean },
 ): Promise<ToolResultSummaryDerivation | Extract<InferenceResult, { ok: false }>> {
   const tokens = estimateTokens(input.content);
-  if (FORCE_TOOL_RESULT_SUMMARY_FALLBACK) {
+  const useInference = opts?.useInference ?? !FORCE_TOOL_RESULT_SUMMARY_FALLBACK;
+  if (!useInference) {
     return {
       write: {
         subjectKind: "message",
@@ -202,11 +220,13 @@ export async function deriveToolResultSummary(
     subjectId: messageId,
     derivationType: "tool_result_summary",
     content: result.text,
-    metadata: { outcome: input.outcome },
+    metadata: {
+      outcome: input.outcome,
+      inferenceAttempted: true,
+      inferenceSucceeded: true,
+      ...(result.provenance !== undefined ? { provenance: result.provenance } : {}),
+    },
   };
-  if (result.provenance !== undefined) {
-    write.metadata = { ...write.metadata, provenance: result.provenance };
-  }
   return { write };
 }
 
@@ -223,15 +243,52 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   // The summary abbreviates; the full result content stays untouched in the
   // record. Nothing here writes back to message_block. The result is tool
   // activity, so its outcome is stamped from its own isError flag.
-  const outcome = deriveToolOutcome({ isError: block["isError"] === true });
+  const toolOutcome = deriveToolOutcome({ isError: block["isError"] === true });
   const derived = await deriveToolResultSummary(run, loaded.messageId, {
     toolName: pairedCall?.toolName ?? "unknown_tool",
     ...(pairedCall?.toolInput === undefined ? {} : { toolInput: pairedCall.toolInput }),
     content,
-    outcome,
+    outcome: toolOutcome,
   });
-  if (!("write" in derived)) return { ok: false, retryable: derived.retryable, reason: derived.reason };
-  return { ok: true, derivations: [derived.write] };
+  if (!("write" in derived)) {
+    appendDerivationLog(
+      { db: run.openDb(), threadId: run.threadId, filePath: run.filePath },
+      {
+        target: {
+          subjectKind: "message",
+          subjectId: loaded.messageId,
+          derivationType: "tool_result_summary",
+        },
+        eventKind: "inference_failed",
+        payload: { reason: derived.reason },
+      },
+    );
+    return { ok: false, retryable: derived.retryable, reason: derived.reason };
+  }
+  const handlerOutcome: HandlerOutcome = { ok: true, derivations: [derived.write] };
+  if (derived.write.metadata?.inferenceSucceeded === true) {
+    handlerOutcome.onApplied = (transaction) => {
+      transaction.onCommit(() => {
+        appendDerivationLog(
+          { db: transaction.db, threadId: run.threadId, filePath: run.filePath },
+          {
+            target: {
+              subjectKind: "message",
+              subjectId: loaded.messageId,
+              derivationType: "tool_result_summary",
+            },
+            eventKind: "inference_succeeded",
+            payload: {
+              ...(derived.write.metadata?.provenance !== undefined
+                ? { provenance: derived.write.metadata.provenance }
+                : {}),
+            },
+          },
+        );
+      });
+    };
+  }
+  return handlerOutcome;
 };
 
 // The domain's handler table is merged into the SDK dispatch map at

@@ -271,8 +271,29 @@ describe("Story 3: smooth turn compression", () => {
       content: rendering?.content,
       metadata: {
         fallbackFloor: "turn_rendering",
+        fallbackUsed: true,
+        inferenceAttempted: true,
+        inferenceSucceeded: false,
         lastError: "provider_failure: empty_output: model returned empty or whitespace-only text",
       },
+    });
+
+    const derivationLog = await sdk.logging.queryDerivationLog(
+      { filePath },
+      { subjectId: "t1", derivationType: "smooth_turn_compression" },
+    );
+    expect(derivationLog.ok).toBe(true);
+    if (!derivationLog.ok) return;
+    expect(derivationLog.value.map((entry) => entry.eventKind)).toEqual(
+      expect.arrayContaining(["inference_failed", "retry_scheduled", "fallback_applied"]),
+    );
+    const failedEvents = derivationLog.value.filter((entry) => entry.eventKind === "inference_failed");
+    const fallbackEvent = derivationLog.value.find((entry) => entry.eventKind === "fallback_applied");
+    expect(failedEvents.length).toBeGreaterThanOrEqual(1);
+    expect(failedEvents.at(-1)?.payload.reason).toContain("empty_output");
+    expect(fallbackEvent?.payload).toMatchObject({
+      fallbackFloor: "turn_rendering",
+      reason: expect.stringContaining("empty_output"),
     });
 
     const chunks = readChunks(filePath);

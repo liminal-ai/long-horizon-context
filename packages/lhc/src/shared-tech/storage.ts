@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const CURRENT_THREAD_SCHEMA_VERSION = 1;
+export const CURRENT_THREAD_SCHEMA_VERSION = 2;
 
 const databasePaths = new WeakMap<DatabaseSync, string>();
 

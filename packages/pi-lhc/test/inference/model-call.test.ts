@@ -52,6 +52,116 @@ describe("Story 5: Inference Host Routing", () => {
       }
       expect(complete).toHaveBeenCalledWith(mockHandle, { messages: INPUT.messages }, undefined);
     });
+
+    it("passes registry-resolved request auth into complete() without exposing tokens in assertions", async () => {
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
+      const oauthToken = "oauth-access-token-fixture";
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => mockHandle,
+          hasConfiguredAuth: () => true,
+          getApiKeyAndHeaders: async () => ({
+            ok: true as const,
+            apiKey: oauthToken,
+            headers: { Authorization: `Bearer ${oauthToken}` },
+          }),
+          getAvailable: () => [mockHandle],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall(INPUT);
+
+      expect(complete).toHaveBeenCalledWith(
+        mockHandle,
+        { messages: INPUT.messages },
+        expect.objectContaining({
+          apiKey: expect.any(String),
+          headers: expect.objectContaining({ Authorization: expect.stringMatching(/^Bearer /) }),
+        }),
+      );
+      const passedOptions = complete.mock.calls[0]?.[2];
+      const resolvedAuth = await ctx.modelRegistry.getApiKeyAndHeaders?.(mockHandle);
+      expect(resolvedAuth?.ok).toBe(true);
+      if (resolvedAuth?.ok !== true) return;
+      expect(passedOptions?.apiKey).toBe(resolvedAuth.apiKey);
+      expect(passedOptions?.headers).toEqual(resolvedAuth.headers);
+    });
+
+    it("awaits async getApiKeyAndHeaders before calling complete", async () => {
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
+      let releaseAuth: (() => void) | undefined;
+      const authGate = new Promise<void>((resolve) => {
+        releaseAuth = resolve;
+      });
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => mockHandle,
+          hasConfiguredAuth: () => true,
+          getApiKeyAndHeaders: async () => {
+            await authGate;
+            return { ok: true as const, apiKey: "delayed-oauth-token" };
+          },
+          getAvailable: () => [mockHandle],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      const pending = modelCall(INPUT);
+      await Promise.resolve();
+      expect(complete).not.toHaveBeenCalled();
+      releaseAuth?.();
+      await pending;
+      expect(complete).toHaveBeenCalledWith(
+        mockHandle,
+        { messages: INPUT.messages },
+        expect.objectContaining({ apiKey: "delayed-oauth-token" }),
+      );
+    });
+
+    it("maps getApiKeyAndHeaders ok:false to auth failure preserving error", async () => {
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => ({ provider: "openai-codex", id: "gpt-5.4-mini" }),
+          hasConfiguredAuth: () => true,
+          getApiKeyAndHeaders: async () => ({
+            ok: false as const,
+            error: "OAuth token refresh failed",
+          }),
+          getAvailable: () => [],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>();
+      const result = await createModelCall(ctx, { complete })(INPUT);
+
+      expect(result).toEqual({
+        ok: false,
+        kind: "auth",
+        message: "OAuth token refresh failed",
+      });
+      expect(complete).not.toHaveBeenCalled();
+    });
     it("passes thinking none to pi-ai as reasoningEffort none", async () => {
       const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
       const ctx: ExtensionContext = {
@@ -338,6 +448,65 @@ describe("Story 5: Inference Host Routing", () => {
         }
       } finally {
         store.cleanup();
+      }
+    });
+  });
+
+  describe("TC-4.5: Provider error responses stay failures at the host boundary", () => {
+    it("maps stopReason error with empty content to ok:false preserving errorMessage", async () => {
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => ({ provider: "openai-codex", id: "gpt-5.4-mini" }),
+          hasConfiguredAuth: () => true,
+          getAvailable: () => [],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const modelCall = createModelCall(ctx, {
+        complete: async () => ({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "No API key for provider: openai-codex",
+          content: [],
+        }),
+      });
+      const result = await modelCall(INPUT);
+
+      expect(result).toEqual({
+        ok: false,
+        kind: "auth",
+        message: "No API key for provider: openai-codex",
+      });
+    });
+
+    it("returns ok:true with whitespace-only text for successful completions", async () => {
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => ({ provider: "openai-codex", id: "gpt-5.4" }),
+          hasConfiguredAuth: () => true,
+          getAvailable: () => [],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const modelCall = createModelCall(ctx, {
+        complete: async () => ({
+          role: "assistant",
+          content: [{ type: "text", text: "   " }],
+        }),
+      });
+      const result = await modelCall(INPUT);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.text).toBe("   ");
       }
     });
   });

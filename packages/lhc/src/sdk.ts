@@ -271,6 +271,10 @@ export interface ThreadViewSurface {
 export interface LoggingSurface {
   write(ref: threadsDomain.ThreadRef, entry: loggingDomain.LogEntry): Promise<OpResult<void>>;
   query(ref: threadsDomain.ThreadRef, q: loggingDomain.LogQuery): Promise<OpResult<loggingDomain.StoredLogEntry[]>>;
+  queryDerivationLog(
+    ref: threadsDomain.ThreadRef,
+    q: loggingDomain.DerivationLogQuery,
+  ): Promise<OpResult<loggingDomain.StoredDerivationLogEntry[]>>;
 }
 
 export type IntakeStreamSurface = typeof intakeStreamDomain & {
@@ -662,6 +666,17 @@ export function initLhc(config: SdkConfig): Lhc {
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           return storageFailure(`log query failed: ${reason}`);
+        }
+      }),
+    queryDerivationLog: (ref, q) =>
+      runWithInstanceSeam(seam, async () => {
+        try {
+          return await createDbReadTransaction(ref, (transaction) =>
+            loggingDomain.queryDerivationLog(transaction.db, q),
+          );
+        } catch (cause) {
+          const reason = cause instanceof Error ? cause.message : String(cause);
+          return storageFailure(`derivation log query failed: ${reason}`);
         }
       }),
   };

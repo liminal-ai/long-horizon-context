@@ -22,6 +22,11 @@ import {
 } from "./durable-work/index.js";
 import { type ErrorResult, type OpResult, storageFailure } from "./errors.js";
 import {
+  appendDerivationLog,
+  type DerivationLogEventKind,
+  type DerivationLogPayload,
+} from "./logging/derivation-log.js";
+import {
   type ClaimedWorkItem,
   claimNext,
   countLiveItems,
@@ -83,6 +88,22 @@ function ranEntry(
   };
   if (reason !== undefined) entry.reason = reason;
   return entry;
+}
+
+function logDerivationExecution(
+  identity: { threadId: string; filePath: string } | undefined,
+  db: DatabaseSync,
+  derivations: ClaimedWorkItem["derivations"],
+  eventKind: DerivationLogEventKind,
+  payload: DerivationLogPayload,
+): void {
+  if (identity === undefined || derivations.length === 0) return;
+  for (const target of derivations) {
+    appendDerivationLog(
+      { db, threadId: identity.threadId, filePath: identity.filePath },
+      { target, eventKind, payload },
+    );
+  }
 }
 
 // The drain loop against an open handle. Claim → dispatch → complete, one
@@ -205,6 +226,12 @@ export async function drainOpenDb(
           now: clock().toISOString(),
         },
       );
+      if (terminal !== "lost_lease") {
+        logDerivationExecution(identity, db, item.derivations, "terminal_failed", {
+          reason: outcome.reason,
+          attempts: item.attempts + 1,
+        });
+      }
       ran.push(
         terminal === "lost_lease"
           ? ranEntry(item, "lost_lease", item.attempts + 1, outcome.reason)
@@ -221,7 +248,14 @@ export async function drainOpenDb(
         const backoffMs = Math.min(retry.backoffBaseMs * 2 ** attempts, retry.backoffCapMs);
         const eligibleAt = new Date(Date.parse(clock().toISOString()) + backoffMs).toISOString();
         const owned = retryClaimedItem(db, item, { reason: outcome.reason, attempts, eligibleAt });
-        if (!owned) ran.push(ranEntry(item, "lost_lease", attempts, outcome.reason));
+        if (!owned) {
+          ran.push(ranEntry(item, "lost_lease", attempts, outcome.reason));
+        } else {
+          logDerivationExecution(identity, db, item.derivations, "retry_scheduled", {
+            reason: outcome.reason,
+            attempts,
+          });
+        }
       } else {
         const terminal = applyDerivationTerminalFailure(
           db,
@@ -233,6 +267,12 @@ export async function drainOpenDb(
             now: clock().toISOString(),
           },
         );
+        if (terminal !== "lost_lease") {
+          logDerivationExecution(identity, db, item.derivations, "terminal_failed", {
+            reason: outcome.reason,
+            attempts,
+          });
+        }
         ran.push(
           terminal === "lost_lease"
             ? ranEntry(item, "lost_lease", attempts, outcome.reason)

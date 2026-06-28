@@ -20,7 +20,7 @@ import {
   type ModelCallInput,
   type ModelCallResult,
 } from "lhc";
-import type { ExtensionContext } from "../pi/types.js";
+import type { ExtensionContext, ModelHandle, ModelRegistryAuthResolution } from "../pi/types.js";
 import type { CompleteOptions, PiAiComplete } from "./pi-ai.js";
 
 interface ModelCallDeps {
@@ -31,6 +31,65 @@ function completeOptionsForThinking(thinking: ModelCallInput["thinking"]): Compl
   if (thinking === undefined) return undefined;
   if (thinking === "none") return { reasoningEffort: "none" };
   return { reasoningEffort: thinking };
+}
+
+function hasUsableRequestAuth(auth: ModelRegistryAuthResolution | undefined): boolean {
+  if (auth === undefined) return false;
+  if (auth.apiKey !== undefined && auth.apiKey !== "") return true;
+  if (auth.headers !== undefined && Object.keys(auth.headers).length > 0) return true;
+  return false;
+}
+
+function mergeCompleteOptions(
+  thinking: ModelCallInput["thinking"],
+  auth: ModelRegistryAuthResolution | undefined,
+): CompleteOptions | undefined {
+  const merged: CompleteOptions = { ...completeOptionsForThinking(thinking) };
+  if (auth?.apiKey !== undefined) merged.apiKey = auth.apiKey;
+  if (auth?.headers !== undefined) merged.headers = auth.headers;
+  if (auth?.env !== undefined) merged.env = auth.env;
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function resolveRequestAuth(
+  registry: ExtensionContext["modelRegistry"],
+  model: ModelHandle,
+): Promise<{ ok: true; auth?: ModelRegistryAuthResolution } | { ok: false; message: string }> {
+  if (registry.getApiKeyAndHeaders === undefined) {
+    return Promise.resolve({ ok: true });
+  }
+  return (async () => {
+    try {
+      const result = await registry.getApiKeyAndHeaders!(model);
+      if (!result.ok) {
+        return { ok: false as const, message: result.error };
+      }
+      const auth: ModelRegistryAuthResolution = {
+        ...(result.apiKey !== undefined ? { apiKey: result.apiKey } : {}),
+        ...(result.headers !== undefined ? { headers: result.headers } : {}),
+        ...(result.env !== undefined ? { env: result.env } : {}),
+      };
+      if (!hasUsableRequestAuth(auth)) {
+        return {
+          ok: false as const,
+          message: `configured auth for ${model.provider}/${model.id} did not resolve request credentials`,
+        };
+      }
+      return { ok: true as const, auth };
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      return { ok: false as const, message: `failed to resolve auth for ${model.provider}/${model.id}: ${detail}` };
+    }
+  })();
+}
+
+function providerErrorFromResponse(response: {
+  stopReason?: string;
+  errorMessage?: string;
+}): { kind: ModelCallFailureKind; message: string } | undefined {
+  if (response.stopReason !== "error" && response.errorMessage === undefined) return undefined;
+  const message = response.errorMessage ?? "provider returned stopReason error";
+  return { kind: classifyFailure({ message }), message };
 }
 
 /** Extract the text content from an AssistantMessage-like shape. */
@@ -55,7 +114,7 @@ export function classifyFailure(err: unknown): ModelCallFailureKind {
   const message = errorLike.message?.toLowerCase() ?? "";
 
   // Check for auth failures (terminal)
-  const authPatterns = ["auth", "unauthorized", "401", "authentication"];
+  const authPatterns = ["auth", "unauthorized", "401", "authentication", "api key"];
   if (authPatterns.some((p) => code.includes(p) || type.includes(p) || message.includes(p))) {
     return "auth";
   }
@@ -132,12 +191,27 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
       };
     }
 
+    const requestAuth = await resolveRequestAuth(ctx.modelRegistry, resolved);
+    if (!requestAuth.ok) {
+      return {
+        ok: false,
+        kind: "auth",
+        message: requestAuth.message,
+      };
+    }
+
     // Complete through pi-ai. Tests may inject this seam; production loads the
     // host package at runtime so pi-lhc does not publish fabricated text when
     // the host dependency is absent.
     try {
       const complete = deps.complete ?? (await importPiAiComplete());
-      const response = await complete(resolved, { messages }, completeOptionsForThinking(thinking));
+      const completeOptions = mergeCompleteOptions(thinking, requestAuth.auth);
+      const response = await complete(resolved, { messages }, completeOptions);
+
+      const providerError = providerErrorFromResponse(response);
+      if (providerError !== undefined) {
+        return { ok: false, kind: providerError.kind, message: providerError.message };
+      }
 
       // Extract text from the response
       const text = extractAssistantText(response);

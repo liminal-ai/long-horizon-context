@@ -58,6 +58,9 @@ export interface DerivationMetadata {
   lastError?: string;
   discardReason?: string;
   fallbackFloor?: string;
+  fallbackUsed?: boolean;
+  inferenceAttempted?: boolean;
+  inferenceSucceeded?: boolean;
   sizeDisposition?: "in_range" | "under_min" | "over_max";
   // Which provider/model/prompt produced the content, copied from the
   // InferenceResult's config-known strings, never authored from model output.

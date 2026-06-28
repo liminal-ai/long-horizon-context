@@ -16,6 +16,9 @@ export interface CompleteContext {
 /** Provider options passed as pi-ai complete()'s third argument. */
 export interface CompleteOptions {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  apiKey?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
 }
 
 /** The pi-ai complete() signature. */

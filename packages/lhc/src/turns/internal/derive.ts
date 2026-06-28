@@ -26,7 +26,7 @@ import {
   resolveInstancePoke,
   runWorkHandler,
 } from "../../shared-tech/index.js";
-import { type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
+import { appendDerivationLog, type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import {
   createOrClaimImmediateWorkItem,
@@ -256,6 +256,18 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   let compressionUsedFallback = false;
   let compressionFailureReason: string | undefined;
   if (!compressionResult.ok) {
+    appendDerivationLog(
+      { db, threadId: run.threadId, filePath: run.filePath },
+      {
+        target: {
+          subjectKind: "turn",
+          subjectId: turnId,
+          derivationType: "smooth_turn_compression",
+        },
+        eventKind: "inference_failed",
+        payload: { reason: compressionResult.reason, attempts: claimAttempts + 1 },
+      },
+    );
     if (!compressionExhausted(compressionResult, claimAttempts, run.config.retry.budget)) {
       return inferenceFailed(compressionResult);
     }
@@ -263,6 +275,24 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     compressionFailureReason = compressionResult.reason;
   } else {
     compressionText = compressionResult.text;
+    if (inputTokens >= tinyTurnTokens) {
+      appendDerivationLog(
+        { db, threadId: run.threadId, filePath: run.filePath },
+        {
+          target: {
+            subjectKind: "turn",
+            subjectId: turnId,
+            derivationType: "smooth_turn_compression",
+          },
+          eventKind: "inference_succeeded",
+          payload: {
+            ...("provenance" in compressionResult && compressionResult.provenance !== undefined
+              ? { provenance: compressionResult.provenance }
+              : {}),
+          },
+        },
+      );
+    }
   }
 
   // The compression token count is estimated exactly once, here, as the
@@ -281,11 +311,16 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   }
   if (compressionUsedFallback) {
     compressionMetadata.attempts = claimAttempts + 1;
+    compressionMetadata.inferenceAttempted = true;
+    compressionMetadata.inferenceSucceeded = false;
+    compressionMetadata.fallbackUsed = true;
     if (compressionFailureReason !== undefined) {
       compressionMetadata.lastError = compressionFailureReason;
     }
     compressionMetadata.fallbackFloor = "turn_rendering";
   } else if (inputTokens >= tinyTurnTokens) {
+    compressionMetadata.inferenceAttempted = true;
+    compressionMetadata.inferenceSucceeded = true;
     compressionMetadata.sizeDisposition = sizeDisposition(projectedTokens, targetTokens);
   }
 
@@ -323,6 +358,27 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         );
       }
       if (compressionUsedFallback) {
+        appendDerivationLog(
+          {
+            db: transaction.db,
+            threadId: run.threadId,
+            filePath: run.filePath,
+            postCommitHook: { add: transaction.onCommit },
+          },
+          {
+            target: {
+              subjectKind: "turn",
+              subjectId: turnId,
+              derivationType: "smooth_turn_compression",
+            },
+            eventKind: "fallback_applied",
+            payload: {
+              fallbackFloor: "turn_rendering",
+              ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
+              attempts: claimAttempts + 1,
+            },
+          },
+        );
         writeLog(
           {
             db: transaction.db,
@@ -502,9 +558,41 @@ function chunkBriefHandler(): WorkHandler {
 
     const targetTokens = compressionTargetTokens(estimateTokens(detailed.content), run.config.briefTargets);
     const result = await run.inferenceCallbacks.summarizeChunkBrief({ text: detailed.content, ...targetTokens });
-    if (!result.ok) return inferenceFailed(result);
+    if (!result.ok) {
+      appendDerivationLog(
+        { db, threadId: run.threadId, filePath: run.filePath },
+        {
+          target: {
+            subjectKind: "chunk",
+            subjectId: chunkId,
+            derivationType: "chunk_summary_brief",
+          },
+          eventKind: "inference_failed",
+          payload: { reason: result.reason },
+        },
+      );
+      return inferenceFailed(result);
+    }
+    appendDerivationLog(
+      { db, threadId: run.threadId, filePath: run.filePath },
+      {
+        target: {
+          subjectKind: "chunk",
+          subjectId: chunkId,
+          derivationType: "chunk_summary_brief",
+        },
+        eventKind: "inference_succeeded",
+        payload: {
+          ...(result.provenance !== undefined ? { provenance: result.provenance } : {}),
+        },
+      },
+    );
     const outputTokens = estimateTokens(result.text);
-    const metadata: DerivationMetadata = { sizeDisposition: sizeDisposition(outputTokens, targetTokens) };
+    const metadata: DerivationMetadata = {
+      inferenceAttempted: true,
+      inferenceSucceeded: true,
+      sizeDisposition: sizeDisposition(outputTokens, targetTokens),
+    };
     if (result.provenance !== undefined) metadata.provenance = result.provenance;
 
     return {

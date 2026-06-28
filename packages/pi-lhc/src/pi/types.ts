@@ -231,9 +231,18 @@ export interface ModelHandle extends ModelDescriptor {
   readonly [k: string]: unknown;
 }
 
+export interface ModelRegistryAuthResolution {
+  apiKey?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+export type ModelRegistryAuthResult = ({ ok: true } & ModelRegistryAuthResolution) | { ok: false; error: string };
+
 export interface ModelRegistry {
   find(provider: string, model: string): ModelHandle | undefined;
   hasConfiguredAuth(model: ModelHandle | string): boolean;
+  getApiKeyAndHeaders?(model: ModelHandle): Promise<ModelRegistryAuthResult>;
   getAvailable(): ModelHandle[];
 }
 
@@ -328,6 +337,7 @@ export interface AssistantMessage {
   role: "assistant";
   content: ContentPart[];
   stopReason?: PiStopReason;
+  errorMessage?: string;
   usage?: TokenUsage;
 }
 export interface ToolResultMessage {

@@ -125,3 +125,14 @@ export function queryLog(db: DatabaseSync, q: LogQuery): StoredLogEntry[] {
     recordedAt: row.recorded_at,
   }));
 }
+
+export {
+  appendDerivationLog,
+  type DerivationLogEntry,
+  type DerivationLogEventKind,
+  type DerivationLogPayload,
+  type DerivationLogQuery,
+  type DerivationLogTarget,
+  queryDerivationLog,
+  type StoredDerivationLogEntry,
+} from "./derivation-log.js";
