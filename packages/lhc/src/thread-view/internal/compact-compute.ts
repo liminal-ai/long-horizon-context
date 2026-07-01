@@ -49,14 +49,6 @@ export function compactWouldWriteSnapshot(db: DatabaseSync, selectionCompactPoin
   return selectionCompactPoint >= stored;
 }
 
-/** Preflight no-op for pi-lhc: bands only when selection produces a compact point that advances the stored view (or first compact). */
-export function wouldProduceBandsPreview(db: DatabaseSync, selectionCompactPoint: number): boolean {
-  if (selectionCompactPoint <= 0) return false;
-  const stored = readStoredCompactPoint(db);
-  if (stored === null) return true;
-  return selectionCompactPoint > stored;
-}
-
 /** messageId of the first PI-mappable live message past the compact point. */
 export function firstPiMappableMessagePast(db: DatabaseSync, compactPoint: number): string | null {
   const placeholders = PI_MAPPABLE_MESSAGE_KINDS.map(() => "?").join(", ");

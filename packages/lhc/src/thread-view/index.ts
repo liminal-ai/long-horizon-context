@@ -403,7 +403,7 @@ export async function compact(
         error: {
           errorClass: "caller_error",
           code: "compact_unchanged",
-          reason: `compact point ${selection.compactPoint} would not advance stored compact point ${stored}`,
+          reason: `compact point ${selection.compactPoint} would regress stored compact point ${stored}`,
         },
       };
     }

@@ -11,12 +11,12 @@ describe("compact diagnostics buffer", () => {
   it("accumulates multiple cancel diagnostics", () => {
     const buffer = createCompactDiagnosticsBuffer();
     buffer.push({ code: "no_op", reason: "fits budget" });
-    buffer.push({ code: "open_turn", reason: "turn open" });
+    buffer.push({ code: "capture_incomplete", reason: "agent_end failed" });
     expect(buffer.snapshot()).toEqual([
       { code: "no_op", reason: "fits budget" },
-      { code: "open_turn", reason: "turn open" },
+      { code: "capture_incomplete", reason: "agent_end failed" },
     ]);
-    expect(buffer.last()).toEqual({ code: "open_turn", reason: "turn open" });
+    expect(buffer.last()).toEqual({ code: "capture_incomplete", reason: "agent_end failed" });
   });
 
   it("clears all entries", () => {

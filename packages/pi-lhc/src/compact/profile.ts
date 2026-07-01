@@ -9,6 +9,9 @@ export const DEFAULT_COMPACT_PROFILE = {
   percentages: { full: number; smooth: number; detailed: number; brief: number };
 };
 
+/** Serving-context floor below which a compact request is refused. Interim hardcode until named compact settings land; sits above the mechanical floor (lowerBound × full%) so bands get real material, and below lowerBound so snapshot repair is never blocked. */
+export const COMPACT_FLOOR_TOKENS = 50_000;
+
 const bandSum =
   DEFAULT_COMPACT_PROFILE.percentages.full +
   DEFAULT_COMPACT_PROFILE.percentages.smooth +

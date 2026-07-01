@@ -1,5 +1,17 @@
-import type { PreviewCompactOutcome } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("lhc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lhc")>();
+  return {
+    ...actual,
+    estimateTokens: (text: string) => {
+      if (text === "__above_threshold__") return 150_000;
+      return actual.estimateTokens(text);
+    },
+  };
+});
+
+import type { LlmRequestContext, PreviewCompactOutcome } from "lhc";
 import * as captureModule from "../../src/capture/converter.js";
 import {
   COMPACT_HOOKS,
@@ -14,6 +26,20 @@ import { startCapture, syntheticCtx } from "../capture/support.js";
 import { makeAgentEnd, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
 import { makeBeforeCompactEvent, makeBranchEntries, makeCompactReceipt } from "./fixtures.js";
+
+function aboveThresholdContext(): LlmRequestContext {
+  return {
+    threadId: "th_test",
+    messages: [{ role: "user", content: [{ type: "text", text: "__above_threshold__" }] }],
+  };
+}
+
+function belowThresholdContext(): LlmRequestContext {
+  return {
+    threadId: "th_test",
+    messages: [{ role: "user", content: [{ type: "text", text: "still open" }] }],
+  };
+}
 
 function okPreview(firstKeptMessageId = "m14"): PreviewCompactOutcome {
   return {
@@ -34,6 +60,8 @@ function mockInstance(
     compactOk?: boolean;
     compactError?: string;
     sessionViewOk?: boolean;
+    servingContext?: LlmRequestContext;
+    servingContextOk?: boolean;
   } = {},
 ) {
   const compactSpy = vi.fn(async (_ref: unknown, _opts?: { signal?: { aborted: boolean } }) => {
@@ -84,6 +112,18 @@ function mockInstance(
       },
     };
   });
+  const getLlmRequestContext = vi.fn(async (_ref?: unknown) => {
+    if (overrides.servingContextOk === false) {
+      return {
+        ok: false as const,
+        error: { code: "storage_failure", reason: "context fail", errorClass: "system_error" as const },
+      };
+    }
+    return {
+      ok: true as const,
+      value: overrides.servingContext ?? aboveThresholdContext(),
+    };
+  });
 
   return {
     instance: {
@@ -92,6 +132,7 @@ function mockInstance(
           previewCompact: previewSpy,
           compact: compactSpy,
           getSessionThreadView,
+          getLlmRequestContext,
         },
       },
     },
@@ -99,6 +140,7 @@ function mockInstance(
     previewSpy,
     flushSpy: vi.fn(async () => {}),
     sessionView: getSessionThreadView,
+    servingContext: getLlmRequestContext,
   };
 }
 
@@ -151,26 +193,8 @@ describe("handleSessionBeforeCompact", () => {
     }
   });
 
-  it("cancels open_turn when preview reports turn_not_ready", async () => {
-    const mocks = mockInstance({ preview: { kind: "turn_not_ready", openTurnHasMembers: true } });
-    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
-      state: createSessionState({ threadId: "th_test" }),
-      instance: mocks.instance as never,
-      piSessionId: "th_test",
-      flushPendingCapture: mocks.flushSpy,
-      getSessionView: async () => mocks.sessionView() as never,
-      findSeedEntryMap: () => null,
-      recordCancel: (d) => {
-        diagnostics.push(d);
-      },
-    });
-    expect(result).toEqual({ cancel: true });
-    expect(diagnostics[0]?.code).toBe("open_turn");
-    expect(mocks.compactSpy).not.toHaveBeenCalled();
-  });
-
   it("cancels capture_incomplete after flush before preview when capture failed", async () => {
-    const mocks = mockInstance({ preview: { kind: "turn_not_ready", openTurnHasMembers: true } });
+    const mocks = mockInstance();
     const state = createSessionState({ threadId: "th_test" });
     state.health.lastCaptureFailure = { code: "invalid_event", message: "agent_end failed", recordedGap: true };
     const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
@@ -190,27 +214,6 @@ describe("handleSessionBeforeCompact", () => {
     expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
 
-  it("open_turn cancel ignores stale lastCaptureFailure after successful pending flush", async () => {
-    const mocks = mockInstance({ preview: { kind: "turn_not_ready", openTurnHasMembers: true } });
-    const state = createSessionState({ threadId: "th_test" });
-    state.health.lastCaptureFailure = { code: "invalid_event", message: "old failure", recordedGap: true };
-    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
-      state,
-      instance: mocks.instance as never,
-      piSessionId: "th_test",
-      flushPendingCapture: async () => {
-        delete state.health.lastCaptureFailure;
-      },
-      getSessionView: async () => mocks.sessionView() as never,
-      findSeedEntryMap: () => null,
-      recordCancel: (d) => {
-        diagnostics.push(d);
-      },
-    });
-    expect(diagnostics[0]?.code).toBe("open_turn");
-    expect(result).toEqual({ cancel: true });
-  });
-
   it("proceeds when preview returns ok for normal compactable state", async () => {
     const mocks = mockInstance({ preview: okPreview() });
     const previewSpy = vi.fn(async () => ({ ok: true as const, value: okPreview() }));
@@ -226,7 +229,27 @@ describe("handleSessionBeforeCompact", () => {
     expect(result.compaction).toBeDefined();
   });
 
-  it("cancels no_op without calling compact", async () => {
+  it("cancels no_op below compact threshold without calling preview", async () => {
+    const mocks = mockInstance({ servingContext: belowThresholdContext() });
+    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
+      state: createSessionState({ threadId: "th_test" }),
+      instance: mocks.instance as never,
+      piSessionId: "th_test",
+      flushPendingCapture: mocks.flushSpy,
+      getSessionView: async () => mocks.sessionView() as never,
+      findSeedEntryMap: () => null,
+      recordCancel: (d) => {
+        diagnostics.push(d);
+      },
+    });
+    expect(result).toEqual({ cancel: true });
+    expect(diagnostics[0]?.code).toBe("no_op");
+    expect(diagnostics[0]?.reason).toMatch(/below the ~50k compact floor/);
+    expect(mocks.previewSpy).not.toHaveBeenCalled();
+    expect(mocks.compactSpy).not.toHaveBeenCalled();
+  });
+
+  it("cancels no_op when view is already current without calling compact", async () => {
     const mocks = mockInstance({
       preview: {
         kind: "ok",
@@ -246,6 +269,7 @@ describe("handleSessionBeforeCompact", () => {
     });
     expect(result).toEqual({ cancel: true });
     expect(diagnostics[0]?.code).toBe("no_op");
+    expect(diagnostics[0]?.reason).toBe("view already current — nothing new to compact");
     expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
 
@@ -451,7 +475,10 @@ describe("connector compact hooks", () => {
     await connector.compactHandlers.session_before_compact(makeBeforeCompactEvent(), ctx);
 
     expect(connector.getCompactDiagnostics()).toEqual([
-      { code: "no_op", reason: "closed history fits full-tail budget" },
+      expect.objectContaining({
+        code: "no_op",
+        reason: expect.stringMatching(/below the ~50k compact floor/),
+      }),
     ]);
 
     const instance = connector.getInstance();
@@ -510,7 +537,10 @@ describe("connector compact hooks", () => {
     const result = await connector.compactHandlers.session_before_compact(makeBeforeCompactEvent(), ctx);
     expect(result).toEqual({ cancel: true });
     expect(connector.getCompactDiagnostics()).toEqual([
-      { code: "no_op", reason: "closed history fits full-tail budget" },
+      expect.objectContaining({
+        code: "no_op",
+        reason: expect.stringMatching(/below the ~50k compact floor/),
+      }),
     ]);
   });
 

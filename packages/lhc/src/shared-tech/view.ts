@@ -177,10 +177,7 @@ export interface PreviewCompactResult {
   firstKeptMessageId: string | null;
 }
 
-export type PreviewCompactOutcome =
-  | { kind: "ok"; preview: PreviewCompactResult }
-  | { kind: "turn_not_ready"; openTurnHasMembers: boolean }
-  | { kind: "error"; reason: string };
+export type PreviewCompactOutcome = { kind: "ok"; preview: PreviewCompactResult } | { kind: "error"; reason: string };
 
 // ── receipts ─────────────────────────────────────────────────────
 export interface CompactReceipt {

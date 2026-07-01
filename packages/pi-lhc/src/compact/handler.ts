@@ -1,4 +1,4 @@
-import type { OpResult, SessionThreadView } from "lhc";
+import { estimateTokens, type LlmRequestContextMessage, type OpResult, type SessionThreadView } from "lhc";
 import type { SessionState } from "../lifecycle/state.js";
 import type {
   ExtensionContext,
@@ -7,12 +7,11 @@ import type {
   SessionEntry,
 } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
-import { DEFAULT_COMPACT_PROFILE } from "./profile.js";
+import { COMPACT_FLOOR_TOKENS, DEFAULT_COMPACT_PROFILE } from "./profile.js";
 import { assembleCompactionResult, mapFirstKeptToEntryId } from "./result-mapping.js";
 import type { LhcSeedEntryMap } from "./seed-entry-map.js";
 
 export type CompactCancelCode =
-  | "open_turn"
   | "no_op"
   | "compact_error"
   | "no_thread"
@@ -43,6 +42,14 @@ function compactSignal(event: SessionBeforeCompactEvent): { aborted: boolean } {
   };
 }
 
+function servingContextTokens(messages: readonly LlmRequestContextMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTokens(message.content.map((part) => part.text).join("")), 0);
+}
+
+function formatTokenThousands(tokens: number): string {
+  return `~${Math.round(tokens / 1000)}k`;
+}
+
 export async function handleSessionBeforeCompact(
   event: SessionBeforeCompactEvent,
   ctx: ExtensionContext,
@@ -63,6 +70,18 @@ export async function handleSessionBeforeCompact(
       return await cancel("capture_incomplete", deps.state.health.lastCaptureFailure.message);
     }
 
+    const contextOutcome = await deps.instance.sdk.threadView.getLlmRequestContext(deps.state.threadRef);
+    if (!contextOutcome.ok) {
+      return await cancel("compact_error", contextOutcome.error.reason);
+    }
+    const servingTokens = servingContextTokens(contextOutcome.value.messages);
+    if (servingTokens < COMPACT_FLOOR_TOKENS) {
+      return await cancel(
+        "no_op",
+        `thread ${formatTokenThousands(servingTokens)} tokens is below the ${formatTokenThousands(COMPACT_FLOOR_TOKENS)} compact floor — nothing to reclaim`,
+      );
+    }
+
     const previewOutcome = await deps.instance.sdk.threadView.previewCompact(deps.state.threadRef, {
       params: DEFAULT_COMPACT_PROFILE,
       signal: compactSignal(event),
@@ -72,16 +91,13 @@ export async function handleSessionBeforeCompact(
     }
 
     const outcome = previewOutcome.value;
-    if (outcome.kind === "turn_not_ready") {
-      return await cancel("open_turn", "open turn has members");
-    }
     if (outcome.kind === "error") {
       return await cancel("compact_error", outcome.reason);
     }
 
     const preview = outcome.preview;
     if (!preview.wouldProduceBands) {
-      return await cancel("no_op", "closed history fits full-tail budget");
+      return await cancel("no_op", "view already current — nothing new to compact");
     }
     if (preview.firstKeptMessageId === null) {
       return await cancel("mapping_failed", "no PI-mappable first kept message");

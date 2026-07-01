@@ -159,7 +159,7 @@ describe("/lhc-rehydrate command", () => {
     expect(newSession).not.toHaveBeenCalled();
     expect(notifications).toEqual([
       {
-        message: "pi-lhc: no LHC thread attached — rehydrate requires an active thread",
+        message: "pi-lhc: no active LHC thread",
         type: "error",
       },
     ]);

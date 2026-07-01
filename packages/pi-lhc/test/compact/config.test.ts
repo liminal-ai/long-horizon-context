@@ -5,8 +5,7 @@ import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PI_MODEL } from "../../src/inference/model-call.js";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-const sampleModelsPath = join(repoRoot, "docs/specs/02-pi-lhc/02-smart-compact/models.example.json");
+const sampleModelsPath = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "models.example.json");
 
 const { provider, id: modelId } = DEFAULT_PI_MODEL;
 
