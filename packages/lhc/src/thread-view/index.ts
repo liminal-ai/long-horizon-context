@@ -36,9 +36,7 @@ import {
   compactStopped,
   compactWouldWriteSnapshot,
   computeArrangement,
-  openTurnHasMembers,
   readStoredCompactPoint,
-  wouldProduceBandsPreview,
 } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
@@ -299,6 +297,35 @@ function buildRenderedBands(
   });
 }
 
+function selectionWouldWriteSnapshot(
+  transaction: DbReadTransaction,
+  selection: { compactPoint: number; entries: ArrangementEntry[] },
+): boolean {
+  if (selection.compactPoint <= 0) return false;
+  const stored = readStoredView(transaction.db);
+  if (stored === null) return true;
+  if (selection.compactPoint !== stored.compactPoint) return selection.compactPoint > stored.compactPoint;
+
+  const arrangement = selection.entries.map((entry) => ({
+    band: entry.band,
+    subjectKind: entry.subjectKind,
+    subjectId: entry.subjectId,
+    derivationUsed: entry.derivationUsed,
+    degraded: entry.degraded,
+  }));
+  const gaps = selection.entries
+    .filter((entry) => entry.gap)
+    .map((entry) => ({
+      band: entry.band,
+      subjectId: entry.subjectId,
+      reason: entry.reason ?? "unknown",
+    }));
+  return (
+    JSON.stringify(arrangement) !== JSON.stringify(stored.arrangement) ||
+    JSON.stringify(gaps) !== JSON.stringify(stored.gaps)
+  );
+}
+
 // Read-only compact preflight: same selection path as compact, no snapshot write.
 // Runs touch-suppressed like getLlmRequestContext so background mode never
 // schedules catch-up drain from a preview read.
@@ -311,10 +338,6 @@ export async function previewCompact(
 
   try {
     return await createDbReadTransaction(ref, (transaction) => {
-      if (openTurnHasMembers(transaction.db)) {
-        return { kind: "turn_not_ready", openTurnHasMembers: true };
-      }
-
       const computed = computeArrangement(transaction.db, transaction, call.value.merged, {
         signal: opts.signal,
         includeChunkMaterials: false,
@@ -329,7 +352,7 @@ export async function previewCompact(
         kind: "ok",
         preview: {
           compactPoint: selection.compactPoint,
-          wouldProduceBands: wouldProduceBandsPreview(transaction.db, selection.compactPoint),
+          wouldProduceBands: selectionWouldWriteSnapshot(transaction, selection),
           tailTokens,
           firstKeptMessageId: computed.value.firstKeptMessageId,
         },

@@ -223,6 +223,43 @@ describe("previewCompact agreement with compact", () => {
     expect(described.value?.compactPoint).toBe(48);
   });
 
+  it("same-point preview reports bands when recomputed arrangement repairs the stored snapshot", async () => {
+    const local = await derivedThreadFixture(store);
+    const first = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: TARGET_PARAMS });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.compactPoint).toBe(48);
+    expect(first.value.renderedBands.find((band) => band.band === "detailed")?.text).toContain("§t7");
+    expect(first.value.gaps).toEqual([]);
+
+    const db = openRaw(local.filePath);
+    try {
+      const row = db.prepare(`SELECT arrangement_json FROM thread_view WHERE singleton = 1`).get() as {
+        arrangement_json: string;
+      };
+      const arrangement = JSON.parse(row.arrangement_json) as Array<{ subjectId: string }>;
+      db.prepare(`UPDATE thread_view SET arrangement_json = ?, gaps_json = ? WHERE singleton = 1`).run(
+        JSON.stringify(arrangement.filter((entry) => entry.subjectId !== "t7")),
+        "[]",
+      );
+    } finally {
+      db.close();
+    }
+
+    const preview = await local.sdk.threadView.previewCompact({ filePath: local.filePath }, { params: TARGET_PARAMS });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok || preview.value.kind !== "ok") return;
+    expect(preview.value.preview.compactPoint).toBe(48);
+    expect(preview.value.preview.wouldProduceBands).toBe(true);
+
+    const repaired = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: TARGET_PARAMS });
+    expect(repaired.ok).toBe(true);
+    if (!repaired.ok) return;
+    expect(repaired.value.compactPoint).toBe(48);
+    expect(repaired.value.renderedBands.find((band) => band.band === "detailed")?.text).toContain("§t7");
+    expect(repaired.value.gaps).toEqual([]);
+  });
+
   it("exactness golden: corpus sizes agree on compactPoint (no-op, banded, re-compact)", async () => {
     const cases = [
       {
@@ -289,23 +326,45 @@ describe("previewCompact agreement with compact", () => {
     expect(viewRowCount(local.filePath)).toBe(before);
   });
 
-  it("open turn with members returns turn_not_ready without writing", async () => {
+  it("latest open turn with a dangling tool call previews ok and stays after compact point", async () => {
     const path = store.threadPath();
     const localSdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
     const created = await localSdk.threads.newThread({ filePath: path, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
 
-    const captured = await localSdk.intakeStream.messageEvents(
-      { filePath: path },
-      eventBatch(["user_prompt", "assistant_text"]),
-    );
+    for (let turn = 1; turn <= 3; turn += 1) {
+      const closed = await localSdk.intakeStream.messageEvents({ filePath: path }, [
+        validEvent("user_prompt", { payload: { text: `closed turn ${turn}` } }),
+        validEvent("assistant_text", { payload: { text: `closed answer ${turn}` } }),
+        validEvent("turn_end"),
+      ]);
+      expect(closed.ok).toBe(true);
+    }
+    const drained = await localSdk.work.drain({ filePath: path });
+    expect(drained.ok).toBe(true);
+
+    const captured = await localSdk.intakeStream.messageEvents({ filePath: path }, [
+      validEvent("user_prompt", { payload: { text: "render the plan locally" } }),
+      validEvent("assistant_text", { payload: { text: "Lint passed. Now let me serve it." } }),
+      validEvent("tool_call", {
+        payload: {
+          toolCallId: "call-open-serve",
+          toolName: "bash",
+          arguments: { command: `npx @agent-native/core@latest plan local serve ${" --verbose".repeat(200)}` },
+        },
+      }),
+    ]);
     expect(captured.ok).toBe(true);
 
     const before = viewRowCount(path);
     const preview = await localSdk.threadView.previewCompact({ filePath: path }, { params: TARGET_PARAMS });
     expect(preview.ok).toBe(true);
     if (!preview.ok) return;
-    expect(preview.value).toEqual({ kind: "turn_not_ready", openTurnHasMembers: true });
+    const previewResult = expectOkPreview(preview);
+    expect(previewResult.compactPoint).toBe(9);
+    expect(previewResult.wouldProduceBands).toBe(true);
+    expect(previewResult.firstKeptMessageId).toBe("m10");
+    expect(previewResult.tailTokens).toBeGreaterThan((TARGET_PARAMS.lowerBound * TARGET_PARAMS.percentages.full) / 100);
     expect(viewRowCount(path)).toBe(before);
   });
 

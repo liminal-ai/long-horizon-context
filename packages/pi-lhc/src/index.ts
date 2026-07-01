@@ -17,6 +17,7 @@ import { TurnAccumulator } from "./capture/turn-accumulator.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
 import { findSeedEntryMapInBranch } from "./compact/seed-entry-map.js";
+import { handleDumpView, LHC_DUMP_VIEW_COMMAND } from "./commands/dump-view.js";
 import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
 import { createModelCall } from "./inference/model-call.js";
 import { report, type StartupValidationReporter, validateReachable } from "./inference/startup-validation.js";
@@ -1043,6 +1044,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         description:
           "Replace the live PI session with a fresh in-memory session hydrated from the latest LHC thread-view",
         handler: onRehydrate,
+      });
+      pi.registerCommand(LHC_DUMP_VIEW_COMMAND, {
+        description: "Write the current LHC thread-view to a timestamped text file in the working directory",
+        handler: async (_args, ctx) => handleDumpView(ctx, state?.threadRef ?? null, instance),
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
       for (const name of COMPACT_HOOKS) {

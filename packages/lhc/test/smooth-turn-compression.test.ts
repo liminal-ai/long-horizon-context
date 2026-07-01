@@ -203,8 +203,10 @@ describe("Story 3: smooth turn compression", () => {
       },
     });
     const rendered = host.log.at(-1);
-    expect(rendered?.messages.map((message) => message.content).join("\n")).toContain("Target output range:");
-    expect(rendered?.messages.map((message) => message.content).join("\n")).toContain("Preserve substance:");
+    const promptText = rendered?.messages.map((message) => message.content).join("\n");
+    expect(promptText).toContain("Below is one exchange from a coding conversation.");
+    expect(promptText).toContain("The final answer must be within");
+    expect(promptText).toContain("<turn_rendering_to_compress>");
   });
 
   it("retries compression while budget remains and does not land fallback yet", async () => {

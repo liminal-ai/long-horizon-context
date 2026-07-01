@@ -59,6 +59,9 @@ export async function handleSessionBeforeCompact(
     }
 
     await deps.flushPendingCapture(ctx);
+    if (deps.state.health.lastCaptureFailure !== undefined) {
+      return await cancel("capture_incomplete", deps.state.health.lastCaptureFailure.message);
+    }
 
     const previewOutcome = await deps.instance.sdk.threadView.previewCompact(deps.state.threadRef, {
       params: DEFAULT_COMPACT_PROFILE,
@@ -70,9 +73,6 @@ export async function handleSessionBeforeCompact(
 
     const outcome = previewOutcome.value;
     if (outcome.kind === "turn_not_ready") {
-      if (deps.state.health.lastCaptureFailure !== undefined) {
-        return await cancel("capture_incomplete", deps.state.health.lastCaptureFailure.message);
-      }
       return await cancel("open_turn", "open turn has members");
     }
     if (outcome.kind === "error") {

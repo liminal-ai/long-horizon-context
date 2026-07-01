@@ -130,8 +130,11 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     const golden = loadGolden("g3-oversized-loner.json");
     const stored = await runGolden(golden);
     expectMatches(stored, golden);
-    // The loner condition itself: exactly one smooth entry, and the smooth
-    // budget (250 × 4% = 10) is smaller than any turn entry could render.
-    expect(stored.arrangement.filter((entry) => entry.band === "smooth")).toHaveLength(1);
+    // The loner condition itself: exactly one non-gap smooth entry, and the
+    // smooth budget (250 × 4% = 10) is smaller than any turn entry could
+    // render. Coverage gaps are added after the budget fill.
+    expect(
+      stored.arrangement.filter((entry) => entry.band === "smooth" && entry.derivationUsed !== "gap"),
+    ).toHaveLength(1);
   });
 });

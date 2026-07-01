@@ -26,7 +26,14 @@ const goldensDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "gold
 const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = {
   "smoothing-v1": {
     input: { text: "plz smooth this prmpt about src/app.ts line 42 thx" },
-    embedded: ["src/app.ts line 42"],
+    embedded: [
+      "src/app.ts line 42",
+      "almost word-for-word",
+      "Do not summarize.",
+      "Do not answer the prompt.",
+      "<system_instructions>",
+      "<user_prompt_to_rewrite>",
+    ],
   },
   "tool-result-v2": {
     input: {
@@ -46,7 +53,7 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
         outputChars: 39,
       },
     },
-    embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary"],
+    embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary", "responseShape"],
   },
   "smooth-turn-compression-v1": {
     input: {
@@ -60,9 +67,12 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     embedded: [
       "notes/plan.md",
       "42-78",
-      "Preserve substance",
+      "Below is one exchange from a coding conversation.",
+      "Preserve:",
       "Do not say only that a tool ran or a file was read. Say what it showed, changed, proved, or failed to do.",
-      "If it is too short, expand it by restoring missing substance. If it is too long, contract it by removing lower-value detail and repeated explanation.",
+      "If it is too short, expand it by restoring missing substance.",
+      "If it is too long, contract it by removing lower-value detail and repeated explanation.",
+      "<turn_rendering_to_compress>",
     ],
   },
   "chunk-brief-v1": {
@@ -141,7 +151,7 @@ describe("TC-2.2: prompt-rendering goldens (AC-2.2, AC-2.3)", () => {
     it(`${name} embeds its fixture content in single-turn shape`, () => {
       const fixture = PROMPT_FIXTURES[name];
       const rendered = renderByName(name, fixture?.input);
-      expect(rendered.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(rendered.filter((message) => message.role === "user")).toHaveLength(name === "smoothing-v1" ? 2 : 1);
       for (const message of rendered) {
         expect(["system", "user"]).toContain(message.role);
         expect(typeof message.content).toBe("string");
@@ -229,10 +239,13 @@ describe("TC-2.6: tool-result prompt excludes diagnostic routing fields", () => 
       },
     });
     const joined = rendered.map((message) => message.content).join("\n");
-    expect(joined).not.toContain("operationClass");
-    expect(joined).not.toContain("responseShape");
-    expect(joined).not.toContain("outputChars");
-    expect(joined).not.toContain("outputWords");
+    const parsedFieldsStart = joined.indexOf("Parsed fields:");
+    const parsedFieldsEnd = joined.indexOf("\nTool:");
+    const parsedFields = joined.slice(parsedFieldsStart, parsedFieldsEnd);
+    expect(parsedFields).not.toContain("operationClass");
+    expect(parsedFields).not.toContain("responseShape");
+    expect(parsedFields).not.toContain("outputChars");
+    expect(parsedFields).not.toContain("outputWords");
     expect(joined).toContain('"exitCode": 127');
     expect(joined).toContain('"failureType": "command_not_found"');
   });

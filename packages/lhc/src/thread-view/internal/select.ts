@@ -400,14 +400,96 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     buildChunkEntry(chunk, "detailed"),
   );
   // Rule 4 — brief: the remaining chunks, same fill rule against its share.
-  // Chunks remaining after the budget are the coverage edge — outside the
-  // view, reported via covered_from, never phantom gap entries.
   const brief = fillBand(detailed.rest, budget(config.percentages.brief), (chunk) => buildChunkEntry(chunk, "brief"));
 
   const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number => a.startOrder - b.startOrder;
+  const selectedEntries: ArrangementEntry[] = [...brief.included, ...detailed.included, ...smooth.included];
+
+  // Coverage invariant: every closed turn behind the compact point must be
+  // represented by a selected turn, represented by a selected chunk's
+  // membership, or explicitly surfaced as a smooth gap. This catches the
+  // normal open-chunk shape where older closed turns are too old for smooth
+  // but cannot be represented by their still-open chunk.
+  const coveredTurnIds = new Set<string>();
+  const chunksById = new Map(chunks.map((chunk) => [chunk.chunkId, chunk]));
+  let oldestSelectedTurnOrder = Number.POSITIVE_INFINITY;
+  for (const entry of selectedEntries) {
+    if (entry.subjectKind === "turn") {
+      coveredTurnIds.add(entry.subjectId);
+      const turn = turnsById.get(entry.subjectId);
+      if (turn !== undefined) oldestSelectedTurnOrder = Math.min(oldestSelectedTurnOrder, turn.turnOrder);
+      continue;
+    }
+    const chunk = chunksById.get(entry.subjectId);
+    for (const turnId of chunk?.memberTurnIds ?? []) {
+      const turn = turnsById.get(turnId);
+      if (turn !== undefined && bandedTurnIds.has(turnId)) {
+        coveredTurnIds.add(turnId);
+        oldestSelectedTurnOrder = Math.min(oldestSelectedTurnOrder, turn.turnOrder);
+      }
+    }
+  }
+
+  function readyContent(derivation: DerivationSnapshot | undefined): string | null {
+    return derivation?.state === "ready" && typeof derivation.content === "string" ? derivation.content : null;
+  }
+
+  function derivationState(derivation: DerivationSnapshot | undefined): string {
+    return derivation === undefined ? "missing" : derivation.state;
+  }
+
+  function buildCoverageEntry(turn: SelectionTurn): ArrangementEntry {
+    const compression = lookup(turn.turnId, "smooth_turn_compression");
+    const rendering = lookup(turn.turnId, "turn_rendering");
+    const compressionContent = readyContent(compression);
+    const renderingContent = readyContent(rendering);
+    const rep =
+      compressionContent !== null
+        ? {
+            derivationUsed: "smooth_turn_compression",
+            body: compressionContent,
+            degraded: false,
+            gap: false,
+          }
+        : renderingContent !== null
+          ? {
+              derivationUsed: "turn_rendering",
+              body: renderingContent,
+              degraded: true,
+              gap: false,
+              degradedMarker: "coverage-from-turn-rendering",
+              reason: `smooth_turn_compression ${derivationState(compression)}`,
+            }
+          : {
+              derivationUsed: "gap",
+              body: "",
+              degraded: false,
+              gap: true,
+              reason: `closed turn before compact point was not represented by selected bands (smooth_turn_compression: ${derivationState(compression)}, turn_rendering: ${derivationState(rendering)})`,
+            };
+    const text = renderArrangementEntry("turn", turn.turnId, rep, []);
+    const entry: ArrangementEntry = {
+      band: "detailed",
+      subjectKind: "turn",
+      subjectId: turn.turnId,
+      derivationUsed: rep.derivationUsed,
+      degraded: rep.degraded,
+      gap: rep.gap,
+      startOrder: turnStartOrder(turn),
+      text,
+      tokens: estimateTokens(text),
+    };
+    if (rep.reason !== undefined) entry.reason = rep.reason;
+    return entry;
+  }
+
+  const coverageGaps = bandedTurns
+    .filter((turn) => turn.turnOrder >= oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
+    .map((turn) => buildCoverageEntry(turn));
+
   const entries: ArrangementEntry[] = [
     ...brief.included.sort(byRecordOrder),
-    ...detailed.included.sort(byRecordOrder),
+    ...[...detailed.included, ...coverageGaps].sort(byRecordOrder),
     ...smooth.included.sort(byRecordOrder),
   ];
 

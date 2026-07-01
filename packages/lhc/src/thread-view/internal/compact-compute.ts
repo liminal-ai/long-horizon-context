@@ -5,7 +5,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { DbReadTransaction, OpResult, ViewProfile } from "../../shared-tech/index.js";
 import * as turnsDomain from "../../turns/index.js";
-import { countTurnMembers, selectOpenTurnIds } from "../../turns/internal/store.js";
 import {
   CanonicalCorruptionError,
   readSelectionInputs,
@@ -33,12 +32,6 @@ export interface ArrangementComputeResult {
 
 export function compactStopped(signal: { aborted: boolean } | undefined): boolean {
   return signal?.aborted === true;
-}
-
-export function openTurnHasMembers(db: DatabaseSync): boolean {
-  const openTurnIds = selectOpenTurnIds(db);
-  if (openTurnIds.length !== 1) return false;
-  return countTurnMembers(db, openTurnIds[0]!) > 0;
 }
 
 /** Stored compact point from the active view snapshot, or null when never compacted. */

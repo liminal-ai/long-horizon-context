@@ -169,7 +169,7 @@ describe("handleSessionBeforeCompact", () => {
     expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
 
-  it("cancels capture_incomplete when turn_not_ready and capture failed", async () => {
+  it("cancels capture_incomplete after flush before preview when capture failed", async () => {
     const mocks = mockInstance({ preview: { kind: "turn_not_ready", openTurnHasMembers: true } });
     const state = createSessionState({ threadId: "th_test" });
     state.health.lastCaptureFailure = { code: "invalid_event", message: "agent_end failed", recordedGap: true };
@@ -186,6 +186,8 @@ describe("handleSessionBeforeCompact", () => {
     });
     expect(diagnostics[0]?.code).toBe("capture_incomplete");
     expect(result).toEqual({ cancel: true });
+    expect(mocks.previewSpy).not.toHaveBeenCalled();
+    expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
 
   it("open_turn cancel ignores stale lastCaptureFailure after successful pending flush", async () => {
@@ -209,7 +211,7 @@ describe("handleSessionBeforeCompact", () => {
     expect(result).toEqual({ cancel: true });
   });
 
-  it("proceeds when open turn is empty", async () => {
+  it("proceeds when preview returns ok for normal compactable state", async () => {
     const mocks = mockInstance({ preview: okPreview() });
     const previewSpy = vi.fn(async () => ({ ok: true as const, value: okPreview() }));
     mocks.instance.sdk.threadView.previewCompact = previewSpy;
@@ -448,16 +450,18 @@ describe("connector compact hooks", () => {
     await connector.handlers.message_end(makeMessageEnd(makeUserMessage("still open")), ctx);
     await connector.compactHandlers.session_before_compact(makeBeforeCompactEvent(), ctx);
 
-    expect(connector.getCompactDiagnostics()).toEqual([{ code: "open_turn", reason: "open turn has members" }]);
+    expect(connector.getCompactDiagnostics()).toEqual([
+      { code: "no_op", reason: "closed history fits full-tail budget" },
+    ]);
 
     const instance = connector.getInstance();
     expect(instance).not.toBeNull();
     if (instance === null) return;
 
-    const logs = await instance.sdk.logging.query(threadRef, { level: "warning", reason: "open_turn" });
+    const logs = await instance.sdk.logging.query(threadRef, { level: "warning", reason: "no_op" });
     expect(logs.ok).toBe(true);
     if (!logs.ok) return;
-    expect(logs.value.some((entry) => entry.message.includes("open_turn"))).toBe(true);
+    expect(logs.value.some((entry) => entry.message.includes("no_op"))).toBe(true);
   });
 
   it("capture_incomplete when agent_end turn-close failed and compact flush is empty", async () => {
@@ -492,7 +496,7 @@ describe("connector compact hooks", () => {
     }
   });
 
-  it("open_turn when stale capture failure was cleared by a successful pending flush", async () => {
+  it("no_op when stale capture failure was cleared by a successful pending flush", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
 
@@ -505,7 +509,9 @@ describe("connector compact hooks", () => {
 
     const result = await connector.compactHandlers.session_before_compact(makeBeforeCompactEvent(), ctx);
     expect(result).toEqual({ cancel: true });
-    expect(connector.getCompactDiagnostics()).toEqual([{ code: "open_turn", reason: "open turn has members" }]);
+    expect(connector.getCompactDiagnostics()).toEqual([
+      { code: "no_op", reason: "closed history fits full-tail budget" },
+    ]);
   });
 
   it("clears compact diagnostics on session_before_switch without successful compact", async () => {
