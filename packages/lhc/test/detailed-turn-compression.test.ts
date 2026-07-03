@@ -265,6 +265,28 @@ describe("Story 3: detailed turn compression", () => {
     expect(promptText).toContain("<instructions-for-summarizing>");
     expect(promptText).toContain("<content-for-summarizing>");
     expect(promptText).toContain("targetting approximately 20%-30%");
+
+    const derivationLog = await sdk.logging.queryDerivationLog(
+      { filePath },
+      { subjectId: "t1", derivationType: "detailed_turn_compression" },
+    );
+    expect(derivationLog.ok).toBe(true);
+    if (!derivationLog.ok) return;
+    const succeeded = derivationLog.value.find((entry) => entry.eventKind === "inference_succeeded");
+    expect(succeeded).toEqual(
+      expect.objectContaining({
+        eventKind: "inference_succeeded",
+        payload: {
+          provenance: {
+            provider: expect.any(String),
+            model: expect.any(String),
+            prompt: "detailed-turn-compression-v3",
+          },
+          requestMessages: rendered?.messages,
+          rawResponse: tokenText(120),
+        },
+      }),
+    );
   });
 
   it("retries compression while budget remains and does not land fallback yet", async () => {
@@ -294,6 +316,44 @@ describe("Story 3: detailed turn compression", () => {
     });
 
     expect(formOf(filePath, "t1", "detailed_turn_compression")?.state).toBe("pending");
+  });
+
+  it("terminal compression failure logs requestMessages on inference_failed", async () => {
+    const log: ModelCallInput[] = [];
+    const call: ModelCall = (input) => {
+      log.push(structuredClone(input));
+      return Promise.resolve({ ok: true, text: "   " });
+    };
+    const sdk = initLhc({
+      mode: "manual",
+      inference: { call },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
+      retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
+      lease: { durationMs: 200 },
+    });
+    const filePath = await newThread();
+
+    await sendTurn(sdk, filePath, "observable failure", tokenText(120));
+    await drain(sdk, filePath);
+
+    const derivationLog = await sdk.logging.queryDerivationLog(
+      { filePath },
+      { subjectId: "t1", derivationType: "detailed_turn_compression" },
+    );
+    expect(derivationLog.ok).toBe(true);
+    if (!derivationLog.ok) return;
+    const failed = derivationLog.value.find((entry) => entry.eventKind === "inference_failed");
+    const compressionCall = log.at(-1);
+    expect(failed).toEqual(
+      expect.objectContaining({
+        eventKind: "inference_failed",
+        payload: {
+          reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
+          attempts: 1,
+          requestMessages: compressionCall?.messages,
+        },
+      }),
+    );
   });
 
   it("terminal compression failure lands compression ready with pre_detailed_assembly fallback", async () => {

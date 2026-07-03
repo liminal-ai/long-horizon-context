@@ -135,6 +135,23 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
       "<bad-example-2-input>",
     ],
   },
+  "chunk-brief-v3": {
+    input: {
+      text: "[turn 0001]\nUser inspected notes/plan.md and found 3 open items.",
+      inputTokens: 2000,
+      targetMinTokens: 160,
+      targetAimTokens: 240,
+      targetMaxTokens: 400,
+    },
+    embedded: [
+      "notes/plan.md",
+      "brief memory notes",
+      "around 150 tokens total (roughly 100-200)",
+      "<instructions-for-summarizing>",
+      "past-tense narrative prose",
+      "<content-for-summarizing>",
+    ],
+  },
 };
 
 function renderByName(name: string, input: unknown): ModelCallInput["messages"] {
@@ -332,8 +349,7 @@ describe("TC-2.2: brief receipt-stripping holds through the adapter (AC-2.2)", (
     if (briefCall === undefined) return;
 
     expect(userContent(briefCall)).toContain("turn one: planning work");
-    expect(userContent(briefCall)).toContain("Input size: about 2000 tokens");
-    expect(userContent(briefCall)).toContain("Output target: 160–400 tokens");
+    expect(userContent(briefCall)).toContain("around 150 tokens total (roughly 100-200)");
     expect(userContent(briefCall)).toContain(RECEIPT_ACCOUNT);
   });
 });

@@ -5,13 +5,15 @@
 // 5/5 in-window with this bias. Stated ≠ enforced, by design.
 import type { PromptTemplate } from "./index.js";
 
-// Nearest-100 above 1000 input tokens (the granularity the prompt was
-// validated at), nearest-10 below — small turns otherwise round to degenerate
-// text ("around 0 tokens total (roughly 0-0)") for inputs near the 80-token
-// tiny-turn floor.
+// Round the stated number at a granularity matched to its own magnitude
+// (nearest-100 when the target is 1000+, nearest-10 below) — small turns
+// otherwise round to degenerate text ("around 0 tokens total (roughly 0-0)")
+// near the 80-token tiny-turn floor. Reproduces the lab-validated numbers
+// (5618 input → 1400/1100/1700). Same rule as chunk-brief-v3.
 function statedTarget(inputTokens: number, ratio: number): number {
-  const step = inputTokens >= 1000 ? 100 : 10;
-  return Math.round((inputTokens * ratio) / step) * step;
+  const raw = inputTokens * ratio;
+  const step = raw >= 1000 ? 100 : 10;
+  return Math.round(raw / step) * step;
 }
 
 export const detailedTurnCompressionV3: PromptTemplate<{

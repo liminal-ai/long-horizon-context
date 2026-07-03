@@ -9,7 +9,7 @@
 // never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, type Derivation, initLhc, type Lhc } from "../src/index.js";
-import type { ModelCall } from "../src/shared-tech/inference-types.js";
+import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
 import {
   cannedResponses,
   DERIVATION_TYPES,
@@ -142,7 +142,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     }
   });
 
-  it.skip("outcomes and receipts are stamped from the record, disagreeing with the adversarial canned text", async () => {
+  it.skip("outcomes are stamped from the record, disagreeing with the adversarial canned text", async () => {
     const responses = adversarialResponses();
     const { call } = recordingCall(responses);
     const { sdk } = inferenceSdk(call);
@@ -154,12 +154,10 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     expect(form?.metadata?.outcome).toBe("succeeded");
     expect(form?.content).toContain("failed");
     const rendering = forms.find(
-      (row) => row.derivationType === "turn_rendering" && row.state === "ready" && row.metadata?.receipts,
+      (row) => row.subjectId === "t1" && row.derivationType === "turn_rendering" && row.state === "ready",
     );
     expect(rendering).toBeDefined();
-    for (const receipt of rendering?.metadata?.receipts ?? []) {
-      expect(receipt.outcome).toBe("succeeded");
-    }
+    expect(rendering?.content).toContain("⇒ succeeded");
   });
 
   it.skip("handler equivalence: deterministic inference callbacks land the same rows with marker content and no provenance", async () => {
@@ -204,12 +202,15 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
       { ok: true, text: "  " },
       { ok: true, text: "the real smoothing" },
     ]);
+    const log: ModelCallInput[] = [];
     const call: ModelCall = (input) => {
       calls += 1;
+      log.push(structuredClone(input));
       return script(input);
     };
     const { sdk } = inferenceSdk(call);
-    const forms = await drainAll(sdk, await seedSmoothingOnly(sdk, freshStore()));
+    const filePath = await seedSmoothingOnly(sdk, freshStore());
+    const forms = await drainAll(sdk, filePath);
 
     const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
@@ -217,6 +218,23 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
     // Two boundary calls: the whitespace-only first attempt was rejected and
     // retried — it never landed as a ready form.
     expect(calls).toBe(2);
+
+    const derivationLog = await sdk.logging.queryDerivationLog(
+      { filePath },
+      { subjectId: "m1", derivationType: "smoothed_prompt" },
+    );
+    expect(derivationLog.ok).toBe(true);
+    if (!derivationLog.ok) return;
+    const failed = derivationLog.value.find((entry) => entry.eventKind === "inference_failed");
+    expect(failed).toEqual(
+      expect.objectContaining({
+        eventKind: "inference_failed",
+        payload: {
+          reason: expect.stringContaining("empty_output"),
+          requestMessages: log[0]?.messages,
+        },
+      }),
+    );
   });
 
   it("an all-whitespace script exhausts the budget: failed, reason provider_failure, last error naming empty_output", async () => {

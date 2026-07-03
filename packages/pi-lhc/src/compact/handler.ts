@@ -95,10 +95,11 @@ export async function handleSessionBeforeCompact(
       return await cancel("compact_error", outcome.reason);
     }
 
+    // An explicit compact command always proceeds — the handler never
+    // second-guesses it against the stored snapshot (Lee's ruling, twice:
+    // "blocking me from recompacting is dumb"). The only cancels are the
+    // floor gate above and real failures below.
     const preview = outcome.preview;
-    if (!preview.wouldProduceBands) {
-      return await cancel("no_op", "view already current — nothing new to compact");
-    }
     if (preview.firstKeptMessageId === null) {
       return await cancel("mapping_failed", "no PI-mappable first kept message");
     }

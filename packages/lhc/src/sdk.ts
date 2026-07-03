@@ -137,7 +137,6 @@ export type {
   ToolResultOperationClass,
   ToolResultPromptMode,
   ToolResultResponseShape,
-  ToolRunReceipt,
   ViewCompactParams,
   ViewContentsReport,
   ViewProfile,
@@ -155,7 +154,6 @@ export {
   type DbWriteTransaction,
   type DeterministicOpName,
   deterministicOutcomesSuffix,
-  deterministicReceiptsSuffix,
   deterministicText,
   type PostCommitHook,
   type ProviderProvenance,
@@ -382,6 +380,8 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
     model: DEFAULT_INFERENCE_LANE.model,
     // Stated prompt target (v3) is lower than these ratios — see detailed-turn-compression-v3.ts.
     prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression ?? "detailed-turn-compression-v3",
+    // These ratios (and the targets stated in prompts) are steering, not decided
+    // specs or tolerances. Ballparks that get the model in the zone; adjust freely.
     targetMinRatio: 0.35,
     targetMaxRatio: 0.65,
     targetAimRatio: 0.5,
@@ -390,7 +390,9 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   chunk_summary_brief: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v2",
+    // Stated prompt target (v3) is lower than these ratios — see chunk-brief-v3.ts.
+    prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v3",
+    // Steering, not specs — see the comment on detailed_turn_compression above.
     targetMinRatio: 0.08,
     targetMaxRatio: 0.2,
     targetAimRatio: 0.12,

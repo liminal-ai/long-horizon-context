@@ -193,7 +193,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     expect(detailedText).not.toContain(" | ");
   });
 
-  it("embeds receipts only in the member section that owns tool activity", async () => {
+  it("detailed assembly is compression text only — no receipt block, no tool argument leak", async () => {
     const double = createInferenceCallbacksDouble();
     const perTurnTokens = assemblyTokens("plain prompt", "plain answer");
     const toolTurnTokens = estimateTokens(`User:\n${smoothedPrompt("read the project plan")}`);
@@ -208,13 +208,14 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
 
     await drain(sdk, filePath);
 
-    const receipt = formOf(filePath, "t1", "turn_rendering")?.metadata?.receipts?.[0];
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
-    expect(receipt).toBeDefined();
-    expect(detailed?.content).toBe(
-      `[turn 0001]\n${FIXED_PROJECTION}\n[receipts ${receipt?.account}=>succeeded]\n\n[turn 0002]\n${FIXED_PROJECTION}`,
-    );
-    expect(detailed?.content?.endsWith(`[receipts ${receipt?.account}=>succeeded]`)).toBe(false);
+    expect(detailed?.content).toBe(`[turn 0001]\n${FIXED_PROJECTION}\n\n[turn 0002]\n${FIXED_PROJECTION}`);
+    expect(detailed?.content).not.toContain("[receipts");
+    expect(detailed?.content).not.toContain('({"');
+    expect(detailed?.content).not.toContain("docs/plan.md");
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    expect(rendering?.content).toContain("tool run · read_file · 1 call · 1 succeeded");
+    expect(rendering?.metadata).toBeUndefined();
   });
 
   it("uses ready pre_detailed_assembly as the floor for failed detailed members and logs the fallback", async () => {

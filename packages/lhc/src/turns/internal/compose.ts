@@ -5,9 +5,9 @@
 // or clock in the signature.
 //
 // Tool activity stays in message order and groups into maximal runs. A run
-// becomes one RenderingPart and one receipt: the account names tools, call
-// count, and per-call mechanical outcomes. Prompts and assistant text break a
-// run; thinking and runtime notes do not. Runs are never reordered.
+// becomes one RenderingPart whose header names tools, call count, and per-call
+// mechanical outcomes. Prompts and assistant text break a run; thinking and
+// runtime notes do not. Runs are never reordered.
 
 import { cleanPrompt } from "../../messages/index.js";
 import type {
@@ -17,7 +17,6 @@ import type {
   RenderingPart,
   RenderingPartKind,
   ToolOutcome,
-  ToolRunReceipt,
 } from "../../shared-tech/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
 
@@ -47,9 +46,6 @@ export interface CompositionInput {
   parts: RenderingPart[];
   gaps: DependencyGap[];
   recoveries: RecoveryReceipt[];
-  // Tool parts restated as account + outcome in message order, stamped on
-  // the rendering so chunk summaries read receipts without re-deriving them.
-  receipts: ToolRunReceipt[];
 }
 
 export interface RecoveryReceipt {
@@ -261,14 +257,9 @@ function runTallyText(counts: Record<ToolOutcome, number>): string {
   return segs.length > 0 ? segs.join(", ") : "no outcomes";
 }
 
-// One RenderingPart and one ToolRunReceipt for a maximal tool run: a run-level
-// header over member accounts in record order, each tool member stating its
-// own outcome. The receipt restates the same account and run outcome for
-// chunk summaries.
-function composeRun(members: readonly ComposeAtom[]): {
-  part: RenderingPart;
-  receipt: ToolRunReceipt;
-} {
+// One RenderingPart for a maximal tool run: a run-level header over member
+// accounts in record order, each tool member stating its own outcome.
+function composeRun(members: readonly ComposeAtom[]): RenderingPart {
   const { counts, outcome, callCount, toolNames } = tallyRun(members);
   const tools = toolNames.length > 0 ? toolNames.join(", ") : "tools";
   const header = `tool run · ${tools} · ${callCount} call${callCount === 1 ? "" : "s"} · ${runTallyText(counts)}`;
@@ -279,27 +270,18 @@ function composeRun(members: readonly ComposeAtom[]): {
   const lead = members[0];
   if (lead === undefined) throw new Error("composeRun: a tool run has no members");
   return {
-    part: {
-      messageId: lead.part.messageId,
-      kind: lead.part.kind,
-      text,
-      fallback: members.some((m) => m.isTool && m.part.fallback),
-      outcome,
-    },
-    receipt: {
-      messageId: lead.part.messageId,
-      activity: lead.part.kind === "tool_result" ? "tool_result" : "tool_call",
-      account: text,
-      outcome,
-    },
+    messageId: lead.part.messageId,
+    kind: lead.part.kind,
+    text,
+    fallback: members.some((m) => m.isTool && m.part.fallback),
+    outcome,
   };
 }
 
-// Compose the ordered RenderingParts and tool-run receipts. Per-message atoms
-// build first (derivations verbatim or fallbacks, per-message gaps); then maximal
-// runs of consecutive tool activity fold into one run part + one receipt each
-// with prompts/assistant text breaking runs and thinking/runtime notes
-// transparent to them.
+// Compose the ordered RenderingParts. Per-message atoms build first
+// (derivations verbatim or fallbacks, per-message gaps); then maximal runs of
+// consecutive tool activity fold into one run part each with prompts/assistant
+// text breaking runs and thinking/runtime notes transparent to them.
 export function composeRenderingInput(
   messages: readonly ComposeMessage[],
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
@@ -316,7 +298,6 @@ export function composeRenderingInput(
   }
 
   const parts: RenderingPart[] = [];
-  const receipts: ToolRunReceipt[] = [];
   let i = 0;
   while (i < atoms.length) {
     const atom = atoms[i];
@@ -337,8 +318,7 @@ export function composeRenderingInput(
       if (next.isTool) lastToolIdx = j;
     }
     const run = composeRun(atoms.slice(i, lastToolIdx + 1));
-    parts.push(run.part);
-    receipts.push(run.receipt);
+    parts.push(run);
     for (let k = lastToolIdx + 1; k <= j; k += 1) {
       const trailing = atoms[k];
       if (trailing !== undefined) parts.push(trailing.part);
@@ -346,7 +326,7 @@ export function composeRenderingInput(
     i = j + 1;
   }
 
-  return { parts, gaps, receipts, recoveries };
+  return { parts, gaps, recoveries };
 }
 
 function formatDialogueSection(part: RenderingPart): string {

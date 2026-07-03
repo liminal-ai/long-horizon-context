@@ -1,6 +1,4 @@
-// Pre-dial-in template kept under its versioned name. Receipt text is
-// structurally absent here: the brief handler strips it before inference is
-// called and this template's input carries outcomes only.
+// Pre-dial-in template kept under its versioned name for provenance.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 

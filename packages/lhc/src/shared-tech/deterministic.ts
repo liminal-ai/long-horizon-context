@@ -46,16 +46,6 @@ function ok(op: DeterministicOpName, input: unknown, text: string): Promise<Infe
   return Promise.resolve({ ok: true, text: deterministicText(op, input, text) });
 }
 
-// Test helper for locally assembled detailed artifacts that need stable
-// receipt text without crossing the inference boundary.
-export function deterministicReceiptsSuffix(
-  memberReceipts?: Array<Array<{ account: string; outcome: ToolOutcome }>>,
-): string {
-  const receipts = (memberReceipts ?? []).flat();
-  if (receipts.length === 0) return "";
-  return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
-}
-
 export function deterministicOutcomesSuffix(memberOutcomes?: ToolOutcome[][]): string {
   const outcomes = (memberOutcomes ?? []).flat();
   if (outcomes.length === 0) return "";

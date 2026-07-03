@@ -359,11 +359,11 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/lhc/src/turns/internal/compose.ts:159,352-379; fixes-feature-log item 14
 - Confidence: high
 
-### DERIV-17: Turn rendering groups consecutive tool activity into maximal runs with receipts
-- Decision: Consecutive tool calls/results compose into one run-level part (header naming tools, call count, mechanical outcome tally) and one ToolRunReceipt. Prompts/assistant text break runs; thinking/notes are transparent. Runs are never reordered; receipts are stored structured so chunk summaries read outcomes machine-readably.
-- Why: chunk summaries must read outcomes without re-deriving; run grouping compresses structure deterministically. [rationale: documented]
+### DERIV-17: Turn rendering groups consecutive tool activity into maximal runs
+- Decision: Consecutive tool calls/results compose into one run-level rendering part — a header naming the tools, call count, and mechanical outcome tally, followed by per-call lines with truncated arguments and outcomes. Prompts/assistant text break runs; thinking/notes are transparent. Runs are never reordered. Tool activity appears only in this rendering (the smooth band's material); it does not flow into chunk summaries (see DERIV-30).
+- Why: run grouping compresses structure deterministically for the full-texture tier. [rationale: documented]
 - Status: firm
-- Evidence: packages/lhc/src/turns/internal/compose.ts:6-10,144-158,264-296; commit 40facf7
+- Evidence: packages/lhc/src/turns/internal/compose.ts; commit 40facf7
 - Confidence: high
 
 ### DERIV-18: Composition fallback ladder per message kind; fallbacks are floors, never omissions
@@ -381,7 +381,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Confidence: high
 
 ### DERIV-20: chunk_summary_detailed is deterministic concatenation, not inference
-- Decision: Detailed chunk summaries concatenate member turn compressions with per-turn headers and receipt blocks. A failed member floors to its assembly text (warning-logged); a blocked member blocks the chunk summary; a not-ready member requeues.
+- Decision: Detailed chunk summaries concatenate member turn compressions with per-turn headers — nothing else (see DERIV-30). A failed member floors to its assembly text (warning-logged); a blocked member blocks the chunk summary; a not-ready member requeues.
 - Why: the texture is already in the member compressions; a second model pass adds cost without information. [rationale: inferred — the prior inference callback existed and was removed]
 - Rejected: inference-backed detailed chunk summary (callback + chunk-detailed-v1 prompt existed, since deleted).
 - Status: firm
@@ -401,7 +401,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Status: firm (mechanism); ratios tunable-config (compression 0.35/0.5/0.65; brief 0.08/0.12/0.2)
 - Evidence: packages/lhc/src/turns/internal/derive.ts:118-142,389; packages/lhc/src/shared-tech/derivation.ts:234-243
 - Confidence: medium
-- Open: whether under_min/over_max should ever gate (retry/floor) is an unresolved design question; per-model band bias may move into assignment config (fixes-feature-log items 14/19)
+- Open: whether under_min/over_max should ever gate (retry/floor) — current evidence says no (quality is judged by reading outputs; see INFER-15: these ranges are steering, not tolerances, so a stale-looking disposition stamp is not a defect). Ruled direction: per-model stated-target bias belongs in assignment config, not prompt text (nine-model sweep evidence; items 19/21).
 
 ### DERIV-23: Handlers never hold a DB transaction across inference
 - Decision: HandlerRunContext.openDb() gives short-transaction access never held across inference calls; handlers return derivation content as data and the queue util performs the completion write.
@@ -410,11 +410,11 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/lhc/src/shared-tech/derivation.ts:255-268
 - Confidence: high
 
-### DERIV-24: derivation_log is append-only per-attempt execution history, separate from derivation state
-- Decision: derivation_log captures per-attempt events (inference_succeeded/failed, retry_scheduled, fallback_applied, terminal_failed) with freeform JSON payloads; the derivation row remains the durable current state; durable outcome detail (attempts, lastError) is copied into derivation metadata before the queue row is deleted.
-- Why: troubleshooting needs attempt history but queue rows are deleted on completion; the queue row "is not an audit table". [rationale: documented]
-- Status: interim (successor: fixes-feature-log item 13 — persist full rendered request messages + raw response per attempt; ruled prerequisite for the next gorilla analysis round)
-- Evidence: packages/lhc/src/shared-tech/logging/derivation-log.ts:1-2; packages/lhc/src/shared-tech/derivation.ts:50-59; fixes-feature-log item 13
+### DERIV-24: derivation_log is append-only per-attempt execution history carrying full request/response
+- Decision: derivation_log captures per-attempt events (inference_succeeded/failed, retry_scheduled, fallback_applied, terminal_failed) with freeform JSON payloads; inference attempt events additionally persist `requestMessages` (the exact rendered messages the adapter sent) and `rawResponse` (the untrimmed model text, success only). The adapter returns these on its result (optional fields; absent on pre-render failures); handlers write them at the existing log sites. The derivation row remains the durable current state; durable outcome detail (attempts, lastError) is copied into derivation metadata before the queue row is deleted.
+- Why: troubleshooting needs attempt history but queue rows are deleted on completion; and reconstruction of what was sent was proven able to lie (the system-prompt-drop bug shipped invisibly behind correct-looking provenance) — only captured payloads count. [rationale: documented]
+- Status: firm
+- Evidence: packages/lhc/src/shared-tech/logging/derivation-log.ts; packages/lhc/src/shared-tech/inference-adapter.ts; fixes-feature-log item 13 (Done 2026-07-03)
 - Confidence: high
 
 ### DERIV-25: Synchronous derive shares the queue machinery (claim-or-refuse)
@@ -453,7 +453,16 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/lhc/src/shared-tech/tool-result-rendering.ts; packages/lhc/src/thread-view/internal/render.ts:22-29; fixes-feature-log Done: Slice A
 - Confidence: high
 
+### DERIV-30: Detailed and brief bands carry no tool calls or tool-activity summaries — dialog narrative only
+- Decision: A chunk's detailed summary is the concatenation of member turn compressions (which derive from the dialog-only assembly), and brief compresses that — so nothing tool-shaped survives below the smooth band. Tool activity lives in the record (full), the live tail (full), and the smooth band's renderings (truncated runs); below that, what tools did survives only as the assistant's own narrated account of it.
+- Why: explicit ruling (2026-07-02/03, second/third occurrence — earlier attempts to strip tool calls from detailed kept getting partially undone). The bands are memory, and mechanical tool traces are texture, not outcomes: the dialog narrative already carries what the tools accomplished in the assistant's words, and the record holds the mechanical truth one query away. Generic tool-outcome lines are summarization without editorial intent. Any future tool-outcome representation in these bands (e.g. failure-only receipts) gets designed deliberately against a demonstrated need. [rationale: documented — by ruling]
+- Rejected: per-run outcome receipt lines appended to chunk assemblies (shipped unratified, removed); always-on tool summaries at any compression tier.
+- Status: firm
+- Evidence: packages/lhc/src/turns/internal/compose.ts; packages/lhc/src/turns/internal/derive.ts; fixes-feature-log Done: "Receipts removed" (2026-07-03)
+- Confidence: high
+
 ### Graveyard
+- was ToolRunReceipt outcome lines riding turn_rendering metadata into chunk detailed assemblies → removed entirely; detailed/brief bands are dialog narrative only (DERIV-30; fixes-feature-log Done 2026-07-03)
 - was `smooth_turn_compression` (compression of the full-texture turn rendering) → replaced by `detailed_turn_compression` over `pre_detailed_assembly`, with v2→v3 thread migration (fixes-feature-log Done: Slices B/C)
 - was inference-backed chunk detailed summary (summarizeChunkDetailed callback + chunk-detailed-v1 prompt) → replaced by deterministic concatenation (bad-code-log; commit f9262b4)
 - was inference-backed tool-result summaries in the live path → replaced by forced 500-char truncation after queue clogging (fixes-feature-log Slice A, item 11)
@@ -864,7 +873,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Confidence: high
 
 ### QUEUE-15: Schema migrations run at thread-file open (current: v3)
-- Decision: Opening a thread through the threads domain guarantees the schema is current. v2→v3 (the rename migration) used JSON-key-anchored provenance rewrites that cannot touch receipt accounts, queue-item normalization covering queued AND claimed leftovers, and seed-first + transaction for crash-window safety.
+- Decision: Opening a thread through the threads domain guarantees the schema is current. v2→v3 (the rename migration) used JSON-key-anchored provenance rewrites that can only match provenance keys — never content or metadata prose, queue-item normalization covering queued AND claimed leftovers, and seed-first + transaction for crash-window safety.
 - Why: per-thread files can be arbitrarily old; migration must be crash-safe and must not corrupt user-visible text. [rationale: documented]
 - Status: firm
 - Evidence: packages/lhc/src/shared-tech/thread-migrate.ts; fixes-feature-log Done: Slice B
@@ -936,17 +945,17 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Confidence: high
 
 ### INFER-5: Default inference lane is codex / gpt-5.4-mini / thinking none — an interim placement, layered
-- Decision: All four inference kinds default to provider "codex", model gpt-5.4-mini, thinking none, with tuned ratios and v2 compression/brief prompts (SDK layer, sdk.ts). The pi-lhc connector overlays its own default table using PI's provider key "openai-codex" (model-call.ts) — the connector's table overrides the SDK's, and the two layers use different routing keys for the same lane. Both tables must be read together to know what actually runs.
-- Why: the currently-dialed control lane from prompt-lab tuning; the two-layer shape is a consequence of host-interpreted routing keys. [rationale: documented]
-- Status: interim (successors: fixes-feature-log items 17 native lane + 19 model exploration; per-model band bias may move into assignment config)
-- Evidence: packages/lhc/src/sdk.ts:355-398; packages/pi-lhc/src/inference/model-call.ts:272-276; commit f271a3a
+- Decision: All four inference kinds default to provider "codex", model gpt-5.4-mini, thinking none, with tuned ratios and the v3 compression/brief prompts (SDK layer, sdk.ts). The pi-lhc connector overlays its own default table using PI's provider key "openai-codex" (model-call.ts) — the connector's table overrides the SDK's, and the two layers use different routing keys for the same lane. Both tables must be read together to know what actually runs.
+- Why: the currently-dialed control lane from prompt-lab tuning — mini graded zero fidelity errors across the v3 sweeps. Successor candidates from the nine-model sweep (2026-07-02, single-run evidence in prompt-lab results): gpt-5.3-codex-spark (mini-grade quality, ~3× speed, plan-covered — pending item 21's CLI-harness provider) and oss-120b-low on Cerebras (~1,100 tok/s, tier-3 fidelity) for the high-volume lanes. The two-layer shape is a consequence of host-interpreted routing keys. [rationale: documented]
+- Status: interim (successors: fixes-feature-log items 17 native lane + 19 model exploration; per-model stated-target bias ruled toward assignment config)
+- Evidence: packages/lhc/src/sdk.ts; packages/pi-lhc/src/inference/model-call.ts:272-276; prompt-lab results (runs.jsonl)
 - Confidence: high
 
 ### INFER-6: Prompt registry is name-keyed modules; versioning lives in the name
-- Decision: PROMPT_REGISTRY maps names (smoothing-v1, detailed-turn-compression-v2, …) to {name, render} modules. Dial-in = add a module + edit config; no handler/adapter/host changes. PROMPT_NAMES exports valid names; DEFAULT_PROMPT_NAMES records per-kind defaults.
+- Decision: PROMPT_REGISTRY maps names (smoothing-v1, detailed-turn-compression-v3, chunk-brief-v3, …) to {name, render} modules; superseded versions stay registered for provenance. Dial-in = add a module + edit config; no handler/adapter/host changes. PROMPT_NAMES exports valid names; DEFAULT_PROMPT_NAMES records per-kind defaults (compression and brief default to their v3 modules).
 - Why: prompt tuning must not touch pipeline code. [rationale: documented]
-- Status: firm (template contents actively tuned — fixes-feature-log item 14 in flight)
-- Evidence: packages/lhc/src/shared-tech/prompts/index.ts:1-44; commit e2a5d4c
+- Status: firm
+- Evidence: packages/lhc/src/shared-tech/prompts/index.ts; commit e2a5d4c
 - Confidence: high
 
 ### INFER-7: One adapter pipeline for every kind — bound, render, safeCall, classify, reject-empty, stamp provenance
@@ -970,12 +979,12 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/lhc/src/shared-tech/inference-types.ts:43-117; packages/lhc/src/sdk.ts:504
 - Confidence: high
 
-### INFER-10: Assignment ratios merge into the prompt render input; handlers own token arithmetic
-- Decision: An assignment's targetMin/Aim/MaxRatio merge into the render input so templates can state targets in both percentages and absolute tokens; concrete token targets are computed by the owning handler from actual input size, never by the adapter or template.
-- Why: prompts state targets both ways (ruled prompt principle); the handler owns arithmetic. [rationale: documented]
+### INFER-10: Assignment ratios merge into the prompt render input; handlers own token arithmetic; v3 templates own their stated figures
+- Decision: An assignment's targetMin/Aim/MaxRatio merge into the render input, and concrete token targets are computed by the owning handler from actual input size — that plumbing stands. The v3 templates, however, deliberately ignore the passed acceptance-derived targets and compute their *stated* token figures internally from inputTokens × their own stated ratios (see INFER-13); the handler-computed targets remain what sizeDisposition measures against.
+- Why: the handler owns acceptance arithmetic; the template owns what the model is told — two different numbers by doctrine. [rationale: documented]
 - Status: firm
-- Evidence: packages/lhc/src/shared-tech/inference-adapter.ts:50-73; packages/lhc/src/turns/internal/derive.ts:118; fixes-feature-log item 14
-- Confidence: medium
+- Evidence: packages/lhc/src/shared-tech/inference-adapter.ts:50-73; packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts; packages/lhc/src/turns/internal/derive.ts
+- Confidence: high
 
 ### INFER-11: Prompt templates are golden-pinned; the registry is type-pinned read-only
 - Decision: Every registry template has a golden file pinning rendered output (drift visible in review before any model call); PromptTemplate<never> pins the registry read-only at the type level — rendering goes only through the adapter, which owns the kind→input pairing. The tool-result v2 template deliberately hides diagnostic routing fields (operationClass/responseShape) from the rendered prompt.
@@ -989,6 +998,30 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Why: every mystery of the tuning round lived below the callback boundary (the system-prompt drop shipped invisibly); direct calls are wire-observable and behave identically across hosts. [rationale: documented]
 - Status: planned (fixes-feature-log items 17 + 21; sequencing: OpenRouter first, high-speed provider before any high-frequency inference)
 - Evidence: fixes-feature-log items 17, 21
+- Confidence: high
+
+### INFER-13: Stated targets and acceptance windows are deliberately different numbers
+- Decision: A compression template *states* a target chosen to steer the model (turn v3: 20–30%; brief v3: 5–10%), while the assignment's ratios define the *acceptance* window sizeDisposition measures against (35–65 / 8–20). The stated bias lives in the template (which computes its stated token figures from inputTokens, magnitude-rounded: nearest-100 when the figure ≥1000, else nearest-10); acceptance lives in assignment config. Both sites carry a comment marking the divergence as deliberate.
+- Why: models don't land on what you say — GPT-family lands 1.5–2× above the stated ask (measured across the v3 sweeps), so you state low to land in-window. The stated range is a steering input, not the requirement. [rationale: documented — by ruling]
+- Rejected: stating the acceptance band verbatim (the v2 failure — GPT rode its top and beyond).
+- Status: firm (doctrine); stated/acceptance values tunable-config
+- Evidence: packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts; chunk-brief-v3.ts; packages/lhc/src/sdk.ts (assignment comment); fixes-feature-log Done: item 14
+- Confidence: high
+- Open: per-model stated-target bias in assignment config (Opus/gemma undershoot ~0.5×, GPT overshoots — one prompt can't serve both; items 19/21)
+
+### INFER-14: Derivation prompts are minimal, single user message, narrative register, no examples
+- Decision: The v3 prompt doctrine, applying to compression templates and to future prompt work: (a) one user message, no system message — nothing for a host lane to drop or rewrap (the item-12 failure class eliminated by construction); (b) minimal trust-the-model instructions in Lee's voice — task, size, voice, judgment delegation; enumerated keep/drop rules and guardrail sentences are added only against that lane's *measured* failures (+55 tokens of untargeted guardrails measurably cost 20–30 ratio points on dense inputs); (c) output register is third-person past-tense narrative — a transformation that cannot be satisfied by copying, which is what broke the echo failure mode; (d) no embedded examples — and if examples ever return, never harvested from this project's own content (v2 brief's examples about this codebase bled into production output the moment input topics overlapped).
+- Why: measured head-to-head — the 253-token minimal prompt beat the engineered alternative on every axis, and each prohibition traces to a specific production defect. [rationale: documented — by ruling, with lab evidence]
+- Rejected: system-message prompts (droppable); example galleries in production prompts (contamination + token cost); dialogue-register output (satisfiable by transcription).
+- Status: firm
+- Evidence: packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts; chunk-brief-v3.ts (header comment records the contamination lesson); fixes-feature-log Done: item 14, chunk-brief-v3
+- Confidence: high
+
+### INFER-15: Compression size targets — in prompts and in config — are steering guidelines, never specs
+- Decision: The token ranges and percentages stated in compression prompts, and the target ratios in assignment config, are ballparks that get the model into the zone we need. They are tested guidelines, not decided specifications with tolerances. Outputs landing outside a stated or configured range are not defects; whether output is right is judged by reading it. Adjust these numbers freely without a design ruling.
+- Why: repeated ruling — models treat any stated range as a bias, not a bound, and we sometimes state ranges we know a model won't stay in just to push it in a direction. Treating these numbers as locked specs keeps producing manufactured "recalibration decisions" about mismatches that have no consequence. [rationale: documented — by ruling, 2026-07-03]
+- Status: firm (rule); every value involved is tunable-config
+- Evidence: packages/lhc/src/sdk.ts (comment at the assignment ratios); packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts
 - Confidence: high
 
 ### Graveyard
@@ -1091,11 +1124,12 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/pi-lhc/src/serving/context.ts:38-67
 - Confidence: medium
 
-### PILHC-14: The compact bridge is a fixed ladder that cancels on any doubt
-- Decision: session_before_compact runs: flush pending capture → refuse on capture failure → floor-gate on measured serving tokens → previewCompact → refuse when no bands would be produced ("view already current") → map firstKeptMessageId via the seed-entry map (cancel if unmappable) → compact → require receipt.renderedBands → assemble PI's compaction result from rendered bands + first-kept entry id. Every failure path cancels PI's compact with a coded diagnostic rather than letting PI's own compaction run over LHC's view.
-- Why: LHC replaces PI's compaction; a half-working bridge must cancel loudly, not corrupt the session. [rationale: documented]
+### PILHC-14: The compact bridge is a fixed ladder that cancels on real failure — never on second-guessing
+- Decision: session_before_compact runs: flush pending capture → refuse on capture failure → floor-gate on measured serving tokens → previewCompact → map firstKeptMessageId via the seed-entry map (cancel if unmappable) → compact → require receipt.renderedBands → assemble PI's compaction result from rendered bands + first-kept entry id. Every failure path cancels PI's compact with a coded diagnostic rather than letting PI's own compaction run over LHC's view. There is deliberately NO "nothing new to compact" gate: an explicit compact command executes, period — the only cancels are the floor gate and real errors. (Same-point rewrites re-render bands from current derivation content, which is what the re-derive tuning loop depends on.)
+- Why: LHC replaces PI's compaction; a half-working bridge must cancel loudly, not corrupt the session. The no-second-guessing rule is a repeated ruling — skeleton-comparison gates blocked legitimate re-compacts twice (they cannot see content changes, and even a new tail turn doesn't move the arrangement); the ruling is recorded at the deletion site in the handler. [rationale: documented — by ruling]
+- Rejected: unchanged-view no_op cancel (shipped twice in different forms, removed both times).
 - Status: firm
-- Evidence: packages/pi-lhc/src/compact/handler.ts:53-142
+- Evidence: packages/pi-lhc/src/compact/handler.ts; fixes-feature-log Done: "Explicit compact always proceeds" (2026-07-02)
 - Confidence: high
 
 ### PILHC-15: The compact floor gate measures the real serving context
@@ -1164,6 +1198,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 ### Graveyard
 - was turn_not_ready compact cancel branch → removed after openTurnHasMembers left previewCompact (fixes-feature-log item 2, Done)
 - was the bridge passing system prompts only in messages → replaced by partitionSystemPrompt (fixes-feature-log item 12, Done)
+- was the unchanged-view "no_op" compact cancel (skeleton comparison via wouldProduceBands) → removed; explicit compact always proceeds past preview (PILHC-14; fixes-feature-log Done 2026-07-02)
 
 ## VOCAB
 
@@ -1319,7 +1354,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 ### PROC-5: Existing it.skip tests are acknowledged debt
 - Decision: Skipped tests (old inference/tool-result paths) mark unfinished or deferred behavior and are not green coverage.
 - Why: visible debt beats deleted-or-faked coverage. [rationale: inferred]
-- Status: interim (no single successor; largely tied to fixes-feature-log items 4 and 11)
+- Status: interim (no single successor; the remaining skips are tied to fixes-feature-log item 11 — item 4's share was resolved 2026-07-03)
 - Evidence: packages/lhc/test/inference-adapter.test.ts; packages/lhc/test/tool-result-rendering.test.ts
 - Confidence: medium
 
@@ -1366,10 +1401,10 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Confidence: medium
 
 ### PROC-12: Prompt tuning happens in a lab against real specimens; promotion only when proven
-- Decision: Prompts are tuned in test/prompt-lab with self-contained case files harvested from real threads (measured ratios, finish_reason capture, model/effort sweeps); deterministic input normalization is tried test-file-first and promoted to the composer when proven. Ruled principles: stated target biases off the acceptance band per model; targets in percentages AND absolute tokens; examples are real outputs with measured ratios, never invented.
+- Decision: Prompts are tuned in test/prompt-lab with self-contained case files harvested from real threads (measured ratios, finish_reason capture, model/effort sweeps); deterministic input normalization is tried test-file-first and promoted to the composer only when the promoted artifact byte-matches what the runs validated. Ruled principles: stated target biases off the acceptance band per model (INFER-13); targets in percentages AND absolute tokens; less-is-more — additions to a prompt must trace to that lane's measured failures (INFER-14), and production prompts carry no examples. Iteration against live threads uses the per-chunk/per-turn re-derive surfaces, not re-fills.
 - Why: shipped v2 prompts lost previously-validated learnings; the lab makes learnings durable and testable. [rationale: documented]
 - Status: firm
-- Evidence: fixes-feature-log items 14, 15; packages/lhc/test/prompt-lab/
+- Evidence: fixes-feature-log items 14 (Done), 15; packages/lhc/test/prompt-lab/
 - Confidence: high
 
 ### PROC-13: Wire-truth capture and adversarial verification are the norm for risky changes
@@ -1384,13 +1419,6 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Why: history in comments makes code read like an archaeological record. [rationale: documented]
 - Status: firm
 - Evidence: docs/onboard/bad-code-log.md comment entries; commit series 9ed43d8…4dde316
-- Confidence: high
-
-### PROC-15: Real-inference test fixes are deliberately deferred while prompts move
-- Decision: inference-real.test.ts is left failing on provenance/call-count drift until the turn-compression prompt work lands, so expectations update once against the final prompt set.
-- Why: churn control during active tuning. [rationale: documented]
-- Status: interim (successor: fixes-feature-log item 4)
-- Evidence: fixes-feature-log item 4
 - Confidence: high
 
 ### PROC-16: Append-only working logs are the between-sessions memory

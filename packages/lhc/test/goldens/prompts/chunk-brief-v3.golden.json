@@ -1,0 +1,6 @@
+[
+  {
+    "role": "user",
+    "content": "<instructions-for-summarizing>\nYou write brief memory notes from AI coding-session history. The note below replaces a longer stretch of conversation in an agent's memory, so it must carry what a future agent would otherwise have to rediscover: what was decided, what was corrected, what was learned, what was left open.\n\nYour job is to condense the following conversation summary down to roughly 5-10% of its original size — around 150 tokens total (roughly 100-200). Write it as past-tense narrative prose, not a transcript and not live instructions. Old plans read as history (\"at that point the next step was...\"), never as commands to the reader. Keep exact names, paths, numbers, and error text when they carry the meaning.\n</instructions-for-summarizing>\n\n<content-for-summarizing>\n[turn 0001]\nUser inspected notes/plan.md and found 3 open items.\n</content-for-summarizing>"
+  }
+]

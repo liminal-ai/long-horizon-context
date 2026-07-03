@@ -274,7 +274,7 @@ describe("FIX-1: background mode honors the backoff eligibility gate", () => {
 });
 
 // ── Fix 2 (P2): tool activity composes into grouped run parts (AC-3.4) ────────
-describe("FIX-2: consecutive tool activity groups into run parts and run receipts", () => {
+describe("FIX-2: consecutive tool activity groups into run parts", () => {
   it("prompt, call, result, call, result, text, call, result → exactly two run parts (sizes 2 and 1)", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = sdkFor(double, "manual");
@@ -300,17 +300,17 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     expect(batch.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
 
-    // prompt | runA | assistant text | runB — two outcome-bearing run receipts,
-    // anchored at the run's first tool message, not one receipt per tool message.
+    // prompt | runA | assistant text | runB — two outcome-bearing run parts in
+    // the smooth-band rendering, anchored at each run's first tool message.
     const rendering = readDerivedForms(filePath).find(
       (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     );
-    const receipts = rendering?.metadata?.receipts;
-    expect(receipts).toHaveLength(2);
-    expect(receipts?.map((r) => r.messageId)).toEqual(["m2", "m7"]);
-    expect(receipts?.map((r) => r.outcome)).toEqual(["succeeded", "succeeded"]);
-    expect(receipts?.[0]?.account).toContain("2 calls");
-    expect(receipts?.[1]?.account).toContain("1 call");
+    const runText = rendering?.content ?? "";
+    const runHeaders = [...runText.matchAll(/\[tool run · [^\]]+\]/g)].map((match) => match[0]);
+    expect(runHeaders).toHaveLength(2);
+    expect(runHeaders[0]).toContain("2 calls");
+    expect(runHeaders[1]).toContain("1 call");
+    expect(rendering?.metadata).toBeUndefined();
   });
 
   it("a mixed-outcome run stays explicit and names the failure", async () => {
@@ -336,19 +336,14 @@ describe("FIX-2: consecutive tool activity groups into run parts and run receipt
     expect(batch.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
 
-    const receipts = readDerivedForms(filePath).find(
+    const rendering = readDerivedForms(filePath).find(
       (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
-    )?.metadata?.receipts;
-    expect(receipts).toHaveLength(1);
-    const receipt = receipts?.[0];
-    // The run reads failed at run level because one call failed; the account
-    // keeps the success explicit (never collapsed) and names the failed result.
-    expect(receipt?.outcome).toBe("failed");
-    expect(receipt?.account).toContain("1 succeeded, 1 failed");
-    const failedResult = readDerivedForms(filePath).find(
-      (f) => f.subjectId === "m5" && f.derivationType === "tool_result_summary",
-    )?.content;
-    expect(receipt?.account).toContain(`${failedResult} ⇒ failed`);
+    );
+    const runText = rendering?.content ?? "";
+    // The run reads failed at run level because one call failed; the header
+    // line carries an explicit mixed tally.
+    expect(runText).toContain("[tool run · edit_file · 2 calls · 1 succeeded, 1 failed]");
+    expect(rendering?.metadata).toBeUndefined();
   });
 });
 

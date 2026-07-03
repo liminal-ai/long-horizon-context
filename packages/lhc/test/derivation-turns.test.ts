@@ -346,22 +346,11 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
     expect(formOf(filePath, "t1", "turn_rendering")?.state).toBe("ready");
 
     const rendering = formOf(filePath, "t1", "turn_rendering");
-    const receipts = rendering?.metadata?.receipts ?? [];
-    expect(receipts).toHaveLength(1);
+    const runText = rendering?.content ?? "";
     // Fix 2 grouping (AC-3.4): the three-call edit run folds into ONE run part
     // after the prompt — outcome-explicit, not one part per tool message.
-    expect(receipts[0]?.messageId).toBe("m2");
-    const run = receipts[0];
-    // A run with any failed call reads failed at run level — the state-changing
-    // failure cannot be lost — and the mixed tally stays explicit, never a
-    // vague success.
-    expect(run?.outcome).toBe("failed");
-    const account = run?.account ?? "";
-    expect(account).toContain("2 succeeded, 1 failed");
-    expect(account).not.toMatch(/\b3 succeeded\b/);
-    // Composition consumed the ready forms, not the raw record: every tool
-    // message's summary form content rides the run account verbatim, each
-    // stamped with its record outcome — the failed pair (m4/m5) included.
+    expect(runText).toContain("[tool run · edit_file · 3 calls · 2 succeeded, 1 failed]");
+    expect(runText).not.toMatch(/\b3 succeeded\b/);
     const toolMessages = [
       { id: "m2", kind: "tool_call", outcome: "succeeded", text: 'edit_file({"path":"a.txt"})' },
       { id: "m3", kind: "tool_result", outcome: "succeeded" },
@@ -373,7 +362,7 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
     for (const m of toolMessages) {
       const summary = m.kind === "tool_call" ? m.text : formOf(filePath, m.id, "tool_result_summary")?.content;
       expect(summary).toBeDefined();
-      expect(account).toContain(`${summary} ⇒ ${m.outcome}`);
+      expect(runText).toContain(`${summary} ⇒ ${m.outcome}`);
     }
   });
 });
@@ -550,13 +539,12 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(detailed?.content).not.toBe(brief?.content);
   });
 
-  it("detailed preserves the tool-run receipts; brief consumes the detailed text", async () => {
+  it("detailed is compression-only assembly; brief consumes the detailed text", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
-    // The run-receipts fixture: a two-call edit run, one isError, closing
-    // into its own chunk so both summaries derive over it.
+    // Two-call edit run, one isError, closing into its own chunk so both summaries derive over it.
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "edit two files" } }),
       validEvent("tool_call", {
@@ -575,26 +563,19 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     ]);
     await drain(sdk, filePath);
 
-    // Fix 2 grouping (AC-3.4/3.8): the two-call run folds into ONE receipt —
-    // its account names each call's summary content with its record outcome,
-    // and the run-level outcome is failed because one half failed. The summary
-    // contents are what the detailed summary must preserve.
     const callA = 'edit_file({"path":"ok.txt"})';
     const resultA = formOf(filePath, "m3", "tool_result_summary")?.content;
     const callB = 'edit_file({"path":"ro.txt"})';
     const resultB = formOf(filePath, "m5", "tool_result_summary")?.content;
-    const receipts = formOf(filePath, "t1", "turn_rendering")?.metadata?.receipts;
-    expect(receipts).toHaveLength(1);
-    const receipt = receipts?.[0];
-    expect(receipt?.messageId).toBe("m2");
-    expect(receipt?.activity).toBe("tool_call");
-    expect(receipt?.outcome).toBe("failed");
-    const account = receipt?.account ?? "";
-    expect(account).toContain("1 succeeded, 1 failed");
-    expect(account).toContain(`${callA} ⇒ succeeded`);
-    expect(account).toContain(`${resultA} ⇒ succeeded`);
-    expect(account).toContain(`${callB} ⇒ failed`);
-    expect(account).toContain(`${resultB} ⇒ failed`);
+    const rendering = formOf(filePath, "t1", "turn_rendering");
+    const account = "tool run · edit_file · 2 calls · 1 succeeded, 1 failed";
+    const runText = rendering?.content ?? "";
+    expect(runText).toContain(account);
+    expect(runText).toContain(`${callA} ⇒ succeeded`);
+    expect(runText).toContain(`${resultA} ⇒ succeeded`);
+    expect(runText).toContain(`${callB} ⇒ failed`);
+    expect(runText).toContain(`${resultB} ⇒ failed`);
+    expect(rendering?.metadata).toBeUndefined();
 
     // Seam evidence: only the brief call crosses the inference boundary, and
     // it receives the detailed chunk text rather than raw member projections.
@@ -605,16 +586,17 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(JSON.stringify(briefInput)).not.toContain(
       formOf(filePath, "t1", "detailed_turn_compression")?.content ?? "",
     );
-    expect(detailedText).toContain(`${account}=>failed`);
-    for (const summary of [callA, resultA, callB, resultB]) expect(detailedText).toContain(summary as string);
+    expect(detailedText).not.toContain("[receipts");
+    expect(detailedText).not.toContain('({"');
+    for (const summary of [callA, resultA, callB, resultB]) expect(detailedText).not.toContain(summary as string);
 
-    // Artifact evidence: detailed carries the run receipt's account and
-    // outcome; brief is produced from detailed and carries size metadata.
+    // Artifact evidence: detailed is member compression only; brief is produced
+    // from detailed and carries size metadata.
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
-    expect(detailed?.content).toContain(`${account}=>failed`);
     expect(detailed?.content).toContain("[turn 0001]");
+    expect(detailed?.content).not.toContain("[receipts");
     expect(brief?.metadata?.sizeDisposition).toBeDefined();
   });
 

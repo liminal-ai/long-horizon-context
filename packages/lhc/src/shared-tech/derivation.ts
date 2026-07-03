@@ -36,24 +36,11 @@ export interface Derivation {
   derivedAt?: string;
 }
 
-// One tool call's or result's receipt within a turn's composed account: the
-// account text, as composed, plus the mechanically derived outcome. Derived
-// from composition input, never from model prose; stamped on turn_rendering so
-// chunk summaries can read receipts machine-readably in turn order.
-export interface ToolRunReceipt {
-  messageId: string;
-  activity: "tool_call" | "tool_result";
-  account: string;
-  outcome: ToolOutcome;
-}
-
-// Mechanically stamped derivation metadata: tool outcomes, turn rendering's
-// tool-run receipts, and retry-exhaustion attempts/last-error copied from the
-// work item before its row is deleted. The queue is not an audit table; durable
-// outcome detail lives here.
+// Mechanically stamped derivation metadata: tool outcomes and retry-exhaustion
+// attempts/last-error copied from the work item before its row is deleted. The
+// queue is not an audit table; durable outcome detail lives here.
 export interface DerivationMetadata {
   outcome?: ToolOutcome;
-  receipts?: ToolRunReceipt[];
   attempts?: number;
   lastError?: string;
   discardReason?: string;
@@ -94,9 +81,17 @@ export interface ProviderProvenance {
   prompt: string;
 }
 
+export type InferenceRequestMessage = { role: "system" | "user"; content: string };
+
 export type InferenceResult =
-  | { ok: true; text: string; provenance?: ProviderProvenance }
-  | { ok: false; retryable: boolean; reason: string };
+  | {
+      ok: true;
+      text: string;
+      provenance?: ProviderProvenance;
+      requestMessages?: InferenceRequestMessage[];
+      rawResponse?: string;
+    }
+  | { ok: false; retryable: boolean; reason: string; requestMessages?: InferenceRequestMessage[] };
 
 // Message kinds a rendering part can carry — mirrors the intake event-kind
 // vocabulary minus turn_end (turn_end never projects a message). Mirrored

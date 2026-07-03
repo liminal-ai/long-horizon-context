@@ -249,7 +249,7 @@ describe("handleSessionBeforeCompact", () => {
     expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
 
-  it("cancels no_op when view is already current without calling compact", async () => {
+  it("proceeds past an unchanged-view preview — explicit compact is never second-guessed", async () => {
     const mocks = mockInstance({
       preview: {
         kind: "ok",
@@ -267,10 +267,12 @@ describe("handleSessionBeforeCompact", () => {
         diagnostics.push(d);
       },
     });
+    // wouldProduceBands=false must NOT cancel; this preview also has no
+    // mappable first-kept message, so the handler falls through to the next
+    // real check rather than a no_op.
     expect(result).toEqual({ cancel: true });
-    expect(diagnostics[0]?.code).toBe("no_op");
-    expect(diagnostics[0]?.reason).toBe("view already current — nothing new to compact");
-    expect(mocks.compactSpy).not.toHaveBeenCalled();
+    expect(diagnostics[0]?.code).toBe("mapping_failed");
+    expect(diagnostics.some((d) => d.code === "no_op")).toBe(false);
   });
 
   it("cancels mapping_failed before compact writes", async () => {

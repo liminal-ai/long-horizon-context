@@ -9,7 +9,7 @@
 // safeCall.
 
 import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
-import type { InferenceCallbacks, InferenceResult } from "./derivation.js";
+import type { InferenceCallbacks, InferenceRequestMessage, InferenceResult } from "./derivation.js";
 import type { ModelAssignment, ModelCallFailureKind, ResolvedInferenceConfig } from "./inference-types.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
 
@@ -37,13 +37,18 @@ function boundContent(content: string, maxInputChars: number): string {
 // code-before-first-colon convention. Retryable failures lead with
 // `provider_failure`, the code exhausted derivations already use; terminal
 // kinds lead with the kind itself and land failed immediately.
-function classifiedFailure(kind: ModelCallFailureKind, message: string): InferenceResult {
+function classifiedFailure(
+  kind: ModelCallFailureKind,
+  message: string,
+  requestMessages?: InferenceRequestMessage[],
+): InferenceResult {
   const { retryable } = FAILURE_CLASSIFICATION[kind];
   const detail = message === "" ? kind : `${kind}: ${message}`;
   return {
     ok: false,
     retryable,
     reason: retryable ? `provider_failure: ${detail}` : detail,
+    ...(requestMessages !== undefined ? { requestMessages } : {}),
   };
 }
 
@@ -99,7 +104,7 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
       config.timeoutMs,
     );
     if (!result.ok) {
-      return classifiedFailure(result.kind, result.message);
+      return classifiedFailure(result.kind, result.message, messages);
     }
     // Shaping: surrounding whitespace never becomes derivation content — and a
     // model that returned nothing but whitespace has not produced a
@@ -107,7 +112,7 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
     // `empty_output` is adapter-generated; hosts never return it.
     const text = result.text.trim();
     if (text === "") {
-      return classifiedFailure("empty_output", "model returned empty or whitespace-only text");
+      return classifiedFailure("empty_output", "model returned empty or whitespace-only text", messages);
     }
     // Provenance is the assignment's three config-known strings, copied, never
     // authored from model output.
@@ -119,6 +124,8 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
         model: assignment.model,
         prompt: assignment.prompt,
       },
+      requestMessages: messages,
+      rawResponse: result.text,
     };
   };
 

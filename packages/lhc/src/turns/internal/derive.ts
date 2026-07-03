@@ -13,7 +13,6 @@ import type {
   HandlerRunContext,
   RenderingPart,
   ResolvedSdkConfig,
-  ToolRunReceipt,
   WorkHandler,
 } from "../../shared-tech/index.js";
 import {
@@ -96,21 +95,10 @@ function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
     .join("\n\n");
 }
 
-function detailedReceiptBlock(receipts: readonly ToolRunReceipt[]): string {
-  if (receipts.length === 0) return "";
-  return `[receipts ${receipts.map((r) => `${r.account}=>${r.outcome}`).join("; ")}]`;
-}
-
-function composeDetailedChunkSummary(
-  memberProjections: readonly string[],
-  memberReceipts: readonly (readonly ToolRunReceipt[])[],
-): string {
+function composeDetailedChunkSummary(memberProjections: readonly string[]): string {
   return memberProjections
     .map((memberText, index) => {
-      const receiptBlock = detailedReceiptBlock(memberReceipts[index] ?? []);
-      const section = [`[turn ${String(index + 1).padStart(4, "0")}]`, memberText];
-      if (receiptBlock !== "") section.push(receiptBlock);
-      return section.join("\n");
+      return [`[turn ${String(index + 1).padStart(4, "0")}]`, memberText].join("\n");
     })
     .join("\n\n");
 }
@@ -212,7 +200,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     db,
     messages.map((message) => message.messageId),
   );
-  const { parts, receipts, recoveries } = composeRenderingInput(messages, derivations);
+  const { parts, recoveries } = composeRenderingInput(messages, derivations);
   const assembly = composePreDetailedAssembly(messages, derivations);
   const seenRecoveries = new Set<string>();
   const mergedRecoveries = [...recoveries, ...assembly.recoveries].filter((recovery) => {
@@ -242,9 +230,6 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const threadId = run.threadId;
   const compressionSourceVersion =
     readTurnDerivationRow(db, "turn", turnId, "pre_detailed_assembly")?.sourceVersion ?? 1;
-  const renderingMetadata: DerivationMetadata = {
-    ...(receipts.length > 0 ? { receipts } : {}),
-  };
 
   return {
     ok: true,
@@ -254,7 +239,6 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         subjectId: turnId,
         derivationType: "turn_rendering",
         content: renderingText,
-        ...(Object.keys(renderingMetadata).length > 0 ? { metadata: renderingMetadata } : {}),
       },
       {
         subjectKind: "turn",
@@ -342,7 +326,13 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
           derivationType: "detailed_turn_compression",
         },
         eventKind: "inference_failed",
-        payload: { reason: compressionResult.reason, attempts: claimAttempts + 1 },
+        payload: {
+          reason: compressionResult.reason,
+          attempts: claimAttempts + 1,
+          ...(compressionResult.requestMessages !== undefined
+            ? { requestMessages: compressionResult.requestMessages }
+            : {}),
+        },
       },
     );
     if (!compressionExhausted(compressionResult, claimAttempts, run.config.retry.budget)) {
@@ -365,6 +355,12 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
           payload: {
             ...("provenance" in compressionResult && compressionResult.provenance !== undefined
               ? { provenance: compressionResult.provenance }
+              : {}),
+            ...("requestMessages" in compressionResult && compressionResult.requestMessages !== undefined
+              ? { requestMessages: compressionResult.requestMessages }
+              : {}),
+            ...("rawResponse" in compressionResult && compressionResult.rawResponse !== undefined
+              ? { rawResponse: compressionResult.rawResponse }
               : {}),
           },
         },
@@ -449,9 +445,9 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
   };
 };
 
-// Detailed is deterministic material assembly from stored member compressions
-// plus per-turn tool-run receipts. Brief is inference-backed and consumes the
-// stored detailed summary for the same chunk.
+// Detailed is deterministic material assembly from stored member compressions.
+// Brief is inference-backed and consumes the stored detailed summary for the
+// same chunk.
 type DetailedChunkComposition =
   | Extract<HandlerOutcome, { ok: false }>
   | { ok: true; text: string; fallbackLogs: LogEntry[] };
@@ -491,10 +487,7 @@ function composeDetailedChunkFromMembers(db: DatabaseSync, chunkId: string): Det
   }
   return {
     ok: true,
-    text: composeDetailedChunkSummary(
-      memberProjections,
-      members.map((member) => member.receipts),
-    ),
+    text: composeDetailedChunkSummary(memberProjections),
     fallbackLogs,
   };
 }
@@ -617,7 +610,10 @@ function chunkBriefHandler(): WorkHandler {
             derivationType: "chunk_summary_brief",
           },
           eventKind: "inference_failed",
-          payload: { reason: result.reason },
+          payload: {
+            reason: result.reason,
+            ...(result.requestMessages !== undefined ? { requestMessages: result.requestMessages } : {}),
+          },
         },
       );
       return inferenceFailed(result);
@@ -633,6 +629,8 @@ function chunkBriefHandler(): WorkHandler {
         eventKind: "inference_succeeded",
         payload: {
           ...(result.provenance !== undefined ? { provenance: result.provenance } : {}),
+          ...(result.requestMessages !== undefined ? { requestMessages: result.requestMessages } : {}),
+          ...(result.rawResponse !== undefined ? { rawResponse: result.rawResponse } : {}),
         },
       },
     );

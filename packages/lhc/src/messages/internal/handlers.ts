@@ -8,6 +8,7 @@ import type {
   HandlerDerivationWrite,
   HandlerOutcome,
   HandlerRunContext,
+  InferenceRequestMessage,
   InferenceResult,
   ToolOutcome,
   WorkHandler,
@@ -134,7 +135,10 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
           derivationType: "smoothed_prompt",
         },
         eventKind: "inference_failed",
-        payload: { reason: derived.reason },
+        payload: {
+          reason: derived.reason,
+          ...(derived.requestMessages !== undefined ? { requestMessages: derived.requestMessages } : {}),
+        },
       },
     );
     return { ok: false, retryable: derived.retryable, reason: derived.reason };
@@ -158,6 +162,8 @@ export function toolResultTargetTokens(tokens: number, config: HandlerRunContext
 
 export interface ToolResultSummaryDerivation {
   write: HandlerDerivationWrite;
+  requestMessages?: InferenceRequestMessage[];
+  rawResponse?: string;
 }
 
 export async function deriveToolResultSummary(
@@ -227,7 +233,11 @@ export async function deriveToolResultSummary(
       ...(result.provenance !== undefined ? { provenance: result.provenance } : {}),
     },
   };
-  return { write };
+  return {
+    write,
+    ...(result.requestMessages !== undefined ? { requestMessages: result.requestMessages } : {}),
+    ...(result.rawResponse !== undefined ? { rawResponse: result.rawResponse } : {}),
+  };
 }
 
 const toolResultSummaryHandler: WorkHandler = async (run, item) => {
@@ -260,7 +270,10 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
           derivationType: "tool_result_summary",
         },
         eventKind: "inference_failed",
-        payload: { reason: derived.reason },
+        payload: {
+          reason: derived.reason,
+          ...(derived.requestMessages !== undefined ? { requestMessages: derived.requestMessages } : {}),
+        },
       },
     );
     return { ok: false, retryable: derived.retryable, reason: derived.reason };
@@ -282,6 +295,8 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
               ...(derived.write.metadata?.provenance !== undefined
                 ? { provenance: derived.write.metadata.provenance }
                 : {}),
+              ...(derived.requestMessages !== undefined ? { requestMessages: derived.requestMessages } : {}),
+              ...(derived.rawResponse !== undefined ? { rawResponse: derived.rawResponse } : {}),
             },
           },
         );

@@ -72,6 +72,23 @@ const MARKER_AT_START = /^(?:smoothed|toolcall|toolresult|rendering|projection|d
 const MARKER_ANYWHERE = /(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\([0-9a-f]{8}:/;
 const SIZE_DISPOSITIONS = ["in_range", "under_min", "over_max"] as const;
 
+// Distinctive substrings from each default prompt template's rendered content.
+// v3 turn/chunk templates emit a single user message (no system role); smoothing
+// embeds instructions in a user message; only tool-result-v2 uses system role.
+const PROMPT_CONTENT_MARKERS = {
+  smoothing: "You rewrite user prompts for a long-horizon coding agent's smooth context layer.",
+  turnCompression: "You condense dialogues from AI coding sessions",
+  chunkBrief: "You write brief memory notes from AI coding-session history",
+} as const;
+
+// Assigned inference lanes that currently cross ModelCall in production.
+// tool_result_summary keeps an assignment but handlers.ts gates inference off.
+const LIVE_INFERENCE_DERIVATION_TYPES = [
+  "smoothed_prompt",
+  "detailed_turn_compression",
+  "chunk_summary_brief",
+] as const satisfies readonly InferenceDerivationType[];
+
 function ok<T>(result: OpResult<T>): T {
   if (!result.ok) {
     throw new Error(`expected ok result: ${JSON.stringify(result.error)}`);
@@ -137,7 +154,7 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
 
 // ── TC-4.1 / TC-4.3: keyed seven-kind round-trips + conformance ───
 
-describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): six real derivation kinds through the shared seam helpers", () => {
+describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): all derivation kinds through the shared seam helpers", () => {
   const call = realKey === undefined ? undefined : createOpenRouterCall(realKey, realModel);
   const assignments = realAssignments(realModel);
   let store: TempStore;
@@ -172,15 +189,19 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): six real derivation kinds throug
         expect(form.content).not.toMatch(MARKER_ANYWHERE);
         if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
           const kind = form.derivationType as InferenceDerivationType;
-          // Provenance names the real lane from config, never model output.
-          expect(form.metadata?.provenance).toEqual({
-            provider: "openrouter",
-            model: realModel,
-            prompt: assignments[kind].prompt,
-          });
-          if (kind === "chunk_summary_brief") {
-            expect(form.metadata?.provenance?.prompt).toBe("chunk-brief-v2");
-            expect(form.metadata?.sizeDisposition).toBeDefined();
+          if (LIVE_INFERENCE_DERIVATION_TYPES.includes(kind as (typeof LIVE_INFERENCE_DERIVATION_TYPES)[number])) {
+            // Provenance names the real lane from config, never model output.
+            expect(form.metadata?.provenance).toEqual({
+              provider: "openrouter",
+              model: realModel,
+              prompt: assignments[kind].prompt,
+            });
+            if (kind === "chunk_summary_brief") {
+              expect(form.metadata?.provenance?.prompt).toBe("chunk-brief-v3");
+              expect(form.metadata?.sizeDisposition).toBeDefined();
+            }
+          } else {
+            expect(form.metadata?.provenance).toBeUndefined();
           }
         } else {
           expect(form.metadata?.provenance).toBeUndefined();
@@ -232,12 +253,8 @@ function renderedPrompt(input: ModelCallInput): string {
   return input.messages.map((message) => message.content).join("\n---\n");
 }
 
-function systemPrompt(input: ModelCallInput): string {
-  return input.messages.find((message) => message.role === "system")?.content ?? "";
-}
-
-function countCallsWithSystemPrefix(log: readonly ModelCallInput[], prefix: string): number {
-  return log.filter((input) => systemPrompt(input).startsWith(prefix)).length;
+function countCallsWithContentMarker(log: readonly ModelCallInput[], marker: string): number {
+  return log.filter((input) => renderedPrompt(input).includes(marker)).length;
 }
 
 function expectSizeDisposition(derivation: Derivation): void {
@@ -305,7 +322,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     });
   }, 300_000);
 
-  it("tool-result classification reaches the real adapter for bash failures and formerly-large outputs", async () => {
+  it("tool-result summaries floor through truncation fallback without reaching the real adapter", async () => {
     if (realKey === undefined) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
     const sdk = initLhc({
@@ -343,39 +360,21 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     );
     await drainRealWork(sdk, filePath);
 
-    expect(recorded.log).toHaveLength(2);
-    const failurePrompt = renderedPrompt(recorded.log[0]!);
-    expect(failurePrompt).toContain('"exitCode": 127');
-    expect(failurePrompt).toContain('"failureType": "command_not_found"');
-    expect(failurePrompt).toContain('"missingCommand": "frobnicate"');
-    for (const forbidden of ["operationClass", "responseShape", "outputChars", "outputWords"]) {
-      expect(failurePrompt).not.toContain(forbidden);
-    }
-
-    const largePrompt = renderedPrompt(recorded.log[1]!);
-    expect(largePrompt).toContain("HEAD_UNIQUE_STORY2_REAL_INFERENCE");
-    expect(largePrompt).toContain("TAIL_UNIQUE_STORY2_REAL_INFERENCE");
-    expect(largePrompt).toContain("[... truncated: tool result was");
-    expect(largePrompt).not.toContain("MIDDLE_UNIQUE_SHOULD_BE_BOUND_OUT");
+    expect(recorded.log).toHaveLength(0);
 
     const failureSummary = findDerivation(filePath, "m2", "tool_result_summary");
     expect(failureSummary.state).toBe("ready");
     expect((failureSummary.content ?? "").trim()).not.toBe("");
-    expect(failureSummary.metadata?.provenance).toEqual({
-      provider: "openrouter",
-      model: realModel,
-      prompt: assignmentsForKind("tool_result_summary").prompt,
-    });
+    expect(failureSummary.content).toBe(truncateForFallback(bashFailure));
+    expect(failureSummary.metadata?.provenance).toBeUndefined();
+    expect(failureSummary.metadata?.outcome).toBeDefined();
 
     const largeSummary = findDerivation(filePath, "m4", "tool_result_summary");
     expect(largeSummary.state).toBe("ready");
     expect((largeSummary.content ?? "").trim()).not.toBe("");
-    expect(largeSummary.content).not.toBe(truncateForFallback(largeOutput));
-    expect(largeSummary.metadata?.provenance).toEqual({
-      provider: "openrouter",
-      model: realModel,
-      prompt: assignmentsForKind("tool_result_summary").prompt,
-    });
+    expect(largeSummary.content).toBe(truncateForFallback(largeOutput));
+    expect(largeSummary.metadata?.provenance).toBeUndefined();
+    expect(largeSummary.metadata?.outcome).toBeDefined();
   }, 300_000);
 
   it("smooth turn compression uses the real prompt above the tiny threshold and passthrough below it", async () => {
@@ -417,17 +416,17 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     expect(largeCompression.metadata?.provenance).toEqual({
       provider: "openrouter",
       model: realModel,
-      prompt: "detailed-turn-compression-v1",
+      prompt: assignmentsForKind("detailed_turn_compression").prompt,
     });
     expectSizeDisposition(largeCompression);
 
-    const tinyRendering = findDerivation(filePath, "t2", "turn_rendering");
+    const tinyAssembly = findDerivation(filePath, "t2", "pre_detailed_assembly");
     const tinyCompression = findDerivation(filePath, "t2", "detailed_turn_compression");
     expect(tinyCompression.state).toBe("ready");
-    expect(tinyCompression.content).toBe(tinyRendering.content);
+    expect(tinyCompression.content).toBe(tinyAssembly.content);
     expect(tinyCompression.metadata?.sizeDisposition).toBeUndefined();
     expect(tinyCompression.metadata?.provenance).toBeUndefined();
-    expect(countCallsWithSystemPrefix(recorded.log, "Compress one structured turn rendering")).toBe(1);
+    expect(countCallsWithContentMarker(recorded.log, PROMPT_CONTENT_MARKERS.turnCompression)).toBe(1);
   }, 300_000);
 
   it("chunk brief derives from deterministic detailed text through the real adapter", async () => {
@@ -461,12 +460,10 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     expect(brief.metadata?.provenance).toEqual({
       provider: "openrouter",
       model: realModel,
-      prompt: "chunk-brief-v2",
+      prompt: assignmentsForKind("chunk_summary_brief").prompt,
     });
     expectSizeDisposition(brief);
-    expect(
-      countCallsWithSystemPrefix(recorded.log, "You will receive conversation text between a user and an agent."),
-    ).toBe(1);
+    expect(countCallsWithContentMarker(recorded.log, PROMPT_CONTENT_MARKERS.chunkBrief)).toBe(1);
     expect(renderedPrompt(recorded.log.at(-1)!)).toContain(detailed.content ?? "");
   }, 300_000);
 });
@@ -536,7 +533,11 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   it("provenance on every ready form names the real model", () => {
     for (const form of finalForms) {
       if (form.state !== "ready") continue;
-      if (!INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
+      if (
+        !LIVE_INFERENCE_DERIVATION_TYPES.includes(
+          form.derivationType as (typeof LIVE_INFERENCE_DERIVATION_TYPES)[number],
+        )
+      ) {
         expect(form.metadata?.provenance).toBeUndefined();
         continue;
       }
@@ -569,10 +570,9 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
 
   it("all model calls are inference-backed prompt templates", () => {
     const knownCallCount =
-      countCallsWithSystemPrefix(callLog, "You smooth user prompts for long-horizon coding context.") +
-      countCallsWithSystemPrefix(callLog, "Summarize this tool response for long-horizon coding context.") +
-      countCallsWithSystemPrefix(callLog, "Compress one structured turn rendering") +
-      countCallsWithSystemPrefix(callLog, "You will receive conversation text between a user and an agent.");
+      countCallsWithContentMarker(callLog, PROMPT_CONTENT_MARKERS.smoothing) +
+      countCallsWithContentMarker(callLog, PROMPT_CONTENT_MARKERS.turnCompression) +
+      countCallsWithContentMarker(callLog, PROMPT_CONTENT_MARKERS.chunkBrief);
     expect(callLog.length).toBeGreaterThan(0);
     expect(callLog).toHaveLength(knownCallCount);
   });

@@ -12,7 +12,6 @@ import type {
   DerivationState,
   RenderingPartKind,
   SubjectKind,
-  ToolRunReceipt,
 } from "../../shared-tech/index.js";
 import { type RawReportRow, reportEntryFromRow } from "../../shared-tech/index.js";
 import type { ComposeDerivationRow, ComposeMessage } from "./compose.js";
@@ -107,8 +106,7 @@ export function readMessageDerivationRows(
 
 // Stored member material in turn order for chunk summaries: every chunk_member
 // row by member_idx, joined to its canonical turn, stored
-// detailed_turn_compression row, pre_detailed_assembly for failed floors, and
-// turn_rendering's stamped tool-run receipts.
+// detailed_turn_compression row, and pre_detailed_assembly for failed floors.
 // Missing turns are returned as source corruption so background summaries
 // block instead of silently summarizing a shortened member list; SDK
 // soft-deleted turns stay filtered because sanctioned delete rebuilds chunk
@@ -121,7 +119,6 @@ export interface MemberProjection {
   assemblyContent?: string;
   renderingState?: string;
   renderingContent?: string;
-  receipts: ToolRunReceipt[]; // empty when the member turn had no tool activity
   sourceCorruptionReason?: string;
 }
 
@@ -131,8 +128,7 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
       `SELECT cm.turn_id, t.turn_id AS existing_turn_id, t.deleted_at,
               df.state, df.content,
               af.state AS assembly_state, af.content AS assembly_content,
-              rf.state AS rendering_state, rf.content AS rendering_content,
-              rf.metadata AS rendering_metadata
+              rf.state AS rendering_state, rf.content AS rendering_content
        FROM chunk_member cm
        LEFT JOIN turns t ON t.turn_id = cm.turn_id
        LEFT JOIN derivation df ON df.subject_kind = 'turn'
@@ -151,19 +147,13 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     assembly_content: string | null;
     rendering_state: string | null;
     rendering_content: string | null;
-    rendering_metadata: string | null;
     existing_turn_id: string | null;
     deleted_at: string | null;
   }>;
   return rows.flatMap((row) => {
     if (row.deleted_at !== null) return [];
-    const metadata =
-      row.rendering_metadata === null
-        ? undefined
-        : (JSON.parse(row.rendering_metadata) as { receipts?: ToolRunReceipt[] });
     const memberProjection: MemberProjection = {
       turnId: row.turn_id,
-      receipts: metadata?.receipts ?? [],
     };
     if (row.existing_turn_id === null) {
       memberProjection.sourceCorruptionReason = `canonical record corrupt: chunk ${chunkId} member ${row.turn_id} references missing turn`;
