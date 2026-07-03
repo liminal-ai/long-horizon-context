@@ -65,10 +65,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const ctx = createMockContext(models, models[0], true);
       const assignments = createAssignments({
         smoothed_prompt: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "anthropic",
           model: "claude-3-opus",
-          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
         },
       });
 
@@ -150,16 +150,16 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const ctx = createMockContext(models, models[0], false); // Model exists but no auth
 
       const assignments = createAssignments({
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "openai",
           model: "gpt-4o",
-          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
         },
       });
 
       const report = validateReachable(assignments, ctx);
 
-      const toolEntry = report.unreachable.find((e) => e.kind === "smooth_turn_compression");
+      const toolEntry = report.unreachable.find((e) => e.kind === "detailed_turn_compression");
       expect(toolEntry).toBeDefined();
       expect(toolEntry?.provider).toBe("openai");
       expect(toolEntry?.model).toBe("gpt-4o");
@@ -181,10 +181,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         },
       });
       const assignmentsWithoutModel = createAssignments({
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "unknown",
           model: "unknown",
-          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
         },
       });
 
@@ -274,10 +274,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       const assignments = createAssignments({
         smoothed_prompt: { provider: "unknown1", model: "model1", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "unknown2",
           model: "model2",
-          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
         },
       });
 
@@ -294,7 +294,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const notifyMessage = (notifySpy.mock.calls[0]?.[0] ?? "") as string;
       expect(notifyMessage).toContain("smoothed_prompt");
       expect(notifyMessage).toContain("unknown1/model1");
-      expect(notifyMessage).toContain("smooth_turn_compression");
+      expect(notifyMessage).toContain("detailed_turn_compression");
       expect(notifyMessage).toContain("unknown2/model2");
     });
   });
@@ -344,10 +344,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         // Create assignments with one reachable and one unreachable lane
         const assignments = createAssignments({
           smoothed_prompt: { provider: "openai", model: "gpt-4o", prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt },
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "unknown",
             model: "unknown",
-            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+            prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
           },
           tool_result_summary: {
             provider: "openai",
@@ -374,7 +374,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
             assignments,
           },
           mode: "background",
-          guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+          guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
         };
 
         const connector = createConn({
@@ -393,11 +393,11 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         expect(state).not.toBeNull();
         if (instance === null || state === null) return;
 
-        // Verify validation reported the unreachable lane (smooth_turn_compression)
+        // Verify validation reported the unreachable lane (detailed_turn_compression)
         expect(state.health.startupValidation).toBeDefined();
         expect(state.health.startupValidation?.unreachable.length).toBeGreaterThan(0);
         const smoothEntry = state.health.startupValidation?.unreachable.find(
-          (e) => e.kind === "smooth_turn_compression",
+          (e) => e.kind === "detailed_turn_compression",
         );
         expect(smoothEntry?.reason).toBe("unknown_model");
 
@@ -426,22 +426,22 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
         expect(health.value.owners).toContainEqual(
           expect.objectContaining({
-            kind: "smooth_turn_compression",
+            kind: "detailed_turn_compression",
             counts: expect.objectContaining({ ready: 1, failed: 0 }),
           }),
         );
-        expect(health.value.failures.some((f) => f.derivationType === "smooth_turn_compression")).toBe(false);
+        expect(health.value.failures.some((f) => f.derivationType === "detailed_turn_compression")).toBe(false);
 
         const turnList = await instance.sdk.turns.listTurns(threadRef);
         expect(turnList.ok).toBe(true);
         if (!turnList.ok) return;
         const compression = turnList.value[0]?.derivations?.find(
-          (form) => form.derivationType === "smooth_turn_compression",
+          (form) => form.derivationType === "detailed_turn_compression",
         );
         expect(compression).toMatchObject({
           state: "ready",
           metadata: expect.objectContaining({
-            fallbackFloor: "turn_rendering",
+            fallbackFloor: "pre_detailed_assembly",
             lastError: expect.stringContaining("invalid_request"),
           }),
         });

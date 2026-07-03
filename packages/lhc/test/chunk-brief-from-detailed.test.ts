@@ -43,7 +43,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
     lease: { durationMs: 200 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: SELF_CHUNK,
     ...overrides,
   });
@@ -150,7 +150,7 @@ describe("Story 5: chunk_summary_brief from detailed material", () => {
     const filePath = await newThread();
     await seedClosedChunk(sdk, filePath);
     const detailedText = "seeded detailed text; not the member compression";
-    const memberCompression = formOf(filePath, "t1", "smooth_turn_compression")?.content ?? "";
+    const memberCompression = formOf(filePath, "t1", "detailed_turn_compression")?.content ?? "";
     expect(memberCompression).not.toBe(detailedText);
 
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "ready", { content: detailedText });
@@ -260,7 +260,7 @@ describe("Story 5: chunk_summary_brief from detailed material", () => {
     setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "pending");
     setFormState(
       filePath,
-      { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression" },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "detailed_turn_compression" },
       { state: "pending" },
     );
     enqueueChunkSummaryWork(filePath, "w-c1-chunk_summary_brief-v1", "c1", "chunk_summary_brief");

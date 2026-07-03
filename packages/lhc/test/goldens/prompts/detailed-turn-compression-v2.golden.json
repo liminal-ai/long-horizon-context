@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "Below is a user↔assistant dialogue from a coding conversation.\n\nIt is about 120 tokens long.\n\nCompress it to about 60 tokens (roughly 30-50% of the input). The final output must fall within 42-78 tokens.\n\nWrite the compressed version as compact prose in the same dialogue register.\n\nPreserve:\n- user constraints, corrections, decisions, and preferences\n- exact identifiers: file paths, commands, model names, numbers, errors, test results, commit hashes\n- decisions made during the exchange\n- outcomes and conclusions the assistant stated\n\nRemove:\n- pleasantries and repeated acknowledgements\n- repetition and meta-commentary\n- filler that does not change what happened\n\nBefore returning, estimate whether the output is within 42-78 tokens.\nIf it is too short, expand it by restoring missing substance.\nIf it is too long, contract it by removing lower-value detail and repeated explanation.\n\nThe final answer must be within 42-78 tokens.\n\nRewrite only the text inside <dialogue_to_compress>.\nReturn only the compressed dialogue, without XML tags."
+  },
+  {
+    "role": "user",
+    "content": "<dialogue_to_compress>\nUser:\nPlease inspect notes/plan.md\n\nAssistant:\nIt has 3 open items.\n</dialogue_to_compress>"
+  }
+]

@@ -1,9 +1,8 @@
-// The turns derivation handlers: turn_derivation and the two chunk summaries.
-// turn_derivation composes rendering from message-level derivations, sends that
-// deterministic rendering through compressSmoothTurn, hands both derivations
-// back for the version-checked completion write, and runs placement in the same
-// completion transaction. Open-chunk append, accumulated close policy, and any
-// close's summary enqueues all ride one commit.
+// The turns derivation handlers: turn_derivation (deterministic assembly),
+// detailed_turn_compression (inference over pre_detailed_assembly), and the
+// two chunk summaries. turn_derivation composes turn_rendering and
+// pre_detailed_assembly, places the turn from uncompressed assembly tokens,
+// and enqueues detailed_turn_compression in the same completion transaction.
 
 import type { DatabaseSync } from "node:sqlite";
 import { writeMessageDerivationFloorInThread } from "../../messages/internal/derive.js";
@@ -39,7 +38,7 @@ import {
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
-import { composeRenderingInput } from "./compose.js";
+import { composePreDetailedAssembly, composeRenderingInput } from "./compose.js";
 import {
   chunkExists,
   readChunkSummaryDerivation,
@@ -198,36 +197,31 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   const db = run.openDb();
   const turn = readTurnSource(db, turnId);
   if (turn === undefined || turn.deleted) {
-    // A deleted turn's derivation rows were dropped with it, so a blocked stamp
-    // would hit nothing; either way the item is terminal against a source
-    // that cannot improve.
     return sourceDamaged(`turn ${turnId} not found`);
   }
   if (turn.status !== "closed") {
-    // Derivation is queued only at close; an open turn under a queued item
-    // means the record was interfered with.
     return sourceDamaged(`turn ${turnId} is open under a derivation item`);
   }
-  // Only the batch pipeline writes turn state, and it never leaves two turns
-  // open. More than one open turn means the record was damaged below the SDK.
-  // A handler must not compose against a membership it cannot trust; the
-  // derivation lands blocked naming the damage, and later derive attempts
-  // refuse with that reason until the source reads clean.
   const openTurnIds = selectOpenTurnIds(db);
   if (openTurnIds.length > 1) {
     return sourceDamaged(`turn state corrupt: ${openTurnIds.length} turns open (${openTurnIds.join(", ")})`);
   }
 
-  // Compose from current message-derivation states: ready derivations verbatim,
-  // non-ready derivations fall back with one gap each. Both reads land before
-  // any inference call, and no transaction is held across them.
   const messages = readMemberMessages(db, turnId);
   const derivations = readMessageDerivationRows(
     db,
     messages.map((message) => message.messageId),
   );
   const { parts, receipts, recoveries } = composeRenderingInput(messages, derivations);
-  for (const recovery of recoveries) {
+  const assembly = composePreDetailedAssembly(messages, derivations);
+  const seenRecoveries = new Set<string>();
+  const mergedRecoveries = [...recoveries, ...assembly.recoveries].filter((recovery) => {
+    const key = `${recovery.subjectId}:${recovery.derivationType}`;
+    if (seenRecoveries.has(key)) return false;
+    seenRecoveries.add(key);
+    return true;
+  });
+  for (const recovery of mergedRecoveries) {
     logFallback(run, {
       derivationType: recovery.derivationType,
       subjectId: recovery.subjectId,
@@ -243,16 +237,99 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
   }
 
   const renderingText = composeStructuredTurnText(parts);
-  const inputTokens = estimateTokens(renderingText);
-  const tinyTurnTokens = run.config.guards.smoothTurnCompression.tinyTurnTokens;
+  const assemblyText = assembly.text;
+  const projectedTokens = estimateTokens(assemblyText);
+  const threadId = run.threadId;
+  const compressionSourceVersion =
+    readTurnDerivationRow(db, "turn", turnId, "pre_detailed_assembly")?.sourceVersion ?? 1;
+  const renderingMetadata: DerivationMetadata = {
+    ...(receipts.length > 0 ? { receipts } : {}),
+  };
+
+  return {
+    ok: true,
+    derivations: [
+      {
+        subjectKind: "turn",
+        subjectId: turnId,
+        derivationType: "turn_rendering",
+        content: renderingText,
+        ...(Object.keys(renderingMetadata).length > 0 ? { metadata: renderingMetadata } : {}),
+      },
+      {
+        subjectKind: "turn",
+        subjectId: turnId,
+        derivationType: "pre_detailed_assembly",
+        content: assemblyText,
+      },
+    ],
+    onApplied: (transaction) => {
+      if (!hasLiveItem(transaction.db, "detailed_turn_compression", { turnId }, compressionSourceVersion)) {
+        enqueue(
+          {
+            db: transaction.db,
+            clock: run.clock,
+            threadId,
+            filePath: run.filePath,
+            postCommitHook: { add: transaction.onCommit },
+            poke: resolveInstancePoke(),
+          },
+          {
+            owner: "turns",
+            kind: "detailed_turn_compression",
+            sourceRef: { turnId },
+            sourceVersion: compressionSourceVersion,
+            derivations: [{ subjectKind: "turn", subjectId: turnId, derivationType: "detailed_turn_compression" }],
+          },
+        );
+      }
+      const placement = placeTurn(transaction.db, turnId, projectedTokens, run.config.chunkPolicy);
+      for (const chunkId of placement.closedChunkIds) {
+        enqueueChunkSummaries(
+          {
+            db: transaction.db,
+            clock: run.clock,
+            threadId,
+            filePath: run.filePath,
+            postCommitHook: { add: transaction.onCommit },
+            poke: resolveInstancePoke(),
+          },
+          chunkId,
+        );
+      }
+    },
+  };
+};
+
+const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
+  const turnId = item.sourceRef["turnId"];
+  if (turnId === undefined) return sourceDamaged("work item carries no turnId");
+  const db = run.openDb();
+  const turn = readTurnSource(db, turnId);
+  if (turn === undefined || turn.deleted) {
+    return sourceDamaged(`turn ${turnId} not found`);
+  }
+  if (turn.status !== "closed") {
+    return sourceDamaged(`turn ${turnId} is open under a derivation item`);
+  }
+
+  const assemblyRow = readTurnDerivationRow(db, "turn", turnId, "pre_detailed_assembly");
+  if (assemblyRow === undefined || assemblyRow.state !== "ready" || assemblyRow.content === undefined) {
+    return dependencyNotReady(
+      `pre_detailed_assembly_not_ready: turn ${turnId} pre_detailed_assembly is ${assemblyRow?.state ?? "missing"}`,
+    );
+  }
+  const assemblyText = assemblyRow.content;
+  const inputTokens = estimateTokens(assemblyText);
+  const tinyTurnTokens = run.config.guards.detailedTurnCompression.tinyTurnTokens;
   const targetTokens = compressionTargetTokens(inputTokens, run.config.compressionTargets);
   const compressionResult =
     inputTokens < tinyTurnTokens
-      ? ({ ok: true, text: renderingText } as const)
-      : await run.inferenceCallbacks.compressSmoothTurn({ rendering: renderingText, ...targetTokens });
+      ? ({ ok: true, text: assemblyText } as const)
+      : await run.inferenceCallbacks.compressDetailedTurn({ dialogueText: assemblyText, ...targetTokens });
 
   const claimAttempts = readClaimedWorkAttempts(db, item.workItemId);
-  let compressionText = renderingText;
+  let compressionText = assemblyText;
   let compressionUsedFallback = false;
   let compressionFailureReason: string | undefined;
   if (!compressionResult.ok) {
@@ -262,7 +339,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
         target: {
           subjectKind: "turn",
           subjectId: turnId,
-          derivationType: "smooth_turn_compression",
+          derivationType: "detailed_turn_compression",
         },
         eventKind: "inference_failed",
         payload: { reason: compressionResult.reason, attempts: claimAttempts + 1 },
@@ -282,7 +359,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
           target: {
             subjectKind: "turn",
             subjectId: turnId,
-            derivationType: "smooth_turn_compression",
+            derivationType: "detailed_turn_compression",
           },
           eventKind: "inference_succeeded",
           payload: {
@@ -295,16 +372,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     }
   }
 
-  // The compression token count is estimated exactly once, here, as the
-  // artifact lands; placement reads this stored arithmetic and never re-counts.
   const projectedTokens = estimateTokens(compressionText);
-  const threadId = run.threadId;
-  // Tool-run receipts ride the rendering's metadata, mechanically restated from
-  // the composition input. Chunk summaries read them from here, never from
-  // inference prose.
-  const renderingMetadata: DerivationMetadata = {
-    ...(receipts.length > 0 ? { receipts } : {}),
-  };
   const compressionMetadata: DerivationMetadata = {};
   if (!compressionUsedFallback && "provenance" in compressionResult && compressionResult.provenance !== undefined) {
     compressionMetadata.provenance = compressionResult.provenance;
@@ -317,7 +385,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     if (compressionFailureReason !== undefined) {
       compressionMetadata.lastError = compressionFailureReason;
     }
-    compressionMetadata.fallbackFloor = "turn_rendering";
+    compressionMetadata.fallbackFloor = "pre_detailed_assembly";
   } else if (inputTokens >= tinyTurnTokens) {
     compressionMetadata.inferenceAttempted = true;
     compressionMetadata.inferenceSucceeded = true;
@@ -330,73 +398,54 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
       {
         subjectKind: "turn",
         subjectId: turnId,
-        derivationType: "turn_rendering",
-        content: renderingText,
-        ...(Object.keys(renderingMetadata).length > 0 ? { metadata: renderingMetadata } : {}),
-      },
-      {
-        subjectKind: "turn",
-        subjectId: turnId,
-        derivationType: "smooth_turn_compression",
+        derivationType: "detailed_turn_compression",
         content: compressionText,
         ...(Object.keys(compressionMetadata).length > 0 ? { metadata: compressionMetadata } : {}),
       },
     ],
-    onApplied: (transaction) => {
-      const placement = placeTurn(transaction.db, turnId, projectedTokens, run.config.chunkPolicy);
-      for (const chunkId of placement.closedChunkIds) {
-        enqueueChunkSummaries(
-          {
-            db: transaction.db,
-            clock: run.clock,
-            threadId,
-            filePath: run.filePath,
-            postCommitHook: { add: transaction.onCommit },
-            poke: resolveInstancePoke(),
+    ...(compressionUsedFallback
+      ? {
+          onApplied: (transaction) => {
+            appendDerivationLog(
+              {
+                db: transaction.db,
+                threadId: run.threadId,
+                filePath: run.filePath,
+                postCommitHook: { add: transaction.onCommit },
+              },
+              {
+                target: {
+                  subjectKind: "turn",
+                  subjectId: turnId,
+                  derivationType: "detailed_turn_compression",
+                },
+                eventKind: "fallback_applied",
+                payload: {
+                  fallbackFloor: "pre_detailed_assembly",
+                  ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
+                  attempts: claimAttempts + 1,
+                },
+              },
+            );
+            writeLog(
+              {
+                db: transaction.db,
+                threadId: run.threadId,
+                filePath: run.filePath,
+                postCommitHook: { add: transaction.onCommit },
+              },
+              {
+                level: "warning",
+                message: "turn compression fallback used",
+                derivationType: "detailed_turn_compression",
+                subjectId: turnId,
+                ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
+                floorUsed: "pre_detailed_assembly",
+              },
+            );
           },
-          chunkId,
-        );
-      }
-      if (compressionUsedFallback) {
-        appendDerivationLog(
-          {
-            db: transaction.db,
-            threadId: run.threadId,
-            filePath: run.filePath,
-            postCommitHook: { add: transaction.onCommit },
-          },
-          {
-            target: {
-              subjectKind: "turn",
-              subjectId: turnId,
-              derivationType: "smooth_turn_compression",
-            },
-            eventKind: "fallback_applied",
-            payload: {
-              fallbackFloor: "turn_rendering",
-              ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
-              attempts: claimAttempts + 1,
-            },
-          },
-        );
-        writeLog(
-          {
-            db: transaction.db,
-            threadId: run.threadId,
-            filePath: run.filePath,
-            postCommitHook: { add: transaction.onCommit },
-          },
-          {
-            level: "warning",
-            message: "turn compression fallback used",
-            derivationType: "smooth_turn_compression",
-            subjectId: turnId,
-            ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
-            floorUsed: "turn_rendering",
-          },
-        );
-      }
-    },
+        }
+      : {}),
   };
 };
 
@@ -421,11 +470,11 @@ function composeDetailedChunkFromMembers(db: DatabaseSync, chunkId: string): Det
     }
     if (member.state === "blocked") {
       return sourceDamaged(
-        `member ${member.turnId} smooth_turn_compression blocked while deriving chunk_summary_detailed`,
+        `member ${member.turnId} detailed_turn_compression blocked while deriving chunk_summary_detailed`,
       );
     }
-    if (member.state === "failed" && member.renderingState === "ready" && member.renderingContent !== undefined) {
-      memberProjections.push(member.renderingContent);
+    if (member.state === "failed" && member.assemblyState === "ready" && member.assemblyContent !== undefined) {
+      memberProjections.push(member.assemblyContent);
       fallbackLogs.push({
         level: "warning",
         message: "derivation fallback used",
@@ -437,7 +486,7 @@ function composeDetailedChunkFromMembers(db: DatabaseSync, chunkId: string): Det
       continue;
     }
     return dependencyNotReady(
-      `member_projection_not_ready: member ${member.turnId} smooth_turn_compression is ${member.state ?? "missing"}`,
+      `member_projection_not_ready: member ${member.turnId} detailed_turn_compression is ${member.state ?? "missing"}`,
     );
   }
   return {
@@ -613,6 +662,7 @@ function chunkBriefHandler(): WorkHandler {
 // The domain's handler table, merged into the SDK dispatch map at construction.
 export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   turn_derivation: turnDerivationHandler,
+  detailed_turn_compression: detailedTurnCompressionHandler,
   chunk_summary_detailed: chunkDetailedHandler(),
   chunk_summary_brief: chunkBriefHandler(),
 };

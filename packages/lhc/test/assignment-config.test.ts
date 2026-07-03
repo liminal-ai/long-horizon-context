@@ -36,10 +36,10 @@ const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> 
       p.config.inferenceCallbacks.summarizeToolResult({ toolName: "read", content: "c", outcome: "succeeded" }),
   },
   {
-    kind: "smooth_turn_compression",
+    kind: "detailed_turn_compression",
     run: (p) =>
-      p.config.inferenceCallbacks.compressSmoothTurn({
-        rendering: "r",
+      p.config.inferenceCallbacks.compressDetailedTurn({
+        dialogueText: "r",
         inputTokens: 10,
         targetMinTokens: 4,
         targetAimTokens: 5,
@@ -64,7 +64,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
     const assignments: Record<string, ModelAssignment> = {
       smoothed_prompt: { provider: "p", model: "m", prompt: "smoothing-v1" },
       tool_result_summary: { provider: "p", model: "m", prompt: "tool-result-v1" },
-      smooth_turn_compression: { provider: "p", model: "m", prompt: "smooth-turn-compression-v1" },
+      detailed_turn_compression: { provider: "p", model: "m", prompt: "detailed-turn-compression-v1" },
       chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v2" },
     };
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
@@ -88,14 +88,14 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
 });
 
 describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
-  it("smooth_turn_compression and chunk_summary_brief accept target ratios without error", () => {
+  it("detailed_turn_compression and chunk_summary_brief accept target ratios without error", () => {
     const assignments: Record<string, ModelAssignment> = {
       smoothed_prompt: { provider: "p", model: "m", prompt: "smoothing-v1" },
       tool_result_summary: { provider: "p", model: "m", prompt: "tool-result-v1" },
-      smooth_turn_compression: {
+      detailed_turn_compression: {
         provider: "p",
         model: "m",
-        prompt: "smooth-turn-compression-v1",
+        prompt: "detailed-turn-compression-v1",
         targetMinRatio: 0.35,
         targetAimRatio: 0.5,
         targetMaxRatio: 0.65,
@@ -112,12 +112,12 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
     expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
   });
 
-  it("rejects smooth_turn_compression target aim outside min/max", () => {
+  it("rejects detailed_turn_compression target aim outside min/max", () => {
     const assignments: Record<string, ModelAssignment> = {
-      smooth_turn_compression: {
+      detailed_turn_compression: {
         provider: "p",
         model: "m",
-        prompt: "smooth-turn-compression-v1",
+        prompt: "detailed-turn-compression-v1",
         targetMinRatio: 0.35,
         targetAimRatio: 0.8,
         targetMaxRatio: 0.65,
@@ -151,7 +151,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
     expect(guards).toEqual(DEFAULT_GUARDS);
     expect(guards.smoothedPrompt?.maxInferenceTokens).toBe(700);
     expect(guards.smoothedPrompt?.suspiciousOutputRatio).toBe(0.15);
-    expect(guards.smoothTurnCompression?.tinyTurnTokens).toBe(80);
+    expect(guards.detailedTurnCompression?.tinyTurnTokens).toBe(80);
     expect(guards.toolResultSummary?.timeoutMs).toBe(60_000);
   });
 
@@ -159,7 +159,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
     const guards = resolveGuards({ smoothedPrompt: { maxInferenceTokens: 500 } });
     expect(guards.smoothedPrompt?.maxInferenceTokens).toBe(500);
     expect(guards.smoothedPrompt?.suspiciousOutputRatio).toBe(0.15);
-    expect(guards.smoothTurnCompression?.tinyTurnTokens).toBe(80);
+    expect(guards.detailedTurnCompression?.tinyTurnTokens).toBe(80);
   });
 
   it("construction with no guards succeeds (defaults applied at construction)", () => {
@@ -210,13 +210,13 @@ describe("partial assignment overrides merge defaults", () => {
     expect(log[0]?.thinking).toBe("none");
   });
 
-  it("preserves smooth_turn_compression target ratios when override omits them", () => {
+  it("preserves detailed_turn_compression target ratios when override omits them", () => {
     const sdk = initLhc({
       mode: "manual",
       inference: {
         call: recordingCall().call,
         assignments: {
-          smooth_turn_compression: { provider: "p", model: "m", prompt: "smooth-turn-compression-v1" },
+          detailed_turn_compression: { provider: "p", model: "m", prompt: "detailed-turn-compression-v1" },
         },
       },
     });

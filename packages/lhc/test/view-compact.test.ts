@@ -278,7 +278,7 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     // c1 fits brief, c2 fills detailed as a loner, detailed also carries the
     // coverage entry for skipped t7, and tail remains under the full share
     // plus turn-boundary snap.
-    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 29 });
+    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 30 });
     expect(receipt.value.bands.detailed.entries).toBe(2);
     expect(receipt.value.bands.detailed.tokens).toBeGreaterThan(shares.detailed);
     expect(receipt.value.bands.smooth.entries).toBe(1);
@@ -388,9 +388,9 @@ describe("architecture-risk: coverage edge accounting", () => {
       turns,
       chunks,
       derivations: new Map([
-        ["t3/smooth_turn_compression", { state: "ready", content: "compressed open-chunk member" }],
-        ["t4/smooth_turn_compression", { state: "failed", reason: "compression exhausted" }],
-        ["t4/turn_rendering", { state: "ready", content: "large ".repeat(500) }],
+        ["t3/detailed_turn_compression", { state: "ready", content: "compressed ".repeat(200) }],
+        ["t4/detailed_turn_compression", { state: "failed", reason: "compression exhausted" }],
+        ["t4/pre_detailed_assembly", { state: "ready", content: `User:\n${"large ".repeat(500)}\n\n⏺ more` }],
         ["t5/turn_rendering", { state: "ready", content: "newest banded turn" }],
         ["c1/chunk_summary_detailed", { state: "ready", content: "closed chunk summary" }],
       ]),
@@ -415,8 +415,14 @@ describe("architecture-risk: coverage edge accounting", () => {
       })),
     ).toEqual([
       { band: "detailed", subjectKind: "chunk", subjectId: "c1", derivationUsed: "chunk_summary_detailed", gap: false },
-      { band: "detailed", subjectKind: "turn", subjectId: "t3", derivationUsed: "smooth_turn_compression", gap: false },
-      { band: "detailed", subjectKind: "turn", subjectId: "t4", derivationUsed: "turn_rendering", gap: false },
+      {
+        band: "detailed",
+        subjectKind: "turn",
+        subjectId: "t3",
+        derivationUsed: "detailed_turn_compression",
+        gap: false,
+      },
+      { band: "smooth", subjectKind: "turn", subjectId: "t4", derivationUsed: "message_excerpt", gap: false },
       { band: "smooth", subjectKind: "turn", subjectId: "t5", derivationUsed: "turn_rendering", gap: false },
     ]);
     expect(selection.entries.filter((entry) => entry.gap)).toEqual([]);
@@ -604,7 +610,7 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
     inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
   });
   const filePath = intoStore.threadPath();

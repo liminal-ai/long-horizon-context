@@ -25,7 +25,7 @@ function assignments(
   const base = defaultAssignments({ provider: "openai", id: "good" });
   return {
     smoothed_prompt: { ...base.smoothed_prompt, ...(overrides.smoothed_prompt ?? {}) },
-    smooth_turn_compression: { ...base.smooth_turn_compression, ...(overrides.smooth_turn_compression ?? {}) },
+    detailed_turn_compression: { ...base.detailed_turn_compression, ...(overrides.detailed_turn_compression ?? {}) },
     tool_result_summary: { ...base.tool_result_summary, ...(overrides.tool_result_summary ?? {}) },
     chunk_summary_brief: { ...base.chunk_summary_brief, ...(overrides.chunk_summary_brief ?? {}) },
   };
@@ -104,11 +104,11 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     const sdkConfig: SdkConfig = {
       inference: {
         call: modelCall,
-        assignments: assignments({ smooth_turn_compression: { model: "fail" } }),
+        assignments: assignments({ detailed_turn_compression: { model: "fail" } }),
       },
       mode: "background",
       retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
-      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     };
 
     connector = createConnector({
@@ -135,25 +135,27 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
     expect(health.value.owners).toContainEqual(
       expect.objectContaining({
         owner: "turns",
-        kind: "smooth_turn_compression",
+        kind: "detailed_turn_compression",
         counts: expect.objectContaining({ ready: 1, failed: 0 }),
       }),
     );
-    expect(health.value.failures.some((f) => f.derivationType === "smooth_turn_compression")).toBe(false);
+    expect(health.value.failures.some((f) => f.derivationType === "detailed_turn_compression")).toBe(false);
 
     const turnList = await instance.sdk.turns.listTurns(threadRef);
     expect(turnList.ok).toBe(true);
     if (!turnList.ok) return;
     const compression = turnList.value[0]?.derivations?.find(
-      (form) => form.derivationType === "smooth_turn_compression",
+      (form) => form.derivationType === "detailed_turn_compression",
     );
+    const assembly = turnList.value[0]?.derivations?.find((form) => form.derivationType === "pre_detailed_assembly");
     const rendering = turnList.value[0]?.derivations?.find((form) => form.derivationType === "turn_rendering");
     expect(rendering).toMatchObject({ state: "ready" });
+    expect(assembly).toMatchObject({ state: "ready" });
     expect(compression).toMatchObject({
       state: "ready",
-      content: rendering?.content,
+      content: assembly?.content,
       metadata: expect.objectContaining({
-        fallbackFloor: "turn_rendering",
+        fallbackFloor: "pre_detailed_assembly",
         lastError: expect.stringContaining("auth"),
       }),
     });

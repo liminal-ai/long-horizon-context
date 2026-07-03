@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { truncateForFallback } from "../../shared-tech/index.js";
 
 export type CompactChunkMaterial =
   | { kind: "ready"; content: string }
@@ -22,11 +23,11 @@ function blockText(kind: string, content: Record<string, unknown>): string {
     }
     case "tool_call": {
       const name = typeof content["toolName"] === "string" ? content["toolName"] : "unknown_tool";
-      return `[tool call · ${name}] ${JSON.stringify(content["arguments"] ?? {})}`;
+      return truncateForFallback(`[tool call · ${name}] ${JSON.stringify(content["arguments"] ?? {})}`);
     }
     case "tool_result": {
       const text = content["content"];
-      return typeof text === "string" ? `[tool result]\n${text}` : "[tool result]";
+      return typeof text === "string" ? `[tool result]\n${truncateForFallback(text)}` : "[tool result]";
     }
     default:
       return "";

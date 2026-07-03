@@ -289,8 +289,9 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 
-    // Two post-compact tool turns (80-token results). Seed the boundary behind
-    // the older turn; the newer closed turn stays full.
+    // Two post-compact tool turns (150-token results, over the 500-char
+    // abbreviation floor). Seed the boundary behind the older turn; the newer
+    // closed turn stays full.
     for (const run of [1, 2]) {
       const sent = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `post-compact tool run ${run}` } }),
@@ -298,7 +299,7 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the
           payload: { toolCallId: `call-adv-${run}`, toolName: "read_file", arguments: { path: `adv-${run}.txt` } },
         }),
         validEvent("tool_result", {
-          payload: { toolCallId: `call-adv-${run}`, content: tokens(80), isError: false },
+          payload: { toolCallId: `call-adv-${run}`, content: tokens(150), isError: false },
         }),
         validEvent("turn_end"),
       ]);
@@ -389,7 +390,7 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     const throwing: InferenceCallbacks = {
       smoothPrompt: refuse,
       summarizeToolResult: refuse,
-      compressSmoothTurn: refuse,
+      compressDetailedTurn: refuse,
       summarizeChunkBrief: refuse,
     };
     const reader = initLhc({ inferenceCallbacks: throwing, mode: "manual" });

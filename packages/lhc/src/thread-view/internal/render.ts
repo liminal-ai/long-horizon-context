@@ -176,7 +176,7 @@ function ladderState(derivation: DerivationSnapshot | undefined): string {
   return derivation === undefined ? "absent" : derivation.state;
 }
 
-// Smooth (turn) ladder: turn_rendering → smooth_turn_compression →
+// Smooth (turn) ladder: turn_rendering → detailed_turn_compression →
 // deterministic excerpt of the turn's live messages → gap entry.
 export function resolveSmoothRepresentation(
   turnId: string,
@@ -187,10 +187,10 @@ export function resolveSmoothRepresentation(
   if (usable(rendering)) {
     return { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
   }
-  const compression = lookup(turnId, "smooth_turn_compression");
+  const compression = lookup(turnId, "detailed_turn_compression");
   if (usable(compression)) {
     return {
-      derivationUsed: "smooth_turn_compression",
+      derivationUsed: "detailed_turn_compression",
       body: compression.content,
       degraded: true,
       gap: false,
@@ -211,7 +211,7 @@ export function resolveSmoothRepresentation(
     body: "",
     degraded: false,
     gap: true,
-    reason: `no usable derivation (turn_rendering: ${ladderState(rendering)}, smooth_turn_compression: ${ladderState(compression)}, no live messages)`,
+    reason: `no usable derivation (turn_rendering: ${ladderState(rendering)}, detailed_turn_compression: ${ladderState(compression)}, no live messages)`,
   };
 }
 

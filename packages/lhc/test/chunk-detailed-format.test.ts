@@ -2,6 +2,7 @@ import type { SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DrainReport,
+  deterministicText,
   estimateTokens,
   type InferenceCallbacks,
   type InferenceResult,
@@ -33,6 +34,18 @@ afterEach(() => {
 const SELF_CHUNK = { targetProjectedTokens: 1, maxProjectedTokens: 1 };
 const FIXED_PROJECTION = "fixed projected turn text";
 
+function smoothedPrompt(text: string): string {
+  return deterministicText("smoothPrompt", { text }, text);
+}
+
+function dialogueAssemblyText(prompt: string, answer: string): string {
+  return `User:\n${smoothedPrompt(prompt)}\n\n⏺ ${answer}`;
+}
+
+function assemblyTokens(prompt: string, answer: string): number {
+  return estimateTokens(dialogueAssemblyText(prompt, answer));
+}
+
 async function newThread(): Promise<string> {
   const created = await threads.newThread({
     filePath: store.threadPath(),
@@ -48,7 +61,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
     lease: { durationMs: 200 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: SELF_CHUNK,
     ...overrides,
   });
@@ -58,7 +71,7 @@ function withScriptedProjection(base: InferenceCallbacks, projection = FIXED_PRO
   return {
     smoothPrompt: (input) => base.smoothPrompt(input),
     summarizeToolResult: (input) => base.summarizeToolResult(input),
-    compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: projection }),
+    compressDetailedTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: projection }),
     summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
   };
 }
@@ -150,15 +163,19 @@ function setCompressionState(
   turnId: string,
   update: { state: "pending" | "failed" | "blocked"; reason?: string; content?: string },
 ): void {
-  setFormState(filePath, { subjectKind: "turn", subjectId: turnId, derivationType: "smooth_turn_compression" }, update);
+  setFormState(
+    filePath,
+    { subjectKind: "turn", subjectId: turnId, derivationType: "detailed_turn_compression" },
+    update,
+  );
 }
 
 describe("Story 4: chunk_summary_detailed concatenation format", () => {
   it("derives marker-separated member text in order without a detailed model call", async () => {
     const double = createInferenceCallbacksDouble();
-    const projectedTokens = estimateTokens(FIXED_PROJECTION);
+    const perTurnTokens = assemblyTokens("first prompt", "first answer");
     const sdk = sdkFor(withScriptedProjection(double), {
-      chunkPolicy: { targetProjectedTokens: 4 * projectedTokens, maxProjectedTokens: 999999 },
+      chunkPolicy: { targetProjectedTokens: 4 * perTurnTokens, maxProjectedTokens: 999999 },
     });
     const filePath = await newThread();
 
@@ -178,9 +195,11 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
 
   it("embeds receipts only in the member section that owns tool activity", async () => {
     const double = createInferenceCallbacksDouble();
-    const projectedTokens = estimateTokens(FIXED_PROJECTION);
+    const perTurnTokens = assemblyTokens("plain prompt", "plain answer");
+    const toolTurnTokens = estimateTokens(`User:\n${smoothedPrompt("read the project plan")}`);
+    const placementTokens = Math.max(perTurnTokens, toolTurnTokens);
     const sdk = sdkFor(withScriptedProjection(double), {
-      chunkPolicy: { targetProjectedTokens: 3 * projectedTokens, maxProjectedTokens: 999999 },
+      chunkPolicy: { targetProjectedTokens: 2 * placementTokens, maxProjectedTokens: 999999 },
     });
     const filePath = await newThread();
     await sendToolTurn(sdk, filePath);
@@ -198,13 +217,13 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     expect(detailed?.content?.endsWith(`[receipts ${receipt?.account}=>succeeded]`)).toBe(false);
   });
 
-  it("uses ready turn_rendering as the floor for failed detailed members and logs the fallback", async () => {
+  it("uses ready pre_detailed_assembly as the floor for failed detailed members and logs the fallback", async () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await sendPromptTurn(sdk, filePath, "floor prompt", "floor answer");
     await drain(sdk, filePath);
-    const rendering = formOf(filePath, "t1", "turn_rendering")?.content;
-    expect(rendering).toBeDefined();
+    const assembly = formOf(filePath, "t1", "pre_detailed_assembly")?.content;
+    expect(assembly).toBeDefined();
 
     setCompressionState(filePath, "t1", { state: "failed", reason: "scripted compression failure" });
     resetChunkSummary(filePath, "c1", "chunk_summary_detailed");
@@ -217,7 +236,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     ]);
     expect(formOf(filePath, "c1", "chunk_summary_detailed")).toMatchObject({
       state: "ready",
-      content: `[turn 0001]\n${rendering}`,
+      content: `[turn 0001]\n${assembly}`,
     });
     const logs = await sdk.logging.query({ filePath }, { derivationType: "chunk_summary_detailed", subjectId: "c1" });
     expect(logs.ok).toBe(true);

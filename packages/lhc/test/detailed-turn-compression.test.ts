@@ -90,30 +90,86 @@ function recordingModelCall(text: string): { call: ModelCall; log: ModelCallInpu
   };
 }
 
-describe("Story 3: smooth turn compression", () => {
-  it("stores tiny turns as smooth_turn_compression without calling compression inference", async () => {
+describe("Story 3: detailed turn compression", () => {
+  it("stores tiny turns as detailed_turn_compression without calling compression inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
-    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1000 } } });
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1000 } } });
     const filePath = await newThread();
 
     await sendTurn(sdk, filePath, "tiny turn", "short answer");
     await drain(sdk, filePath);
 
-    const rendering = formOf(filePath, "t1", "turn_rendering");
-    const compression = formOf(filePath, "t1", "smooth_turn_compression");
-    expect(captured.filter((entry) => entry.op === "compressSmoothTurn")).toEqual([]);
-    expect(rendering).toMatchObject({ state: "ready" });
+    const assembly = formOf(filePath, "t1", "pre_detailed_assembly");
+    const compression = formOf(filePath, "t1", "detailed_turn_compression");
+    expect(captured.filter((entry) => entry.op === "compressDetailedTurn")).toEqual([]);
+    expect(assembly).toMatchObject({ state: "ready" });
     expect(compression).toMatchObject({
       state: "ready",
-      content: rendering?.content,
+      content: assembly?.content,
     });
     expect(compression?.metadata?.sizeDisposition).toBeUndefined();
   });
 
+  it("composes pre_detailed_assembly from dialog only in User/Assistant sections", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1000 } } });
+    const filePath = await newThread();
+
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "read runtime state" } }),
+      validEvent("assistant_thinking", { payload: { text: "planning the read" } }),
+      validEvent("assistant_text", { payload: { text: "I will inspect it" } }),
+      validEvent("tool_call", {
+        payload: { toolCallId: "call-1", toolName: "read_file", arguments: { path: "state.txt" } },
+      }),
+      validEvent("tool_result", { payload: { toolCallId: "call-1", content: "state is ready", isError: false } }),
+      validEvent("turn_end"),
+    ]);
+    await drain(sdk, filePath);
+
+    const assembly = formOf(filePath, "t1", "pre_detailed_assembly")?.content ?? "";
+    expect(assembly).toContain("User:\n");
+    expect(assembly).toContain("read runtime state");
+    expect(assembly).toContain("⏺ I will inspect it");
+    expect(assembly).not.toContain("planning the read");
+    expect(assembly).not.toContain("read_file");
+    expect(assembly).not.toContain("state is ready");
+    expect(assembly).not.toMatch(/\[1\]/);
+  });
+
+  it("item 1 writes deterministic derivations and enqueues detailed_turn_compression", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1 } } });
+    const filePath = await newThread();
+
+    await sendTurn(sdk, filePath, "two item flow", tokenText(120));
+    const partial = await drain(sdk, filePath, { maxItems: 2 });
+    expect(partial.ran).toContainEqual(
+      expect.objectContaining({ workItemId: "w-t1-turn_derivation-v1", disposition: "done" }),
+    );
+
+    expect(formOf(filePath, "t1", "turn_rendering")).toMatchObject({ state: "ready" });
+    expect(formOf(filePath, "t1", "pre_detailed_assembly")).toMatchObject({ state: "ready" });
+    expect(formOf(filePath, "t1", "detailed_turn_compression")).toMatchObject({ state: "pending" });
+
+    const db = openRaw(filePath);
+    try {
+      const queued = db
+        .prepare(`SELECT kind, status FROM work_item WHERE work_item_id = 'w-t1-detailed_turn_compression-v1'`)
+        .get() as { kind: string; status: string } | undefined;
+      expect(queued).toMatchObject({ kind: "detailed_turn_compression", status: "queued" });
+    } finally {
+      db.close();
+    }
+
+    await drain(sdk, filePath, { maxItems: 1 });
+    expect(formOf(filePath, "t1", "detailed_turn_compression")).toMatchObject({ state: "ready" });
+  });
+
   it("renders structured turn text with message-kind markers in record order", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1000 } } });
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1000 } } });
     const filePath = await newThread();
 
     await send(sdk, filePath, [
@@ -138,13 +194,13 @@ describe("Story 3: smooth turn compression", () => {
 
   it("passes concrete target tokens to compression and records size disposition", async () => {
     const double = createInferenceCallbacksDouble();
-    const captured: Array<{ op: "compressSmoothTurn"; input: unknown }> = [];
+    const captured: Array<{ op: "compressDetailedTurn"; input: unknown }> = [];
     const output = tokenText(90);
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => double.smoothPrompt(input),
       summarizeToolResult: (input) => double.summarizeToolResult(input),
-      compressSmoothTurn: async (input) => {
-        captured.push({ op: "compressSmoothTurn", input: structuredClone(input) });
+      compressDetailedTurn: async (input) => {
+        captured.push({ op: "compressDetailedTurn", input: structuredClone(input) });
         return { ok: true, text: output };
       },
       summarizeChunkBrief: (input) => double.summarizeChunkBrief(input),
@@ -155,9 +211,9 @@ describe("Story 3: smooth turn compression", () => {
     await sendTurn(sdk, filePath, "target ratios", tokenText(300));
     await drain(sdk, filePath);
 
-    const call = captured.find((entry) => entry.op === "compressSmoothTurn")?.input as
+    const call = captured.find((entry) => entry.op === "compressDetailedTurn")?.input as
       | {
-          rendering: string;
+          dialogueText: string;
           inputTokens: number;
           targetMinTokens: number;
           targetAimTokens: number;
@@ -166,13 +222,15 @@ describe("Story 3: smooth turn compression", () => {
       | undefined;
     expect(call).toBeDefined();
     if (call === undefined) return;
-    expect(call.rendering).toContain("[1] User prompt (m1)");
-    expect(call.rendering).toContain("[2] Assistant response (m2)");
-    expect(call.inputTokens).toBe(estimateTokens(call.rendering));
+    expect(call.dialogueText).toContain("User:\n");
+    expect(call.dialogueText).toContain("target ratios");
+    expect(call.dialogueText).toContain("⏺ ");
+    expect(call.dialogueText).not.toContain("[1] User prompt");
+    expect(call.inputTokens).toBe(estimateTokens(call.dialogueText));
     expect(call.targetMinTokens).toBe(Math.max(1, Math.round(call.inputTokens * 0.35)));
     expect(call.targetAimTokens).toBe(Math.max(1, Math.round(call.inputTokens * 0.5)));
     expect(call.targetMaxTokens).toBe(Math.max(1, Math.round(call.inputTokens * 0.65)));
-    expect(formOf(filePath, "t1", "smooth_turn_compression")).toMatchObject({
+    expect(formOf(filePath, "t1", "detailed_turn_compression")).toMatchObject({
       state: "ready",
       content: output,
       metadata: { sizeDisposition: "under_min" },
@@ -184,7 +242,7 @@ describe("Story 3: smooth turn compression", () => {
     const sdk = initLhc({
       mode: "manual",
       inference: { call: host.call },
-      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
@@ -193,33 +251,39 @@ describe("Story 3: smooth turn compression", () => {
     await sendTurn(sdk, filePath, "target ratios", "assistant answer with enough content");
     await drain(sdk, filePath);
 
-    const compression = formOf(filePath, "t1", "smooth_turn_compression");
+    const compression = formOf(filePath, "t1", "detailed_turn_compression");
     expect(compression).toMatchObject({
       state: "ready",
       metadata: {
         provenance: {
-          prompt: "smooth-turn-compression-v1",
+          prompt: "detailed-turn-compression-v3",
         },
       },
     });
     const rendered = host.log.at(-1);
     const promptText = rendered?.messages.map((message) => message.content).join("\n");
-    expect(promptText).toContain("Below is one exchange from a coding conversation.");
-    expect(promptText).toContain("The final answer must be within");
-    expect(promptText).toContain("<turn_rendering_to_compress>");
+    expect(promptText).toContain("<instructions-for-summarizing>");
+    expect(promptText).toContain("<content-for-summarizing>");
+    expect(promptText).toContain("targetting approximately 20%-30%");
   });
 
   it("retries compression while budget remains and does not land fallback yet", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smooth_turn_compression", 99, {
+    double.failKind("detailed_turn_compression", 99, {
       retryable: true,
       reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
     });
-    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1 } } });
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1 } } });
     const filePath = await newThread();
 
     await sendTurn(sdk, filePath, "retry compression", tokenText(120));
-    await drain(sdk, filePath, { maxItems: 1 });
+    await drain(sdk, filePath, { maxItems: 2 });
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = 'w-t1-detailed_turn_compression-v1'`).run();
+    } finally {
+      db.close();
+    }
 
     const retrying = await sdk.turns.deriveTurn({ filePath }, "t1");
     expect(retrying.ok).toBe(true);
@@ -229,29 +293,16 @@ describe("Story 3: smooth turn compression", () => {
       error: { code: "derivation_retry_scheduled" },
     });
 
-    const rendering = formOf(filePath, "t1", "turn_rendering");
-    const compression = formOf(filePath, "t1", "smooth_turn_compression");
-    expect(rendering?.state).toBe("pending");
-    expect(compression?.state).toBe("pending");
-
-    const db = openRaw(filePath);
-    try {
-      const live = db
-        .prepare(`SELECT status, attempts FROM work_item WHERE work_item_id = 'w-t1-turn_derivation-v1'`)
-        .get() as { status: string; attempts: number } | undefined;
-      expect(live).toMatchObject({ status: "queued", attempts: 1 });
-    } finally {
-      db.close();
-    }
+    expect(formOf(filePath, "t1", "detailed_turn_compression")?.state).toBe("pending");
   });
 
-  it("terminal compression failure lands turn_rendering and smooth_turn_compression ready with rendering fallback", async () => {
+  it("terminal compression failure lands compression ready with pre_detailed_assembly fallback", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smooth_turn_compression", 99, {
+    double.failKind("detailed_turn_compression", 99, {
       retryable: true,
       reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
     });
-    const sdk = sdkFor(double, { guards: { smoothTurnCompression: { tinyTurnTokens: 1 } } });
+    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1 } } });
     const filePath = await newThread();
 
     await sendTurn(sdk, filePath, "fallback compression", tokenText(120));
@@ -260,19 +311,20 @@ describe("Story 3: smooth turn compression", () => {
     if (!drained.ok) return;
     expect(drained.value.ran).toContainEqual(
       expect.objectContaining({
-        workItemId: "w-t1-turn_derivation-v1",
+        workItemId: "w-t1-detailed_turn_compression-v1",
         disposition: "done",
       }),
     );
 
-    const rendering = formOf(filePath, "t1", "turn_rendering");
-    const compression = formOf(filePath, "t1", "smooth_turn_compression");
-    expect(rendering).toMatchObject({ state: "ready" });
+    const assembly = formOf(filePath, "t1", "pre_detailed_assembly");
+    const compression = formOf(filePath, "t1", "detailed_turn_compression");
+    expect(formOf(filePath, "t1", "turn_rendering")).toMatchObject({ state: "ready" });
+    expect(assembly).toMatchObject({ state: "ready" });
     expect(compression).toMatchObject({
       state: "ready",
-      content: rendering?.content,
+      content: assembly?.content,
       metadata: {
-        fallbackFloor: "turn_rendering",
+        fallbackFloor: "pre_detailed_assembly",
         fallbackUsed: true,
         inferenceAttempted: true,
         inferenceSucceeded: false,
@@ -282,7 +334,7 @@ describe("Story 3: smooth turn compression", () => {
 
     const derivationLog = await sdk.logging.queryDerivationLog(
       { filePath },
-      { subjectId: "t1", derivationType: "smooth_turn_compression" },
+      { subjectId: "t1", derivationType: "detailed_turn_compression" },
     );
     expect(derivationLog.ok).toBe(true);
     if (!derivationLog.ok) return;
@@ -294,7 +346,7 @@ describe("Story 3: smooth turn compression", () => {
     expect(failedEvents.length).toBeGreaterThanOrEqual(1);
     expect(failedEvents.at(-1)?.payload.reason).toContain("empty_output");
     expect(fallbackEvent?.payload).toMatchObject({
-      fallbackFloor: "turn_rendering",
+      fallbackFloor: "pre_detailed_assembly",
       reason: expect.stringContaining("empty_output"),
     });
 
@@ -303,7 +355,7 @@ describe("Story 3: smooth turn compression", () => {
 
     const logs = await sdk.logging.query(
       { filePath },
-      { derivationType: "smooth_turn_compression", subjectId: "t1", level: "warning" },
+      { derivationType: "detailed_turn_compression", subjectId: "t1", level: "warning" },
     );
     expect(logs.ok).toBe(true);
     if (!logs.ok) return;
@@ -311,7 +363,7 @@ describe("Story 3: smooth turn compression", () => {
       expect.objectContaining({
         message: "turn compression fallback used",
         reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
-        floorUsed: "turn_rendering",
+        floorUsed: "pre_detailed_assembly",
       }),
     ]);
   });

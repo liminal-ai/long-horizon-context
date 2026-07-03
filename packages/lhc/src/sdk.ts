@@ -377,10 +377,11 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
     prompt: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v2",
     thinking: DEFAULT_INFERENCE_THINKING,
   },
-  smooth_turn_compression: {
+  detailed_turn_compression: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "smooth-turn-compression-v1",
+    // Stated prompt target (v3) is lower than these ratios — see detailed-turn-compression-v3.ts.
+    prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression ?? "detailed-turn-compression-v3",
     targetMinRatio: 0.35,
     targetMaxRatio: 0.65,
     targetAimRatio: 0.5,
@@ -398,7 +399,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
 };
 
 function resolveTargetRatios(
-  kind: "smooth_turn_compression" | "chunk_summary_brief",
+  kind: "detailed_turn_compression" | "chunk_summary_brief",
   assignment?: ModelAssignment,
 ): ResolvedSdkConfig["compressionTargets"] {
   const defaults = DEFAULT_INFERENCE_ASSIGNMENTS[kind]!;
@@ -503,8 +504,8 @@ export function initLhc(config: SdkConfig): Lhc {
   }
   const guards = resolveGuards(config.guards);
   const compressionTargets = resolveTargetRatios(
-    "smooth_turn_compression",
-    config.inference?.assignments?.smooth_turn_compression,
+    "detailed_turn_compression",
+    config.inference?.assignments?.detailed_turn_compression,
   );
   const briefTargets = resolveTargetRatios("chunk_summary_brief", config.inference?.assignments?.chunk_summary_brief);
 
@@ -552,7 +553,10 @@ export function initLhc(config: SdkConfig): Lhc {
   requirePositive(resolved.guards.smoothedPrompt.maxInferenceTokens, "guards.smoothedPrompt.maxInferenceTokens");
   requirePositive(resolved.guards.smoothedPrompt.suspiciousOutputRatio, "guards.smoothedPrompt.suspiciousOutputRatio");
   requirePositive(resolved.guards.toolResultSummary.timeoutMs, "guards.toolResultSummary.timeoutMs");
-  requirePositive(resolved.guards.smoothTurnCompression.tinyTurnTokens, "guards.smoothTurnCompression.tinyTurnTokens");
+  requirePositive(
+    resolved.guards.detailedTurnCompression.tinyTurnTokens,
+    "guards.detailedTurnCompression.tinyTurnTokens",
+  );
   requirePositive(resolved.compressionTargets.minRatio, "compressionTargets.minRatio");
   requirePositive(resolved.compressionTargets.aimRatio, "compressionTargets.aimRatio");
   requirePositive(resolved.compressionTargets.maxRatio, "compressionTargets.maxRatio");
@@ -591,6 +595,8 @@ export function initLhc(config: SdkConfig): Lhc {
   const workDispatchers: DurableWorkDispatcherMap = {
     "messages.derive": (run, item) => dispatchMessageDeriveWork(run, item),
     "turns.deriveTurn": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "turn_derivation" }),
+    "turns.deriveDetailedTurnCompression": (run, item) =>
+      dispatchTurnOwnedWork(run, { ...item, kind: "detailed_turn_compression" }),
     "turns.deriveDetailedChunk": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "chunk_summary_detailed" }),
     "turns.deriveBriefChunk": (run, item) => dispatchTurnOwnedWork(run, { ...item, kind: "chunk_summary_brief" }),
   };

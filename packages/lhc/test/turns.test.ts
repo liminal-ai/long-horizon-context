@@ -116,7 +116,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "smooth_turn_compression",
+            derivationType: "pre_detailed_assembly",
             state: "pending",
             sourceVersion: 1,
           },
@@ -164,7 +164,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "smooth_turn_compression",
+            derivationType: "pre_detailed_assembly",
             state: "pending",
             sourceVersion: 1,
           },
@@ -240,7 +240,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
         {
           subjectKind: "turn",
           subjectId: "t2",
-          derivationType: "smooth_turn_compression",
+          derivationType: "pre_detailed_assembly",
           state: "pending",
           sourceVersion: 1,
         },
@@ -350,7 +350,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t1",
-            derivationType: "smooth_turn_compression",
+            derivationType: "pre_detailed_assembly",
             state: "pending",
             sourceVersion: 1,
           },
@@ -374,7 +374,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
           {
             subjectKind: "turn",
             subjectId: "t2",
-            derivationType: "smooth_turn_compression",
+            derivationType: "pre_detailed_assembly",
             state: "pending",
             sourceVersion: 1,
           },

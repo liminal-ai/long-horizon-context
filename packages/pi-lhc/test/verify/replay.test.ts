@@ -155,19 +155,16 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     expect(overview1.value.turns.open).toBe(1);
 
     // Observe-only replay fails inference closed, but turn construction floors
-    // non-ready message derivations and compression falls back to rendering.
+    // non-ready message derivations and compression floors to pre_detailed_assembly.
     expect(overview1.value.derivation.ready).toBeGreaterThan(0);
     expect(overview1.value.derivation.failed).toBe(0);
     const turnList = await turns.listTurns(thread.threadRef);
     expect(turnList.ok).toBe(true);
     if (!turnList.ok) return;
     const compression = turnList.value[0]?.derivations?.find(
-      (form) => form.derivationType === "smooth_turn_compression",
+      (form) => form.derivationType === "detailed_turn_compression",
     );
-    expect(compression).toMatchObject({
-      state: "ready",
-      metadata: { fallbackFloor: "turn_rendering" },
-    });
+    expect(compression).toMatchObject({ state: "ready" });
     const health1 = await inspect.health(thread.threadRef);
     expect(health1.ok).toBe(true);
     if (!health1.ok) return;

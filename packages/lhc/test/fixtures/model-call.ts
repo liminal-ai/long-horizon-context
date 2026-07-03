@@ -23,7 +23,8 @@ export const DERIVATION_TYPES = [
   "smoothed_prompt",
   "tool_result_summary",
   "turn_rendering",
-  "smooth_turn_compression",
+  "pre_detailed_assembly",
+  "detailed_turn_compression",
   "chunk_summary_detailed",
   "chunk_summary_brief",
 ] as const;
@@ -32,7 +33,7 @@ export type DerivationType = (typeof DERIVATION_TYPES)[number];
 export const INFERENCE_DERIVATION_TYPES = [
   "smoothed_prompt",
   "tool_result_summary",
-  "smooth_turn_compression",
+  "detailed_turn_compression",
   "chunk_summary_brief",
 ] as const;
 export type InferenceDerivationType = (typeof INFERENCE_DERIVATION_TYPES)[number];

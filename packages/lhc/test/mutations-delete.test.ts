@@ -62,7 +62,7 @@ function manualSdk(
     mode: overrides.mode ?? "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 5000 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
   if (overrides.clock !== undefined) config.clock = overrides.clock;
@@ -190,7 +190,8 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     expect(result.value.dropped.map(clearKey)).toEqual(["message/m3/tool_result_summary"]);
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
-        "turn/t1/smooth_turn_compression",
+        "turn/t1/detailed_turn_compression",
+        "turn/t1/pre_detailed_assembly",
         "turn/t1/turn_rendering",
         "chunk/c1/chunk_summary_brief",
         "chunk/c1/chunk_summary_detailed",
@@ -199,6 +200,7 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     expect(result.value.queued.map((item) => item.workItemId).sort()).toEqual([
       "w-c1-chunk_summary_brief-v2",
       "w-c1-chunk_summary_detailed-v2",
+      "w-t1-detailed_turn_compression-v2",
       "w-t1-turn_derivation-v2",
     ]);
 
@@ -218,13 +220,13 @@ describe("TC-6.2 / AC-6.2 (architecture risk): delete drops own forms, re-queues
     );
 
     // The rebuild re-derives the affected turn: turn_rendering is deterministic
-    // (AC-6.3), so the proof it re-ran is a compressSmoothTurn call carrying the
+    // (AC-6.3), so the proof it re-ran is a compressDetailedTurn call carrying the
     // re-rendered text (the live-members-only filter is exercised by the ready
     // check above and m3's absence throughout).
     const captured = double.captureInputs();
     await drain(sdk, filePath);
     expect(readDerivedForms(filePath).every((form) => form.state === "ready")).toBe(true);
-    expect(captured.some((call) => call.op === "compressSmoothTurn")).toBe(true);
+    expect(captured.some((call) => call.op === "compressDetailedTurn")).toBe(true);
   });
 });
 
@@ -311,7 +313,7 @@ describe("background mode: delete-and-walk-away (production path)", () => {
     await sdk.drainSettled({ filePath });
 
     const turnForms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
-    expect(turnForms).toHaveLength(2);
+    expect(turnForms).toHaveLength(3);
     expect(turnForms.every((form) => form.state === "ready" && form.sourceVersion === 2)).toBe(true);
     expect(rawDetail(filePath)).toEqual([]);
   });

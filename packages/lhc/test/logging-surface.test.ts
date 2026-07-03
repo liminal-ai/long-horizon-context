@@ -144,6 +144,7 @@ describe("Flow 5: Derivation Logging", () => {
     expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "failed_terminal"],
       ["w-t1-turn_derivation-v1", "done"],
+      ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
 
     const read = openRaw(filePath);
@@ -273,7 +274,7 @@ describe("Flow 5: Derivation Logging", () => {
         db.prepare(
           `INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content)
            VALUES (?, ?, ?, ?, ?)`,
-        ).run("turn", "t1", "smooth_turn_compression", "ready", "projection content");
+        ).run("turn", "t1", "detailed_turn_compression", "ready", "projection content");
         db.exec("COMMIT;");
       } catch (cause) {
         db.exec("ROLLBACK;");
@@ -283,7 +284,7 @@ describe("Flow 5: Derivation Logging", () => {
       const rows = db
         .prepare(`SELECT derivation_type FROM derivation WHERE subject_id = ? ORDER BY derivation_type`)
         .all("t1") as unknown as Array<{ derivation_type: string }>;
-      expect(rows.map((row) => row.derivation_type)).toEqual(["smooth_turn_compression", "turn_rendering"]);
+      expect(rows.map((row) => row.derivation_type)).toEqual(["detailed_turn_compression", "turn_rendering"]);
     } finally {
       db.close();
     }
@@ -347,6 +348,6 @@ describe("Flow 5: Derivation Logging", () => {
     await background.drainSettled({ filePath });
 
     expect(liveCount(filePath)).toBe(0);
-    expect(readDerivedForms(filePath).map((form) => form.state)).toEqual(["ready", "ready", "ready"]);
+    expect(readDerivedForms(filePath).map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready"]);
   });
 });

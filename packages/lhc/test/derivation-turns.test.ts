@@ -20,7 +20,6 @@ import {
   enqueue,
   estimateTokens,
   type InferenceCallbacks,
-  type InferenceResult,
   initLhc,
   type Lhc,
   type MessageEventInput,
@@ -61,7 +60,7 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks, chunkPolicy?: SdkConf
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   };
   if (chunkPolicy !== undefined) config.chunkPolicy = chunkPolicy;
   return initLhc(config);
@@ -110,6 +109,14 @@ function deleteWorkItem(filePath: string, workItemId: string): void {
   }
 }
 
+function dialogueAssemblyText(prompt: string, answer: string): string {
+  return `User:\n${prompt}\n\n⏺ ${answer}`;
+}
+
+function assemblyTokens(prompt: string, answer: string): number {
+  return estimateTokens(dialogueAssemblyText(prompt, answer));
+}
+
 function structuredRendering(parts: readonly RenderingPart[]): string {
   const labels: Record<RenderingPart["kind"], string> = {
     user_prompt: "User prompt",
@@ -141,19 +148,6 @@ async function requeueDirect(filePath: string, input: EnqueueInput): Promise<voi
   if (!queued.ok) throw new Error(`direct requeue failed: ${queued.error.reason}`);
 }
 
-// Callbacks that delegate to the deterministic double except for scripted
-// smooth-turn compressions — the seam tests use to pin projected token counts
-// for the placement golden cases (the compression content is what placement
-// arithmetic measures, exactly once, at landing).
-function withScriptedProjections(base: InferenceCallbacks, next: () => string): InferenceCallbacks {
-  return {
-    smoothPrompt: (i) => base.smoothPrompt(i),
-    summarizeToolResult: (i) => base.summarizeToolResult(i),
-    compressSmoothTurn: (): Promise<InferenceResult> => Promise.resolve({ ok: true, text: next() }),
-    summarizeChunkBrief: (i) => base.summarizeChunkBrief(i),
-  };
-}
-
 describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compression as independent rows", () => {
   it("all message forms ready → both turn forms ready, composed from the forms, each its own state row", async () => {
     const double = createInferenceCallbacksDouble();
@@ -167,6 +161,7 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
     expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "done"],
       ["w-t1-turn_derivation-v1", "done"],
+      ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
 
     // Reconstruct the exact composition: the smoothed form verbatim, the
@@ -178,16 +173,18 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
       { messageId: "m2", kind: "assistant_text", text: answer, fallback: false },
     ];
     const renderingText = structuredRendering(parts);
-    const inputTokens = estimateTokens(renderingText);
+    const assemblyText = dialogueAssemblyText(smoothed, answer);
+    const inputTokens = estimateTokens(assemblyText);
     const compressionInput = {
-      rendering: renderingText,
+      dialogueText: assemblyText,
       inputTokens,
       targetMinTokens: Math.max(1, Math.round(inputTokens * 0.35)),
       targetAimTokens: Math.max(1, Math.round(inputTokens * 0.5)),
       targetMaxTokens: Math.max(1, Math.round(inputTokens * 0.65)),
     };
     const rendering = formOf(filePath, "t1", "turn_rendering");
-    const compression = formOf(filePath, "t1", "smooth_turn_compression");
+    const assembly = formOf(filePath, "t1", "pre_detailed_assembly");
+    const compression = formOf(filePath, "t1", "detailed_turn_compression");
     expect(rendering).toMatchObject({
       subjectKind: "turn",
       state: "ready",
@@ -195,10 +192,16 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
       sourceVersion: 1,
     });
     expect(rendering?.gaps).toBeUndefined();
+    expect(assembly).toMatchObject({
+      subjectKind: "turn",
+      state: "ready",
+      content: assemblyText,
+      sourceVersion: 1,
+    });
     expect(compression).toMatchObject({
       subjectKind: "turn",
       state: "ready",
-      content: deterministicText("compressSmoothTurn", compressionInput, renderingText),
+      content: deterministicText("compressDetailedTurn", compressionInput, assemblyText),
       sourceVersion: 1,
     });
     expect(liveCount(filePath)).toBe(0);
@@ -217,6 +220,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "failed_terminal"],
       ["w-t1-turn_derivation-v1", "done"],
+      ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
 
     // Message-derivation fallback degrades the rendering's inputs; it does
@@ -230,7 +234,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     expect(log.ok).toBe(true);
     if (!log.ok) return;
     expect(log.value.map((entry) => [entry.derivationType, entry.subjectId])).toEqual([["smoothed_prompt", "m1"]]);
-    expect(formOf(filePath, "t1", "smooth_turn_compression")?.state).toBe("ready");
+    expect(formOf(filePath, "t1", "detailed_turn_compression")?.state).toBe("ready");
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
   });
 
@@ -251,7 +255,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
 
     expect(captured.slice(callsBeforeTurn).filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
     expect(formOf(filePath, "t1", "turn_rendering")).toMatchObject({ state: "ready" });
-    expect(formOf(filePath, "t1", "smooth_turn_compression")).toMatchObject({ state: "ready" });
+    expect(formOf(filePath, "t1", "detailed_turn_compression")).toMatchObject({ state: "ready" });
   });
 });
 
@@ -297,12 +301,13 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
       sourceVersion: 2,
       derivations: [
         { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering" },
-        { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression" },
+        { subjectKind: "turn", subjectId: "t1", derivationType: "pre_detailed_assembly" },
       ],
     });
     const rebuildReport = await drain(sdk, filePath);
     expect(rebuildReport.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-t1-turn_derivation-v2", "done"],
+      ["w-t1-detailed_turn_compression-v2", "done"],
     ]);
     const rebuilt = formOf(filePath, "t1", "turn_rendering");
     expect(rebuilt?.state).toBe("ready");
@@ -391,18 +396,19 @@ describe("TC-3.5 / AC-3.5: placement is recorded with the turn and readable thro
 });
 
 describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — the crossing turn is excluded", () => {
-  const PROJ = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
+  const PROMPT = "prompt text";
+  const ANSWER = "answer text";
+  const SMOOTHED = deterministicText("smoothPrompt", { text: PROMPT }, PROMPT);
 
   it("three turns at ~equal size: the third's placement closes the chunk holding two, and the third opens chunk 2", async () => {
-    const per = estimateTokens(PROJ);
+    const per = assemblyTokens(SMOOTHED, ANSWER);
     const double = createInferenceCallbacksDouble();
-    const callbacks = withScriptedProjections(double, () => PROJ);
-    const sdk = manualSdk(callbacks, {
+    const sdk = manualSdk(double, {
       targetProjectedTokens: 2 * per + 1,
       maxProjectedTokens: 100 * per,
     });
     const filePath = await newThread();
-    for (let i = 1; i <= 3; i += 1) await sendTurn(sdk, filePath, `prompt ${i}`, `answer ${i}`);
+    for (let i = 1; i <= 3; i += 1) await sendTurn(sdk, filePath, PROMPT, ANSWER);
 
     await drain(sdk, filePath);
     const snapshot = readChunks(filePath);
@@ -424,16 +430,15 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
   });
 
   it("threshold exactness: accumulated + incoming equal to the target closes (inclusive), holding only the prior member", async () => {
-    const per = estimateTokens(PROJ);
+    const per = assemblyTokens(SMOOTHED, ANSWER);
     const double = createInferenceCallbacksDouble();
-    const callbacks = withScriptedProjections(double, () => PROJ);
-    const sdk = manualSdk(callbacks, {
+    const sdk = manualSdk(double, {
       targetProjectedTokens: 2 * per,
       maxProjectedTokens: 100 * per,
     });
     const filePath = await newThread();
-    await sendTurn(sdk, filePath, "first", "one");
-    await sendTurn(sdk, filePath, "second", "two");
+    await sendTurn(sdk, filePath, PROMPT, ANSWER);
+    await sendTurn(sdk, filePath, PROMPT, ANSWER);
 
     await drain(sdk, filePath);
     const snapshot = readChunks(filePath);
@@ -449,18 +454,19 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
 });
 
 describe("TC-3.7 / AC-3.7: a single compression at or above the max forms its own chunk, closed immediately", () => {
-  const BIG = "omega ".repeat(120).trim();
+  const BIG_ANSWER = "omega ".repeat(120).trim();
 
   it("one oversized turn → its own closed chunk with both summaries derived", async () => {
-    const big = estimateTokens(BIG);
+    const prompt = "huge turn";
+    const smoothed = deterministicText("smoothPrompt", { text: prompt }, prompt);
+    const big = assemblyTokens(smoothed, BIG_ANSWER);
     const double = createInferenceCallbacksDouble();
-    const callbacks = withScriptedProjections(double, () => BIG);
-    const sdk = manualSdk(callbacks, {
+    const sdk = manualSdk(double, {
       targetProjectedTokens: big,
       maxProjectedTokens: big,
     });
     const filePath = await newThread();
-    await sendTurn(sdk, filePath, "huge turn", "huge answer");
+    await sendTurn(sdk, filePath, prompt, BIG_ANSWER);
 
     await drain(sdk, filePath);
     expect(readChunks(filePath)).toEqual({
@@ -472,25 +478,19 @@ describe("TC-3.7 / AC-3.7: a single compression at or above the max forms its ow
   });
 
   it("an oversized turn arriving behind an open chunk closes both: the open chunk without it, its own chunk with it", async () => {
-    const SMALL = "tiny compression text";
-    const big = estimateTokens(BIG);
-    const compressions = [SMALL, BIG];
+    const smallPrompt = "small turn";
+    const smallAnswer = "small answer";
+    const hugePrompt = "huge turn";
+    const hugeSmoothed = deterministicText("smoothPrompt", { text: hugePrompt }, hugePrompt);
+    const big = assemblyTokens(hugeSmoothed, BIG_ANSWER);
     const double = createInferenceCallbacksDouble();
-    const callbacks = withScriptedProjections(double, () => {
-      const next = compressions.shift();
-      if (next === undefined) throw new Error("scripted compressions exhausted");
-      return next;
-    });
-    // target = max = big: the small turn sits safely under both; the big
-    // turn's arrival crosses the target (small + big ≥ big) and its own
-    // compression meets the max.
-    const sdk = manualSdk(callbacks, {
+    const sdk = manualSdk(double, {
       targetProjectedTokens: big,
       maxProjectedTokens: big,
     });
     const filePath = await newThread();
-    await sendTurn(sdk, filePath, "small turn", "small answer");
-    await sendTurn(sdk, filePath, "huge turn", "huge answer");
+    await sendTurn(sdk, filePath, smallPrompt, smallAnswer);
+    await sendTurn(sdk, filePath, hugePrompt, BIG_ANSWER);
 
     await drain(sdk, filePath);
     const snapshot = readChunks(filePath);
@@ -524,6 +524,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(report.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([
       ["prompt_smoothing", "done"],
       ["turn_derivation", "done"],
+      ["detailed_turn_compression", "done"],
       ["chunk_summary_detailed", "done"],
       ["chunk_summary_brief", "done"],
     ]);
@@ -533,7 +534,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(brief?.state).toBe("ready");
     // Detailed is deterministic material assembly; brief still goes through
     // its own inference operation over projections + outcomes.
-    const memberProjections = [formOf(filePath, "t1", "smooth_turn_compression")?.content ?? ""];
+    const memberProjections = [formOf(filePath, "t1", "detailed_turn_compression")?.content ?? ""];
     expect(detailed?.content).toBe(`[turn 0001]\n${memberProjections[0]}`);
     const briefInputText = detailed?.content ?? "";
     const briefInputTokens = estimateTokens(briefInputText);
@@ -601,7 +602,9 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
     const detailedText = detailed?.content ?? "";
     expect(briefInput).toMatchObject({ text: detailedText });
-    expect(JSON.stringify(briefInput)).not.toContain(formOf(filePath, "t1", "smooth_turn_compression")?.content ?? "");
+    expect(JSON.stringify(briefInput)).not.toContain(
+      formOf(filePath, "t1", "detailed_turn_compression")?.content ?? "",
+    );
     expect(detailedText).toContain(`${account}=>failed`);
     for (const summary of [callA, resultA, callB, resultB]) expect(detailedText).toContain(summary as string);
 
@@ -629,6 +632,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(report.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([
       ["prompt_smoothing", "done"],
       ["turn_derivation", "done"],
+      ["detailed_turn_compression", "done"],
       ["chunk_summary_detailed", "done"],
       ["chunk_summary_brief", "failed_terminal"],
     ]);

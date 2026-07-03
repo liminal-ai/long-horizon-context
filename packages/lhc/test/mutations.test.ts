@@ -148,10 +148,16 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     // The chain above m1: its own smoothing and t1's two forms. t1's chunk is
     // still open — no summary rows exist, so none are named.
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
-      ["message/m1/smoothed_prompt", "turn/t1/smooth_turn_compression", "turn/t1/turn_rendering"].sort(),
+      [
+        "message/m1/smoothed_prompt",
+        "turn/t1/detailed_turn_compression",
+        "turn/t1/pre_detailed_assembly",
+        "turn/t1/turn_rendering",
+      ].sort(),
     );
     expect([...result.value.queued].sort((a, b) => a.workItemId.localeCompare(b.workItemId))).toEqual([
       { workItemId: "w-m1-prompt_smoothing-v2", kind: "prompt_smoothing" },
+      { workItemId: "w-t1-detailed_turn_compression-v2", kind: "detailed_turn_compression" },
       { workItemId: "w-t1-turn_derivation-v2", kind: "turn_derivation" },
     ]);
     expect(result.value.superseded).toEqual([]);
@@ -231,9 +237,11 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
       [
         "message/m1/smoothed_prompt",
         "message/m4/smoothed_prompt",
-        "turn/t1/smooth_turn_compression",
+        "turn/t1/detailed_turn_compression",
+        "turn/t1/pre_detailed_assembly",
         "turn/t1/turn_rendering",
-        "turn/t2/smooth_turn_compression",
+        "turn/t2/detailed_turn_compression",
+        "turn/t2/pre_detailed_assembly",
         "turn/t2/turn_rendering",
         "chunk/c1/chunk_summary_brief",
         "chunk/c1/chunk_summary_detailed",
@@ -251,7 +259,8 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
-        "turn/t1/smooth_turn_compression",
+        "turn/t1/detailed_turn_compression",
+        "turn/t1/pre_detailed_assembly",
         "turn/t1/turn_rendering",
         "chunk/c1/chunk_summary_brief",
         "chunk/c1/chunk_summary_detailed",
@@ -294,6 +303,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
       "w-c1-chunk_summary_brief-v2",
       "w-c1-chunk_summary_detailed-v2",
       "w-m1-prompt_smoothing-v2",
+      "w-t1-detailed_turn_compression-v2",
       "w-t1-turn_derivation-v2",
     ];
 
@@ -324,6 +334,7 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
       "w-c1-chunk_summary_brief-v3",
       "w-c1-chunk_summary_detailed-v3",
       "w-m1-prompt_smoothing-v3",
+      "w-t1-detailed_turn_compression-v3",
       "w-t1-turn_derivation-v3",
     ]);
     expect(readDerivedForms(filePath).every((form) => form.state === "pending" && form.sourceVersion === 3)).toBe(true);
@@ -386,6 +397,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       ["w-m1-prompt_smoothing-v1", "stale_discarded"],
       ["w-m1-prompt_smoothing-v2", "done"],
       ["w-t1-turn_derivation-v2", "done"],
+      ["w-t1-detailed_turn_compression-v2", "done"],
     ]);
 
     // Exactly one ready smoothing row, derived from the post-edit content at

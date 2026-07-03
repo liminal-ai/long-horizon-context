@@ -55,9 +55,9 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
     },
     embedded: ["contents of notes/plan.md: 3 open items", "succeeded", "120", "content_summary", "responseShape"],
   },
-  "smooth-turn-compression-v1": {
+  "detailed-turn-compression-v1": {
     input: {
-      rendering:
+      dialogueText:
         "[1] User prompt (m1)\nPlease inspect notes/plan.md\n\n[2] Assistant response (m2)\nIt has 3 open items.",
       inputTokens: 120,
       targetMinTokens: 42,
@@ -73,6 +73,42 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
       "If it is too short, expand it by restoring missing substance.",
       "If it is too long, contract it by removing lower-value detail and repeated explanation.",
       "<turn_rendering_to_compress>",
+    ],
+  },
+  "detailed-turn-compression-v2": {
+    input: {
+      dialogueText: "User:\nPlease inspect notes/plan.md\n\nAssistant:\nIt has 3 open items.",
+      inputTokens: 120,
+      targetMinTokens: 42,
+      targetAimTokens: 60,
+      targetMaxTokens: 78,
+    },
+    embedded: [
+      "notes/plan.md",
+      "42-78",
+      "user↔assistant dialogue",
+      "30-50%",
+      "Preserve:",
+      "Remove:",
+      "<dialogue_to_compress>",
+    ],
+  },
+  "detailed-turn-compression-v3": {
+    input: {
+      dialogueText: "User:\nPlease inspect notes/plan.md\n\n⏺ It has 3 open items.",
+      inputTokens: 120,
+      targetMinTokens: 42,
+      targetAimTokens: 60,
+      targetMaxTokens: 78,
+    },
+    embedded: [
+      "notes/plan.md",
+      "around 30 tokens total (roughly 20-40)",
+      "<instructions-for-summarizing>",
+      "techincal",
+      "targetting approximately 20%-30%",
+      "⏺ represents the agent",
+      "<content-for-summarizing>",
     ],
   },
   "chunk-brief-v1": {

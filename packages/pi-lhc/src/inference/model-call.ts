@@ -21,7 +21,7 @@ import {
   type ModelCallResult,
 } from "lhc";
 import type { ExtensionContext, ModelHandle, ModelRegistryAuthResolution } from "../pi/types.js";
-import type { CompleteOptions, PiAiComplete } from "./pi-ai.js";
+import type { CompleteContext, CompleteOptions, PiAiComplete } from "./pi-ai.js";
 
 interface ModelCallDeps {
   complete?: PiAiComplete;
@@ -90,6 +90,24 @@ function providerErrorFromResponse(response: {
   if (response.stopReason !== "error" && response.errorMessage === undefined) return undefined;
   const message = response.errorMessage ?? "provider returned stopReason error";
   return { kind: classifyFailure({ message }), message };
+}
+
+function partitionSystemPrompt(messages: ModelCallInput["messages"]): CompleteContext {
+  const systemContents: string[] = [];
+  const rest: CompleteContext["messages"] = [];
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      systemContents.push(message.content);
+    } else {
+      rest.push({ role: "user", content: message.content });
+    }
+  }
+
+  if (systemContents.length === 0) {
+    return { messages: rest };
+  }
+  return { systemPrompt: systemContents.join("\n\n"), messages: rest };
 }
 
 /** Extract the text content from an AssistantMessage-like shape. */
@@ -206,7 +224,8 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
     try {
       const complete = deps.complete ?? (await importPiAiComplete());
       const completeOptions = mergeCompleteOptions(thinking, requestAuth.auth);
-      const response = await complete(resolved, { messages }, completeOptions);
+      const context = partitionSystemPrompt(messages);
+      const response = await complete(resolved, context, completeOptions);
 
       const providerError = providerErrorFromResponse(response);
       if (providerError !== undefined) {
@@ -232,7 +251,7 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
 export const ASSIGNMENT_KINDS = [
   "smoothed_prompt",
   "tool_result_summary",
-  "smooth_turn_compression",
+  "detailed_turn_compression",
   "chunk_summary_brief",
 ] as const;
 
@@ -241,7 +260,7 @@ export type AssignmentKind = (typeof ASSIGNMENT_KINDS)[number];
 export const DEFAULT_ASSIGNMENT_PROMPTS: Record<AssignmentKind, string> = {
   smoothed_prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
   tool_result_summary: DEFAULT_PROMPT_NAMES.tool_result_summary ?? "tool-result-v2",
-  smooth_turn_compression: DEFAULT_PROMPT_NAMES.smooth_turn_compression ?? "smooth-turn-compression-v1",
+  detailed_turn_compression: DEFAULT_PROMPT_NAMES.detailed_turn_compression ?? "detailed-turn-compression-v1",
   chunk_summary_brief: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v1",
 };
 

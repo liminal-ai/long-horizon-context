@@ -130,7 +130,7 @@ const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
       const toolName = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
-      return `${toolName}(${JSON.stringify(block["arguments"] ?? {})})`;
+      return truncateForFallback(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`);
     },
   },
   tool_result: {
@@ -156,6 +156,7 @@ interface ComposeAtom {
 
 const RUN_BREAK_KINDS: ReadonlySet<RenderingPartKind> = new Set(["user_prompt", "assistant_text"]);
 const TOOL_KINDS: ReadonlySet<RenderingPartKind> = new Set(["tool_call", "tool_result"]);
+const DIALOG_KINDS: ReadonlySet<RenderingPartKind> = new Set(["user_prompt", "assistant_text"]);
 
 // One message → its composed part (ready derivation verbatim, else raw/truncated
 // fallback) plus a gap when a derivable derivation was not ready. Gaps stay
@@ -346,4 +347,46 @@ export function composeRenderingInput(
   }
 
   return { parts, gaps, receipts, recoveries };
+}
+
+function formatDialogueSection(part: RenderingPart): string {
+  if (part.kind === "user_prompt") return `User:\n${part.text}`;
+  return `⏺ ${part.text}`;
+}
+
+function composeDialogueText(parts: readonly RenderingPart[]): string {
+  const dialogueParts = parts.filter(
+    (part): part is RenderingPart & { kind: "user_prompt" | "assistant_text" } =>
+      part.kind === "user_prompt" || part.kind === "assistant_text",
+  );
+  if (dialogueParts.length === 0) return "";
+
+  let text = formatDialogueSection(dialogueParts[0]!);
+  for (let index = 1; index < dialogueParts.length; index += 1) {
+    const previous = dialogueParts[index - 1]!;
+    const current = dialogueParts[index]!;
+    const separator = previous.kind === "assistant_text" && current.kind === "assistant_text" ? "\n" : "\n\n";
+    text += separator + formatDialogueSection(current);
+  }
+  return text.replace(/\n{3,}/g, "\n\n");
+}
+
+// Dialog-register assembly for detailed-band compression: user prompts
+// (smoothed where ready) and assistant text only, in record order.
+export function composePreDetailedAssembly(
+  messages: readonly ComposeMessage[],
+  derivations: ReadonlyMap<string, ComposeDerivationRow>,
+): Pick<CompositionInput, "gaps" | "recoveries"> & { text: string } {
+  const resultByCallId = recordOutcomes(messages);
+  const parts: RenderingPart[] = [];
+  const gaps: DependencyGap[] = [];
+  const recoveries: RecoveryReceipt[] = [];
+  for (const message of messages) {
+    if (!DIALOG_KINDS.has(message.kind)) continue;
+    const built = buildAtom(message, derivations, resultByCallId);
+    parts.push(built.atom.part);
+    if (built.gap !== undefined) gaps.push(built.gap);
+    if (built.recovery !== undefined) recoveries.push(built.recovery);
+  }
+  return { text: composeDialogueText(parts), gaps, recoveries };
 }

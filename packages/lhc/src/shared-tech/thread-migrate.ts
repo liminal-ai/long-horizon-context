@@ -2,6 +2,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { CURRENT_THREAD_SCHEMA_VERSION, getSchemaVersion } from "./storage.js";
 
 export const THREAD_SCHEMA_VERSION_1 = 1;
+export const THREAD_SCHEMA_VERSION_2 = 2;
+export const THREAD_SCHEMA_VERSION_3 = 3;
+
+const OLD_DERIVATION_TYPE = "smooth_turn_compression";
+const NEW_DERIVATION_TYPE = "detailed_turn_compression";
+const OLD_PROMPT_NAME = "smooth-turn-compression-v1";
+const NEW_PROMPT_NAME = "detailed-turn-compression-v1";
 
 export function derivationLogSchemaStatements(): string[] {
   return [
@@ -19,15 +26,172 @@ export function derivationLogSchemaStatements(): string[] {
   ];
 }
 
-export function migrateThreadSchema(db: DatabaseSync): void {
-  const version = getSchemaVersion(db);
-  if (version >= CURRENT_THREAD_SCHEMA_VERSION) return;
-  if (version !== THREAD_SCHEMA_VERSION_1) {
-    throw new Error(`unsupported thread schema version ${version}`);
+const OLD_PROMPT_JSON = `"prompt":"${OLD_PROMPT_NAME}"`;
+const NEW_PROMPT_JSON = `"prompt":"${NEW_PROMPT_NAME}"`;
+
+function migrateDetailedTurnCompressionRename(db: DatabaseSync): void {
+  db.prepare(`UPDATE derivation SET derivation_type = ? WHERE derivation_type = ?`).run(
+    NEW_DERIVATION_TYPE,
+    OLD_DERIVATION_TYPE,
+  );
+  db.prepare(`UPDATE derivation_log SET derivation_type = ? WHERE derivation_type = ?`).run(
+    NEW_DERIVATION_TYPE,
+    OLD_DERIVATION_TYPE,
+  );
+  db.prepare(`UPDATE log SET derivation_type = ? WHERE derivation_type = ?`).run(
+    NEW_DERIVATION_TYPE,
+    OLD_DERIVATION_TYPE,
+  );
+  db.prepare(`UPDATE derivation SET metadata = REPLACE(metadata, ?, ?) WHERE metadata LIKE ?`).run(
+    OLD_PROMPT_JSON,
+    NEW_PROMPT_JSON,
+    `%${OLD_PROMPT_JSON}%`,
+  );
+  db.prepare(`UPDATE derivation_log SET payload = REPLACE(payload, ?, ?) WHERE payload LIKE ?`).run(
+    OLD_PROMPT_JSON,
+    NEW_PROMPT_JSON,
+    `%${OLD_PROMPT_JSON}%`,
+  );
+  db.prepare(`UPDATE log SET message = REPLACE(message, ?, ?) WHERE message LIKE ?`).run(
+    OLD_DERIVATION_TYPE,
+    NEW_DERIVATION_TYPE,
+    `%${OLD_DERIVATION_TYPE}%`,
+  );
+  db.prepare(
+    `UPDATE thread_view SET
+       arrangement_json = REPLACE(arrangement_json, ?, ?),
+       gaps_json = REPLACE(gaps_json, ?, ?),
+       source_state_json = REPLACE(source_state_json, ?, ?)
+     WHERE arrangement_json LIKE ?
+        OR gaps_json LIKE ?
+        OR source_state_json LIKE ?`,
+  ).run(
+    OLD_DERIVATION_TYPE,
+    NEW_DERIVATION_TYPE,
+    OLD_DERIVATION_TYPE,
+    NEW_DERIVATION_TYPE,
+    OLD_DERIVATION_TYPE,
+    NEW_DERIVATION_TYPE,
+    `%${OLD_DERIVATION_TYPE}%`,
+    `%${OLD_DERIVATION_TYPE}%`,
+    `%${OLD_DERIVATION_TYPE}%`,
+  );
+}
+
+interface QueuedWorkItemPayload {
+  sourceVersion?: number;
+  operation?: string;
+  derivations?: Array<{ subjectKind: string; subjectId: string; derivationType: string }>;
+}
+
+const LEGACY_TURN_DERIVATION_COMPRESSION_TYPES = new Set([OLD_DERIVATION_TYPE, NEW_DERIVATION_TYPE]);
+
+function turnDerivationPayloadNeedsPreDetailedAssembly(payload: QueuedWorkItemPayload): boolean {
+  const derivations = payload.derivations ?? [];
+  if (!derivations.some((target) => target.derivationType === "turn_rendering")) return false;
+  if (derivations.some((target) => target.derivationType === "pre_detailed_assembly")) return false;
+  return derivations.some((target) => LEGACY_TURN_DERIVATION_COMPRESSION_TYPES.has(target.derivationType));
+}
+
+function migratedTurnDerivationTargets(turnId: string): Array<{
+  subjectKind: "turn";
+  subjectId: string;
+  derivationType: "turn_rendering" | "pre_detailed_assembly";
+}> {
+  return [
+    { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
+    { subjectKind: "turn", subjectId: turnId, derivationType: "pre_detailed_assembly" },
+  ];
+}
+
+// Pre-rewire turn_derivation items scheduled compression inside the same handler;
+// rewrite their derivations payload and seed pre_detailed_assembly so item 1 can
+// complete and enqueue compression. Idempotent — safe on every open.
+function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
+  const rows = db
+    .prepare(
+      `SELECT work_item_id, source_ref, payload
+       FROM work_item
+       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`,
+    )
+    .all() as Array<{ work_item_id: string; source_ref: string; payload: string }>;
+
+  const updatePayload = db.prepare(`UPDATE work_item SET payload = ? WHERE work_item_id = ?`);
+  const seedAssembly = db.prepare(
+    `INSERT OR IGNORE INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
+     VALUES ('turn', ?, 'pre_detailed_assembly', 'pending', ?)`,
+  );
+  const assemblyRowExists = db.prepare(
+    `SELECT 1 AS present FROM derivation
+     WHERE subject_kind = 'turn' AND subject_id = ? AND derivation_type = 'pre_detailed_assembly'`,
+  );
+
+  for (const row of rows) {
+    const sourceRef = JSON.parse(row.source_ref) as { turnId?: string };
+    const turnId = sourceRef.turnId;
+    if (turnId === undefined) continue;
+
+    const payload = JSON.parse(row.payload) as QueuedWorkItemPayload;
+    const sourceVersion = payload.sourceVersion ?? 1;
+    const needsPayloadMigration = turnDerivationPayloadNeedsPreDetailedAssembly(payload);
+    const targetsPreDetailedAssembly = (payload.derivations ?? []).some(
+      (target) => target.derivationType === "pre_detailed_assembly",
+    );
+    const needsAssemblySeed =
+      needsPayloadMigration || (targetsPreDetailedAssembly && assemblyRowExists.get(turnId) === undefined);
+    if (!needsPayloadMigration && !needsAssemblySeed) continue;
+
+    if (needsAssemblySeed) {
+      seedAssembly.run(turnId, sourceVersion);
+    }
+    if (needsPayloadMigration) {
+      const nextPayload: QueuedWorkItemPayload = {
+        ...payload,
+        derivations: migratedTurnDerivationTargets(turnId),
+      };
+      updatePayload.run(JSON.stringify(nextPayload), row.work_item_id);
+    }
   }
+}
+
+function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    for (const statement of derivationLogSchemaStatements()) db.exec(statement);
+    migrateQueuedTurnDerivationWorkItems(db);
+    db.exec("COMMIT;");
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
+export function migrateThreadSchema(db: DatabaseSync): void {
+  let version = getSchemaVersion(db);
+  if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
+    runQueuedTurnDerivationMigration(db);
+    return;
+  }
+  if (version < THREAD_SCHEMA_VERSION_1) {
+    throw new Error(`unsupported thread schema version ${version}`);
+  }
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    if (version === THREAD_SCHEMA_VERSION_1) {
+      for (const statement of derivationLogSchemaStatements()) db.exec(statement);
+      version = THREAD_SCHEMA_VERSION_2;
+    }
+    if (version === THREAD_SCHEMA_VERSION_2) {
+      migrateDetailedTurnCompressionRename(db);
+      version = THREAD_SCHEMA_VERSION_3;
+    }
+    if (version === THREAD_SCHEMA_VERSION_3) {
+      migrateQueuedTurnDerivationWorkItems(db);
+      version = CURRENT_THREAD_SCHEMA_VERSION;
+    }
+    if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
+      throw new Error(`unsupported thread schema version ${version}`);
+    }
     db.exec(`PRAGMA user_version = ${CURRENT_THREAD_SCHEMA_VERSION};`);
     db.exec("COMMIT;");
   } catch (cause) {

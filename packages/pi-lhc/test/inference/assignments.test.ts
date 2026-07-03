@@ -72,23 +72,23 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       expect(assignments.smoothed_prompt.prompt).toBe(DEFAULT_PROMPT_NAMES.smoothed_prompt);
 
       // Other kinds retain defaults
-      expect(assignments.smooth_turn_compression.provider).toBe(DEFAULT_PI_MODEL.provider);
-      expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
+      expect(assignments.detailed_turn_compression.provider).toBe(DEFAULT_PI_MODEL.provider);
+      expect(assignments.detailed_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
     });
 
     it("applies partial override (provider only, keeps model/prompt/thinking from default)", () => {
       const config = {
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "openai",
         },
       };
 
       const assignments = loadAssignments(config);
 
-      expect(assignments.smooth_turn_compression.provider).toBe("openai");
-      expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
-      expect(assignments.smooth_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.smooth_turn_compression);
-      expect(assignments.smooth_turn_compression.thinking).toBe("none");
+      expect(assignments.detailed_turn_compression.provider).toBe("openai");
+      expect(assignments.detailed_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
+      expect(assignments.detailed_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.detailed_turn_compression);
+      expect(assignments.detailed_turn_compression.thinking).toBe("none");
     });
 
     it("preserves thinking none when override omits thinking", () => {
@@ -112,10 +112,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
           model: "claude-3-opus",
           prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt,
         },
-        smooth_turn_compression: {
+        detailed_turn_compression: {
           provider: "openai",
           model: "gpt-4o",
-          prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+          prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
         },
         chunk_summary_brief: {
           provider: "google",
@@ -127,7 +127,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
       const assignments = loadAssignments(config);
 
       expect(assignments.smoothed_prompt.provider).toBe("anthropic");
-      expect(assignments.smooth_turn_compression.provider).toBe("openai");
+      expect(assignments.detailed_turn_compression.provider).toBe("openai");
       expect(assignments.chunk_summary_brief.provider).toBe("google");
     });
 
@@ -170,22 +170,22 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("fills model from default when override omits it", () => {
         const config = {
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "openai",
-            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+            prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
           },
         };
 
         const assignments = loadAssignments(config);
 
-        expect(assignments.smooth_turn_compression.provider).toBe("openai");
-        expect(assignments.smooth_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
-        expect(assignments.smooth_turn_compression.thinking).toBe("none");
+        expect(assignments.detailed_turn_compression.provider).toBe("openai");
+        expect(assignments.detailed_turn_compression.model).toBe(DEFAULT_PI_MODEL.id);
+        expect(assignments.detailed_turn_compression.thinking).toBe("none");
       });
 
       it("fills prompt from default when override omits it", () => {
         const config = {
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "google",
             model: "gemini-pro",
           },
@@ -193,10 +193,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
         const assignments = loadAssignments(config);
 
-        expect(assignments.smooth_turn_compression.provider).toBe("google");
-        expect(assignments.smooth_turn_compression.model).toBe("gemini-pro");
-        expect(assignments.smooth_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.smooth_turn_compression);
-        expect(assignments.smooth_turn_compression.thinking).toBe("none");
+        expect(assignments.detailed_turn_compression.provider).toBe("google");
+        expect(assignments.detailed_turn_compression.model).toBe("gemini-pro");
+        expect(assignments.detailed_turn_compression.prompt).toBe(DEFAULT_PROMPT_NAMES.detailed_turn_compression);
+        expect(assignments.detailed_turn_compression.thinking).toBe("none");
       });
 
       it("merges partial override over defaults when base assignment is complete", () => {
@@ -244,7 +244,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
             model: "claude-3-opus",
             prompt: "unknown-1",
           },
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "openai",
             model: "gpt-4o",
             prompt: "unknown-2",
@@ -288,10 +288,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws when model contains placeholder pattern", () => {
         const config = {
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "openai",
             model: "your-model",
-            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+            prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
           },
         };
 
@@ -301,7 +301,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smooth_turn_compression");
+            expect(e.kind).toBe("detailed_turn_compression");
             expect(e.problem).toBe("placeholder");
           }
         }
@@ -309,10 +309,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws for 'unconfigured' placeholder", () => {
         const config = {
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "google",
             model: "unconfigured",
-            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+            prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
           },
         };
 
@@ -322,7 +322,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
         } catch (e) {
           expect(e).toBeInstanceOf(AssignmentValidationError);
           if (e instanceof AssignmentValidationError) {
-            expect(e.kind).toBe("smooth_turn_compression");
+            expect(e.kind).toBe("detailed_turn_compression");
             expect(e.problem).toBe("placeholder");
           }
         }
@@ -330,10 +330,10 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
 
       it("throws for 'placeholder' literal", () => {
         const config = {
-          smooth_turn_compression: {
+          detailed_turn_compression: {
             provider: "placeholder",
             model: "some-model",
-            prompt: DEFAULT_PROMPT_NAMES.smooth_turn_compression,
+            prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression,
           },
         };
 

@@ -48,7 +48,7 @@ describe("FC-0.1: current view storage on a current thread file", () => {
     const db = openRaw(fixture.filePath);
     try {
       const version = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
-      expect(Number(version?.user_version ?? 0)).toBe(2);
+      expect(Number(version?.user_version ?? 0)).toBe(3);
 
       const tables = (
         db
@@ -220,7 +220,7 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const blocked = report.value.filter(
       (entry) => entry.subjectId === sibling.blockedTurnId && entry.state === "blocked",
     );
-    expect(blocked.map((entry) => entry.derivationType).sort()).toEqual(["smooth_turn_compression", "turn_rendering"]);
+    expect(blocked.map((entry) => entry.derivationType).sort()).toEqual(["pre_detailed_assembly", "turn_rendering"]);
     for (const entry of blocked) {
       expect(entry.reason).toMatch(/^source_damaged: turn state corrupt/);
     }

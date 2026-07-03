@@ -132,8 +132,8 @@ export interface InferenceCallbacks {
     promptMode?: ToolResultPromptMode;
     facts?: ToolResultFacts;
   }): Promise<InferenceResult>;
-  compressSmoothTurn(i: {
-    rendering: string;
+  compressDetailedTurn(i: {
+    dialogueText: string;
     inputTokens: number;
     targetMinTokens: number;
     targetAimTokens: number;
@@ -197,7 +197,7 @@ export interface ToolResultClassification {
 export const INFERENCE_CALLBACK_OPERATIONS = [
   "smoothPrompt",
   "summarizeToolResult",
-  "compressSmoothTurn",
+  "compressDetailedTurn",
   "summarizeChunkBrief",
 ] as const;
 

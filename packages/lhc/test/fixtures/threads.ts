@@ -288,9 +288,9 @@ export async function multiStateThread(store: TempStore): Promise<{ filePath: st
       { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary", state: "ready" },
       { subjectKind: "message", subjectId: "m6", derivationType: "smoothed_prompt", state: "pending" },
       { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering", state: "failed" },
-      { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression", state: "pending" },
+      { subjectKind: "turn", subjectId: "t1", derivationType: "pre_detailed_assembly", state: "pending" },
       { subjectKind: "turn", subjectId: "t2", derivationType: "turn_rendering", state: "blocked" },
-      { subjectKind: "turn", subjectId: "t2", derivationType: "smooth_turn_compression", state: "pending" },
+      { subjectKind: "turn", subjectId: "t2", derivationType: "pre_detailed_assembly", state: "pending" },
     ],
   };
 }

@@ -439,33 +439,33 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
   }
 
   function buildCoverageEntry(turn: SelectionTurn): ArrangementEntry {
-    const compression = lookup(turn.turnId, "smooth_turn_compression");
-    const rendering = lookup(turn.turnId, "turn_rendering");
+    const compression = lookup(turn.turnId, "detailed_turn_compression");
+    const assembly = lookup(turn.turnId, "pre_detailed_assembly");
     const compressionContent = readyContent(compression);
-    const renderingContent = readyContent(rendering);
+    const assemblyContent = readyContent(assembly);
     const rep =
       compressionContent !== null
         ? {
-            derivationUsed: "smooth_turn_compression",
+            derivationUsed: "detailed_turn_compression",
             body: compressionContent,
             degraded: false,
             gap: false,
           }
-        : renderingContent !== null
+        : assemblyContent !== null
           ? {
-              derivationUsed: "turn_rendering",
-              body: renderingContent,
+              derivationUsed: "pre_detailed_assembly",
+              body: assemblyContent,
               degraded: true,
               gap: false,
-              degradedMarker: "coverage-from-turn-rendering",
-              reason: `smooth_turn_compression ${derivationState(compression)}`,
+              degradedMarker: "coverage-from-pre-detailed-assembly",
+              reason: `detailed_turn_compression ${derivationState(compression)}`,
             }
           : {
               derivationUsed: "gap",
               body: "",
               degraded: false,
               gap: true,
-              reason: `closed turn before compact point was not represented by selected bands (smooth_turn_compression: ${derivationState(compression)}, turn_rendering: ${derivationState(rendering)})`,
+              reason: `closed turn before compact point was not represented by selected bands (detailed_turn_compression: ${derivationState(compression)}, pre_detailed_assembly: ${derivationState(assembly)})`,
             };
     const text = renderArrangementEntry("turn", turn.turnId, rep, []);
     const entry: ArrangementEntry = {

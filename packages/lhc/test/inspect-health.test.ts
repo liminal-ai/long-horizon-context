@@ -61,7 +61,8 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 6, failed: 2 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 3 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 3 } },
-      { owner: "turns", kind: "smooth_turn_compression", counts: { ...ZERO, ready: 12, blocked: 1 } },
+      { owner: "turns", kind: "detailed_turn_compression", counts: { ...ZERO, ready: 12 } },
+      { owner: "turns", kind: "pre_detailed_assembly", counts: { ...ZERO, ready: 12, blocked: 1 } },
       { owner: "turns", kind: "turn_rendering", counts: { ...ZERO, ready: 12, blocked: 1 } },
     ]);
 
@@ -109,7 +110,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
     // never as repair targets.
     const blocked = report.failures.filter((entry) => !failed.includes(entry));
     expect(blocked.map((entry) => [entry.owner, entry.subjectKind, entry.subjectId, entry.derivationType])).toEqual([
-      ["turns", "turn", fixture.blockedTurnId, "smooth_turn_compression"],
+      ["turns", "turn", fixture.blockedTurnId, "pre_detailed_assembly"],
       ["turns", "turn", fixture.blockedTurnId, "turn_rendering"],
     ]);
     for (const entry of blocked) {
@@ -186,7 +187,8 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       [
         `message:${fixture.editedMessageId}:smoothed_prompt`,
         "turn:t2:turn_rendering",
-        "turn:t2:smooth_turn_compression",
+        "turn:t2:pre_detailed_assembly",
+        "turn:t2:detailed_turn_compression",
         "chunk:c1:chunk_summary_detailed",
         "chunk:c1:chunk_summary_brief",
       ].sort(),
@@ -201,13 +203,14 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 2, pending: 1 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 2, pending: 1 } },
-      { owner: "turns", kind: "smooth_turn_compression", counts: { ...ZERO, ready: 11, pending: 1 } },
+      { owner: "turns", kind: "detailed_turn_compression", counts: { ...ZERO, ready: 11, pending: 1 } },
+      { owner: "turns", kind: "pre_detailed_assembly", counts: { ...ZERO, ready: 11, pending: 1 } },
       { owner: "turns", kind: "turn_rendering", counts: { ...ZERO, ready: 11, pending: 1 } },
     ]);
-    // Queued work visible and consistent: 4 replacement items — smoothing,
-    // turn derivation (two forms), two chunk summaries — join onto the 5
-    // pending entries.
-    expect(before.queue).toEqual({ queued: 5, claimed: 0 });
+    // Queued work visible and consistent: 5 replacement items — smoothing,
+    // turn derivation (two forms), compression, two chunk summaries — join
+    // onto the 6 pending entries.
+    expect(before.queue).toEqual({ queued: 6, claimed: 0 });
     expect(before.failures).toEqual([]);
     expect(before.repairPreview).toEqual([]);
 
@@ -236,7 +239,8 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
       { owner: "turns", kind: "chunk_summary_brief", counts: { ...ZERO, ready: 3 } },
       { owner: "turns", kind: "chunk_summary_detailed", counts: { ...ZERO, ready: 3 } },
-      { owner: "turns", kind: "smooth_turn_compression", counts: { ...ZERO, ready: 12 } },
+      { owner: "turns", kind: "detailed_turn_compression", counts: { ...ZERO, ready: 12 } },
+      { owner: "turns", kind: "pre_detailed_assembly", counts: { ...ZERO, ready: 12 } },
       { owner: "turns", kind: "turn_rendering", counts: { ...ZERO, ready: 12 } },
     ]);
     expect(after.queue).toEqual({ queued: 0, claimed: 0 });
@@ -256,7 +260,7 @@ describe("architecture risk: health is inference-callback-free and surface-compo
       inferenceCallbacks: {
         smoothPrompt: refuse,
         summarizeToolResult: refuse,
-        compressSmoothTurn: refuse,
+        compressDetailedTurn: refuse,
         summarizeChunkBrief: refuse,
       },
       mode: "manual",

@@ -248,9 +248,9 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
     const turnEntries = await reportOf(sdk, filePath, "turns");
     expect(turnEntries.every((entry) => entry.subjectKind === "turn" || entry.subjectKind === "chunk")).toBe(true);
     expect(turnEntries.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
-      ["t1", "smooth_turn_compression", "blocked"],
+      ["t1", "pre_detailed_assembly", "blocked"],
       ["t1", "turn_rendering", "blocked"],
-      ["t2", "smooth_turn_compression", "blocked"],
+      ["t2", "pre_detailed_assembly", "blocked"],
       ["t2", "turn_rendering", "blocked"],
     ]);
 
@@ -386,7 +386,7 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     expect(rebuilt?.sourceVersion).toBe(2);
     expect(rebuilt?.gaps).toBeUndefined();
     // Both turn derivations ride the one work item: the compression rebuilt too.
-    expect(formOf(filePath, turnId, "smooth_turn_compression")).toMatchObject({
+    expect(formOf(filePath, turnId, "detailed_turn_compression")).toMatchObject({
       state: "ready",
       sourceVersion: 2,
     });
@@ -437,12 +437,13 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
     expect(rendering?.state).toBe("blocked");
     expect(rendering?.reason).toContain("source_damaged");
     expect(rendering?.reason).toContain("open");
-    expect(formOf(filePath, turnId, "smooth_turn_compression")?.state).toBe("blocked");
+    expect(formOf(filePath, turnId, "pre_detailed_assembly")?.state).toBe("blocked");
+    expect(formOf(filePath, turnId, "detailed_turn_compression")).toBeUndefined();
 
     // The report surfaces the blocked rows with their reasons.
     const notReady = await reportOf(sdk, filePath, "turns", { notReady: true });
     expect(notReady.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
-      ["t1", "smooth_turn_compression", "blocked"],
+      ["t1", "pre_detailed_assembly", "blocked"],
       ["t1", "turn_rendering", "blocked"],
     ]);
 
@@ -503,11 +504,11 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
       ]),
     );
     expect(turnFormStates.get("t1")).toEqual([
-      ["smooth_turn_compression", "blocked"],
+      ["pre_detailed_assembly", "blocked"],
       ["turn_rendering", "blocked"],
     ]);
     expect(turnFormStates.get("t2")).toEqual([
-      ["smooth_turn_compression", "blocked"],
+      ["pre_detailed_assembly", "blocked"],
       ["turn_rendering", "blocked"],
     ]);
     expect(turnFormStates.get("t3")).toBeUndefined();

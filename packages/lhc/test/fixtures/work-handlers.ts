@@ -18,12 +18,15 @@ import type {
   WorkKind,
 } from "../../src/index.js";
 import { applyDerivationSuccess, deterministicText, registerTestingWork } from "../../src/index.js";
+import type { HandlerRunContext } from "../../src/shared-tech/derivation.js";
+import { enqueue } from "../../src/shared-tech/work-queue/index.js";
 import type { DerivationType } from "./model-call.js";
 
 const WORK_KINDS: readonly WorkKind[] = [
   "prompt_smoothing",
   "tool_result_summary",
   "turn_derivation",
+  "detailed_turn_compression",
   "chunk_summary_detailed",
   "chunk_summary_brief",
 ];
@@ -41,27 +44,39 @@ export function testWorkHandlers(
 ): Partial<Record<WorkKind, WorkHandler>> {
   const map: Partial<Record<WorkKind, WorkHandler>> = {};
   for (const kind of WORK_KINDS) {
-    map[kind] = async (_run, item) => {
+    map[kind] = async (run, item) => {
       await hooks.onHandlerStart?.(item);
       const sourceId = item.sourceRef["messageId"] ?? item.sourceRef["turnId"] ?? item.sourceRef["chunkId"];
       if (sourceId === undefined) {
         return { ok: false, retryable: false, reason: "test handler: unrecognized sourceRef" };
       }
-      const derived = await deriveForTestWork(kind, inferenceCallbacks, sourceId);
+      const derived = await deriveForTestWork(run, kind, inferenceCallbacks, sourceId);
       if (!derived.ok) {
         return { ok: false, retryable: derived.retryable, reason: derived.reason };
       }
-      return { ok: true, derivations: derived.derivations };
+      return {
+        ok: true,
+        derivations: derived.derivations,
+        ...(derived.onApplied === undefined ? {} : { onApplied: derived.onApplied }),
+      };
     };
   }
   return map;
 }
 
 async function deriveForTestWork(
+  run: HandlerRunContext,
   kind: WorkKind,
   inferenceCallbacks: InferenceCallbacks,
   sourceId: string,
-): Promise<{ ok: true; derivations: HandlerDerivationWrite[] } | { ok: false; retryable: boolean; reason: string }> {
+): Promise<
+  | {
+      ok: true;
+      derivations: HandlerDerivationWrite[];
+      onApplied?: (transaction: { db: import("node:sqlite").DatabaseSync; onCommit: (fn: () => void) => void }) => void;
+    }
+  | { ok: false; retryable: boolean; reason: string }
+> {
   if (kind === "prompt_smoothing") {
     return inferenceWrite(
       "message",
@@ -82,15 +97,8 @@ async function deriveForTestWork(
     const renderingInput = {
       parts: [{ messageId: sourceId, kind: "user_prompt", text: `turn:${sourceId}`, fallback: false }],
     };
-    const renderingText = deterministicText("compressSmoothTurn", renderingInput, `turn:${sourceId}`);
-    const compression = await inferenceCallbacks.compressSmoothTurn({
-      rendering: `turn:${sourceId}`,
-      inputTokens: 10,
-      targetMinTokens: 4,
-      targetAimTokens: 5,
-      targetMaxTokens: 7,
-    });
-    if (!compression.ok) return compression;
+    const renderingText = deterministicText("compressDetailedTurn", renderingInput, `turn:${sourceId}`);
+    const assemblyText = `User:\nturn:${sourceId}\n\n⏺ findings for ${sourceId}`;
     return {
       ok: true,
       derivations: [
@@ -103,7 +111,48 @@ async function deriveForTestWork(
         {
           subjectKind: "turn",
           subjectId: sourceId,
-          derivationType: "smooth_turn_compression",
+          derivationType: "pre_detailed_assembly",
+          content: assemblyText,
+        },
+      ],
+      onApplied: (transaction) => {
+        enqueue(
+          {
+            db: transaction.db,
+            clock: run.clock,
+            threadId: run.threadId,
+            filePath: run.filePath,
+            postCommitHook: { add: transaction.onCommit },
+            poke: () => {},
+          },
+          {
+            owner: "turns",
+            kind: "detailed_turn_compression",
+            sourceRef: { turnId: sourceId },
+            sourceVersion: 1,
+            derivations: [{ subjectKind: "turn", subjectId: sourceId, derivationType: "detailed_turn_compression" }],
+          },
+        );
+      },
+    };
+  }
+  if (kind === "detailed_turn_compression") {
+    const assemblyText = `User:\nturn:${sourceId}\n\n⏺ findings for ${sourceId}`;
+    const compression = await inferenceCallbacks.compressDetailedTurn({
+      dialogueText: assemblyText,
+      inputTokens: 10,
+      targetMinTokens: 4,
+      targetAimTokens: 5,
+      targetMaxTokens: 7,
+    });
+    if (!compression.ok) return compression;
+    return {
+      ok: true,
+      derivations: [
+        {
+          subjectKind: "turn",
+          subjectId: sourceId,
+          derivationType: "detailed_turn_compression",
           content: compression.text,
         },
       ],
@@ -196,6 +245,7 @@ export function testWorkDispatchers(
   return {
     "messages.derive": wrapFromItem,
     "turns.deriveTurn": wrap("turn_derivation"),
+    "turns.deriveDetailedTurnCompression": wrap("detailed_turn_compression"),
     "turns.deriveDetailedChunk": wrap("chunk_summary_detailed"),
     "turns.deriveBriefChunk": wrap("chunk_summary_brief"),
   };

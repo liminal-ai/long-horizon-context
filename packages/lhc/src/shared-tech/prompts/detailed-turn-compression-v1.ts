@@ -1,13 +1,13 @@
 import type { PromptTemplate } from "./index.js";
 
-export const smoothTurnCompressionV1: PromptTemplate<{
-  rendering: string;
+export const detailedTurnCompressionV1: PromptTemplate<{
+  dialogueText: string;
   inputTokens: number;
   targetMinTokens: number;
   targetAimTokens: number;
   targetMaxTokens: number;
 }> = {
-  name: "smooth-turn-compression-v1",
+  name: "detailed-turn-compression-v1",
   render: (i) => [
     {
       role: "system",
@@ -50,7 +50,7 @@ export const smoothTurnCompressionV1: PromptTemplate<{
     },
     {
       role: "user",
-      content: `<turn_rendering_to_compress>\n${i.rendering}\n</turn_rendering_to_compress>`,
+      content: `<turn_rendering_to_compress>\n${i.dialogueText}\n</turn_rendering_to_compress>`,
     },
   ],
 };

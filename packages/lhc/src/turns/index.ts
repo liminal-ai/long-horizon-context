@@ -84,14 +84,15 @@ function currentOpenTurnId(transaction: DbWriteTransaction): string {
 // transaction: the close update and the work item commit or roll back together.
 function closeTurnAndQueueWork(transaction: DbWriteTransaction, turnId: string, eventOrder: number): WorkItemRecord {
   closeTurn(transaction.db, turnId, eventOrder);
-  // One work item backs two independent turn-owned derivation rows.
+  // One work item backs two deterministic turn-owned derivation rows; compression
+  // queues from the turn_derivation completion transaction.
   return enqueue(transaction, {
     owner: "turns",
     kind: "turn_derivation",
     sourceRef: { turnId },
     derivations: [
       { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
-      { subjectKind: "turn", subjectId: turnId, derivationType: "smooth_turn_compression" },
+      { subjectKind: "turn", subjectId: turnId, derivationType: "pre_detailed_assembly" },
     ],
   });
 }
@@ -253,9 +254,15 @@ export async function deriveTurn(threadRef: ThreadRef, turnId: string): Promise<
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const result = await deriveTurnOwnedInOpenDb(db, config, "turn_derivation", { turnId }, [
+    const assemblyResult = await deriveTurnOwnedInOpenDb(db, config, "turn_derivation", { turnId }, [
       { subjectKind: "turn", subjectId: turnId, derivationType: "turn_rendering" },
-      { subjectKind: "turn", subjectId: turnId, derivationType: "smooth_turn_compression" },
+      { subjectKind: "turn", subjectId: turnId, derivationType: "pre_detailed_assembly" },
+    ]);
+    if (assemblyResult.outcome === "failed") {
+      return { ok: true, value: { turnId, ...assemblyResult } };
+    }
+    const result = await deriveTurnOwnedInOpenDb(db, config, "detailed_turn_compression", { turnId }, [
+      { subjectKind: "turn", subjectId: turnId, derivationType: "detailed_turn_compression" },
     ]);
     return { ok: true, value: { turnId, ...result } };
   } catch (cause) {

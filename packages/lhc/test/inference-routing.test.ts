@@ -78,13 +78,13 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     const lanes = {
       smoothed_prompt: "lane-alpha",
       tool_result_summary: "lane-beta",
-      smooth_turn_compression: "lane-beta",
+      detailed_turn_compression: "lane-beta",
       chunk_summary_brief: "lane-gamma",
     } as const;
     const assignments = validAssignments({
       smoothed_prompt: { provider: lanes.smoothed_prompt },
       tool_result_summary: { provider: lanes.tool_result_summary },
-      smooth_turn_compression: { provider: lanes.smooth_turn_compression },
+      detailed_turn_compression: { provider: lanes.detailed_turn_compression },
       chunk_summary_brief: { provider: lanes.chunk_summary_brief },
     });
     const responses = cannedResponses();

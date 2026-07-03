@@ -57,7 +57,7 @@ function inferenceSdk(call: ModelCall, timeoutMs?: number): Lhc {
     mode: "manual",
     retry: RETRY,
     chunkPolicy: CHUNK_POLICY,
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
 }
 
@@ -250,7 +250,7 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     expect(smoothed?.state).toBe("ready");
     // The drain continued past the hanging lane: the turn's forms landed.
     expect(forms.find((form) => form.derivationType === "turn_rendering")?.state).toBe("ready");
-    expect(forms.find((form) => form.derivationType === "smooth_turn_compression")?.state).toBe("ready");
+    expect(forms.find((form) => form.derivationType === "detailed_turn_compression")?.state).toBe("ready");
   });
 
   it("timeout is retryable: a host that hangs once then answers lands the form ready", async () => {

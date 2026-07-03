@@ -46,9 +46,9 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
     ...overrides,
     guards: {
       ...overrides.guards,
-      smoothTurnCompression: {
+      detailedTurnCompression: {
         tinyTurnTokens: 1,
-        ...overrides.guards?.smoothTurnCompression,
+        ...overrides.guards?.detailedTurnCompression,
       },
     },
   });
@@ -537,7 +537,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     const db = openRaw(filePath);
     try {
-      expect(countLiveItems(db)).toBe(1);
+      expect(countLiveItems(db)).toBe(2);
       expect(queueDetail(db)[0]?.workItemId).toBe("w-m1-prompt_smoothing-v1-live");
     } finally {
       db.close();

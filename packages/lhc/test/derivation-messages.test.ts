@@ -172,7 +172,7 @@ describe("TC-2.4 / AC-2.4 (architecture risk): outcome is stamped from the recor
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (i) => double.smoothPrompt(i),
       summarizeToolResult: () => Promise.resolve({ ok: true, text: constantText }),
-      compressSmoothTurn: (i) => double.compressSmoothTurn(i),
+      compressDetailedTurn: (i) => double.compressDetailedTurn(i),
       summarizeChunkBrief: (i) => double.summarizeChunkBrief(i),
     };
     const sdk = manualSdk(callbacks);

@@ -135,7 +135,7 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
         promptMode: i.promptMode ?? "generic_summary",
         facts: i.facts ?? {},
       }),
-    compressSmoothTurn: (i) => callKind("smooth_turn_compression", i),
+    compressDetailedTurn: (i) => callKind("detailed_turn_compression", i),
     summarizeChunkBrief: (i) => callKind("chunk_summary_brief", i),
   };
 }

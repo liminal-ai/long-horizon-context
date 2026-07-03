@@ -23,16 +23,30 @@ import {
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
 
+// Replacement work for one subject may fan out across several kinds; enqueue
+// in dependency order so turn_derivation lands pre_detailed_assembly before
+// detailed_turn_compression, and both finish before chunk summaries consume them.
+const REBUILD_KIND_ORDER: Record<WorkKind, number> = {
+  prompt_smoothing: 0,
+  tool_result_summary: 1,
+  turn_derivation: 2,
+  detailed_turn_compression: 3,
+  chunk_summary_detailed: 4,
+  chunk_summary_brief: 5,
+};
+
 // Each derivation's rebuild queue-site — the owning domains' enqueue mappings,
 // gathered here because the cascade is the one place that re-queues across
 // the whole chain (module responsibility matrix: replacement enqueues for
 // all three mutations live with the cascade). Both turn derivations ride the one
-// turn_derivation item; every other derivation rides its same-named kind.
+// turn_derivation item; detailed_turn_compression rides its own kind; every
+// other derivation rides its same-named kind.
 const DERIVATION_REBUILD_KINDS: Record<string, WorkKind> = {
   smoothed_prompt: "prompt_smoothing",
   tool_result_summary: "tool_result_summary",
   turn_rendering: "turn_derivation",
-  smooth_turn_compression: "turn_derivation",
+  pre_detailed_assembly: "turn_derivation",
+  detailed_turn_compression: "detailed_turn_compression",
   chunk_summary_detailed: "chunk_summary_detailed",
   chunk_summary_brief: "chunk_summary_brief",
 };
@@ -203,16 +217,18 @@ function runCascade(
     })),
   ]);
 
-  const queued = [...groups.values()].map((group) => {
-    const item = enqueue(transaction, {
-      owner: WORK_KIND_REGISTRY[group.kind].owner,
-      kind: group.kind,
-      sourceRef: sourceRefFor(group.subject),
-      sourceVersion: group.maxSourceVersion + 1,
-      derivations: group.derivations,
+  const queued = [...groups.values()]
+    .sort((left, right) => REBUILD_KIND_ORDER[left.kind] - REBUILD_KIND_ORDER[right.kind])
+    .map((group) => {
+      const item = enqueue(transaction, {
+        owner: WORK_KIND_REGISTRY[group.kind].owner,
+        kind: group.kind,
+        sourceRef: sourceRefFor(group.subject),
+        sourceVersion: group.maxSourceVersion + 1,
+        derivations: group.derivations,
+      });
+      return { workItemId: item.workItemId, kind: group.kind };
     });
-    return { workItemId: item.workItemId, kind: group.kind };
-  });
 
   return { cleared, dropped, queued, superseded };
 }

@@ -15,6 +15,7 @@ export type WorkKind =
   | "prompt_smoothing"
   | "tool_result_summary"
   | "turn_derivation"
+  | "detailed_turn_compression"
   | "chunk_summary_detailed"
   | "chunk_summary_brief";
 export type WorkSourceRef = { messageId: string } | { turnId: string } | { chunkId: string };
@@ -28,6 +29,7 @@ export const WORK_KIND_REGISTRY: Readonly<
   prompt_smoothing: { owner: "messages", sourceRefKey: "messageId" },
   tool_result_summary: { owner: "messages", sourceRefKey: "messageId" },
   turn_derivation: { owner: "turns", sourceRefKey: "turnId" },
+  detailed_turn_compression: { owner: "turns", sourceRefKey: "turnId" },
   chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
   chunk_summary_brief: { owner: "turns", sourceRefKey: "chunkId" },
 };

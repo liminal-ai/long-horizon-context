@@ -351,11 +351,12 @@ function rawFormRows(filePath: string): Array<{ key: string; state: string }> {
 }
 
 describe("FC-0.4: work-kind registry and handler-map assembly", () => {
-  it("the registry covers all five kinds with owner and sourceRef semantics per the Work Item contract", () => {
+  it("the registry covers all six kinds with owner and sourceRef semantics per the Work Item contract", () => {
     expect(WORK_KIND_REGISTRY).toEqual({
       prompt_smoothing: { owner: "messages", sourceRefKey: "messageId" },
       tool_result_summary: { owner: "messages", sourceRefKey: "messageId" },
       turn_derivation: { owner: "turns", sourceRefKey: "turnId" },
+      detailed_turn_compression: { owner: "turns", sourceRefKey: "turnId" },
       chunk_summary_detailed: { owner: "turns", sourceRefKey: "chunkId" },
       chunk_summary_brief: { owner: "turns", sourceRefKey: "chunkId" },
     });
@@ -418,10 +419,10 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     expect(result.queuedWork).toHaveLength(2);
 
     // The pending state rows rode the same transaction (DD-5): one for the
-    // prompt's derivation, two for the turn's rendering + compression.
+    // prompt's derivation, two for the turn's rendering + pre-detailed assembly.
     expect(rawFormRows(filePath)).toEqual([
       { key: "message/m1/smoothed_prompt", state: "pending" },
-      { key: "turn/t1/smooth_turn_compression", state: "pending" },
+      { key: "turn/t1/pre_detailed_assembly", state: "pending" },
       { key: "turn/t1/turn_rendering", state: "pending" },
     ]);
   });

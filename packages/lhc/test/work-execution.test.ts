@@ -84,7 +84,7 @@ function manualSdk(
     clock: overrides.clock ?? (() => new Date()),
     retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
   registerTestWorkHandlers(sdk, double);
   return sdk;
@@ -246,8 +246,9 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       "w-m1-prompt_smoothing-v1",
       "w-m3-tool_result_summary-v1",
       "w-t1-turn_derivation-v1",
+      "w-t1-detailed_turn_compression-v1",
     ]);
-    expect(report.ran.map((entry) => entry.disposition)).toEqual(["done", "done", "done"]);
+    expect(report.ran.map((entry) => entry.disposition)).toEqual(["done", "done", "done", "done"]);
     expect(report.stoppedBecause).toBe("empty");
     expect(report.remaining).toBe(0);
 
@@ -267,7 +268,7 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     // Artifacts landed in run order: derivedAt strictly monotone with the
     // injected clock from m1 to m3 to the turn's forms.
     const forms = readDerivedForms(filePath);
-    expect(forms.map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready"]);
+    expect(forms.map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready", "ready"]);
     const at = (subjectId: string, derivationType: string): number => {
       const row = forms.find((f) => f.subjectId === subjectId && f.derivationType === derivationType);
       if (row?.derivedAt === undefined) {
@@ -277,7 +278,8 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     };
     expect(at("m1", "smoothed_prompt")).toBeLessThan(at("m3", "tool_result_summary"));
     expect(at("m3", "tool_result_summary")).toBeLessThan(at("t1", "turn_rendering"));
-    expect(at("t1", "turn_rendering")).toBe(at("t1", "smooth_turn_compression"));
+    expect(at("t1", "pre_detailed_assembly")).toBe(at("t1", "turn_rendering"));
+    expect(at("t1", "turn_rendering")).toBeLessThan(at("t1", "detailed_turn_compression"));
   });
 });
 
@@ -331,7 +333,8 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     const forms = readDerivedForms(filePath);
     expect(forms.map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`).sort()).toEqual([
       "m1/smoothed_prompt/ready",
-      "t1/smooth_turn_compression/ready",
+      "t1/detailed_turn_compression/ready",
+      "t1/pre_detailed_assembly/ready",
       "t1/turn_rendering/ready",
     ]);
     expect(liveCount(filePath)).toBe(0);
@@ -388,7 +391,8 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
         .map((form) => [form.derivationType, form.state])
         .sort(),
     ).toEqual([
-      ["smooth_turn_compression", "ready"],
+      ["detailed_turn_compression", "ready"],
+      ["pre_detailed_assembly", "ready"],
       ["turn_rendering", "ready"],
     ]);
   });
@@ -429,7 +433,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
     expect(liveCount(filePath)).toBe(0);
     const states = readDerivedForms(filePath).map((f) => f.state);
-    expect(states).toEqual(["ready", "ready", "ready"]);
+    expect(states).toEqual(["ready", "ready", "ready", "ready"]);
   });
 
   it("first-touch catch-up wakes when a leftover claimed head reaches claim_expires_at", async () => {
@@ -585,7 +589,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
       reason: "scripted exhaustion (smoothPrompt)",
     });
     const report = await drain(sdk, filePath);
-    expect(report.ran).toHaveLength(2);
+    expect(report.ran).toHaveLength(3);
     expect(report.ran[0]).toMatchObject({
       workItemId: "w-m1-prompt_smoothing-v1",
       disposition: "failed_terminal",
@@ -594,6 +598,10 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     });
     expect(report.ran[1]).toMatchObject({
       workItemId: "w-t1-turn_derivation-v1",
+      disposition: "done",
+    });
+    expect(report.ran[2]).toMatchObject({
+      workItemId: "w-t1-detailed_turn_compression-v1",
       disposition: "done",
     });
 
@@ -651,6 +659,7 @@ describe("TC-1.8 / AC-1.9: retry per policy, terminal exhaustion, and the backof
     expect(second.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "done"],
       ["w-t1-turn_derivation-v1", "done"],
+      ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
     expect(second.ran[0]?.attempts).toBe(1);
     expect(liveCount(filePath)).toBe(0);
@@ -922,7 +931,7 @@ describe("completion exactness", () => {
 
     const forms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
     expect(forms.map((form) => [form.derivationType, form.state, form.content]).sort()).toEqual([
-      ["smooth_turn_compression", "pending", undefined],
+      ["pre_detailed_assembly", "pending", undefined],
       ["turn_rendering", "pending", undefined],
     ]);
     expect(liveDetail(filePath)).toEqual([
@@ -994,13 +1003,38 @@ describe("completion exactness", () => {
       db.prepare(
         `UPDATE derivation
          SET source_version = 2
-         WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'turn_rendering'`,
+         WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'pre_detailed_assembly'`,
       ).run();
     } finally {
       db.close();
     }
 
-    double.failKind("smooth_turn_compression", 1, { retryable: false, reason: "partial terminal failure" });
+    registerTestingWork(sdk, {
+      dispatchers: {
+        "turns.deriveTurn": async (run, item) => {
+          const disposition = applyDerivationSuccess(
+            run.openDb(),
+            {
+              sourceVersion: item.sourceVersion,
+              derivations: item.derivations,
+              workItemId: item.workItemId,
+              claimEpoch: item.claimEpoch,
+            },
+            [
+              {
+                subjectKind: "turn",
+                subjectId: "t1",
+                derivationType: "turn_rendering",
+                content: "partial rendering",
+              },
+            ],
+            run.clock().toISOString(),
+          );
+          return { disposition };
+        },
+      },
+    });
+
     const failed = await sdk.work.drain({ filePath });
     expect(failed.ok).toBe(false);
     if (failed.ok) return;
@@ -1008,12 +1042,12 @@ describe("completion exactness", () => {
       errorClass: "state_corruption",
       code: "derivation_completion_mismatch",
     });
-    expect(failed.error.reason).toContain("terminal partially hit 1 of 2 rows");
+    expect(failed.error.reason).toContain("derivation completion target mismatch");
 
     const forms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
     expect(forms.map((form) => [form.derivationType, form.state, form.reason, form.sourceVersion]).sort()).toEqual([
-      ["smooth_turn_compression", "pending", undefined, 1],
-      ["turn_rendering", "pending", undefined, 2],
+      ["pre_detailed_assembly", "pending", undefined, 2],
+      ["turn_rendering", "pending", undefined, 1],
     ]);
     expect(liveDetail(filePath)).toEqual([
       expect.objectContaining({
@@ -1159,7 +1193,7 @@ describe("sync derive collision policy", () => {
         return { ok: true, text: "late inline value" };
       },
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      compressDetailedTurn: (input) => base.compressDetailedTurn(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1191,7 +1225,7 @@ describe("sync derive collision policy", () => {
         return { ok: true, text: "stale inline completion" };
       },
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      compressDetailedTurn: (input) => base.compressDetailedTurn(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1271,7 +1305,7 @@ describe("sync derive collision policy", () => {
         .map((form) => [form.derivationType, form.state, form.sourceVersion])
         .sort(),
     ).toEqual([
-      ["smooth_turn_compression", "pending", 1],
+      ["pre_detailed_assembly", "pending", 1],
       ["turn_rendering", "pending", 1],
     ]);
   });
@@ -1287,8 +1321,8 @@ describe("sync derive collision policy", () => {
           advanceOnClock = false;
           setReadyDerivation(
             filePath,
-            { subjectKind: "turn", subjectId: "t1", derivationType: "smooth_turn_compression" },
-            "newer compression",
+            { subjectKind: "turn", subjectId: "t1", derivationType: "pre_detailed_assembly" },
+            "newer assembly",
             2,
           );
         }
@@ -1328,7 +1362,7 @@ describe("sync derive collision policy", () => {
         .map((form) => [form.derivationType, form.state, form.content, form.sourceVersion])
         .sort(),
     ).toEqual([
-      ["smooth_turn_compression", "ready", "newer compression", 2],
+      ["pre_detailed_assembly", "ready", "newer assembly", 2],
       ["turn_rendering", "pending", undefined, 1],
     ]);
   });
@@ -1339,7 +1373,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: () => new Promise((resolve) => smoothCalls.push({ resolve })),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      compressDetailedTurn: (input) => base.compressDetailedTurn(input),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1382,7 +1416,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => base.smoothPrompt(input),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: () => new Promise((resolve) => compressionCalls.push({ resolve })),
+      compressDetailedTurn: () => new Promise((resolve) => compressionCalls.push({ resolve })),
       summarizeChunkBrief: (input) => base.summarizeChunkBrief(input),
     };
     const sdk = manualSdk(callbacks);
@@ -1392,8 +1426,8 @@ describe("sync derive collision policy", () => {
       validEvent("assistant_text", { payload: { text: "answer" } }),
       validEvent("turn_end"),
     ]);
-    deleteWorkItem(filePath, "w-m1-prompt_smoothing-v1");
-    deleteWorkItem(filePath, "w-t1-turn_derivation-v1");
+    await drain(sdk, filePath, { maxItems: 2 });
+    deleteWorkItem(filePath, "w-t1-detailed_turn_compression-v1");
 
     const first = sdk.turns.deriveTurn({ filePath }, "t1");
     await until(() => compressionCalls.length === 1, "first sync turn derive claim");
@@ -1409,12 +1443,12 @@ describe("sync derive collision policy", () => {
       outcome: "failed",
       error: { errorClass: "caller_error", code: "derivation_work_in_flight" },
     });
-    expect(owned.value).toEqual({ turnId: "t1", outcome: "derived", sourceVersion: 1 });
+    expect(owned.value).toEqual({ turnId: "t1", outcome: "derived", sourceVersion: 2 });
     const turnForms = readDerivedForms(filePath).filter((form) => form.subjectId === "t1");
-    expect(turnForms.map((form) => [form.derivationType, form.state, form.content]).sort()).toEqual([
-      ["smooth_turn_compression", "ready", "owned turn compression"],
-      ["turn_rendering", "ready", expect.stringContaining("turn claim")],
-    ]);
+    expect(turnForms.find((form) => form.derivationType === "detailed_turn_compression")).toMatchObject({
+      state: "ready",
+      content: "owned turn compression",
+    });
     expect(liveDetail(filePath).filter((item) => item.workItemId === "w-t1-turn_derivation-v1")).toEqual([]);
   });
 
@@ -1424,7 +1458,7 @@ describe("sync derive collision policy", () => {
     const callbacks: InferenceCallbacks = {
       smoothPrompt: (input) => base.smoothPrompt(input),
       summarizeToolResult: (input) => base.summarizeToolResult(input),
-      compressSmoothTurn: (input) => base.compressSmoothTurn(input),
+      compressDetailedTurn: (input) => base.compressDetailedTurn(input),
       summarizeChunkBrief: () => new Promise((resolve) => briefCalls.push({ resolve })),
     };
     const sdk = manualSdk(callbacks);

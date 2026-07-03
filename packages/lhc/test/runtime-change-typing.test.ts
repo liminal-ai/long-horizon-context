@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type InferenceCallbacks, initLhc, type Lhc, type MessageEventInput, messages, threads } from "../src/index.js";
-import { createInferenceCallbacksDouble, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  createInferenceCallbacksDouble,
+  readDerivedForms,
+  type TempStore,
+  tempStore,
+  validEvent,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -25,7 +31,7 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
 }
 
@@ -102,17 +108,21 @@ describe("Story 5: runtime-change typing", () => {
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
 
-    // turn_rendering is deterministic (AC-6.3): its text is the joined part
-    // texts, carried as the compressSmoothTurn input's `rendering` field.
-    // model_change and thinking_level_change render as their own segments in
-    // stream order (their typed blocks are still stamped for the view renderer,
-    // verified via the messages read above).
-    const compression = captured.find((entry) => entry.op === "compressSmoothTurn");
-    const renderingText = (compression?.input as { rendering?: string } | undefined)?.rendering ?? "";
-    const segments = renderingText.split("\n\n");
+    // turn_rendering keeps full texture in stream order; compression reads
+    // the dialog-register pre_detailed_assembly instead.
+    const rendering = readDerivedForms(filePath).find(
+      (form) => form.subjectId === "t1" && form.derivationType === "turn_rendering",
+    )?.content;
+    const segments = (rendering ?? "").split("\n\n");
     expect(segments).toHaveLength(4);
     expect(segments[1]).toContain(`model_change ${modelBlock.previousModel} -> ${modelBlock.newModel}`);
     expect(segments[2]).toContain(`thinking_level_change ${thinkingBlock.previousLevel} -> ${thinkingBlock.newLevel}`);
     expect(segments[3]).toContain("answer");
+
+    const compression = captured.find((entry) => entry.op === "compressDetailedTurn");
+    const assemblyText = (compression?.input as { dialogueText?: string } | undefined)?.dialogueText ?? "";
+    expect(assemblyText).toContain("User:");
+    expect(assemblyText).toContain("⏺ ");
+    expect(assemblyText).not.toContain("model_change");
   });
 });

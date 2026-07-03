@@ -385,7 +385,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-      guards: { smoothTurnCompression: { tinyTurnTokens: 500 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 500 } },
     });
     const filePath = await newRealThread(sdk, store, "real-smooth-compression");
 
@@ -411,18 +411,18 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     );
     await drainRealWork(sdk, filePath);
 
-    const largeCompression = findDerivation(filePath, "t1", "smooth_turn_compression");
+    const largeCompression = findDerivation(filePath, "t1", "detailed_turn_compression");
     expect(largeCompression.state).toBe("ready");
     expect((largeCompression.content ?? "").trim()).not.toBe("");
     expect(largeCompression.metadata?.provenance).toEqual({
       provider: "openrouter",
       model: realModel,
-      prompt: "smooth-turn-compression-v1",
+      prompt: "detailed-turn-compression-v1",
     });
     expectSizeDisposition(largeCompression);
 
     const tinyRendering = findDerivation(filePath, "t2", "turn_rendering");
-    const tinyCompression = findDerivation(filePath, "t2", "smooth_turn_compression");
+    const tinyCompression = findDerivation(filePath, "t2", "detailed_turn_compression");
     expect(tinyCompression.state).toBe("ready");
     expect(tinyCompression.content).toBe(tinyRendering.content);
     expect(tinyCompression.metadata?.sizeDisposition).toBeUndefined();
@@ -437,7 +437,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
       retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });
     const filePath = await newRealThread(sdk, store, "real-brief-from-detailed");
@@ -495,7 +495,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     run = await runLifecycle(store, {
       name: "real-capstone",
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
-      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       onCheckpoint: (checkpoint, ctx) => {
         // Pre-mutation snapshot: the regeneration assertion compares each
         // mutation-cleared form's content before the edit and after rebuild.
@@ -551,7 +551,7 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   it("turn and chunk inference derivations carry size disposition metadata", () => {
     for (const form of finalForms) {
       if (form.state !== "ready") continue;
-      if (form.derivationType === "smooth_turn_compression" || form.derivationType === "chunk_summary_brief") {
+      if (form.derivationType === "detailed_turn_compression" || form.derivationType === "chunk_summary_brief") {
         expectSizeDisposition(form);
       }
     }

@@ -107,7 +107,8 @@ export function readMessageDerivationRows(
 
 // Stored member material in turn order for chunk summaries: every chunk_member
 // row by member_idx, joined to its canonical turn, stored
-// smooth_turn_compression row, and turn_rendering's stamped tool-run receipts.
+// detailed_turn_compression row, pre_detailed_assembly for failed floors, and
+// turn_rendering's stamped tool-run receipts.
 // Missing turns are returned as source corruption so background summaries
 // block instead of silently summarizing a shortened member list; SDK
 // soft-deleted turns stay filtered because sanctioned delete rebuilds chunk
@@ -116,6 +117,8 @@ export interface MemberProjection {
   turnId: string;
   state?: string; // undefined: no compression row exists for the member
   content?: string;
+  assemblyState?: string;
+  assemblyContent?: string;
   renderingState?: string;
   renderingContent?: string;
   receipts: ToolRunReceipt[]; // empty when the member turn had no tool activity
@@ -127,12 +130,15 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     .prepare(
       `SELECT cm.turn_id, t.turn_id AS existing_turn_id, t.deleted_at,
               df.state, df.content,
+              af.state AS assembly_state, af.content AS assembly_content,
               rf.state AS rendering_state, rf.content AS rendering_content,
               rf.metadata AS rendering_metadata
        FROM chunk_member cm
        LEFT JOIN turns t ON t.turn_id = cm.turn_id
        LEFT JOIN derivation df ON df.subject_kind = 'turn'
-         AND df.subject_id = cm.turn_id AND df.derivation_type = 'smooth_turn_compression'
+         AND df.subject_id = cm.turn_id AND df.derivation_type = 'detailed_turn_compression'
+       LEFT JOIN derivation af ON af.subject_kind = 'turn'
+         AND af.subject_id = cm.turn_id AND af.derivation_type = 'pre_detailed_assembly'
        LEFT JOIN derivation rf ON rf.subject_kind = 'turn'
          AND rf.subject_id = cm.turn_id AND rf.derivation_type = 'turn_rendering'
        WHERE cm.chunk_id = ? ORDER BY cm.member_idx`,
@@ -141,6 +147,8 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     turn_id: string;
     state: string | null;
     content: string | null;
+    assembly_state: string | null;
+    assembly_content: string | null;
     rendering_state: string | null;
     rendering_content: string | null;
     rendering_metadata: string | null;
@@ -162,6 +170,8 @@ export function readMemberProjections(db: DatabaseSync, chunkId: string): Member
     }
     if (row.state !== null) memberProjection.state = row.state;
     if (row.content !== null) memberProjection.content = row.content;
+    if (row.assembly_state !== null) memberProjection.assemblyState = row.assembly_state;
+    if (row.assembly_content !== null) memberProjection.assemblyContent = row.assembly_content;
     if (row.rendering_state !== null) memberProjection.renderingState = row.rendering_state;
     if (row.rendering_content !== null) memberProjection.renderingContent = row.rendering_content;
     return [memberProjection];
@@ -260,20 +270,21 @@ export function readTurnDerivationRow(
   subjectKind: "turn" | "chunk",
   subjectId: string,
   derivation: string,
-): { state: DerivationState; reason?: string; sourceVersion: number } | undefined {
+): { state: DerivationState; content?: string; reason?: string; sourceVersion: number } | undefined {
   const row = db
     .prepare(
-      `SELECT state, reason, source_version FROM derivation
+      `SELECT state, content, reason, source_version FROM derivation
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
     )
     .get(subjectKind, subjectId, derivation) as unknown as
-    | { state: string; reason: string | null; source_version: number | bigint }
+    | { state: string; content: string | null; reason: string | null; source_version: number | bigint }
     | undefined;
   if (row === undefined) return undefined;
-  const view: { state: DerivationState; reason?: string; sourceVersion: number } = {
+  const view: { state: DerivationState; content?: string; reason?: string; sourceVersion: number } = {
     state: row.state as DerivationState,
     sourceVersion: Number(row.source_version),
   };
+  if (row.content !== null) view.content = row.content;
   if (row.reason !== null) view.reason = row.reason;
   return view;
 }
@@ -303,9 +314,9 @@ export function readChunkSummaryDerivation(
 
 // The turns owner's report: one query over turn- and chunk-owned derivation rows
 // LEFT JOINed with the live work_item targeting each derivation at its current
-// source version. Both turn derivations map to the one turn_derivation kind;
-// the chunk summary derivations map to their same-named kinds. The CASE mirrors
-// the owner's enqueue mapping.
+// source version. turn_rendering and pre_detailed_assembly map to turn_derivation;
+// detailed_turn_compression maps to its same-named kind; chunk summaries map
+// to their same-named kinds.
 export function reportTurnDerivations(
   db: DatabaseSync,
   opts: { notReady?: boolean; turnId?: string; chunkId?: string } = {},
@@ -333,7 +344,12 @@ export function reportTurnDerivations(
        FROM derivation df
        LEFT JOIN work_item w
          ON w.status IN ('queued', 'claimed')
-        AND w.kind = CASE WHEN df.subject_kind = 'turn' THEN 'turn_derivation' ELSE df.derivation_type END
+        AND w.kind = CASE
+          WHEN df.derivation_type IN ('turn_rendering', 'pre_detailed_assembly') THEN 'turn_derivation'
+          WHEN df.derivation_type = 'detailed_turn_compression' THEN 'detailed_turn_compression'
+          WHEN df.subject_kind = 'chunk' THEN df.derivation_type
+          ELSE 'turn_derivation'
+        END
         AND json_extract(
               w.source_ref,
               CASE WHEN df.subject_kind = 'turn' THEN '$.turnId' ELSE '$.chunkId' END

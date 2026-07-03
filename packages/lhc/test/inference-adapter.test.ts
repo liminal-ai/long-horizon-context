@@ -111,7 +111,7 @@ function inferenceSdk(call: ModelCall): { sdk: Lhc; assignments: ReturnType<type
     mode: "manual",
     retry: RETRY,
     chunkPolicy: CHUNK_POLICY,
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
   return { sdk, assignments };
 }
@@ -172,7 +172,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
       mode: "manual",
       retry: RETRY,
       chunkPolicy: CHUNK_POLICY,
-      guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+      guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     });
     const deterministicForms = await drainAll(deterministicSdk, await seedSevenKinds(deterministicSdk, freshStore()));
 

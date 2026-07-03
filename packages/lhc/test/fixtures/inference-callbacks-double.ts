@@ -21,7 +21,7 @@ import {
 export type InferenceCallbackOpName =
   | "smoothPrompt"
   | "summarizeToolResult"
-  | "compressSmoothTurn"
+  | "compressDetailedTurn"
   | "summarizeChunkBrief";
 
 // Tests script by work-kind / form-kind vocabulary (the test plan writes
@@ -30,12 +30,12 @@ export type InferenceCallbackOpName =
 const KIND_ALIASES: Record<string, InferenceCallbackOpName> = {
   smoothPrompt: "smoothPrompt",
   summarizeToolResult: "summarizeToolResult",
-  compressSmoothTurn: "compressSmoothTurn",
+  compressDetailedTurn: "compressDetailedTurn",
   summarizeChunkBrief: "summarizeChunkBrief",
   prompt_smoothing: "smoothPrompt",
   smoothed_prompt: "smoothPrompt",
   tool_result_summary: "summarizeToolResult",
-  smooth_turn_compression: "compressSmoothTurn",
+  detailed_turn_compression: "compressDetailedTurn",
   chunk_summary_brief: "summarizeChunkBrief",
 };
 
@@ -130,14 +130,14 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     return this.run("summarizeToolResult", i, i.content);
   }
 
-  compressSmoothTurn(i: {
-    rendering: string;
+  compressDetailedTurn(i: {
+    dialogueText: string;
     inputTokens: number;
     targetMinTokens: number;
     targetAimTokens: number;
     targetMaxTokens: number;
   }): Promise<InferenceResult> {
-    return this.run("compressSmoothTurn", i, i.rendering);
+    return this.run("compressDetailedTurn", i, i.dialogueText);
   }
 
   summarizeChunkBrief(i: {

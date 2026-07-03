@@ -1,0 +1,397 @@
+{"specimen":"t6","inputTokens":5669,"min":1984,"aim":2835,"max":3685}
+=== PROMPT BELOW — everything after this line is sent verbatim as one user message ===
+<instructions-for-summarizing>
+You condense dialogues from AI coding sessions so they can stand in for the original in a long-running conversation history. The condensed version is what the assistant will "remember" about this exchange later, so it must carry everything a future reader needs and nothing they don't.
+
+Your job is to summarize the following dialogue between a user and an llm assistant to 20% to 30% of its original size and turn the back and forth dialog into a narrative generally 3rd person voicing of the events unfolding across the back and forth. keep it in narrative past tense voicing targetting approximately 20%-30% of original size. That comes out to around 1400 tokens total (roughly 1150-1700). Retain maximal meaning despite compression. > represents the user and ⏺ represents the agent.
+
+Write it as prose occasionally using bullets or headings as appropriate to what's being discussed or when techincal information needs to be retained. use best judgement on code blocks or fenced content as to whether to try and retain verbatim or simply create a fense and describe in parenthesis what was in the code block without reproducing based on best judgement as to how important that content or code block is
+</instructions-for-summarizing>
+
+<content-for-summarizing>
+User:
+Do a deeper dive on packages/lhc internals you have not fully absorbed yet: reread the trickiest parts — the work queue claim/epoch fencing, the cascade logic in messages/internal/cascade.ts, the compact selection algorithm in thread-view/internal/select.ts including coverage entries, and the migration code in thread-migrate.ts. Trace a message edit end to end through the cascade. Explain what you found in detail.
+
+⏺ Let me re-read each of these modules with fresh eyes, tracing every edge case.
+⏺ Now the cascade:
+⏺ Now the compact selection walk in full:
+⏺ Now the migration code:
+⏺ Now let me also look at how the edit entry point calls the cascade, to trace the full path:
+⏺ Now I have everything. Here's the deep analysis:
+
+---
+
+# Deep Dive: The Four Trickiest Internals
+
+## 1. Work Queue Claim/Epoch Fencing — The Concurrency Design
+
+### The Three-Phase Pattern
+
+Every work item processed by the drain follows a three-phase pattern where **no SQLite transaction spans the handler execution**:
+
+```
+Phase 1: BEGIN IMMEDIATE → claim (UPDATE+RETURNING) → COMMIT
+Phase 2: handler runs (no open transaction — can take seconds for inference)  
+Phase 3: BEGIN IMMEDIATE → complete/retry/terminal (with epoch check) → COMMIT
+```
+
+This is the core design decision. If the transaction spanned the handler, an inference call taking 30 seconds would hold a SQLite write lock for 30 seconds, blocking all other operations on the thread file. Instead, the handler runs "loose" and the completion phase re-validates ownership.
+
+### How Epoch Fencing Prevents Corruption
+
+The `claim_epoch` column is an integer that starts at 0 and increments on every claim. The race it prevents:
+
+```
+Process A: claimNext() → gets item X at epoch=1, starts handler
+Process A: handler takes 3 minutes (inference hangs)
+Process B: claimNext() → lease expired, reclaims item X at epoch=2, starts handler
+Process B: handler completes, complete() → WHERE claim_epoch=2 → succeeds, deletes item
+Process A: handler finally returns, complete() → WHERE claim_epoch=1 → 0 rows changed → "lost_lease"
+```
+
+Without epoch fencing, Process A's stale completion would write to derivation rows that Process B already wrote. With it, the stale write harmlessly misses.
+
+### The claimNext SQL — One Atomic UPDATE
+
+The claim is a single `UPDATE...WHERE...RETURNING` statement, not a `SELECT` followed by an `UPDATE`. This is critical — a read-then-write would have a race window where two processes read the same head and both claim it. The SQL:
+
+```sql
+UPDATE work_item SET status = 'claimed', claimed_at = ?, claim_expires_at = ?,
+   claim_epoch = claim_epoch + 1,
+   attempts = attempts + CASE WHEN status = 'claimed' THEN 1 ELSE 0 END
+ WHERE work_item_id = (
+   SELECT work_item_id FROM (
+     SELECT work_item_id, status, eligible_at, claim_expires_at
+     FROM work_item WHERE status IN ('queued', 'claimed')
+     ORDER BY rowid LIMIT 1
+   )
+   WHERE (status = 'queued' AND (eligible_at IS NULL OR eligible_at <= ?))
+      OR (status = 'claimed' AND (
+        claim_expires_at IS NULL OR unixepoch(claim_expires_at) IS NULL OR claim_expires_at <= ?
+      ))
+ )
+ RETURNING ...
+```
+
+The nested subqueries work like this:
+1. **Inner SELECT**: Find the oldest live row by `rowid` (insertion order = FIFO).
+2. **Outer WHERE**: Only claim it if it's actually claimable — either queued with eligible_at past, or claimed with expired lease.
+3. **UPDATE**: If the WHERE matches, atomically set claimed + bump epoch + conditionally bump attempts.
+4. **RETURNING**: Give back the claimed row's data so no second read is needed.
+
+The `CASE WHEN status = 'claimed' THEN 1 ELSE 0 END` on `attempts` is subtle: when reclaiming an expired lease (the previous claimant died), it increments attempts so the crash is counted against the retry budget. A normal claim from `queued` doesn't touch attempts (the handler hasn't run yet).
+
+### The Head-First / No-Skip-Ahead Rule
+
+When claimNext fails to claim, it re-reads the head **inside the same BEGIN IMMEDIATE** to classify why:
+- Head is `claimed` with a live lease → `"in_flight"` (someone else is working on it)
+- Head is `queued` with `eligible_at` in the future → `"waiting"` (backing off after a retry)
+- No live rows → `"empty"`
+
+This is why the queue is strictly FIFO: a row with a future `eligible_at` blocks everything behind it. Work is never reordered. The scheduler uses the `waitingUntil` / `claimExpiresAt` from these outcomes to arm wake timers.
+
+### Source-Version Check in Completion
+
+The completion `UPDATE derivation SET state = 'ready' ... WHERE source_version = ?` is the second concurrency guard. Scenario:
+
+```
+1. Message m5 is recorded, smoothed_prompt derivation created at version 1
+2. Work item queued for smoothed_prompt at version 1
+3. User edits m5 → cascade bumps derivation to version 2, new work queued at version 2
+4. Old version-1 handler finishes, tries to complete → WHERE source_version = 1 → 0 rows (it's now version 2)
+5. Result: "stale_discarded" — the stale content is silently dropped
+```
+
+The three-way state: `hits` (matched and updated), `misses` (didn't match), `stale` (all missed). A partial hit (some matched, some didn't) is a `DerivationCompletionError` — state corruption, because a single work item's derivation targets should all be at the same version.
+
+### The `supersedeQueued` Function
+
+During a cascade, still-queued items for superseded work are `DELETE`d from `work_item`. But **claimed** items are deliberately left alone — their epoch-fenced completion will just miss (source version moved) and report `stale_discarded`. Trying to delete a claimed item would race with the handler.
+
+---
+
+## 2. The Mutation Cascade — Tracing a Message Edit End-to-End
+
+### Setup: The State Before the Edit
+
+Imagine message `m5` is a `user_prompt` in turn `t3`. Turn `t3` is closed and placed in chunk `c2`. The derivation state is:
+
+```
+message/m5/smoothed_prompt       → ready, version 1, content="smoothed text"
+turn/t3/turn_rendering           → ready, version 1
+turn/t3/pre_detailed_assembly    → ready, version 1  
+turn/t3/detailed_turn_compression → ready, version 1
+chunk/c2/chunk_summary_detailed  → ready, version 1
+chunk/c2/chunk_summary_brief     → ready, version 1
+```
+
+### Step 1: Entry validation (`messages.edit`)
+
+```typescript
+const target = readMutableMessage(transaction.db, edit.messageId);
+```
+
+This reads message `m5` joined to its turn via `LEFT JOIN turns t ON t.turn_id = m.turn_id`, filtered by `m.deleted_at IS NULL`. It checks:
+- Message exists and is not deleted → otherwise `message_not_found`
+- Turn status is `closed` → otherwise `turn_open` (open-turn messages can't be edited)
+- NOT the first live member of the turn → that check is for delete only (initiates-turn protection)
+
+### Step 2: Content update (`applyMessageEdit`)
+
+Updates each block's content-bearing field (`text` for text blocks, `content` for tool_result, etc.) and re-stamps the `token_estimate` using the same `estimateTokens` function. Events are never touched.
+
+### Step 3: The cascade (`cascadeFromMessage`)
+
+```typescript
+const cascade = cascadeFromMessage(transaction, edit.messageId);
+```
+
+#### 3a: Chain walk (`chainSubjects`)
+
+Walks upward from the edited message:
+1. `{ subjectKind: "message", subjectId: "m5" }` — the message itself
+2. Read `message.turn_id` → `t3` → `{ subjectKind: "turn", subjectId: "t3" }`
+3. Read `chunk_member WHERE turn_id = 't3'` → `c2` → `{ subjectKind: "chunk", subjectId: "c2" }`
+
+Result: `[message/m5, turn/t3, chunk/c2]`
+
+#### 3b: Counterpart lookup (`pairedCounterpartSubject`)
+
+Since m5 is a `user_prompt`, its blocks are `text` type, not `tool_call`/`tool_result`. The query for a paired block returns `undefined`. No counterpart is added.
+
+(If m5 were a `tool_result`, this would find the `tool_call` sharing the same `toolCallId` — the other half of the pair — and add it to the clear set so its summary gets rebuilt too.)
+
+#### 3c: Core cascade (`runCascade`)
+
+For an edit, everything is in the `clearSubjects` list (nothing dropped). The cascade:
+
+**Phase 1: Read existing derivation rows**
+
+For each subject in `[message/m5, turn/t3, chunk/c2]`, read all derivation rows:
+- `message/m5` → `smoothed_prompt` at version 1
+- `turn/t3` → `turn_rendering` at v1, `pre_detailed_assembly` at v1, `detailed_turn_compression` at v1
+- `chunk/c2` → `chunk_summary_detailed` at v1, `chunk_summary_brief` at v1
+
+**Phase 2: Group by rebuild kind**
+
+The `DERIVATION_REBUILD_KINDS` map tells us which work kind rebuilds each derivation:
+- `smoothed_prompt` → `prompt_smoothing` (message-owned)
+- `turn_rendering` → `turn_derivation` ← same kind
+- `pre_detailed_assembly` → `turn_derivation` ← same kind (grouped!)
+- `detailed_turn_compression` → `detailed_turn_compression`
+- `chunk_summary_detailed` → `chunk_summary_detailed`
+- `chunk_summary_brief` → `chunk_summary_brief`
+
+This produces 5 `RebuildGroup`s:
+
+| Group key | Kind | Derivations | maxSourceVersion |
+|---|---|---|---|
+| `message:m5:prompt_smoothing` | `prompt_smoothing` | `[message/m5/smoothed_prompt]` | 1 |
+| `turn:t3:turn_derivation` | `turn_derivation` | `[turn/t3/turn_rendering, turn/t3/pre_detailed_assembly]` | 1 |
+| `turn:t3:detailed_turn_compression` | `detailed_turn_compression` | `[turn/t3/detailed_turn_compression]` | 1 |
+| `chunk:c2:chunk_summary_detailed` | `chunk_summary_detailed` | `[chunk/c2/chunk_summary_detailed]` | 1 |
+| `chunk:c2:chunk_summary_brief` | `chunk_summary_brief` | `[chunk/c2/chunk_summary_brief]` | 1 |
+
+**Phase 3: Supersede old queued work**
+
+```typescript
+const superseded = supersedeQueued(transaction.db, [...supersedeTargets, ...groupTargets]);
+```
+
+Deletes any still-queued items for these (kind, sourceRef) pairs. Since the derivations were all `ready`, there are probably no queued items. But if there were (e.g., a retry was pending), they'd be deleted here — before the replacement enqueues, so the deterministic work item IDs (which include the version number) can't collide.
+
+**Phase 4: Enqueue replacement work**
+
+Sorted by `REBUILD_KIND_ORDER` (prompt_smoothing=0, turn_derivation=2, detailed_turn_compression=3, chunk_summary_detailed=4, chunk_summary_brief=5), each group enqueues one work item at `maxSourceVersion + 1 = 2`:
+
+```
+w-m5-prompt_smoothing-v2        → derivations: [message/m5/smoothed_prompt]
+w-t3-turn_derivation-v2         → derivations: [turn/t3/turn_rendering, turn/t3/pre_detailed_assembly]
+w-t3-detailed_turn_compression-v2 → derivations: [turn/t3/detailed_turn_compression]
+w-c2-chunk_summary_detailed-v2  → derivations: [chunk/c2/chunk_summary_detailed]
+w-c2-chunk_summary_brief-v2     → derivations: [chunk/c2/chunk_summary_brief]
+```
+
+Each `enqueue` call UPSERTs the derivation row to `pending` at the new version:
+
+```sql
+INSERT INTO derivation (...) VALUES (?, ?, ?, 'pending', 2)
+ON CONFLICT (...) DO UPDATE SET
+  state = 'pending', content = NULL, reason = NULL, metadata = NULL,
+  gaps = NULL, derived_at = NULL, source_version = 2
+```
+
+This atomically erases the old `ready` content and stamps version 2. Each enqueue also registers a post-commit poke.
+
+### Step 4: Return to caller
+
+The `MutationResult` reports:
+- `changed`: `{ messageIds: ["m5"], turnIds: [] }`
+- `cleared`: all 6 derivations
+- `dropped`: empty (edit doesn't drop anything)
+- `queued`: the 5 work items
+- `superseded`: any old queued items that were deleted
+
+### Step 5: Transaction COMMIT and post-commit
+
+The entire edit — content update, derivation resets, old-item supersedes, new-item enqueues — committed atomically. After COMMIT, post-commit hooks fire: pokes reach the background scheduler, which schedules drains for the thread.
+
+### Step 6: Background drain processes the replacement work
+
+The scheduler picks up the queued items in FIFO order. The `prompt_smoothing` item runs first (it was enqueued first by insertion order). The handler re-reads `m5`'s new content, calls inference, and the completion writes `smoothed_prompt` to `ready` at version 2.
+
+Then `turn_derivation` runs — it re-reads `t3`'s member messages (including `m5`'s new derivation), composes fresh turn_rendering + pre_detailed_assembly, and in its `onApplied` hook, places the turn and enqueues `detailed_turn_compression`.
+
+And so on up the chain. The dependency ordering means each handler reads the latest content from its inputs.
+
+---
+
+## 3. The Compact Selection Algorithm — The Pure Walk
+
+### Two Halves by Design
+
+The algorithm is split into `readSelectionInputs` (IO + corruption check) and `selectArrangement` (pure function). This split means:
+
+1. Corruption (referential damage, multiple open turns) is caught before any write transaction opens, so the prior view stays intact.
+2. The selection is deterministic: same inputs → same arrangement, testable with goldens.
+
+### Corruption Checks in `readSelectionInputs`
+
+Three kinds of canonical damage are detected:
+- **Multiple open turns**: `throw CanonicalCorruptionError("turn_state_corrupt", ...)` — the compacted span can't be identified if we don't know which turn is open.
+- **Closed turn with no close boundary**: A closed turn must have `closedAtEventOrder` — without it, the compact point can't snap to turn boundaries.
+- **Orphan references**: A message referencing a missing turn, or a chunk member referencing a missing turn. Note: **tombstoned turns are legitimate reference targets** — the `turnIds` set includes all turns (including deleted), so a chunk member pointing at a deleted turn passes the referential check. The selection walk itself filters deleted turns out via the `!row.deleted` filter.
+
+### Compact Point Calculation (Rule 1)
+
+Walk messages **newest-first**, summing token estimates until the sum reaches the `full` band budget (e.g., 25% of 120k = 30k). The crossing message is the one that pushed the sum over.
+
+**The snap**: The compact point must land on a turn boundary, so the tail never begins mid-turn. Two cases for the crossing message:
+
+1. **Message is in an open turn**: Open-turn messages are always tail. Snap the compact point to the previous closed turn's `closedAt`. All open-turn content stays in the tail.
+
+2. **Message is in a closed turn, at or before the turn's start**: The full budget covers this turn entirely → the compact point moves to the previous closed turn's `closedAt` (this turn becomes tail).
+
+3. **Message is in a closed turn, after the turn's start**: The budget only partially covers this turn → snap **forward** to this turn's `closedAt`. The partially-covered turn falls **whole** to the bands, not to the tail. This is the subtle case: the algorithm prefers giving the bands a complete turn over leaving a partial turn in the tail.
+
+If the budget is never reached, `compactPoint = 0` — everything stays as tail, no bands are produced.
+
+### Band Filling (Rules 2–4)
+
+**Smooth** (Rule 2): Take all closed turns wholly behind the compact point (`closedAt <= compactPoint`). These are the "banded turns." Fill newest-first against the smooth budget using `buildTurnEntry`, which resolves `detailed_turn_compression` content (or degrades through fallback ladders). Track `oldestSmoothOrder` — the oldest turn included in smooth.
+
+**Chunk candidacy** (Rule 3–4 prep): A closed chunk is a candidate for detailed/brief only if its **newest live member turn** is (a) a banded turn AND (b) older than `oldestSmoothOrder`. This prevents overlap: chunks overlapping the smooth band would double-represent content.
+
+**Detailed** (Rule 3): Fill newest-first from chunk candidates against the detailed budget, building entries from `chunk_summary_detailed` content.
+
+**Brief** (Rule 4): Fill newest-first from the remaining chunks (after detailed consumed its share) against the brief budget, using `chunk_summary_brief` content.
+
+### The `fillBand` Function — The Shared Fill Rule
+
+```typescript
+function fillBand<T>(candidates: T[], bandBudget: number, build: (c: T) => ArrangementEntry) {
+  const included = [];
+  let sum = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const entry = build(candidates[i]);
+    if (sum + entry.tokens <= bandBudget) {  // <= inclusion: exactly filling is included
+      included.push(entry); sum += entry.tokens;
+      continue;
+    }
+    if (included.length === 0) {  // first entry over budget → include anyway (never empty a band if material exists)
+      included.push(entry);
+      return { included, rest: candidates.slice(i + 1) };
+    }
+    return { included, rest: candidates.slice(i) };  // crossing entry stops the band, not included
+  }
+  return { included, rest: [] };
+}
+```
+
+Key behaviors:
+- `<=` threshold: an entry exactly filling the budget is included.
+- First-entry guarantee: if the very first candidate exceeds the budget, it's included anyway so a band is never empty when material exists. But only that one entry.
+- The rest array carries unconsumed candidates to the next band (detailed → brief).
+
+### Coverage Entries — The Gap Filler
+
+After smooth/detailed/brief selection, there's a coverage invariant: **every closed turn behind the compact point must be represented** — either directly selected in smooth, or covered by a selected chunk's membership. If a turn falls through the cracks (typically because its chunk is still open and thus not a candidate), it gets a **coverage entry**.
+
+The coverage check:
+1. Build `coveredTurnIds` — turns explicitly selected in smooth, plus all banded turn members of selected chunks.
+2. Find `oldestSelectedTurnOrder` — the oldest turn anywhere in the selection.
+3. Any banded turn at or newer than `oldestSelectedTurnOrder` that isn't in `coveredTurnIds` gets a coverage entry.
+
+The coverage entries use a three-tier degradation:
+1. `detailed_turn_compression` is ready → use it (not degraded)
+2. `pre_detailed_assembly` is ready → use it (degraded=true, marked as coverage-from-pre-detailed-assembly)
+3. Neither ready → gap entry (gap=true, reason explains what's missing)
+
+Coverage entries are placed in the **detailed** band and sorted by record order alongside normal detailed entries. This means the detailed band can have both chunk-level entries and individual turn-level coverage entries interleaved by time.
+
+### Final Assembly Order
+
+```typescript
+entries = [
+  ...brief.included.sort(byRecordOrder),          // oldest→newest within brief
+  ...[...detailed.included, ...coverageGaps].sort(byRecordOrder),  // oldest→newest within detailed
+  ...smooth.included.sort(byRecordOrder),          // oldest→newest within smooth
+]
+```
+
+This is gradient order: brief (oldest/most compressed) → detailed → smooth (newest/least compressed) → then tail (appended at serving time). Within each band, entries are oldest-first by `startOrder`.
+
+---
+
+## 4. Thread Migration — The Rename-and-Rewire Problem
+
+### The Three Schema Versions
+
+**Version 1 → 2**: Add the `derivation_log` table (append-only inference execution history). Straightforward DDL: `CREATE TABLE IF NOT EXISTS derivation_log ...` + two indexes.
+
+**Version 2 → 3**: The tricky one — rename `smooth_turn_compression` to `detailed_turn_compression` across the **entire database**. This happened because the derivation type was renamed during Epic 07's architecture realignment.
+
+### The Rename Cascade (`migrateDetailedTurnCompressionRename`)
+
+The rename must touch **every table** that stores the derivation type string:
+
+1. **`derivation` table**: `UPDATE derivation SET derivation_type = ? WHERE derivation_type = ?` — the primary data.
+2. **`derivation_log` table**: Same pattern for the execution history.
+3. **`log` table**: The operational log's `derivation_type` column.
+4. **`derivation.metadata` JSON**: The prompt name embedded in metadata JSON (`"prompt":"smooth-turn-compression-v1"` → `"prompt":"detailed-turn-compression-v1"`). Uses `REPLACE(metadata, old_json, new_json) WHERE metadata LIKE '%old_json%'`.
+5. **`derivation_log.payload` JSON**: Same REPLACE for provenance inside payload JSON.
+6. **`log.message` text**: The derivation type appears in human-readable log messages.
+7. **`thread_view` JSON columns**: The arrangement, gaps, and source-state JSON all store derivation type strings. Three REPLACE calls on three columns in one UPDATE.
+
+This is a rare case of needing to search-and-replace inside JSON stored in SQLite. The approach is safe because the old/new strings are known constants, not arbitrary user data, and the REPLACE only fires on rows that LIKE-match. But it's fragile: if any new table or column stores the derivation type string, it would need to be added here.
+
+### The Queued Work Item Migration (`migrateQueuedTurnDerivationWorkItems`)
+
+This is the most subtle migration. It runs **on every open**, not just during version upgrade. The reason: the architecture changed how `turn_derivation` work items target their derivations.
+
+**Before**: A `turn_derivation` work item's payload.derivations listed `[turn_rendering, smooth_turn_compression]`. The handler composed both and completed them in one pass.
+
+**After**: The handler produces `[turn_rendering, pre_detailed_assembly]`. Compression is a separate `detailed_turn_compression` work item enqueued from the turn_derivation handler's `onApplied` hook.
+
+So any in-flight `turn_derivation` items from before the change have the wrong derivation targets. The migration:
+
+1. Find all `turn_derivation` items with status `queued` or `claimed`.
+2. For each, parse the payload and check if it has the legacy shape (has `turn_rendering` and a compression type but no `pre_detailed_assembly`).
+3. If so: rewrite the payload's derivations to `[turn_rendering, pre_detailed_assembly]`.
+4. Also seed a `pre_detailed_assembly` derivation row (`INSERT OR IGNORE`) at the item's source version, so the completion's UPDATE has a row to hit.
+
+The `INSERT OR IGNORE` is important: if the migration runs twice (idempotent), the seed is a no-op. The `turnDerivationPayloadNeedsPreDetailedAssembly` check is precise: it only triggers when `turn_rendering` is present AND a compression type is present AND `pre_detailed_assembly` is absent. An already-migrated item (which has `pre_detailed_assembly`) passes through unchanged.
+
+There's also a secondary path: if the payload already lists `pre_detailed_assembly` but no derivation row exists for it yet, the migration seeds the row. This handles the edge case where the payload was migrated but the process crashed before the derivation row was created.
+
+### Why It Runs on Every Open
+
+The comment says "idempotent — safe on every open." This is necessary because:
+1. A process crash could leave a half-migrated item (payload rewritten but derivation row not seeded).
+2. A `turn_derivation` item could be claimed by a handler that was loaded before the migration ran — the old handler would produce the wrong writes, failing the `assertExactDerivationWrites` check. Running the migration on every open ensures the items are in the expected shape before any handler touches them.
+
+The idempotency guarantee comes from:
+- `INSERT OR IGNORE` for the derivation row seed
+- The payload check (`turnDerivationPayloadNeedsPreDetailedAssembly`) returning false for already-migrated items
+- The whole thing running in `BEGIN IMMEDIATE` so it's atomic
+</content-for-summarizing>

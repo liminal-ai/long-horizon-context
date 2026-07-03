@@ -49,7 +49,7 @@ export interface DerivationGuards {
   toolResultSummary?: {
     timeoutMs?: number; // default 60_000
   };
-  smoothTurnCompression?: {
+  detailedTurnCompression?: {
     tinyTurnTokens?: number; // default 80
   };
 }
@@ -62,7 +62,7 @@ export interface ResolvedDerivationGuards {
   toolResultSummary: {
     timeoutMs: number;
   };
-  smoothTurnCompression: {
+  detailedTurnCompression: {
     tinyTurnTokens: number;
   };
 }
@@ -93,7 +93,7 @@ export interface ResolvedInferenceConfig {
 export const DEFAULT_GUARDS: ResolvedDerivationGuards = {
   smoothedPrompt: { maxInferenceTokens: 700, suspiciousOutputRatio: 0.15 },
   toolResultSummary: { timeoutMs: 60_000 },
-  smoothTurnCompression: { tinyTurnTokens: 80 },
+  detailedTurnCompression: { tinyTurnTokens: 80 },
 };
 
 // Fill a DerivationGuards with defaults for every omitted value. A pure
@@ -109,8 +109,9 @@ export function resolveGuards(guards?: DerivationGuards): ResolvedDerivationGuar
     toolResultSummary: {
       timeoutMs: g.toolResultSummary?.timeoutMs ?? DEFAULT_GUARDS.toolResultSummary.timeoutMs,
     },
-    smoothTurnCompression: {
-      tinyTurnTokens: g.smoothTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.smoothTurnCompression.tinyTurnTokens,
+    detailedTurnCompression: {
+      tinyTurnTokens:
+        g.detailedTurnCompression?.tinyTurnTokens ?? DEFAULT_GUARDS.detailedTurnCompression.tinyTurnTokens,
     },
   };
 }

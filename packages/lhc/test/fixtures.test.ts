@@ -129,8 +129,8 @@ function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceR
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
     double.summarizeToolResult({ toolName: "read_file", content: "tool result content" }),
-    double.compressSmoothTurn({
-      rendering: "the rendering text",
+    double.compressDetailedTurn({
+      dialogueText: "the rendering text",
       inputTokens: 10,
       targetMinTokens: 4,
       targetAimTokens: 5,
@@ -230,8 +230,8 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     expect(cleanResult.ok).toBe(true);
     expect(capturedScripted).toHaveLength(0);
     const capturedClean = clean.captureInputs();
-    await clean.compressSmoothTurn({
-      rendering: "r",
+    await clean.compressDetailedTurn({
+      dialogueText: "r",
       inputTokens: 10,
       targetMinTokens: 4,
       targetAimTokens: 5,
@@ -239,9 +239,9 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     });
     expect(capturedClean).toEqual([
       {
-        op: "compressSmoothTurn",
+        op: "compressDetailedTurn",
         input: {
-          rendering: "r",
+          dialogueText: "r",
           inputTokens: 10,
           targetMinTokens: 4,
           targetAimTokens: 5,

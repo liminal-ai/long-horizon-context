@@ -14,6 +14,7 @@ import type { EnqueueDerivationTarget, WorkKind, WorkSourceRef } from "../work-q
 export type DurableWorkOperation =
   | { operation: "messages.derive"; messageId: string }
   | { operation: "turns.deriveTurn"; turnId: string }
+  | { operation: "turns.deriveDetailedTurnCompression"; turnId: string }
   | { operation: "turns.deriveDetailedChunk"; chunkId: string }
   | { operation: "turns.deriveBriefChunk"; chunkId: string };
 
@@ -100,6 +101,9 @@ export function operationIntent(kind: WorkKind, sourceRef: WorkSourceRef): Durab
     case "turn_derivation":
       if (!("turnId" in sourceRef)) throw new Error("turn_derivation work requires a turnId source");
       return { operation: "turns.deriveTurn", turnId: sourceRef.turnId };
+    case "detailed_turn_compression":
+      if (!("turnId" in sourceRef)) throw new Error("detailed_turn_compression work requires a turnId source");
+      return { operation: "turns.deriveDetailedTurnCompression", turnId: sourceRef.turnId };
     case "chunk_summary_detailed":
       if (!("chunkId" in sourceRef)) throw new Error("chunk_summary_detailed work requires a chunkId source");
       return { operation: "turns.deriveDetailedChunk", chunkId: sourceRef.chunkId };

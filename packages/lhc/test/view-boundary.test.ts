@@ -202,7 +202,7 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
     const contents = messageTexts(contextRead.value.messages);
 
     expect(contents).toContain(
-      `[tool result · read_file · abridged]\n${tokens(60).slice(0, 200)}… [truncated 39 chars] [full content in record §${r1.messageId}]`,
+      `[tool result · read_file · abridged]\n${tokens(60)} [full content in record §${r1.messageId}]`,
     );
     expect(contents).toContain(
       `[tool result · read_file · abridged]\n${tokens(20)} [full content in record §${r2.messageId}]`,

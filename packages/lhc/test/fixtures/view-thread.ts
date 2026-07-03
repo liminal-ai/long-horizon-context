@@ -145,7 +145,7 @@ export async function derivedThreadFixture(
     inferenceCallbacks: double,
     mode: "manual",
     retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
   });
@@ -248,7 +248,7 @@ export async function corruptedVariantThread(store: TempStore): Promise<{ filePa
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -381,7 +381,7 @@ export async function blockedSiblingThread(
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
-    guards: { smoothTurnCompression: { tinyTurnTokens: 1 } },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });

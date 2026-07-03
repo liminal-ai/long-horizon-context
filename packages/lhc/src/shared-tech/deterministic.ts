@@ -13,12 +13,16 @@ import type {
   ToolResultResponseShape,
 } from "./derivation.js";
 
-export type DeterministicOpName = "smoothPrompt" | "summarizeToolResult" | "compressSmoothTurn" | "summarizeChunkBrief";
+export type DeterministicOpName =
+  | "smoothPrompt"
+  | "summarizeToolResult"
+  | "compressDetailedTurn"
+  | "summarizeChunkBrief";
 
 export const DETERMINISTIC_MARKERS: Record<DeterministicOpName, string> = {
   smoothPrompt: "smoothed",
   summarizeToolResult: "toolresult",
-  compressSmoothTurn: "projection",
+  compressDetailedTurn: "projection",
   summarizeChunkBrief: "brief",
 };
 
@@ -71,13 +75,13 @@ export function createDeterministicInferenceCallbacks(): InferenceCallbacks {
       promptMode?: ToolResultPromptMode;
       facts?: ToolResultFacts;
     }) => ok("summarizeToolResult", i, i.content),
-    compressSmoothTurn: (i: {
-      rendering: string;
+    compressDetailedTurn: (i: {
+      dialogueText: string;
       inputTokens: number;
       targetMinTokens: number;
       targetAimTokens: number;
       targetMaxTokens: number;
-    }) => ok("compressSmoothTurn", i, i.rendering),
+    }) => ok("compressDetailedTurn", i, i.dialogueText),
     summarizeChunkBrief: (i: {
       text: string;
       inputTokens: number;

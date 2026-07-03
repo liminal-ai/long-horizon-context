@@ -10,7 +10,8 @@ import type { AssistantMessage, ModelHandle } from "../pi/types.js";
 
 /** Completion context passed to pi-ai's complete() function. */
 export interface CompleteContext {
-  messages: Array<{ role: "system" | "user"; content: string }>;
+  systemPrompt?: string;
+  messages: Array<{ role: "user"; content: string }>;
 }
 
 /** Provider options passed as pi-ai complete()'s third argument. */

@@ -334,7 +334,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
   it("falls to deterministic truncation when no summary is ready and the content is oversized", async () => {
     const sdk = manualSdk();
     const filePath = await newThread(sdk);
-    const longContent = "x".repeat(260);
+    const longContent = "x".repeat(560);
     await intake(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "truncation prompt" } }),
       validEvent("tool_call", {
@@ -346,8 +346,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
       validEvent("turn_end"),
     ]);
     // No drain: the summary stays pending, so the ladder's truncation rung
-    // renders — fixed 200-char prefix plus the exact dropped-count marker
-    // (Epic 01's abbreviation rule).
+    // renders — fixed 500-char prefix plus the exact dropped-count marker.
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -360,7 +359,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (!context.ok) return;
     const short = context.value.messages.find((m) => messageText(m)?.startsWith("[tool result"));
     expect(messageText(short)).toBe(
-      `[tool result · read_file · abridged]\n${"x".repeat(200)}… [truncated 60 chars] [full content in record §${result.messageId}]`,
+      `[tool result · read_file · abridged]\n${"x".repeat(500)}… [truncated 60 chars] [full content in record §${result.messageId}]`,
     );
   });
 });
@@ -429,7 +428,7 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     expect(status.ok).toBe(true);
     if (!status.ok) return;
     // The sibling's damaged turn landed both turn derivations blocked through the
-    // production terminal path (turn_rendering + smooth_turn_compression).
+    // production terminal path (turn_rendering + detailed_turn_compression).
     expect(status.value.derivation.blocked).toBe(2);
     expect(status.value.view).toBeNull();
   });

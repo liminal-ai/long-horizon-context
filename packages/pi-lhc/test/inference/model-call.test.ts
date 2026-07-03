@@ -191,7 +191,7 @@ describe("Story 5: Inference Host Routing", () => {
       for (const kind of [
         "smoothed_prompt",
         "tool_result_summary",
-        "smooth_turn_compression",
+        "detailed_turn_compression",
         "chunk_summary_brief",
       ] as const) {
         expect(assignments[kind]).toMatchObject({
@@ -449,6 +449,87 @@ describe("Story 5: Inference Host Routing", () => {
       } finally {
         store.cleanup();
       }
+    });
+  });
+
+  describe("system prompt partitioning for pi-ai Context", () => {
+    const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
+    const ctx: ExtensionContext = {
+      cwd: "/test",
+      hasUI: false,
+      modelRegistry: {
+        find: () => mockHandle,
+        hasConfiguredAuth: () => true,
+        getAvailable: () => [mockHandle],
+      },
+      ui: { notify: () => {} },
+      sessionManager: { getEntries: () => [] },
+    };
+
+    it("extracts a leading system message into context.systemPrompt", async () => {
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall({
+        ...INPUT,
+        messages: [
+          { role: "system", content: "You compress turns." },
+          { role: "user", content: "hi" },
+        ],
+      });
+
+      expect(complete).toHaveBeenCalledWith(
+        mockHandle,
+        {
+          systemPrompt: "You compress turns.",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        undefined,
+      );
+    });
+
+    it("omits systemPrompt when messages contain no system role", async () => {
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall(INPUT);
+
+      const passedContext = complete.mock.calls[0]?.[1];
+      expect(passedContext).toEqual({ messages: INPUT.messages });
+      expect(passedContext).not.toHaveProperty("systemPrompt");
+    });
+
+    it("extracts multiple system messages in order and joins with blank lines", async () => {
+      const complete = vi.fn<PiAiComplete>(async () => ({
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+      }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall({
+        ...INPUT,
+        messages: [
+          { role: "system", content: "First instruction." },
+          { role: "user", content: "middle" },
+          { role: "system", content: "Second instruction." },
+          { role: "user", content: "end" },
+        ],
+      });
+
+      expect(complete).toHaveBeenCalledWith(
+        mockHandle,
+        {
+          systemPrompt: "First instruction.\n\nSecond instruction.",
+          messages: [
+            { role: "user", content: "middle" },
+            { role: "user", content: "end" },
+          ],
+        },
+        undefined,
+      );
     });
   });
 
