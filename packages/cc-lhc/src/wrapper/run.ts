@@ -1,8 +1,18 @@
 import { type IPty, spawn as defaultSpawn } from "@lydell/node-pty";
 
+import {
+  dispatchLhcCommand,
+  formatCommandOutput,
+  type CaptureCommandContext,
+} from "../commands/dispatch.js";
 import { startCaptureSession, type CaptureSession } from "../intake/session.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
-import { formatCaptureStatsLine } from "../stats.js";
+import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
+import {
+  createInterceptState,
+  processInputChunk,
+  type InterceptState,
+} from "./intercept.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -98,8 +108,37 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     stdout.write(data);
   };
 
+  let interceptState: InterceptState = createInterceptState();
+
+  const commandContext = (): CaptureCommandContext => {
+    if (noCapture || captureSession === undefined) {
+      return {
+        captureDisabled: true,
+        stats: emptyCaptureStats(),
+        sdk: undefined,
+        threadRef: undefined,
+      };
+    }
+    return captureSession.getCommandContext();
+  };
+
+  const runDispatch = (commandLine: string): void => {
+    void dispatchLhcCommand(commandLine, commandContext())
+      .then((text) => {
+        stdout.write(formatCommandOutput(text));
+      })
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        stdout.write(formatCommandOutput(`command error: ${message}`));
+      });
+  };
+
   const forwardInput = (data: Buffer): void => {
-    ptyProcess.write(data);
+    const result = processInputChunk(data, interceptState);
+    interceptState = result.state;
+    if (result.toStdout !== "") stdout.write(result.toStdout);
+    if (result.toPty.length > 0) ptyProcess.write(result.toPty);
+    if (result.dispatch !== undefined) runDispatch(result.dispatch);
   };
 
   ptyProcess.onData(forwardOutput);

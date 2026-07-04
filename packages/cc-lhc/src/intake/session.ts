@@ -16,6 +16,7 @@ import {
 
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
+import type { CaptureCommandContext } from "../commands/dispatch.js";
 
 import { mapRolloutLine } from "./map.js";
 import { discoverSessionFile, type DiscoverDeps } from "../rollout/discover.js";
@@ -95,6 +96,7 @@ export interface CaptureSessionDeps {
 
 export interface CaptureSession {
   stats: CaptureStats;
+  getCommandContext(): CaptureCommandContext;
   stop(): Promise<void>;
 }
 
@@ -229,6 +231,14 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
 
   return {
     stats,
+    getCommandContext(): CaptureCommandContext {
+      return {
+        captureDisabled: false,
+        stats,
+        sdk,
+        threadRef,
+      };
+    },
     stop: async () => {
       stopped = true;
       abort.abort();
