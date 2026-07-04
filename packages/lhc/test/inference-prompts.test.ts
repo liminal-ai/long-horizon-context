@@ -58,7 +58,7 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
   "detailed-turn-compression-v1": {
     input: {
       dialogueText:
-        "[1] User prompt (m1)\nPlease inspect notes/plan.md\n\n[2] Assistant response (m2)\nIt has 3 open items.",
+        "User prompt\nPlease inspect notes/plan.md\n\nAssistant response\nIt has 3 open items.",
       inputTokens: 120,
       targetMinTokens: 42,
       targetAimTokens: 60,
@@ -120,7 +120,7 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
   },
   "chunk-brief-v2": {
     input: {
-      text: "[turn 0001]\nUser inspected notes/plan.md and found 3 open items.",
+      text: "User inspected notes/plan.md and found 3 open items.",
       inputTokens: 2000,
       targetMinTokens: 160,
       targetAimTokens: 240,
@@ -137,7 +137,7 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
   },
   "chunk-brief-v3": {
     input: {
-      text: "[turn 0001]\nUser inspected notes/plan.md and found 3 open items.",
+      text: "User inspected notes/plan.md and found 3 open items.",
       inputTokens: 2000,
       targetMinTokens: 160,
       targetAimTokens: 240,

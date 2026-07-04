@@ -4,8 +4,8 @@
 // inference, no clock.
 //
 // The band-entry side includes degrade ladders, gap entries as the last rung,
-// visible subject keys, the [degraded: ...] and [inter-turn note] markers, and
-// band-text assembly. select.ts consumes the same entry renderer to price
+// the [degraded: ...] and [inter-turn note] markers, and band-text assembly.
+// select.ts consumes the same entry renderer to price
 // entries during the fill walk, so the tokens the walk budgets are the tokens
 // the band stores: one renderer, no drift.
 import type { Band } from "../../shared-tech/index.js";
@@ -80,8 +80,7 @@ export function toolResultSessionContent(message: TailMessageRow, ctx: TailRende
   if (message.sourceEventOrder > ctx.boundaryPosition) {
     return content;
   }
-  const short = deterministicTruncation(content);
-  return `${short} [full content in record §${message.messageId}]`;
+  return deterministicTruncation(content);
 }
 
 function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {
@@ -94,7 +93,7 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): Asse
   const short = deterministicTruncation(toolResultRawContent(message));
   return {
     role: "user",
-    content: `[tool result · ${name} · abridged]\n${short} [full content in record §${message.messageId}]`,
+    content: `[tool result · ${name} · abridged]\n${short}`,
   };
 }
 
@@ -313,21 +312,21 @@ export function excerptLine(
 
 // One selected subject → its band-entry text: any attached inter-turn notes
 // (rule 6: rendered raw with the marker, immediately before the entry), then
-// the keyed entry — §key, [degraded: …] when a fallback rung rendered, or the
+// the representation body, [degraded: …] when a fallback rung rendered, or the
 // gap line as the last rung. select.ts prices exactly this text in the fill
 // walk; the band stores exactly this text.
 export function renderArrangementEntry(
   subjectKind: "turn" | "chunk",
-  subjectId: string,
+  _subjectId: string,
   rep: ResolvedRepresentation,
   noteTexts: readonly string[],
 ): string {
   const lines = noteTexts.map((text) => `[inter-turn note] ${text}`);
   if (rep.gap) {
-    lines.push(`§${subjectId} [${subjectKind} ${subjectId} unavailable: ${rep.reason ?? "unknown"}]`);
+    lines.push(`[${subjectKind} unavailable: ${rep.reason ?? "unknown"}]`);
   } else {
-    const marker = rep.degraded ? ` [degraded: ${rep.degradedMarker ?? rep.derivationUsed}]` : "";
-    lines.push(`§${subjectId}${marker}\n${rep.body}`);
+    const marker = rep.degraded ? `[degraded: ${rep.degradedMarker ?? rep.derivationUsed}]\n` : "";
+    lines.push(`${marker}${rep.body}`);
   }
   return lines.join("\n");
 }

@@ -171,7 +171,7 @@ function setCompressionState(
 }
 
 describe("Story 4: chunk_summary_detailed concatenation format", () => {
-  it("derives marker-separated member text in order without a detailed model call", async () => {
+  it("derives blank-line-separated member text in order without a detailed model call", async () => {
     const double = createInferenceCallbacksDouble();
     const perTurnTokens = assemblyTokens("first prompt", "first answer");
     const sdk = sdkFor(withScriptedProjection(double), {
@@ -187,9 +187,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
 
     const detailedText = formOf(filePath, "c1", "chunk_summary_detailed")?.content;
 
-    expect(detailedText).toBe(
-      `[turn 0001]\n${FIXED_PROJECTION}\n\n[turn 0002]\n${FIXED_PROJECTION}\n\n[turn 0003]\n${FIXED_PROJECTION}`,
-    );
+    expect(detailedText).toBe(`${FIXED_PROJECTION}\n\n${FIXED_PROJECTION}\n\n${FIXED_PROJECTION}`);
     expect(detailedText).not.toContain(" | ");
   });
 
@@ -209,7 +207,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     await drain(sdk, filePath);
 
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
-    expect(detailed?.content).toBe(`[turn 0001]\n${FIXED_PROJECTION}\n\n[turn 0002]\n${FIXED_PROJECTION}`);
+    expect(detailed?.content).toBe(`${FIXED_PROJECTION}\n\n${FIXED_PROJECTION}`);
     expect(detailed?.content).not.toContain("[receipts");
     expect(detailed?.content).not.toContain('({"');
     expect(detailed?.content).not.toContain("docs/plan.md");
@@ -237,7 +235,7 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     ]);
     expect(formOf(filePath, "c1", "chunk_summary_detailed")).toMatchObject({
       state: "ready",
-      content: `[turn 0001]\n${assembly}`,
+      content: assembly,
     });
     const logs = await sdk.logging.query({ filePath }, { derivationType: "chunk_summary_detailed", subjectId: "c1" });
     expect(logs.ok).toBe(true);

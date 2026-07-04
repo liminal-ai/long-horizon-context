@@ -79,12 +79,12 @@ function storedMemberConcat(db: DatabaseSync, chunkId: string): CompactChunkMate
         .filter((text) => text.length > 0);
       lines.push(...rendered);
     }
-    sections.push(`§${member.turn_id}\n${lines.join("\n")}`);
+    sections.push(lines.join("\n"));
   }
 
   return {
     kind: "concat",
-    content: sections.join("\n\n"),
+    content: sections.join("\n\n---\n\n"),
     reason: "not_ready",
   };
 }

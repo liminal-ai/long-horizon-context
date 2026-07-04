@@ -84,23 +84,19 @@ function renderingPartLabel(kind: RenderingPart["kind"]): string {
 
 function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
   return parts
-    .map((part, index) => {
+    .map((part) => {
       const annotations = [
         part.fallback ? "fallback" : undefined,
         part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
       ].filter((annotation): annotation is string => annotation !== undefined);
       const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
-      return `[${index + 1}] ${renderingPartLabel(part.kind)} (${part.messageId})${suffix}\n${part.text}`;
+      return `${renderingPartLabel(part.kind)}${suffix}\n${part.text}`;
     })
     .join("\n\n");
 }
 
 function composeDetailedChunkSummary(memberProjections: readonly string[]): string {
-  return memberProjections
-    .map((memberText, index) => {
-      return [`[turn ${String(index + 1).padStart(4, "0")}]`, memberText].join("\n");
-    })
-    .join("\n\n");
+  return memberProjections.join("\n\n");
 }
 
 function compressionTargetTokens(

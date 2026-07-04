@@ -184,9 +184,9 @@ describe("Story 3: detailed turn compression", () => {
     await drain(sdk, filePath);
 
     const rendering = formOf(filePath, "t1", "turn_rendering")?.content ?? "";
-    expect(rendering.indexOf("[1] User prompt (m1)")).toBeLessThan(rendering.indexOf("[2] Assistant response (m2)"));
-    expect(rendering.indexOf("[2] Assistant response (m2)")).toBeLessThan(
-      rendering.indexOf("[3] Tool call (m3) [outcome: succeeded]"),
+    expect(rendering.indexOf("User prompt\n")).toBeLessThan(rendering.indexOf("Assistant response\n"));
+    expect(rendering.indexOf("Assistant response\n")).toBeLessThan(
+      rendering.indexOf("Tool call [outcome: succeeded]\n"),
     );
     expect(rendering).toContain("read_file");
     expect(rendering).toContain("state is ready");

@@ -201,15 +201,9 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
     if (!contextRead.ok) return;
     const contents = messageTexts(contextRead.value.messages);
 
-    expect(contents).toContain(
-      `[tool result · read_file · abridged]\n${tokens(60)} [full content in record §${r1.messageId}]`,
-    );
-    expect(contents).toContain(
-      `[tool result · read_file · abridged]\n${tokens(20)} [full content in record §${r2.messageId}]`,
-    );
-    expect(contents).not.toContain(
-      `[tool result · read_file · abridged]\n${r2Summary} [full content in record §${r2.messageId}]`,
-    );
+    expect(contents).toContain(`[tool result · read_file · abridged]\n${tokens(60)}`);
+    expect(contents).toContain(`[tool result · read_file · abridged]\n${tokens(20)}`);
+    expect(contents).not.toContain(`[tool result · read_file · abridged]\n${r2Summary}`);
     expect(contents).toContain("interleaved assistant text");
     expect(contents).toContain(`[tool result · read_file]\n${tokens(80)}`);
   });

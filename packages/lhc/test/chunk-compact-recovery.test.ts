@@ -206,8 +206,8 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       message.content.some((part) => part.text.startsWith("[context · detailed]")),
     );
     const detailedText = detailed?.content.map((part) => part.text).join("");
-    expect(detailedText).toContain("§c1 [degraded: detailed-from-stored-members]");
-    expect(detailedText).toContain("§t1\nprompt 1\nanswer 1");
+    expect(detailedText).toContain("[degraded: detailed-from-stored-members]");
+    expect(detailedText).toContain("prompt 1\nanswer 1");
     expect(detailedText).not.toContain("unavailable");
 
     const logs = await compactSdk.logging.query(

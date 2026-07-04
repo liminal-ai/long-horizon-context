@@ -203,7 +203,8 @@ describe("threadView.prune no-op cases", () => {
   it("does not move the boundary backward when a second prune uses a larger target", async () => {
     const sdk = visSdk();
     const filePath = await newThread(sdk);
-    await intake(sdk, filePath, toolTurn([20, 20, 20, 20]));
+    const sizes = [20, 21, 22, 23];
+    await intake(sdk, filePath, toolTurn(sizes));
 
     const first = await sdk.threadView.prune({ filePath }, { targetTokens: 20 });
     expect(first.ok).toBe(true);
@@ -246,7 +247,8 @@ describe("threadView.prune boundary rendering", () => {
   it("renders the tool result at exactly the boundary position as short", async () => {
     const sdk = visSdk();
     const filePath = await newThread(sdk);
-    await intake(sdk, filePath, toolTurn([20, 20, 20, 20]));
+    const sizes = [20, 21, 22, 23];
+    await intake(sdk, filePath, toolTurn(sizes));
 
     const receipt = await sdk.threadView.prune({ filePath });
     expect(receipt.ok).toBe(true);
@@ -261,9 +263,10 @@ describe("threadView.prune boundary rendering", () => {
     expect(context.ok).toBe(true);
     if (!context.ok) return;
 
+    const boundaryIndex = results.findIndex((result) => result.messageId === boundaryResult.messageId);
     const boundaryText = context.value.messages
       .map((m) => messageText(m))
-      .find((text) => text.includes(`§${boundaryResult.messageId}`));
+      .find((text) => text.includes(tokens(sizes[boundaryIndex] ?? 0)));
     expect(boundaryText).toBeDefined();
     expect(boundaryText).toContain(" · abridged]");
   });

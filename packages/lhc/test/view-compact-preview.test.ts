@@ -62,6 +62,19 @@ function liveCount(filePath: string): number {
   }
 }
 
+function storedArrangementSubjectIds(filePath: string): string[] {
+  const db = openRaw(filePath);
+  try {
+    const row = db.prepare(`SELECT arrangement_json FROM thread_view WHERE singleton = 1`).get() as
+      | { arrangement_json: string }
+      | undefined;
+    if (row === undefined) return [];
+    return (JSON.parse(row.arrangement_json) as Array<{ subjectId: string }>).map((entry) => entry.subjectId);
+  } finally {
+    db.close();
+  }
+}
+
 async function previewAndCompact(
   target: Lhc,
   filePath: string,
@@ -229,7 +242,7 @@ describe("previewCompact agreement with compact", () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.compactPoint).toBe(48);
-    expect(first.value.renderedBands.find((band) => band.band === "detailed")?.text).toContain("§t7");
+    expect(storedArrangementSubjectIds(local.filePath)).toContain("t7");
     expect(first.value.gaps).toEqual([]);
 
     const db = openRaw(local.filePath);
@@ -256,7 +269,7 @@ describe("previewCompact agreement with compact", () => {
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
     expect(repaired.value.compactPoint).toBe(48);
-    expect(repaired.value.renderedBands.find((band) => band.band === "detailed")?.text).toContain("§t7");
+    expect(storedArrangementSubjectIds(local.filePath)).toContain("t7");
     expect(repaired.value.gaps).toEqual([]);
   });
 

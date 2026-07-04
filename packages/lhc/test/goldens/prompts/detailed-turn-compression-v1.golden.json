@@ -5,6 +5,6 @@
   },
   {
     "role": "user",
-    "content": "<turn_rendering_to_compress>\n[1] User prompt (m1)\nPlease inspect notes/plan.md\n\n[2] Assistant response (m2)\nIt has 3 open items.\n</turn_rendering_to_compress>"
+    "content": "<turn_rendering_to_compress>\nUser prompt\nPlease inspect notes/plan.md\n\nAssistant response\nIt has 3 open items.\n</turn_rendering_to_compress>"
   }
 ]

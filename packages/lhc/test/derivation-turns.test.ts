@@ -129,13 +129,13 @@ function structuredRendering(parts: readonly RenderingPart[]): string {
     tool_result: "Tool result",
   };
   return parts
-    .map((part, index) => {
+    .map((part) => {
       const annotations = [
         part.fallback ? "fallback" : undefined,
         part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
       ].filter((annotation): annotation is string => annotation !== undefined);
       const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
-      return `[${index + 1}] ${labels[part.kind]} (${part.messageId})${suffix}\n${part.text}`;
+      return `${labels[part.kind]}${suffix}\n${part.text}`;
     })
     .join("\n\n");
 }
@@ -524,7 +524,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     // Detailed is deterministic material assembly; brief still goes through
     // its own inference operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "detailed_turn_compression")?.content ?? ""];
-    expect(detailed?.content).toBe(`[turn 0001]\n${memberProjections[0]}`);
+    expect(detailed?.content).toBe(memberProjections[0]);
     const briefInputText = detailed?.content ?? "";
     const briefInputTokens = estimateTokens(briefInputText);
     const briefInput = {
@@ -595,7 +595,7 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
-    expect(detailed?.content).toContain("[turn 0001]");
+    expect(detailed?.content).toContain(formOf(filePath, "t1", "detailed_turn_compression")?.content ?? "");
     expect(detailed?.content).not.toContain("[receipts");
     expect(brief?.metadata?.sizeDisposition).toBeDefined();
   });

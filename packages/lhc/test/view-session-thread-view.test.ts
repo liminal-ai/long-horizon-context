@@ -203,7 +203,6 @@ describe("threadView.getSessionThreadView", () => {
       content: largeResult,
     });
     expect(toolResult?.content).not.toContain("abridged");
-    expect(toolResult?.content).not.toContain("[full content in record");
   });
 
   it("shortens at-or-behind-boundary tool results like getLlmRequestContext", async () => {
@@ -243,7 +242,5 @@ describe("threadView.getSessionThreadView", () => {
     const llmText = llmToolResult.content[0]?.text ?? "";
     const llmBody = llmText.replace(/^\[tool result · [^\]]+\]\n/, "");
     expect(sessionToolResult.content).toBe(llmBody);
-    expect(sessionToolResult.content).toContain(`[full content in record §${result.messageId}]`);
-    expect(sessionToolResult.content).not.toBe("contents of notes.txt");
   });
 });

@@ -250,9 +250,7 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
     // deterministic truncation for at-or-behind-boundary tool results.
     expect(short).toEqual({
       role: "user",
-      content: textPart(
-        `[tool result · read_file · abridged]\nmapping output [full content in record §${result.messageId}]`,
-      ),
+      content: textPart("[tool result · read_file · abridged]\nmapping output"),
     });
   });
 });
@@ -311,15 +309,11 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (!context.ok) return;
     const contents = context.value.messages.map((m) => messageText(m));
 
-    // Behind: deterministic short form, abridged marker, record pointer.
+    // Behind: deterministic short form with the abridged marker.
     // Ready model summaries remain stored derivations but are not rendered
     // on the at-or-behind-boundary full-band surface.
-    expect(contents).toContain(
-      `[tool result · read_file · abridged]\nboundary output 1 [full content in record §${behind.messageId}]`,
-    );
-    expect(contents).not.toContain(
-      `[tool result · read_file · abridged]\n${behindSummary?.content} [full content in record §${behind.messageId}]`,
-    );
+    expect(contents).toContain("[tool result · read_file · abridged]\nboundary output 1");
+    expect(contents).not.toContain(`[tool result · read_file · abridged]\n${behindSummary?.content}`);
     // Ahead: full content.
     expect(contents).toContain("[tool result · read_file]\nboundary output 2");
     // Non-tool-result content renders full everywhere, both sides of the
@@ -359,7 +353,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (!context.ok) return;
     const short = context.value.messages.find((m) => messageText(m)?.startsWith("[tool result"));
     expect(messageText(short)).toBe(
-      `[tool result · read_file · abridged]\n${"x".repeat(500)}… [truncated 60 chars] [full content in record §${result.messageId}]`,
+      `[tool result · read_file · abridged]\n${"x".repeat(500)}… [truncated 60 chars]`,
     );
   });
 });
