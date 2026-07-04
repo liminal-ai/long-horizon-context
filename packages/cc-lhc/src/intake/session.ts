@@ -78,12 +78,19 @@ export async function createCaptureThread(cwd: string, registryPath?: string): P
   };
 }
 
+export interface ContinueCapture {
+  threadRef: ThreadRef;
+  sdk: Lhc;
+  stats: CaptureStats;
+}
+
 export interface CaptureSessionDeps {
   cwd?: string;
   registryPath?: string;
   discoverDeps?: DiscoverDeps;
   startedAt?: Date;
   noInference?: boolean;
+  continueCapture?: ContinueCapture;
   log?: (message: string) => void;
   logError?: (message: string) => void;
   /** Test hook: replace intake flush to observe batch ordering. */
@@ -94,9 +101,15 @@ export interface CaptureSessionDeps {
   drainSettledCapMs?: number;
 }
 
+export interface RolloutCaptureInfo {
+  path: string | undefined;
+  sessionId: string | undefined;
+}
+
 export interface CaptureSession {
   stats: CaptureStats;
   getCommandContext(): CaptureCommandContext;
+  getRolloutInfo(): RolloutCaptureInfo;
   stop(): Promise<void>;
 }
 
@@ -172,6 +185,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let threadRef: ThreadRef | undefined;
   let watcher: RolloutWatcher | undefined;
   let discoverPromise: Promise<void> | undefined;
+  let rolloutFilePath: string | undefined;
+  let rolloutSessionId: string | undefined;
   let stopped = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
@@ -196,23 +211,34 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     });
   };
 
-  void (async () => {
-    const threadResult = await createCaptureThread(cwd, deps.registryPath);
-    if (!threadResult.ok) {
-      logError(`cc-lhc thread create failed: ${threadResult.error.reason}`);
-      return;
-    }
-    if (stopped) return;
+  if (deps.continueCapture !== undefined) {
+    threadRef = deps.continueCapture.threadRef;
+    sdk = deps.continueCapture.sdk;
+    Object.assign(stats, deps.continueCapture.stats);
+    stats.threadId = "threadId" in threadRef ? threadRef.threadId : stats.threadId;
+  }
 
-    threadRef = threadResult.value;
-    stats.threadId = "threadId" in threadRef ? threadRef.threadId : null;
-    sdk = (deps.initSdkFn ?? initLhc)(
-      captureSdkConfig(deps.noInference === true ? { noInference: true } : {}),
-    );
+  void (async () => {
+    if (threadRef === undefined || sdk === undefined) {
+      const threadResult = await createCaptureThread(cwd, deps.registryPath);
+      if (!threadResult.ok) {
+        logError(`cc-lhc thread create failed: ${threadResult.error.reason}`);
+        return;
+      }
+      if (stopped) return;
+
+      threadRef = threadResult.value;
+      stats.threadId = "threadId" in threadRef ? threadRef.threadId : null;
+      sdk = (deps.initSdkFn ?? initLhc)(
+        captureSdkConfig(deps.noInference === true ? { noInference: true } : {}),
+      );
+    }
 
     discoverPromise = discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal })
       .then((filePath) => {
         if (stopped) return;
+        rolloutFilePath = filePath;
+        rolloutSessionId = basename(filePath, ".jsonl");
         log(`cc-lhc rollout: ${filePath}`);
         watcher = watchRolloutFile(filePath, {
           onBatch: (emissions) => {
@@ -238,6 +264,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         sdk,
         threadRef,
       };
+    },
+    getRolloutInfo(): RolloutCaptureInfo {
+      return { path: rolloutFilePath, sessionId: rolloutSessionId };
     },
     stop: async () => {
       stopped = true;

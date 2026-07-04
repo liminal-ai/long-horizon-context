@@ -3,16 +3,24 @@ import { type IPty, spawn as defaultSpawn } from "@lydell/node-pty";
 import {
   dispatchLhcCommand,
   formatCommandOutput,
-  type CaptureCommandContext,
+  type LhcCommandRuntime,
+  type SessionRestartPlan,
 } from "../commands/dispatch.js";
 import { startCaptureSession, type CaptureSession } from "../intake/session.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
+import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
 import {
   createInterceptState,
   processInputChunk,
   type InterceptState,
 } from "./intercept.js";
+import {
+  CLEAR_SCREEN,
+  executeSessionRestart,
+  formatRestartSpawnFailure,
+  RestartSpawnFailure,
+} from "./restart.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -63,12 +71,13 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const stderr = options.stderr ?? process.stderr;
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
+  const originalArgv = [...argv];
+  const commandGuard = new CommandInFlightGuard();
 
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
-  const startedAt = new Date();
 
-  const ptyProcess = spawnPty(claudeBin, argv, {
+  let ptyProcess = spawnPty(claudeBin, argv, {
     name: TERM_NAME,
     cols,
     rows,
@@ -77,7 +86,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   });
 
   let exited = false;
+  let restarting = false;
   let captureSession: CaptureSession | undefined;
+  const startedAt = new Date();
 
   const printStats = (): void => {
     if (captureSession === undefined) return;
@@ -110,39 +121,27 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
   let interceptState: InterceptState = createInterceptState();
 
-  const commandContext = (): CaptureCommandContext => {
+  const commandRuntime = (): LhcCommandRuntime => {
+    const rollout = captureSession?.getRolloutInfo();
     if (noCapture || captureSession === undefined) {
       return {
         captureDisabled: true,
         stats: emptyCaptureStats(),
         sdk: undefined,
         threadRef: undefined,
+        cwd: process.cwd(),
+        sourceRolloutPath: undefined,
+        sourceSessionId: undefined,
       };
     }
-    return captureSession.getCommandContext();
+    const ctx = captureSession.getCommandContext();
+    return {
+      ...ctx,
+      cwd: process.cwd(),
+      sourceRolloutPath: rollout?.path,
+      sourceSessionId: rollout?.sessionId,
+    };
   };
-
-  const runDispatch = (commandLine: string): void => {
-    void dispatchLhcCommand(commandLine, commandContext())
-      .then((text) => {
-        stdout.write(formatCommandOutput(text));
-      })
-      .catch((cause: unknown) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        stdout.write(formatCommandOutput(`command error: ${message}`));
-      });
-  };
-
-  const forwardInput = (data: Buffer): void => {
-    const result = processInputChunk(data, interceptState);
-    interceptState = result.state;
-    if (result.toStdout !== "") stdout.write(result.toStdout);
-    if (result.toPty.length > 0) ptyProcess.write(result.toPty);
-    if (result.dispatch !== undefined) runDispatch(result.dispatch);
-  };
-
-  ptyProcess.onData(forwardOutput);
-  stdin.on("data", forwardInput);
 
   const handleSigwinch = (): void => {
     onTerminalResize(ptyProcess, stdout);
@@ -150,34 +149,117 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   process.on("SIGWINCH", handleSigwinch);
 
   const forwardSignal = (signal: NodeJS.Signals): void => {
-    if (!exited) {
+    if (!exited && !restarting) {
       ptyProcess.kill(signal);
     }
   };
   process.on("SIGINT", forwardSignal);
   process.on("SIGTERM", forwardSignal);
 
+  const ptyBinding: { attach: (pty: IPty) => void } = {
+    attach: () => {},
+  };
+
   return new Promise((resolve) => {
-    ptyProcess.onExit(async ({ exitCode, signal }) => {
+    const teardownAndExit = async (exitCode: number): Promise<void> => {
+      if (exited) return;
       exited = true;
       stdin.removeListener("data", forwardInput);
       process.removeListener("SIGWINCH", handleSigwinch);
       process.removeListener("SIGINT", forwardSignal);
       process.removeListener("SIGTERM", forwardSignal);
-
       if (captureSession !== undefined) {
-        await captureSession.stop();
+        await captureSession.stop().catch(() => {});
         printStats();
         killAllInferenceChildren();
       }
-
       cleanup();
+      resolve(exitCode);
+    };
 
-      if (signal !== undefined && signal !== 0) {
-        resolve(128 + signal);
-      } else {
-        resolve(exitCode ?? 1);
+    const performRestartWithAttach = async (plan: SessionRestartPlan): Promise<void> => {
+      if (noCapture || captureSession === undefined) return;
+      restarting = true;
+      try {
+        const result = await executeSessionRestart({
+          plan,
+          originalArgv,
+          pty: ptyProcess,
+          captureSession,
+          clearScreen: () => {
+            stdout.write(CLEAR_SCREEN);
+          },
+          spawnChild: (childArgv) =>
+            spawnPty(claudeBin, childArgv, {
+              name: TERM_NAME,
+              cols: stdout.columns ?? DEFAULT_COLS,
+              rows: stdout.rows ?? DEFAULT_ROWS,
+              cwd: process.cwd(),
+              env: process.env as Record<string, string>,
+            }),
+          startCapture: (restartStartedAt, continueCapture) =>
+            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture }),
+          logRestart: (message) => {
+            stderr.write(`${message}\n`);
+          },
+        });
+        ptyProcess = result.pty as IPty;
+        captureSession = result.captureSession;
+        ptyBinding.attach(ptyProcess);
+        interceptState = createInterceptState();
+      } catch (cause) {
+        if (cause instanceof RestartSpawnFailure) {
+          stderr.write(`${formatRestartSpawnFailure(cause.plan, cause.message)}\n`);
+          await teardownAndExit(1);
+          return;
+        }
+        throw cause;
+      } finally {
+        restarting = false;
       }
-    });
+    };
+
+    const runDispatch = (commandLine: string): void => {
+      if (!commandGuard.tryAcquire()) {
+        stdout.write(formatCommandOutput(COMMAND_BUSY_MESSAGE));
+        return;
+      }
+      void dispatchLhcCommand(commandLine, commandRuntime())
+        .then(async (outcome) => {
+          for (const message of outcome.messages) {
+            stdout.write(formatCommandOutput(message));
+          }
+          if (outcome.restart !== undefined) {
+            await performRestartWithAttach(outcome.restart);
+          }
+        })
+        .catch((cause: unknown) => {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          stdout.write(formatCommandOutput(`command error: ${message}`));
+        })
+        .finally(() => {
+          commandGuard.release();
+        });
+    };
+
+    const forwardInput = (data: Buffer): void => {
+      const result = processInputChunk(data, interceptState);
+      interceptState = result.state;
+      if (result.toStdout !== "") stdout.write(result.toStdout);
+      if (result.toPty.length > 0) ptyProcess.write(result.toPty);
+      if (result.dispatch !== undefined) runDispatch(result.dispatch);
+    };
+
+    const onExit = async ({ exitCode, signal }: { exitCode: number; signal?: number }): Promise<void> => {
+      if (restarting || exited) return;
+      await teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : exitCode ?? 1);
+    };
+
+    ptyBinding.attach = (pty: IPty): void => {
+      pty.onData(forwardOutput);
+      pty.onExit(onExit);
+    };
+    ptyBinding.attach(ptyProcess);
+    stdin.on("data", forwardInput);
   });
 }

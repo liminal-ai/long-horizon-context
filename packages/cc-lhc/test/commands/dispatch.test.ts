@@ -7,11 +7,11 @@ import {
   dispatchLhcCommand,
   formatCommandOutput,
   UNKNOWN_COMMAND_MESSAGE,
-  type CaptureCommandContext,
+  type LhcCommandRuntime,
 } from "../../src/commands/dispatch.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 
-function fakeContext(overrides: Partial<CaptureCommandContext> = {}): CaptureCommandContext {
+function fakeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRuntime {
   return {
     captureDisabled: false,
     stats: {
@@ -22,6 +22,9 @@ function fakeContext(overrides: Partial<CaptureCommandContext> = {}): CaptureCom
     },
     sdk: undefined,
     threadRef: undefined,
+    cwd: "/work",
+    sourceRolloutPath: undefined,
+    sourceSessionId: undefined,
     ...overrides,
   };
 }
@@ -37,8 +40,8 @@ const sampleStatus: ViewStatus = {
 
 describe("dispatchLhcCommand", () => {
   it("returns capture disabled when capture is off", async () => {
-    const text = await dispatchLhcCommand("/lhc-status", fakeContext({ captureDisabled: true }));
-    expect(text).toBe(CAPTURE_DISABLED_MESSAGE);
+    const outcome = await dispatchLhcCommand("/lhc-status", fakeRuntime({ captureDisabled: true }));
+    expect(outcome.messages).toEqual([CAPTURE_DISABLED_MESSAGE]);
   });
 
   it("prints status from threadView.status", async () => {
@@ -47,30 +50,29 @@ describe("dispatchLhcCommand", () => {
         status: async (): Promise<OpResult<ViewStatus>> => ({ ok: true, value: sampleStatus }),
       },
     } as unknown as Lhc;
-    const text = await dispatchLhcCommand(
+    const outcome = await dispatchLhcCommand(
       "/lhc-status",
-      fakeContext({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
+      fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
     );
-    expect(text).toContain("tail=1200 threshold=8000 zone=400/2000");
-    expect(text).toContain("derivation pending=1 failed=2 thread=th_test");
+    expect(outcome.messages[0]).toContain("tail=1200 threshold=8000 zone=400/2000");
+    expect(outcome.messages[0]).toContain("derivation pending=1 failed=2 thread=th_test");
   });
 
   it("prints the capture stats line", async () => {
-    const text = await dispatchLhcCommand("/lhc-stats", fakeContext());
-    expect(text).toContain("cc-lhc-capture lines=3 events=2");
-    expect(text).toContain("thread=th_test");
+    const outcome = await dispatchLhcCommand("/lhc-stats", fakeRuntime());
+    expect(outcome.messages[0]).toContain("cc-lhc-capture lines=3 events=2");
+    expect(outcome.messages[0]).toContain("thread=th_test");
   });
 
-  it("lists help including coming-soon commands", async () => {
-    const text = await dispatchLhcCommand("/lhc-help", fakeContext());
-    expect(text).toContain("/lhc-status");
-    expect(text).toContain("/lhc-compact — (coming soon)");
-    expect(text).toContain("/lhc-prune — (coming soon)");
+  it("lists help including compact and prune", async () => {
+    const outcome = await dispatchLhcCommand("/lhc-help", fakeRuntime());
+    expect(outcome.messages[0]).toContain("/lhc-compact");
+    expect(outcome.messages[0]).toContain("/lhc-prune");
   });
 
   it("reports unknown /lhc-* commands", async () => {
-    const text = await dispatchLhcCommand("/lhc-foo", fakeContext());
-    expect(text).toBe(UNKNOWN_COMMAND_MESSAGE);
+    const outcome = await dispatchLhcCommand("/lhc-foo", fakeRuntime());
+    expect(outcome.messages).toEqual([UNKNOWN_COMMAND_MESSAGE]);
   });
 
   it("returns an error string when a handler throws", async () => {
@@ -81,11 +83,11 @@ describe("dispatchLhcCommand", () => {
         },
       },
     } as unknown as Lhc;
-    const text = await dispatchLhcCommand(
+    const outcome = await dispatchLhcCommand(
       "/lhc-status",
-      fakeContext({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
+      fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
     );
-    expect(text).toBe("command failed: db exploded");
+    expect(outcome.messages).toEqual(["command failed: db exploded"]);
   });
 });
 

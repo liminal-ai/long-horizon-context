@@ -2,6 +2,8 @@ import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
+import { runCompactCommand } from "./compact.js";
+import { runPruneCommand } from "./prune.js";
 
 export interface CaptureCommandContext {
   captureDisabled: boolean;
@@ -10,20 +12,39 @@ export interface CaptureCommandContext {
   threadRef: ThreadRef | undefined;
 }
 
+export interface LhcCommandRuntime extends CaptureCommandContext {
+  cwd: string;
+  sourceRolloutPath: string | undefined;
+  sourceSessionId: string | undefined;
+}
+
+export interface SessionRestartPlan {
+  oldSessionId: string;
+  newSessionId: string;
+  rolloutPath: string;
+  rebuiltLineCount: number;
+  expectedReintakeLines: number;
+}
+
+export interface DispatchOutcome {
+  messages: string[];
+  restart?: SessionRestartPlan;
+}
+
 export const CAPTURE_DISABLED_MESSAGE = "capture disabled";
 export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try /lhc-help";
 
-type CommandHandler = (ctx: CaptureCommandContext) => Promise<string>;
+type CommandHandler = (commandLine: string, runtime: LhcCommandRuntime) => Promise<DispatchOutcome>;
 
 function commandErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-async function runHandler(handler: CommandHandler, ctx: CaptureCommandContext): Promise<string> {
+async function runHandler(handler: CommandHandler, commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   try {
-    return await handler(ctx);
+    return await handler(commandLine, runtime);
   } catch (cause) {
-    return `command failed: ${commandErrorMessage(cause)}`;
+    return { messages: [`command failed: ${commandErrorMessage(cause)}`] };
   }
 }
 
@@ -35,59 +56,69 @@ function formatStatus(status: ViewStatus, threadId: string | null): string {
   return lines.join("\n");
 }
 
-async function handleStatus(ctx: CaptureCommandContext): Promise<string> {
-  if (ctx.sdk === undefined || ctx.threadRef === undefined) {
-    return "capture not ready";
+async function handleStatus(runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
+  if (runtime.sdk === undefined || runtime.threadRef === undefined) {
+    return { messages: ["capture not ready"] };
   }
-  const result: OpResult<ViewStatus> = await ctx.sdk.threadView.status(ctx.threadRef);
-  if (!result.ok) return `status error: ${result.error.reason}`;
-  return formatStatus(result.value, ctx.stats.threadId);
+  const result: OpResult<ViewStatus> = await runtime.sdk.threadView.status(runtime.threadRef);
+  if (!result.ok) return { messages: [`status error: ${result.error.reason}`] };
+  return { messages: [formatStatus(result.value, runtime.stats.threadId)] };
 }
 
-function handleStats(ctx: CaptureCommandContext): Promise<string> {
-  return Promise.resolve(formatCaptureStatsLine(ctx.stats));
+function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {
+  return { messages: [formatCaptureStatsLine(runtime.stats)] };
 }
 
-function handleHelp(_ctx: CaptureCommandContext): Promise<string> {
-  return Promise.resolve(
-    [
-      "/lhc-status — thread-view status + capture stats",
-      "/lhc-stats — capture stats line",
-      "/lhc-help — this list",
-      "/lhc-compact — (coming soon)",
-      "/lhc-prune — (coming soon)",
-    ].join("\n"),
-  );
+function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
+  return {
+    messages: [
+      [
+        "/lhc-status — thread-view status + capture stats",
+        "/lhc-stats — capture stats line",
+        "/lhc-help — this list",
+        "/lhc-compact — compact thread view and restart session",
+        "/lhc-prune [targetTokens] — prune visibility zone and restart session",
+      ].join("\n"),
+    ],
+  };
 }
 
 const HANDLERS: Record<string, CommandHandler> = {
-  "lhc-status": handleStatus,
-  "lhc-stats": handleStats,
-  "lhc-help": handleHelp,
+  "lhc-status": (line, runtime) => handleStatus(runtime),
+  "lhc-stats": (line, runtime) => Promise.resolve(handleStats(runtime)),
+  "lhc-help": (line, runtime) => Promise.resolve(handleHelp(runtime)),
+  "lhc-prune": runPruneCommand,
+  "lhc-compact": runCompactCommand,
 };
 
 export function parseLhcCommandName(commandLine: string): string | null {
   if (!commandLine.startsWith("/lhc")) return null;
-  return commandLine.slice(1);
+  const rest = commandLine.slice(1);
+  const name = rest.split(/\s+/)[0] ?? "";
+  return name === "" ? null : name;
 }
 
-export async function dispatchLhcCommand(commandLine: string, ctx: CaptureCommandContext): Promise<string> {
+export async function dispatchLhcCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   try {
-    if (ctx.captureDisabled) return CAPTURE_DISABLED_MESSAGE;
+    if (runtime.captureDisabled) return { messages: [CAPTURE_DISABLED_MESSAGE] };
 
     const name = parseLhcCommandName(commandLine);
-    if (name === null) return UNKNOWN_COMMAND_MESSAGE;
+    if (name === null) return { messages: [UNKNOWN_COMMAND_MESSAGE] };
 
     const handler = HANDLERS[name];
-    if (handler !== undefined) return runHandler(handler, ctx);
+    if (handler !== undefined) return runHandler(handler, commandLine, runtime);
 
-    if (name.startsWith("lhc-")) return UNKNOWN_COMMAND_MESSAGE;
-    return UNKNOWN_COMMAND_MESSAGE;
+    if (name.startsWith("lhc-")) return { messages: [UNKNOWN_COMMAND_MESSAGE] };
+    return { messages: [UNKNOWN_COMMAND_MESSAGE] };
   } catch (cause) {
-    return `command failed: ${commandErrorMessage(cause)}`;
+    return { messages: [`command failed: ${commandErrorMessage(cause)}`] };
   }
 }
 
 export function formatCommandOutput(text: string): string {
   return `\r\n[cc-lhc] ${text.replace(/\n/g, "\r\n[cc-lhc] ")}`;
+}
+
+export function formatSessionRestartLog(plan: SessionRestartPlan): string {
+  return `[cc-lhc] session ${plan.oldSessionId} preserved; resuming as ${plan.newSessionId} via ${plan.rolloutPath} (expect ~${plan.expectedReintakeLines} replayed lines to re-intake)`;
 }
