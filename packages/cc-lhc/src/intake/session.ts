@@ -1,7 +1,4 @@
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 
 import {
   createDeterministicInferenceCallbacks,
@@ -20,29 +17,25 @@ import type { CaptureCommandContext } from "../commands/dispatch.js";
 
 import { mapRolloutLine } from "./map.js";
 import {
-  defaultLineagePath,
+  defaultLineageDbPath,
   lineageWriteFailureMessage,
-  loadLineageFile,
+  resolveCaptureThread,
+  safeLoadThreadSignatures,
   safeAppendThreadSignatures,
   safeRecordSessionThread,
-  resolveCaptureThread,
-  threadSignatures,
-  type LineageDeps,
-} from "./lineage.js";
+  type LineageDbDeps,
+} from "./lineage-db.js";
+import {
+  captureThreadRef,
+  defaultRegistryPath,
+  defaultThreadFilePath,
+} from "./paths.js";
 import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
 import { discoverSessionFile, type DiscoverDeps } from "../rollout/discover.js";
 import type { RolloutLineItem } from "../rollout/types.js";
 import { watchRolloutFile, type RolloutWatcher } from "../rollout/watcher.js";
 import type { WatcherEmission } from "../rollout/types.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
-
-const DEFAULT_LHC_DIR = join(homedir(), ".lhc");
-
-export function defaultThreadFilePath(): string {
-  const dir = join(DEFAULT_LHC_DIR, "threads");
-  mkdirSync(dir, { recursive: true });
-  return join(dir, `${randomUUID()}.sqlite`);
-}
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
 export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
@@ -75,17 +68,20 @@ export function defaultThreadTitle(cwd: string): string {
   return cwd !== "" ? cwd : "cc-lhc session";
 }
 
-export async function createCaptureThread(cwd: string, registryPath?: string): Promise<OpResult<ThreadRef>> {
+export async function createCaptureThread(
+  cwd: string,
+  registryPath: string = defaultRegistryPath(),
+): Promise<OpResult<ThreadRef>> {
   const created = await threads.newThread({
     filePath: defaultThreadFilePath(),
     cwd,
     title: defaultThreadTitle(cwd),
-    ...(registryPath === undefined ? {} : { registryPath }),
+    registryPath,
   });
   if (!created.ok) return created;
   return {
     ok: true,
-    value: registryPath === undefined ? { threadId: created.value.threadId } : { threadId: created.value.threadId, registryPath },
+    value: captureThreadRef(created.value.threadId, registryPath),
   };
 }
 
@@ -104,8 +100,8 @@ export interface CaptureSessionDeps {
   continueCapture?: ContinueCapture;
   resumeSessionId?: string;
   continueFlag?: boolean;
-  lineagePath?: string;
-  lineageDeps?: LineageDeps;
+  lineageDbPath?: string;
+  lineageDeps?: LineageDbDeps;
   log?: (message: string) => void;
   logError?: (message: string) => void;
   /** Test hook: replace intake flush to observe batch ordering. */
@@ -132,6 +128,13 @@ export interface CaptureSession {
 
 function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function normalizeThreadRef(threadRef: ThreadRef, registryPath: string): ThreadRef {
+  if ("threadId" in threadRef) {
+    return captureThreadRef(threadRef.threadId, "registryPath" in threadRef ? threadRef.registryPath : registryPath);
+  }
+  return threadRef;
 }
 
 function threadIdFromRef(threadRef: ThreadRef): string {
@@ -226,7 +229,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   });
   const flush = deps.flushBatchFn ?? flushBatch;
   const createThread = deps.createThreadFn ?? createCaptureThread;
-  const lineagePath = deps.lineagePath ?? defaultLineagePath();
+  const registryPath = deps.registryPath ?? defaultRegistryPath();
+  const lineageDbPath = deps.lineageDbPath ?? defaultLineageDbPath();
   const stats = emptyCaptureStats();
   const abort = new AbortController();
 
@@ -262,7 +266,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   };
 
   if (deps.continueCapture !== undefined) {
-    threadRef = deps.continueCapture.threadRef;
+    threadRef = normalizeThreadRef(deps.continueCapture.threadRef, registryPath);
     sdk = deps.continueCapture.sdk;
     Object.assign(stats, deps.continueCapture.stats);
     stats.threadId = threadIdFromRef(threadRef) || stats.threadId;
@@ -283,8 +287,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           cwd,
           ...(deps.resumeSessionId === undefined ? {} : { resumeSessionId: deps.resumeSessionId }),
           ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
-          ...(deps.registryPath === undefined ? {} : { registryPath: deps.registryPath }),
-          lineagePath,
+          registryPath,
+          lineageDbPath,
           ...(deps.discoverDeps?.projectsRoot === undefined
             ? {}
             : { projectsRoot: deps.discoverDeps.projectsRoot }),
@@ -305,11 +309,13 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       } else {
         const continuedThreadId = threadIdFromRef(threadRef);
         if (continuedThreadId !== "") {
-          await safeRecordSessionThread(lineagePath, rolloutSessionId, continuedThreadId, logError, deps.lineageDeps);
-          const file = await loadLineageFile(lineagePath, deps.lineageDeps);
-          dedupeState = createReplayDedupeState(true, threadSignatures(file, continuedThreadId));
+          await safeRecordSessionThread(lineageDbPath, rolloutSessionId, continuedThreadId, logError, deps.lineageDeps);
+          dedupeState = createReplayDedupeState(
+            true,
+            safeLoadThreadSignatures(lineageDbPath, continuedThreadId, logError, deps.lineageDeps),
+          );
           persistSignatures = async (added) => {
-            await safeAppendThreadSignatures(lineagePath, continuedThreadId, added, logError, deps.lineageDeps);
+            await safeAppendThreadSignatures(lineageDbPath, continuedThreadId, added, logError, deps.lineageDeps);
           };
           log(`cc-lhc: continuing thread ${continuedThreadId} for session ${rolloutSessionId}`);
         }

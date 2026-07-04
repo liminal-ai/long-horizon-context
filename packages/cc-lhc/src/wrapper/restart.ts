@@ -1,6 +1,6 @@
 import type { SessionRestartPlan } from "../commands/dispatch.js";
 import { formatSessionRestartLog } from "../commands/dispatch.js";
-import { lineageWriteFailureMessage } from "../intake/lineage.js";
+import { lineageWriteFailureMessage } from "../intake/lineage-db.js";
 import type { CaptureSession, ContinueCapture } from "../intake/session.js";
 
 const KILL_GRACE_MS = 3_000;

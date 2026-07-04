@@ -49,7 +49,7 @@ describe("executeSessionRestart", () => {
     const order: string[] = [];
     const oldPty = fakePty();
     const newPty = fakePty();
-    const threadRef = { threadId: "th_same" };
+    const threadRef = { threadId: "th_same", registryPath: "/tmp/registry.sqlite" };
     const sdk = { threadView: {} };
     const stats = { threadId: "th_same" };
 
@@ -114,7 +114,7 @@ describe("executeSessionRestart", () => {
 
   it("throws RestartSpawnFailure when spawnChild fails after the old child is killed", async () => {
     const oldPty = fakePty();
-    const threadRef = { threadId: "th_same" };
+    const threadRef = { threadId: "th_same", registryPath: "/tmp/registry.sqlite" };
     const captureSession = {
       stats: { threadId: "th_same" },
       getCommandContext: () => ({ captureDisabled: false, stats: {}, sdk: {}, threadRef }),
@@ -155,7 +155,7 @@ describe("executeSessionRestart", () => {
   it("respawns when recordLineage fails", async () => {
     const oldPty = fakePty();
     const newPty = fakePty();
-    const threadRef = { threadId: "th_same" };
+    const threadRef = { threadId: "th_same", registryPath: "/tmp/registry.sqlite" };
     const captureSession = {
       stats: { threadId: "th_same" },
       getCommandContext: () => ({ captureDisabled: false, stats: {}, sdk: {}, threadRef }),

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
@@ -13,6 +14,7 @@ import {
   startCaptureSession,
 } from "../../src/intake/session.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
+import { emptyCaptureStats } from "../../src/stats.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -214,8 +216,9 @@ function appendLine(filePath: string, item: RolloutLineItem): void {
 describe("lineage wiring", () => {
   it("reuses a mapped thread instead of creating a new one", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-"));
-    const lineageDir = mkdtempSync(join(tmpdir(), "cc-lhc-lineage-map-"));
-    const mapPath = join(lineageDir, "cc-sessions.json");
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-map-"));
+    const dbPath = join(home, "cc-lhc.sqlite");
+    const registryPath = join(home, "registry.sqlite");
     const cwd = "/work/lineage-session";
     const projectDir = join(projectsRoot, encodeProjectPath(cwd));
     mkdirSync(projectDir, { recursive: true });
@@ -232,8 +235,8 @@ describe("lineage wiring", () => {
       })}\n`,
     );
 
-    const { recordSessionThread } = await import("../../src/intake/lineage.js");
-    await recordSessionThread(mapPath, sessionId, "th_mapped");
+    const { recordSessionThread } = await import("../../src/intake/lineage-db.js");
+    recordSessionThread(dbPath, sessionId, "th_mapped");
 
     let created = 0;
     const logs: string[] = [];
@@ -241,13 +244,14 @@ describe("lineage wiring", () => {
       cwd,
       startedAt,
       noInference: true,
-      lineagePath: mapPath,
+      lineageDbPath: dbPath,
+      registryPath,
       discoverDeps: { projectsRoot, pollMs: 20 },
       log: (message) => logs.push(message),
       logError: () => {},
       createThreadFn: async () => {
         created += 1;
-        return { ok: true, value: { threadId: "th_should_not_create" } };
+        return { ok: true, value: { threadId: "th_should_not_create", registryPath } };
       },
       flushBatchFn: async () => {},
     });
@@ -264,8 +268,9 @@ describe("lineage wiring", () => {
 
   it("starts capture when lineage write fails", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-write-"));
-    const lineageDir = mkdtempSync(join(tmpdir(), "cc-lhc-lineage-write-fail-"));
-    const mapPath = join(lineageDir, "cc-sessions.json");
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-write-fail-"));
+    const dbPath = join(home, "cc-lhc.sqlite");
+    const registryPath = join(home, "registry.sqlite");
     const cwd = "/work/lineage-write-fail";
     const projectDir = join(projectsRoot, encodeProjectPath(cwd));
     mkdirSync(projectDir, { recursive: true });
@@ -284,20 +289,24 @@ describe("lineage wiring", () => {
 
     const errors: string[] = [];
     let flushed = false;
+    let dbOpens = 0;
     const session = startCaptureSession({
       cwd,
       startedAt,
       noInference: true,
-      lineagePath: mapPath,
+      lineageDbPath: dbPath,
+      registryPath,
       discoverDeps: { projectsRoot, pollMs: 20 },
       log: () => {},
       logError: (message) => errors.push(message),
       lineageDeps: {
-        writeFileFn: async () => {
-          throw new Error("disk full");
+        openDbFn: (path) => {
+          dbOpens += 1;
+          if (dbOpens > 1) throw new Error("disk full");
+          return new DatabaseSync(path);
         },
       },
-      createThreadFn: async () => ({ ok: true, value: { threadId: "th_write_fail" } }),
+      createThreadFn: async () => ({ ok: true, value: { threadId: "th_write_fail", registryPath } }),
       flushBatchFn: async () => {
         flushed = true;
       },
@@ -310,6 +319,122 @@ describe("lineage wiring", () => {
     expect(session.stats.threadId).toBe("th_write_fail");
     expect(flushed).toBe(true);
     expect(errors.some((line) => line.includes("lineage write failed (continuing)"))).toBe(true);
+    await session.stop();
+  });
+
+  it("starts capture with a new thread when lineage read fails", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-read-"));
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-read-fail-"));
+    const dbPath = join(home, "cc-lhc.sqlite");
+    const registryPath = join(home, "registry.sqlite");
+    const cwd = "/work/lineage-read-fail";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = "read-fail-session";
+    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
+    const startedAt = new Date(Date.now() - 60_000);
+
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "user",
+        uuid: "line-1",
+        message: { role: "user", content: "hello" },
+      })}\n`,
+    );
+
+    const errors: string[] = [];
+    let created = 0;
+    let flushed = false;
+    const session = startCaptureSession({
+      cwd,
+      startedAt,
+      noInference: true,
+      lineageDbPath: dbPath,
+      registryPath,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      log: () => {},
+      logError: (message) => errors.push(message),
+      lineageDeps: {
+        withDb: () => {
+          throw new Error("lineage read fail");
+        },
+      },
+      createThreadFn: async () => {
+        created += 1;
+        return { ok: true, value: { threadId: "th_read_fail", registryPath } };
+      },
+      flushBatchFn: async () => {
+        flushed = true;
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && !flushed; attempt += 1) {
+      await sleep(50);
+    }
+
+    expect(created).toBe(1);
+    expect(session.stats.threadId).toBe("th_read_fail");
+    expect(flushed).toBe(true);
+    expect(errors.some((line) => line.includes("lineage read failed (continuing)"))).toBe(true);
+    await session.stop();
+  });
+
+  it("continues restart capture when lineage signature read fails", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-restart-cont-"));
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-restart-cont-"));
+    const dbPath = join(home, "cc-lhc.sqlite");
+    const registryPath = join(home, "registry.sqlite");
+    const cwd = "/work/restart-continue";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = "restart-cont-session";
+    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
+    const startedAt = new Date(Date.now() - 60_000);
+
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "user",
+        uuid: "line-1",
+        message: { role: "user", content: "hello" },
+      })}\n`,
+    );
+
+    const errors: string[] = [];
+    let flushed = false;
+    const stats = emptyCaptureStats();
+    stats.threadId = "th_restart";
+    const threadRef = { threadId: "th_restart", registryPath };
+    const sdk = { drainSettled: async () => {} } as unknown as Lhc;
+
+    const session = startCaptureSession({
+      cwd,
+      startedAt,
+      noInference: true,
+      lineageDbPath: dbPath,
+      registryPath,
+      continueCapture: { threadRef, sdk, stats },
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      log: () => {},
+      logError: (message) => errors.push(message),
+      lineageDeps: {
+        withDb: () => {
+          throw new Error("lineage read fail");
+        },
+      },
+      flushBatchFn: async () => {
+        flushed = true;
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && !flushed; attempt += 1) {
+      await sleep(50);
+    }
+
+    expect(session.stats.threadId).toBe("th_restart");
+    expect(flushed).toBe(true);
+    expect(errors.some((line) => line.includes("lineage read failed (continuing)"))).toBe(true);
     await session.stop();
   });
 });

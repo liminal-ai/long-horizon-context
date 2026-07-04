@@ -8,7 +8,7 @@ import {
 } from "../commands/dispatch.js";
 import { startCaptureSession, type CaptureSession } from "../intake/session.js";
 import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
-import { defaultLineagePath, recordSessionThread } from "../intake/lineage.js";
+import { defaultLineageDbPath, safeRecordSessionThread } from "../intake/lineage-db.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
@@ -110,7 +110,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       noInference,
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(continueFlag ? { continueFlag: true } : {}),
-      lineagePath: defaultLineagePath(),
+      lineageDbPath: defaultLineageDbPath(),
     });
     process.on("SIGUSR1", onSigusr1);
   }
@@ -209,9 +209,11 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
               env: process.env as Record<string, string>,
             }),
           startCapture: (restartStartedAt, continueCapture) =>
-            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture, lineagePath: defaultLineagePath() }),
+            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture, lineageDbPath: defaultLineageDbPath() }),
           recordLineage: async ({ sessionId, threadId }) => {
-            await recordSessionThread(defaultLineagePath(), sessionId, threadId);
+            await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
+              stderr.write(`${message}\n`);
+            });
           },
           logRestart: (message) => {
             stderr.write(`${message}\n`);
