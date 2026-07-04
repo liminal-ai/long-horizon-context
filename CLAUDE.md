@@ -61,10 +61,6 @@
 - Use "threadId" or "source of truth threadId" not "original PI session". Confidence: 0.80
 - Avoid "Context Steward" as code branding or domain naming. Confidence: 0.80
 
-## PI/Tool Preferences
-
-- Thinking levels should be core/built-in functionality, not requiring extensions. Confidence: 0.75
-
 ## Testing Preferences
 
 - Never skip tests based on auth availability - creates silent failures that hide issues. Confidence: 0.85
