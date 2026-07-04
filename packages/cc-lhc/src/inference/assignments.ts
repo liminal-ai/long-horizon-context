@@ -16,7 +16,9 @@ export function ccAssignments(): Record<InferenceAssignmentKind, ModelAssignment
   return {
     smoothed_prompt: {
       provider: "cc-cli",
-      model: "haiku",
+      // Sonnet across the board (Lee's ruling, 2026-07-04): haiku returned
+      // empty output and meta-commentary refusals on smoothing in live use.
+      model: "sonnet",
       prompt: DEFAULT_PROMPT_NAMES.smoothed_prompt ?? "smoothing-v1",
       thinking: DEFAULT_SYSTEM_THINKING,
     },

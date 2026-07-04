@@ -5,7 +5,7 @@ import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult }
 import { resolveClaudeBin } from "../shared/claude-bin.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_CONCURRENCY = 2;
+const DEFAULT_CONCURRENCY = 3;
 const STDERR_EXCERPT_MAX = 500;
 const DEFAULT_SYSTEM_PROMPT = "You are a text processor. Follow the user instruction exactly.";
 export const SLOT_TIMEOUT_MESSAGE = "timed out waiting for inference slot";
