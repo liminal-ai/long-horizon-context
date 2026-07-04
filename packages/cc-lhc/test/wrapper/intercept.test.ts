@@ -113,8 +113,8 @@ describe("processInputChunk", () => {
   });
 
   it("flushes withheld bytes on bare Escape followed by a non-sequence byte", () => {
-    const result = feedChunks(["/lhc", "\x1bX"]);
-    expect(result.toPty).toBe("\x1bX");
+    const result = feedChunks(["/lhc", "\x1bY"]);
+    expect(result.toPty).toBe("\x1bY");
     expect(result.toStdout).toBe(`/lhc${BS.repeat(4)}`);
     expect(result.state.freshLine).toBe(false);
   });
@@ -233,7 +233,7 @@ describe("processInputChunk", () => {
 
   it("passes legacy mouse and bare ESC pairs through without disarming interception", () => {
     const legacy = "\x1bM!!!";
-    const bare = "\x1bX";
+    const bare = "\x1bY";
     const result = feedChunks([legacy, bare, "/lhc-stats\r"]);
     expect(result.toPty).toBe(`${legacy}${bare}`);
     expect(result.dispatch).toBe("/lhc-stats");
@@ -285,5 +285,42 @@ describe("processInputChunk", () => {
     const last = feedChunks(["c-status\r"], mid.state);
     expect(last.dispatch).toBe("/lhc-status");
     expect(last.toPty).toBe("");
+  });
+
+  const WARP_HANDSHAKE =
+    "\x1bP>|Warp(v0.2026.07.01)\x1b\\\x1b[?2026;2$y\x1b[?62c";
+
+  it("intercepts after Warp terminal handshake on startup", () => {
+    const result = feedChunks([WARP_HANDSHAKE, "/lhc-status\r"]);
+    expect(result.toPty).toBe(WARP_HANDSHAKE);
+    expect(result.dispatch).toBe("/lhc-status");
+    expect(result.toStdout).toBe("/lhc-status\r\n");
+    expect(result.state.freshLine).toBe(true);
+  });
+
+  it("passes Warp DCS split across chunks without disarming interception", () => {
+    const dcs = "\x1bP>|Warp(v0.2026.07.01)\x1b\\";
+    const first = feedChunks(["\x1bP>|W", "arp(v0.2026.07.01)\x1b\\"]);
+    expect(first.state.freshLine).toBe(true);
+    expect(first.state.escapePassthrough).toBeNull();
+    expect(first.toPty).toBe(dcs);
+    const second = feedChunks(["/lhc-help\r"], first.state);
+    expect(second.dispatch).toBe("/lhc-help");
+  });
+
+  it("passes DCS through mid-withhold without flushing the buffer", () => {
+    const dcs = "\x1bP>|Warp(v0.2026.07.01)\x1b\\";
+    const result = feedChunks(["/lh", dcs, "c-prune\r"]);
+    expect(result.toPty).toBe(dcs);
+    expect(result.dispatch).toBe("/lhc-prune");
+    expect(result.toStdout).toBe("/lhc-prune\r\n");
+  });
+
+  it("passes DECRPM and DA CSI responses at a fresh line without disarming interception", () => {
+    const responses = "\x1b[?2026;2$y\x1b[?62c";
+    const result = feedChunks([responses, "/lhc-stats\r"]);
+    expect(result.toPty).toBe(responses);
+    expect(result.dispatch).toBe("/lhc-stats");
+    expect(result.state.freshLine).toBe(true);
   });
 });

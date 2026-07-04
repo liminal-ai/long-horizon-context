@@ -4,8 +4,8 @@ const BACKSPACE_ECHO = "\x08 \x08";
 export type EscapePassthrough =
   | { kind: "pending_esc" }
   | { kind: "csi"; params: string }
-  | { kind: "osc" }
-  | { kind: "osc_esc" }
+  | { kind: "string_term" }
+  | { kind: "string_term_esc" }
   | { kind: "legacy_mouse"; remaining: number };
 
 export interface InterceptState {
@@ -119,6 +119,10 @@ function dispatchWithheldCommand(state: InterceptState): ByteOutcome {
   };
 }
 
+function isStringTermIntroducer(byte: number): boolean {
+  return byte === 0x5d || byte === 0x50 || byte === 0x5e || byte === 0x5f || byte === 0x58;
+}
+
 function continueEscapePassthrough(
   byte: number,
   state: InterceptState,
@@ -141,8 +145,8 @@ function continueEscapePassthrough(
           toStdout: "",
         };
       }
-      if (byte === 0x5d) {
-        return { state: { ...state, escapePassthrough: { kind: "osc" } }, toPty: Buffer.from([byte]), toStdout: "" };
+      if (isStringTermIntroducer(byte)) {
+        return { state: { ...state, escapePassthrough: { kind: "string_term" } }, toPty: Buffer.from([byte]), toStdout: "" };
       }
       if (byte === 0x4d) {
         return {
@@ -176,16 +180,16 @@ function continueEscapePassthrough(
         toStdout: "",
       };
 
-    case "osc":
+    case "string_term":
       if (byte === 0x07) {
         return { state: base, toPty: Buffer.from([byte]), toStdout: "" };
       }
       if (byte === 0x1b) {
-        return { state: { ...state, escapePassthrough: { kind: "osc_esc" } }, toPty: Buffer.from([byte]), toStdout: "" };
+        return { state: { ...state, escapePassthrough: { kind: "string_term_esc" } }, toPty: Buffer.from([byte]), toStdout: "" };
       }
       return { state, toPty: Buffer.from([byte]), toStdout: "" };
 
-    case "osc_esc":
+    case "string_term_esc":
       if (byte === 0x5c) {
         return { state: base, toPty: Buffer.from([byte]), toStdout: "" };
       }
