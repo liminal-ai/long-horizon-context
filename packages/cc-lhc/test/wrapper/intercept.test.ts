@@ -180,4 +180,51 @@ describe("processInputChunk", () => {
     expect(result.dispatch).toBeUndefined();
     expect(result.toStdout).toBe("");
   });
+
+  it("intercepts /lhc-status after mouse SGR noise on a fresh line", () => {
+    const mouse = "\x1b[<0;10;20M";
+    const result = feedChunks([mouse, "/lhc-status\r"]);
+    expect(result.toPty).toBe(mouse);
+    expect(result.dispatch).toBe("/lhc-status");
+    expect(result.toStdout).toBe("/lhc-status\r\n");
+    expect(result.state.freshLine).toBe(true);
+  });
+
+  it("intercepts /lhc-prune after focus-reporting noise before typing", () => {
+    const result = feedChunks(["\x1b[I", "\x1b[O", "/lhc-prune\r"]);
+    expect(result.toPty).toBe("\x1b[I\x1b[O");
+    expect(result.dispatch).toBe("/lhc-prune");
+    expect(result.toStdout).toBe("/lhc-prune\r\n");
+  });
+
+  it("intercepts after a CSI sequence split across chunks", () => {
+    const first = feedChunks(["\x1b[", "100"]);
+    expect(first.state.freshLine).toBe(true);
+    expect(first.state.escapePassthrough).toEqual({ kind: "csi" });
+    const second = feedChunks([";20M", "/lhc-stats\r"], first.state);
+    expect(second.toPty).toBe(";20M");
+    expect(second.dispatch).toBe("/lhc-stats");
+  });
+
+  it("passes OSC sequences through without disarming fresh line interception", () => {
+    const osc = "\x1b]0;title\x07";
+    const result = feedChunks([osc, "/lhc-help\r"]);
+    expect(result.toPty).toBe(osc);
+    expect(result.dispatch).toBe("/lhc-help");
+  });
+
+  it("passes legacy mouse and bare ESC pairs through without disarming interception", () => {
+    const legacy = "\x1bM!!!";
+    const bare = "\x1bX";
+    const result = feedChunks([legacy, bare, "/lhc-stats\r"]);
+    expect(result.toPty).toBe(`${legacy}${bare}`);
+    expect(result.dispatch).toBe("/lhc-stats");
+  });
+
+  it("passes tab and other C0 controls on a fresh line without disarming interception", () => {
+    const result = feedChunks(["\t", "/lhc-status\r"]);
+    expect(result.toPty).toBe("\t");
+    expect(result.dispatch).toBe("/lhc-status");
+    expect(result.state.freshLine).toBe(true);
+  });
 });
