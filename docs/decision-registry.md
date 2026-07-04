@@ -1320,6 +1320,16 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - was `form` as the stored-output noun → derivation (commit sweep cd28af1)
 - was generic workHandlers naming accepted as harmless → logged as leaky construction wiring (bad-code-log)
 
+## MODEL
+
+### MODEL-1: Per-model optimization via config plus discrete extensions; the record stays model-neutral
+- Decision: Customizing/optimizing the harness per agent model is done through model config plus an array of discrete extensions flipped on and off based on the loaded model. Extensions can contribute both tools and system-prompt sections. The durable record stays model-neutral forever; the served rendering becomes a function of (thread, model-profile). Profile key is model-tier, not model-name (Fable/Opus cluster together; GPT variants cluster; avoids per-point-release proliferation). Prompt contributions compose deterministically (fixed order, stable text per extension version) and are captured into the render, so reload/clone fidelity holds; a model swap on a live thread is a context-rebuild boundary.
+- Why: different models need different support to run well in the same harness — first concrete case is the memory-maintenance protocol block: Claude models (Opus/Fable) have RL'd memory write-side reflexes and need only a pointer; models without that training (GPT, GLM 5.1) need the full protocol spelled out and possibly active nudges at rebuild boundaries. Model-specific behavior belongs in config/extensions, never in shared prompt text (same doctrine as per-model drift bias in derivation assignments). [rationale: documented]
+- Rejected: model-conditional text baked into shared prompts; a model-neutral single served rendering for all agent models.
+- Status: firm (ratified by Lee 2026-07-04, not excavated)
+- Evidence: fixes-feature-log item 20 (per-model dimension, 2026-07-04); item 28 (memory-index injection rulings); exa-search extension config-gating precedent (2026-07-03)
+- Confidence: high
+
 ## PROC
 
 ### PROC-1: Expected failures return OpResult with three error classes; throws are programmer bugs
