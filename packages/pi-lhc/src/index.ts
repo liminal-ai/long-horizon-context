@@ -14,7 +14,10 @@ import { capture, captureGap } from "./capture/converter.js";
 import { type MapCtx, mapMessage } from "./capture/map-message.js";
 import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
 import { TurnAccumulator } from "./capture/turn-accumulator.js";
-import { handleDumpView, LHC_DUMP_VIEW_COMMAND } from "./commands/dump-view.js";
+import { handleExportPiSession, LHC_EXPORT_PI_SESSION_COMMAND } from "./commands/export-pi-session.js";
+import { handleExportThreadview, LHC_EXPORT_THREADVIEW_COMMAND } from "./commands/export-threadview.js";
+export { LHC_EXPORT_PI_SESSION_COMMAND } from "./commands/export-pi-session.js";
+export { LHC_EXPORT_THREADVIEW_COMMAND } from "./commands/export-threadview.js";
 import { handleToolPrune, LHC_TOOL_PRUNE_COMMAND } from "./commands/tool-prune.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
@@ -1050,9 +1053,13 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           "Replace the live PI session with a fresh in-memory session hydrated from the latest LHC thread-view",
         handler: onRehydrate,
       });
-      pi.registerCommand(LHC_DUMP_VIEW_COMMAND, {
+      pi.registerCommand(LHC_EXPORT_THREADVIEW_COMMAND, {
         description: "Write the current LHC thread-view to a timestamped text file in the working directory",
-        handler: async (_args, ctx) => handleDumpView(ctx, state?.threadRef ?? null, instance),
+        handler: async (_args, ctx) => handleExportThreadview(ctx, state?.threadRef ?? null, instance),
+      });
+      pi.registerCommand(LHC_EXPORT_PI_SESSION_COMMAND, {
+        description: "Write the live PI SessionManager entries to a timestamped text file in the working directory",
+        handler: async (_args, ctx) => handleExportPiSession(ctx),
       });
       pi.registerCommand(LHC_TOOL_PRUNE_COMMAND, {
         description:

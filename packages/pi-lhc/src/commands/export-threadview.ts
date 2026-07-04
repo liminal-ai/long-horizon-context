@@ -2,25 +2,16 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ThreadRef } from "lhc";
 import type { ExtensionCommandContext } from "../pi/types.js";
+import {
+  exportTimestamp,
+  llmRequestContextMessagesToExportEntries,
+  serializeExportEntries,
+} from "../serving/export-serializer.js";
 import type { LhcInstance } from "../shared/instance.js";
 
-export const LHC_DUMP_VIEW_COMMAND = "lhc-dump-view";
+export const LHC_EXPORT_THREADVIEW_COMMAND = "lhc-export-threadview";
 
-function timestamp(): string {
-  const now = new Date();
-  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
-  return [
-    now.getFullYear(),
-    pad(now.getMonth() + 1),
-    pad(now.getDate()),
-    "-",
-    pad(now.getHours()),
-    pad(now.getMinutes()),
-    pad(now.getSeconds()),
-  ].join("");
-}
-
-export async function handleDumpView(
+export async function handleExportThreadview(
   ctx: ExtensionCommandContext,
   threadRef: ThreadRef | null,
   instance: LhcInstance | null,
@@ -36,16 +27,9 @@ export async function handleDumpView(
     return;
   }
 
-  const lines: string[] = [];
-  for (const message of result.value.messages) {
-    const text = message.content.map((part) => part.text).join("");
-    lines.push(`[${message.role}]`);
-    lines.push(text);
-    lines.push("");
-  }
-
-  const filename = `lhc-view-${timestamp()}.txt`;
+  const entries = llmRequestContextMessagesToExportEntries(result.value.messages);
+  const filename = `lhc-threadview-${exportTimestamp()}.txt`;
   const filepath = join(ctx.cwd, filename);
-  writeFileSync(filepath, lines.join("\n"), "utf8");
+  writeFileSync(filepath, serializeExportEntries(entries), "utf8");
   ctx.ui.notify(`pi-lhc: thread view written to ${filename}`, "info");
 }
