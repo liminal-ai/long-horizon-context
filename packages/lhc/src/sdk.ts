@@ -17,6 +17,7 @@ import type {
   LlmRequestContext,
   OpResult,
   PreviewCompactOutcome,
+  PruneReceipt,
   SessionThreadView,
   StoredView,
   ViewCompactParams,
@@ -79,6 +80,7 @@ export type {
 export type {
   Band,
   CompactReceipt,
+  PruneReceipt,
   CompletionTx,
   DependencyGap,
   Derivation,
@@ -251,6 +253,10 @@ export interface ThreadViewSurface {
   getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
   getSessionThreadView(ref: threadsDomain.ThreadRef): Promise<OpResult<SessionThreadView>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
+  prune(
+    ref: threadsDomain.ThreadRef,
+    params?: { targetTokens?: number },
+  ): Promise<OpResult<PruneReceipt>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   previewCompact(
     ref: threadsDomain.ThreadRef,
@@ -704,6 +710,7 @@ export function initLhc(config: SdkConfig): Lhc {
         getLlmRequestContext: threadViewDomain.getLlmRequestContext,
         getSessionThreadView: threadViewDomain.getSessionThreadView,
         status: threadViewDomain.status,
+        prune: threadViewDomain.prune,
         describe: threadViewDomain.describe,
         previewCompact: threadViewDomain.previewCompact,
         compact: threadViewDomain.compact,

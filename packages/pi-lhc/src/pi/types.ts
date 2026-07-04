@@ -179,7 +179,9 @@ export type PiContextHookHandler = (
 
 // ── Registration-time API (the `pi` object, ExtensionAPI) ────────────
 
-export type PiCommandHandler = (args: string[], ctx: ExtensionCommandContext) => void | Promise<void>;
+// PI passes the raw text after the command name as ONE string (see pi's
+// agent-session.ts command dispatch), not a pre-split argv.
+export type PiCommandHandler = (args: string, ctx: ExtensionCommandContext) => void | Promise<void>;
 
 export interface ReplacedSessionContext extends ExtensionCommandContext {
   sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): Promise<void>;

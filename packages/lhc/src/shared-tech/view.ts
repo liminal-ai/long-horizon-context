@@ -170,6 +170,18 @@ export interface ViewStatus {
   visibility: { boundaryPosition: number; zoneTokens: number; maxTokens: number };
 }
 
+export interface PruneReceipt {
+  previousBoundary: number;
+  newBoundary: number;
+  compactPoint: number;
+  targetTokens: number;
+  toolResultsPruned: number;
+  tokensBehindBoundary: number;
+  zoneTokensBefore: number;
+  zoneTokensAfter: number;
+  noOp: boolean;
+}
+
 export interface PreviewCompactResult {
   compactPoint: number;
   wouldProduceBands: boolean;

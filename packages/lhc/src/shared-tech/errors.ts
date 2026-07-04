@@ -36,7 +36,8 @@ export type ErrorCode =
   | "unknown_format" // caller_error — materialize format not supported
   // Bounded listing: a bad bounds option is an operational caller error
   // returned as a result, mirroring the compact-params precedent.
-  | "invalid_bounds"; // caller_error — list bounds option rejected
+  | "invalid_bounds" // caller_error — list bounds option rejected
+  | "invalid_target_tokens"; // caller_error — prune targetTokens rejected
 
 export interface ErrorResult {
   errorClass: ErrorClass;

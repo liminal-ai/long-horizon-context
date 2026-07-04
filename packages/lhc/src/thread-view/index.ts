@@ -3,6 +3,7 @@
 // no network, no queue interaction, and no writes. Profile resolution consumed
 // by initLhc is re-exported at the bottom.
 import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
 import * as messagesDomain from "../messages/index.js";
 import type {
@@ -11,6 +12,7 @@ import type {
   DerivationReportEntry,
   LlmRequestContext,
   PreviewCompactOutcome,
+  PruneReceipt,
   ResolvedViewConfig,
   SessionThreadView,
   StoredView,
@@ -20,7 +22,9 @@ import type {
 } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
+  createDbWriteTransaction,
   type DbReadTransaction,
+  type DbWriteTransaction,
   type ErrorResult,
   type OpResult,
   resolveInstanceViewConfig,
@@ -236,6 +240,191 @@ export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | nu
     return await createDbReadTransaction(ref, (transaction) => readStoredView(transaction.db));
   } catch (cause) {
     return storageFailure(`view describe failed: ${detail(cause)}`);
+  }
+}
+
+// ── prune ────────────────────────────────────────────────────────
+
+function pruneCallerError(code: "invalid_target_tokens", reason: string): { ok: false; error: ErrorResult } {
+  return { ok: false, error: { errorClass: "caller_error", code, reason } };
+}
+
+function validatePruneTarget(targetTokens: number | undefined): { ok: true; value: number } | { ok: false; error: ErrorResult } {
+  if (targetTokens === undefined) return { ok: true, value: viewConfig().visibility.targetTokens };
+  if (!Number.isFinite(targetTokens) || !Number.isInteger(targetTokens) || targetTokens < 0) {
+    return pruneCallerError(
+      "invalid_target_tokens",
+      `targetTokens must be a non-negative finite integer; received ${String(targetTokens)}`,
+    );
+  }
+  return { ok: true, value: targetTokens };
+}
+
+interface ToolResultZoneRow {
+  sourceEventOrder: number;
+  tokenEstimate: number;
+}
+
+function readZoneToolResults(db: DatabaseSync, effectiveStart: number): ToolResultZoneRow[] {
+  const rows = db
+    .prepare(
+      `SELECT source_event_order, token_estimate FROM message
+       WHERE kind = 'tool_result' AND deleted_at IS NULL AND source_event_order > ?
+       ORDER BY source_event_order DESC`,
+    )
+    .all(effectiveStart) as unknown as Array<{ source_event_order: number | bigint; token_estimate: number | bigint }>;
+  return rows.map((row) => ({
+    sourceEventOrder: Number(row.source_event_order),
+    tokenEstimate: Number(row.token_estimate),
+  }));
+}
+
+function tokensBehindBoundary(db: DatabaseSync, boundary: number, compactPoint: number): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message
+       WHERE kind = 'tool_result' AND deleted_at IS NULL
+         AND source_event_order > ? AND source_event_order <= ?`,
+    )
+    .get(compactPoint, boundary) as { total: number | bigint };
+  return Number(row.total);
+}
+
+function countPrunedToolResults(
+  db: DatabaseSync,
+  previousBoundary: number,
+  newBoundary: number,
+  compactPoint: number,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM message
+       WHERE kind = 'tool_result' AND deleted_at IS NULL
+         AND source_event_order > ? AND source_event_order <= ?`,
+    )
+    .get(Math.max(previousBoundary, compactPoint), newBoundary) as { n: number | bigint };
+  return Number(row.n);
+}
+
+function buildPruneReceipt(
+  db: DatabaseSync,
+  input: {
+    previousBoundary: number;
+    newBoundary: number;
+    compactPoint: number;
+    targetTokens: number;
+    zoneTokensBefore: number;
+    noOp: boolean;
+  },
+): PruneReceipt {
+  const zoneTokensAfter = visibilityZoneTokens(db, input.newBoundary, input.compactPoint);
+  return {
+    previousBoundary: input.previousBoundary,
+    newBoundary: input.newBoundary,
+    compactPoint: input.compactPoint,
+    targetTokens: input.targetTokens,
+    toolResultsPruned: input.noOp
+      ? 0
+      : countPrunedToolResults(db, input.previousBoundary, input.newBoundary, input.compactPoint),
+    tokensBehindBoundary: tokensBehindBoundary(db, input.newBoundary, input.compactPoint),
+    zoneTokensBefore: input.zoneTokensBefore,
+    zoneTokensAfter,
+    noOp: input.noOp,
+  };
+}
+
+function computePruneBoundary(
+  rows: readonly ToolResultZoneRow[],
+  targetTokens: number,
+  previousBoundary: number,
+): number {
+  let accumulated = 0;
+  for (const row of rows) {
+    if (accumulated + row.tokenEstimate <= targetTokens) {
+      accumulated += row.tokenEstimate;
+      continue;
+    }
+    return row.sourceEventOrder;
+  }
+  return previousBoundary;
+}
+
+function pruneInTransaction(
+  transaction: DbWriteTransaction,
+  targetTokens: number,
+): PruneReceipt {
+  const { db } = transaction;
+  const snapshot = readViewSnapshot(db);
+  const compactPoint = snapshot?.compactPoint ?? 0;
+  const previousBoundary = readBoundaryPosition(db);
+  const effectiveStart = Math.max(previousBoundary, compactPoint);
+  const zoneTokensBefore = visibilityZoneTokens(db, previousBoundary, compactPoint);
+
+  if (zoneTokensBefore <= targetTokens) {
+    return buildPruneReceipt(db, {
+      previousBoundary,
+      newBoundary: previousBoundary,
+      compactPoint,
+      targetTokens,
+      zoneTokensBefore,
+      noOp: true,
+    });
+  }
+
+  const rows = readZoneToolResults(db, effectiveStart);
+  const computedBoundary = computePruneBoundary(rows, targetTokens, previousBoundary);
+
+  if (computedBoundary <= previousBoundary) {
+    return buildPruneReceipt(db, {
+      previousBoundary,
+      newBoundary: previousBoundary,
+      compactPoint,
+      targetTokens,
+      zoneTokensBefore,
+      noOp: true,
+    });
+  }
+
+  if (computedBoundary <= compactPoint) {
+    throw new Error(`prune boundary ${computedBoundary} would land behind compact point ${compactPoint}`);
+  }
+
+  const updatedAt = transaction.clock().toISOString();
+  db.prepare(`UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`).run(
+    computedBoundary,
+    updatedAt,
+  );
+
+  return buildPruneReceipt(db, {
+    previousBoundary,
+    newBoundary: computedBoundary,
+    compactPoint,
+    targetTokens,
+    zoneTokensBefore,
+    noOp: false,
+  });
+}
+
+// Advance the visibility boundary forward so older tool results in the
+// visibility zone render short. Deterministic, no inference, one write
+// transaction. Explicit commands always execute and report — a zone already
+// under target returns a no-op receipt, never an error.
+export async function prune(
+  ref: ThreadRef,
+  params?: { targetTokens?: number },
+): Promise<OpResult<PruneReceipt>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+
+  const target = validatePruneTarget(params?.targetTokens);
+  if (!target.ok) return target;
+
+  try {
+    return await createDbWriteTransaction(ref, (transaction) => pruneInTransaction(transaction, target.value));
+  } catch (cause) {
+    return storageFailure(`view prune failed: ${detail(cause)}`);
   }
 }
 

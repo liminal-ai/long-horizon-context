@@ -113,7 +113,7 @@ describe("pending rehydrate handoff", () => {
 describe("/lhc-rehydrate command", () => {
   it("fails clearly when no LHC thread is attached", async () => {
     const notifications: Array<{ message: string; type?: string }> = [];
-    let commandHandler: ((args: string[], ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+    let commandHandler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 
     const connector = createConnector({
       registryPath: store.registryPath,
@@ -125,8 +125,8 @@ describe("/lhc-rehydrate command", () => {
 
     const pi = {
       on: () => {},
-      registerCommand: (_name: string, options: { handler: typeof commandHandler }) => {
-        commandHandler = options.handler;
+      registerCommand: (name: string, options: { handler: typeof commandHandler }) => {
+        if (name === LHC_REHYDRATE_COMMAND) commandHandler = options.handler;
       },
       registerTool: () => {},
       registerFlag: () => {},
@@ -142,7 +142,7 @@ describe("/lhc-rehydrate command", () => {
     if (commandHandler === undefined) return;
 
     const newSession = vi.fn();
-    await commandHandler([], {
+    await commandHandler("", {
       cwd: "/work/rehydrate",
       hasUI: true,
       ui: {
@@ -159,7 +159,7 @@ describe("/lhc-rehydrate command", () => {
     expect(newSession).not.toHaveBeenCalled();
     expect(notifications).toEqual([
       {
-        message: "pi-lhc: no active LHC thread",
+        message: "pi-lhc: no LHC thread attached — rehydrate requires an active thread",
         type: "error",
       },
     ]);
@@ -176,7 +176,7 @@ describe("/lhc-rehydrate command", () => {
       startupValidationReporter: () => {},
     });
 
-    let commandHandler: ((args: string[], ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+    let commandHandler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
     const pi = {
       on: () => {},
       registerCommand: (name: string, options: { handler: typeof commandHandler }) => {
@@ -238,7 +238,7 @@ describe("/lhc-rehydrate command", () => {
       return { cancelled: false };
     });
 
-    await commandHandler([], {
+    await commandHandler("", {
       cwd: "/work/rehydrate",
       hasUI: true,
       model,

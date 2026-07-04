@@ -15,6 +15,7 @@ import { type MapCtx, mapMessage } from "./capture/map-message.js";
 import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
 import { TurnAccumulator } from "./capture/turn-accumulator.js";
 import { handleDumpView, LHC_DUMP_VIEW_COMMAND } from "./commands/dump-view.js";
+import { handleToolPrune, LHC_TOOL_PRUNE_COMMAND } from "./commands/tool-prune.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
 import { findSeedEntryMapInBranch } from "./compact/seed-entry-map.js";
@@ -47,6 +48,7 @@ import {
 import type {
   AgentMessage,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   PiCommandHandler,
   PiHookHandler,
@@ -967,7 +969,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       ctx.ui.notify("pi-lhc: no LHC thread attached — rehydrate requires an active thread", "error");
       return;
     }
+    await runRehydrate(ctx, state.threadRef);
+  };
 
+  async function runRehydrate(ctx: ExtensionCommandContext, threadRef: ThreadRef): Promise<void> {
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       ctx.ui.notify(`pi-lhc: rehydrate failed — ${config.error.reason}`, "error");
@@ -989,7 +994,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
 
     setPendingRehydrate({
-      threadRef: state.threadRef,
+      threadRef,
       sdkConfig: config.value,
       modelPrefs,
     });
@@ -1028,7 +1033,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       clearPendingRehydrate();
       ctx.ui.notify("pi-lhc: rehydrate cancelled", "warning");
     }
-  };
+  }
 
   return {
     handlers,
@@ -1048,6 +1053,14 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       pi.registerCommand(LHC_DUMP_VIEW_COMMAND, {
         description: "Write the current LHC thread-view to a timestamped text file in the working directory",
         handler: async (_args, ctx) => handleDumpView(ctx, state?.threadRef ?? null, instance),
+      });
+      pi.registerCommand(LHC_TOOL_PRUNE_COMMAND, {
+        description:
+          "Advance the LHC visibility boundary so older tool results render truncated — relieves context pressure without a compact. Optional arg: target tokens (default 32k).",
+        handler: async (args, ctx) =>
+          handleToolPrune(ctx, args, state?.threadRef ?? null, instance, {
+            rehydrate: runRehydrate,
+          }),
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
       for (const name of COMPACT_HOOKS) {
