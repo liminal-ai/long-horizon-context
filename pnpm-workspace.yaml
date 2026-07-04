@@ -2,6 +2,7 @@ packages:
   - "packages/*"
 allowBuilds:
   '@google/genai': set this to true or false
+  '@lydell/node-pty': true
   esbuild: true
   protobufjs: set this to true or false
 minimumReleaseAgeExclude:
