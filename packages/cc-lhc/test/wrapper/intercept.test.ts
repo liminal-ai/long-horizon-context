@@ -102,11 +102,29 @@ describe("processInputChunk", () => {
     expect(result.state).toEqual(createInterceptState());
   });
 
-  it("flushes withheld bytes on Escape then passes the sequence through", () => {
-    const result = feedChunks(["/lhc", "\x1b[A"]);
-    expect(result.toPty).toBe("/lhc\x1b[A");
+  it("flushes withheld bytes on bare Escape at chunk end", () => {
+    const first = feed("/lhc");
+    expect(first.state.withholding).toBe(true);
+    const second = feedChunks(["\x1b"], first.state);
+    expect(second.toPty).toBe("\x1b");
+    expect(second.toStdout).toBe(BS.repeat(4));
+    expect(second.state.freshLine).toBe(false);
+    expect(second.state.withholding).toBe(false);
+  });
+
+  it("flushes withheld bytes on bare Escape followed by a non-sequence byte", () => {
+    const result = feedChunks(["/lhc", "\x1bX"]);
+    expect(result.toPty).toBe("\x1bX");
     expect(result.toStdout).toBe(`/lhc${BS.repeat(4)}`);
     expect(result.state.freshLine).toBe(false);
+  });
+
+  it("passes CSI sequences through mid-withhold without flushing the buffer", () => {
+    const result = feedChunks(["/lhc", "\x1b[A"]);
+    expect(result.toPty).toBe("\x1b[A");
+    expect(result.toStdout).toBe("/lhc");
+    expect(result.state.withholding).toBe(true);
+    expect(result.state.buffer).toBe("/lhc");
   });
 
   it("does not intercept after non-slash content on the line", () => {
@@ -200,7 +218,7 @@ describe("processInputChunk", () => {
   it("intercepts after a CSI sequence split across chunks", () => {
     const first = feedChunks(["\x1b[", "100"]);
     expect(first.state.freshLine).toBe(true);
-    expect(first.state.escapePassthrough).toEqual({ kind: "csi" });
+    expect(first.state.escapePassthrough).toEqual({ kind: "csi", params: "100" });
     const second = feedChunks([";20M", "/lhc-stats\r"], first.state);
     expect(second.toPty).toBe(";20M");
     expect(second.dispatch).toBe("/lhc-stats");
@@ -226,5 +244,46 @@ describe("processInputChunk", () => {
     expect(result.toPty).toBe("\t");
     expect(result.dispatch).toBe("/lhc-status");
     expect(result.state.freshLine).toBe(true);
+  });
+
+  it("intercepts after mouse SGR noise mid-withhold", () => {
+    const mouse = "\x1b[<35;10;5M";
+    const result = feedChunks(["/lh", mouse, "c-status\r"]);
+    expect(result.toPty).toBe(mouse);
+    expect(result.toStdout).toBe("/lhc-status\r\n");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("intercepts after focus events mid-withhold", () => {
+    const result = feedChunks(["/lhc", "\x1b[I", "-prune\r"]);
+    expect(result.toPty).toBe("\x1b[I");
+    expect(result.dispatch).toBe("/lhc-prune");
+    expect(result.state.withholding).toBe(false);
+  });
+
+  it("dispatches on kitty Enter \\x1b[13u while withholding", () => {
+    const result = feedChunks(["/lhc-stats", "\x1b[13u"]);
+    expect(result.toPty).toBe("\x1b[13");
+    expect(result.dispatch).toBe("/lhc-stats");
+    expect(result.toStdout).toBe("/lhc-stats\r\n");
+  });
+
+  it("dispatches on kitty Enter with modifier params while withholding", () => {
+    const result = feedChunks(["/lhc-help", "\x1b[13;1u"]);
+    expect(result.dispatch).toBe("/lhc-help");
+    expect(result.toPty).toBe("\x1b[13;1");
+    expect(result.toStdout).toBe("/lhc-help\r\n");
+  });
+
+  it("intercepts after a CSI sequence split across chunks mid-withhold", () => {
+    const first = feed("/lh");
+    expect(first.state.withholding).toBe(true);
+    const mid = feedChunks(["\x1b[", "35;10;5M"], first.state);
+    expect(mid.toPty).toBe("\x1b[35;10;5M");
+    expect(mid.state.withholding).toBe(true);
+    expect(mid.state.buffer).toBe("/lh");
+    const last = feedChunks(["c-status\r"], mid.state);
+    expect(last.dispatch).toBe("/lhc-status");
+    expect(last.toPty).toBe("");
   });
 });

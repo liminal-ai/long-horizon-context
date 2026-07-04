@@ -15,6 +15,7 @@ import {
   processInputChunk,
   type InterceptState,
 } from "./intercept.js";
+import { createInputDebugLogger } from "./input-debug.js";
 import {
   CLEAR_SCREEN,
   executeSessionRestart,
@@ -242,9 +243,12 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         });
     };
 
+    const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
+
     const forwardInput = (data: Buffer): void => {
       const result = processInputChunk(data, interceptState);
       interceptState = result.state;
+      debugInput(data, interceptState);
       if (result.toStdout !== "") stdout.write(result.toStdout);
       if (result.toPty.length > 0) ptyProcess.write(result.toPty);
       if (result.dispatch !== undefined) runDispatch(result.dispatch);
