@@ -105,7 +105,7 @@ describe("startCaptureSession stop()", () => {
     await session.stop();
 
     expect(pollCount).toBeGreaterThan(0);
-    expect(session.stats.threadId).not.toBeNull();
+    expect(session.stats.threadId).toBeNull();
   });
 
   it("awaits drainSettled after batch flush when inference is enabled", async () => {
@@ -210,3 +210,106 @@ describe("awaitDrainSettled", () => {
 function appendLine(filePath: string, item: RolloutLineItem): void {
   writeFileSync(filePath, `${JSON.stringify(item)}\n`, { flag: "a" });
 }
+
+describe("lineage wiring", () => {
+  it("reuses a mapped thread instead of creating a new one", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-"));
+    const lineageDir = mkdtempSync(join(tmpdir(), "cc-lhc-lineage-map-"));
+    const mapPath = join(lineageDir, "cc-sessions.json");
+    const cwd = "/work/lineage-session";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = "mapped-session";
+    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
+    const startedAt = new Date(Date.now() - 60_000);
+
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "user",
+        uuid: "line-1",
+        message: { role: "user", content: "hello" },
+      })}\n`,
+    );
+
+    const { recordSessionThread } = await import("../../src/intake/lineage.js");
+    await recordSessionThread(mapPath, sessionId, "th_mapped");
+
+    let created = 0;
+    const logs: string[] = [];
+    const session = startCaptureSession({
+      cwd,
+      startedAt,
+      noInference: true,
+      lineagePath: mapPath,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      log: (message) => logs.push(message),
+      logError: () => {},
+      createThreadFn: async () => {
+        created += 1;
+        return { ok: true, value: { threadId: "th_should_not_create" } };
+      },
+      flushBatchFn: async () => {},
+    });
+
+    for (let attempt = 0; attempt < 50 && session.stats.threadId === null; attempt += 1) {
+      await sleep(50);
+    }
+
+    expect(created).toBe(0);
+    expect(session.stats.threadId).toBe("th_mapped");
+    expect(logs.some((line) => line.includes("continuing thread th_mapped"))).toBe(true);
+    await session.stop();
+  });
+
+  it("starts capture when lineage write fails", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-write-"));
+    const lineageDir = mkdtempSync(join(tmpdir(), "cc-lhc-lineage-write-fail-"));
+    const mapPath = join(lineageDir, "cc-sessions.json");
+    const cwd = "/work/lineage-write-fail";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = "write-fail-session";
+    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
+    const startedAt = new Date(Date.now() - 60_000);
+
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "user",
+        uuid: "line-1",
+        message: { role: "user", content: "hello" },
+      })}\n`,
+    );
+
+    const errors: string[] = [];
+    let flushed = false;
+    const session = startCaptureSession({
+      cwd,
+      startedAt,
+      noInference: true,
+      lineagePath: mapPath,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      log: () => {},
+      logError: (message) => errors.push(message),
+      lineageDeps: {
+        writeFileFn: async () => {
+          throw new Error("disk full");
+        },
+      },
+      createThreadFn: async () => ({ ok: true, value: { threadId: "th_write_fail" } }),
+      flushBatchFn: async () => {
+        flushed = true;
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && !flushed; attempt += 1) {
+      await sleep(50);
+    }
+
+    expect(session.stats.threadId).toBe("th_write_fail");
+    expect(flushed).toBe(true);
+    expect(errors.some((line) => line.includes("lineage write failed (continuing)"))).toBe(true);
+    await session.stop();
+  });
+});

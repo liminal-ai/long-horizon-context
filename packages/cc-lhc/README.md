@@ -21,3 +21,4 @@ Status: slice 5 — rollout capture, inference, `/lhc` commands, `/lhc-prune` an
 - Rebuild emits text-only user/assistant rollout lines; `model_change` / `thinking_level_change` view entries are dropped; tool results become user text lines.
 - If rollout jsonl is written but `sessions-index.json` update fails afterward, an orphan rollout file may remain (harmless; index unchanged).
 - `sessions-index.json.bak` is single-slot — only the pre-write snapshot is kept.
+- Backspace/typo editing while typing a /lhc command can garble the input-line rendering: our withhold echo and Claude Code's TUI repaint the same region on independent schedules, so \x08-erase can land at a stale cursor position. Cosmetic, self-corrects on next repaint. Fix direction: render pending /lhc commands in a dedicated status line instead of inline echo (polish pass).

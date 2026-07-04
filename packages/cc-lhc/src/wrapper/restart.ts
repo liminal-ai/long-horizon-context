@@ -1,5 +1,6 @@
 import type { SessionRestartPlan } from "../commands/dispatch.js";
 import { formatSessionRestartLog } from "../commands/dispatch.js";
+import { lineageWriteFailureMessage } from "../intake/lineage.js";
 import type { CaptureSession, ContinueCapture } from "../intake/session.js";
 
 const KILL_GRACE_MS = 3_000;
@@ -74,6 +75,8 @@ export interface SessionRestartInput {
   spawnChild: (argv: string[]) => PtyLike;
   startCapture: (startedAt: Date, continueCapture: ContinueCapture) => CaptureSession;
   logRestart: (message: string) => void;
+  recordLineage?: (input: { sessionId: string; threadId: string }) => Promise<void>;
+  logLineageError?: (message: string) => void;
 }
 
 export interface SessionRestartResult {
@@ -90,6 +93,17 @@ export async function executeSessionRestart(input: SessionRestartInput): Promise
     throw new Error("capture session required for restart");
   }
   const continueCapture = await pauseCaptureForRestart(input.captureSession);
+  const threadId = "threadId" in continueCapture.threadRef ? continueCapture.threadRef.threadId : "";
+  if (input.recordLineage !== undefined && threadId !== "") {
+    try {
+      await input.recordLineage({ sessionId: input.plan.newSessionId, threadId });
+    } catch (cause) {
+      const message = lineageWriteFailureMessage(cause);
+      if (input.logLineageError !== undefined) {
+        input.logLineageError(message);
+      }
+    }
+  }
   input.clearScreen();
 
   const argv = buildResumeArgv(input.originalArgv, input.plan.newSessionId);

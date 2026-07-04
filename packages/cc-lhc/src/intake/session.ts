@@ -19,6 +19,17 @@ import { claudeCliModelCall } from "../inference/claude-cli.js";
 import type { CaptureCommandContext } from "../commands/dispatch.js";
 
 import { mapRolloutLine } from "./map.js";
+import {
+  defaultLineagePath,
+  lineageWriteFailureMessage,
+  loadLineageFile,
+  safeAppendThreadSignatures,
+  safeRecordSessionThread,
+  resolveCaptureThread,
+  threadSignatures,
+  type LineageDeps,
+} from "./lineage.js";
+import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
 import { discoverSessionFile, type DiscoverDeps } from "../rollout/discover.js";
 import type { RolloutLineItem } from "../rollout/types.js";
 import { watchRolloutFile, type RolloutWatcher } from "../rollout/watcher.js";
@@ -91,6 +102,10 @@ export interface CaptureSessionDeps {
   startedAt?: Date;
   noInference?: boolean;
   continueCapture?: ContinueCapture;
+  resumeSessionId?: string;
+  continueFlag?: boolean;
+  lineagePath?: string;
+  lineageDeps?: LineageDeps;
   log?: (message: string) => void;
   logError?: (message: string) => void;
   /** Test hook: replace intake flush to observe batch ordering. */
@@ -99,6 +114,8 @@ export interface CaptureSessionDeps {
   initSdkFn?: (config: SdkConfig) => Lhc;
   /** Test hook: cap for drainSettled at stop (default 30s). */
   drainSettledCapMs?: number;
+  /** Test hook: substitute thread creation. */
+  createThreadFn?: typeof createCaptureThread;
 }
 
 export interface RolloutCaptureInfo {
@@ -117,6 +134,10 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+function threadIdFromRef(threadRef: ThreadRef): string {
+  return "threadId" in threadRef ? threadRef.threadId : "";
+}
+
 async function flushBatch(
   sdk: Lhc,
   threadRef: ThreadRef,
@@ -125,6 +146,8 @@ async function flushBatch(
   log: (message: string) => void,
   logError: (message: string) => void,
   lineOffset: number,
+  dedupeState: ReplayDedupeState | undefined,
+  persistSignatures: ((signatures: string[]) => Promise<void>) | undefined,
 ): Promise<void> {
   const events = [];
   for (const [index, item] of items.entries()) {
@@ -137,15 +160,39 @@ async function flushBatch(
   }
   if (events.length === 0) return;
 
+  const filtered =
+    dedupeState === undefined
+      ? { toSend: events, skipped: 0, signaturesToAdd: [] as string[] }
+      : filterReplayEvents(events, dedupeState);
+
+  if (filtered.skipped > 0) {
+    stats.skippedReplay += filtered.skipped;
+    log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
+  }
+  if (filtered.toSend.length === 0) return;
+
   try {
-    const result = await sdk.intakeStream.messageEvents(threadRef, events);
+    const result = await sdk.intakeStream.messageEvents(threadRef, filtered.toSend);
     if (!result.ok) {
       logError(`cc-lhc intake error: ${result.error.code} ${result.error.reason}`);
       return;
     }
     const recorded = result.value.events.filter((entry) => entry.outcome === "recorded").length;
     stats.eventsSent += recorded;
-    log(`cc-lhc intake batch: ${recorded}/${events.length} recorded`);
+    log(`cc-lhc intake batch: ${recorded}/${filtered.toSend.length} recorded`);
+
+    if (dedupeState !== undefined && filtered.signaturesToAdd.length > 0) {
+      for (const signature of filtered.signaturesToAdd) {
+        dedupeState.seen.add(signature);
+      }
+      if (persistSignatures !== undefined) {
+        try {
+          await persistSignatures(filtered.signaturesToAdd);
+        } catch (cause) {
+          logError(lineageWriteFailureMessage(cause));
+        }
+      }
+    }
   } catch (cause) {
     logError(`cc-lhc intake threw: ${detail(cause)}`);
   }
@@ -178,18 +225,21 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     console.error(message);
   });
   const flush = deps.flushBatchFn ?? flushBatch;
+  const createThread = deps.createThreadFn ?? createCaptureThread;
+  const lineagePath = deps.lineagePath ?? defaultLineagePath();
   const stats = emptyCaptureStats();
   const abort = new AbortController();
 
   let sdk: Lhc | undefined;
   let threadRef: ThreadRef | undefined;
   let watcher: RolloutWatcher | undefined;
-  let discoverPromise: Promise<void> | undefined;
   let rolloutFilePath: string | undefined;
   let rolloutSessionId: string | undefined;
   let stopped = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
+  let dedupeState: ReplayDedupeState | undefined;
+  let persistSignatures: ((signatures: string[]) => Promise<void>) | undefined;
 
   const enqueueEmissions = (emissions: WatcherEmission[]): void => {
     batchQueue = batchQueue.then(async () => {
@@ -207,7 +257,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (items.length === 0 || sdk === undefined || threadRef === undefined) return;
       const lineOffset = lineCounter;
       lineCounter += items.length;
-      await flush(sdk, threadRef, items, stats, log, logError, lineOffset);
+      await flush(sdk, threadRef, items, stats, log, logError, lineOffset, dedupeState, persistSignatures);
     });
   };
 
@@ -215,44 +265,68 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     threadRef = deps.continueCapture.threadRef;
     sdk = deps.continueCapture.sdk;
     Object.assign(stats, deps.continueCapture.stats);
-    stats.threadId = "threadId" in threadRef ? threadRef.threadId : stats.threadId;
+    stats.threadId = threadIdFromRef(threadRef) || stats.threadId;
   }
 
   void (async () => {
-    if (threadRef === undefined || sdk === undefined) {
-      const threadResult = await createCaptureThread(cwd, deps.registryPath);
-      if (!threadResult.ok) {
-        logError(`cc-lhc thread create failed: ${threadResult.error.reason}`);
-        return;
-      }
+    try {
+      const filePath = await discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal });
       if (stopped) return;
 
-      threadRef = threadResult.value;
-      stats.threadId = "threadId" in threadRef ? threadRef.threadId : null;
-      sdk = (deps.initSdkFn ?? initLhc)(
-        captureSdkConfig(deps.noInference === true ? { noInference: true } : {}),
-      );
-    }
+      rolloutFilePath = filePath;
+      rolloutSessionId = basename(filePath, ".jsonl");
+      log(`cc-lhc rollout: ${filePath}`);
 
-    discoverPromise = discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal })
-      .then((filePath) => {
-        if (stopped) return;
-        rolloutFilePath = filePath;
-        rolloutSessionId = basename(filePath, ".jsonl");
-        log(`cc-lhc rollout: ${filePath}`);
-        watcher = watchRolloutFile(filePath, {
-          onBatch: (emissions) => {
-            enqueueEmissions(emissions);
-          },
-          onBufferCap: (message) => {
-            logError(`cc-lhc watcher: ${message}`);
-          },
+      if (threadRef === undefined || sdk === undefined) {
+        const resolution = await resolveCaptureThread({
+          sessionId: rolloutSessionId,
+          cwd,
+          ...(deps.resumeSessionId === undefined ? {} : { resumeSessionId: deps.resumeSessionId }),
+          ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
+          ...(deps.registryPath === undefined ? {} : { registryPath: deps.registryPath }),
+          lineagePath,
+          ...(deps.discoverDeps?.projectsRoot === undefined
+            ? {}
+            : { projectsRoot: deps.discoverDeps.projectsRoot }),
+          log,
+          logError,
+          ...(deps.lineageDeps === undefined ? {} : { lineageDeps: deps.lineageDeps }),
+          createThreadFn: createThread,
         });
-      })
-      .catch((cause) => {
-        if (abort.signal.aborted) return;
-        logError(`cc-lhc discover failed: ${detail(cause)}`);
+        if (stopped) return;
+
+        threadRef = resolution.threadRef;
+        dedupeState = resolution.dedupeState;
+        persistSignatures = resolution.persistSignatures;
+        stats.threadId = threadIdFromRef(threadRef) || null;
+        sdk = (deps.initSdkFn ?? initLhc)(
+          captureSdkConfig(deps.noInference === true ? { noInference: true } : {}),
+        );
+      } else {
+        const continuedThreadId = threadIdFromRef(threadRef);
+        if (continuedThreadId !== "") {
+          await safeRecordSessionThread(lineagePath, rolloutSessionId, continuedThreadId, logError, deps.lineageDeps);
+          const file = await loadLineageFile(lineagePath, deps.lineageDeps);
+          dedupeState = createReplayDedupeState(true, threadSignatures(file, continuedThreadId));
+          persistSignatures = async (added) => {
+            await safeAppendThreadSignatures(lineagePath, continuedThreadId, added, logError, deps.lineageDeps);
+          };
+          log(`cc-lhc: continuing thread ${continuedThreadId} for session ${rolloutSessionId}`);
+        }
+      }
+
+      watcher = watchRolloutFile(filePath, {
+        onBatch: (emissions) => {
+          enqueueEmissions(emissions);
+        },
+        onBufferCap: (message) => {
+          logError(`cc-lhc watcher: ${message}`);
+        },
       });
+    } catch (cause) {
+      if (abort.signal.aborted) return;
+      logError(`cc-lhc discover failed: ${detail(cause)}`);
+    }
   })();
 
   return {
@@ -272,7 +346,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       stopped = true;
       abort.abort();
       if (watcher !== undefined) watcher.stop();
-      if (discoverPromise !== undefined) await discoverPromise.catch(() => {});
       await batchQueue;
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
         await awaitDrainSettled(sdk, threadRef, {

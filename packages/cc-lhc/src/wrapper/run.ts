@@ -7,6 +7,8 @@ import {
   type SessionRestartPlan,
 } from "../commands/dispatch.js";
 import { startCaptureSession, type CaptureSession } from "../intake/session.js";
+import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
+import { defaultLineagePath, recordSessionThread } from "../intake/lineage.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
@@ -73,6 +75,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
   const originalArgv = [...argv];
+  const resumeSessionId = parseResumeSessionId(argv);
+  const continueFlag = hasContinueFlag(argv);
   const commandGuard = new CommandInFlightGuard();
 
   const cols = stdout.columns ?? DEFAULT_COLS;
@@ -101,7 +105,13 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   };
 
   if (!noCapture) {
-    captureSession = startCaptureSession({ startedAt, noInference });
+    captureSession = startCaptureSession({
+      startedAt,
+      noInference,
+      ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
+      ...(continueFlag ? { continueFlag: true } : {}),
+      lineagePath: defaultLineagePath(),
+    });
     process.on("SIGUSR1", onSigusr1);
   }
 
@@ -199,7 +209,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
               env: process.env as Record<string, string>,
             }),
           startCapture: (restartStartedAt, continueCapture) =>
-            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture }),
+            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture, lineagePath: defaultLineagePath() }),
+          recordLineage: async ({ sessionId, threadId }) => {
+            await recordSessionThread(defaultLineagePath(), sessionId, threadId);
+          },
           logRestart: (message) => {
             stderr.write(`${message}\n`);
           },

@@ -70,6 +70,7 @@ describe("executeSessionRestart", () => {
       expectedReintakeLines: 4,
     };
 
+    const recordLineage = vi.fn(async () => {});
     const result = await executeSessionRestart({
       plan,
       originalArgv: ["claude"],
@@ -97,10 +98,13 @@ describe("executeSessionRestart", () => {
           stop: vi.fn(async () => {}),
         } as unknown as CaptureSession;
       },
+      recordLineage,
       logRestart: () => {
         order.push("log");
       },
     });
+
+    expect(recordLineage).toHaveBeenCalledWith({ sessionId: "new-session", threadId: "th_same" });
 
     expect(oldPty.kill).toHaveBeenCalled();
     expect(order).toEqual(["log", "stop", "clear", "spawn:claude --resume new-session", "resume:th_same"]);
@@ -146,5 +150,57 @@ describe("executeSessionRestart", () => {
       "[cc-lhc] FATAL: could not respawn claude (spawn exploded). Original session old-session is intact; run: claude --resume new-session",
     );
     expect((failure as RestartSpawnFailure).resumeArgv).toEqual(["claude", "--resume", "new-session"]);
+  });
+
+  it("respawns when recordLineage fails", async () => {
+    const oldPty = fakePty();
+    const newPty = fakePty();
+    const threadRef = { threadId: "th_same" };
+    const captureSession = {
+      stats: { threadId: "th_same" },
+      getCommandContext: () => ({ captureDisabled: false, stats: {}, sdk: {}, threadRef }),
+      getRolloutInfo: () => ({ path: "/tmp/old.jsonl", sessionId: "old-session" }),
+      stop: vi.fn(async () => {}),
+    } as unknown as CaptureSession;
+
+    const plan: SessionRestartPlan = {
+      oldSessionId: "old-session",
+      newSessionId: "new-session",
+      rolloutPath: "/tmp/new.jsonl",
+      rebuiltLineCount: 1,
+      expectedReintakeLines: 1,
+    };
+
+    const lineageErrors: string[] = [];
+    const result = await executeSessionRestart({
+      plan,
+      originalArgv: ["claude"],
+      pty: oldPty,
+      captureSession,
+      clearScreen: () => {},
+      spawnChild: () => newPty,
+      startCapture: (_startedAt, continueCapture) =>
+        ({
+          stats: continueCapture.stats,
+          getCommandContext: () => ({
+            captureDisabled: false,
+            stats: continueCapture.stats,
+            sdk: continueCapture.sdk,
+            threadRef: continueCapture.threadRef,
+          }),
+          getRolloutInfo: () => ({ path: undefined, sessionId: undefined }),
+          stop: vi.fn(async () => {}),
+        }) as unknown as CaptureSession,
+      recordLineage: async () => {
+        throw new Error("disk full");
+      },
+      logLineageError: (message) => {
+        lineageErrors.push(message);
+      },
+      logRestart: () => {},
+    });
+
+    expect(result.pty).toBe(newPty);
+    expect(lineageErrors.some((line) => line.includes("lineage write failed (continuing)"))).toBe(true);
   });
 });

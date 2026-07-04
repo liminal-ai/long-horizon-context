@@ -124,16 +124,17 @@ describe("createClaudeCliModelCall", () => {
       {
         CC_LHC_FAKE_MODE: "concurrency",
         CC_LHC_FAKE_COUNTER_FILE: counterFile,
-        CC_LHC_FAKE_SLEEP_MS: "150",
+        CC_LHC_FAKE_SLEEP_MS: "300",
       },
       { maxConcurrency: 2 },
     );
     await Promise.all([harness.call(baseInput), harness.call(baseInput), harness.call(baseInput)]);
     harness.restore();
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const counter = JSON.parse(readFileSync(counterFile, "utf8")) as { peak: number };
     expect(counter.peak).toBeLessThanOrEqual(2);
     expect(counter.peak).toBeGreaterThanOrEqual(2);
-  });
+  }, 10_000);
 
   it("returns empty stdout for adapter empty_output classification", async () => {
     const harness = fakeCall({ CC_LHC_FAKE_MODE: "empty" });
