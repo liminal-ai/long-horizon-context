@@ -56,11 +56,11 @@ importers:
   packages/pi-lhc:
     dependencies:
       '@earendil-works/pi-agent-core':
-        specifier: file:../../../repo-ref/pi/packages/agent
-        version: file:../repo-ref/pi/packages/agent(ws@8.21.0)(zod@4.4.3)
+        specifier: file:../../vendor/pi/packages/agent
+        version: file:vendor/pi/packages/agent(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-coding-agent':
-        specifier: file:../../../repo-ref/pi/packages/coding-agent
-        version: file:../repo-ref/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)
+        specifier: file:../../vendor/pi/packages/coding-agent
+        version: file:vendor/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)
       lhc:
         specifier: workspace:*
         version: link:../lhc
@@ -252,8 +252,8 @@ packages:
     resolution: {integrity: sha512-3qw0/GeRQBU/nlGjDe5Yb7ePKTmoxefx2YxyKMFAviFUMXpFexBG/hS7mBtwFahFvzrrTPPoRT6sFIDjwoDWPQ==}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-agent-core@file:../repo-ref/pi/packages/agent':
-    resolution: {directory: ../repo-ref/pi/packages/agent, type: directory}
+  '@earendil-works/pi-agent-core@file:vendor/pi/packages/agent':
+    resolution: {directory: vendor/pi/packages/agent, type: directory}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-ai@0.80.3':
@@ -261,8 +261,8 @@ packages:
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-coding-agent@file:../repo-ref/pi/packages/coding-agent':
-    resolution: {directory: ../repo-ref/pi/packages/coding-agent, type: directory}
+  '@earendil-works/pi-coding-agent@file:vendor/pi/packages/coding-agent':
+    resolution: {directory: vendor/pi/packages/coding-agent, type: directory}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -1632,7 +1632,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-agent-core@file:../repo-ref/pi/packages/agent(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-agent-core@file:vendor/pi/packages/agent(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-ai': 0.80.3(ws@8.21.0)(zod@4.4.3)
       ignore: 7.0.5
@@ -1667,7 +1667,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@file:../repo-ref/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@file:vendor/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.80.3(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.80.3(ws@8.21.0)(zod@4.4.3)
