@@ -383,7 +383,7 @@ Prune walks live tool results newest-first from the current boundary, keeps resu
 
 ### Rendering for a harness
 
-The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into a host-specific file format (PI session JSONL, Claude Code rollout JSONL) via `threadView.materialize`. Both come from the same serving assembly; only the output shape differs. A written file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
+The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into a host-specific file format via `threadView.materialize` (today PI session JSONL); a host can also build its own format from the served view, as cc-lhc does when it rebuilds Claude Code rollout files. Both come from the same serving assembly; only the output shape differs. A written file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
 
 ## Inspect
 
