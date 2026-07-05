@@ -2,7 +2,7 @@
 
 Long Horizon Context is a durable context-management system for AI coding agents. It solves the problem that long-running agent sessions produce conversation threads exceeding LLM context windows. LHC records every event in a session to SQLite, derives compressed and summarized forms through an inference pipeline, and serves **smart compact** views — intelligently compressed conversation histories that fit within token budgets while preserving what the agent needs to keep working effectively.
 
-The system is designed as an SDK consumed by host harnesses. The primary integration is with [PI](https://github.com/anthropics/pi), Earendil Works' coding agent, via the `pi-lhc` connector extension.
+The system is designed as an SDK consumed by host harnesses. The primary integration is with [PI](https://github.com/earendil-works/pi), Earendil Works' coding agent, via the `pi-lhc` connector extension. PI itself is vendored into this repo as a git submodule (see [Vendored PI](#vendored-pi-submodule)).
 
 ## Packages
 
@@ -25,7 +25,20 @@ All state is persisted to a per-thread SQLite file (WAL mode, `node:sqlite`). Th
 
 A PI extension that hooks into PI's session lifecycle. It captures PI events into an LHC thread, intercepts PI's compaction requests to run LHC smart compact instead, and seeds PI sessions from LHC thread views so agents start with full context history. It also provides the `pi-lhc` binary for launcher-owned startup.
 
-`pi-lhc` depends on `lhc` (workspace dependency) and on PI's packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`) via local file references.
+`pi-lhc` depends on `lhc` (workspace dependency) and on PI's packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`) via `file:` references into `vendor/pi`. pnpm overrides in `pnpm-workspace.yaml` force the transitive `pi-ai`/`pi-agent-core`/`pi-tui` deps to the vendored packages as well — without them, pnpm resolves those from the npm registry and the vendored patch never reaches the runtime.
+
+#### Slash commands
+
+| Command | What it does |
+|---|---|
+| `/lhc-rehydrate` | Fresh PI session seeded from the latest LHC thread view |
+| `/lhc-tool-prune [targetTokens]` | Advance the visibility boundary — older tool results render truncated (default target 32k) |
+| `/lhc-export-pi-session` | Export the live in-memory PI session to a text file (fidelity diffing) |
+| `/lhc-export-threadview` | Export LHC's canonical render of the thread (fidelity diffing) |
+
+### `cc-lhc` — The Claude Code Wrapper (POC)
+
+Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture into an LHC thread, `/lhc-*` command interception ahead of Claude Code's input handling, a `claude -p` inference lane for derivations (Sonnet 5 no-thinking baseline), and prune/compact via rollout rebuild + `claude --resume` restart. Fully self-contained state in `~/.cc-lhc/` (registry, lineage, threads). Known warts are listed in `packages/cc-lhc/README.md`.
 
 ---
 
@@ -192,8 +205,31 @@ When PI requests compaction, the connector:
 ### Setup
 
 ```bash
+git clone --recursive <repo-url>        # or: git submodule update --init
+cd vendor/pi && npm ci && npm run build && cd ../..
 pnpm install
+pnpm build
 ```
+
+The submodule build comes first — `pi-lhc` links against `vendor/pi`'s built `dist/` output.
+
+### Vendored PI (submodule)
+
+`vendor/pi` is a git submodule pointing at [leegmoore/pi](https://github.com/leegmoore/pi), a fork of upstream [earendil-works/pi](https://github.com/earendil-works/pi). The checked-out `patches` branch is upstream `main` plus local patch commits — currently one: `fix(ai): preserve signed thinking blocks with empty text in Anthropic history` (tagged `pi-thinking-signature-fix`), needed for reasoning continuity on `display: "omitted"` models (Fable 5 / Sonnet 5 / Opus 4.7+). Patches are dropped as upstream fixes land.
+
+Syncing with upstream (done in a separate working clone, then the pin bumped here):
+
+```bash
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main && git push origin main
+git checkout patches && git rebase main
+# build + test, then:
+git push origin patches --force-with-lease
+# in this repo: cd vendor/pi && git fetch && git checkout origin/patches,
+# then commit the pin bump
+```
+
+Note: PI's build regenerates model-catalog files inside the submodule; if `git status` shows `vendor/pi` dirty after a build, that's what it is and it's discardable.
 
 ### Build
 
@@ -207,8 +243,9 @@ pnpm build           # Build all packages
 
 ```bash
 # Fast tests (no real LLM calls)
-pnpm --filter lhc test         # 50 test files, ~440 tests
-pnpm --filter pi-lhc test      # 39 test files, ~250 tests
+pnpm --filter lhc test         # ~52 test files, ~450 tests
+pnpm --filter pi-lhc test      # ~43 test files, ~275 tests
+pnpm --filter cc-lhc test      # ~17 test files, ~135 tests
 
 # Integration tests (requires OPENROUTER_API_KEY)
 pnpm --filter lhc test:integration
@@ -321,6 +358,14 @@ packages/pi-lhc/src/
 └── pi/
     └── types.ts              Local PI type declarations
 ```
+
+## Further Reading
+
+- `docs/onboard/01-core-concepts.md` — vocabulary and the record/derivation model
+- `docs/onboard/02-domain-design.md` — per-domain design detail
+- `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
+- `docs/decision-registry.md` — full decision registry (canonical authority)
+- `docs/fixes-feature-log.md` — running log of fixes, features, and open items
 
 ## License
 
