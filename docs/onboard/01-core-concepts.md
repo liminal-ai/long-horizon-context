@@ -1,12 +1,12 @@
 # Long Horizon Context: Core Concepts
 
-Last verified against code: 2026-07-04. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
 Long Horizon Context (LHC) is an SDK for managing an agentic harness's context and history. It keeps the full message history of a conversation as a durable record, and from that record builds shorter, summarized views that a harness can load and work from.
 
 ## Basics
 
-LHC is a stateful SDK consumed in-process by a host. The host — a PI extension today; a web or desktop app server later — creates an SDK instance at startup via `initLhc`, wiring in everything LHC needs: storage location, configuration, and a way to make model calls. There are two ways to give LHC model access: hand it a complete set of inference callback functions directly, or hand it one model-calling function plus a table of which provider/model to use for each kind of derivation work (the adapter resolves this into callbacks internally). LHC has no logins of its own and no out-of-process surface; anything that needs to talk to LHC runs inside a host that holds an SDK instance.
+LHC is a stateful SDK consumed in-process by a host. The host — a PI extension, a Claude Code wrapper, or another harness — creates an SDK instance at startup via `initLhc`, wiring in everything LHC needs: storage location, configuration, and a way to make model calls. There are two ways to give LHC model access: hand it a complete set of inference callback functions directly, or hand it one model-calling function plus a table of which provider/model to use for each kind of derivation work (the adapter resolves this into callbacks internally). LHC has no logins of its own and no out-of-process surface; anything that needs to talk to LHC runs inside a host that holds an SDK instance.
 
 All durable state lives in storage — one SQLite file per thread, plus a separate SQLite registry that tracks which threads exist and where their files are — so a host can stop and restart without losing anything, including queued background work, which picks up where it left off.
 
@@ -67,7 +67,9 @@ The SDK ships built-in compact configurations that can be overridden or extended
 
 **Compact point.** Where the most recent compact stopped. Everything after it is the **tail** (or live tail): recent activity served alongside the view. Before an explicit smart compact, tail tool results render full. After compact, a visibility boundary may shorten at-or-behind tool results.
 
-**Visibility boundary.** A per-thread marker that controls how tool results appear in the model context: tool results at or behind it render as a deterministic truncation with a pointer back to the full record, tool results ahead of it render full. Intake does not advance it automatically — pre-compact resume and session-view keep full tool results. Compact resets the boundary to the compact point. It affects only tool results — prompts, assistant text, and thinking always render full.
+**Visibility boundary.** A per-thread marker that controls how tool results appear in the model context: tool results at or behind it render as a short truncation (first ~500 characters plus a truncation marker), tool results ahead of it render full. Three things move the boundary: compact resets it to the compact point; `prune` advances it independently (see below); intake never moves it. It affects only tool results — prompts, assistant text, and thinking always render full.
+
+**Prune.** An operation (`threadView.prune`) that advances the visibility boundary without running a compact. It walks live tool results newest-first from the current boundary, keeps results full until the target token budget is met, and sets the boundary behind the last full result. The boundary never moves backward and never moves behind the compact point. Prune always executes and reports what it did (a receipt with before/after boundary, zone tokens, pruned count); it never refuses. The typical use is reclaiming context space from old tool outputs between compacts.
 
 **Inference callbacks.** The four-operation interface that sits at the boundary between LHC and the host's model access: `smoothPrompt`, `summarizeToolResult`, `compressDetailedTurn`, and `summarizeChunkBrief`. Any model call LHC makes goes through this interface. Deterministic derivations such as `turn_rendering`, `pre_detailed_assembly`, and `chunk_summary_detailed` stay inside their owning domain handlers and do not cross the inference boundary.
 
@@ -79,4 +81,4 @@ The SDK ships built-in compact configurations that can be overridden or extended
 
 **Render / materialize / LlmRequestContext.** Three ways view content leaves LHC: **render** is producing the output form of an entry; **materialize** is writing the view to a file in a host-specific format (today PI session JSONL); **LlmRequestContext** is the host-facing model context returned by `threadView.getLlmRequestContext`. Both materialized and in-memory forms come from the same serving assembly; only the output shape differs.
 
-**Host.** The process that owns an SDK instance and everything LHC needs from the outside world: storage location, configuration, model access. PI extension now; app server later; possibly a wrapper around another harness someday. One login — the host's — covers everything LHC does.
+**Host.** The process that owns an SDK instance and everything LHC needs from the outside world: storage location, configuration, model access. Current hosts: `pi-lhc` (PI extension), `cc-lhc` (Claude Code PTY wrapper), with a Codex harness coming next. A web or desktop app server is a future possibility. One login — the host's — covers everything LHC does.

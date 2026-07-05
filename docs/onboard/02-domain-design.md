@@ -1,6 +1,6 @@
 # Long Horizon Context: Domain Design
 
-Last verified against code: 2026-07-04. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
 This document describes each domain in more depth: what it stores, the operations it provides, and the other domains it calls. It builds on the vocabulary in 01-core-concepts.md.
 
@@ -153,7 +153,7 @@ Events carry an idempotency key from the harness. If an event with the same key 
 
 Turn boundaries are decided in the hot path, as events land, while intake is the thing watching the ordered stream. `intake-stream` calls the `turns` surface to apply the turn state machine and get the turn membership for message-producing events. This keeps membership correct: a message is attached to its turn when it is recorded, not inferred later against a stream that has moved on.
 
-The deterministic work is synchronous: recording events, calling `messages` to create messages and blocks, calling `turns` to apply the state machine, attaching messages to the current turn, and assigning token estimates. Smoothed prompts and tool-result summaries are queued as durable work when each message lands; turn compression and chunk summaries are queued when the turn or chunk closes. Closing a turn settles its membership immediately; the derivation work that follows operates on a turn whose contents are already frozen.
+The deterministic work is synchronous: recording events, calling `messages` to create messages and blocks, calling `turns` to apply the state machine, attaching messages to the current turn, and assigning token estimates. Smoothed prompts and tool-result summaries are queued as durable work when each message lands; turn compression and chunk summaries are queued when the turn closes (turn derivation work is queued at close; `detailed_turn_compression` is enqueued in the turn-derivation handler's completion transaction; chunk summaries are enqueued when chunk placement closes a chunk in that same transaction). Closing a turn settles its membership immediately; the derivation work that follows operates on a turn whose contents are already frozen.
 
 There is always exactly one open turn. Thread creation seeds the first open turn. A `turn_end` with members closes the current turn, queues its derivation work, and immediately opens a new empty turn. A `user_prompt` arriving when the current open turn already has members does the same: closes the current turn, opens a new one, and the prompt becomes the new turn's first member. A `turn_end` with no members is a no-op — the empty open turn stays open. A `user_prompt` arriving into an empty open turn simply becomes its first member; no close happens.
 
@@ -377,11 +377,13 @@ sequenceDiagram
 
 Before an explicit smart compact, tail tool results render in full so resume and session-view stay faithful to the record. Smart compact is the planned reduction point for older material (via bands).
 
-The **visibility boundary** controls at-or-behind shortening when it is set: tool results at or behind it render short, tool results ahead of it render full. Intake does not advance it automatically. Compact resets the boundary to the compact point.
+The **visibility boundary** controls at-or-behind shortening when it is set: tool results at or behind it render as a short truncation (~500 characters plus a truncation marker), tool results ahead of it render full. Three things move the boundary: compact resets it to the compact point; **prune** (`threadView.prune`) advances it independently; intake never moves it.
+
+Prune walks live tool results newest-first from the current boundary, keeps results full until the target token budget is met, and sets the boundary behind the last full result. It never moves the boundary backward or behind the compact point. The typical use is reclaiming context space from old tool outputs between compacts without the cost of a full compact cycle.
 
 ### Rendering for a harness
 
-The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into a host-specific file format (today PI session JSONL) via `threadView.materialize`. Both come from the same serving assembly; only the output shape differs. A written file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
+The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into a host-specific file format (PI session JSONL, Claude Code rollout JSONL) via `threadView.materialize`. Both come from the same serving assembly; only the output shape differs. A written file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
 
 ## Inspect
 
