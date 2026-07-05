@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@earendil-works/pi-ai': file:./vendor/pi/packages/ai
+  '@earendil-works/pi-agent-core': file:./vendor/pi/packages/agent
+  '@earendil-works/pi-tui': file:./vendor/pi/packages/tui
+
 importers:
 
   .:
@@ -248,16 +253,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@earendil-works/pi-agent-core@0.80.3':
-    resolution: {integrity: sha512-3qw0/GeRQBU/nlGjDe5Yb7ePKTmoxefx2YxyKMFAviFUMXpFexBG/hS7mBtwFahFvzrrTPPoRT6sFIDjwoDWPQ==}
-    engines: {node: '>=22.19.0'}
-
   '@earendil-works/pi-agent-core@file:vendor/pi/packages/agent':
     resolution: {directory: vendor/pi/packages/agent, type: directory}
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-ai@0.80.3':
-    resolution: {integrity: sha512-jPZLMeGL5kkMSEAwAklfXTMHqZvfhsJtCCpKGIr5Duk7mc0n4skjB1dugk7y0z3z8ZHIUCmPAWHdyDqgUz5vdA==}
+  '@earendil-works/pi-ai@file:vendor/pi/packages/ai':
+    resolution: {directory: vendor/pi/packages/ai, type: directory}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -266,8 +267,8 @@ packages:
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-tui@0.80.3':
-    resolution: {integrity: sha512-2BJI6qwRQfnM0Q7seL1+SbacU/jRRjBnN7Hu3n9BjAn7/s5FaBNnvdD1qBQYRsFTHfjqMaDsjYqanPyqwXj99w==}
+  '@earendil-works/pi-tui@file:vendor/pi/packages/tui':
+    resolution: {directory: vendor/pi/packages/tui, type: directory}
     engines: {node: '>=22.19.0'}
 
   '@emnapi/core@1.10.0':
@@ -1618,23 +1619,9 @@ snapshots:
   '@biomejs/cli-win32-x64@2.5.0':
     optional: true
 
-  '@earendil-works/pi-agent-core@0.80.3(ws@8.21.0)(zod@4.4.3)':
-    dependencies:
-      '@earendil-works/pi-ai': 0.80.3(ws@8.21.0)(zod@4.4.3)
-      ignore: 7.0.5
-      typebox: 1.1.38
-      yaml: 2.9.0
-    transitivePeerDependencies:
-      - '@modelcontextprotocol/sdk'
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-      - ws
-      - zod
-
   '@earendil-works/pi-agent-core@file:vendor/pi/packages/agent(ws@8.21.0)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/pi-ai': 0.80.3(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai': file:vendor/pi/packages/ai(ws@8.21.0)(zod@4.4.3)
       ignore: 7.0.5
       typebox: 1.1.38
       yaml: 2.9.0
@@ -1646,7 +1633,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.80.3(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-ai@file:vendor/pi/packages/ai(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
@@ -1669,9 +1656,9 @@ snapshots:
 
   '@earendil-works/pi-coding-agent@file:vendor/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/pi-agent-core': 0.80.3(ws@8.21.0)(zod@4.4.3)
-      '@earendil-works/pi-ai': 0.80.3(ws@8.21.0)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.80.3
+      '@earendil-works/pi-agent-core': file:vendor/pi/packages/agent(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai': file:vendor/pi/packages/ai(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-tui': file:vendor/pi/packages/tui
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -1697,7 +1684,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-tui@0.80.3':
+  '@earendil-works/pi-tui@file:vendor/pi/packages/tui':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
