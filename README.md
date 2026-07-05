@@ -40,6 +40,17 @@ A PI extension that hooks into PI's session lifecycle. It captures PI events int
 
 Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture into an LHC thread, `/lhc-*` command interception ahead of Claude Code's input handling, a `claude -p` inference lane for derivations (Sonnet 5 no-thinking baseline), and prune/compact via rollout rebuild + `claude --resume` restart. Fully self-contained state in `~/.cc-lhc/` (registry, lineage, threads). Known warts are listed in `packages/cc-lhc/README.md`.
 
+## Installing the Claude Code Harness (cc-lhc)
+
+To set up cc-lhc on a machine that has Claude Code (no PI needed), give an AI coding agent this instruction — or follow it yourself:
+
+```
+Clone --recursive https://github.com/liminal-ai/pi-lhc.git, then read
+.setup/cc-lhc-standalone.md in the clone and follow it to set up cc-lhc.
+```
+
+The setup doc is written for an agent to execute: prerequisite checks and shim install are scripted (`.setup/scripts/`), each step carries its own verification, and the vendored PI submodule is checked out but never built for this profile.
+
 ---
 
 ## Core Concepts

@@ -2,13 +2,7 @@
 
 Audience: an AI coding agent (or a person) setting up cc-lhc on a machine that has Claude Code and will NOT use PI. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
-> **Kickoff (for the human):** this doc lives inside the repo, so the only thing an agent on a fresh machine needs is one line containing the repo URL. Paste this to the agent:
->
-> ```
-> Clone --recursive <repo-url>, then read .setup/cc-lhc-standalone.md in the clone and follow it to set up cc-lhc.
-> ```
->
-> Everything below assumes the agent is reading this file inside a completed clone.
+> Kickoff lives in the repo README ("Installing the Claude Code Harness"). Everything below assumes the agent is reading this file inside a completed clone.
 
 ## Step 1: Clone
 
