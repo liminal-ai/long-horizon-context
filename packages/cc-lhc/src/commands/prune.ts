@@ -51,7 +51,7 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
       cwd: runtime.cwd,
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
     });
-    lines.push("restarting session...");
+    lines.push("resuming session in-place...");
     return {
       messages: lines,
       restart: {

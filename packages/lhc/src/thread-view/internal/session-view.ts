@@ -132,6 +132,11 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
         entries.push(thinkingLevelChangeOf(row));
         break;
       case "runtime_note":
+        // Same rendering as getLlmRequestContext: a labeled user line. Hosts
+        // rebuilding a session file from this view keep the note in place, so
+        // the assistant turn that responded to it stays coherent.
+        flushAssistant();
+        entries.push({ role: "user", content: `[runtime note] ${textOf(row)}`, sourceMessages: [entrySource(row)] });
         break;
     }
   }

@@ -196,6 +196,101 @@ describe("startCaptureSession stop()", () => {
   });
 });
 
+describe("resume handoff capture", () => {
+  it("tails a known rollout path directly without discovery", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-known-path-"));
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-known-rollout-"));
+    const rolloutPath = join(rolloutDir, "rebuilt-session.jsonl");
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "user",
+        uuid: "rebuilt-1",
+        message: { role: "user", content: "rebuilt line" },
+      })}\n`,
+    );
+
+    const stats = emptyCaptureStats();
+    stats.threadId = "th_known";
+    const flushedItems: RolloutLineItem[] = [];
+    const session = startCaptureSession({
+      cwd: "/work/known-path",
+      startedAt: new Date(),
+      noInference: true,
+      lineageDbPath: join(home, "cc-lhc.sqlite"),
+      knownRolloutPath: rolloutPath,
+      continueCapture: {
+        threadRef: { threadId: "th_known", registryPath: join(home, "registry.sqlite") },
+        sdk: { drainSettled: async () => {} } as unknown as Lhc,
+        stats,
+      },
+      // Discovery would never resolve here; knownRolloutPath must bypass it.
+      discoverDeps: { projectsRoot: join(rolloutDir, "no-projects"), pollMs: 20 },
+      log: () => {},
+      logError: () => {},
+      flushBatchFn: async (_sdk, _threadRef, items: RolloutLineItem[]) => {
+        flushedItems.push(...items);
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && flushedItems.length < 1; attempt += 1) {
+      await sleep(50);
+    }
+    expect(flushedItems).toHaveLength(1);
+    expect(session.getRolloutInfo().path).toBe(rolloutPath);
+    expect(session.getRolloutInfo().sessionId).toBe("rebuilt-session");
+    await session.stop();
+  });
+
+  it("counts replayed-prefix lines under skippedReplay without inflating linesSeen or skip tallies", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-prefix-"));
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-rollout-"));
+    const rolloutPath = join(rolloutDir, "rebuilt-prefix.jsonl");
+    // Two replayed-prefix lines that map to unknown skips (no events).
+    writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`,
+    );
+
+    const stats = emptyCaptureStats();
+    stats.threadId = "th_prefix";
+    stats.linesSeen = 10;
+    stats.skippedUnknown = 5;
+    const session = startCaptureSession({
+      cwd: "/work/prefix-stats",
+      startedAt: new Date(),
+      noInference: true,
+      lineageDbPath: join(home, "cc-lhc.sqlite"),
+      knownRolloutPath: rolloutPath,
+      replayedPrefixLines: 2,
+      continueCapture: {
+        threadRef: { threadId: "th_prefix", registryPath: join(home, "registry.sqlite") },
+        sdk: { drainSettled: async () => {} } as unknown as Lhc,
+        stats,
+      },
+      log: () => {},
+      logError: () => {},
+    });
+
+    for (let attempt = 0; attempt < 50 && session.stats.skippedReplay < 2; attempt += 1) {
+      await sleep(50);
+    }
+    expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.linesSeen).toBe(10);
+    expect(session.stats.skippedUnknown).toBe(5);
+
+    // A genuinely new line past the prefix counts normally again.
+    appendLine(rolloutPath, { type: "mode", mode: "normal" } as RolloutLineItem);
+    for (let attempt = 0; attempt < 50 && session.stats.linesSeen < 11; attempt += 1) {
+      await sleep(50);
+    }
+    expect(session.stats.linesSeen).toBe(11);
+    expect(session.stats.skippedUnknown).toBe(6);
+    expect(session.stats.skippedReplay).toBe(2);
+    await session.stop();
+  });
+});
+
 describe("awaitDrainSettled", () => {
   it("logs and proceeds when drainSettled does not resolve before cap", async () => {
     const errors: string[] = [];

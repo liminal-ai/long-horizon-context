@@ -100,6 +100,15 @@ export interface CaptureSessionDeps {
   continueCapture?: ContinueCapture;
   resumeSessionId?: string;
   continueFlag?: boolean;
+  /** Skip discovery and tail this rollout file directly (in-app resume handoff). */
+  knownRolloutPath?: string;
+  /**
+   * First N tailed lines are a replayed prefix (the rebuilt rollout after an
+   * in-app resume): tally them under skippedReplay instead of linesSeen and
+   * keep them out of the mapper skip counters, so cross-restart totals stay
+   * honest as a version-drift instrument.
+   */
+  replayedPrefixLines?: number;
   lineageDbPath?: string;
   lineageDeps?: LineageDbDeps;
   log?: (message: string) => void;
@@ -151,14 +160,19 @@ async function flushBatch(
   lineOffset: number,
   dedupeState: ReplayDedupeState | undefined,
   persistSignatures: ((signatures: string[]) => Promise<void>) | undefined,
+  replayedPrefixItems = 0,
 ): Promise<void> {
   const events = [];
   for (const [index, item] of items.entries()) {
     const mapped = mapRolloutLine(item, lineOffset + index);
-    stats.skippedSidechain += mapped.stats.sidechain;
-    stats.skippedUnknown += mapped.stats.unknown;
-    stats.skippedMeta += mapped.stats.meta;
-    stats.skippedImage += mapped.stats.image;
+    // Replayed-prefix lines were already tallied by the pre-restart capture;
+    // re-counting their skips would double the drift instrument.
+    if (index >= replayedPrefixItems) {
+      stats.skippedSidechain += mapped.stats.sidechain;
+      stats.skippedUnknown += mapped.stats.unknown;
+      stats.skippedMeta += mapped.stats.meta;
+      stats.skippedImage += mapped.stats.image;
+    }
     events.push(...mapped.events);
   }
   if (events.length === 0) return;
@@ -242,6 +256,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let stopped = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
+  let prefixRemaining = deps.replayedPrefixLines ?? 0;
   let dedupeState: ReplayDedupeState | undefined;
   let persistSignatures: ((signatures: string[]) => Promise<void>) | undefined;
 
@@ -249,19 +264,27 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     batchQueue = batchQueue.then(async () => {
       if (stopped && emissions.length === 0) return;
       const items: RolloutLineItem[] = [];
+      let prefixItems = 0;
       for (const emission of emissions) {
-        stats.linesSeen += 1;
+        const isPrefixLine = prefixRemaining > 0;
+        if (isPrefixLine) {
+          prefixRemaining -= 1;
+          stats.skippedReplay += 1;
+        } else {
+          stats.linesSeen += 1;
+        }
         if (emission.kind === "parse_error") {
           stats.parseFailures += 1;
           logError(`cc-lhc parse fail: ${emission.error}`);
           continue;
         }
+        if (isPrefixLine) prefixItems += 1;
         items.push(emission.item);
       }
       if (items.length === 0 || sdk === undefined || threadRef === undefined) return;
       const lineOffset = lineCounter;
       lineCounter += items.length;
-      await flush(sdk, threadRef, items, stats, log, logError, lineOffset, dedupeState, persistSignatures);
+      await flush(sdk, threadRef, items, stats, log, logError, lineOffset, dedupeState, persistSignatures, prefixItems);
     });
   };
 
@@ -274,7 +297,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
 
   void (async () => {
     try {
-      const filePath = await discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal });
+      const filePath =
+        deps.knownRolloutPath ??
+        (await discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal }));
       if (stopped) return;
 
       rolloutFilePath = filePath;

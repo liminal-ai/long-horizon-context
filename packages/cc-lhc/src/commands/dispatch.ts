@@ -76,8 +76,8 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
         "/lhc-status — thread-view status + capture stats",
         "/lhc-stats — capture stats line",
         "/lhc-help — this list",
-        "/lhc-compact — compact thread view and restart session",
-        "/lhc-prune [targetTokens] — prune visibility zone and restart session",
+        "/lhc-compact — compact thread view and resume in-place",
+        "/lhc-prune [targetTokens] — prune visibility zone and resume in-place",
       ].join("\n"),
     ],
   };
@@ -119,6 +119,6 @@ export function formatCommandOutput(text: string): string {
   return `\r\n[cc-lhc] ${text.replace(/\n/g, "\r\n[cc-lhc] ")}`;
 }
 
-export function formatSessionRestartLog(plan: SessionRestartPlan): string {
-  return `[cc-lhc] session ${plan.oldSessionId} preserved; resuming as ${plan.newSessionId} via ${plan.rolloutPath} (expect ~${plan.expectedReintakeLines} replayed lines to re-intake)`;
+export function formatSessionResumeLog(plan: SessionRestartPlan): string {
+  return `[cc-lhc] session ${plan.oldSessionId} preserved; resuming in-place as ${plan.newSessionId} via ${plan.rolloutPath} (expect ~${plan.expectedReintakeLines} replayed lines to re-intake)`;
 }

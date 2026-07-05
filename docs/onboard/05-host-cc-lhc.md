@@ -10,7 +10,7 @@ It builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md) and th
 
 `cc-lhc` is a **PTY wrapper around the closed `claude` CLI**. Claude Code has no extension API rich enough to host LHC the way PI does — hooks are limited and disabled in some environments — so cc-lhc takes the outside position instead: it owns the `claude` process, passes the terminal through transparently, and reaches LHC by two side channels. It **watches** the rollout JSONL file Claude Code writes and feeds those records into an LHC thread (capture), and it **intercepts** a narrow set of `/lhc-*` command lines from stdin (control). Everything else — keystrokes, output, exit code — passes through untouched, so from the user's seat it is Claude Code.
 
-Because the wrapper cannot inject context back into a running `claude` session, its compact/prune story is different from pi-lhc's in-memory seeding: it **rebuilds a fresh rollout file** from the thread view and restarts `claude --resume` on it (see below). The harness-specific bits — rollout format mapping and resume mechanics — are the seam a future Codex wrapper adapts.
+Because the wrapper cannot inject context back into a running `claude` session, its compact/prune story is different from pi-lhc's in-memory seeding: it **rebuilds a fresh rollout file** from the thread view and injects `/resume <newSessionId>` into the running child, which hot-swaps the session in-place (see below). The harness-specific bits — rollout format mapping and resume mechanics — are the seam a future Codex wrapper adapts.
 
 ## The wrapper
 
@@ -18,7 +18,7 @@ Because the wrapper cannot inject context back into a running `claude` session, 
 
 Passthrough is raw and bidirectional: stdin is put in raw mode and forwarded to the PTY (after interception), PTY output is forwarded to stdout, and `SIGWINCH` resizes the PTY. `SIGINT`/`SIGTERM` are forwarded to the child. On child exit the wrapper propagates the exit code (`signal ? 128+signal : exitCode ?? 1`), stops capture, prints the final stats line, kills any live inference subprocesses, and restores the terminal (raw mode off, cursor shown) (`run.ts:175`). Stopping capture waits for the derivation queue to settle, capped at `DEFAULT_DRAIN_SETTLED_CAP_MS` (30 s, `intake/session.ts:41`) — so a session with heavy inference still draining can take a few seconds to exit, which reads as a pause rather than a hang. A `SIGUSR1` prints the current capture stats to stderr without stopping.
 
-The PTY handle is held behind an indirection object so the data/exit handlers can be re-pointed at a *new* PTY after a restart without re-registering listeners (`run.ts:170`).
+The wrapper spawns exactly one PTY for its lifetime — prune/compact swap the *session* inside the running child rather than replacing the child (see the resume flow below), so the data/exit handlers are registered once and never re-pointed.
 
 ## Input interception
 
@@ -42,7 +42,7 @@ A single-flight `CommandInFlightGuard` prevents overlapping command dispatches; 
 
 Capture runs in the wrapper process against the rollout JSONL file Claude Code writes under `~/.claude/projects/<encoded-cwd>/`. `rollout/discover.ts` polls that directory (250 ms) for a `.jsonl` file created or modified after the wrapper started, picking the newest. `rollout/watcher.ts` then tails it with both `fs.watch` and a 500 ms interval poll, tracking a byte offset, splitting on newlines, and holding a trailing partial line until it completes. On `stop()` it does one **final read and partial flush**, so a last line written without a trailing newline is still captured (`watcher.ts:128`). A partial that grows past 10 MB is dropped with a logged `parse_error`.
 
-`intake/map.ts` maps each rollout line into LHC intake vocabulary (`HARNESS = "cc"`). The mapper is deliberately **tolerant of records it does not understand**: sidechain lines, `summary`/`file-history-snapshot` types, and meta command-wrapper lines are **skipped and counted** rather than erroring (the `summary`/`snapshot` skips fall into a general `unknown` tally, not per-type counters), and anything that produces no events (unknown role, empty message) increments the `unknown` counter and returns nothing — the mapper never throws on an unrecognized shape (`map.ts:190`). Images are the exception to skipping: an image-bearing user message is still captured as a `user_prompt`, with an `[image content not captured]` placeholder appended to its text and the image counted separately. The pixels drop; the turn does not — consistent with the record's "nothing silently omitted" rule. What it does map fans out an assistant record in order thinking → text → tool_use, mirroring the LHC event kinds. Idempotency keys are `cc-lhc:rollout:<uuid>:<blockIndex>:<kind>`, with a synthetic uuid when a line carries none.
+`intake/map.ts` maps each rollout line into LHC intake vocabulary (`HARNESS = "cc"`). The mapper is deliberately **tolerant of records it does not understand**: sidechain lines, `summary`/`file-history-snapshot` types, and meta command-wrapper lines are **skipped and counted** rather than erroring (the `summary`/`snapshot` skips fall into a general `unknown` tally, not per-type counters), and anything that produces no events (unknown role, empty message) increments the `unknown` counter and returns nothing — the mapper never throws on an unrecognized shape (`map.ts:190`). Images are the exception to skipping: an image-bearing user message is still captured as a `user_prompt`, with an `[image content not captured]` placeholder appended to its text and the image counted separately. The pixels drop; the turn does not — consistent with the record's "nothing silently omitted" rule. Background-task notifications — user messages whose text starts with `<task-notification>` — are captured as `runtime_note` rather than `user_prompt`: they stay in the record and in rebuilt rollouts (the assistant's next turn responds to them), but they skip prompt smoothing and stay out of the user lane. Rebuilt rollouts re-serve runtime notes with a `[runtime note]` label, which the mapper also recognizes so the classification survives a re-tail. What it does map fans out an assistant record in order thinking → text → tool_use, mirroring the LHC event kinds. Idempotency keys are `cc-lhc:rollout:<uuid>:<blockIndex>:<kind>`, with a synthetic uuid when a line carries none.
 
 **Session lineage** lives in a SQLite DB (`intake/lineage-db.ts`), whose `cc_session_lineage` table maps `rollout_session_id → thread_id` and whose `cc_thread_signatures` table stores per-thread content signatures. On startup, `resolveCaptureThread` looks up a thread by the current rollout session id, then by a `--resume` session id, then by `--continue`'s newest session (`lineage-db.ts:362`) — so **`--resume` follows lineage** and continues the same LHC thread across Claude Code restarts. If nothing matches, a new thread is created.
 
@@ -84,20 +84,20 @@ Dispatched from `commands/dispatch.ts`; output lines are prefixed `\r\n[cc-lhc] 
 | `/lhc-status` | Show `threadView.status`: tail tokens vs threshold, zone, and derivation pending/failed counts. |
 | `/lhc-stats` | Print the one-line capture stats (lines seen, events sent, skip tallies). |
 | `/lhc-help` | List the five commands. |
-| `/lhc-prune [targetTokens]` | Advance the visibility boundary via `threadView.prune`; if it changes anything, rebuild + restart (below). A no-op prune does not restart. |
-| `/lhc-compact` | `previewCompact` then `compact`; on success, rebuild + restart. |
+| `/lhc-prune [targetTokens]` | Advance the visibility boundary via `threadView.prune`; if it changes anything, rebuild + in-app resume (below). A no-op prune does not resume. |
+| `/lhc-compact` | `previewCompact` then `compact`; on success, rebuild + in-app resume. |
 
-## Prune/compact restart flow
+## Prune/compact resume flow
 
-Because the wrapper cannot push new context into the running `claude` process, prune and compact take effect by **replaying a rebuilt session**. The sequence:
+Because the wrapper cannot push new context into the running `claude` process, prune and compact take effect by **swapping to a rebuilt session in-place**. The sequence:
 
 1. Run the LHC op (`prune` or `compact`) against the thread, mutating the stored view.
 2. Read the resulting `getSessionThreadView` and **rebuild a rollout file** (`rollout/rebuild.ts`, `rollout/write-rebuilt.ts`). A fresh `randomUUID()` session id is minted, the envelope is reconstructed from the original rollout, view entries are mapped to new user/assistant JSONL lines with a rebuilt parent chain, and the file is written **fsync'd to a new path** `<projects>/<cwd>/<newSessionId>.jsonl`. **The original rollout is never modified.**
 3. Append an entry to `sessions-index.json` (backed up once to `.bak`, then written atomically via temp-file rename) so Claude Code lists the rebuilt session. If the index exists but is unreadable, the op throws and does not touch it.
-4. Kill the child with a SIGTERM → 3 s grace → SIGKILL, stop the old capture, record the new-session→thread lineage, and clear the screen.
-5. Respawn `claude <originalArgv> --resume <newSessionId>`, and start a new capture session that carries the stats and thread forward (`wrapper/restart.ts:88`).
+4. Record the new-session→thread lineage, then **inject `/resume <newSessionId>\r` into the pty** (`wrapper/resume-injection.ts`). Claude Code hot-swaps the session in-place in ~1-2 s — no child kill, no TUI teardown. The child keeps the resumed session id and appends new turns to the rebuilt rollout file.
+5. Watch the forwarded pty output for ~3 s for the plain-text tripwire `was not found` (a rolling scanner spans chunk boundaries). **Not seen** → the swap took: stop the old capture and start a new one that tails the rebuilt rollout path directly (no discovery), carrying the stats and thread forward. The first `rebuiltLineCount` lines it tails are the replayed prefix — tallied under `skipped_replay`, not `linesSeen` or the mapper skip counters, so cross-restart totals stay honest. **Seen** → the swap did not take: report failure with the manual `/resume <newSessionId>` command and change nothing else — the original session is still live and the old capture keeps running.
 
-**Failure is safe by construction.** If the rebuild throws, the current session is left running unchanged and no restart happens (the command reports as much). If the *respawn* fails after the child was already killed, the wrapper raises a `RestartSpawnFailure` with a FATAL message telling the user the rebuilt session id and that they can recover manually with `claude --resume <newSessionId>` — the worst case is a manual resume, never a lost thread.
+**Failure is safe by construction.** If the rebuild throws, the current session is left running unchanged and no resume is attempted (the command reports as much). If the injected resume does not take, the original session is untouched — the worst case is running the printed `/resume` command by hand, never a lost thread. A bare `/resume` is never injected (it opens an interactive picker).
 
 ```mermaid
 sequenceDiagram
@@ -111,11 +111,12 @@ sequenceDiagram
   V-->>Cmd: session thread view
   Cmd->>Rb: write NEW rollout <newId>.jsonl (fsync); append index
   Note over Rb: original rollout untouched
-  Cmd->>CC: SIGTERM→3s→SIGKILL, stop old capture
-  Cmd->>Cmd: record lineage newId→thread, clear screen
-  Cmd->>CC: respawn claude --resume <newId>
-  Cmd->>Cmd: start new capture (stats carried forward)
-  Note over Cmd: rebuild throw → old session runs on; spawn fail → manual --resume
+  Cmd->>Cmd: record lineage newId→thread
+  Cmd->>CC: inject "/resume <newId>\r" into pty
+  CC->>CC: hot-swap session in-place (~1-2s)
+  Cmd->>Cmd: watch output ~3s for "was not found"
+  Cmd->>Cmd: not seen → swap capture to rebuilt rollout (stats carried, prefix → skipped_replay)
+  Note over Cmd: rebuild throw → old session runs on; tripwire → report manual /resume, change nothing
 ```
 
 ## State layout
@@ -138,6 +139,5 @@ Most are carried from the package README; a couple are additional edges found wh
 - **Backspace echo desync** — the divergence flush erases the inline echo with backspaces before forwarding, so wide/multibyte characters can render wrong; and editing a `/lhc` command while typing can garble the input line, because the withhold echo and Claude Code's TUI repaint the same region on independent schedules. The `\x08` erase assumes single-column ASCII. Self-corrects on the next repaint. The fix direction is a dedicated status line instead of inline echo.
 - **No line editor while withholding** — arrow keys typed while a `/lhc` command is being withheld flush to the PTY; paste and UTF-8 in that state are best-effort.
 - **`--continue` reattach gap** — lineage lookup for `--continue` matches the newest session against the newest lineage entry, which is best-effort, not exact.
-- **Stats double-count after restart** — the stats object is carried into the new capture session, which re-tails the rebuilt rollout and re-increments `linesSeen` and the skip counters for every replayed line, so cross-restart totals over-count the replayed prefix (`eventsSent` stays roughly correct because replay-dedupe keeps duplicates out of it).
 - **Rebuild is lossy** — rebuilt rollout lines are text-only: `model_change` / `thinking_level_change` view entries are dropped and tool results become plain user text lines.
 - **Index fragility** — an orphan rollout file can remain if the `sessions-index.json` update fails afterward (harmless; index unchanged), and the `.bak` is a single slot holding only the pre-write snapshot.

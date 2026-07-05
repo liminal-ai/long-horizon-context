@@ -244,3 +244,29 @@ describe("threadView.getSessionThreadView", () => {
     expect(sessionToolResult.content).toBe(llmBody);
   });
 });
+
+describe("runtime_note entries", () => {
+  it("renders runtime notes as labeled user entries in tail order", async () => {
+    const noteText = "<task-notification>task t-123 completed: build finished</task-notification>";
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+      validEvent("runtime_note", { payload: { text: noteText } }),
+      validEvent("assistant_text", { payload: { text: "picked up the notification" } }),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    expect(messageRoles(view.value.entries)).toEqual(["user", "assistant", "user", "assistant"]);
+    const note = messageEntries(view.value.entries)[2];
+    expect(note).toMatchObject({
+      role: "user",
+      content: `[runtime note] ${noteText}`,
+    });
+    if (note?.role !== "user") return;
+    expect(note.sourceMessages).toHaveLength(1);
+  });
+});

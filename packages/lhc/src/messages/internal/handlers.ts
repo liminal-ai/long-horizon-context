@@ -60,6 +60,16 @@ export interface SmoothedPromptDerivation {
   warningLog?: LogEntry;
 }
 
+// Harness marker prompts ("[Request interrupted by user]") are machine text:
+// smoothing inference returns empty output on them, burning retries for a
+// verbatim fallback. A prompt whose entire trimmed content is one short
+// bracketed marker stores its cleaned text directly instead.
+const MARKER_PROMPT_PATTERN = /^\[[^\]]{1,80}\]$/;
+
+export function isMarkerPrompt(text: string): boolean {
+  return MARKER_PROMPT_PATTERN.test(text.trim());
+}
+
 export async function deriveSmoothedPrompt(
   run: HandlerRunContext,
   messageId: string,
@@ -68,7 +78,7 @@ export async function deriveSmoothedPrompt(
   const cleaned = cleanPrompt(text);
   const cleanedTokens = estimateTokens(cleaned);
   const guards = run.config.guards.smoothedPrompt;
-  if (cleanedTokens > guards.maxInferenceTokens) {
+  if (isMarkerPrompt(cleaned) || cleanedTokens > guards.maxInferenceTokens) {
     return {
       write: {
         subjectKind: "message",

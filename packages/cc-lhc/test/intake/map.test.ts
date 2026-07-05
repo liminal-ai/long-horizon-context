@@ -167,6 +167,57 @@ describe("mapRolloutLine", () => {
     expect(result.events[0].payload.text).toContain("[image content not captured]");
   });
 
+  it("maps task-notification user messages to runtime_note, not user_prompt", () => {
+    const blob =
+      '<task-notification>\n<task id="b-1" tool-use-id="toolu_x">\n<status>completed</status>\n<summary>build finished</summary>\n<output-file>/tmp/out.txt</output-file>\n</task>\n</task-notification>';
+    const item = {
+      type: "user",
+      uuid: "task-note-uuid",
+      message: { role: "user", content: blob },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]?.eventKind).toBe("runtime_note");
+    expect(result.events[0]?.actor).toBe("system");
+    expect(result.events[0]?.payload).toEqual({ text: blob });
+    expect(result.events[0]?.idempotencyKey).toBe(idempotencyKey("task-note-uuid", 0, "runtime_note"));
+    expect(result.stats.meta).toBe(0);
+    expect(result.stats.unknown).toBe(0);
+  });
+
+  it("maps task-notification text blocks and tolerates leading whitespace", () => {
+    const item = {
+      type: "user",
+      uuid: "task-note-block-uuid",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "  <task-notification>task done</task-notification>" }],
+      },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.eventKind)).toEqual(["runtime_note"]);
+  });
+
+  it("keeps rebuilt-rollout runtime-note lines classified as runtime_note on re-tail", () => {
+    const item = {
+      type: "user",
+      uuid: "rebuilt-note-uuid",
+      message: { role: "user", content: "[runtime note] <task-notification>task done</task-notification>" },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.eventKind)).toEqual(["runtime_note"]);
+  });
+
+  it("keeps prompts that merely mention task notifications as user_prompt", () => {
+    const item = {
+      type: "user",
+      uuid: "mention-uuid",
+      message: { role: "user", content: "why did the <task-notification> block show up in my transcript?" },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.eventKind)).toEqual(["user_prompt"]);
+  });
+
   it("uses line index in synthetic idempotency keys for uuid-less lines", () => {
     const lineA = { type: "mode", sessionId: "sess-1" } as RolloutLineItem;
     const lineB = { type: "mode", sessionId: "sess-1" } as RolloutLineItem;

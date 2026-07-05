@@ -292,3 +292,63 @@ describe("smoothed_prompt guard config", () => {
     expect(logs.value).toEqual([]);
   });
 });
+
+describe("marker prompt smoothing skip", () => {
+  it("stores a bracketed marker prompt verbatim without calling inference", async () => {
+    const { sdk, log } = sdkWithModelCall("should never be produced");
+    const filePath = await newThread();
+
+    await sendPrompt(sdk, filePath, "[Request interrupted by user]");
+    await drain(sdk, filePath);
+
+    expect(log).toHaveLength(0);
+    expect(derivation(filePath)).toMatchObject({
+      state: "ready",
+      content: "[Request interrupted by user]",
+    });
+    expect(derivation(filePath)?.metadata).toBeUndefined();
+    expect(liveWorkCount(filePath)).toBe(0);
+  });
+
+  it("skips inference for a marker with surrounding whitespace", async () => {
+    const { sdk, log } = sdkWithModelCall("should never be produced");
+    const filePath = await newThread();
+
+    await sendPrompt(sdk, filePath, "  [Request interrupted by user for tool use]\n");
+    await drain(sdk, filePath);
+
+    expect(log).toHaveLength(0);
+    expect(derivation(filePath)).toMatchObject({
+      state: "ready",
+      content: "[Request interrupted by user for tool use]",
+    });
+  });
+
+  it("still smooths a prompt that merely contains brackets", async () => {
+    const modelText = "please fix the flaky test in ci.yml";
+    const { sdk, log } = sdkWithModelCall(modelText);
+    const filePath = await newThread();
+
+    await sendPrompt(sdk, filePath, "please fix the [flaky] test in ci.yml, it keeps failing intermittently on main");
+    await drain(sdk, filePath);
+
+    expect(log).toHaveLength(1);
+    expect(derivation(filePath)).toMatchObject({
+      state: "ready",
+      content: modelText,
+    });
+  });
+
+  it("still smooths when brackets wrap more than eighty characters", async () => {
+    const inner = "x".repeat(100);
+    const modelText = "long bracketed content smoothed";
+    const { sdk, log } = sdkWithModelCall(modelText);
+    const filePath = await newThread();
+
+    await sendPrompt(sdk, filePath, `[${inner}]`);
+    await drain(sdk, filePath);
+
+    expect(log).toHaveLength(1);
+    expect(derivation(filePath)).toMatchObject({ state: "ready", content: modelText });
+  });
+});

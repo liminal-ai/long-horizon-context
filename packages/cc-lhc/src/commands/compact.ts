@@ -54,7 +54,7 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
       cwd: runtime.cwd,
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
     });
-    lines.push("restarting session...");
+    lines.push("resuming session in-place...");
     return {
       messages: lines,
       restart: {

@@ -19,11 +19,10 @@ import {
 } from "./intercept.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
-  CLEAR_SCREEN,
-  executeSessionRestart,
-  formatRestartSpawnFailure,
-  RestartSpawnFailure,
-} from "./restart.js";
+  executeResumeInjection,
+  formatResumeFailure,
+  formatResumeSuccess,
+} from "./resume-injection.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -74,7 +73,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const stderr = options.stderr ?? process.stderr;
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
-  const originalArgv = [...argv];
   const resumeSessionId = parseResumeSessionId(argv);
   const continueFlag = hasContinueFlag(argv);
   const commandGuard = new CommandInFlightGuard();
@@ -82,7 +80,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
 
-  let ptyProcess = spawnPty(claudeBin, argv, {
+  const ptyProcess = spawnPty(claudeBin, argv, {
     name: TERM_NAME,
     cols,
     rows,
@@ -91,7 +89,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   });
 
   let exited = false;
-  let restarting = false;
   let captureSession: CaptureSession | undefined;
   const startedAt = new Date();
 
@@ -126,8 +123,13 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     stdin.setRawMode(true);
   }
 
+  // The resume tripwire taps forwarded output for the duration of its watch
+  // window; everything still reaches stdout untouched.
+  let outputTap: ((data: string) => void) | null = null;
+
   const forwardOutput = (data: string): void => {
     stdout.write(data);
+    outputTap?.(data);
   };
 
   let interceptState: InterceptState = createInterceptState();
@@ -160,16 +162,12 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   process.on("SIGWINCH", handleSigwinch);
 
   const forwardSignal = (signal: NodeJS.Signals): void => {
-    if (!exited && !restarting) {
+    if (!exited) {
       ptyProcess.kill(signal);
     }
   };
   process.on("SIGINT", forwardSignal);
   process.on("SIGTERM", forwardSignal);
-
-  const ptyBinding: { attach: (pty: IPty) => void } = {
-    attach: () => {},
-  };
 
   return new Promise((resolve) => {
     const teardownAndExit = async (exitCode: number): Promise<void> => {
@@ -188,50 +186,43 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       resolve(exitCode);
     };
 
-    const performRestartWithAttach = async (plan: SessionRestartPlan): Promise<void> => {
+    const performResumeInjection = async (plan: SessionRestartPlan): Promise<void> => {
       if (noCapture || captureSession === undefined) return;
-      restarting = true;
-      try {
-        const result = await executeSessionRestart({
-          plan,
-          originalArgv,
-          pty: ptyProcess,
-          captureSession,
-          clearScreen: () => {
-            stdout.write(CLEAR_SCREEN);
-          },
-          spawnChild: (childArgv) =>
-            spawnPty(claudeBin, childArgv, {
-              name: TERM_NAME,
-              cols: stdout.columns ?? DEFAULT_COLS,
-              rows: stdout.rows ?? DEFAULT_ROWS,
-              cwd: process.cwd(),
-              env: process.env as Record<string, string>,
-            }),
-          startCapture: (restartStartedAt, continueCapture) =>
-            startCaptureSession({ startedAt: restartStartedAt, noInference, continueCapture, lineageDbPath: defaultLineageDbPath() }),
-          recordLineage: async ({ sessionId, threadId }) => {
-            await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
-              stderr.write(`${message}\n`);
-            });
-          },
-          logRestart: (message) => {
+      const result = await executeResumeInjection({
+        plan,
+        captureSession,
+        writeToPty: (data) => {
+          ptyProcess.write(data);
+        },
+        onOutput: (listener) => {
+          outputTap = listener;
+          return () => {
+            outputTap = null;
+          };
+        },
+        startCapture: (injectedAt, continueCapture, rolloutPath) =>
+          startCaptureSession({
+            startedAt: injectedAt,
+            noInference,
+            continueCapture,
+            lineageDbPath: defaultLineageDbPath(),
+            knownRolloutPath: rolloutPath,
+            replayedPrefixLines: plan.rebuiltLineCount,
+          }),
+        recordLineage: async ({ sessionId, threadId }) => {
+          await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
             stderr.write(`${message}\n`);
-          },
-        });
-        ptyProcess = result.pty as IPty;
+          });
+        },
+        logResume: (message) => {
+          stderr.write(`${message}\n`);
+        },
+      });
+      if (result.ok) {
         captureSession = result.captureSession;
-        ptyBinding.attach(ptyProcess);
-        interceptState = createInterceptState();
-      } catch (cause) {
-        if (cause instanceof RestartSpawnFailure) {
-          stderr.write(`${formatRestartSpawnFailure(cause.plan, cause.message)}\n`);
-          await teardownAndExit(1);
-          return;
-        }
-        throw cause;
-      } finally {
-        restarting = false;
+        stdout.write(formatCommandOutput(formatResumeSuccess(plan)));
+      } else {
+        stdout.write(formatCommandOutput(formatResumeFailure(plan)));
       }
     };
 
@@ -246,7 +237,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
             stdout.write(formatCommandOutput(message));
           }
           if (outcome.restart !== undefined) {
-            await performRestartWithAttach(outcome.restart);
+            await performResumeInjection(outcome.restart);
           }
         })
         .catch((cause: unknown) => {
@@ -270,15 +261,12 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     };
 
     const onExit = async ({ exitCode, signal }: { exitCode: number; signal?: number }): Promise<void> => {
-      if (restarting || exited) return;
+      if (exited) return;
       await teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : exitCode ?? 1);
     };
 
-    ptyBinding.attach = (pty: IPty): void => {
-      pty.onData(forwardOutput);
-      pty.onExit(onExit);
-    };
-    ptyBinding.attach(ptyProcess);
+    ptyProcess.onData(forwardOutput);
+    ptyProcess.onExit(onExit);
     stdin.on("data", forwardInput);
   });
 }

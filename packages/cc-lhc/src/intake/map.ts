@@ -7,6 +7,13 @@ const IMAGE_PLACEHOLDER = "[image content not captured]";
 
 const META_MARKERS = ["<local-command-caveat>", "<command-name>", "<local-command-stdout>"] as const;
 
+// Background-task notifications are machine traffic injected as user messages.
+// They stay in the record (the assistant's next turn responds to them) but as
+// runtime_note, so they skip prompt smoothing and stay out of the user lane.
+// Rebuilt rollouts re-serve runtime notes with the "[runtime note]" label, so
+// that prefix keeps the classification stable across a re-tail.
+const RUNTIME_NOTE_MARKERS = ["<task-notification>", "[runtime note]"] as const;
+
 export interface MapStats {
   sidechain: number;
   unknown: number;
@@ -62,7 +69,7 @@ function isMetaUserLine(item: RolloutLineItem, content: string): boolean {
 }
 
 function textEvent(
-  kind: "user_prompt" | "assistant_text" | "assistant_thinking",
+  kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "runtime_note",
   text: string,
   actor: string,
   key: string,
@@ -70,8 +77,16 @@ function textEvent(
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
 }
 
+function isRuntimeNoteText(text: string): boolean {
+  const trimmed = text.trimStart();
+  return RUNTIME_NOTE_MARKERS.some((marker) => trimmed.startsWith(marker));
+}
+
 function mapUserString(item: RolloutLineItem, text: string, lineIndex: number): MessageEventInput[] {
   const uuid = recordUuid(item, lineIndex);
+  if (isRuntimeNoteText(text)) {
+    return [textEvent("runtime_note", text, "system", idempotencyKey(uuid, 0, "runtime_note"))];
+  }
   return [textEvent("user_prompt", text, "user", idempotencyKey(uuid, 0, "user_prompt"))];
 }
 
