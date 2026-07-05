@@ -165,15 +165,21 @@ async function flushBatch(
 ): Promise<void> {
   const events = [];
   for (const [index, item] of items.entries()) {
+    // Replayed-prefix lines are the rebuilt rollout's own bytes — content we
+    // wrote from the thread's served view. The thread already holds the real
+    // history behind them, so they must never re-enter intake as events:
+    // rebuilt lines are mostly synthetic (band summaries, re-rendered tail),
+    // signature dedupe cannot match them against the original capture, and
+    // mapping them re-records the served view as fresh messages (observed
+    // live: compact fire leaked ~40 duplicate messages per swap). Their
+    // count is already tallied under stats.replayedPrefixLines; their skips
+    // stay out of the drift instrument.
+    if (index < replayedPrefixItems) continue;
     const mapped = mapRolloutLine(item, lineOffset + index);
-    // Replayed-prefix lines were already tallied by the pre-restart capture;
-    // re-counting their skips would double the drift instrument.
-    if (index >= replayedPrefixItems) {
-      stats.skippedSidechain += mapped.stats.sidechain;
-      stats.skippedUnknown += mapped.stats.unknown;
-      stats.skippedMeta += mapped.stats.meta;
-      stats.skippedImage += mapped.stats.image;
-    }
+    stats.skippedSidechain += mapped.stats.sidechain;
+    stats.skippedUnknown += mapped.stats.unknown;
+    stats.skippedMeta += mapped.stats.meta;
+    stats.skippedImage += mapped.stats.image;
     events.push(...mapped.events);
   }
   if (events.length === 0) return;

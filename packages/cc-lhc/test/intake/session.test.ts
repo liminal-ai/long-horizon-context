@@ -291,34 +291,38 @@ describe("resume handoff capture", () => {
     await session.stop();
   });
 
-  it("counts deduped prefix EVENTS once under skippedReplay, prefix LINES once under replayedPrefixLines", async () => {
+  it("never re-records prefix lines: known and synthetic prefix content both stay out of intake", async () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-prefix-events-"));
     const dbPath = join(home, "cc-lhc.sqlite");
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-events-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-events.jsonl");
 
-    // A realistic rebuilt prefix: one user line and one assistant line.
+    // A realistic rebuilt prefix: one line whose content matches the original
+    // capture (signature known) and one synthetic line a compact rebuild
+    // produces (band summary — signature matches nothing). Neither may
+    // re-enter intake: rebuilt bytes are ours, the thread already holds the
+    // real history behind them.
     const userLine = {
       type: "user",
       uuid: "prefix-user",
       message: { role: "user", content: "please read the file" },
     } as RolloutLineItem;
-    const assistantLine = {
-      type: "assistant",
-      uuid: "prefix-assistant",
-      message: { role: "assistant", content: [{ type: "text", text: "here is what I found" }] },
+    const syntheticLine = {
+      type: "user",
+      uuid: "prefix-synthetic",
+      message: { role: "user", content: "[history summary] earlier work compressed to a band summary" },
     } as RolloutLineItem;
-    writeFileSync(rolloutPath, `${JSON.stringify(userLine)}\n${JSON.stringify(assistantLine)}\n`);
+    writeFileSync(rolloutPath, `${JSON.stringify(userLine)}\n${JSON.stringify(syntheticLine)}\n`);
 
-    // Persist the prefix events' signatures as already-seen, the state a real
-    // handoff inherits from the pre-resume capture of the same content.
+    // Persist only the first line's signature as already-seen — the state a
+    // real handoff inherits for verbatim tail content. The synthetic line
+    // deliberately has no known signature: it must be excluded by prefix
+    // position alone, not by dedupe.
     const { mapRolloutLine } = await import("../../src/intake/map.js");
     const { eventContentSignature } = await import("../../src/intake/replay-dedupe.js");
     const { appendThreadSignatures } = await import("../../src/intake/lineage-db.js");
-    const signatures = [userLine, assistantLine].flatMap((line, index) =>
-      mapRolloutLine(line, index).events.map((event) => eventContentSignature(event)),
-    );
-    expect(signatures).toHaveLength(2);
+    const signatures = mapRolloutLine(userLine, 0).events.map((event) => eventContentSignature(event));
+    expect(signatures).toHaveLength(1);
     appendThreadSignatures(dbPath, "th_prefix_events", signatures);
 
     const stats = emptyCaptureStats();
@@ -350,12 +354,13 @@ describe("resume handoff capture", () => {
       logError: () => {},
     });
 
-    for (let attempt = 0; attempt < 50 && session.stats.skippedReplay < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && session.stats.replayedPrefixLines < 2; attempt += 1) {
       await sleep(50);
     }
-    // Each prefix line counted once as a line, each of its deduped events once as an event.
+    // Both prefix lines counted once as prefix lines, zero events produced —
+    // the synthetic line included, despite dedupe never having seen it.
     expect(session.stats.replayedPrefixLines).toBe(2);
-    expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.skippedReplay).toBe(0);
     expect(session.stats.linesSeen).toBe(10);
     expect(session.stats.eventsSent).toBe(8);
     expect(intakeCalls).toEqual([]);
@@ -371,7 +376,7 @@ describe("resume handoff capture", () => {
     }
     expect(session.stats.linesSeen).toBe(11);
     expect(session.stats.eventsSent).toBe(9);
-    expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.skippedReplay).toBe(0);
     expect(session.stats.replayedPrefixLines).toBe(2);
     await session.stop();
   });
