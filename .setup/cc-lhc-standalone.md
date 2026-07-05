@@ -2,11 +2,29 @@
 
 Audience: an AI coding agent (or a person) setting up cc-lhc on a machine that has Claude Code and will NOT use PI. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
+> **Kickoff (for the human):** this doc lives inside the repo, so the only thing an agent on a fresh machine needs is one line containing the repo URL. Paste this to the agent:
+>
+> ```
+> Clone --recursive <repo-url>, then read .setup/cc-lhc-standalone.md in the clone and follow it to set up cc-lhc.
+> ```
+>
+> Everything below assumes the agent is reading this file inside a completed clone.
+
+## Step 1: Clone
+
+If you are reading this, the clone likely already happened — confirm it was recursive:
+
+```bash
+git submodule status   # must list vendor/pi with a SHA, not be empty
+```
+
+If empty or you cloned without `--recursive`: `git submodule update --init`. The `vendor/pi` submodule is never built for cc-lhc, but its directories must exist for the workspace install to resolve.
+
 cc-lhc is a PTY wrapper around Claude Code that records sessions into a durable local store (`~/.cc-lhc/`), adds `/lhc-*` commands inside Claude Code (status, stats, prune, compact), and runs background summarization through `claude -p`. It changes nothing about how Claude Code itself behaves.
 
-## Prerequisites
+## Step 2: Prerequisites
 
-After cloning (next section), run the checker:
+Run the checker from the repo root:
 
 ```bash
 node .setup/scripts/check-prereqs.mjs
@@ -16,23 +34,21 @@ It verifies: **git**; **Node 24.x** (`>=24.17.0 <25` — if wrong, install via y
 
 All lines must PASS before continuing. The script needs only Node, so if even Node is missing/wrong-version, fix that first by hand.
 
-## Install
+## Step 3: Install and build
+
+From the repo root:
 
 ```bash
-git clone --recursive <repo-url>
-cd liminal-context
 pnpm install
 pnpm --filter lhc run build
 pnpm --filter cc-lhc run build
 ```
 
-Notes:
-- `--recursive` matters: the repo has a `vendor/pi` git submodule. You do NOT build it for cc-lhc (it belongs to the PI integration), but the directories must exist for `pnpm install` to resolve workspace links. If you cloned without `--recursive`, run `git submodule update --init` before `pnpm install`.
-- Do not run the root `pnpm build` — it builds every package including PI-dependent ones you don't need.
+Do not run the root `pnpm build` — it builds every package including PI-dependent ones you don't need.
 
 **Verify:** `node packages/cc-lhc/dist/bin.js --version` prints the Claude Code version banner (it passes through to the real `claude`). If you want more confidence: `pnpm --filter cc-lhc test` should pass everything (134 tests at time of writing).
 
-## Put `cc-lhc` on PATH
+## Step 4: Put `cc-lhc` on PATH
 
 ```bash
 node .setup/scripts/install-shim.mjs
@@ -42,7 +58,7 @@ Writes a launcher to `~/.local/bin/cc-lhc` (or `cc-lhc.cmd` on Windows) pointing
 
 **Verify:** `cc-lhc --version` from any directory prints the Claude Code version banner.
 
-## First run
+## Step 5: First run
 
 From a project directory (not this repo):
 
