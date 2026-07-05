@@ -47,9 +47,9 @@ Tracking fixes, tighten-ups, and feature work on the road to v1 (loosely) of lhc
 **What:** Docs predate: `openTurnHasMembers` removal, coverage accounting, preview repair, tool-activity truncation at 500 (calls and results), the rename (slice B), the dialog pipeline (`pre_detailed_assembly`, split work items, prose compression for chunks — slice C), the bridge fix, and whatever the prompt rework settles. Do after behavior stops moving.
 **Registry distillation:** as part of this pass, produce an onboarding-sized distillation of `docs/onboard/decision-registry.md` (~27k tokens, reference-grade — not worth a full read at onboarding): the ~40 load-bearing decisions + all nine Graveyards + the interim/Open map, targeting ~5-6k tokens as a read-first slice. The full registry stays the on-contact reference; optionally add a read-first index inside the registry itself, marked during Lee's ratification pass.
 
-### 7. Add pi-lhc onboarding doc
-**Where:** `docs/onboard/` (new file)
-**What:** No onboarding doc for the connector layer: capture flow, compact trigger from `SessionBeforeCompact`, launcher/lifecycle/session model, inference bridging, serving path. Write just before item 9 starts — the wrapper reimplements the same host responsibilities and this doc becomes its reference. Fold in item 18's rework rather than documenting the pre-rework mess.
+### 7. Add pi-lhc onboarding doc — DONE (first pass) 2026-07-05
+**Where:** `docs/onboard/04-host-pi-lhc.md` (+ `05-host-cc-lhc.md`, same pass)
+**What:** Host onboarding docs for both connectors at 02-domain-design depth, drafted by an Opus 4.8 subagent from full source reads and verified claim-by-claim against code. Lee overruled the original wait-for-item-18 sequencing: document the messy-but-working hosts now; a well-documented messy host is what makes the later rewrite easy. Both docs state their known debt plainly (pi-lhc: item 18 rework pending; cc-lhc: POC warts). Expect a rewrite pass of 04 after item 18 lands.
 
 ## New host projects
 

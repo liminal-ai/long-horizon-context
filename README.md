@@ -364,6 +364,8 @@ packages/pi-lhc/src/
 - `docs/onboard/01-core-concepts.md` — vocabulary and the record/derivation model
 - `docs/onboard/02-domain-design.md` — per-domain design detail
 - `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
+- `docs/onboard/04-host-pi-lhc.md` — the PI connector host: capture, seeding, compact bridge, known debt
+- `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, interception, rollout capture, restart flow
 - `docs/decision-registry.md` — full decision registry (canonical authority)
 - `docs/fixes-feature-log.md` — running log of fixes, features, and open items
 
