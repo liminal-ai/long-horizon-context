@@ -20,13 +20,13 @@ The extension retains almost no state. The registered connector holds a plain-da
 
 The `pi-lhc` binary (`bin.ts`) computes a default new-thread path at `~/.lhc/threads/<uuid>.sqlite` and calls `runPiLhcLauncher` (`launcher/run.ts:66`). The launcher splits its own `--lhc-*` flags out of argv before PI's parser ever sees them (`launcher/parse-args.ts:54`), so PI's native `--session`/`--resume`/`--continue` stay untouched — and are in fact rejected outright if a user passes them, because LHC owns session identity now (`parse-args.ts:113`).
 
-Thread resolution has three modes (`lifecycle/thread-resolution.ts:64`):
+Thread resolution has four outcomes, split across two layers: `--lhc-resume`'s interactive picker is handled in `launcher/resolve-startup.ts`, and the id / `--lhc-continue` / new-thread branches in `lifecycle/thread-resolution.ts:64`.
 
 - `--lhc-thread <id>` resolves an existing thread by full or partial id; an ambiguous prefix fails loudly.
-- `--lhc-resume` opens a **picker**: `resolveStartupThread` prompts on the TTY with `promptResumeChoice`, auto-selecting when there is a single candidate and returning null on a non-TTY (`launcher/resolve-startup.ts:19`). `--lhc-continue` is the non-interactive cousin — it takes the most recently created thread.
-- No flag at all **creates a new thread**, titled with the cwd's leaf name (`thread-resolution.ts:93`).
+- `--lhc-resume` opens a **picker**: `resolveStartupThread` prompts on the TTY with `promptResumeChoice`, auto-selecting when there is a single candidate and returning null on a non-TTY (`launcher/resolve-startup.ts:37`). `--lhc-continue` is the non-interactive cousin — it takes the most recently created thread.
+- No flag at all **creates a new thread**, titled with the cwd's leaf name (`thread-resolution.ts:96`).
 
-More than one attach flag is a hard `conflicting_lhc_launch_flags` error (`lifecycle/lhc-launch-flags.ts:72`).
+More than one attach flag is a hard `conflicting_lhc_launch_flags` error (`lifecycle/lhc-launch-flags.ts:78`).
 
 With a thread resolved, `prepareLhcLauncherStartup` (`launcher/startup.ts:49`) builds a short-lived read instance, calls `getSessionThreadView(threadRef)`, and seeds an in-memory PI `SessionManager` from the returned entries (`launcher/seed-session.ts:7`). It then appends the durable `pi-lhc.thread` entry to that session manager and **always disposes the read instance in a `finally`** — the launcher's seeding SDK is read-only and uses deterministic (no-inference) callbacks in the process. The resolved thread ref and launch flags are stashed via `setLauncherOwnedStartup`, a one-shot handoff the extension consumes on its first `session_start` (`launcher/startup.ts` → `index.ts:525`).
 
@@ -57,6 +57,10 @@ Inside the extension, `initInstance` validates the thread through `threads.info`
 
 `pi-lhc.thread` is a custom PI session entry carrying `{ threadId, registryPath? }` (`lifecycle/thread-entry.ts`). It is how a reload reattaches: on `session_start` the extension scans the session manager's entries newest-first for a `pi-lhc.thread` entry and, if found, resolves that thread rather than creating a new one (`index.ts:243`, `index.ts:533`). Reload resolution never creates and never re-prompts — it reattaches or fails.
 
+### Fork
+
+When PI forks a session (branching the conversation into a new tree), the extension creates a **new LHC thread seeded from the source**, rather than reattaching or capturing into the original. A fork is detected two ways: the `session_before_fork` hook records a `pendingFork` (source thread ref + fork entry id) as the primary path (`index.ts:412`), with PI's session tree as fallback evidence when the hook did not fire (`lifecycle/fork.ts`). Seeding replays the source thread's recorded events up to the fork point into the new thread and never writes the source (`fork.ts:129`). The upshot for thread identity: a fork is a genuine branch — two threads sharing a common prefix — not a reload of one thread and not an ordinary capture.
+
 ## Capture
 
 ### The hook rail
@@ -70,7 +74,7 @@ Two hooks in the rail are deliberately unusual:
 
 ### Fan-out: one PI message, many LHC events
 
-`mapMessage` turns a single PI `AgentMessage` into an ordered list of LHC intake events (`capture/map-message.ts:289`). An assistant message fans out in PI's confirmed part order — `assistant_thinking` (if any) → `assistant_text` (if any) → one `tool_call` per call in order — and, if the run aborted, a trailing `runtime_note` (`map-message.ts:172`). A user message produces a `user_prompt` plus `runtime_note`s for unsupported parts, never a silent drop; a tool result produces one correlated `tool_result`. An unknown role throws, and that throw is caught upstream and recorded as a **gap** rather than lost.
+`mapMessage` turns a single PI `AgentMessage` into an ordered list of LHC intake events (`capture/map-message.ts:289`). An assistant message fans out in PI's confirmed part order — `assistant_thinking` (if any) → `assistant_text` (if any) → one `tool_call` per call in order — and, if the run aborted, a trailing `runtime_note` (`map-message.ts:230`). A user message produces a `user_prompt` plus `runtime_note`s for unsupported parts, never a silent drop; a tool result produces one correlated `tool_result`. An unknown role throws, and that throw is caught upstream and recorded as a **gap** rather than lost.
 
 ### Idempotency keys
 
@@ -165,7 +169,7 @@ All are registered in `register()` (`index.ts:1051`). Note that PI hands a comma
 | `/lhc-rehydrate` | Replace the live PI session with a fresh in-memory session hydrated from the latest LHC thread view. |
 | `/lhc-export-threadview` | Write the current LHC serving view (what the model sees) to `lhc-threadview-<ts>.txt` in cwd. |
 | `/lhc-export-pi-session` | Write the live PI session entries to `lhc-pi-session-<ts>.txt` in cwd — the diff counterpart for resume fidelity. |
-| `/lhc-tool-prune [targetTokens]` | Advance the visibility boundary so older tool results render truncated (no compact); auto-rehydrates so the running session picks up the new boundary. |
+| `/lhc-tool-prune [targetTokens]` | Advance the visibility boundary so older tool results render truncated (no compact; default target 32k); auto-rehydrates so the running session picks up the new boundary. |
 
 Launcher **flags** (`--lhc-thread`, `--lhc-resume`, `--lhc-continue`, `--lhc-help`) are separate from these in-session commands and are consumed before PI starts.
 
