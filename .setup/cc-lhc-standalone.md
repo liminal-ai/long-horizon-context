@@ -54,6 +54,8 @@ Writes a launcher to `~/.local/bin/cc-lhc` (or `cc-lhc.cmd` on Windows) pointing
 
 ## Step 5: First run
 
+> **If you are an agent doing this setup:** step 5 needs an interactive terminal (a real TTY), which you do not have headless. Do not treat that as a failure. Report that steps 1–4 passed and the install is complete, and ask the human to run step 5 themselves. Give them the PATH line for the shim directory you installed.
+
 From a project directory (not this repo):
 
 ```bash
