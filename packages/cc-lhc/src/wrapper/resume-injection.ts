@@ -4,19 +4,39 @@
 // (~1-2s) and keeps appending to the rebuilt rollout file under the same
 // session id, so capture hands off to a new session tailing that known path.
 //
-// Failure detection is a passive tripwire: a bad id leaves the original
-// session fully live and prints the plain text "was not found" into the
-// stream. If the phrase shows up within the watch window, the swap did not
-// take and NOTHING else changes — the old capture keeps running and the user
-// gets the manual `/resume` command. Never inject a bare `/resume` (it opens
-// an interactive picker).
+// Outcome detection has two layers. The fast layer is a tripwire scoped to
+// this swap's failure line — `Session <newSessionId> was not found.` — scanned
+// over the forwarded pty output. The new session id is minted at rebuild time,
+// so replayed conversation text cannot contain it; a bare "was not found" in
+// replayed history never trips. The ground-truth layer is the rebuilt rollout
+// file itself: a successful swap touches and appends to it within ~1-2s, a
+// failed one leaves it exactly as the rebuild wrote it. Growth decides; the
+// tripwire only shortens the wait when the failure line appears.
+//
+// The failure line's words arrive separated by cursor-positioning sequences
+// (`was\x1b[55Gnot\x1b[59Gfound.`), NOT literal spaces, so the scanner strips
+// ANSI escape sequences statefully and drops whitespace before matching.
+//
+// On failure NOTHING else changes — no lineage row, the old capture keeps
+// running, and the user gets the manual `/resume` command. Never inject a
+// bare `/resume` (it opens an interactive picker).
+import { stat } from "node:fs/promises";
+
 import type { SessionRestartPlan } from "../commands/dispatch.js";
 import { formatSessionResumeLog } from "../commands/dispatch.js";
 import { lineageWriteFailureMessage } from "../intake/lineage-db.js";
 import type { CaptureSession, ContinueCapture } from "../intake/session.js";
 
-export const RESUME_NOT_FOUND_PHRASE = "was not found";
 export const RESUME_TRIPWIRE_WINDOW_MS = 3_000;
+/** After a trip, how long to give a possibly-concurrent swap to touch the rollout before ruling failure. */
+export const RESUME_TRIP_GRACE_MS = 750;
+/** Without a trip, how much extra time to poll for swap evidence past the tripwire window. */
+export const RESUME_CONFIRM_EXTRA_MS = 5_000;
+const CONFIRM_POLL_MS = 250;
+
+export function resumeNotFoundPhrase(newSessionId: string): string {
+  return `Session ${newSessionId} was not found`;
+}
 
 export function buildResumeInjection(newSessionId: string): string {
   return `/resume ${newSessionId}\r`;
@@ -27,31 +47,67 @@ export interface TripwireScanner {
   feed(chunk: string): boolean;
 }
 
+type AnsiMode = "text" | "esc" | "csi" | "str" | "str_esc";
+
 /**
- * Rolling substring scanner over a chunk stream. Keeps a carry of the last
- * phrase-length-minus-one characters so a phrase split across chunks still
- * trips. The phrase arrives as plain text even in raw ANSI output, so no
- * escape-sequence stripping is needed.
+ * Phrase scanner over a raw pty chunk stream. Statefully strips ANSI escape
+ * sequences (CSI, OSC/DCS-style strings, single-char escapes — sequences may
+ * span chunk boundaries) and drops all whitespace/control characters, then
+ * substring-matches the whitespace-stripped phrase against a rolling window.
+ * Whitespace-insensitive matching is load-bearing: the TUI renders the failure
+ * line's word gaps as cursor-column jumps, so the plain text `was not found`
+ * never appears contiguously in the raw stream.
  */
-export function createTripwireScanner(phrase: string = RESUME_NOT_FOUND_PHRASE): TripwireScanner {
+export function createTripwireScanner(phrase: string): TripwireScanner {
+  const normalizedPhrase = phrase.replace(/\s+/g, "");
   let carry = "";
+  let mode: AnsiMode = "text";
   let seen = false;
+
+  const cleanChunk = (chunk: string): string => {
+    let clean = "";
+    for (const char of chunk) {
+      switch (mode) {
+        case "text":
+          if (char === "\x1b") mode = "esc";
+          else if (!/[\s\x00-\x1f\x7f]/.test(char)) clean += char;
+          break;
+        case "esc":
+          if (char === "[") mode = "csi";
+          else if (char === "]" || char === "P" || char === "^" || char === "_" || char === "X") mode = "str";
+          else mode = "text"; // single-character escape; consume it
+          break;
+        case "csi":
+          if (char >= "\x40" && char <= "\x7e") mode = "text";
+          break;
+        case "str":
+          if (char === "\x07") mode = "text";
+          else if (char === "\x1b") mode = "str_esc";
+          break;
+        case "str_esc":
+          mode = char === "\\" ? "text" : "str";
+          break;
+      }
+    }
+    return clean;
+  };
+
   return {
     feed(chunk: string): boolean {
       if (seen) return true;
-      const window = carry + chunk;
-      if (window.includes(phrase)) {
+      const window = carry + cleanChunk(chunk);
+      if (window.includes(normalizedPhrase)) {
         seen = true;
         return true;
       }
-      carry = window.slice(Math.max(0, window.length - (phrase.length - 1)));
+      carry = window.slice(Math.max(0, window.length - (normalizedPhrase.length - 1)));
       return false;
     },
   };
 }
 
 export function formatResumeFailure(plan: SessionRestartPlan): string {
-  return `resume did not take (session ${plan.newSessionId} not found); original session ${plan.oldSessionId} is still live — run /resume ${plan.newSessionId} manually`;
+  return `resume did not take; original session ${plan.oldSessionId} is still live — run /resume ${plan.newSessionId} manually`;
 }
 
 export function formatResumeSuccess(plan: SessionRestartPlan): string {
@@ -72,6 +128,26 @@ export async function pauseCaptureForResume(session: CaptureSession): Promise<Co
   return paused;
 }
 
+export interface RolloutStat {
+  size: number;
+  mtimeMs: number;
+}
+
+async function defaultStatRollout(path: string): Promise<RolloutStat | null> {
+  try {
+    const fileStat = await stat(path);
+    return { size: fileStat.size, mtimeMs: fileStat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function rolloutGrew(before: RolloutStat | null, after: RolloutStat | null): boolean {
+  if (after === null) return false;
+  if (before === null) return true;
+  return after.size > before.size || after.mtimeMs > before.mtimeMs;
+}
+
 export interface ResumeInjectionInput {
   plan: SessionRestartPlan;
   captureSession: CaptureSession | undefined;
@@ -83,7 +159,10 @@ export interface ResumeInjectionInput {
   recordLineage?: (input: { sessionId: string; threadId: string }) => Promise<void>;
   logLineageError?: (message: string) => void;
   windowMs?: number;
+  tripGraceMs?: number;
+  confirmExtraMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  statRollout?: (path: string) => Promise<RolloutStat | null>;
 }
 
 export type ResumeInjectionResult = { ok: true; captureSession: CaptureSession } | { ok: false };
@@ -94,19 +173,15 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
   }
   input.logResume(formatSessionResumeLog(input.plan));
 
-  const ctx = input.captureSession.getCommandContext();
-  const threadId = ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "";
-  if (input.recordLineage !== undefined && threadId !== "") {
-    try {
-      await input.recordLineage({ sessionId: input.plan.newSessionId, threadId });
-    } catch (cause) {
-      input.logLineageError?.(lineageWriteFailureMessage(cause));
-    }
-  }
-
   const windowMs = input.windowMs ?? RESUME_TRIPWIRE_WINDOW_MS;
+  const tripGraceMs = input.tripGraceMs ?? RESUME_TRIP_GRACE_MS;
+  const confirmExtraMs = input.confirmExtraMs ?? RESUME_CONFIRM_EXTRA_MS;
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const scanner = createTripwireScanner();
+  const statRollout = input.statRollout ?? defaultStatRollout;
+  const scanner = createTripwireScanner(resumeNotFoundPhrase(input.plan.newSessionId));
+
+  const beforeStat = await statRollout(input.plan.rolloutPath);
+  const swapEvidence = async (): Promise<boolean> => rolloutGrew(beforeStat, await statRollout(input.plan.rolloutPath));
 
   let tripped = false;
   let resolveTripped: () => void = () => {};
@@ -128,8 +203,37 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
     unsubscribe();
   }
 
+  // Growth of the rebuilt rollout is the ground truth: a successful swap
+  // touches/appends it, a failed one leaves the rebuild's bytes alone. The
+  // tripwire only decides how long we wait before consulting it.
+  let swapped: boolean;
   if (tripped) {
+    await sleep(tripGraceMs);
+    swapped = await swapEvidence();
+  } else {
+    swapped = await swapEvidence();
+    for (let waited = 0; !swapped && waited < confirmExtraMs; waited += CONFIRM_POLL_MS) {
+      await sleep(CONFIRM_POLL_MS);
+      swapped = await swapEvidence();
+    }
+  }
+  if (!swapped) {
     return { ok: false };
+  }
+
+  // Lineage is recorded only once the swap is confirmed, so a failed resume
+  // leaves no session→thread row behind to misdirect later --resume/--continue
+  // resolution. The cost is the narrow crash-between-swap-and-record window;
+  // that is acceptable because the handoff capture below re-records the same
+  // mapping the moment it attaches to the rebuilt rollout.
+  const ctx = input.captureSession.getCommandContext();
+  const threadId = ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "";
+  if (input.recordLineage !== undefined && threadId !== "") {
+    try {
+      await input.recordLineage({ sessionId: input.plan.newSessionId, threadId });
+    } catch (cause) {
+      input.logLineageError?.(lineageWriteFailureMessage(cause));
+    }
   }
 
   const continueCapture = await pauseCaptureForResume(input.captureSession);

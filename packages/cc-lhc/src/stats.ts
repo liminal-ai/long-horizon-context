@@ -5,7 +5,14 @@ export interface CaptureStats {
   skippedUnknown: number;
   skippedMeta: number;
   skippedImage: number;
+  /** EVENTS dropped by replay dedupe (signature already seen while the replay window was open). */
   skippedReplay: number;
+  /**
+   * LINES re-tailed as a rebuilt-rollout prefix after an in-app resume. Kept
+   * apart from both linesSeen (they are not new activity) and skippedReplay
+   * (that counter is event-unit) so each stat stays a single coherent unit.
+   */
+  replayedPrefixLines: number;
   parseFailures: number;
   derivationsPending: number | null;
   threadId: string | null;
@@ -20,6 +27,7 @@ export function emptyCaptureStats(): CaptureStats {
     skippedMeta: 0,
     skippedImage: 0,
     skippedReplay: 0,
+    replayedPrefixLines: 0,
     parseFailures: 0,
     derivationsPending: null,
     threadId: null,
@@ -37,6 +45,7 @@ export function formatCaptureStatsLine(stats: CaptureStats): string {
     `skipped_meta=${stats.skippedMeta}`,
     `skipped_image=${stats.skippedImage}`,
     `skipped_replay=${stats.skippedReplay}`,
+    `replayed_prefix=${stats.replayedPrefixLines}`,
     `parse_fail=${stats.parseFailures}`,
   ];
   if (stats.derivationsPending !== null) {

@@ -104,9 +104,10 @@ export interface CaptureSessionDeps {
   knownRolloutPath?: string;
   /**
    * First N tailed lines are a replayed prefix (the rebuilt rollout after an
-   * in-app resume): tally them under skippedReplay instead of linesSeen and
-   * keep them out of the mapper skip counters, so cross-restart totals stay
-   * honest as a version-drift instrument.
+   * in-app resume): tally them under stats.replayedPrefixLines instead of
+   * linesSeen and keep them out of the mapper skip counters, so cross-restart
+   * totals stay honest as a version-drift instrument. Their EVENTS still flow
+   * through replay dedupe, which owns the event-unit skippedReplay counter.
    */
   replayedPrefixLines?: number;
   lineageDbPath?: string;
@@ -269,7 +270,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         const isPrefixLine = prefixRemaining > 0;
         if (isPrefixLine) {
           prefixRemaining -= 1;
-          stats.skippedReplay += 1;
+          stats.replayedPrefixLines += 1;
         } else {
           stats.linesSeen += 1;
         }

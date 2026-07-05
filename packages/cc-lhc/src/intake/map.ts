@@ -10,9 +10,12 @@ const META_MARKERS = ["<local-command-caveat>", "<command-name>", "<local-comman
 // Background-task notifications are machine traffic injected as user messages.
 // They stay in the record (the assistant's next turn responds to them) but as
 // runtime_note, so they skip prompt smoothing and stay out of the user lane.
-// Rebuilt rollouts re-serve runtime notes with the "[runtime note]" label, so
-// that prefix keeps the classification stable across a re-tail.
-const RUNTIME_NOTE_MARKERS = ["<task-notification>", "[runtime note]"] as const;
+// Rebuilt rollouts re-serve runtime notes with the "[runtime note]" label; the
+// mapper recognizes that label AND strips it, so the stored payload is always
+// the canonical note text — labels never stack across prune cycles, and the
+// replay signature of a re-tailed note matches the originally captured event.
+const TASK_NOTIFICATION_MARKER = "<task-notification>";
+const RUNTIME_NOTE_LABEL = "[runtime note]";
 
 export interface MapStats {
   sidechain: number;
@@ -77,15 +80,22 @@ function textEvent(
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
 }
 
-function isRuntimeNoteText(text: string): boolean {
+/** Canonical runtime-note text, or null when the text is a regular prompt. */
+function runtimeNoteText(text: string): string | null {
   const trimmed = text.trimStart();
-  return RUNTIME_NOTE_MARKERS.some((marker) => trimmed.startsWith(marker));
+  if (trimmed.startsWith(TASK_NOTIFICATION_MARKER)) return text;
+  if (trimmed.startsWith(RUNTIME_NOTE_LABEL)) {
+    const stripped = trimmed.slice(RUNTIME_NOTE_LABEL.length);
+    return stripped.startsWith(" ") ? stripped.slice(1) : stripped;
+  }
+  return null;
 }
 
 function mapUserString(item: RolloutLineItem, text: string, lineIndex: number): MessageEventInput[] {
   const uuid = recordUuid(item, lineIndex);
-  if (isRuntimeNoteText(text)) {
-    return [textEvent("runtime_note", text, "system", idempotencyKey(uuid, 0, "runtime_note"))];
+  const noteText = runtimeNoteText(text);
+  if (noteText !== null) {
+    return [textEvent("runtime_note", noteText, "system", idempotencyKey(uuid, 0, "runtime_note"))];
   }
   return [textEvent("user_prompt", text, "user", idempotencyKey(uuid, 0, "user_prompt"))];
 }

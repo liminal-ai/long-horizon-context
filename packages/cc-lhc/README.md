@@ -22,7 +22,7 @@ Nothing cc-related is written under `~/.lhc`. Existing threads there remain read
 
 ## `/lhc` commands
 
-`/lhc-status`, `/lhc-stats`, `/lhc-help`, `/lhc-prune [targetTokens]`, and `/lhc-compact` are intercepted locally. Prune/compact rebuild a **new** rollout file under `~/.claude/projects/…` (original never modified), then inject `/resume <newSessionId>` into the running Claude Code, which hot-swaps the session in-place (~1-2s) on the same LHC thread. If the resume doesn't take (a `was not found` tripwire in the output), the original session stays live and the wrapper prints the manual `/resume` command.
+`/lhc-status`, `/lhc-stats`, `/lhc-help`, `/lhc-prune [targetTokens]`, and `/lhc-compact` are intercepted locally. Prune/compact rebuild a **new** rollout file under `~/.claude/projects/…` (original never modified), then inject `/resume <newSessionId>` into the running Claude Code, which hot-swaps the session in-place (~1-2s) on the same LHC thread. If the resume doesn't take (the `Session <newSessionId> was not found` tripwire, confirmed against whether the rebuilt rollout file actually grew), the original session stays live and the wrapper prints the manual `/resume` command.
 
 ## Known warts (POC)
 

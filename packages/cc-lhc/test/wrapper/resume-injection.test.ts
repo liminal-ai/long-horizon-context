@@ -8,16 +8,27 @@ import {
   executeResumeInjection,
   formatResumeFailure,
   formatResumeSuccess,
-  RESUME_NOT_FOUND_PHRASE,
+  resumeNotFoundPhrase,
+  type RolloutStat,
 } from "../../src/wrapper/resume-injection.js";
+
+const NEW_ID = "00000000-1111-2222-3333-444444444444";
 
 const PLAN: SessionRestartPlan = {
   oldSessionId: "old-session",
-  newSessionId: "new-session",
+  newSessionId: NEW_ID,
   rolloutPath: "/tmp/new.jsonl",
   rebuiltLineCount: 4,
   expectedReintakeLines: 4,
 };
+
+// Byte-for-byte from a live claude 2.1.201 failure capture (/tmp/resume-x-nonexistent.log):
+// the words of the failure line arrive separated by cursor-column sequences, not spaces.
+const RAW_FAILURE_CHUNK = `  ⎿  \x1b[39mSession \x1b[1m${NEW_ID}\x1b[51G\x1b[22mwas\x1b[55Gnot\x1b[59Gfound.\r\x1b[1B\x1b[K`;
+
+function scanner(id: string = NEW_ID) {
+  return createTripwireScanner(resumeNotFoundPhrase(id));
+}
 
 function fakeCaptureSession(order: string[]): CaptureSession {
   const stats = { threadId: "th_same" };
@@ -36,6 +47,16 @@ function fakeCaptureSession(order: string[]): CaptureSession {
   } as unknown as CaptureSession;
 }
 
+/** statRollout double: first call returns `before`, later calls walk `after` (last repeats). */
+function statSequence(before: RolloutStat | null, ...after: Array<RolloutStat | null>) {
+  let calls = 0;
+  return async (): Promise<RolloutStat | null> => {
+    calls += 1;
+    if (calls === 1) return before;
+    return after[Math.min(calls - 2, after.length - 1)] ?? null;
+  };
+}
+
 describe("buildResumeInjection", () => {
   it("builds the slash command with a trailing carriage return", () => {
     expect(buildResumeInjection("abc-123")).toBe("/resume abc-123\r");
@@ -43,56 +64,55 @@ describe("buildResumeInjection", () => {
 });
 
 describe("createTripwireScanner", () => {
-  it("trips on the phrase inside one chunk", () => {
-    const scanner = createTripwireScanner();
-    expect(scanner.feed("Session 0000 was not found.")).toBe(true);
+  it("trips on the real raw failure bytes (words split by cursor sequences)", () => {
+    expect(scanner().feed(RAW_FAILURE_CHUNK)).toBe(true);
   });
 
-  it("does not trip on unrelated output", () => {
-    const scanner = createTripwireScanner();
-    expect(scanner.feed("Welcome back! Session resumed.")).toBe(false);
-    expect(scanner.feed("? for shortcuts")).toBe(false);
+  it("does not trip on a failure line for a different session id", () => {
+    const otherId = "99999999-8888-7777-6666-555555555555";
+    expect(scanner(otherId).feed(RAW_FAILURE_CHUNK)).toBe(false);
   });
 
-  it("trips when the phrase spans chunk boundaries", () => {
-    const scanner = createTripwireScanner();
-    expect(scanner.feed("Session 0000-1111 was n")).toBe(false);
-    expect(scanner.feed("ot fo")).toBe(false);
-    expect(scanner.feed("und.")).toBe(true);
+  it("does not trip on replayed conversation text discussing the phrase", () => {
+    const s = scanner();
+    expect(s.feed("the tripwire greps for Session abc was not found in the stream")).toBe(false);
+    expect(s.feed('we saw "was not found" render during the swap')).toBe(false);
+  });
+
+  it("trips on the plain-text form with literal spaces", () => {
+    expect(scanner().feed(`Session ${NEW_ID} was not found.`)).toBe(true);
+  });
+
+  it("trips when the raw bytes are split across chunks, including mid-escape-sequence", () => {
+    const s = scanner();
+    // Split inside the id, inside "\x1b[55G", and inside "found."
+    const cut1 = RAW_FAILURE_CHUNK.indexOf("2222");
+    const cut2 = RAW_FAILURE_CHUNK.indexOf("[55G") + 2;
+    const cut3 = RAW_FAILURE_CHUNK.indexOf("fou") + 2;
+    expect(s.feed(RAW_FAILURE_CHUNK.slice(0, cut1))).toBe(false);
+    expect(s.feed(RAW_FAILURE_CHUNK.slice(cut1, cut2))).toBe(false);
+    expect(s.feed(RAW_FAILURE_CHUNK.slice(cut2, cut3))).toBe(false);
+    expect(s.feed(RAW_FAILURE_CHUNK.slice(cut3))).toBe(true);
   });
 
   it("trips one character at a time", () => {
-    const scanner = createTripwireScanner();
-    const text = `xx ${RESUME_NOT_FOUND_PHRASE} yy`;
+    const s = scanner();
     let tripped = false;
-    for (const char of text) {
-      if (scanner.feed(char)) tripped = true;
+    for (const char of RAW_FAILURE_CHUNK) {
+      if (s.feed(char)) tripped = true;
     }
     expect(tripped).toBe(true);
   });
 
-  it("trips with ANSI sequences around the phrase", () => {
-    const scanner = createTripwireScanner();
-    expect(scanner.feed("\x1b[2K\x1b[1G\x1b[31mSession abc was")).toBe(false);
-    expect(scanner.feed(" not found.\x1b[0m\x1b[?25h")).toBe(true);
-  });
-
   it("stays tripped after the first hit", () => {
-    const scanner = createTripwireScanner();
-    scanner.feed("was not found");
-    expect(scanner.feed("anything")).toBe(true);
-  });
-
-  it("does not trip on a phrase torn apart by a long interruption", () => {
-    const scanner = createTripwireScanner();
-    expect(scanner.feed("was not")).toBe(false);
-    expect(scanner.feed("... lots of unrelated repaint bytes ...")).toBe(false);
-    expect(scanner.feed(" found")).toBe(false);
+    const s = scanner();
+    s.feed(RAW_FAILURE_CHUNK);
+    expect(s.feed("anything")).toBe(true);
   });
 });
 
 describe("executeResumeInjection", () => {
-  it("injects, records lineage, and hands capture off on success", async () => {
+  it("hands capture off and records lineage only after swap evidence, in order", async () => {
     const order: string[] = [];
     const captureSession = fakeCaptureSession(order);
     const written: string[] = [];
@@ -118,21 +138,24 @@ describe("executeResumeInjection", () => {
       },
       logResume: (message) => {
         order.push("log");
-        expect(message).toContain("resuming in-place as new-session");
+        expect(message).toContain(`resuming in-place as ${NEW_ID}`);
       },
       recordLineage,
       windowMs: 5,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 130, mtimeMs: 2 }),
     });
 
     expect(result).toEqual({ ok: true, captureSession: newCapture });
-    expect(written).toEqual(["/resume new-session\r"]);
-    expect(recordLineage).toHaveBeenCalledWith({ sessionId: "new-session", threadId: "th_same" });
-    expect(order).toEqual(["log", "lineage", "inject", "stop", "capture:/tmp/new.jsonl"]);
+    expect(written).toEqual([`/resume ${NEW_ID}\r`]);
+    expect(recordLineage).toHaveBeenCalledWith({ sessionId: NEW_ID, threadId: "th_same" });
+    expect(order).toEqual(["log", "inject", "lineage", "stop", "capture:/tmp/new.jsonl"]);
   });
 
-  it("reports failure and leaves the old capture running when the tripwire fires", async () => {
+  it("treats a trip as failure when the rollout never grew: no lineage, old capture untouched", async () => {
     const order: string[] = [];
     const captureSession = fakeCaptureSession(order);
+    const recordLineage = vi.fn(async () => {});
     let emitOutput: ((data: string) => void) | undefined;
     let unsubscribed = false;
 
@@ -141,8 +164,9 @@ describe("executeResumeInjection", () => {
       captureSession,
       writeToPty: () => {
         queueMicrotask(() => {
-          emitOutput?.("\x1b[2K Session new-session was not ");
-          emitOutput?.("found. \x1b[0m");
+          const cut = RAW_FAILURE_CHUNK.indexOf("not");
+          emitOutput?.(RAW_FAILURE_CHUNK.slice(0, cut));
+          emitOutput?.(RAW_FAILURE_CHUNK.slice(cut));
         });
       },
       onOutput: (listener) => {
@@ -155,15 +179,99 @@ describe("executeResumeInjection", () => {
         throw new Error("must not start a new capture on failure");
       },
       logResume: () => {},
+      recordLineage,
       windowMs: 5_000,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
     });
 
     expect(result).toEqual({ ok: false });
     expect(unsubscribed).toBe(true);
+    expect(recordLineage).not.toHaveBeenCalled();
     expect(order).not.toContain("stop");
   });
 
-  it("proceeds with injection when lineage write fails", async () => {
+  it("rescues a trip when the rollout grew anyway (false positive self-heals)", async () => {
+    const order: string[] = [];
+    const captureSession = fakeCaptureSession(order);
+    const newCapture = { stats: {} } as unknown as CaptureSession;
+    let emitOutput: ((data: string) => void) | undefined;
+
+    const result = await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      writeToPty: () => {
+        queueMicrotask(() => {
+          emitOutput?.(RAW_FAILURE_CHUNK);
+        });
+      },
+      onOutput: (listener) => {
+        emitOutput = listener;
+        return () => {};
+      },
+      startCapture: () => newCapture,
+      logResume: () => {},
+      windowMs: 5_000,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 145, mtimeMs: 3 }),
+    });
+
+    expect(result).toEqual({ ok: true, captureSession: newCapture });
+    expect(order).toContain("stop");
+  });
+
+  it("fails when no trip fires but the rollout never shows swap evidence", async () => {
+    const order: string[] = [];
+    const captureSession = fakeCaptureSession(order);
+    const recordLineage = vi.fn(async () => {});
+
+    const result = await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => {
+        throw new Error("must not start a new capture on failure");
+      },
+      logResume: () => {},
+      recordLineage,
+      windowMs: 5,
+      confirmExtraMs: 500,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(recordLineage).not.toHaveBeenCalled();
+    expect(order).not.toContain("stop");
+  });
+
+  it("keeps polling past the window and succeeds when growth arrives late", async () => {
+    const captureSession = fakeCaptureSession([]);
+    const newCapture = { stats: {} } as unknown as CaptureSession;
+
+    const result = await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => newCapture,
+      logResume: () => {},
+      windowMs: 5,
+      confirmExtraMs: 2_000,
+      sleep: async () => {},
+      statRollout: statSequence(
+        { size: 100, mtimeMs: 1 },
+        { size: 100, mtimeMs: 1 },
+        { size: 100, mtimeMs: 1 },
+        { size: 160, mtimeMs: 4 },
+      ),
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("proceeds with the handoff when the lineage write fails", async () => {
     const order: string[] = [];
     const captureSession = fakeCaptureSession(order);
     const lineageErrors: string[] = [];
@@ -183,6 +291,8 @@ describe("executeResumeInjection", () => {
         lineageErrors.push(message);
       },
       windowMs: 5,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 130, mtimeMs: 2 }),
     });
 
     expect(result.ok).toBe(true);
@@ -199,6 +309,7 @@ describe("executeResumeInjection", () => {
         startCapture: () => ({}) as CaptureSession,
         logResume: () => {},
         windowMs: 5,
+        sleep: async () => {},
       }),
     ).rejects.toThrow("capture session required");
   });
@@ -207,14 +318,14 @@ describe("executeResumeInjection", () => {
 describe("receipt formatting", () => {
   it("success receipt has no restart language and carries the reintake estimate", () => {
     const message = formatResumeSuccess(PLAN);
-    expect(message).toContain("resumed in-place as new-session");
+    expect(message).toContain(`resumed in-place as ${NEW_ID}`);
     expect(message).toContain("~4 replayed lines");
     expect(message).not.toMatch(/restart/i);
   });
 
   it("failure receipt names the manual command and the still-live session", () => {
     const message = formatResumeFailure(PLAN);
-    expect(message).toContain("/resume new-session");
+    expect(message).toContain(`/resume ${NEW_ID}`);
     expect(message).toContain("still live");
   });
 });

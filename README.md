@@ -12,7 +12,7 @@ packages/
 ├── pi-lhc/    PI extension — captures PI events into LHC, bridges compact, serves context
 └── cc-lhc/    Claude Code wrapper (POC) — PTY passthrough, rollout capture into LHC intake,
                /lhc command interception, claude -p inference lane, prune/compact via
-               rollout rebuild + --resume restart. State in ~/.cc-lhc/
+               rollout rebuild + in-app /resume swap. State in ~/.cc-lhc/
 ```
 
 ### `lhc` — The Core SDK
@@ -38,7 +38,7 @@ A PI extension that hooks into PI's session lifecycle. It captures PI events int
 
 ### `cc-lhc` — The Claude Code Wrapper (POC)
 
-Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture into an LHC thread, `/lhc-*` command interception ahead of Claude Code's input handling, a `claude -p` inference lane for derivations (Sonnet 5 no-thinking baseline), and prune/compact via rollout rebuild + `claude --resume` restart. Fully self-contained state in `~/.cc-lhc/` (registry, lineage, threads). Known warts are listed in `packages/cc-lhc/README.md`.
+Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture into an LHC thread, `/lhc-*` command interception ahead of Claude Code's input handling, a `claude -p` inference lane for derivations (Sonnet 5 no-thinking baseline), and prune/compact via rollout rebuild + an injected in-app `/resume` that hot-swaps the session in-place. Fully self-contained state in `~/.cc-lhc/` (registry, lineage, threads). Known warts are listed in `packages/cc-lhc/README.md`.
 
 ## Installing the Claude Code Harness (cc-lhc)
 
@@ -376,7 +376,7 @@ packages/pi-lhc/src/
 - `docs/onboard/02-domain-design.md` — per-domain design detail
 - `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
 - `docs/onboard/04-host-pi-lhc.md` — the PI connector host: capture, seeding, compact bridge, known debt
-- `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, interception, rollout capture, restart flow
+- `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, interception, rollout capture, in-app resume flow
 - `docs/decision-registry.md` — full decision registry (canonical authority)
 - `docs/fixes-feature-log.md` — running log of fixes, features, and open items
 

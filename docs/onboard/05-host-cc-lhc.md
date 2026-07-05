@@ -95,7 +95,7 @@ Because the wrapper cannot push new context into the running `claude` process, p
 2. Read the resulting `getSessionThreadView` and **rebuild a rollout file** (`rollout/rebuild.ts`, `rollout/write-rebuilt.ts`). A fresh `randomUUID()` session id is minted, the envelope is reconstructed from the original rollout, view entries are mapped to new user/assistant JSONL lines with a rebuilt parent chain, and the file is written **fsync'd to a new path** `<projects>/<cwd>/<newSessionId>.jsonl`. **The original rollout is never modified.**
 3. Append an entry to `sessions-index.json` (backed up once to `.bak`, then written atomically via temp-file rename) so Claude Code lists the rebuilt session. If the index exists but is unreadable, the op throws and does not touch it.
 4. Record the new-session→thread lineage, then **inject `/resume <newSessionId>\r` into the pty** (`wrapper/resume-injection.ts`). Claude Code hot-swaps the session in-place in ~1-2 s — no child kill, no TUI teardown. The child keeps the resumed session id and appends new turns to the rebuilt rollout file.
-5. Watch the forwarded pty output for ~3 s for the plain-text tripwire `was not found` (a rolling scanner spans chunk boundaries). **Not seen** → the swap took: stop the old capture and start a new one that tails the rebuilt rollout path directly (no discovery), carrying the stats and thread forward. The first `rebuiltLineCount` lines it tails are the replayed prefix — tallied under `skipped_replay`, not `linesSeen` or the mapper skip counters, so cross-restart totals stay honest. **Seen** → the swap did not take: report failure with the manual `/resume <newSessionId>` command and change nothing else — the original session is still live and the old capture keeps running.
+5. Decide the outcome with two layers. The fast layer watches the forwarded pty output for ~3 s for this swap's failure line, `Session <newSessionId> was not found` — scoped to the freshly minted id so replayed conversation text can never trip it, and matched whitespace-insensitively after stateful ANSI stripping because the TUI renders the line's word gaps as cursor-column jumps (`was\x1b[55Gnot\x1b[59Gfound.`), not spaces. The ground truth is the rebuilt rollout file itself: a successful swap touches and appends to it within ~1-2 s, so growth (size/mtime since injection) decides — a trip without growth is failure, a trip with growth self-heals to success, and a quiet window without growth polls a few seconds longer before ruling failure. **Success** → record the new-session→thread lineage (only now, so a failed resume leaves no stale row; the handoff capture re-records it on attach as the crash backstop), stop the old capture, and start a new one that tails the rebuilt rollout path directly (no discovery), carrying the stats and thread forward. The first `rebuiltLineCount` lines it tails are the replayed prefix — tallied per line under `replayed_prefix`, kept out of `linesSeen` and the mapper skip counters, while their deduped events count once under the event-unit `skipped_replay` — so cross-restart totals stay honest. **Failure** → report it with the manual `/resume <newSessionId>` command and change nothing else — the original session is still live and the old capture keeps running.
 
 **Failure is safe by construction.** If the rebuild throws, the current session is left running unchanged and no resume is attempted (the command reports as much). If the injected resume does not take, the original session is untouched — the worst case is running the printed `/resume` command by hand, never a lost thread. A bare `/resume` is never injected (it opens an interactive picker).
 
@@ -114,9 +114,10 @@ sequenceDiagram
   Cmd->>Cmd: record lineage newId→thread
   Cmd->>CC: inject "/resume <newId>\r" into pty
   CC->>CC: hot-swap session in-place (~1-2s)
-  Cmd->>Cmd: watch output ~3s for "was not found"
-  Cmd->>Cmd: not seen → swap capture to rebuilt rollout (stats carried, prefix → skipped_replay)
-  Note over Cmd: rebuild throw → old session runs on; tripwire → report manual /resume, change nothing
+  Cmd->>Cmd: watch output ~3s for "Session <newId> was not found"
+  Cmd->>Cmd: confirm swap via rebuilt-rollout growth (ground truth)
+  Cmd->>Cmd: swapped → record lineage, swap capture to rebuilt rollout (stats carried, prefix → replayed_prefix)
+  Note over Cmd: rebuild throw → old session runs on; no swap evidence → report manual /resume, change nothing
 ```
 
 ## State layout

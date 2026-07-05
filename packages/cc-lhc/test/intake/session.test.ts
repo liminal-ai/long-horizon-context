@@ -242,7 +242,7 @@ describe("resume handoff capture", () => {
     await session.stop();
   });
 
-  it("counts replayed-prefix lines under skippedReplay without inflating linesSeen or skip tallies", async () => {
+  it("counts replayed-prefix lines under replayedPrefixLines without inflating linesSeen or skip tallies", async () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-prefix-"));
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-prefix.jsonl");
@@ -272,12 +272,13 @@ describe("resume handoff capture", () => {
       logError: () => {},
     });
 
-    for (let attempt = 0; attempt < 50 && session.stats.skippedReplay < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && session.stats.replayedPrefixLines < 2; attempt += 1) {
       await sleep(50);
     }
-    expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.replayedPrefixLines).toBe(2);
     expect(session.stats.linesSeen).toBe(10);
     expect(session.stats.skippedUnknown).toBe(5);
+    expect(session.stats.skippedReplay).toBe(0);
 
     // A genuinely new line past the prefix counts normally again.
     appendLine(rolloutPath, { type: "mode", mode: "normal" } as RolloutLineItem);
@@ -286,7 +287,92 @@ describe("resume handoff capture", () => {
     }
     expect(session.stats.linesSeen).toBe(11);
     expect(session.stats.skippedUnknown).toBe(6);
+    expect(session.stats.replayedPrefixLines).toBe(2);
+    await session.stop();
+  });
+
+  it("counts deduped prefix EVENTS once under skippedReplay, prefix LINES once under replayedPrefixLines", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-prefix-events-"));
+    const dbPath = join(home, "cc-lhc.sqlite");
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-events-rollout-"));
+    const rolloutPath = join(rolloutDir, "rebuilt-events.jsonl");
+
+    // A realistic rebuilt prefix: one user line and one assistant line.
+    const userLine = {
+      type: "user",
+      uuid: "prefix-user",
+      message: { role: "user", content: "please read the file" },
+    } as RolloutLineItem;
+    const assistantLine = {
+      type: "assistant",
+      uuid: "prefix-assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "here is what I found" }] },
+    } as RolloutLineItem;
+    writeFileSync(rolloutPath, `${JSON.stringify(userLine)}\n${JSON.stringify(assistantLine)}\n`);
+
+    // Persist the prefix events' signatures as already-seen, the state a real
+    // handoff inherits from the pre-resume capture of the same content.
+    const { mapRolloutLine } = await import("../../src/intake/map.js");
+    const { eventContentSignature } = await import("../../src/intake/replay-dedupe.js");
+    const { appendThreadSignatures } = await import("../../src/intake/lineage-db.js");
+    const signatures = [userLine, assistantLine].flatMap((line, index) =>
+      mapRolloutLine(line, index).events.map((event) => eventContentSignature(event)),
+    );
+    expect(signatures).toHaveLength(2);
+    appendThreadSignatures(dbPath, "th_prefix_events", signatures);
+
+    const stats = emptyCaptureStats();
+    stats.threadId = "th_prefix_events";
+    stats.linesSeen = 10;
+    stats.eventsSent = 8;
+    const intakeCalls: number[] = [];
+    const session = startCaptureSession({
+      cwd: "/work/prefix-event-stats",
+      startedAt: new Date(),
+      noInference: true,
+      lineageDbPath: dbPath,
+      knownRolloutPath: rolloutPath,
+      replayedPrefixLines: 2,
+      continueCapture: {
+        threadRef: { threadId: "th_prefix_events", registryPath: join(home, "registry.sqlite") },
+        sdk: {
+          drainSettled: async () => {},
+          intakeStream: {
+            messageEvents: async (_ref: unknown, events: unknown[]) => {
+              intakeCalls.push(events.length);
+              return { ok: true, value: { events: events.map(() => ({ outcome: "recorded" })) } };
+            },
+          },
+        } as unknown as Lhc,
+        stats,
+      },
+      log: () => {},
+      logError: () => {},
+    });
+
+    for (let attempt = 0; attempt < 50 && session.stats.skippedReplay < 2; attempt += 1) {
+      await sleep(50);
+    }
+    // Each prefix line counted once as a line, each of its deduped events once as an event.
+    expect(session.stats.replayedPrefixLines).toBe(2);
     expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.linesSeen).toBe(10);
+    expect(session.stats.eventsSent).toBe(8);
+    expect(intakeCalls).toEqual([]);
+
+    // A genuinely new post-prefix line intakes normally.
+    appendLine(rolloutPath, {
+      type: "user",
+      uuid: "post-prefix-user",
+      message: { role: "user", content: "a brand new prompt" },
+    } as RolloutLineItem);
+    for (let attempt = 0; attempt < 50 && session.stats.eventsSent < 9; attempt += 1) {
+      await sleep(50);
+    }
+    expect(session.stats.linesSeen).toBe(11);
+    expect(session.stats.eventsSent).toBe(9);
+    expect(session.stats.skippedReplay).toBe(2);
+    expect(session.stats.replayedPrefixLines).toBe(2);
     await session.stop();
   });
 });

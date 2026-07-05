@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { idempotencyKey, mapRolloutLine, mapRolloutLines } from "../../src/intake/map.js";
+import {
+  createReplayDedupeState,
+  eventContentSignature,
+  filterReplayEvents,
+} from "../../src/intake/replay-dedupe.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
 const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "rollout-samples.jsonl");
@@ -198,7 +203,7 @@ describe("mapRolloutLine", () => {
     expect(result.events.map((event) => event.eventKind)).toEqual(["runtime_note"]);
   });
 
-  it("keeps rebuilt-rollout runtime-note lines classified as runtime_note on re-tail", () => {
+  it("strips the [runtime note] label on re-tail so the payload is canonical", () => {
     const item = {
       type: "user",
       uuid: "rebuilt-note-uuid",
@@ -206,6 +211,36 @@ describe("mapRolloutLine", () => {
     } as RolloutLineItem;
     const result = mapRolloutLine(item);
     expect(result.events.map((event) => event.eventKind)).toEqual(["runtime_note"]);
+    expect(result.events[0]?.payload).toEqual({ text: "<task-notification>task done</task-notification>" });
+  });
+
+  it("round-trips a notification through rebuild rendering: identical payload, replay dedupe skips it", () => {
+    const blob = '<task-notification>\n<task id="b-1"><status>completed</status></task>\n</task-notification>';
+    const original = mapRolloutLine({
+      type: "user",
+      uuid: "orig-note-uuid",
+      message: { role: "user", content: blob },
+    } as RolloutLineItem).events[0];
+    expect(original).toBeDefined();
+
+    // Exactly what lhc's session-thread-view renders into a rebuilt rollout.
+    const rendered = `[runtime note] ${blob}`;
+    const replayed = mapRolloutLine({
+      type: "user",
+      uuid: "rebuilt-note-uuid-2",
+      message: { role: "user", content: rendered },
+    } as RolloutLineItem).events[0];
+    expect(replayed).toBeDefined();
+
+    expect(replayed?.eventKind).toBe("runtime_note");
+    expect(replayed?.payload).toEqual(original?.payload);
+    expect(eventContentSignature(replayed!)).toBe(eventContentSignature(original!));
+
+    const dedupe = createReplayDedupeState(true, [eventContentSignature(original!)]);
+    const filtered = filterReplayEvents([replayed!], dedupe);
+    expect(filtered.skipped).toBe(1);
+    expect(filtered.toSend).toEqual([]);
+    expect(dedupe.replayWindowActive).toBe(true);
   });
 
   it("keeps prompts that merely mention task notifications as user_prompt", () => {
