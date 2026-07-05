@@ -1,8 +1,8 @@
 # Decisions brief
 
-The high-leverage rulings that shape how to approach this system. The full authority is
-`decision-registry.md` (197 entries, evidence-cited, statuses, graveyards) — this is the
-orientation cut. Entry IDs point there. If this brief and the registry disagree, the
+The high-leverage rulings that shape how to approach this system. The full registry is
+`docs/decision-registry.md` (evidence-cited entries with statuses and graveyards) — this is
+the orientation cut. Entry IDs point there. If this brief and the registry disagree, the
 registry wins; if code and the registry disagree, that's a finding, not a license.
 
 ## The record (RECORD)

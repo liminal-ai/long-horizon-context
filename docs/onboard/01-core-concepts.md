@@ -1,5 +1,7 @@
 # Long Horizon Context: Core Concepts
 
+Last verified against code: 2026-07-04. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+
 Long Horizon Context (LHC) is an SDK for managing an agentic harness's context and history. It keeps the full message history of a conversation as a durable record, and from that record builds shorter, summarized views that a harness can load and work from.
 
 ## Basics
@@ -32,13 +34,14 @@ The working vocabulary of the project. Each entry says what the term means and, 
 
 **Derivation.** The stored output of producing a new representation of existing content — a smoothed prompt, a tool-result summary, a chunk summary — attached to its source. To **derive** (deriving) is the act; a **derivation** is the stored result. **Derivation type** names which one. Deriving runs either in the background off the work queue or synchronously through explicit derive operations on the domain surfaces — never on the intake hot path.
 
-**Derivation types.** The system has six derivation types, each owned by one domain. Four are produced by calling a model; two are assembled deterministically from other material:
+**Derivation types.** The system has seven derivation types, each owned by one domain. Four are produced by calling a model; three are assembled deterministically from other material:
 
 - `smoothed_prompt` — cleans up a user prompt; inference-backed (owned by messages)
-- `tool_result_summary` — summarizes a tool result; inference-backed (owned by messages)
+- `tool_result_summary` — summarizes a tool result; inference-backed (owned by messages). Inference summarization is currently forced off — every tool result gets deterministic 500-char truncation instead (interim; see DERIV-12 in the decision registry).
 - `turn_rendering` — composes a turn's activity into one account from its message-level derivations; deterministic (owned by turns)
-- `smooth_turn_compression` — compresses a turn rendering for the smooth band; inference-backed (owned by turns)
-- `chunk_summary_detailed` — assembles a chunk summary from member turn compressions and tool-activity receipts; deterministic (owned by turns)
+- `pre_detailed_assembly` — strips a closed turn to dialogue only (`user_prompt` and `assistant_text`); deterministic (owned by turns). `detailed_turn_compression` compresses this assembly, not the full turn rendering.
+- `detailed_turn_compression` — compresses a turn's pre-detailed assembly for the smooth band's degraded fallback; inference-backed (owned by turns)
+- `chunk_summary_detailed` — assembles a chunk summary from member `detailed_turn_compression` content (dialogue-derived); deterministic (owned by turns)
 - `chunk_summary_brief` — summarizes a chunk, keeping outcomes only; inference-backed (owned by turns)
 
 **Derivation states.** Every derivation carries one of four states: `pending` (expected or in flight), `ready` (usable), `failed` (terminal, with a reason), `blocked` (source damage; retry won't help). Retry-in-progress is not a state — a derivation stays `pending` while attempts remain. Mechanical retry detail (attempt counts, backoff) lives on the queue row, not the derivation. State belongs to the derivation itself, never to its subject — a chunk does not have "a state"; its detailed derivation and its brief derivation each carry their own.
@@ -56,7 +59,7 @@ The working vocabulary of the project. Each entry says what the term means and, 
 
 **Turn.** One full exchange: a user prompt and everything that follows it, up to the turn's end. **Chunk:** a container of consecutive closed turns, cut by a token-based size policy, whose membership never changes once closed.
 
-**Bands.** The fidelity tiers a thread view is built from, oldest to newest: **brief** (shortest chunk summaries), **detailed** (fuller chunk summaries), **smooth** (compressed turn renderings). These three are rendered and stored as snapshot text by a compact. The **full** tier is not stored — compact uses its percentage to determine where the compact point falls, and everything after that point is served as the live tail. A compact decides how much of the thread lands in each tier.
+**Bands.** The fidelity tiers a thread view is built from, oldest to newest: **brief** (shortest chunk summaries), **detailed** (fuller chunk summaries), **smooth** (turn renderings at full texture). These three are rendered and stored as snapshot text by a compact. When `turn_rendering` is missing, the smooth band falls back to `detailed_turn_compression` as a degraded rung. The **full** tier is not stored — compact uses its percentage to determine where the compact point falls, and everything after that point is served as the live tail. A compact decides how much of the thread lands in each tier.
 
 **Smart compact.** The explicit operation that produces a new thread view. It takes a compact configuration — a target size in tokens and a set of percentages that control how much of that size each band gets — and arranges the thread's turns and chunks into bands accordingly. Compact never calls a model; it assembles from derivations that already exist. Missing derivation material degrades the entry (falls back to a cruder derivation, a deterministic floor, or raw content). Damage to the canonical record itself — such as a turn referencing a missing chunk member — causes compact to refuse before writing, leaving the prior view intact.
 
@@ -66,7 +69,7 @@ The SDK ships built-in compact configurations that can be overridden or extended
 
 **Visibility boundary.** A per-thread marker that controls how tool results appear in the model context: tool results at or behind it render as a deterministic truncation with a pointer back to the full record, tool results ahead of it render full. Intake does not advance it automatically — pre-compact resume and session-view keep full tool results. Compact resets the boundary to the compact point. It affects only tool results — prompts, assistant text, and thinking always render full.
 
-**Inference callbacks.** The four-operation interface that sits at the boundary between LHC and the host's model access: `smoothPrompt`, `summarizeToolResult`, `compressSmoothTurn`, and `summarizeChunkBrief`. Any model call LHC makes goes through this interface. Deterministic derivations such as `turn_rendering` and `chunk_summary_detailed` stay inside their owning domain handlers and do not cross the inference boundary.
+**Inference callbacks.** The four-operation interface that sits at the boundary between LHC and the host's model access: `smoothPrompt`, `summarizeToolResult`, `compressDetailedTurn`, and `summarizeChunkBrief`. Any model call LHC makes goes through this interface. Deterministic derivations such as `turn_rendering`, `pre_detailed_assembly`, and `chunk_summary_detailed` stay inside their owning domain handlers and do not cross the inference boundary.
 
 **OpResult.** The error contract. Every operation that can fail returns either `{ ok: true, value }` or `{ ok: false, error }`. The error carries a machine-readable `code`, a human-readable `reason`, and an `errorClass` (`caller_error`, `state_corruption`, or `system_error`). Expected failures are always returned this way, never thrown. Programmer bugs inside LHC may still throw, but callers are not expected to handle throws as contract outcomes.
 

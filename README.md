@@ -9,7 +9,10 @@ The system is designed as an SDK consumed by host harnesses. The primary integra
 ```
 packages/
 ├── lhc/       Core SDK — event storage, derivation pipeline, smart compact, thread views
-└── pi-lhc/    PI extension — captures PI events into LHC, bridges compact, serves context
+├── pi-lhc/    PI extension — captures PI events into LHC, bridges compact, serves context
+└── cc-lhc/    Claude Code wrapper (POC) — PTY passthrough, rollout capture into LHC intake,
+               /lhc command interception, claude -p inference lane, prune/compact via
+               rollout rebuild + --resume restart. State in ~/.cc-lhc/
 ```
 
 ### `lhc` — The Core SDK

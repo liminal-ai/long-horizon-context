@@ -1,5 +1,7 @@
 # Long Horizon Context: Domain Design
 
+Last verified against code: 2026-07-04. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+
 This document describes each domain in more depth: what it stores, the operations it provides, and the other domains it calls. It builds on the vocabulary in 01-core-concepts.md.
 
 ## Domain surfaces
@@ -199,7 +201,7 @@ Some derivations belong to a single message and need nothing beyond it, so `mess
 
 A user prompt gets a `smoothed_prompt` derivation: cleaned and attenuated with its content preserved, queued when the prompt lands. If the cleaned text exceeds a configured token threshold, the cleaned text itself becomes the derivation without calling inference.
 
-A tool result gets a `tool_result_summary` derivation. The full output is stored when its message is created and is never discarded. The summary is produced by inference, carrying derivation state and able to fail. Large tool results (above the `largeTierTokens` threshold) get an immediate deterministic truncation instead of queuing inference work. Every tool-result summary states its outcome mechanically — succeeded, failed, or unknown — stamped from the record, never authored by model text.
+A tool result gets a `tool_result_summary` derivation. The full output is stored when its message is created and is never discarded. The summary is inference-backed and carries derivation state, but inference summarization is currently forced off — every tool result gets deterministic 500-char truncation instead (interim; see DERIV-12 in the decision registry). Large tool results (above the `largeTierTokens` threshold) would get an immediate deterministic truncation instead of queuing inference work when inference is enabled. Every tool-result summary states its outcome mechanically — succeeded, failed, or unknown — stamped from the record, never authored by model text.
 
 Tool calls are kept as-is, not summarized: call arguments are usually short, so no separate derivation pass is needed.
 
@@ -268,11 +270,9 @@ sequenceDiagram
 
 Closing a turn makes its membership stable. The work that follows runs after the close and is queued durably in the same transaction:
 
-- **`turn_rendering`** — a deterministic composition of the turn's activity from its message-level derivations. Smoothed prompts and tool-result summaries are used where ready; deterministic floors fill in where they are not. Tool calls and results that form a consecutive stretch are composed into a single run-level account that names the tools, counts the calls, and tallies the mechanical outcomes. The rendering carries tool-run receipts — structured records of what each run did and how it ended — so that chunk summaries can read outcomes without re-deriving anything.
+- **`turn_derivation`** (one work item) — deterministically produces **`turn_rendering`** and **`pre_detailed_assembly`** in one completion transaction. `turn_rendering` composes the turn's activity from its message-level derivations: smoothed prompts and tool-result summaries where ready, deterministic floors where they are not. Tool calls and results that form a consecutive stretch are composed into a single run-level account that names the tools, counts the calls, and tallies the mechanical outcomes. `pre_detailed_assembly` strips the same turn to dialogue only (`user_prompt` and `assistant_text`) for compression input.
 
-- **`smooth_turn_compression`** — an inference-backed compression of the turn rendering for the smooth band. This is the slow work; the rendering composition above is deterministic and fast.
-
-Both derivations are queued together as one work item. When the handler runs, it composes the rendering first, then sends the rendering through inference for compression. Both derivation results are written in one completion transaction.
+- **`detailed_turn_compression`** (a separate work item, enqueued in that same completion transaction) — inference-backed compression of the `pre_detailed_assembly`, not the turn rendering. This is the slow work; the rendering and assembly above are deterministic and fast. The smooth band serves `turn_rendering` at full texture; `detailed_turn_compression` is only a degraded fallback when rendering is missing.
 
 The `turns` surface exposes operations to check derivation state, re-queue failed work, and run derivation synchronously (`deriveTurn`).
 
@@ -280,15 +280,15 @@ The `turns` surface exposes operations to check derivation state, re-queue faile
 
 A chunk is a container of turns. Chunks let the system group multiple closed turns into larger units that can be summarized and placed into lower-fidelity bands. Turns are the base unit; chunks are the next container above them.
 
-The `turns` domain owns chunk formation because chunking depends on turn order, turn size, and the token cost of smooth turn compressions. Closed turns accumulate into the current open chunk. The chunk close policy is a deterministic arithmetic check against configured thresholds (`targetProjectedTokens` / `maxProjectedTokens`) over stored projected token counts — identical streams produce identical chunk boundaries across restarts. Chunk placement — assigning a turn to a chunk — happens inside the turn derivation handler's completion transaction, so a crash leaves either a placed turn with its enqueued summaries or nothing, never a derived-but-unplaced turn.
+The `turns` domain owns chunk formation because chunking depends on turn order, turn size, and projected pre-compression token counts. Turn derivation, composition, and chunk recovery live in `turns/internal/derive.ts`, `turns/internal/compose.ts`, and `turns/internal/chunk-recovery.ts`. Closed turns accumulate into the current open chunk. The chunk close policy is a deterministic arithmetic check against configured thresholds (`targetProjectedTokens` / `maxProjectedTokens`) over stored projected token counts — identical streams produce identical chunk boundaries across restarts. Chunk placement — assigning a turn to a chunk — happens inside the turn derivation handler's completion transaction, so a crash leaves either a placed turn with its enqueued summaries or nothing, never a derived-but-unplaced turn.
 
 A closed chunk gets two derivations, queued in the completion transaction:
 
-- **`chunk_summary_detailed`** — a deterministic assembly from member turn compressions and their tool-run receipts. Keeps the texture of what happened: what was changed and whether it succeeded.
+- **`chunk_summary_detailed`** — a deterministic assembly from member `detailed_turn_compression` content (dialogue-derived). Keeps the texture of what happened: what was changed and whether it succeeded.
 
 - **`chunk_summary_brief`** — an inference-backed summary that keeps outcomes only. What ages out first is the activity's texture, never its result.
 
-Both carry derivation state and can be checked through the `turns` surface. Chunk summaries wait on their member turn compressions: if a member's `smooth_turn_compression` is not ready, the chunk summary handler requeues; if it is blocked, the chunk summary lands blocked.
+Both carry derivation state and can be checked through the `turns` surface. Chunk summaries wait on their member turn compressions: if a member's `detailed_turn_compression` is not ready, the chunk summary handler requeues; if it is blocked, the chunk summary lands blocked.
 
 ### Reading turns and chunks
 
@@ -310,7 +310,7 @@ sequenceDiagram
 
 ## Thread view
 
-A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter representations. The `thread-view` domain stores compact snapshots and serves them with the live tail. Its operations are `getLlmRequestContext`, `status`, `describe`, `compact`, and `materialize`. A harness either loads a view that LHC has written to a file or asks LHC for the current `LlmRequestContext` directly.
+A thread view is a summarized, harness-ready rendering of a thread. It holds enough of the conversation for an agent to resume work without the full history: recent activity at high fidelity, older activity compressed into shorter representations. The `thread-view` domain stores compact snapshots and serves them with the live tail. Its operations are `getLlmRequestContext`, `getSessionThreadView`, `status`, `describe`, `prune`, `previewCompact`, `compact`, and `materialize`. Internally the domain spreads across `thread-view/index.ts`, `internal/select.ts`, `internal/compact-compute.ts`, `internal/assemble.ts`, `internal/boundary.ts`, `internal/session-view.ts`, `internal/render.ts`, `internal/snapshot.ts`, and `internal/materialize.ts`. A harness either loads a view that LHC has written to a file or asks LHC for the current `LlmRequestContext` directly.
 
 A view is a rendering, not a second copy of the conversation. It is assembled from records the other domains already own: messages, turns, chunks, and the derivations derived from them. Producing a view never changes the canonical history; it selects and arranges what already exists.
 
@@ -319,7 +319,7 @@ A view is a rendering, not a second copy of the conversation. It is assembled fr
 A thread view is arranged in bands of decreasing fidelity, from the most recent activity down to the oldest:
 
 - **full**: recent turns and messages served live from the record (the tail)
-- **smooth**: compressed turn renderings
+- **smooth**: turn renderings at full texture (`detailed_turn_compression` is a degraded fallback when rendering is missing)
 - **detailed**: detailed chunk summaries
 - **brief**: brief chunk summaries — the compressed floor of the view
 
@@ -335,7 +335,7 @@ Compact is an explicit operation, invoked by the host or caller. It does not run
 
 Before assembly, compact reads record and derivation state as it stands. It does not call providers, schedule repair work, or re-queue failed derivations. If canonical record damage is detected — such as a turn referencing a missing chunk member — compact refuses before writing, leaving the prior view intact.
 
-When a band entry depends on a derivation that is not ready, compact does not stop. It walks a fallback ladder: the smooth band tries `turn_rendering`, then `smooth_turn_compression`, then a deterministic excerpt of the turn's messages, then a gap. The detailed and brief bands try their primary chunk summary, then a concatenation of stored member material, then a gap. A gap is always the last resort, never the first response to a missing derivation. Chunk stored-member fallbacks are warning-logged; all degraded entries and gaps are recorded in the compact receipt and the stored view metadata.
+When a band entry depends on a derivation that is not ready, compact does not stop. It walks a fallback ladder: the smooth band tries `turn_rendering`, then `detailed_turn_compression` (marked degraded), then a deterministic excerpt of the turn's messages, then a gap. The detailed and brief bands try their primary chunk summary, then a concatenation of stored member material, then a gap. A gap is always the last resort, never the first response to a missing derivation. Chunk stored-member fallbacks are warning-logged; all degraded entries and gaps are recorded in the compact receipt and the stored view metadata.
 
 ```mermaid
 sequenceDiagram
