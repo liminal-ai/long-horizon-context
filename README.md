@@ -45,7 +45,7 @@ Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture
 To set up cc-lhc on a machine that has Claude Code (no PI needed), give an AI coding agent this instruction — or follow it yourself:
 
 ```
-Clone --recursive https://github.com/liminal-ai/pi-lhc.git, then read
+Clone --recursive https://github.com/liminal-ai/long-horizon-context.git, then read
 .setup/cc-lhc-standalone.md in the clone and follow it to set up cc-lhc.
 ```
 
