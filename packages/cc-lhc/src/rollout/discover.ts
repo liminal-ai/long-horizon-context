@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 /** Encode cwd the way Claude Code names project dirs under ~/.claude/projects/. */
 export function encodeProjectPath(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9_-]/g, "-");
+  return cwd.replace(/[^A-Za-z0-9-]/g, "-");
 }
 
 export interface DiscoverDeps {
