@@ -1,8 +1,23 @@
 # pi-lhc — PI ↔ LHC Connector Extension
 
-A PI extension that bridges the [PI](https://github.com/anthropics/pi) coding agent with the LHC context management SDK. It captures every PI session event into a durable LHC thread, intercepts PI's compaction to run LHC smart compact, and seeds PI sessions from LHC thread views so agents start with full long-horizon context.
+A PI extension that bridges the [PI](https://github.com/earendil-works/pi) coding agent with the LHC context management SDK. It captures every PI session event into a durable LHC thread, intercepts PI's compaction to run LHC smart compact, and seeds PI sessions from LHC thread views so agents start with full long-horizon context.
 
 The connector holds only plain data (`SessionState`) and a live `LhcInstance` between hooks — never a PI `ctx` or session object, which PI replaces on new/resume/fork.
+
+## Current status (2026-07-06)
+
+Stable daily driver — this is the harness LHC is developed inside:
+
+- **Capture, serving, and compact bridge** all in production use. Smart compact replaces PI's native compaction via `session_before_compact`.
+- **Resume fidelity verified byte-exact**: a resumed session's rendered context matched the live session character-for-character on a ~150k-token real session (77 messages, 35 tool calls). Rendered identifiers were stripped from served text to make this hold.
+- **Runs on vendored patched PI** (`vendor/pi` submodule): stock upstream plus a fix preserving signed thinking blocks in request history for `display: "omitted"` models. See the root README's "Vendored PI" section.
+- **Commands**: `/lhc-rehydrate`, `/lhc-tool-prune [targetTokens]`, `/lhc-export-threadview`, `/lhc-export-pi-session`.
+
+Known open items:
+
+- **Thinking-signature capture**: the record stores thinking text but not `thinkingSignature`, so a resumed session rebuilds history without prior signed thinking blocks — a one-time cache miss on resume for Claude lanes now that the PI patch preserves them live. Fix queued.
+- **Token accounting understates real context**: image payloads and empty-text thinking are represented cheaply in the record, so thread token totals sit below what the live session actually costs.
+- **Tool-result summaries are truncation-only** (`FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true`); inference-backed summaries are wired but gated off.
 
 ## Launcher
 
@@ -63,7 +78,7 @@ All PI runtime/config flags pass through: `--provider`, `--model`, `--api-key`, 
 PI calls `activate(pi)`, which creates a connector and registers:
 - 9 Epic 1 hooks (capture and lifecycle)
 - 2 compact hooks
-- 2 commands (`/lhc-rehydrate`, `/lhc-dump-view`)
+- 4 commands (`/lhc-rehydrate`, `/lhc-tool-prune`, `/lhc-export-threadview`, `/lhc-export-pi-session`)
 - 3 extension flags (`--lhc-thread`, `--lhc-resume`, `--lhc-continue`)
 
 ### Registered Hooks
@@ -189,9 +204,17 @@ Sequence:
 
 If the setup throws or the session is cancelled, pending rehydrate state is cleaned up. The temporary instance is always disposed in `finally`.
 
-### `/lhc-dump-view`
+### `/lhc-tool-prune [targetTokens]`
 
-Write the current LHC thread view to a timestamped text file in the working directory (`lhc-view-YYYYMMDD-HHMMSS.txt`). The file contains every message from `getLlmRequestContext` formatted as `[role]\ncontent\n`. Useful for inspecting what the agent would see.
+Advance the visibility boundary over older tool results: walks live tool results newest-first from the current boundary, keeps full results until the target budget (default 32k tokens), then moves the boundary so everything older serves truncated. One write transaction; prints a receipt with before/after boundary and zone tokens. Never moves behind the compact point; reports honestly when already under target (`no-op`).
+
+### `/lhc-export-threadview`
+
+Write the canonical LHC thread view to a timestamped text file in the working directory. Deterministic serialization — used with `/lhc-export-pi-session` to diff LHC's rendering against live PI state.
+
+### `/lhc-export-pi-session`
+
+Write the live PI session's messages to a timestamped text file using the same serializer. Byte-identical output across a resume is the fidelity contract; these two commands are the verification harness for it.
 
 ---
 

@@ -6,7 +6,22 @@ Usage: `cc-lhc [claude args...]` — all arguments pass through to `claude` verb
 
 Override the child binary with `CC_LHC_CLAUDE_BIN` (default: `claude` on PATH).
 
-Status: slice 7 — `~/.cc-lhc` home directory, sqlite lineage, thread continuity across wrapper launches.
+## Current status (2026-07-06)
+
+Working POC, all core paths proven on real sessions:
+
+- **Capture**: rollout JSONL tailed into an LHC thread; tolerant of unknown record types (skips are counted, `/lhc-stats` shows them — a rising `skipped_unknown` after a Claude Code update is the schema-drift signal).
+- **Inference lane**: derivations run through `claude -p` (Sonnet 5 no-thinking baseline, concurrency 3). No API key needed beyond the Claude Code login.
+- **Prune and compact**: both live-proven, including a 340k-token real session compacted 2026-07-06. Restart is an in-app `/resume <new-session-id>` injection — ~1-2s in-place swap, no process kill. Original session files are never modified.
+- **Thread continuity**: prune/compact/resume all land on the same LHC thread via `~/.cc-lhc` lineage; replayed prefix lines are excluded from re-intake by position (leak fixed after the first live fire).
+
+Setup: see the root README's "Installing the Claude Code Harness" kickoff, which drives `.setup/cc-lhc-standalone.md` (validated by a cold agent run).
+
+Known open defects:
+
+- **Post-swap screen corruption**: after a prune/compact swap, cc-lhc's receipt lines land in Claude Code's status-line region and the input box loses its borders. Self-heals on the next keypress. Fix direction: hold receipts until the swap settles, then force a TUI repaint.
+- **Intermittent `/lhc-*` interception**: sometimes keystrokes reach Claude Code instead of the interceptor (shows as "Unknown command"). Leading hypothesis is unhandled terminal-response CSI sequences flipping the line-state; capture bytes with `CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc` when it happens.
+- **Bare `--continue` reattach gap**: lineage reattachment is only reliable via explicit `-r <session-id>`; interleaved sessions can make `--continue` silently start a fresh thread.
 
 ## `~/.cc-lhc` layout
 
