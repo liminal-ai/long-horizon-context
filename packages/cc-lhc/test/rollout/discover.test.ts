@@ -19,6 +19,12 @@ describe("encodeProjectPath", () => {
   it("replaces slashes with dashes", () => {
     expect(encodeProjectPath("/Users/alice/foo/bar")).toBe("-Users-alice-foo-bar");
   });
+
+  it("matches Claude Code project dirs for paths containing dots", () => {
+    expect(encodeProjectPath("/Users/parsifal2.0/Desktop/cc-lhc-smoke")).toBe(
+      "-Users-parsifal2-0-Desktop-cc-lhc-smoke",
+    );
+  });
 });
 
 describe("findSessionFileOnce", () => {
