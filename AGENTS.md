@@ -4,7 +4,7 @@
 
 You have a persistent file-based memory at `memory/` in this repo. It works exactly like the Claude Code memory system you are trained on, relocated here because this harness does not provide one.
 
-**At the start of every session, before other work: read `memory/MEMORY.md`.** It is the index — one pointer line per memory. Read individual memory files when their description is relevant to the task at hand.
+**At the start of every session, before other work: read `memory/MEMORY.md`** (if present — the directory is local-only and untracked, so fresh clones won't have it; skip this section until it exists). It is the index — one pointer line per memory. Read individual memory files when their description is relevant to the task at hand.
 
 Each memory is one file holding one fact, with frontmatter:
 
