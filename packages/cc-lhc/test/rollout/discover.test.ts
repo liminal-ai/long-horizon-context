@@ -19,6 +19,22 @@ describe("encodeProjectPath", () => {
   it("replaces slashes with dashes", () => {
     expect(encodeProjectPath("/Users/alice/foo/bar")).toBe("-Users-alice-foo-bar");
   });
+
+  it("matches Claude Code project dirs for paths containing dots", () => {
+    expect(encodeProjectPath("/Users/parsifal2.0/Desktop/cc-lhc-smoke")).toBe(
+      "-Users-parsifal2-0-Desktop-cc-lhc-smoke",
+    );
+  });
+
+  it("matches Claude Code project dirs for paths containing underscores", () => {
+    expect(encodeProjectPath("/Users/alice/foo_bar")).toBe("-Users-alice-foo-bar");
+  });
+
+  it("preserves only letters, digits, and hyphens", () => {
+    expect(encodeProjectPath("/tmp/azAZ09-_. +=,;:@#%&!?[]'\"~^\u00e9\u2603/next")).toBe(
+      "-tmp-azAZ09------------------------next",
+    );
+  });
 });
 
 describe("findSessionFileOnce", () => {
