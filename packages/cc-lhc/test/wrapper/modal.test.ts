@@ -125,17 +125,53 @@ describe("passthrough", () => {
     expect(recovered.actions).toEqual([{ kind: "enter_modal" }]);
   });
 
-  it("flushes a truly bare held ESC via resolveBareEsc (run.ts timer) in passthrough", () => {
+  it("flushes a truly bare held ESC via resolveBareEsc but RESUMES tracking", () => {
     const held = feed(createInputState(), Buffer.from([0x1b]));
     const resolved = resolveBareEsc(held.state);
     expect(resolved).not.toBeNull();
     expect(resolved!.toPty!.toString("latin1")).toBe("\x1b");
     expect(resolved!.actions).toEqual([]);
-    expect(resolved!.state.escape).toBeNull();
-    // a stalled CSI candidate flushes the same way
-    const stalled = feed(createInputState(), "\x1b[93;5");
+    // tracking survives the flush, exactly as if the ESC had streamed unheld
+    expect(resolved!.state.escape).toEqual({ kind: "pending_esc" });
+    expect(resolved!.state.heldSeq).toEqual([]);
+    // nothing left to flush → a second fire is a no-op
+    expect(resolveBareEsc(resolved!.state)).toBeNull();
+    // a sequence arriving after the flush still tracks: paste opens, a raw
+    // leader inside it stays literal, and no byte is double-sent
+    const after = feed(resolved!.state, "[200~a\x1db\x1b[201~");
+    expect(after.pty).toBe("[200~a\x1db\x1b[201~");
+    expect(after.actions).toEqual([]);
+    // and a second bare ESC right after the flush is not double-forwarded
+    const doubleEsc = feed(resolved!.state, Buffer.from([0x1b]));
+    expect(doubleEsc.pty).toBe("");
+    expect(doubleEsc.state.heldSeq).toEqual([0x1b]);
+  });
+
+  it("a stalled paste-opener candidate flushes but keeps CSI tracking (reviewer probe)", () => {
+    // ESC[200 held; the timer fires before the ~ arrives
+    const stalled = feed(createInputState(), "\x1b[200");
     const flushed = resolveBareEsc(stalled.state);
-    expect(flushed!.toPty!.toString("latin1")).toBe("\x1b[93;5");
+    expect(flushed).not.toBeNull();
+    expect(flushed!.toPty!.toString("latin1")).toBe("\x1b[200");
+    expect(flushed!.state.escape).toEqual({ kind: "csi", params: "200" });
+    // the late ~ completes the paste marker; a literal raw leader inside the
+    // pasted body stays literal — no modal, every byte reaches the child
+    const after = feed(flushed!.state, "~x\x1dy");
+    expect(after.actions).toEqual([]);
+    expect(after.state.mode).toBe("passthrough");
+    expect(after.state.inPaste).toBe(true);
+    expect(after.pty).toBe("~x\x1dy");
+    const closed = feed(after.state, "\x1b[201~");
+    expect(closed.state.inPaste).toBe(false);
+
+    // a stalled kitty-shaped candidate also resumes as plain CSI: its late
+    // final is forwarded, never claimed as the leader
+    const kittyStall = feed(createInputState(), "\x1b[93;5");
+    const kittyFlushed = resolveBareEsc(kittyStall.state);
+    expect(kittyFlushed!.toPty!.toString("latin1")).toBe("\x1b[93;5");
+    const lateFinal = feed(kittyFlushed!.state, "u");
+    expect(lateFinal.pty).toBe("u");
+    expect(lateFinal.actions).toEqual([]);
   });
 
   it("never opens modal on a leader inside a sequence split after its ESC", () => {
@@ -252,6 +288,10 @@ describe("passthrough", () => {
       const result = feed(createInputState(), "\x1b[27;5;93~");
       expect(result.pty).toBe("");
       expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+      // colon-suffixed third field is a different key event: forwarded byte-identical
+      const suffixed = feed(createInputState(), "\x1b[27;5;93:3~");
+      expect(suffixed.pty).toBe("\x1b[27;5;93:3~");
+      expect(suffixed.actions).toEqual([]);
       // other modifier or other key: forwarded untouched
       const alt = feed(createInputState(), "\x1b[27;7;93~");
       expect(alt.pty).toBe("\x1b[27;7;93~");

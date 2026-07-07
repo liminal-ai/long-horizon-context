@@ -211,9 +211,10 @@ export function isKittyLeaderParams(params: string, leaderByte: number): boolean
 export function isModifyOtherKeysLeaderParams(params: string, leaderByte: number): boolean {
   const fields = params.split(";");
   if (fields.length !== 3) return false;
-  return (
-    fields[0] === "27" && fields[1] === "5" && Number.parseInt(fields[2] ?? "", 10) === kittyLeaderCode(leaderByte)
-  );
+  const code = fields[2] ?? "";
+  // Exact digits only: "93:3" or other suffixed third fields are NOT this key.
+  if (!/^\d+$/.test(code)) return false;
+  return fields[0] === "27" && fields[1] === "5" && Number.parseInt(code, 10) === kittyLeaderCode(leaderByte);
 }
 
 /** CSI finals for cursor/navigation keys — user keys, dropped while modal. */
@@ -331,8 +332,9 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
         };
       }
       if (byte === 0x1b) {
-        // The held ESC was a bare keypress: forward it; hold the new one.
-        return { state: { ...state, heldSeq: [0x1b] }, toPty: Buffer.from([0x1b]) };
+        // The held ESC (if still held — a timer flush may have sent it
+        // already) was a bare keypress: forward it; hold the new one.
+        return { state: { ...state, heldSeq: [0x1b] }, toPty: Buffer.from(state.heldSeq) };
       }
       // Bare Esc keypress followed by a normal byte: forward both. A leader
       // here stays suppressed for this chunk (leader-again recovers).
@@ -625,14 +627,24 @@ export function resolveBareEsc(
 ): { state: InputState; actions: InputAction[]; toPty?: Buffer } | null {
   if (state.mode === "passthrough") {
     // Passthrough holds a bare ESC (and any numeric CSI prefix after it) in
-    // case it heads the kitty-encoded leader; a stall means it was a real
-    // keypress or protocol garbage — flush it to the child unchanged.
-    if (state.escape?.kind !== "pending_esc" && state.escape?.kind !== "csi_candidate") return null;
-    return {
-      state: { ...state, escape: null, heldSeq: [] },
-      actions: [],
-      toPty: Buffer.from(state.heldSeq),
-    };
+    // case it heads the kitty-encoded leader; a stall means the bytes were a
+    // real keypress, a slow terminal, or protocol traffic. Flush them to the
+    // child unchanged but RESUME tracking exactly as if they had streamed
+    // through unheld — a stalled paste-opener prefix (ESC[200) must still
+    // complete into inPaste when its ~ arrives, or a literal leader in the
+    // pasted body would open the modal and eat bytes.
+    if (state.heldSeq.length === 0) return null;
+    if (state.escape?.kind === "pending_esc") {
+      return { state: { ...state, heldSeq: [] }, actions: [], toPty: Buffer.from(state.heldSeq) };
+    }
+    if (state.escape?.kind === "csi_candidate") {
+      return {
+        state: { ...state, escape: { kind: "csi", params: state.escape.params }, heldSeq: [] },
+        actions: [],
+        toPty: Buffer.from(state.heldSeq),
+      };
+    }
+    return null;
   }
   if (state.escape?.kind !== "pending_esc") return null;
   const cleared: InputState = { ...state, escape: null, heldSeq: [] };
