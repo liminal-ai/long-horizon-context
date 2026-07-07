@@ -17,6 +17,38 @@ export const ENTER_ALT_SCREEN = "\x1b[?1049h";
 /** Leave the alternate screen and re-show the cursor (restores main screen). */
 export const LEAVE_ALT_SCREEN = "\x1b[?1049l\x1b[?25h";
 
+export interface AltScreenGuard {
+  readonly active: boolean;
+  enter(): void;
+  leave(): void;
+}
+
+/**
+ * Tracks whether ?1049h is in effect so EVERY exit path — including the
+ * process-exit hook after a crash, signal handlers, and stdin loss — can
+ * restore the terminal exactly once. enter/leave are idempotent: a blind
+ * double-leave would scroll some terminals' main screens, and a missed leave
+ * strands the user on a blank alternate screen.
+ */
+export function createAltScreenGuard(write: (data: string) => void): AltScreenGuard {
+  let active = false;
+  return {
+    get active() {
+      return active;
+    },
+    enter() {
+      if (active) return;
+      active = true;
+      write(ENTER_ALT_SCREEN);
+    },
+    leave() {
+      if (!active) return;
+      active = false;
+      write(LEAVE_ALT_SCREEN);
+    },
+  };
+}
+
 const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 const CLEAR_SCREEN = "\x1b[2J";

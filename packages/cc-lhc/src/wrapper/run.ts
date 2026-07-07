@@ -24,7 +24,7 @@ import {
   showReceipts,
 } from "./modal.js";
 import { OutputHold } from "./output-hold.js";
-import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, renderPanel } from "./panel.js";
+import { createAltScreenGuard, renderPanel } from "./panel.js";
 import { executeResumeInjection, formatResumeAbortTurnOpen, formatResumeFailure } from "./resume-injection.js";
 
 const DEFAULT_COLS = 80;
@@ -110,6 +110,12 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   let captureSession: CaptureSession | undefined;
   const startedAt = new Date();
 
+  // Alt-screen truth for every exit path, normal or not: the process-exit
+  // hook, signal handlers, and stdin loss all leave through this guard, so a
+  // crash between ?1049h and a normal dismiss still restores the terminal,
+  // and no path can double-leave.
+  const altScreen = createAltScreenGuard((data) => stdout.write(data));
+
   const printStats = (): void => {
     if (captureSession === undefined) return;
     stderr.write(`${formatCaptureStatsLine(captureSession.stats)}\n`);
@@ -131,6 +137,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   }
 
   const cleanup = (): void => {
+    altScreen.leave();
     restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
   };
@@ -156,9 +163,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
-      const wasModal = inputState.mode !== "passthrough";
       inputState = forceResetInput(inputState);
-      if (wasModal) stdout.write(LEAVE_ALT_SCREEN);
+      altScreen.leave();
       stdout.write(formatCommandOutput(OUTPUT_HOLD_OVERFLOW_MESSAGE));
       stdout.write("\r\n");
       outputHold.flush();
@@ -204,13 +210,26 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   };
   process.on("SIGWINCH", handleSigwinch);
 
+  // Signals restore the terminal FIRST (leave alt, flush held output —
+  // ordering invariant intact), then forward to the child as before. The
+  // child may ignore the signal and keep running; the wrapper must already be
+  // back on the main screen either way.
+  const restoreIfModal = (): void => {
+    if (!altScreen.active && inputState.mode === "passthrough") return;
+    inputState = forceResetInput(inputState);
+    altScreen.leave();
+    outputHold.flush();
+  };
+
   const forwardSignal = (signal: NodeJS.Signals): void => {
+    restoreIfModal();
     if (!exited) {
       ptyProcess.kill(signal);
     }
   };
   process.on("SIGINT", forwardSignal);
   process.on("SIGTERM", forwardSignal);
+  process.on("SIGHUP", forwardSignal);
 
   return new Promise((resolve) => {
     const teardownAndExit = async (exitCode: number): Promise<void> => {
@@ -221,10 +240,14 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         pendingEscTimer = null;
       }
       stdin.removeListener("data", forwardInput);
+      stdin.removeListener("end", onStdinGone);
+      stdin.removeListener("close", onStdinGone);
+      stdin.removeListener("error", onStdinError);
       process.removeListener("SIGWINCH", handleSigwinch);
       process.removeListener("SIGINT", forwardSignal);
       process.removeListener("SIGTERM", forwardSignal);
-      if (inputState.mode !== "passthrough") stdout.write(LEAVE_ALT_SCREEN);
+      process.removeListener("SIGHUP", forwardSignal);
+      altScreen.leave();
       outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
@@ -297,7 +320,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       }
       if (messages.length === 0) {
         inputState = finishExecuting(inputState);
-        stdout.write(LEAVE_ALT_SCREEN);
+        altScreen.leave();
         outputHold.flush();
         return;
       }
@@ -331,11 +354,11 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
           outputHold.hold();
-          stdout.write(ENTER_ALT_SCREEN);
+          altScreen.enter();
         } else if (action.kind === "exit_modal") {
           // Leave BEFORE flushing: the terminal restores CC's main screen,
           // then the held bytes land on it in order.
-          stdout.write(LEAVE_ALT_SCREEN);
+          altScreen.leave();
           outputHold.flush();
         } else if (action.kind === "execute") runModalCommand(action.commandLine);
       }
@@ -362,6 +385,18 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       pendingEscTimer.unref?.();
     };
 
+    const onStdinGone = (): void => {
+      restoreIfModal();
+    };
+
+    const onStdinError = (cause: unknown): void => {
+      // Restore the terminal, then let the error do what it always did
+      // (propagate as an uncaught exception) — the exit hook's guarded leave
+      // makes the rethrow safe.
+      restoreIfModal();
+      throw cause;
+    };
+
     const forwardInput = (data: Buffer): void => {
       const result = processInputChunk(data, inputState);
       inputState = result.state;
@@ -380,5 +415,11 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     ptyProcess.onData(forwardOutput);
     ptyProcess.onExit(onExit);
     stdin.on("data", forwardInput);
+    // stdin ending/erroring has no wrapper lifecycle of its own (the child
+    // and capture run on) — but with no input left there is no keypress to
+    // dismiss a modal, so restore the terminal before those semantics apply.
+    stdin.on("end", onStdinGone);
+    stdin.on("close", onStdinGone);
+    stdin.on("error", onStdinError);
   });
 }

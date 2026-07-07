@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { createInputState, type InputState, showReceipts } from "../../src/wrapper/modal.js";
-import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, PANEL_HINT, PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
+import {
+  createAltScreenGuard,
+  ENTER_ALT_SCREEN,
+  LEAVE_ALT_SCREEN,
+  PANEL_HINT,
+  PANEL_PROMPT,
+  renderPanel,
+} from "../../src/wrapper/panel.js";
 
 function modalState(overrides: Partial<InputState> = {}): InputState {
   return { ...createInputState(), mode: "modal", ...overrides };
@@ -11,6 +18,32 @@ describe("alt-screen constants", () => {
   it("enter switches to the alternate screen; leave restores it and re-shows the cursor", () => {
     expect(ENTER_ALT_SCREEN).toBe("\x1b[?1049h");
     expect(LEAVE_ALT_SCREEN).toBe("\x1b[?1049l\x1b[?25h");
+  });
+});
+
+describe("createAltScreenGuard", () => {
+  it("enters and leaves exactly once each, whatever the call pattern", () => {
+    const writes: string[] = [];
+    const guard = createAltScreenGuard((data) => writes.push(data));
+    expect(guard.active).toBe(false);
+    guard.leave(); // leave before any enter: nothing
+    guard.enter();
+    guard.enter(); // double-enter: nothing
+    expect(guard.active).toBe(true);
+    guard.leave();
+    guard.leave(); // double-leave (crash hook after a normal dismiss): nothing
+    expect(guard.active).toBe(false);
+    expect(writes).toEqual([ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN]);
+  });
+
+  it("can re-enter after a full cycle", () => {
+    const writes: string[] = [];
+    const guard = createAltScreenGuard((data) => writes.push(data));
+    guard.enter();
+    guard.leave();
+    guard.enter();
+    expect(guard.active).toBe(true);
+    expect(writes).toEqual([ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, ENTER_ALT_SCREEN]);
   });
 });
 
