@@ -12,7 +12,7 @@ function chunkPrintable(chunk: Buffer): string {
 
 export function summarizeInputState(state: InputState): string {
   const escapeKind = state.escape === null ? "none" : state.escape.kind;
-  return `mode=${state.mode} line=${JSON.stringify(state.line)} inPaste=${state.inPaste} escape=${escapeKind} rows=${state.rowsWritten}`;
+  return `mode=${state.mode} line=${JSON.stringify(state.line)} inPaste=${state.inPaste} escape=${escapeKind} panelRows=${state.panelRows.length}`;
 }
 
 export function createInputDebugLogger(logPath: string | undefined): (chunk: Buffer, state: InputState) => void {

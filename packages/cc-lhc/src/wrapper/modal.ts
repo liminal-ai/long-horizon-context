@@ -11,23 +11,20 @@
 //
 // On the leader keypress the wrapper goes MODAL: stdin drives our own
 // one-line editor and nothing forwards to the pty; run.ts holds pty output
-// for the duration. Enter executes a command (mode becomes EXECUTING until
-// the command settles), Esc/ctrl-C/leader cancel. Ambiguity about "whose
-// input box is this" cannot exist by construction — while modal, it is ours.
+// for the duration and renders the panel on the ALTERNATE SCREEN (panel.ts) —
+// this module emits no terminal bytes of its own, it only evolves state.
+// Enter executes a command (mode becomes EXECUTING until the command
+// settles), Esc/ctrl-C/leader cancel. Ambiguity about "whose input box is
+// this" cannot exist by construction — while modal, it is ours.
 //
 // Leader default is ctrl-] (0x1d), telnet's escape-to-control-channel
 // precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
 // BEL on stdin inside an OSC response is protocol, not a keypress.
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
-export const MODAL_PROMPT = "[lhc] > ";
 export const MODAL_HELP_LINE = "commands: status | stats | prune [targetTokens] | compact | help — Esc cancels";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
-
-const BACKSPACE_ECHO = "\x08 \x08";
-const ERASE_LINE = "\r\x1b[2K";
-const CURSOR_UP_ERASE = "\x1b[1A\x1b[2K";
 
 /**
  * Bytes that cannot serve as the leader: NUL, BEL (terminates OSC — a BEL on
@@ -76,8 +73,8 @@ export interface InputState {
   line: string;
   /** Escape-sequence bytes held while modal until the sequence classifies (forward vs consume). */
   heldSeq: number[];
-  /** Terminal rows our modal UI occupies (prompt + help lines) — erased precisely on exit. */
-  rowsWritten: number;
+  /** Receipt/notice lines the panel shows above the prompt (help, unknown, command receipts). */
+  panelRows: string[];
 }
 
 export type InputAction = { kind: "enter_modal" } | { kind: "exit_modal" } | { kind: "execute"; commandLine: string };
@@ -85,7 +82,6 @@ export type InputAction = { kind: "enter_modal" } | { kind: "exit_modal" } | { k
 export interface InputResult {
   state: InputState;
   toPty: Buffer;
-  toStdout: string;
   actions: InputAction[];
 }
 
@@ -97,7 +93,7 @@ export function createInputState(leaderByte: number = DEFAULT_LEADER_BYTE): Inpu
     inPaste: false,
     line: "",
     heldSeq: [],
-    rowsWritten: 0,
+    panelRows: [],
   };
 }
 
@@ -120,50 +116,35 @@ export function mapModalCommand(line: string): string | null {
   }
 }
 
-function eraseModalRows(rows: number): string {
-  if (rows <= 0) return "";
-  return ERASE_LINE + CURSOR_UP_ERASE.repeat(rows - 1);
+/**
+ * Reset to passthrough after a completed command with nothing to show; run.ts
+ * then leaves the alt screen and flushes the held pty output.
+ */
+export function finishExecuting(state: InputState): InputState {
+  return { ...createInputState(state.leaderByte), inPaste: state.inPaste };
 }
 
 /**
- * Reset to passthrough after a completed command: erase every row the modal
- * UI wrote. run.ts calls this when a dispatched command settles with nothing
- * to show, then flushes the held pty output.
+ * Settle a command by putting its receipt lines into the panel above a fresh
+ * prompt, back in modal mode with the screen still held. The panel owns the
+ * alternate screen, so receipts stay readable whatever the main-screen TUI is
+ * doing; the user dismisses with one keypress (Esc/ctrl-C/leader/Enter-on-
+ * empty), which leaves the alt screen and flushes the held output.
  */
-export function finishExecuting(state: InputState): { state: InputState; toStdout: string } {
+export function showReceipts(state: InputState, lines: string[]): InputState {
   return {
-    state: { ...createInputState(state.leaderByte), inPaste: state.inPaste },
-    toStdout: eraseModalRows(state.rowsWritten),
-  };
-}
-
-/**
- * Settle a command by showing its receipt lines as modal rows above a fresh
- * prompt, returning to modal mode with the screen still held. This is the
- * only rendering that survives a running turn: raw prints are overwritten by
- * the TUI's next repaint within a frame (rig-verified), while the modal owns
- * the screen until the user dismisses it (Esc/ctrl-C/leader/Enter-on-empty),
- * which erases every modal row and flushes the held output.
- */
-export function showReceipts(state: InputState, lines: string[]): { state: InputState; toStdout: string } {
-  const rows = lines.flatMap((line) => line.split("\n"));
-  const body = rows.map((row) => `\r\n\x1b[2K[cc-lhc] ${row}`).join("");
-  return {
-    state: {
-      ...state,
-      mode: "modal",
-      line: "",
-      heldSeq: [],
-      escape: null,
-      rowsWritten: state.rowsWritten + rows.length + 1,
-    },
-    toStdout: `${body}\r\n\x1b[2K${MODAL_PROMPT}`,
+    ...state,
+    mode: "modal",
+    line: "",
+    heldSeq: [],
+    escape: null,
+    panelRows: lines.flatMap((line) => line.split("\n")),
   };
 }
 
 /** Cancel any modal/executing UI unconditionally (held-output overflow path). */
-export function forceResetInput(state: InputState): { state: InputState; toStdout: string } {
-  if (state.mode === "passthrough") return { state, toStdout: "" };
+export function forceResetInput(state: InputState): InputState {
+  if (state.mode === "passthrough") return state;
   return finishExecuting(state);
 }
 
@@ -214,7 +195,6 @@ type ModalKey = { kind: "enter" } | { kind: "cancel" } | { kind: "backspace" } |
 interface StepOutcome {
   state: InputState;
   toPty?: Buffer;
-  toStdout?: string;
   actions?: InputAction[];
 }
 
@@ -269,10 +249,8 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
     return { state: { ...state, escape: { kind: "pending_esc" } }, toPty: Buffer.from([byte]) };
   }
   if (!state.inPaste && byte === state.leaderByte) {
-    // \x1b[2K clears whatever TUI content already sits on the prompt's row.
     return {
-      state: { ...state, mode: "modal", line: "", heldSeq: [], rowsWritten: 1 },
-      toStdout: `\r\n\x1b[2K${MODAL_PROMPT}`,
+      state: { ...state, mode: "modal", line: "", heldSeq: [], panelRows: [] },
       actions: [{ kind: "enter_modal" }],
     };
   }
@@ -286,17 +264,12 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
 function cancelModal(state: InputState): StepOutcome {
   return {
     state: { ...createInputState(state.leaderByte), inPaste: state.inPaste },
-    toStdout: eraseModalRows(state.rowsWritten),
     actions: [{ kind: "exit_modal" }],
   };
 }
 
 function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
-  const body = noticeLines.map((line) => `\r\n\x1b[2K${line}`).join("");
-  return {
-    state: { ...state, line: "", rowsWritten: state.rowsWritten + noticeLines.length + 1 },
-    toStdout: `${body}\r\n\x1b[2K${MODAL_PROMPT}`,
-  };
+  return { state: { ...state, line: "", panelRows: noticeLines } };
 }
 
 function submitModalLine(state: InputState): StepOutcome {
@@ -307,10 +280,10 @@ function submitModalLine(state: InputState): StepOutcome {
   if (commandLine === null) {
     return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${trimmed}`, MODAL_HELP_LINE]);
   }
-  // Prompt row stays visible while the command runs; run.ts erases it (via
-  // finishExecuting) when the command settles, then prints receipts.
+  // The submitted text stays in `line` so the panel shows what is running;
+  // editing is disabled while executing, and settle/detach resets it.
   return {
-    state: { ...state, mode: "executing", line: "" },
+    state: { ...state, mode: "executing", line: trimmed, panelRows: [] },
     actions: [{ kind: "execute", commandLine }],
   };
 }
@@ -345,7 +318,7 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
       return cancelModal(state);
     case "backspace":
       if (state.line.length === 0) return { state };
-      return { state: { ...state, line: state.line.slice(0, -1) }, toStdout: BACKSPACE_ECHO };
+      return { state: { ...state, line: state.line.slice(0, -1) } };
     case "none":
       return { state };
   }
@@ -387,7 +360,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       return {
         state: after.state,
         toPty: after.toPty ?? Buffer.alloc(0),
-        toStdout: (cancelled.toStdout ?? "") + (after.toStdout ?? ""),
         actions: [...(cancelled.actions ?? []), ...(after.actions ?? [])],
       };
     }
@@ -441,7 +413,7 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // except ctrl-C, kept as the escape hatch if a paste never closes.
     if (byte === 0x03) return cancelModal(state);
     if (state.mode === "modal" && byte >= 0x20 && byte <= 0x7e) {
-      return { state: { ...state, line: state.line + String.fromCharCode(byte) }, toStdout: String.fromCharCode(byte) };
+      return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
     }
     return { state };
   }
@@ -464,11 +436,10 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   if (byte === 0x0d || byte === 0x0a) return submitModalLine(state);
   if (byte === 0x7f || byte === 0x08) return applyModalKey({ kind: "backspace" }, state);
   if (byte === 0x15) {
-    if (state.line.length === 0) return { state };
-    return { state: { ...state, line: "" }, toStdout: BACKSPACE_ECHO.repeat(state.line.length) };
+    return { state: { ...state, line: "" } };
   }
   if (byte >= 0x20 && byte <= 0x7e) {
-    return { state: { ...state, line: state.line + String.fromCharCode(byte) }, toStdout: String.fromCharCode(byte) };
+    return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
   }
   // Remaining C0 controls and non-ASCII bytes: the editor is ASCII-only.
   return { state };
@@ -481,14 +452,12 @@ function modalByte(byte: number, state: InputState): StepOutcome {
 export function processInputChunk(chunk: Buffer, state: InputState): InputResult {
   let current = state;
   let toPty = Buffer.alloc(0);
-  let toStdout = "";
   const actions: InputAction[] = [];
 
   for (const byte of chunk) {
     const outcome = current.mode === "passthrough" ? passthroughByte(byte, current) : modalByte(byte, current);
     current = outcome.state;
     if (outcome.toPty !== undefined && outcome.toPty.length > 0) toPty = Buffer.concat([toPty, outcome.toPty]);
-    if (outcome.toStdout !== undefined) toStdout += outcome.toStdout;
     if (outcome.actions !== undefined) actions.push(...outcome.actions);
   }
 
@@ -498,7 +467,7 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
   // suppressed — mis-suppressing for one chunk is harmless (leader-again
   // recovers). Bounded ambiguity for a truly bare Esc while modal is run.ts's
   // job: it arms a short timer and calls resolveBareEsc.
-  return { state: current, toPty, toStdout, actions };
+  return { state: current, toPty, actions };
 }
 
 /**
@@ -507,17 +476,15 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
  * → drop it (Esc does not detach; ctrl-C does). Null when nothing is pending
  * or the state has since moved on.
  */
-export function resolveBareEsc(
-  state: InputState,
-): { state: InputState; toStdout: string; actions: InputAction[] } | null {
+export function resolveBareEsc(state: InputState): { state: InputState; actions: InputAction[] } | null {
   if (state.escape?.kind !== "pending_esc") return null;
   const cleared: InputState = { ...state, escape: null, heldSeq: [] };
   if (state.mode === "modal") {
     const cancelled = cancelModal(cleared);
-    return { state: cancelled.state, toStdout: cancelled.toStdout ?? "", actions: cancelled.actions ?? [] };
+    return { state: cancelled.state, actions: cancelled.actions ?? [] };
   }
   if (state.mode === "executing") {
-    return { state: cleared, toStdout: "", actions: [] };
+    return { state: cleared, actions: [] };
   }
   return null;
 }

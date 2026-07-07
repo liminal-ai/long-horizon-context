@@ -24,6 +24,7 @@ import {
   showReceipts,
 } from "./modal.js";
 import { OutputHold } from "./output-hold.js";
+import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, renderPanel } from "./panel.js";
 import { executeResumeInjection, formatResumeAbortTurnOpen, formatResumeFailure } from "./resume-injection.js";
 
 const DEFAULT_COLS = 80;
@@ -155,9 +156,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
-      const reset = forceResetInput(inputState);
-      inputState = reset.state;
-      if (reset.toStdout !== "") stdout.write(reset.toStdout);
+      const wasModal = inputState.mode !== "passthrough";
+      inputState = forceResetInput(inputState);
+      if (wasModal) stdout.write(LEAVE_ALT_SCREEN);
       stdout.write(formatCommandOutput(OUTPUT_HOLD_OVERFLOW_MESSAGE));
       stdout.write("\r\n");
       outputHold.flush();
@@ -192,8 +193,14 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     };
   };
 
+  const renderModalPanel = (): void => {
+    if (inputState.mode === "passthrough") return;
+    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS));
+  };
+
   const handleSigwinch = (): void => {
     onTerminalResize(ptyProcess, stdout);
+    renderModalPanel();
   };
   process.on("SIGWINCH", handleSigwinch);
 
@@ -217,6 +224,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       process.removeListener("SIGWINCH", handleSigwinch);
       process.removeListener("SIGINT", forwardSignal);
       process.removeListener("SIGTERM", forwardSignal);
+      if (inputState.mode !== "passthrough") stdout.write(LEAVE_ALT_SCREEN);
       outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
@@ -273,31 +281,28 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
 
-    // A modal-executed command settles here. Receipts render as modal rows
-    // above a fresh prompt, screen still held — the only rendering that
-    // survives a running turn (rig-verified: raw prints, before OR after the
-    // flush, are overwritten by the TUI's next repaint within a frame). The
-    // user reads the receipt, then dismisses the modal (Esc/ctrl-C/leader),
-    // which erases our rows and flushes the held output.
+    // A modal-executed command settles here. Receipts go into the alt-screen
+    // panel above a fresh prompt, screen still held — the panel owns its own
+    // screen, so receipts stay readable whatever the main-screen TUI is doing.
+    // One keypress (Esc/ctrl-C/leader) dismisses: leave the alt screen (the
+    // terminal restores CC's layout exactly), then flush the held output.
     const settleCommand = (messages: string[]): void => {
       if (inputState.mode !== "executing") {
-        // Modal was force-cancelled (held-output overflow) while the command
-        // ran: the screen is live again, so print raw — visibility is
-        // best-effort in this degenerate case.
+        // Modal was detached (ctrl-C) or force-cancelled (overflow) while the
+        // command ran: the main screen is live again, so print raw —
+        // visibility is best-effort in this degenerate case.
         for (const message of messages) stdout.write(formatCommandOutput(message));
         if (messages.length > 0) stdout.write("\r\n");
         return;
       }
       if (messages.length === 0) {
-        const finished = finishExecuting(inputState);
-        inputState = finished.state;
-        if (finished.toStdout !== "") stdout.write(finished.toStdout);
+        inputState = finishExecuting(inputState);
+        stdout.write(LEAVE_ALT_SCREEN);
         outputHold.flush();
         return;
       }
-      const shown = showReceipts(inputState, messages);
-      inputState = shown.state;
-      stdout.write(shown.toStdout);
+      inputState = showReceipts(inputState, messages);
+      renderModalPanel();
     };
 
     const runModalCommand = (commandLine: string): void => {
@@ -324,9 +329,15 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
-        if (action.kind === "enter_modal") outputHold.hold();
-        else if (action.kind === "exit_modal") outputHold.flush();
-        else if (action.kind === "execute") runModalCommand(action.commandLine);
+        if (action.kind === "enter_modal") {
+          outputHold.hold();
+          stdout.write(ENTER_ALT_SCREEN);
+        } else if (action.kind === "exit_modal") {
+          // Leave BEFORE flushing: the terminal restores CC's main screen,
+          // then the held bytes land on it in order.
+          stdout.write(LEAVE_ALT_SCREEN);
+          outputHold.flush();
+        } else if (action.kind === "execute") runModalCommand(action.commandLine);
       }
     };
 
@@ -346,7 +357,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         const resolved = resolveBareEsc(inputState);
         if (resolved === null) return;
         inputState = resolved.state;
-        if (resolved.toStdout !== "") stdout.write(resolved.toStdout);
         applyActions(resolved.actions);
       }, PENDING_ESC_RESOLVE_MS);
       pendingEscTimer.unref?.();
@@ -356,9 +366,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
-      if (result.toStdout !== "") stdout.write(result.toStdout);
       if (result.toPty.length > 0) ptyProcess.write(result.toPty);
       applyActions(result.actions);
+      renderModalPanel();
       armPendingEscTimer();
     };
 

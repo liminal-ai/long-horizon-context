@@ -62,13 +62,13 @@ From a project directory (not this repo):
 cc-lhc
 ```
 
-This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). Use Claude Code as usual for a few exchanges, then press **ctrl-]** — a `[lhc] > ` prompt appears — and type `status` then Enter. It should show thread info as `[cc-lhc]` receipt lines; press Esc to dismiss. Exit normally.
+This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). Use Claude Code as usual for a few exchanges, then press **ctrl-]** — the screen switches to a command panel with a `long-horizon commands> ` prompt — and type `status` then Enter. Thread info appears as receipt rows in the panel; press Esc once to dismiss (Claude Code's screen comes back exactly as it was). Exit normally.
 
 **Verify after exit:**
 - `ls ~/.cc-lhc/threads/` shows at least one `.sqlite` file.
 - Relaunch `cc-lhc`, press ctrl-] and run `stats` — `lines` and `events` counters are nonzero and `parse_fail=0`.
 
-If ctrl-] does not open the `[lhc] > ` prompt, capture a debug log (`CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc`), reproduce, and report with the log — a terminal emulator may be swallowing the byte, or an in-flight escape sequence may be misclassified. `CC_LHC_LEADER` can rebind the key (e.g. `CC_LHC_LEADER='^_'`).
+If ctrl-] does not open the command panel, capture a debug log (`CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc`), reproduce, and report with the log — a terminal emulator may be swallowing the byte, or an in-flight escape sequence may be misclassified. `CC_LHC_LEADER` can rebind the key (e.g. `CC_LHC_LEADER='^_'`).
 
 ## What to watch on a new machine
 

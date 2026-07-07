@@ -9,7 +9,7 @@ import {
   type InputState,
   MODAL_ASCII_NOTE,
   MODAL_HELP_LINE,
-  MODAL_PROMPT,
+  MODAL_UNKNOWN_PREFIX,
   mapModalCommand,
   processInputChunk,
   resolveBareEsc,
@@ -19,30 +19,25 @@ import {
 import { OutputHold } from "../../src/wrapper/output-hold.js";
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
-const ERASE_LINE = "\r\x1b[2K";
-const CURSOR_UP_ERASE = "\x1b[1A\x1b[2K";
 
 interface FeedResult {
   state: InputState;
   pty: string;
-  out: string;
   actions: InputAction[];
 }
 
 function feed(state: InputState, ...chunks: Array<string | Buffer>): FeedResult {
   let current = state;
   let pty = "";
-  let out = "";
   const actions: InputAction[] = [];
   for (const chunk of chunks) {
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, "latin1") : chunk;
     const result = processInputChunk(buffer, current);
     current = result.state;
     pty += result.toPty.toString("latin1");
-    out += result.toStdout;
     actions.push(...result.actions);
   }
-  return { state: current, pty, out, actions };
+  return { state: current, pty, actions };
 }
 
 function executed(actions: InputAction[]): string[] {
@@ -53,7 +48,6 @@ describe("passthrough", () => {
   it("forwards ordinary bytes verbatim with no echo and no actions", () => {
     const result = feed(createInputState(), "hello world\r", "\x7f\x03\x15");
     expect(result.pty).toBe("hello world\r\x7f\x03\x15");
-    expect(result.out).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("passthrough");
   });
@@ -65,12 +59,13 @@ describe("passthrough", () => {
     expect(result.actions).toEqual([]);
   });
 
-  it("enters modal on the leader byte: prompt printed, byte withheld", () => {
+  it("enters modal on the leader byte: byte withheld, fresh panel state", () => {
     const result = feed(createInputState(), "ab", LEADER);
     expect(result.pty).toBe("ab");
-    expect(result.out).toBe(`\r\n\x1b[2K${MODAL_PROMPT}`);
     expect(result.actions).toEqual([{ kind: "enter_modal" }]);
     expect(result.state.mode).toBe("modal");
+    expect(result.state.line).toBe("");
+    expect(result.state.panelRows).toEqual([]);
   });
 
   it("keeps the leader literal inside a bracketed paste", () => {
@@ -176,12 +171,15 @@ describe("modal line editor", () => {
     return feed(createInputState(), LEADER).state;
   }
 
-  it("echoes typed printables, executes a known command on Enter", () => {
-    const result = feed(openModal(), "status\r");
-    expect(result.out).toBe("status");
+  it("builds the line from typed printables, executes a known command on Enter", () => {
+    const typed = feed(openModal(), "status");
+    expect(typed.state.line).toBe("status");
+    const result = feed(typed.state, "\r");
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
     expect(result.state.mode).toBe("executing");
+    // the submitted text stays visible on the panel's prompt line while running
+    expect(result.state.line).toBe("status");
   });
 
   it("passes the prune target through", () => {
@@ -192,43 +190,44 @@ describe("modal line editor", () => {
   it("treats a malformed prune argument as unknown and stays modal", () => {
     const result = feed(openModal(), "prune lots\r");
     expect(executed(result.actions)).toEqual([]);
-    expect(result.out).toContain("unknown command: prune lots");
-    expect(result.out).toContain(MODAL_HELP_LINE);
+    expect(result.state.panelRows).toEqual([`${MODAL_UNKNOWN_PREFIX}prune lots`, MODAL_HELP_LINE]);
     expect(result.state.mode).toBe("modal");
   });
 
-  it("prints help (with the ASCII-only note) on help/? and stays modal", () => {
+  it("shows help (with the ASCII-only note) as panel rows on help/? and stays modal", () => {
     const result = feed(openModal(), "?\r");
-    expect(result.out).toContain(MODAL_HELP_LINE);
-    expect(result.out).toContain(MODAL_ASCII_NOTE);
+    expect(result.state.panelRows).toEqual([MODAL_HELP_LINE, MODAL_ASCII_NOTE]);
     expect(result.state.mode).toBe("modal");
     const then = feed(result.state, "stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
+    // stale help rows are cleared when a command starts
+    expect(then.state.panelRows).toEqual([]);
   });
 
-  it("prints help for an unknown command, stays modal, and still executes next", () => {
-    const result = feed(openModal(), "bogus\r", "status\r");
-    expect(result.out).toContain("unknown command: bogus");
+  it("shows help for an unknown command, stays modal, and still executes next", () => {
+    const unknown = feed(openModal(), "bogus\r");
+    expect(unknown.state.panelRows[0]).toBe(`${MODAL_UNKNOWN_PREFIX}bogus`);
+    const result = feed(unknown.state, "status\r");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
 
   it("cancels on Enter with an empty line", () => {
     const result = feed(openModal(), "\r");
     expect(result.actions).toEqual([{ kind: "exit_modal" }]);
-    expect(result.out).toBe(ERASE_LINE);
     expect(result.state.mode).toBe("passthrough");
   });
 
   it("backspace edits the line", () => {
-    const result = feed(openModal(), "stx\x7fatus\r");
-    expect(result.out).toContain("\x08 \x08");
+    const edited = feed(openModal(), "stx\x7f");
+    expect(edited.state.line).toBe("st");
+    const result = feed(edited.state, "atus\r");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
 
   it("backspace on an empty line does nothing", () => {
     const result = feed(openModal(), "\x7f");
-    expect(result.out).toBe("");
     expect(result.state.mode).toBe("modal");
+    expect(result.state.line).toBe("");
   });
 
   it("ctrl-U kills the whole line", () => {
@@ -240,7 +239,6 @@ describe("modal line editor", () => {
     const opened = feed(openModal(), "sta");
     const result = feed(opened.state, Buffer.from([0x1b]), "x");
     expect(result.actions).toEqual([{ kind: "exit_modal" }]);
-    expect(result.out).toBe(ERASE_LINE);
     expect(result.pty).toBe("x");
     expect(result.state.mode).toBe("passthrough");
   });
@@ -252,7 +250,6 @@ describe("modal line editor", () => {
     const resolved = resolveBareEsc(opened.state);
     expect(resolved).not.toBeNull();
     expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
-    expect(resolved!.toStdout).toBe(ERASE_LINE);
     expect(resolved!.state.mode).toBe("passthrough");
     // nothing pending → null
     expect(resolveBareEsc(resolved!.state)).toBeNull();
@@ -283,10 +280,12 @@ describe("modal line editor", () => {
     expect(viaLeader.state.mode).toBe("passthrough");
   });
 
-  it("erases every row the modal wrote (help lines included) on cancel", () => {
+  it("dismissal resets the panel state entirely (rows and line)", () => {
     const result = feed(openModal(), "bogus\r", "\x03");
-    // rows: prompt + unknown-notice + help + fresh prompt = 4
-    expect(result.out.endsWith(ERASE_LINE + CURSOR_UP_ERASE.repeat(3))).toBe(true);
+    expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(result.state.mode).toBe("passthrough");
+    expect(result.state.panelRows).toEqual([]);
+    expect(result.state.line).toBe("");
   });
 
   it("handles kitty CSI-u Enter/Esc/Backspace; ignores releases", () => {
@@ -339,21 +338,21 @@ describe("executing mode", () => {
   it("drops user input while a command runs (Esc and leader included)", () => {
     const result = feed(startExecuting(), "abc\r", LEADER, Buffer.from([0x1b]), "q");
     expect(result.pty).toBe("");
-    expect(result.out).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
+    // the running command stays visible on the panel's prompt line
+    expect(result.state.line).toBe("status");
   });
 
-  it("ctrl-C while executing DETACHES: rows erased, output resumes, command unaffected", () => {
+  it("ctrl-C while executing DETACHES: modal leaves, output resumes, command unaffected", () => {
     const detached = feed(startExecuting(), "\x03");
     expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
-    expect(detached.out).toBe(ERASE_LINE);
     expect(detached.state.mode).toBe("passthrough");
     // subsequent input flows to claude; the late receipt path (settleCommand
     // with mode !== executing) prints raw without touching input state
     const after = feed(detached.state, "hello");
     expect(after.pty).toBe("hello");
-    expect(forceResetInput(after.state).toStdout).toBe("");
+    expect(forceResetInput(after.state)).toBe(after.state);
   });
 
   it("resolveBareEsc while executing clears the pending ESC without detaching", () => {
@@ -371,39 +370,31 @@ describe("executing mode", () => {
     expect(result.pty).toBe("\x1b[24;80R");
   });
 
-  it("finishExecuting erases the modal rows and restores passthrough", () => {
+  it("finishExecuting restores a fresh passthrough state", () => {
     const finished = finishExecuting(startExecuting());
-    expect(finished.toStdout).toBe(ERASE_LINE);
-    expect(finished.state.mode).toBe("passthrough");
-    const after = feed(finished.state, "x");
+    expect(finished.mode).toBe("passthrough");
+    expect(finished.line).toBe("");
+    expect(finished.panelRows).toEqual([]);
+    const after = feed(finished, "x");
     expect(after.pty).toBe("x");
   });
 
-  it("finishExecuting erases help rows accumulated before the command", () => {
-    const opened = feed(createInputState(), LEADER, "bogus\r", "status\r");
-    const finished = finishExecuting(opened.state);
-    expect(finished.toStdout).toBe(ERASE_LINE + CURSOR_UP_ERASE.repeat(3));
-  });
-
-  it("showReceipts returns to modal with receipt rows; dismissing erases them all", () => {
+  it("showReceipts returns to modal with receipt rows; one keypress dismisses", () => {
     const shown = showReceipts(startExecuting(), ["line one\nline two", "three"]);
-    expect(shown.state.mode).toBe("modal");
-    expect(shown.toStdout).toContain("[cc-lhc] line one");
-    expect(shown.toStdout).toContain("[cc-lhc] line two");
-    expect(shown.toStdout).toContain("[cc-lhc] three");
-    expect(shown.toStdout.endsWith(MODAL_PROMPT)).toBe(true);
-    // rows: original prompt + 3 receipt rows + fresh prompt = 5
-    const dismissed = feed(shown.state, "\x03");
+    expect(shown.mode).toBe("modal");
+    expect(shown.line).toBe("");
+    expect(shown.panelRows).toEqual(["line one", "line two", "three"]);
+    const dismissed = feed(shown, "\x03");
     expect(dismissed.actions).toEqual([{ kind: "exit_modal" }]);
-    expect(dismissed.out).toBe(ERASE_LINE + CURSOR_UP_ERASE.repeat(4));
+    expect(dismissed.state.mode).toBe("passthrough");
+    expect(dismissed.state.panelRows).toEqual([]);
   });
 
   it("forceResetInput is a no-op in passthrough and a reset elsewhere", () => {
-    const passthrough = forceResetInput(createInputState());
-    expect(passthrough.toStdout).toBe("");
+    const passthrough = createInputState();
+    expect(forceResetInput(passthrough)).toBe(passthrough);
     const executing = forceResetInput(startExecuting());
-    expect(executing.state.mode).toBe("passthrough");
-    expect(executing.toStdout).toBe(ERASE_LINE);
+    expect(executing.mode).toBe("passthrough");
   });
 });
 
