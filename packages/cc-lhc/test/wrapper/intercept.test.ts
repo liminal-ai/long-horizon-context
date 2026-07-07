@@ -413,6 +413,24 @@ describe("shadow line-length freshness", () => {
     const result = feedChunks(["\x1b[200~/lhc-status\x1b[201~", "\r"]);
     expect(result.dispatch).toBe("/lhc-status");
   });
+
+  it("treats a pasted newline inside a withheld command as literal content, never a dispatch", () => {
+    // Reviewer probe: the newline is paste content, so the withheld bytes are
+    // retroactively paste content too — the whole paste must reach the pty.
+    const paste = "\x1b[200~/lhc-status\nnext\x1b[201~";
+    const result = feedChunks([paste]);
+    expect(result.dispatch).toBeUndefined();
+    expect(result.toPty).toBe(paste);
+    expect(result.state.withholding).toBe(false);
+    expect(result.state.inPaste).toBe(false);
+    expect(result.state.shadowLen).toBe(16); // "/lhc-status" + newline + "next"
+  });
+
+  it("arms across paste-open, typed command, paste-close chunks", () => {
+    const result = feedChunks(["\x1b[200~", "/lhc-status", "\x1b[201~", "\r"]);
+    expect(result.dispatch).toBe("/lhc-status");
+    expect(result.state.inPaste).toBe(false);
+  });
 });
 
 describe("kitty CSI-u functional keys", () => {
@@ -450,5 +468,15 @@ describe("kitty CSI-u functional keys", () => {
     const result = feedChunks(["/lhc-stat", "\x1b[127u", "ts\r"]);
     expect(result.toPty).toBe("\x1b[127u");
     expect(result.dispatch).toBe("/lhc-stats");
+  });
+
+  it("ignores kitty Enter release events while withholding (no dispatch, no state damage)", () => {
+    const result = feedChunks(["/lhc-status", "\x1b[13;1:3u"]);
+    expect(result.dispatch).toBeUndefined();
+    expect(result.toPty).toBe("\x1b[13;1:3u");
+    expect(result.state.withholding).toBe(true);
+    expect(result.state.buffer).toBe("/lhc-status");
+    const submitted = feedChunks(["\r"], result.state);
+    expect(submitted.dispatch).toBe("/lhc-status");
   });
 });

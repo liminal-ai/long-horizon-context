@@ -13,10 +13,14 @@ export interface InterceptState {
    * Shadow count of characters sitting in the child's input box. 0 means the
    * line is fresh and a leading `/` may arm interception. Printables and
    * UTF-8 lead bytes increment; backspace/DEL decrement (floor 0); Enter and
-   * ctrl-U zero; a bare Esc zeroes unconditionally (Claude Code clears its
-   * input box on Esc), which is also the user's guaranteed recovery when the
-   * count has drifted. Drift only ever overcounts — the failure mode is
-   * "won't arm until Esc", never "arms over a non-empty box".
+   * ctrl-U zero; a bare Esc zeroes unconditionally. The Esc-zero is a
+   * deliberate recovery affordance, NOT box mirroring: Claude Code 2.1.202
+   * keeps its input-box text on Esc (probed live), and the box can also fill
+   * behind our back (up-arrow history recall is a CSI we pass through
+   * uncounted). After either, a /lhc command can arm while a draft sits
+   * visibly in the box — the command still dispatches, the draft stays put,
+   * and a later bare Enter submits that draft. That trade is accepted so the
+   * user is never locked out of /lhc-* until the next submitted turn.
    */
   shadowLen: number;
   withholding: boolean;
@@ -58,10 +62,6 @@ export function isWithholdBuffer(buffer: string): boolean {
 
 function isDispatchableLhcCommand(buffer: string): boolean {
   return buffer === LHC_PREFIX || buffer.startsWith(`${LHC_PREFIX}-`);
-}
-
-function isKittyEnterCsi(params: string): boolean {
-  return params === "13" || params.startsWith("13;");
 }
 
 /**
@@ -232,21 +232,23 @@ function continueEscapePassthrough(
     case "csi":
       if (isCsiFinal(byte)) {
         if (byte === 0x75) {
-          if (isKittyEnterCsi(mode.params) && state.withholding) {
-            if (isDispatchableLhcCommand(state.buffer)) {
-              return dispatchWithheldCommand(state);
-            }
-            return {
-              state: resetState(state),
-              toPty: Buffer.from([byte]),
-              toStdout: "",
-            };
-          }
-          // Kitty CSI-u functional keys mirror onto the shadow count. The full
-          // sequence is forwarded either way: while withholding the child's box
-          // is empty, so its Enter/Esc/Backspace land as no-ops there.
+          // Kitty CSI-u functional keys mirror onto the shadow count; presses
+          // and repeats act, releases (event 3) are ignored for Enter too.
+          // The full sequence is forwarded (except a dispatching Enter's final
+          // byte): while withholding the child's box is empty, so its
+          // Enter/Esc/Backspace land as no-ops there.
           const key = kittyKeyPressCode(mode.params);
           if (key === 13) {
+            if (state.withholding) {
+              if (isDispatchableLhcCommand(state.buffer)) {
+                return dispatchWithheldCommand(state);
+              }
+              return {
+                state: resetState(state),
+                toPty: Buffer.from([byte]),
+                toStdout: "",
+              };
+            }
             return { state: { ...base, shadowLen: 0 }, toPty: Buffer.from([byte]), toStdout: "" };
           }
           if (key === 27) {
@@ -355,6 +357,28 @@ function processByte(byte: number, state: InterceptState, chunk: Buffer, index: 
   }
 
   if (byte === 0x0d || byte === 0x0a) {
+    if (state.inPaste) {
+      // A pasted newline is literal input-box content, not a submit — even
+      // while withholding: the withheld bytes were retroactively paste
+      // content, so flush them (plus this newline) to the pty and stop
+      // withholding. Only the buffer is flushed, not the rest of the chunk,
+      // so a paste-close marker later in the chunk still parses and clears
+      // inPaste.
+      if (state.withholding) {
+        const flushed = Buffer.from(state.buffer + byteToChar(byte), "utf8");
+        return {
+          state: {
+            ...state,
+            withholding: false,
+            buffer: "",
+            shadowLen: shadowLenAfterRaw(flushed, true),
+          },
+          toPty: flushed,
+          toStdout: eraseEchoed(state.buffer.length),
+        };
+      }
+      return { state: { ...state, shadowLen: state.shadowLen + 1 }, toPty: Buffer.from([byte]), toStdout: "" };
+    }
     if (state.withholding) {
       if (isDispatchableLhcCommand(state.buffer)) {
         return {
@@ -370,10 +394,6 @@ function processByte(byte: number, state: InterceptState, chunk: Buffer, index: 
         toPty: flushed,
         toStdout: "",
       };
-    }
-    if (state.inPaste) {
-      // A pasted newline is literal input-box content, not a submit.
-      return { state: { ...state, shadowLen: state.shadowLen + 1 }, toPty: Buffer.from([byte]), toStdout: "" };
     }
     return {
       state: resetState(state),
@@ -456,9 +476,10 @@ export function processInputChunk(chunk: Buffer, state: InterceptState): Interce
   }
 
   // A lone \x1b chunk is a bare Esc keypress (sequences arrive with their
-  // introducer in the same read). Claude Code clears its input box on Esc, so
-  // the shadow count zeroes — this is the guaranteed recovery when the count
-  // has drifted: Esc then /lhc-… always arms.
+  // introducer in the same read). Zero the shadow count: not because Claude
+  // Code clears its box on Esc (2.1.202 does not — see the shadowLen doc),
+  // but as the guaranteed recovery when the count has drifted. Esc then
+  // /lhc-… always arms, even if a draft remains in the box.
   if (
     current.escapePassthrough?.kind === "pending_esc" &&
     chunk.length === 1 &&
