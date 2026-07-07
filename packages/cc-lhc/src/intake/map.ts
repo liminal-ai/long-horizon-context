@@ -49,7 +49,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function contentBlocks(content: unknown): ContentBlock[] {
+export function contentBlocks(content: unknown): ContentBlock[] {
   if (!Array.isArray(content)) return [];
   return content.filter((block): block is ContentBlock => isRecord(block) && typeof block.type === "string");
 }
@@ -74,7 +74,7 @@ function isMetaUserContent(content: string): boolean {
   return META_MARKERS.some((marker) => content.includes(marker));
 }
 
-function isMetaUserLine(item: RolloutLineItem, content: string): boolean {
+export function isMetaUserLine(item: RolloutLineItem, content: string): boolean {
   if (item.isMeta === true) return true;
   return isMetaUserContent(content);
 }
@@ -89,7 +89,7 @@ function textEvent(
 }
 
 /** Canonical runtime-note text, or null when the text is a regular prompt. */
-function runtimeNoteText(text: string): string | null {
+export function runtimeNoteText(text: string): string | null {
   const trimmed = text.trimStart();
   if (trimmed.startsWith(TASK_NOTIFICATION_MARKER)) return text;
   if (trimmed.startsWith(RUNTIME_NOTE_LABEL)) {
@@ -178,9 +178,7 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
     if (block.type === "text") {
       const text = typeof block.text === "string" ? block.text : "";
       if (text !== "") {
-        events.push(
-          textEvent("assistant_text", text, "assistant", idempotencyKey(uuid, blockIndex, "assistant_text")),
-        );
+        events.push(textEvent("assistant_text", text, "assistant", idempotencyKey(uuid, blockIndex, "assistant_text")));
         blockIndex += 1;
       }
     }
@@ -212,12 +210,12 @@ function isSyntheticNoResponse(item: RolloutLineItem): boolean {
   return blocks.length === 1 && blocks[0]!.type === "text" && blocks[0]!.text === SYNTHETIC_NO_RESPONSE_TEXT;
 }
 
-function isUserLine(item: RolloutLineItem): boolean {
+export function isUserLine(item: RolloutLineItem): boolean {
   if (item.type === "user") return true;
   return item.message?.role === "user";
 }
 
-function isAssistantLine(item: RolloutLineItem): boolean {
+export function isAssistantLine(item: RolloutLineItem): boolean {
   if (item.type === "assistant") return true;
   return item.message?.role === "assistant";
 }

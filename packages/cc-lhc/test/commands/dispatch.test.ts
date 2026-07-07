@@ -1,13 +1,13 @@
-import { describe, expect, it } from "vitest";
-
 import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CAPTURE_DISABLED_MESSAGE,
   dispatchLhcCommand,
   formatCommandOutput,
-  UNKNOWN_COMMAND_MESSAGE,
   type LhcCommandRuntime,
+  TURN_OPEN_REFUSAL,
+  UNKNOWN_COMMAND_MESSAGE,
 } from "../../src/commands/dispatch.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 
@@ -64,15 +64,54 @@ describe("dispatchLhcCommand", () => {
     expect(outcome.messages[0]).toContain("thread=th_test");
   });
 
-  it("lists help including compact and prune", async () => {
+  it("lists help including compact and prune (modal command names)", async () => {
     const outcome = await dispatchLhcCommand("/lhc-help", fakeRuntime());
-    expect(outcome.messages[0]).toContain("/lhc-compact");
-    expect(outcome.messages[0]).toContain("/lhc-prune");
+    expect(outcome.messages[0]).toContain("compact");
+    expect(outcome.messages[0]).toContain("prune [targetTokens]");
   });
 
   it("reports unknown /lhc-* commands", async () => {
     const outcome = await dispatchLhcCommand("/lhc-foo", fakeRuntime());
     expect(outcome.messages).toEqual([UNKNOWN_COMMAND_MESSAGE]);
+  });
+
+  it("refuses prune while a turn is open, before touching the view", async () => {
+    const prune = vi.fn();
+    const sdk = { threadView: { prune } } as unknown as Lhc;
+    const outcome = await dispatchLhcCommand(
+      "/lhc-prune",
+      fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
+    );
+    expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
+    expect(outcome.restart).toBeUndefined();
+    expect(prune).not.toHaveBeenCalled();
+  });
+
+  it("refuses compact while a turn is open, before touching the view", async () => {
+    const previewCompact = vi.fn();
+    const sdk = { threadView: { previewCompact } } as unknown as Lhc;
+    const outcome = await dispatchLhcCommand(
+      "/lhc-compact",
+      fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
+    );
+    expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
+    expect(outcome.restart).toBeUndefined();
+    expect(previewCompact).not.toHaveBeenCalled();
+  });
+
+  it("status and stats stay available while a turn is open", async () => {
+    const sdk = {
+      threadView: {
+        status: async (): Promise<OpResult<ViewStatus>> => ({ ok: true, value: sampleStatus }),
+      },
+    } as unknown as Lhc;
+    const status = await dispatchLhcCommand(
+      "/lhc-status",
+      fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
+    );
+    expect(status.messages[0]).toContain("tail=1200");
+    const stats = await dispatchLhcCommand("/lhc-stats", fakeRuntime({ isTurnOpen: () => true }));
+    expect(stats.messages[0]).toContain("cc-lhc-capture");
   });
 
   it("returns an error string when a handler throws", async () => {
@@ -93,6 +132,6 @@ describe("dispatchLhcCommand", () => {
 
 describe("formatCommandOutput", () => {
   it("prefixes each line for terminal rendering", () => {
-    expect(formatCommandOutput("one\ntwo")).toBe("\r\n[cc-lhc] one\r\n[cc-lhc] two");
+    expect(formatCommandOutput("one\ntwo")).toBe("\r\n\x1b[2K[cc-lhc] one\r\n\x1b[2K[cc-lhc] two");
   });
 });

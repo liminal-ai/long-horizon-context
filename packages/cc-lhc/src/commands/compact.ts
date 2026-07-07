@@ -1,7 +1,7 @@
 import type { Band, CompactReceipt, Lhc, ThreadRef } from "lhc";
-
-import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
+import { statRolloutFile } from "../rollout/stat-file.js";
 import { writeRebuiltRollout } from "../rollout/write-rebuilt.js";
+import { type DispatchOutcome, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 
 function formatBandSummary(receipt: CompactReceipt): string {
   const bands: Band[] = ["smooth", "detailed", "brief"];
@@ -31,6 +31,9 @@ function notReady(runtime: LhcCommandRuntime): DispatchOutcome | null {
 export async function runCompactCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const blocked = notReady(runtime);
   if (blocked !== null) return blocked;
+  // Refuse, don't defer: compacting under an open turn would rebuild from a
+  // view that is mid-mutation and swap a session claude is actively appending to.
+  if (runtime.isTurnOpen?.() === true) return { messages: [TURN_OPEN_REFUSAL] };
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
@@ -49,6 +52,7 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
   if (!view.ok) return { messages: [...lines, `view error: ${view.error.reason}`] };
 
   try {
+    const oldStat = runtime.sourceRolloutPath === undefined ? null : await statRolloutFile(runtime.sourceRolloutPath);
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,
@@ -65,6 +69,8 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
         rebuiltLineCount: rebuilt.lineCount,
         expectedReintakeLines: rebuilt.expectedReintakeLines,
         replayedPrefixLines: rebuilt.replayedPrefixLines,
+        ...(runtime.sourceRolloutPath === undefined ? {} : { oldRolloutPath: runtime.sourceRolloutPath }),
+        ...(oldStat === null ? {} : { oldRolloutSizeAtRebuild: oldStat.size }),
       },
     };
   } catch (cause) {

@@ -6,11 +6,13 @@ import {
   buildResumeInjection,
   createTripwireScanner,
   executeResumeInjection,
+  formatResumeAbortTurnOpen,
   formatResumeFailure,
   formatResumeSuccess,
+  formatSwapCollisionNote,
   REPAINT_NUDGE,
-  resumeNotFoundPhrase,
   type RolloutStat,
+  resumeNotFoundPhrase,
 } from "../../src/wrapper/resume-injection.js";
 
 const NEW_ID = "00000000-1111-2222-3333-444444444444";
@@ -32,21 +34,39 @@ function scanner(id: string = NEW_ID) {
   return createTripwireScanner(resumeNotFoundPhrase(id));
 }
 
-function fakeCaptureSession(order: string[]): CaptureSession {
+function fakeCaptureSession(
+  order: string[],
+  options: { messageEvents?: (threadRef: unknown, events: unknown[]) => Promise<unknown> } = {},
+): CaptureSession {
   const stats = { threadId: "th_same" };
+  const messageEvents = options.messageEvents ?? (async () => ({ ok: true, value: { events: [] } }));
   return {
     stats,
     getCommandContext: () => ({
       captureDisabled: false,
       stats,
-      sdk: { drainSettled: async () => {} },
+      sdk: { drainSettled: async () => {}, intakeStream: { messageEvents } },
       threadRef: { threadId: "th_same", registryPath: "/tmp/registry.sqlite" },
     }),
     getRolloutInfo: () => ({ path: "/tmp/old.jsonl", sessionId: "old-session" }),
+    isTurnOpen: () => false,
     stop: vi.fn(async () => {
       order.push("stop");
     }),
   } as unknown as CaptureSession;
+}
+
+/**
+ * Path-aware statRollout double: the rebuilt rollout grows across calls (swap
+ * evidence), the old rollout reports a fixed post-swap size.
+ */
+function statByPathFake(oldStat: RolloutStat): (path: string) => Promise<RolloutStat | null> {
+  let newCalls = 0;
+  return async (path: string) => {
+    if (path === "/tmp/old.jsonl") return oldStat;
+    newCalls += 1;
+    return newCalls === 1 ? { size: 100, mtimeMs: 1 } : { size: 130, mtimeMs: 2 };
+  };
 }
 
 /** statRollout double: first call returns `before`, later calls walk `after` (last repeats). */
@@ -174,7 +194,7 @@ describe("executeResumeInjection", () => {
       statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
     });
 
-    expect(failed).toEqual({ ok: false });
+    expect(failed).toEqual({ ok: false, reason: "no_swap_evidence" });
     expect(written).toEqual([`/resume ${NEW_ID}\r`]);
   });
 
@@ -211,7 +231,7 @@ describe("executeResumeInjection", () => {
       statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
     });
 
-    expect(result).toEqual({ ok: false });
+    expect(result).toEqual({ ok: false, reason: "no_swap_evidence" });
     expect(unsubscribed).toBe(true);
     expect(recordLineage).not.toHaveBeenCalled();
     expect(order).not.toContain("stop");
@@ -267,7 +287,7 @@ describe("executeResumeInjection", () => {
       statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
     });
 
-    expect(result).toEqual({ ok: false });
+    expect(result).toEqual({ ok: false, reason: "no_swap_evidence" });
     expect(recordLineage).not.toHaveBeenCalled();
     expect(order).not.toContain("stop");
   });
@@ -325,6 +345,122 @@ describe("executeResumeInjection", () => {
     expect(lineageErrors.some((line) => line.includes("lineage write failed (continuing)"))).toBe(true);
   });
 
+  it("aborts before injecting anything when a turn opened during the rebuild", async () => {
+    const order: string[] = [];
+    const captureSession = fakeCaptureSession(order);
+    const written: string[] = [];
+    const logs: string[] = [];
+
+    const result = await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      writeToPty: (data) => {
+        written.push(data);
+      },
+      onOutput: () => () => {},
+      startCapture: () => {
+        throw new Error("must not start a new capture on abort");
+      },
+      logResume: (message) => {
+        logs.push(message);
+      },
+      isTurnOpen: () => true,
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 130, mtimeMs: 2 }),
+    });
+
+    expect(result).toEqual({ ok: false, reason: "turn_open" });
+    expect(written).toEqual([]);
+    expect(logs).toEqual([]);
+    expect(order).not.toContain("stop");
+  });
+
+  it("records a silent runtime_note when the old rollout grew past the rebuild cutoff", async () => {
+    const order: string[] = [];
+    const recorded: unknown[][] = [];
+    const captureSession = fakeCaptureSession(order, {
+      messageEvents: async (_threadRef, events) => {
+        recorded.push(events);
+        return { ok: true, value: { events: [] } };
+      },
+    });
+    const plan: SessionRestartPlan = { ...PLAN, oldRolloutPath: "/tmp/old.jsonl", oldRolloutSizeAtRebuild: 500 };
+    const statByPath = statByPathFake({ size: 650, mtimeMs: 9 });
+
+    const result = await executeResumeInjection({
+      plan,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => ({ stats: {} }) as unknown as CaptureSession,
+      logResume: () => {},
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statByPath,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(recorded).toHaveLength(1);
+    const note = recorded[0]![0] as { eventKind: string; idempotencyKey: string; payload: { text: string } };
+    expect(note.eventKind).toBe("runtime_note");
+    expect(note.idempotencyKey).toBe(`cc-lhc:swap-collision:${NEW_ID}`);
+    expect(note.payload.text).toBe(formatSwapCollisionNote(plan, 500, 650));
+    // The old capture stopped (final flush) before the collision was measured.
+    expect(order).toContain("stop");
+  });
+
+  it("records nothing when the old rollout did not grow", async () => {
+    const recorded: unknown[][] = [];
+    const captureSession = fakeCaptureSession([], {
+      messageEvents: async (_threadRef, events) => {
+        recorded.push(events);
+        return { ok: true, value: { events: [] } };
+      },
+    });
+    const plan: SessionRestartPlan = { ...PLAN, oldRolloutPath: "/tmp/old.jsonl", oldRolloutSizeAtRebuild: 500 };
+    const statByPath = statByPathFake({ size: 500, mtimeMs: 9 });
+
+    const result = await executeResumeInjection({
+      plan,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => ({ stats: {} }) as unknown as CaptureSession,
+      logResume: () => {},
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statByPath,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(recorded).toEqual([]);
+  });
+
+  it("keeps the handoff alive when the collision note write fails", async () => {
+    const captureSession = fakeCaptureSession([], {
+      messageEvents: async () => {
+        throw new Error("thread db locked");
+      },
+    });
+    const plan: SessionRestartPlan = { ...PLAN, oldRolloutPath: "/tmp/old.jsonl", oldRolloutSizeAtRebuild: 500 };
+    const statByPath = statByPathFake({ size: 650, mtimeMs: 9 });
+
+    const result = await executeResumeInjection({
+      plan,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => ({ stats: {} }) as unknown as CaptureSession,
+      logResume: () => {},
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statByPath,
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("throws when no capture session is available", async () => {
     await expect(
       executeResumeInjection({
@@ -347,6 +483,13 @@ describe("receipt formatting", () => {
     expect(message).toContain(`resumed in-place as ${NEW_ID}`);
     expect(message).toContain("~4 replayed lines");
     expect(message).not.toMatch(/restart/i);
+  });
+
+  it("turn-open abort receipt names the untouched session and says rerun when idle", () => {
+    const message = formatResumeAbortTurnOpen(PLAN);
+    expect(message).toContain("turn opened during rebuild");
+    expect(message).toContain("old-session untouched");
+    expect(message).toContain("rerun when idle");
   });
 
   it("failure receipt names the manual command and the still-live session", () => {

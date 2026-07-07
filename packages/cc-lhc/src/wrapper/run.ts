@@ -1,4 +1,4 @@
-import { type IPty, spawn as defaultSpawn } from "@lydell/node-pty";
+import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
   dispatchLhcCommand,
@@ -6,24 +6,38 @@ import {
   type LhcCommandRuntime,
   type SessionRestartPlan,
 } from "../commands/dispatch.js";
-import { startCaptureSession, type CaptureSession } from "../intake/session.js";
+import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
 import { defaultLineageDbPath, safeRecordSessionThread } from "../intake/lineage-db.js";
-import { killAllInferenceChildren } from "../inference/claude-cli.js";
+import { type CaptureSession, startCaptureSession } from "../intake/session.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
-import {
-  createInterceptState,
-  processInputChunk,
-  type InterceptState,
-} from "./intercept.js";
 import { createInputDebugLogger } from "./input-debug.js";
-import { executeResumeInjection, formatResumeFailure } from "./resume-injection.js";
+import {
+  createInputState,
+  finishExecuting,
+  forceResetInput,
+  type InputState,
+  processInputChunk,
+  resolveLeaderByte,
+  showReceipts,
+} from "./modal.js";
+import { OutputHold } from "./output-hold.js";
+import { executeResumeInjection, formatResumeAbortTurnOpen, formatResumeFailure } from "./resume-injection.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const TERM_NAME = "xterm-256color";
 const SHOW_CURSOR = "\x1b[?25h";
+
+/**
+ * Cap on pty output held while the modal is open. Claude keeps running while
+ * we hold its bytes; a runaway stream must not grow unbounded, so past the
+ * cap the modal is cancelled, a one-line notice printed, and everything
+ * flushed.
+ */
+export const OUTPUT_HOLD_CAP_BYTES = 4 * 1024 * 1024;
+export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entry cancelled";
 
 export type PtySpawn = typeof defaultSpawn;
 
@@ -120,15 +134,33 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   }
 
   // The resume tripwire taps forwarded output for the duration of its watch
-  // window; everything still reaches stdout untouched.
+  // window; it must keep seeing data even while the modal holds output.
   let outputTap: ((data: string) => void) | null = null;
 
+  const leaderByte = resolveLeaderByte(process.env.CC_LHC_LEADER, (message) => {
+    stderr.write(`${message}\n`);
+  });
+  let inputState: InputState = createInputState(leaderByte);
+
+  // While the modal (or an executing command) owns the screen, pty output is
+  // held — claude keeps running; we just delay rendering its bytes.
+  const outputHold = new OutputHold(
+    OUTPUT_HOLD_CAP_BYTES,
+    (data) => stdout.write(data),
+    () => {
+      const reset = forceResetInput(inputState);
+      inputState = reset.state;
+      if (reset.toStdout !== "") stdout.write(reset.toStdout);
+      stdout.write(formatCommandOutput(OUTPUT_HOLD_OVERFLOW_MESSAGE));
+      stdout.write("\r\n");
+      outputHold.flush();
+    },
+  );
+
   const forwardOutput = (data: string): void => {
-    stdout.write(data);
+    outputHold.feed(data);
     outputTap?.(data);
   };
-
-  let interceptState: InterceptState = createInterceptState();
 
   const commandRuntime = (): LhcCommandRuntime => {
     const rollout = captureSession?.getRolloutInfo();
@@ -149,6 +181,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       cwd: process.cwd(),
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
+      isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
     };
   };
 
@@ -173,6 +206,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       process.removeListener("SIGWINCH", handleSigwinch);
       process.removeListener("SIGINT", forwardSignal);
       process.removeListener("SIGTERM", forwardSignal);
+      outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
         printStats();
@@ -182,8 +216,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       resolve(exitCode);
     };
 
-    const performResumeInjection = async (plan: SessionRestartPlan): Promise<void> => {
-      if (noCapture || captureSession === undefined) return;
+    /** Runs the injection; returns receipt lines to print (empty on success). */
+    const performResumeInjection = async (plan: SessionRestartPlan): Promise<string[]> => {
+      if (noCapture || captureSession === undefined) return [];
       const result = await executeResumeInjection({
         plan,
         captureSession,
@@ -210,6 +245,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
             stderr.write(`${message}\n`);
           });
         },
+        isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
         logResume: (message) => {
           stderr.write(`${message}\n`);
         },
@@ -219,48 +255,78 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         // the rebuilt rollout (rendered natively in the transcript), and the
         // injected repaint nudge would wipe anything written here anyway.
         captureSession = result.captureSession;
-      } else {
-        stdout.write(formatCommandOutput(formatResumeFailure(plan)));
+        return [];
       }
+      return [result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan)];
     };
 
-    const runDispatch = (commandLine: string): void => {
+    const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
+
+    // A modal-executed command settles here. Receipts render as modal rows
+    // above a fresh prompt, screen still held — the only rendering that
+    // survives a running turn (rig-verified: raw prints, before OR after the
+    // flush, are overwritten by the TUI's next repaint within a frame). The
+    // user reads the receipt, then dismisses the modal (Esc/ctrl-C/leader),
+    // which erases our rows and flushes the held output.
+    const settleCommand = (messages: string[]): void => {
+      if (inputState.mode !== "executing") {
+        // Modal was force-cancelled (held-output overflow) while the command
+        // ran: the screen is live again, so print raw — visibility is
+        // best-effort in this degenerate case.
+        for (const message of messages) stdout.write(formatCommandOutput(message));
+        if (messages.length > 0) stdout.write("\r\n");
+        return;
+      }
+      if (messages.length === 0) {
+        const finished = finishExecuting(inputState);
+        inputState = finished.state;
+        if (finished.toStdout !== "") stdout.write(finished.toStdout);
+        outputHold.flush();
+        return;
+      }
+      const shown = showReceipts(inputState, messages);
+      inputState = shown.state;
+      stdout.write(shown.toStdout);
+    };
+
+    const runModalCommand = (commandLine: string): void => {
       if (!commandGuard.tryAcquire()) {
-        stdout.write(formatCommandOutput(COMMAND_BUSY_MESSAGE));
+        settleCommand([COMMAND_BUSY_MESSAGE]);
         return;
       }
       void dispatchLhcCommand(commandLine, commandRuntime())
         .then(async (outcome) => {
-          for (const message of outcome.messages) {
-            stdout.write(formatCommandOutput(message));
-          }
+          const messages = [...outcome.messages];
           if (outcome.restart !== undefined) {
-            await performResumeInjection(outcome.restart);
+            messages.push(...(await performResumeInjection(outcome.restart)));
           }
+          settleCommand(messages);
         })
         .catch((cause: unknown) => {
           const message = cause instanceof Error ? cause.message : String(cause);
-          stdout.write(formatCommandOutput(`command error: ${message}`));
+          settleCommand([`command error: ${message}`]);
         })
         .finally(() => {
           commandGuard.release();
         });
     };
 
-    const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
-
     const forwardInput = (data: Buffer): void => {
-      const result = processInputChunk(data, interceptState);
-      interceptState = result.state;
-      debugInput(data, interceptState);
+      const result = processInputChunk(data, inputState);
+      inputState = result.state;
+      debugInput(data, inputState);
       if (result.toStdout !== "") stdout.write(result.toStdout);
       if (result.toPty.length > 0) ptyProcess.write(result.toPty);
-      if (result.dispatch !== undefined) runDispatch(result.dispatch);
+      for (const action of result.actions) {
+        if (action.kind === "enter_modal") outputHold.hold();
+        else if (action.kind === "exit_modal") outputHold.flush();
+        else if (action.kind === "execute") runModalCommand(action.commandLine);
+      }
     };
 
     const onExit = async ({ exitCode, signal }: { exitCode: number; signal?: number }): Promise<void> => {
       if (exited) return;
-      await teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : exitCode ?? 1);
+      await teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : (exitCode ?? 1));
     };
 
     ptyProcess.onData(forwardOutput);

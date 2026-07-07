@@ -16,6 +16,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   cwd: string;
   sourceRolloutPath: string | undefined;
   sourceSessionId: string | undefined;
+  /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
+  isTurnOpen?: () => boolean;
 }
 
 export interface SessionRestartPlan {
@@ -26,6 +28,9 @@ export interface SessionRestartPlan {
   expectedReintakeLines: number;
   /** Prefix lines the handoff capture hard-skips; excludes a trailing swap receipt. */
   replayedPrefixLines: number;
+  /** Source rollout path + its size when the rebuild snapshotted it — the swap-collision cutoff. */
+  oldRolloutPath?: string;
+  oldRolloutSizeAtRebuild?: number;
 }
 
 export interface DispatchOutcome {
@@ -34,7 +39,8 @@ export interface DispatchOutcome {
 }
 
 export const CAPTURE_DISABLED_MESSAGE = "capture disabled";
-export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try /lhc-help";
+export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try help";
+export const TURN_OPEN_REFUSAL = "turn in progress — rerun when idle";
 
 type CommandHandler = (commandLine: string, runtime: LhcCommandRuntime) => Promise<DispatchOutcome>;
 
@@ -42,7 +48,11 @@ function commandErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-async function runHandler(handler: CommandHandler, commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
+async function runHandler(
+  handler: CommandHandler,
+  commandLine: string,
+  runtime: LhcCommandRuntime,
+): Promise<DispatchOutcome> {
   try {
     return await handler(commandLine, runtime);
   } catch (cause) {
@@ -75,11 +85,11 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
   return {
     messages: [
       [
-        "/lhc-status — thread-view status + capture stats",
-        "/lhc-stats — capture stats line",
-        "/lhc-help — this list",
-        "/lhc-compact — compact thread view and resume in-place",
-        "/lhc-prune [targetTokens] — prune visibility zone and resume in-place",
+        "status — thread-view status + capture stats",
+        "stats — capture stats line",
+        "compact — compact thread view and resume in-place (refused mid-turn)",
+        "prune [targetTokens] — prune visibility zone and resume in-place (refused mid-turn)",
+        "help — this list",
       ].join("\n"),
     ],
   };
@@ -118,7 +128,9 @@ export async function dispatchLhcCommand(commandLine: string, runtime: LhcComman
 }
 
 export function formatCommandOutput(text: string): string {
-  return `\r\n[cc-lhc] ${text.replace(/\n/g, "\r\n[cc-lhc] ")}`;
+  // \x1b[2K clears any TUI content already on each receipt row (status bar,
+  // box borders) so receipts never interleave with stale characters.
+  return `\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, "\r\n\x1b[2K[cc-lhc] ")}`;
 }
 
 export function formatSessionResumeLog(plan: SessionRestartPlan): string {

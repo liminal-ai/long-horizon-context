@@ -10,32 +10,26 @@ import {
   type ThreadRef,
   threads,
 } from "lhc";
-
+import type { CaptureCommandContext } from "../commands/dispatch.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
-import type { CaptureCommandContext } from "../commands/dispatch.js";
-
-import { mapRolloutLine } from "./map.js";
+import { type DiscoverDeps, discoverSessionFile } from "../rollout/discover.js";
+import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
+import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
+import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
   defaultLineageDbPath,
+  type LineageDbDeps,
   lineageWriteFailureMessage,
   resolveCaptureThread,
-  safeLoadThreadSignatures,
   safeAppendThreadSignatures,
+  safeLoadThreadSignatures,
   safeRecordSessionThread,
-  type LineageDbDeps,
 } from "./lineage-db.js";
-import {
-  captureThreadRef,
-  defaultRegistryPath,
-  defaultThreadFilePath,
-} from "./paths.js";
+import { mapRolloutLine } from "./map.js";
+import { captureThreadRef, defaultRegistryPath, defaultThreadFilePath } from "./paths.js";
 import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
-import { discoverSessionFile, type DiscoverDeps } from "../rollout/discover.js";
-import type { RolloutLineItem } from "../rollout/types.js";
-import { watchRolloutFile, type RolloutWatcher } from "../rollout/watcher.js";
-import type { WatcherEmission } from "../rollout/types.js";
-import { type CaptureStats, emptyCaptureStats } from "../stats.js";
+import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
 export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
@@ -133,6 +127,14 @@ export interface CaptureSession {
   stats: CaptureStats;
   getCommandContext(): CaptureCommandContext;
   getRolloutInfo(): RolloutCaptureInfo;
+  /**
+   * Whether the tailed rollout says a claude turn is open (fold over
+   * classifyTurnSignal). Replayed-prefix lines after a swap are excluded —
+   * they are served history, not live state. Lags the file by at most one
+   * watcher poll; the last-instant resume recheck and the swap-collision log
+   * cover the remaining race.
+   */
+  isTurnOpen(): boolean;
   stop(): Promise<void>;
 }
 
@@ -245,9 +247,11 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const cwd = deps.cwd ?? process.cwd();
   const startedAt = deps.startedAt ?? new Date();
   const log = deps.log ?? (() => {});
-  const logError = deps.logError ?? ((message: string) => {
-    console.error(message);
-  });
+  const logError =
+    deps.logError ??
+    ((message: string) => {
+      console.error(message);
+    });
   const flush = deps.flushBatchFn ?? flushBatch;
   const createThread = deps.createThreadFn ?? createCaptureThread;
   const registryPath = deps.registryPath ?? defaultRegistryPath();
@@ -263,6 +267,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let stopped = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
+  let turnOpen = false;
   let prefixRemaining = deps.replayedPrefixLines ?? 0;
   let dedupeState: ReplayDedupeState | undefined;
   let persistSignatures: ((signatures: string[]) => Promise<void>) | undefined;
@@ -286,6 +291,11 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           continue;
         }
         if (isPrefixLine) prefixItems += 1;
+        else {
+          const signal = classifyTurnSignal(emission.item);
+          if (signal === "opens") turnOpen = true;
+          else if (signal === "closes") turnOpen = false;
+        }
         items.push(emission.item);
       }
       if (items.length === 0 || sdk === undefined || threadRef === undefined) return;
@@ -321,9 +331,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
           registryPath,
           lineageDbPath,
-          ...(deps.discoverDeps?.projectsRoot === undefined
-            ? {}
-            : { projectsRoot: deps.discoverDeps.projectsRoot }),
+          ...(deps.discoverDeps?.projectsRoot === undefined ? {} : { projectsRoot: deps.discoverDeps.projectsRoot }),
           log,
           logError,
           ...(deps.lineageDeps === undefined ? {} : { lineageDeps: deps.lineageDeps }),
@@ -335,9 +343,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         dedupeState = resolution.dedupeState;
         persistSignatures = resolution.persistSignatures;
         stats.threadId = threadIdFromRef(threadRef) || null;
-        sdk = (deps.initSdkFn ?? initLhc)(
-          captureSdkConfig(deps.noInference === true ? { noInference: true } : {}),
-        );
+        sdk = (deps.initSdkFn ?? initLhc)(captureSdkConfig(deps.noInference === true ? { noInference: true } : {}));
       } else {
         const continuedThreadId = threadIdFromRef(threadRef);
         if (continuedThreadId !== "") {
@@ -379,6 +385,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     },
     getRolloutInfo(): RolloutCaptureInfo {
       return { path: rolloutFilePath, sessionId: rolloutSessionId };
+    },
+    isTurnOpen(): boolean {
+      return turnOpen;
     },
     stop: async () => {
       stopped = true;

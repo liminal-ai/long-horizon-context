@@ -14,7 +14,7 @@ git submodule status   # must list vendor/pi with a SHA, not be empty
 
 If empty or you cloned without `--recursive`: `git submodule update --init`. The `vendor/pi` submodule is never built for cc-lhc, but its directories must exist for the workspace install to resolve.
 
-cc-lhc is a PTY wrapper around Claude Code that records sessions into a durable local store (`~/.cc-lhc/`), adds `/lhc-*` commands inside Claude Code (status, stats, prune, compact), and runs background summarization through `claude -p`. It changes nothing about how Claude Code itself behaves.
+cc-lhc is a PTY wrapper around Claude Code that records sessions into a durable local store (`~/.cc-lhc/`), adds a ctrl-] command modal inside Claude Code (status, stats, prune, compact), and runs background summarization through `claude -p`. It changes nothing about how Claude Code itself behaves.
 
 ## Step 2: Prerequisites
 
@@ -62,17 +62,17 @@ From a project directory (not this repo):
 cc-lhc
 ```
 
-This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). Use Claude Code as usual for a few exchanges, then type `/lhc-status` inside the session — it should print thread info instead of Claude Code complaining about an unknown command. Exit normally.
+This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). Use Claude Code as usual for a few exchanges, then press **ctrl-]** — a `[lhc] > ` prompt appears — and type `status` then Enter. It should show thread info as `[cc-lhc]` receipt lines; press Esc to dismiss. Exit normally.
 
 **Verify after exit:**
 - `ls ~/.cc-lhc/threads/` shows at least one `.sqlite` file.
-- Relaunch `cc-lhc`, run `/lhc-stats` — `lines` and `events` counters are nonzero and `parse_fail=0`.
+- Relaunch `cc-lhc`, press ctrl-] and run `stats` — `lines` and `events` counters are nonzero and `parse_fail=0`.
 
-If `/lhc-*` commands reach Claude Code as unknown commands instead of being intercepted, capture a debug log (`CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc`), reproduce, and report with the log — terminal emulators inject escape sequences the interceptor may not know yet.
+If ctrl-] does not open the `[lhc] > ` prompt, capture a debug log (`CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc`), reproduce, and report with the log — a terminal emulator may be swallowing the byte, or an in-flight escape sequence may be misclassified. `CC_LHC_LEADER` can rebind the key (e.g. `CC_LHC_LEADER='^_'`).
 
 ## What to watch on a new machine
 
-- **Claude Code version drift:** cc-lhc's rollout parser was built against Claude Code 2.1.201. On other versions it degrades safely — unknown record shapes are skipped and counted, never fatal. After a real session, check `/lhc-stats`: a high `skipped_unknown` relative to `lines` means the local version writes shapes we don't map yet. Report the version and the counts.
+- **Claude Code version drift:** cc-lhc's rollout parser was built against Claude Code 2.1.201. On other versions it degrades safely — unknown record shapes are skipped and counted, never fatal. After a real session, check the modal `stats` command: a high `skipped_unknown` relative to `lines` means the local version writes shapes we don't map yet. Report the version and the counts.
 - **Exit pause:** quitting can take up to ~30s if background summarization is still draining. It's a pause, not a hang.
 - **Opting out:** `cc-lhc --no-capture` runs Claude Code wrapped but without recording, and plain `claude` is always untouched.
 

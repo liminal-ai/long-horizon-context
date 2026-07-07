@@ -20,13 +20,26 @@
 // On failure NOTHING else changes — no lineage row, the old capture keeps
 // running, and the user gets the manual `/resume` command. Never inject a
 // bare `/resume` (it opens an interactive picker).
-import { stat } from "node:fs/promises";
-
+//
+// Two turn-race protections bracket the swap. BEFORE injecting, the turn
+// state is rechecked (claude has async wakes — monitors, background tasks —
+// so a turn can open during the rebuild): if one is open the injection is
+// aborted cleanly, the original session untouched, the rebuilt file left
+// unused on disk. AFTER a confirmed swap, the OLD rollout is compared against
+// its size at rebuild time: growth means a background turn raced the swap —
+// its content reached the thread record through the old tail's final flush
+// but is absent from the rebuilt live context. That collision is recorded
+// SILENTLY as a thread runtime_note (queryable later in the record, and
+// re-served into rebuilt contexts, unlike an ephemeral debug line); nothing
+// prints to the user.
 import type { SessionRestartPlan } from "../commands/dispatch.js";
 import { formatSessionResumeLog } from "../commands/dispatch.js";
-import { formatSwapReceipt } from "../rollout/rebuild.js";
 import { lineageWriteFailureMessage } from "../intake/lineage-db.js";
 import type { CaptureSession, ContinueCapture } from "../intake/session.js";
+import { formatSwapReceipt } from "../rollout/rebuild.js";
+import { type RolloutStat, statRolloutFile } from "../rollout/stat-file.js";
+
+export type { RolloutStat } from "../rollout/stat-file.js";
 
 export const RESUME_TRIPWIRE_WINDOW_MS = 3_000;
 /**
@@ -120,6 +133,18 @@ export function formatResumeFailure(plan: SessionRestartPlan): string {
   return `resume did not take; original session ${plan.oldSessionId} is still live — run /resume ${plan.newSessionId} manually`;
 }
 
+export function formatResumeAbortTurnOpen(plan: SessionRestartPlan): string {
+  return `swap aborted: turn opened during rebuild — original session ${plan.oldSessionId} untouched; rerun when idle`;
+}
+
+export function formatSwapCollisionNote(plan: SessionRestartPlan, sizeBefore: number, sizeAfter: number): string {
+  return (
+    `[swap collision] background turn raced session swap ${plan.oldSessionId} -> ${plan.newSessionId}: ` +
+    `old rollout grew ${sizeBefore} -> ${sizeAfter} bytes past the rebuild cutoff. ` +
+    `The raced content is in the thread record via the old session tail but absent from the rebuilt live context.`
+  );
+}
+
 export function formatResumeSuccess(plan: SessionRestartPlan): string {
   return formatSwapReceipt(plan.oldSessionId, plan.newSessionId, plan.expectedReintakeLines);
 }
@@ -138,20 +163,6 @@ export async function pauseCaptureForResume(session: CaptureSession): Promise<Co
   return paused;
 }
 
-export interface RolloutStat {
-  size: number;
-  mtimeMs: number;
-}
-
-async function defaultStatRollout(path: string): Promise<RolloutStat | null> {
-  try {
-    const fileStat = await stat(path);
-    return { size: fileStat.size, mtimeMs: fileStat.mtimeMs };
-  } catch {
-    return null;
-  }
-}
-
 function rolloutGrew(before: RolloutStat | null, after: RolloutStat | null): boolean {
   if (after === null) return false;
   if (before === null) return true;
@@ -168,6 +179,8 @@ export interface ResumeInjectionInput {
   logResume: (message: string) => void;
   recordLineage?: (input: { sessionId: string; threadId: string }) => Promise<void>;
   logLineageError?: (message: string) => void;
+  /** Last-instant turn recheck; an open turn aborts before anything is injected. */
+  isTurnOpen?: () => boolean;
   windowMs?: number;
   tripGraceMs?: number;
   confirmExtraMs?: number;
@@ -175,19 +188,59 @@ export interface ResumeInjectionInput {
   statRollout?: (path: string) => Promise<RolloutStat | null>;
 }
 
-export type ResumeInjectionResult = { ok: true; captureSession: CaptureSession } | { ok: false };
+export type ResumeInjectionResult =
+  | { ok: true; captureSession: CaptureSession }
+  | { ok: false; reason: "turn_open" | "no_swap_evidence" };
+
+/**
+ * Silent swap-collision check: the old rollout growing past its
+ * rebuild-cutoff size means a background turn raced the swap. Recorded as a
+ * thread runtime_note — the record is the queryable place — never printed.
+ * The old capture has already done its final-flush stop, so the raced lines
+ * themselves are in the record.
+ */
+async function recordSwapCollisionIfGrown(
+  plan: SessionRestartPlan,
+  continueCapture: ContinueCapture,
+  statRollout: (path: string) => Promise<RolloutStat | null>,
+): Promise<void> {
+  if (plan.oldRolloutPath === undefined || plan.oldRolloutSizeAtRebuild === undefined) return;
+  try {
+    const now = await statRollout(plan.oldRolloutPath);
+    if (now === null || now.size <= plan.oldRolloutSizeAtRebuild) return;
+    await continueCapture.sdk.intakeStream.messageEvents(continueCapture.threadRef, [
+      {
+        eventKind: "runtime_note",
+        idempotencyKey: `cc-lhc:swap-collision:${plan.newSessionId}`,
+        actor: "system",
+        harness: "cc",
+        payload: { text: formatSwapCollisionNote(plan, plan.oldRolloutSizeAtRebuild, now.size) },
+      },
+    ]);
+  } catch {
+    // Silent by design: a failed collision note must not disturb the handoff.
+  }
+}
 
 export async function executeResumeInjection(input: ResumeInjectionInput): Promise<ResumeInjectionResult> {
   if (input.captureSession === undefined) {
     throw new Error("capture session required for resume handoff");
   }
+
+  // Last-instant recheck: a turn may have opened while the rebuild ran
+  // (claude wakes asynchronously for monitors and background tasks). Abort
+  // before touching the pty — the rebuilt file stays on disk unused.
+  if (input.isTurnOpen?.() === true) {
+    return { ok: false, reason: "turn_open" };
+  }
+
   input.logResume(formatSessionResumeLog(input.plan));
 
   const windowMs = input.windowMs ?? RESUME_TRIPWIRE_WINDOW_MS;
   const tripGraceMs = input.tripGraceMs ?? RESUME_TRIP_GRACE_MS;
   const confirmExtraMs = input.confirmExtraMs ?? RESUME_CONFIRM_EXTRA_MS;
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const statRollout = input.statRollout ?? defaultStatRollout;
+  const statRollout = input.statRollout ?? statRolloutFile;
   const scanner = createTripwireScanner(resumeNotFoundPhrase(input.plan.newSessionId));
 
   const beforeStat = await statRollout(input.plan.rolloutPath);
@@ -228,7 +281,7 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
     }
   }
   if (!swapped) {
-    return { ok: false };
+    return { ok: false, reason: "no_swap_evidence" };
   }
 
   input.writeToPty(REPAINT_NUDGE);
@@ -249,6 +302,7 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
   }
 
   const continueCapture = await pauseCaptureForResume(input.captureSession);
+  await recordSwapCollisionIfGrown(input.plan, continueCapture, statRollout);
   const captureSession = input.startCapture(injectedAt, continueCapture, input.plan.rolloutPath);
   return { ok: true, captureSession };
 }

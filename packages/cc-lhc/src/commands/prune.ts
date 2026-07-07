@@ -1,7 +1,7 @@
 import type { Lhc, PruneReceipt, ThreadRef } from "lhc";
-
-import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
+import { statRolloutFile } from "../rollout/stat-file.js";
 import { writeRebuiltRollout } from "../rollout/write-rebuilt.js";
+import { type DispatchOutcome, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 
 function formatPruneReceipt(receipt: PruneReceipt): string {
   return [
@@ -28,14 +28,14 @@ function notReady(runtime: LhcCommandRuntime): DispatchOutcome | null {
 export async function runPruneCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const blocked = notReady(runtime);
   if (blocked !== null) return blocked;
+  // Refuse, don't defer: pruning under an open turn would rebuild from a view
+  // that is mid-mutation and swap a session claude is actively appending to.
+  if (runtime.isTurnOpen?.() === true) return { messages: [TURN_OPEN_REFUSAL] };
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
   const targetTokens = parseTargetTokens(commandLine);
-  const pruneResult = await sdk.threadView.prune(
-    threadRef,
-    targetTokens === undefined ? {} : { targetTokens },
-  );
+  const pruneResult = await sdk.threadView.prune(threadRef, targetTokens === undefined ? {} : { targetTokens });
   if (!pruneResult.ok) return { messages: [`prune error: ${pruneResult.error.reason}`] };
 
   const receipt = pruneResult.value;
@@ -46,6 +46,7 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
   if (!view.ok) return { messages: [...lines, `view error: ${view.error.reason}`] };
 
   try {
+    const oldStat = runtime.sourceRolloutPath === undefined ? null : await statRolloutFile(runtime.sourceRolloutPath);
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,
@@ -62,6 +63,8 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
         rebuiltLineCount: rebuilt.lineCount,
         expectedReintakeLines: rebuilt.expectedReintakeLines,
         replayedPrefixLines: rebuilt.replayedPrefixLines,
+        ...(runtime.sourceRolloutPath === undefined ? {} : { oldRolloutPath: runtime.sourceRolloutPath }),
+        ...(oldStat === null ? {} : { oldRolloutSizeAtRebuild: oldStat.size }),
       },
     };
   } catch (cause) {
