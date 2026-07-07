@@ -485,10 +485,12 @@ describe("receipt formatting", () => {
     expect(message).not.toMatch(/restart/i);
   });
 
-  it("turn-open abort receipt names the untouched session and says rerun when idle", () => {
+  it("turn-open abort receipt tells the truth about the partial state", () => {
     const message = formatResumeAbortTurnOpen(PLAN);
     expect(message).toContain("turn opened during rebuild");
-    expect(message).toContain("old-session untouched");
+    expect(message).toContain("live session old-session untouched");
+    expect(message).toContain("thread view is already compacted/pruned");
+    expect(message).toContain("next successful swap will serve it");
     expect(message).toContain("rerun when idle");
   });
 

@@ -19,6 +19,7 @@ import {
   forceResetInput,
   type InputState,
   processInputChunk,
+  resolveBareEsc,
   resolveLeaderByte,
   showReceipts,
 } from "./modal.js";
@@ -38,6 +39,12 @@ const SHOW_CURSOR = "\x1b[?25h";
  */
 export const OUTPUT_HOLD_CAP_BYTES = 4 * 1024 * 1024;
 export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entry cancelled";
+/**
+ * How long a pending ESC may sit unresolved before it is ruled a bare Esc
+ * keypress. Split escape sequences deliver their next byte within a few ms;
+ * kitty-protocol terminals never send a bare ESC at all.
+ */
+export const PENDING_ESC_RESOLVE_MS = 50;
 
 export type PtySpawn = typeof defaultSpawn;
 
@@ -202,6 +209,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     const teardownAndExit = async (exitCode: number): Promise<void> => {
       if (exited) return;
       exited = true;
+      if (pendingEscTimer !== null) {
+        clearTimeout(pendingEscTimer);
+        pendingEscTimer = null;
+      }
       stdin.removeListener("data", forwardInput);
       process.removeListener("SIGWINCH", handleSigwinch);
       process.removeListener("SIGINT", forwardSignal);
@@ -311,17 +322,44 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         });
     };
 
+    const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
+      for (const action of actions) {
+        if (action.kind === "enter_modal") outputHold.hold();
+        else if (action.kind === "exit_modal") outputHold.flush();
+        else if (action.kind === "execute") runModalCommand(action.commandLine);
+      }
+    };
+
+    // A pending ESC held by the modal is resolved by the next byte; when no
+    // byte follows (a truly bare Esc keypress), this timer rules it bare so
+    // the cancel is never ambiguous for longer than PENDING_ESC_RESOLVE_MS.
+    let pendingEscTimer: NodeJS.Timeout | null = null;
+
+    const armPendingEscTimer = (): void => {
+      if (pendingEscTimer !== null) {
+        clearTimeout(pendingEscTimer);
+        pendingEscTimer = null;
+      }
+      if (inputState.mode === "passthrough" || inputState.escape?.kind !== "pending_esc") return;
+      pendingEscTimer = setTimeout(() => {
+        pendingEscTimer = null;
+        const resolved = resolveBareEsc(inputState);
+        if (resolved === null) return;
+        inputState = resolved.state;
+        if (resolved.toStdout !== "") stdout.write(resolved.toStdout);
+        applyActions(resolved.actions);
+      }, PENDING_ESC_RESOLVE_MS);
+      pendingEscTimer.unref?.();
+    };
+
     const forwardInput = (data: Buffer): void => {
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
       if (result.toStdout !== "") stdout.write(result.toStdout);
       if (result.toPty.length > 0) ptyProcess.write(result.toPty);
-      for (const action of result.actions) {
-        if (action.kind === "enter_modal") outputHold.hold();
-        else if (action.kind === "exit_modal") outputHold.flush();
-        else if (action.kind === "execute") runModalCommand(action.commandLine);
-      }
+      applyActions(result.actions);
+      armPendingEscTimer();
     };
 
     const onExit = async ({ exitCode, signal }: { exitCode: number; signal?: number }): Promise<void> => {

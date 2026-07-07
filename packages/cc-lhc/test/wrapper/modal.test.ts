@@ -7,10 +7,12 @@ import {
   forceResetInput,
   type InputAction,
   type InputState,
+  MODAL_ASCII_NOTE,
   MODAL_HELP_LINE,
   MODAL_PROMPT,
   mapModalCommand,
   processInputChunk,
+  resolveBareEsc,
   resolveLeaderByte,
   showReceipts,
 } from "../../src/wrapper/modal.js";
@@ -111,12 +113,52 @@ describe("passthrough", () => {
     expect(result.actions).toEqual([]);
   });
 
-  it("clears pending escape tracking on a bare Esc chunk", () => {
+  it("keeps a pending ESC across the chunk boundary; the next byte resolves it", () => {
     const result = feed(createInputState(), Buffer.from([0x1b]));
     expect(result.pty).toBe("\x1b");
-    expect(result.state.escape).toBeNull();
-    const after = feed(result.state, LEADER);
-    expect(after.actions).toEqual([{ kind: "enter_modal" }]);
+    expect(result.state.escape).toEqual({ kind: "pending_esc" });
+    // The byte after a bare Esc resolves the pending state. A leader here is
+    // suppressed once (forwarded literally) — the accepted trade for never
+    // misreading a split sequence; leader-again recovers.
+    const suppressed = feed(result.state, LEADER);
+    expect(suppressed.pty).toBe("\x1d");
+    expect(suppressed.actions).toEqual([]);
+    expect(suppressed.state.escape).toBeNull();
+    const recovered = feed(suppressed.state, LEADER);
+    expect(recovered.actions).toEqual([{ kind: "enter_modal" }]);
+  });
+
+  it("never opens modal on a leader inside a sequence split after its ESC", () => {
+    // OSC with a leader (and BEL terminator) in the payload
+    const osc = feed(createInputState(), "\x1b", "]11;fo\x1dob\x07");
+    expect(osc.pty).toBe("\x1b]11;fo\x1dob\x07");
+    expect(osc.actions).toEqual([]);
+
+    // bracketed-paste open split after ESC, leader in the pasted content
+    const paste = feed(createInputState(), "\x1b", "[200~ab\x1dcd", "\x1b[201~");
+    expect(paste.pty).toBe("\x1b[200~ab\x1dcd\x1b[201~");
+    expect(paste.actions).toEqual([]);
+    expect(paste.state.inPaste).toBe(false);
+
+    // CSI with the leader byte among its params
+    const csi = feed(createInputState(), "\x1b", "[38;5;\x1dm");
+    expect(csi.pty).toBe("\x1b[38;5;\x1dm");
+    expect(csi.actions).toEqual([]);
+
+    // legacy mouse report with a leader among its three payload bytes
+    const mouse = feed(createInputState(), Buffer.from([0x1b]), Buffer.from([0x4d, 0x20, 0x1d, 0x21]));
+    expect(mouse.pty).toBe("\x1bM \x1d!");
+    expect(mouse.actions).toEqual([]);
+
+    // double-ESC then a split sequence keeps tracking
+    const doubleEsc = feed(createInputState(), "\x1b", "\x1b", "[200~x\x1dy\x1b[201~");
+    expect(doubleEsc.pty).toBe("\x1b\x1b[200~x\x1dy\x1b[201~");
+    expect(doubleEsc.actions).toEqual([]);
+  });
+
+  it("opens modal on a leader in its own chunk right after a completed sequence", () => {
+    const result = feed(createInputState(), "\x1b[A", LEADER);
+    expect(result.actions).toEqual([{ kind: "enter_modal" }]);
   });
 
   it("honors a custom leader byte", () => {
@@ -155,9 +197,10 @@ describe("modal line editor", () => {
     expect(result.state.mode).toBe("modal");
   });
 
-  it("prints help on help/? and stays modal", () => {
+  it("prints help (with the ASCII-only note) on help/? and stays modal", () => {
     const result = feed(openModal(), "?\r");
     expect(result.out).toContain(MODAL_HELP_LINE);
+    expect(result.out).toContain(MODAL_ASCII_NOTE);
     expect(result.state.mode).toBe("modal");
     const then = feed(result.state, "stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
@@ -193,13 +236,41 @@ describe("modal line editor", () => {
     expect(executed(result.actions)).toEqual(["/lhc-stats"]);
   });
 
-  it("cancels on a bare Esc chunk and erases the prompt", () => {
+  it("a bare Esc followed by a byte cancels; the byte belongs to passthrough", () => {
     const opened = feed(openModal(), "sta");
-    const result = feed(opened.state, Buffer.from([0x1b]));
+    const result = feed(opened.state, Buffer.from([0x1b]), "x");
     expect(result.actions).toEqual([{ kind: "exit_modal" }]);
     expect(result.out).toBe(ERASE_LINE);
-    const after = feed(result.state, "x");
-    expect(after.pty).toBe("x");
+    expect(result.pty).toBe("x");
+    expect(result.state.mode).toBe("passthrough");
+  });
+
+  it("a truly bare Esc resolves to cancel via resolveBareEsc (run.ts timer)", () => {
+    const opened = feed(openModal(), "sta", Buffer.from([0x1b]));
+    expect(opened.state.mode).toBe("modal");
+    expect(opened.state.escape).toEqual({ kind: "pending_esc" });
+    const resolved = resolveBareEsc(opened.state);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(resolved!.toStdout).toBe(ERASE_LINE);
+    expect(resolved!.state.mode).toBe("passthrough");
+    // nothing pending → null
+    expect(resolveBareEsc(resolved!.state)).toBeNull();
+  });
+
+  it("a split escape sequence while modal is never misread as cancel", () => {
+    // split arrow key: dropped, stays modal
+    const arrow = feed(openModal(), "\x1b", "[A");
+    expect(arrow.state.mode).toBe("modal");
+    expect(arrow.pty).toBe("");
+    expect(arrow.actions).toEqual([]);
+    // split kitty Enter still submits
+    const kitty = feed(openModal(), "status", "\x1b", "[13;1u");
+    expect(executed(kitty.actions)).toEqual(["/lhc-status"]);
+    // split OSC response forwards and stays modal
+    const osc = feed(openModal(), "\x1b", "]11;rgb:aa\x07");
+    expect(osc.pty).toBe("\x1b]11;rgb:aa\x07");
+    expect(osc.state.mode).toBe("modal");
   });
 
   it("cancels on ctrl-C and on leader-again", () => {
@@ -265,12 +336,34 @@ describe("executing mode", () => {
     return opened.state;
   }
 
-  it("drops user input while a command runs", () => {
-    const result = feed(startExecuting(), "abc\r\x03", LEADER, Buffer.from([0x1b]));
+  it("drops user input while a command runs (Esc and leader included)", () => {
+    const result = feed(startExecuting(), "abc\r", LEADER, Buffer.from([0x1b]), "q");
     expect(result.pty).toBe("");
     expect(result.out).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
+  });
+
+  it("ctrl-C while executing DETACHES: rows erased, output resumes, command unaffected", () => {
+    const detached = feed(startExecuting(), "\x03");
+    expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(detached.out).toBe(ERASE_LINE);
+    expect(detached.state.mode).toBe("passthrough");
+    // subsequent input flows to claude; the late receipt path (settleCommand
+    // with mode !== executing) prints raw without touching input state
+    const after = feed(detached.state, "hello");
+    expect(after.pty).toBe("hello");
+    expect(forceResetInput(after.state).toStdout).toBe("");
+  });
+
+  it("resolveBareEsc while executing clears the pending ESC without detaching", () => {
+    const pending = feed(startExecuting(), Buffer.from([0x1b]));
+    expect(pending.state.escape).toEqual({ kind: "pending_esc" });
+    const resolved = resolveBareEsc(pending.state);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.actions).toEqual([]);
+    expect(resolved!.state.mode).toBe("executing");
+    expect(resolved!.state.escape).toBeNull();
   });
 
   it("still forwards protocol responses while executing", () => {
@@ -300,7 +393,7 @@ describe("executing mode", () => {
     expect(shown.toStdout).toContain("[cc-lhc] three");
     expect(shown.toStdout.endsWith(MODAL_PROMPT)).toBe(true);
     // rows: original prompt + 3 receipt rows + fresh prompt = 5
-    const dismissed = feed(shown.state, Buffer.from([0x1b]));
+    const dismissed = feed(shown.state, "\x03");
     expect(dismissed.actions).toEqual([{ kind: "exit_modal" }]);
     expect(dismissed.out).toBe(ERASE_LINE + CURSOR_UP_ERASE.repeat(4));
   });

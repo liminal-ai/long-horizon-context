@@ -56,10 +56,30 @@ function classifyUserLine(item: RolloutLineItem): TurnSignal {
   return text === "" ? "neutral" : "opens";
 }
 
+/**
+ * CONTENT first, stop_reason as refinement: 2.1.202 stamps stop_reason on
+ * every assistant line ("tool_use" mid-loop, "end_turn"/"stop_sequence" at
+ * close — verified live), but 2.1.201 writes assistant lines with NO
+ * stop_reason at all (see test/fixtures/rollout-samples.jsonl). A
+ * stop_reason-only fold sticks OPEN forever on those rollouts and the gate
+ * refuses indefinitely.
+ */
 function classifyAssistantLine(item: RolloutLineItem): TurnSignal {
+  const content = item.message?.content;
+  const blocks = contentBlocks(content);
+  // A tool_use block means claude has more to do, whatever the line says.
+  if (blocks.some((block) => block.type === "tool_use")) return "opens";
+
   const stop = item.message?.stop_reason;
-  if (typeof stop !== "string") return "neutral"; // unknown shape: don't guess
-  return stop === "tool_use" ? "opens" : "closes";
+  if (typeof stop === "string") return stop === "tool_use" ? "opens" : "closes";
+
+  // No stop_reason (2.1.201 shape): a text-bearing line without tool calls is
+  // the turn's final response. Thinking-only/empty lines stay neutral —
+  // closing on them could end the fold mid-turn.
+  const hasText =
+    (typeof content === "string" && content !== "") ||
+    blocks.some((block) => block.type === "text" && typeof block.text === "string" && block.text !== "");
+  return hasText ? "closes" : "neutral";
 }
 
 /** What one rollout line says about claude's turn state; fold in order. */

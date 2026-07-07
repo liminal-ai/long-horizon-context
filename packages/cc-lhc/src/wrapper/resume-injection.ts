@@ -134,7 +134,11 @@ export function formatResumeFailure(plan: SessionRestartPlan): string {
 }
 
 export function formatResumeAbortTurnOpen(plan: SessionRestartPlan): string {
-  return `swap aborted: turn opened during rebuild — original session ${plan.oldSessionId} untouched; rerun when idle`;
+  // Tell the truth about the partial state: the live session was not swapped,
+  // but the thread view WAS already compacted/pruned (a view mutation without
+  // a swap is valid — the next successful swap serves it) and a rebuilt
+  // rollout file sits unused on disk.
+  return `swap aborted: turn opened during rebuild — live session ${plan.oldSessionId} untouched; the thread view is already compacted/pruned and the next successful swap will serve it; rerun when idle`;
 }
 
 export function formatSwapCollisionNote(plan: SessionRestartPlan, sizeBefore: number, sizeAfter: number): string {

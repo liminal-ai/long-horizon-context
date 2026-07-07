@@ -22,6 +22,7 @@
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
 export const MODAL_PROMPT = "[lhc] > ";
 export const MODAL_HELP_LINE = "commands: status | stats | prune [targetTokens] | compact | help — Esc cancels";
+export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
 
 const BACKSPACE_ECHO = "\x08 \x08";
@@ -234,6 +235,9 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
       if (byte === 0x5b) return { ...state, escape: { kind: "csi", params: "" } };
       if (isStringTermIntroducer(byte)) return { ...state, escape: { kind: "string_term" } };
       if (byte === 0x4d) return { ...state, escape: { kind: "legacy_mouse", remaining: 3 } };
+      // Another ESC: the pending one was a bare keypress; this one may
+      // introduce a sequence — stay pending.
+      if (byte === 0x1b) return state;
       return { ...state, escape: null };
     case "csi":
       if (isCsiFinal(byte)) {
@@ -298,7 +302,7 @@ function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
 function submitModalLine(state: InputState): StepOutcome {
   const trimmed = state.line.trim();
   if (trimmed === "") return cancelModal(state);
-  if (trimmed === "help" || trimmed === "?") return reprompt(state, [MODAL_HELP_LINE]);
+  if (trimmed === "help" || trimmed === "?") return reprompt(state, [MODAL_HELP_LINE, MODAL_ASCII_NOTE]);
   const commandLine = mapModalCommand(trimmed);
   if (commandLine === null) {
     return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${trimmed}`, MODAL_HELP_LINE]);
@@ -353,7 +357,7 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
   const held = [...state.heldSeq, byte];
 
   switch (mode.kind) {
-    case "pending_esc":
+    case "pending_esc": {
       if (byte === 0x5b) {
         return { state: { ...state, escape: { kind: "csi", params: "" }, heldSeq: held } };
       }
@@ -369,9 +373,24 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       if (byte === 0x4d) {
         return { state: { ...state, escape: { kind: "legacy_mouse", remaining: 3 }, heldSeq: held } };
       }
-      // Alt-key chord or terminal noise — not a key for our editor, and not a
-      // sequence the child is waiting on. Drop both bytes.
-      return { state: { ...state, escape: null, heldSeq: [] } };
+      // Any other byte resolves the held ESC as a bare Esc keypress — this
+      // works across chunk boundaries, so a sequence split after its ESC is
+      // never misread. While executing, Esc is dropped (ctrl-C detaches);
+      // while modal, Esc cancels and the current byte belongs to passthrough.
+      const cleared: InputState = { ...state, escape: null, heldSeq: [] };
+      if (state.mode === "executing") {
+        if (byte === 0x03) return cancelModal(cleared);
+        return { state: cleared };
+      }
+      const cancelled = cancelModal(cleared);
+      const after = passthroughByte(byte, cancelled.state);
+      return {
+        state: after.state,
+        toPty: after.toPty ?? Buffer.alloc(0),
+        toStdout: (cancelled.toStdout ?? "") + (after.toStdout ?? ""),
+        actions: [...(cancelled.actions ?? []), ...(after.actions ?? [])],
+      };
+    }
 
     case "csi": {
       if (!isCsiFinal(byte)) {
@@ -420,14 +439,22 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // literal content with no line to live in, so it is dropped rather than
     // treated as a submit; control bytes (including the leader) are ignored —
     // except ctrl-C, kept as the escape hatch if a paste never closes.
-    if (byte === 0x03 && state.mode === "modal") return cancelModal(state);
+    if (byte === 0x03) return cancelModal(state);
     if (state.mode === "modal" && byte >= 0x20 && byte <= 0x7e) {
       return { state: { ...state, line: state.line + String.fromCharCode(byte) }, toStdout: String.fromCharCode(byte) };
     }
     return { state };
   }
 
-  if (byte === state.leaderByte || byte === 0x03) {
+  if (byte === 0x03) {
+    // Modal: cancel. Executing: DETACH — the modal UI is torn down and output
+    // resumes, but the in-flight command keeps running (the single-flight
+    // guard still serializes); its receipt prints raw on completion and may
+    // be repainted over. This is the escape hatch for a hung command.
+    return cancelModal(state);
+  }
+
+  if (byte === state.leaderByte) {
     if (state.mode === "executing") return { state };
     return cancelModal(state);
   }
@@ -465,19 +492,32 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
     if (outcome.actions !== undefined) actions.push(...outcome.actions);
   }
 
-  // A lone \x1b chunk is a bare Esc keypress (sequences arrive with their
-  // introducer in the same read). Passthrough already forwarded it — just
-  // clear the tracking. Modal holds it — cancel. Executing — drop it.
-  if (current.escape?.kind === "pending_esc" && chunk.length === 1 && chunk[0] === 0x1b) {
-    if (current.mode === "modal") {
-      const cancelled = cancelModal({ ...current, escape: null, heldSeq: [] });
-      current = cancelled.state;
-      toStdout += cancelled.toStdout ?? "";
-      if (cancelled.actions !== undefined) actions.push(...cancelled.actions);
-    } else {
-      current = { ...current, escape: null, heldSeq: [] };
-    }
-  }
-
+  // A pending ESC deliberately SURVIVES the chunk boundary: whether it was a
+  // bare keypress or the head of a split sequence is decided by the NEXT byte
+  // (see the pending_esc cases above). While pending, leader recognition is
+  // suppressed — mis-suppressing for one chunk is harmless (leader-again
+  // recovers). Bounded ambiguity for a truly bare Esc while modal is run.ts's
+  // job: it arms a short timer and calls resolveBareEsc.
   return { state: current, toPty, toStdout, actions };
+}
+
+/**
+ * Resolve a pending ESC that no further byte has resolved (run.ts calls this
+ * from a ~50ms timer): it was a bare Esc keypress. Modal → cancel; executing
+ * → drop it (Esc does not detach; ctrl-C does). Null when nothing is pending
+ * or the state has since moved on.
+ */
+export function resolveBareEsc(
+  state: InputState,
+): { state: InputState; toStdout: string; actions: InputAction[] } | null {
+  if (state.escape?.kind !== "pending_esc") return null;
+  const cleared: InputState = { ...state, escape: null, heldSeq: [] };
+  if (state.mode === "modal") {
+    const cancelled = cancelModal(cleared);
+    return { state: cancelled.state, toStdout: cancelled.toStdout ?? "", actions: cancelled.actions ?? [] };
+  }
+  if (state.mode === "executing") {
+    return { state: cleared, toStdout: "", actions: [] };
+  }
+  return null;
 }
