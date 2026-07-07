@@ -219,14 +219,14 @@ describe("run", () => {
     await runPromise;
   }, 20_000);
 
-  it("leaves the alt screen before the /resume pty write during a confirmed swap", async () => {
+  it("leaves the alt screen and flushes held output before the /resume pty write during a confirmed swap", async () => {
     const timeline: string[] = [];
     const ptyWrites: string[] = [];
 
     runMocks.captureFactory = () => makeCaptureSession();
-    runMocks.dispatchLhcCommand.mockResolvedValue({
-      messages: ["compact view=v4"],
-      restart: SWAP_PLAN,
+    runMocks.dispatchLhcCommand.mockImplementation(async () => {
+      await sleep(400);
+      return { messages: ["compact view=v4"], restart: SWAP_PLAN };
     });
     vi.spyOn(statFile, "statRolloutFile").mockImplementation(statRolloutGrowth());
 
@@ -237,9 +237,15 @@ describe("run", () => {
       output.push(chunk.toString("latin1"));
     });
     const originalWrite = stdout.write.bind(stdout);
+    let sawLeave = false;
     vi.spyOn(stdout, "write").mockImplementation((chunk, ...args) => {
       const text = String(chunk);
-      if (text.includes(LEAVE_ALT_SCREEN)) timeline.push("leave");
+      if (text.includes(LEAVE_ALT_SCREEN)) {
+        timeline.push("leave");
+        sawLeave = true;
+      } else if (sawLeave && !timeline.includes("held-flush") && /tick\d/.test(text)) {
+        timeline.push("held-flush");
+      }
       return originalWrite(chunk, ...args);
     });
 
@@ -256,26 +262,38 @@ describe("run", () => {
       return proc;
     };
 
-    const runPromise = run(["-c", "sleep 30"], {
-      claudeBin: "bash",
-      stdin,
-      stdout,
-      spawnPty,
-      noInference: true,
-      resumeWindowMs: 5,
-    });
+    const runPromise = run(
+      ["-c", 'i=0; while true; do i=$((i+1)); echo "tick$i"; sleep 0.05; done'],
+      {
+        claudeBin: "bash",
+        stdin,
+        stdout,
+        spawnPty,
+        noInference: true,
+        resumeWindowMs: 5,
+      },
+    );
 
-    await sleep(100);
+    await sleep(150);
+    await waitFor(() => output.some((chunk) => chunk.includes("tick2")), "child ticks to hold");
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
     (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
     await waitFor(() => timeline.includes("leave"), "alt-screen leave at injection");
+    await waitFor(() => timeline.includes("held-flush"), "held output flush at injection");
     await waitFor(() => timeline.includes("resume-pty"), "/resume pty write");
 
+    const joined = output.join("");
+    const leavePos = joined.indexOf(LEAVE_ALT_SCREEN);
+    const tickAfterLeave = joined.indexOf("tick", leavePos + LEAVE_ALT_SCREEN.length);
     const leaveIdx = timeline.indexOf("leave");
+    const heldIdx = timeline.indexOf("held-flush");
     const resumeIdx = timeline.indexOf("resume-pty");
+    expect(leavePos).toBeGreaterThan(-1);
+    expect(tickAfterLeave).toBeGreaterThan(leavePos);
     expect(leaveIdx).toBeGreaterThan(-1);
-    expect(resumeIdx).toBeGreaterThan(leaveIdx);
+    expect(heldIdx).toBeGreaterThan(leaveIdx);
+    expect(resumeIdx).toBeGreaterThan(heldIdx);
     expect(ptyWrites.some((line) => line.includes(`/resume ${SWAP_PLAN.newSessionId}`))).toBe(true);
 
     process.kill(process.pid, "SIGTERM");
@@ -317,6 +335,65 @@ describe("run", () => {
     const reopenEnter = joined.indexOf(ENTER_ALT_SCREEN, firstLeave + 1);
     expect(firstLeave).toBeGreaterThan(-1);
     expect(reopenEnter).toBeGreaterThan(firstLeave);
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
+  it("logs a late swap failure instead of clobbering a user-opened panel after dismissal", async () => {
+    const logDir = mkdtempSync(join(tmpdir(), "cc-lhc-run-late-fail-"));
+    const logPath = join(logDir, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+
+    runMocks.captureFactory = () => makeCaptureSession();
+    runMocks.dispatchLhcCommand.mockResolvedValue({
+      messages: ["compact view=v4"],
+      restart: SWAP_PLAN,
+    });
+    vi.spyOn(statFile, "statRolloutFile").mockImplementation(async () => ({ size: 100, mtimeMs: 1 }));
+
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      wrapperLog,
+      noInference: true,
+      resumeWindowMs: 5,
+      resumeConfirmExtraMs: 50,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "dismiss at injection");
+
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.filter((chunk) => chunk.includes(ENTER_ALT_SCREEN)).length >= 2, "user reopens panel");
+    (stdin as unknown as PassThrough).write(Buffer.from("status"));
+    await waitFor(() => output.join("").includes("long-horizon commands> status"), "user panel line intact");
+
+    await waitFor(
+      async () => (await readFile(logPath, "utf8")).includes("swap failed after panel dismissal"),
+      "late failure logged",
+    );
+
+    const joined = output.join("");
+    const secondEnter = joined.indexOf(ENTER_ALT_SCREEN, joined.indexOf(LEAVE_ALT_SCREEN) + 1);
+    const afterUserPanel = joined.slice(secondEnter);
+    expect(afterUserPanel).toContain("long-horizon commands> status");
+    expect(afterUserPanel).not.toContain("resume did not take");
+
+    const logText = await readFile(logPath, "utf8");
+    expect(logText).toMatch(/\[warn\].*swap failed after panel dismissal \(user panel active\)/);
+    expect(logText).toMatch(/resume did not take/);
 
     process.kill(process.pid, "SIGTERM");
     await runPromise;

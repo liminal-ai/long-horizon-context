@@ -193,6 +193,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     wrapperLog.warn(message);
   });
   let inputState: InputState = createInputState(leaderByte);
+  /** Bumped on every modal entry; tags a dismiss-at-injection so late failures reopen only if still idle. */
+  let modalGeneration = 0;
 
   // While the modal (or an executing command) owns the screen, pty output is
   // held — claude keeps running; we just delay rendering its bytes.
@@ -301,9 +303,15 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     const performResumeInjection = async (
       plan: SessionRestartPlan,
       outcomeMessages: string[],
-    ): Promise<{ swapped: boolean; receipts: string[]; failurePanelShown?: boolean }> => {
+    ): Promise<{
+      swapped: boolean;
+      receipts: string[];
+      failurePanelShown?: boolean;
+      failureSettled?: boolean;
+    }> => {
       if (noCapture || captureSession === undefined) return { swapped: false, receipts: [] };
       let dismissedForSwap = false;
+      let dismissedModalGeneration = modalGeneration;
       const result = await executeResumeInjection({
         plan,
         captureSession,
@@ -312,6 +320,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         },
         onBeforeInject: () => {
           dismissedForSwap = true;
+          dismissedModalGeneration = modalGeneration;
           inputState = finishExecuting(inputState);
           altScreen.leave();
           outputHold.flush();
@@ -358,6 +367,12 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       const failureReceipt =
         result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan);
       if (dismissedForSwap) {
+        const idlePassthrough =
+          inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
+        if (!idlePassthrough) {
+          wrapperLog.warn(`swap failed after panel dismissal (user panel active): ${failureReceipt}`);
+          return { swapped: false, receipts: [], failureSettled: true };
+        }
         outputHold.hold();
         altScreen.enter();
         inputState = showReceipts(
@@ -406,7 +421,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
             outcome.restart === undefined
               ? null
               : await performResumeInjection(outcome.restart, outcome.messages);
-          if (resume?.failurePanelShown === true) return;
+          if (resume?.failurePanelShown === true || resume?.failureSettled === true) return;
           const receipts = settleReceipts(outcome.messages, resume);
           if (receipts === null) {
             // Confirmed swap: auto-dismiss — panel already left at injection;
@@ -428,6 +443,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
+          modalGeneration += 1;
           outputHold.hold();
           altScreen.enter();
         } else if (action.kind === "exit_modal") {
