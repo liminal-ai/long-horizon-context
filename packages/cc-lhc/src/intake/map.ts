@@ -17,6 +17,14 @@ const META_MARKERS = ["<local-command-caveat>", "<command-name>", "<local-comman
 const TASK_NOTIFICATION_MARKER = "<task-notification>";
 const RUNTIME_NOTE_LABEL = "[runtime note]";
 
+// Claude Code appends a zero-usage assistant line ("No response requested.",
+// model "<synthetic>") when it resumes a session whose last line is a user
+// message. Rebuilt rollouts end on the swap-receipt runtime note, so every
+// prune/compact swap produces one. It is harness chrome, not conversation —
+// skipped and counted as meta so it never enters the thread record.
+const SYNTHETIC_MODEL = "<synthetic>";
+const SYNTHETIC_NO_RESPONSE_TEXT = "No response requested.";
+
 export interface MapStats {
   sidechain: number;
   unknown: number;
@@ -197,6 +205,13 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
   return events;
 }
 
+function isSyntheticNoResponse(item: RolloutLineItem): boolean {
+  const message = item.message;
+  if (message === undefined || message.model !== SYNTHETIC_MODEL) return false;
+  const blocks = contentBlocks(message.content);
+  return blocks.length === 1 && blocks[0]!.type === "text" && blocks[0]!.text === SYNTHETIC_NO_RESPONSE_TEXT;
+}
+
 function isUserLine(item: RolloutLineItem): boolean {
   if (item.type === "user") return true;
   return item.message?.role === "user";
@@ -267,6 +282,10 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
   }
 
   if (isAssistantLine(item)) {
+    if (isSyntheticNoResponse(item)) {
+      stats.meta += 1;
+      return { events: [], stats };
+    }
     const events = mapAssistant(item, lineIndex);
     if (events.length === 0) {
       stats.unknown += 1;

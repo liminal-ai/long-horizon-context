@@ -53,6 +53,7 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
       view: view.value,
       cwd: runtime.cwd,
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
+      swapReceipt: { oldSessionId: runtime.sourceSessionId ?? "unknown" },
     });
     lines.push("resuming session in-place...");
     return {
@@ -63,6 +64,7 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
         rolloutPath: rebuilt.rolloutPath,
         rebuiltLineCount: rebuilt.lineCount,
         expectedReintakeLines: rebuilt.expectedReintakeLines,
+        replayedPrefixLines: rebuilt.replayedPrefixLines,
       },
     };
   } catch (cause) {

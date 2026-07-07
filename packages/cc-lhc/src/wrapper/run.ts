@@ -18,11 +18,7 @@ import {
   type InterceptState,
 } from "./intercept.js";
 import { createInputDebugLogger } from "./input-debug.js";
-import {
-  executeResumeInjection,
-  formatResumeFailure,
-  formatResumeSuccess,
-} from "./resume-injection.js";
+import { executeResumeInjection, formatResumeFailure } from "./resume-injection.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -207,7 +203,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
             continueCapture,
             lineageDbPath: defaultLineageDbPath(),
             knownRolloutPath: rolloutPath,
-            replayedPrefixLines: plan.rebuiltLineCount,
+            replayedPrefixLines: plan.replayedPrefixLines,
           }),
         recordLineage: async ({ sessionId, threadId }) => {
           await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
@@ -219,8 +215,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         },
       });
       if (result.ok) {
+        // No raw success print: the receipt is a trailing runtime-note line in
+        // the rebuilt rollout (rendered natively in the transcript), and the
+        // injected repaint nudge would wipe anything written here anyway.
         captureSession = result.captureSession;
-        stdout.write(formatCommandOutput(formatResumeSuccess(plan)));
       } else {
         stdout.write(formatCommandOutput(formatResumeFailure(plan)));
       }

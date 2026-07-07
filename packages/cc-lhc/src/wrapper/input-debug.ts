@@ -14,7 +14,7 @@ function chunkPrintable(chunk: Buffer): string {
 
 export function summarizeInterceptState(state: InterceptState): string {
   const escape = state.escapePassthrough === null ? "none" : state.escapePassthrough.kind;
-  return `withholding=${state.withholding} buffer=${JSON.stringify(state.buffer)} freshLine=${state.freshLine} escape=${escape}`;
+  return `withholding=${state.withholding} buffer=${JSON.stringify(state.buffer)} shadowLen=${state.shadowLen} inPaste=${state.inPaste} escape=${escape}`;
 }
 
 export function createInputDebugLogger(logPath: string | undefined): (chunk: Buffer, state: InterceptState) => void {

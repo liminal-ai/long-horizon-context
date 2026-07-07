@@ -220,6 +220,45 @@ describe("writeRebuiltRollout", () => {
     expect(firstLine.message?.content).toBe("hello");
   });
 
+  it("appends the swap receipt as a trailing runtime-note user line when requested", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-rebuild-receipt-"));
+    const projectsRoot = join(root, "projects");
+    const projectDir = join(projectsRoot, "-work-project");
+    mkdirSync(projectDir, { recursive: true });
+
+    const result = await writeRebuiltRollout({
+      view: { threadId: "th_1", entries: sampleEntries },
+      cwd: "/work/project",
+      newSessionId: "rebuilt-session",
+      projectsRoot,
+      swapReceipt: { oldSessionId: "old-session" },
+    });
+
+    // The receipt line is part of the rebuilt file, so it counts as a replayed line.
+    expect(result.lineCount).toBe(4);
+    expect(result.expectedReintakeLines).toBe(4);
+    // ...but it is NEW history, not served-view replay: the handoff capture
+    // must map it (as runtime_note) instead of hard-skipping it as prefix.
+    expect(result.replayedPrefixLines).toBe(3);
+
+    const lines = readFileSync(result.rolloutPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string; uuid?: string; parentUuid?: string | null; message?: { content?: unknown } });
+    expect(lines).toHaveLength(4);
+    const receipt = lines[3]!;
+    expect(receipt.type).toBe("user");
+    expect(receipt.parentUuid).toBe(lines[2]!.uuid);
+    expect(receipt.message?.content).toBe(
+      "[runtime note] session old-session preserved; resumed in-place as rebuilt-session (expect ~4 replayed lines to re-intake)",
+    );
+
+    // First prompt shown in the sessions index stays the conversation opener, not the receipt.
+    const index = await readSessionsIndex(projectDir);
+    const entry = index.entries.find((item) => item.sessionId === "rebuilt-session");
+    expect(entry).toMatchObject({ messageCount: 4, firstPrompt: "hello" });
+  });
+
   it("does not write rollout when sessions-index is unreadable", async () => {
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-rebuild-abort-"));
     const projectsRoot = join(root, "projects");

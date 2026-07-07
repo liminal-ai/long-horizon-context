@@ -24,6 +24,8 @@ export interface SessionRestartPlan {
   rolloutPath: string;
   rebuiltLineCount: number;
   expectedReintakeLines: number;
+  /** Prefix lines the handoff capture hard-skips; excludes a trailing swap receipt. */
+  replayedPrefixLines: number;
 }
 
 export interface DispatchOutcome {

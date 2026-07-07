@@ -98,6 +98,34 @@ function assistantMessageContent(
   };
 }
 
+/**
+ * The swap receipt shown to the user after prune/compact. It lives in the
+ * rebuilt rollout as a trailing runtime-note line, so Claude Code renders it
+ * natively in the transcript on resume — raw stdout writes land in the TUI's
+ * status-line region and are wiped by the post-swap repaint.
+ */
+export function formatSwapReceipt(oldSessionId: string, newSessionId: string, expectedReintakeLines: number): string {
+  return `session ${oldSessionId} preserved; resumed in-place as ${newSessionId} (expect ~${expectedReintakeLines} replayed lines to re-intake)`;
+}
+
+/**
+ * A trailing user line carrying a runtime note. The "[runtime note]" label is
+ * what the intake mapper strips and re-classifies as runtime_note, so the
+ * receipt stays out of the user lane and its replay signature is stable
+ * across prune cycles.
+ */
+export function runtimeNoteRolloutLine(
+  text: string,
+  sessionId: string,
+  envelope: RolloutEnvelope,
+  parentUuid: string | null,
+): RebuiltRolloutLine {
+  const line = baseEnvelopeFields(sessionId, parentUuid, envelope, new Date().toISOString());
+  line.type = "user";
+  line.message = userMessageContent(`[runtime note] ${text}`);
+  return { line, rolloutType: "user" };
+}
+
 /** Map assembled thread-view entries to rollout JSONL line objects (not yet serialized). */
 export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLine[] {
   const { entries, newSessionId, envelope } = input;

@@ -9,13 +9,24 @@ export type EscapePassthrough =
   | { kind: "legacy_mouse"; remaining: number };
 
 export interface InterceptState {
-  freshLine: boolean;
+  /**
+   * Shadow count of characters sitting in the child's input box. 0 means the
+   * line is fresh and a leading `/` may arm interception. Printables and
+   * UTF-8 lead bytes increment; backspace/DEL decrement (floor 0); Enter and
+   * ctrl-U zero; a bare Esc zeroes unconditionally (Claude Code clears its
+   * input box on Esc), which is also the user's guaranteed recovery when the
+   * count has drifted. Drift only ever overcounts — the failure mode is
+   * "won't arm until Esc", never "arms over a non-empty box".
+   */
+  shadowLen: number;
   withholding: boolean;
   buffer: string;
   /** After dispatching on \\r, swallow exactly one following \\n (CRLF). */
   swallowLfAfterDispatch: boolean;
   /** Mid-sequence escape passthrough (terminal mouse/focus noise). */
   escapePassthrough: EscapePassthrough | null;
+  /** Inside a bracketed paste (CSI 200~ … 201~): newlines are literal box content, not submits. */
+  inPaste: boolean;
 }
 
 export interface InterceptResult {
@@ -30,11 +41,12 @@ type ByteOutcome = InterceptResult & { consumedRest?: boolean };
 
 export function createInterceptState(): InterceptState {
   return {
-    freshLine: true,
+    shadowLen: 0,
     withholding: false,
     buffer: "",
     swallowLfAfterDispatch: false,
     escapePassthrough: null,
+    inPaste: false,
   };
 }
 
@@ -52,8 +64,22 @@ function isKittyEnterCsi(params: string): boolean {
   return params === "13" || params.startsWith("13;");
 }
 
-function resetState(): InterceptState {
-  return createInterceptState();
+/**
+ * Key code of a kitty CSI-u keypress (press or repeat), or null for release
+ * events and unparseable params. Format: code[:alts];modifiers[:event];text —
+ * event 3 is a release and must not touch the shadow count twice.
+ */
+function kittyKeyPressCode(params: string): number | null {
+  const fields = params.split(";");
+  const code = Number.parseInt(fields[0] ?? "", 10);
+  if (!Number.isFinite(code)) return null;
+  const event = fields[1]?.split(":")[1];
+  if (event === "3") return null;
+  return code;
+}
+
+function resetState(state: InterceptState): InterceptState {
+  return { ...createInterceptState(), inPaste: state.inPaste };
 }
 
 function byteToChar(byte: number): string {
@@ -62,6 +88,28 @@ function byteToChar(byte: number): string {
 
 function isCsiFinal(byte: number): boolean {
   return byte >= 0x40 && byte <= 0x7e;
+}
+
+/** Printable ASCII or a UTF-8 lead byte — one new character in the child's input box. */
+function countsAsChar(byte: number): boolean {
+  return (byte >= 0x20 && byte <= 0x7e) || byte >= 0xc0;
+}
+
+/**
+ * Shadow count after bytes are forwarded raw (flush/cancel paths that skip
+ * per-byte processing). Escape sequences inside the bytes tally their
+ * printable characters, so this can only overcount — the safe direction; a
+ * bare Esc re-zeroes.
+ */
+function shadowLenAfterRaw(bytes: Buffer, inPaste: boolean): number {
+  let len = 0;
+  for (const byte of bytes) {
+    if (byte === 0x0d || byte === 0x0a) len = inPaste ? len + 1 : 0;
+    else if (byte === 0x15) len = 0;
+    else if (byte === 0x7f || byte === 0x08) len = Math.max(0, len - 1);
+    else if (countsAsChar(byte)) len += 1;
+  }
+  return len;
 }
 
 function eraseEchoed(charCount: number): string {
@@ -78,22 +126,40 @@ function passthroughByte(byte: number, state: InterceptState): ByteOutcome {
 }
 
 function flushWithheldAndRemainder(
-  withheld: string,
+  state: InterceptState,
   chunk: Buffer,
   fromIndex: number,
 ): ByteOutcome {
+  const flushed = Buffer.concat([Buffer.from(state.buffer, "utf8"), chunk.subarray(fromIndex)]);
   return {
-    state: { freshLine: false, withholding: false, buffer: "", swallowLfAfterDispatch: false, escapePassthrough: null },
-    toPty: Buffer.concat([Buffer.from(withheld, "utf8"), chunk.subarray(fromIndex)]),
-    toStdout: eraseEchoed(withheld.length),
+    state: {
+      shadowLen: shadowLenAfterRaw(flushed, state.inPaste),
+      withholding: false,
+      buffer: "",
+      swallowLfAfterDispatch: false,
+      escapePassthrough: null,
+      inPaste: state.inPaste,
+    },
+    toPty: flushed,
+    toStdout: eraseEchoed(state.buffer.length),
     consumedRest: true,
   };
 }
 
 function cancelWithheldBareEsc(state: InterceptState, chunk: Buffer, fromIndex: number): ByteOutcome {
+  // Esc zeroed the child's (empty) input box; the withheld buffer is dropped,
+  // so only the raw-forwarded remainder can put characters in the box.
+  const remainder = chunk.subarray(fromIndex);
   return {
-    state: { freshLine: false, withholding: false, buffer: "", swallowLfAfterDispatch: false, escapePassthrough: null },
-    toPty: chunk.subarray(fromIndex),
+    state: {
+      shadowLen: shadowLenAfterRaw(remainder, state.inPaste),
+      withholding: false,
+      buffer: "",
+      swallowLfAfterDispatch: false,
+      escapePassthrough: null,
+      inPaste: state.inPaste,
+    },
+    toPty: remainder,
     toStdout: eraseEchoed(state.buffer.length),
     consumedRest: true,
   };
@@ -101,18 +167,18 @@ function cancelWithheldBareEsc(state: InterceptState, chunk: Buffer, fromIndex: 
 
 function cancelWithheldBareEscAtEnd(state: InterceptState): { state: InterceptState; toStdout: string } {
   return {
-    state: { freshLine: false, withholding: false, buffer: "", swallowLfAfterDispatch: false, escapePassthrough: null },
+    state: resetState(state),
     toStdout: eraseEchoed(state.buffer.length),
   };
 }
 
-function stateAfterDispatch(): InterceptState {
-  return { freshLine: true, withholding: false, buffer: "", swallowLfAfterDispatch: true, escapePassthrough: null };
+function stateAfterDispatch(state: InterceptState): InterceptState {
+  return { ...resetState(state), swallowLfAfterDispatch: true };
 }
 
 function dispatchWithheldCommand(state: InterceptState): ByteOutcome {
   return {
-    state: stateAfterDispatch(),
+    state: stateAfterDispatch(state),
     toPty: Buffer.alloc(0),
     toStdout: "\r\n",
     dispatch: state.buffer,
@@ -158,19 +224,62 @@ function continueEscapePassthrough(
       if (state.withholding) {
         return cancelWithheldBareEsc(state, chunk, index);
       }
+      // Esc + non-sequence byte in one chunk is Alt-key/terminal noise, not a
+      // bare Esc keypress (those arrive as a lone \x1b chunk) — forward both
+      // without touching the shadow count.
       return { state: base, toPty: Buffer.from([byte]), toStdout: "" };
 
     case "csi":
       if (isCsiFinal(byte)) {
-        if (byte === 0x75 && isKittyEnterCsi(mode.params) && state.withholding) {
-          if (isDispatchableLhcCommand(state.buffer)) {
-            return dispatchWithheldCommand(state);
+        if (byte === 0x75) {
+          if (isKittyEnterCsi(mode.params) && state.withholding) {
+            if (isDispatchableLhcCommand(state.buffer)) {
+              return dispatchWithheldCommand(state);
+            }
+            return {
+              state: resetState(state),
+              toPty: Buffer.from([byte]),
+              toStdout: "",
+            };
           }
-          return {
-            state: resetState(),
-            toPty: Buffer.from([byte]),
-            toStdout: "",
-          };
+          // Kitty CSI-u functional keys mirror onto the shadow count. The full
+          // sequence is forwarded either way: while withholding the child's box
+          // is empty, so its Enter/Esc/Backspace land as no-ops there.
+          const key = kittyKeyPressCode(mode.params);
+          if (key === 13) {
+            return { state: { ...base, shadowLen: 0 }, toPty: Buffer.from([byte]), toStdout: "" };
+          }
+          if (key === 27) {
+            if (state.withholding) {
+              return {
+                state: { ...resetState(state), inPaste: state.inPaste },
+                toPty: Buffer.from([byte]),
+                toStdout: eraseEchoed(state.buffer.length),
+              };
+            }
+            return { state: { ...base, shadowLen: 0 }, toPty: Buffer.from([byte]), toStdout: "" };
+          }
+          if (key === 127) {
+            if (state.withholding) {
+              const nextBuffer = state.buffer.slice(0, -1);
+              return {
+                state: {
+                  ...base,
+                  withholding: nextBuffer.length > 0,
+                  buffer: nextBuffer,
+                },
+                toPty: Buffer.from([byte]),
+                toStdout: BACKSPACE_ECHO,
+              };
+            }
+            return { state: { ...base, shadowLen: Math.max(0, state.shadowLen - 1) }, toPty: Buffer.from([byte]), toStdout: "" };
+          }
+        }
+        if (byte === 0x7e && mode.params === "200") {
+          return { state: { ...base, inPaste: true }, toPty: Buffer.from([byte]), toStdout: "" };
+        }
+        if (byte === 0x7e && mode.params === "201") {
+          return { state: { ...base, inPaste: false }, toPty: Buffer.from([byte]), toStdout: "" };
         }
         return { state: base, toPty: Buffer.from([byte]), toStdout: "" };
       }
@@ -235,9 +344,10 @@ function processByte(byte: number, state: InterceptState, chunk: Buffer, index: 
   }
 
   if (byte === 0x03) {
+    // Ctrl-C clears Claude Code's input box; count only the raw-forwarded rest.
     const rest = chunk.subarray(index + 1);
     return {
-      state: resetState(),
+      state: { ...resetState(state), shadowLen: shadowLenAfterRaw(rest, state.inPaste) },
       toPty: Buffer.concat([Buffer.from([byte]), rest]),
       toStdout: "",
       ...(rest.length > 0 ? { consumedRest: true } : {}),
@@ -248,67 +358,56 @@ function processByte(byte: number, state: InterceptState, chunk: Buffer, index: 
     if (state.withholding) {
       if (isDispatchableLhcCommand(state.buffer)) {
         return {
-          state: byte === 0x0d ? stateAfterDispatch() : resetState(),
+          state: byte === 0x0d ? stateAfterDispatch(state) : resetState(state),
           toPty: Buffer.alloc(0),
           toStdout: "\r\n",
           dispatch: state.buffer,
         };
       }
+      const flushed = Buffer.from(state.buffer + byteToChar(byte), "utf8");
       return {
-        state: resetState(),
-        toPty: Buffer.from(state.buffer + byteToChar(byte), "utf8"),
+        state: { ...resetState(state), shadowLen: shadowLenAfterRaw(flushed, state.inPaste) },
+        toPty: flushed,
         toStdout: "",
       };
     }
+    if (state.inPaste) {
+      // A pasted newline is literal input-box content, not a submit.
+      return { state: { ...state, shadowLen: state.shadowLen + 1 }, toPty: Buffer.from([byte]), toStdout: "" };
+    }
     return {
-      state: resetState(),
+      state: resetState(state),
       toPty: Buffer.from([byte]),
       toStdout: "",
     };
   }
 
-  if (byte === 0x7f) {
+  if (byte === 0x7f || byte === 0x08) {
     if (state.withholding && state.buffer.length > 0) {
       const nextBuffer = state.buffer.slice(0, -1);
       return {
         state: {
-          freshLine: true,
+          ...state,
           withholding: nextBuffer.length > 0,
           buffer: nextBuffer,
-          swallowLfAfterDispatch: false,
-          escapePassthrough: null,
         },
         toPty: Buffer.alloc(0),
         toStdout: BACKSPACE_ECHO,
       };
     }
-    return passthroughByte(byte, state);
+    return { state: { ...state, shadowLen: Math.max(0, state.shadowLen - 1) }, toPty: Buffer.from([byte]), toStdout: "" };
+  }
+
+  if (byte === 0x15) {
+    // Ctrl-U clears the input line.
+    if (state.withholding) {
+      return flushWithheldAndRemainder(state, chunk, index);
+    }
+    return { state: { ...state, shadowLen: 0 }, toPty: Buffer.from([byte]), toStdout: "" };
   }
 
   if (byte === 0x1b) {
     return beginEscapePassthrough(state);
-  }
-
-  if (state.withholding && byte < 0x20) {
-    return flushWithheldAndRemainder(state.buffer, chunk, index);
-  }
-
-  if (state.freshLine && !state.withholding) {
-    if (byte === 0x2f) {
-      return {
-        state: { freshLine: true, withholding: true, buffer: "/", swallowLfAfterDispatch: false, escapePassthrough: null },
-        toPty: Buffer.alloc(0),
-        toStdout: "/",
-      };
-    }
-    if (byte >= 0x20 && byte <= 0x7e) {
-      return {
-        state: { freshLine: false, withholding: false, buffer: "", swallowLfAfterDispatch: false, escapePassthrough: null },
-        toPty: Buffer.from([byte]),
-        toStdout: "",
-      };
-    }
-    return passthroughByte(byte, state);
   }
 
   if (state.withholding) {
@@ -321,11 +420,23 @@ function processByte(byte: number, state: InterceptState, chunk: Buffer, index: 
           toStdout: byteToChar(byte),
         };
       }
-      return flushWithheldAndRemainder(state.buffer, chunk, index);
     }
-    return flushWithheldAndRemainder(state.buffer, chunk, index);
+    return flushWithheldAndRemainder(state, chunk, index);
   }
 
+  if (byte === 0x2f && state.shadowLen === 0) {
+    return {
+      state: { ...state, withholding: true, buffer: "/" },
+      toPty: Buffer.alloc(0),
+      toStdout: "/",
+    };
+  }
+
+  if (countsAsChar(byte)) {
+    return { state: { ...state, shadowLen: state.shadowLen + 1 }, toPty: Buffer.from([byte]), toStdout: "" };
+  }
+
+  // Remaining C0 controls and UTF-8 continuation bytes: forward, no count change.
   return passthroughByte(byte, state);
 }
 
@@ -344,15 +455,22 @@ export function processInputChunk(chunk: Buffer, state: InterceptState): Interce
     if (outcome.consumedRest === true) break;
   }
 
+  // A lone \x1b chunk is a bare Esc keypress (sequences arrive with their
+  // introducer in the same read). Claude Code clears its input box on Esc, so
+  // the shadow count zeroes — this is the guaranteed recovery when the count
+  // has drifted: Esc then /lhc-… always arms.
   if (
     current.escapePassthrough?.kind === "pending_esc" &&
-    current.withholding &&
     chunk.length === 1 &&
     chunk[0] === 0x1b
   ) {
-    const cancelled = cancelWithheldBareEscAtEnd(current);
-    current = cancelled.state;
-    toStdout += cancelled.toStdout;
+    if (current.withholding) {
+      const cancelled = cancelWithheldBareEscAtEnd(current);
+      current = cancelled.state;
+      toStdout += cancelled.toStdout;
+    } else {
+      current = { ...current, escapePassthrough: null, shadowLen: 0 };
+    }
   }
 
   const merged: InterceptResult = { state: current, toPty, toStdout };

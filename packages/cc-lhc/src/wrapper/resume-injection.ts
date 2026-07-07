@@ -24,10 +24,20 @@ import { stat } from "node:fs/promises";
 
 import type { SessionRestartPlan } from "../commands/dispatch.js";
 import { formatSessionResumeLog } from "../commands/dispatch.js";
+import { formatSwapReceipt } from "../rollout/rebuild.js";
 import { lineageWriteFailureMessage } from "../intake/lineage-db.js";
 import type { CaptureSession, ContinueCapture } from "../intake/session.js";
 
 export const RESUME_TRIPWIRE_WINDOW_MS = 3_000;
+/**
+ * Ctrl-L. Injected into the child after a confirmed swap: Claude Code
+ * (verified on 2.1.202) responds with a full TUI repaint that wipes the raw
+ * [cc-lhc] lines printed before injection and restores the input-box borders,
+ * preserving input-box content. The user-facing receipt itself travels inside
+ * the rebuilt rollout as a trailing runtime-note line, so the repaint cannot
+ * erase it.
+ */
+export const REPAINT_NUDGE = "\x0c";
 /** After a trip, how long to give a possibly-concurrent swap to touch the rollout before ruling failure. */
 export const RESUME_TRIP_GRACE_MS = 750;
 /** Without a trip, how much extra time to poll for swap evidence past the tripwire window. */
@@ -111,7 +121,7 @@ export function formatResumeFailure(plan: SessionRestartPlan): string {
 }
 
 export function formatResumeSuccess(plan: SessionRestartPlan): string {
-  return `session ${plan.oldSessionId} preserved; resumed in-place as ${plan.newSessionId} (expect ~${plan.expectedReintakeLines} replayed lines to re-intake)`;
+  return formatSwapReceipt(plan.oldSessionId, plan.newSessionId, plan.expectedReintakeLines);
 }
 
 export async function pauseCaptureForResume(session: CaptureSession): Promise<ContinueCapture> {
@@ -220,6 +230,8 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
   if (!swapped) {
     return { ok: false };
   }
+
+  input.writeToPty(REPAINT_NUDGE);
 
   // Lineage is recorded only once the swap is confirmed, so a failed resume
   // leaves no session→thread row behind to misdirect later --resume/--continue

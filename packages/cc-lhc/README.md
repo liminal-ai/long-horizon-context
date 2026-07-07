@@ -17,10 +17,13 @@ Working POC, all core paths proven on real sessions:
 
 Setup: see the root README's "Installing the Claude Code Harness" kickoff, which drives `.setup/cc-lhc-standalone.md` (validated by a cold agent run).
 
+Fixed defects (2026-07-06):
+
+- **Post-swap screen corruption** — fixed: the swap receipt now travels inside the rebuilt rollout as a trailing `[runtime note]` line (Claude Code renders it natively in the transcript on resume, and it enters the thread record so later rebuilds re-serve it), and a single ctrl-L (0x0c) injected after swap confirmation makes Claude Code repaint over the pre-swap raw prints. The resume-failure message still prints raw — it must be visible even at the cost of a corrupted line.
+- **Intermittent `/lhc-*` interception** (type-and-erase lockout) — fixed: line freshness was tracked write-only (any typed byte dirtied the line, only Enter restored it), so after backspacing a draft away every `/lhc-*` went to Claude Code until the next submitted turn. Freshness is now a shadow count of the input box (printables/UTF-8 leads increment; backspace/DEL decrement; Enter/ctrl-U/ctrl-C zero; kitty CSI-u Enter/Esc/Backspace mirrored), and a bare Esc zeroes it unconditionally as the guaranteed recovery. Note: claude 2.1.202 does NOT clear its input box on Esc, so after Esc-with-draft-text the interceptor arms while the draft stays visible in the box — accepted trade for never being locked out.
+
 Known open defects:
 
-- **Post-swap screen corruption**: after a prune/compact swap, cc-lhc's receipt lines land in Claude Code's status-line region and the input box loses its borders. Self-heals on the next keypress. Fix direction: hold receipts until the swap settles, then force a TUI repaint.
-- **Intermittent `/lhc-*` interception**: sometimes keystrokes reach Claude Code instead of the interceptor (shows as "Unknown command"). Leading hypothesis is unhandled terminal-response CSI sequences flipping the line-state; capture bytes with `CC_LHC_INPUT_DEBUG=/tmp/cc-input.log cc-lhc` when it happens.
 - **Bare `--continue` reattach gap**: lineage reattachment is only reliable via explicit `-r <session-id>`; interleaved sessions can make `--continue` silently start a fresh thread.
 
 ## `~/.cc-lhc` layout

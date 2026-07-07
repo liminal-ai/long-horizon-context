@@ -9,7 +9,9 @@ import { encodeProjectPath } from "./discover.js";
 import {
   buildRolloutLines,
   firstUserPrompt,
+  formatSwapReceipt,
   parseRolloutEnvelopeFromContent,
+  runtimeNoteRolloutLine,
   serializeRolloutLines,
   type RebuildRolloutInput,
   type RolloutEnvelope,
@@ -31,6 +33,8 @@ export interface WriteRebuiltRolloutInput {
   projectsRoot?: string;
   deps?: RolloutWriteDeps;
   readSourceFn?: (path: string) => Promise<string>;
+  /** When set, append the swap receipt as a trailing runtime-note line. */
+  swapReceipt?: { oldSessionId: string };
 }
 
 export interface WriteRebuiltRolloutResult {
@@ -38,6 +42,13 @@ export interface WriteRebuiltRolloutResult {
   rolloutPath: string;
   lineCount: number;
   expectedReintakeLines: number;
+  /**
+   * Lines the handoff capture must hard-skip as replayed served-view content.
+   * A trailing swap receipt is NOT among them: it is genuinely new history
+   * that must map into the thread record (as runtime_note) so later rebuilds
+   * re-serve it.
+   */
+  replayedPrefixLines: number;
 }
 
 export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Promise<WriteRebuiltRolloutResult> {
@@ -62,6 +73,13 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     envelope,
   };
   const lines = buildRolloutLines(rebuildInput);
+  const replayedPrefixLines = lines.length;
+  if (input.swapReceipt !== undefined) {
+    // The receipt line itself replays on re-intake, so the count includes it.
+    const receipt = formatSwapReceipt(input.swapReceipt.oldSessionId, newSessionId, lines.length + 1);
+    const lastUuid = lines.length > 0 ? lines[lines.length - 1]!.line.uuid : null;
+    lines.push(runtimeNoteRolloutLine(receipt, newSessionId, envelope, typeof lastUuid === "string" ? lastUuid : null));
+  }
   const serialized = serializeRolloutLines(lines);
   const rolloutPath = rolloutPathForSession(projectsRoot, input.cwd, newSessionId);
 
@@ -83,5 +101,6 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     rolloutPath,
     lineCount: lines.length,
     expectedReintakeLines: lines.length,
+    replayedPrefixLines,
   };
 }

@@ -8,6 +8,7 @@ import {
   executeResumeInjection,
   formatResumeFailure,
   formatResumeSuccess,
+  REPAINT_NUDGE,
   resumeNotFoundPhrase,
   type RolloutStat,
 } from "../../src/wrapper/resume-injection.js";
@@ -20,6 +21,7 @@ const PLAN: SessionRestartPlan = {
   rolloutPath: "/tmp/new.jsonl",
   rebuiltLineCount: 4,
   expectedReintakeLines: 4,
+  replayedPrefixLines: 3,
 };
 
 // Byte-for-byte from a live claude 2.1.201 failure capture (/tmp/resume-x-nonexistent.log):
@@ -147,9 +149,33 @@ describe("executeResumeInjection", () => {
     });
 
     expect(result).toEqual({ ok: true, captureSession: newCapture });
-    expect(written).toEqual([`/resume ${NEW_ID}\r`]);
+    expect(written).toEqual([`/resume ${NEW_ID}\r`, REPAINT_NUDGE]);
     expect(recordLineage).toHaveBeenCalledWith({ sessionId: NEW_ID, threadId: "th_same" });
-    expect(order).toEqual(["log", "inject", "lineage", "stop", "capture:/tmp/new.jsonl"]);
+    expect(order).toEqual(["log", "inject", "inject", "lineage", "stop", "capture:/tmp/new.jsonl"]);
+  });
+
+  it("injects the repaint nudge only after a confirmed swap, never on failure", async () => {
+    const written: string[] = [];
+
+    const failed = await executeResumeInjection({
+      plan: PLAN,
+      captureSession: fakeCaptureSession([]),
+      writeToPty: (data) => {
+        written.push(data);
+      },
+      onOutput: () => () => {},
+      startCapture: () => {
+        throw new Error("must not start a new capture on failure");
+      },
+      logResume: () => {},
+      windowMs: 5,
+      confirmExtraMs: 500,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 100, mtimeMs: 1 }),
+    });
+
+    expect(failed).toEqual({ ok: false });
+    expect(written).toEqual([`/resume ${NEW_ID}\r`]);
   });
 
   it("treats a trip as failure when the rollout never grew: no lineage, old capture untouched", async () => {

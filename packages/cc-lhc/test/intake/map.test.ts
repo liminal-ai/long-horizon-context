@@ -243,6 +243,38 @@ describe("mapRolloutLine", () => {
     expect(dedupe.replayWindowActive).toBe(true);
   });
 
+  it("skips Claude Code's synthetic 'No response requested.' resume filler as meta", () => {
+    // Appended by claude 2.1.202 (zero usage, no API call) when resuming a
+    // session whose last line is a user message — every swap-receipt rollout
+    // ends that way, so this arrives after each prune/compact swap.
+    const item = {
+      type: "assistant",
+      uuid: "synthetic-uuid",
+      message: {
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text: "No response requested." }],
+      },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events).toEqual([]);
+    expect(result.stats.meta).toBe(1);
+  });
+
+  it("keeps real assistant text that merely says 'No response requested.' on a real model", () => {
+    const item = {
+      type: "assistant",
+      uuid: "real-uuid",
+      message: {
+        role: "assistant",
+        model: "claude-haiku-4-5",
+        content: [{ type: "text", text: "No response requested." }],
+      },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.eventKind)).toEqual(["assistant_text"]);
+  });
+
   it("keeps prompts that merely mention task notifications as user_prompt", () => {
     const item = {
       type: "user",

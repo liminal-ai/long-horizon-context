@@ -61,7 +61,7 @@ describe("processInputChunk", () => {
     expect(result.toPty).toBe("hello");
     expect(result.toStdout).toBe("");
     expect(result.dispatch).toBeUndefined();
-    expect(result.state.freshLine).toBe(false);
+    expect(result.state.shadowLen).toBe(5);
   });
 
   it("flushes /help to the pty in byte order on divergence", () => {
@@ -102,13 +102,13 @@ describe("processInputChunk", () => {
     expect(result.state).toEqual(createInterceptState());
   });
 
-  it("flushes withheld bytes on bare Escape at chunk end", () => {
+  it("cancels withheld bytes on bare Escape at chunk end, leaving the line fresh", () => {
     const first = feed("/lhc");
     expect(first.state.withholding).toBe(true);
     const second = feedChunks(["\x1b"], first.state);
     expect(second.toPty).toBe("\x1b");
     expect(second.toStdout).toBe(BS.repeat(4));
-    expect(second.state.freshLine).toBe(false);
+    expect(second.state.shadowLen).toBe(0);
     expect(second.state.withholding).toBe(false);
   });
 
@@ -116,7 +116,7 @@ describe("processInputChunk", () => {
     const result = feedChunks(["/lhc", "\x1bY"]);
     expect(result.toPty).toBe("\x1bY");
     expect(result.toStdout).toBe(`/lhc${BS.repeat(4)}`);
-    expect(result.state.freshLine).toBe(false);
+    expect(result.state.shadowLen).toBe(1);
   });
 
   it("passes CSI sequences through mid-withhold without flushing the buffer", () => {
@@ -130,7 +130,7 @@ describe("processInputChunk", () => {
   it("does not intercept after non-slash content on the line", () => {
     const first = feed("echo hi");
     expect(first.toPty).toBe("echo hi");
-    expect(first.state.freshLine).toBe(false);
+    expect(first.state.shadowLen).toBe(7);
     const second = feed("/lhc-status\r", first.state);
     expect(second.toPty).toBe("/lhc-status\r");
     expect(second.dispatch).toBeUndefined();
@@ -174,7 +174,7 @@ describe("processInputChunk", () => {
     const result = feed("/lhc-status\rmore text");
     expect(result.dispatch).toBe("/lhc-status");
     expect(result.toPty).toBe("more text");
-    expect(result.state.freshLine).toBe(false);
+    expect(result.state.shadowLen).toBe(9);
   });
 
   it("ignores backspace beyond the withheld buffer start", () => {
@@ -189,7 +189,7 @@ describe("processInputChunk", () => {
     const result = feedChunks(["/lhc\x03more"]);
     expect(result.toPty).toBe("\x03more");
     expect(result.toStdout).toBe("/lhc");
-    expect(result.state).toEqual(createInterceptState());
+    expect(result.state).toEqual({ ...createInterceptState(), shadowLen: 4 });
   });
 
   it("passes through text before /lhc-status on the same line", () => {
@@ -205,7 +205,7 @@ describe("processInputChunk", () => {
     expect(result.toPty).toBe(mouse);
     expect(result.dispatch).toBe("/lhc-status");
     expect(result.toStdout).toBe("/lhc-status\r\n");
-    expect(result.state.freshLine).toBe(true);
+    expect(result.state.shadowLen).toBe(0);
   });
 
   it("intercepts /lhc-prune after focus-reporting noise before typing", () => {
@@ -217,7 +217,7 @@ describe("processInputChunk", () => {
 
   it("intercepts after a CSI sequence split across chunks", () => {
     const first = feedChunks(["\x1b[", "100"]);
-    expect(first.state.freshLine).toBe(true);
+    expect(first.state.shadowLen).toBe(0);
     expect(first.state.escapePassthrough).toEqual({ kind: "csi", params: "100" });
     const second = feedChunks([";20M", "/lhc-stats\r"], first.state);
     expect(second.toPty).toBe(";20M");
@@ -243,7 +243,7 @@ describe("processInputChunk", () => {
     const result = feedChunks(["\t", "/lhc-status\r"]);
     expect(result.toPty).toBe("\t");
     expect(result.dispatch).toBe("/lhc-status");
-    expect(result.state.freshLine).toBe(true);
+    expect(result.state.shadowLen).toBe(0);
   });
 
   it("intercepts after mouse SGR noise mid-withhold", () => {
@@ -295,13 +295,13 @@ describe("processInputChunk", () => {
     expect(result.toPty).toBe(WARP_HANDSHAKE);
     expect(result.dispatch).toBe("/lhc-status");
     expect(result.toStdout).toBe("/lhc-status\r\n");
-    expect(result.state.freshLine).toBe(true);
+    expect(result.state.shadowLen).toBe(0);
   });
 
   it("passes Warp DCS split across chunks without disarming interception", () => {
     const dcs = "\x1bP>|Warp(v0.2026.07.01)\x1b\\";
     const first = feedChunks(["\x1bP>|W", "arp(v0.2026.07.01)\x1b\\"]);
-    expect(first.state.freshLine).toBe(true);
+    expect(first.state.shadowLen).toBe(0);
     expect(first.state.escapePassthrough).toBeNull();
     expect(first.toPty).toBe(dcs);
     const second = feedChunks(["/lhc-help\r"], first.state);
@@ -321,6 +321,134 @@ describe("processInputChunk", () => {
     const result = feedChunks([responses, "/lhc-stats\r"]);
     expect(result.toPty).toBe(responses);
     expect(result.dispatch).toBe("/lhc-stats");
-    expect(result.state.freshLine).toBe(true);
+    expect(result.state.shadowLen).toBe(0);
+  });
+});
+
+describe("shadow line-length freshness", () => {
+  it("intercepts a command after type-then-erase with backspace (user-reported repro)", () => {
+    const result = feedChunks(["hey", "\x7f\x7f\x7f", "/lhc-status\r"]);
+    expect(result.toPty).toBe("hey\x7f\x7f\x7f");
+    expect(result.dispatch).toBe("/lhc-status");
+    expect(result.toStdout).toBe("/lhc-status\r\n");
+  });
+
+  it("floors the count at zero on extra backspaces before a command", () => {
+    const result = feedChunks(["hi", "\x7f\x7f\x7f\x7f", "/lhc-stats\r"]);
+    expect(result.dispatch).toBe("/lhc-stats");
+  });
+
+  it("intercepts a command after ctrl-U clears the line", () => {
+    const result = feedChunks(["draft text", "\x15", "/lhc-status\r"]);
+    expect(result.toPty).toBe("draft text\x15");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("intercepts a command after ctrl-H (0x08) erases typed chars", () => {
+    const result = feedChunks(["ab", "\x08\x08", "/lhc-status\r"]);
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("intercepts a command after a bare Esc keypress zeroes a dirty line", () => {
+    const result = feedChunks(["some draft", "\x1b", "/lhc-status\r"]);
+    expect(result.toPty).toBe("some draft\x1b");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("Esc recovery works even when the count has drifted past reality", () => {
+    // Arrow-key noise miscounted or box cleared behind our back: Esc must
+    // always restore arming.
+    const drifted = feedChunks(["overcounted line", "\x1b"]);
+    expect(drifted.state.shadowLen).toBe(0);
+    const result = feedChunks(["/lhc-help\r"], drifted.state);
+    expect(result.dispatch).toBe("/lhc-help");
+  });
+
+  it("re-arms after Esc cancels a withheld command", () => {
+    const result = feedChunks(["/lhc", "\x1b", "/lhc-status\r"]);
+    expect(result.toPty).toBe("\x1b");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("counts a bare-Esc-then-typed byte in separate chunks as box content", () => {
+    const result = feedChunks(["\x1b", "Y"]);
+    expect(result.toPty).toBe("\x1bY");
+    expect(result.state.shadowLen).toBe(1);
+  });
+
+  it("recovers via backspace after a divergence flush", () => {
+    const result = feedChunks(["/lho", "\x7f\x7f\x7f\x7f", "/lhc-status\r"]);
+    expect(result.toPty).toBe("/lho\x7f\x7f\x7f\x7f");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("counts UTF-8 characters once (lead byte only) and recovers on backspace", () => {
+    const twoByteChar = "é"; // 0xc3 0xa9 in utf8: lead byte counts, continuation does not
+    const typed = feedChunks([twoByteChar]);
+    expect(typed.state.shadowLen).toBe(1);
+    const result = feedChunks(["\x7f", "/lhc-status\r"], typed.state);
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("does not count bracketed-paste markers, does count paste content", () => {
+    const paste = "\x1b[200~abc\x1b[201~";
+    const pasted = feedChunks([paste]);
+    expect(pasted.toPty).toBe(paste);
+    expect(pasted.state.shadowLen).toBe(3);
+    expect(pasted.state.inPaste).toBe(false);
+    const result = feedChunks(["\x7f\x7f\x7f", "/lhc-status\r"], pasted.state);
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("treats pasted newlines as literal box content, not submits", () => {
+    const pasted = feedChunks(["\x1b[200~ab\rcd\x1b[201~"]);
+    expect(pasted.state.shadowLen).toBe(5);
+    expect(pasted.state.inPaste).toBe(false);
+    const blocked = feedChunks(["/lhc-status\r"], pasted.state);
+    expect(blocked.dispatch).toBeUndefined();
+    expect(blocked.toPty).toBe("/lhc-status\r");
+  });
+
+  it("still arms for a bracketed paste of the command itself", () => {
+    const result = feedChunks(["\x1b[200~/lhc-status\x1b[201~", "\r"]);
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+});
+
+describe("kitty CSI-u functional keys", () => {
+  it("kitty backspace decrements the count and interception recovers", () => {
+    const result = feedChunks(["ab", "\x1b[127u\x1b[127u", "/lhc-status\r"]);
+    expect(result.toPty).toBe("ab\x1b[127u\x1b[127u");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("ignores kitty backspace release events", () => {
+    const result = feedChunks(["a", "\x1b[127;1:3u"]);
+    expect(result.state.shadowLen).toBe(1);
+  });
+
+  it("kitty Esc zeroes a dirty line so a command arms", () => {
+    const result = feedChunks(["draft", "\x1b[27u", "/lhc-status\r"]);
+    expect(result.toPty).toBe("draft\x1b[27u");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("kitty Enter outside withholding marks the line fresh", () => {
+    const result = feedChunks(["hello", "\x1b[13u", "/lhc-status\r"]);
+    expect(result.toPty).toBe("hello\x1b[13u");
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("kitty Esc cancels a withheld command and re-arms", () => {
+    const result = feedChunks(["/lhc", "\x1b[27u", "/lhc-status\r"]);
+    expect(result.toPty).toBe("\x1b[27u");
+    expect(result.toStdout).toContain(BS.repeat(4));
+    expect(result.dispatch).toBe("/lhc-status");
+  });
+
+  it("kitty backspace edits a withheld command", () => {
+    const result = feedChunks(["/lhc-stat", "\x1b[127u", "ts\r"]);
+    expect(result.toPty).toBe("\x1b[127u");
+    expect(result.dispatch).toBe("/lhc-stats");
   });
 });
