@@ -26,6 +26,7 @@ import {
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
 import { executeResumeInjection, formatResumeAbortTurnOpen, formatResumeFailure } from "./resume-injection.js";
+import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -47,6 +48,22 @@ export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entr
  */
 export const PENDING_ESC_RESOLVE_MS = 50;
 
+/**
+ * What the panel shows when a command settles. null means AUTO-DISMISS: a
+ * CONFIRMED swap already carries its receipt as a runtime note rendered
+ * natively in the resumed transcript, so the panel closes itself and the
+ * user watches the session repaint. Refusals, errors, no-ops, and
+ * status/stats keep the stay-until-dismissed rhythm.
+ */
+export function settleReceipts(
+  outcomeMessages: string[],
+  resume: { swapped: boolean; receipts: string[] } | null,
+): string[] | null {
+  if (resume === null) return outcomeMessages;
+  if (resume.swapped) return null;
+  return [...outcomeMessages, ...resume.receipts];
+}
+
 export type PtySpawn = typeof defaultSpawn;
 
 export type RunOptions = {
@@ -57,6 +74,8 @@ export type RunOptions = {
   stderr?: NodeJS.WriteStream;
   noCapture?: boolean;
   noInference?: boolean;
+  /** Test hook: substitute the wrapper log (defaults to ~/.cc-lhc/wrapper.log). */
+  wrapperLog?: WrapperLog;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -110,19 +129,29 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   let captureSession: CaptureSession | undefined;
   const startedAt = new Date();
 
+  // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
+  // While the child owns the terminal, diagnostics go to the wrapper log
+  // (surface (c)); `status` reports the warning count so nothing is lost.
+  const wrapperLog = options.wrapperLog ?? createWrapperLog();
+
   // Alt-screen truth for every exit path, normal or not: the process-exit
   // hook, signal handlers, and stdin loss all leave through this guard, so a
   // crash between ?1049h and a normal dismiss still restores the terminal,
   // and no path can double-leave.
   const altScreen = createAltScreenGuard((data) => stdout.write(data));
 
-  const printStats = (): void => {
+  // Exit stats print on stderr only from teardown, AFTER the child has
+  // exited and the screen is back with the shell — legitimate surface (d).
+  const printExitStats = (): void => {
     if (captureSession === undefined) return;
     stderr.write(`${formatCaptureStatsLine(captureSession.stats)}\n`);
   };
 
+  // SIGUSR1 can fire at any moment while claude owns the screen: the stats
+  // snapshot goes to the wrapper log, never the terminal.
   const onSigusr1 = (): void => {
-    printStats();
+    if (captureSession === undefined) return;
+    wrapperLog.info(formatCaptureStatsLine(captureSession.stats));
   };
 
   if (!noCapture) {
@@ -132,6 +161,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(continueFlag ? { continueFlag: true } : {}),
       lineageDbPath: defaultLineageDbPath(),
+      log: (message) => wrapperLog.info(message),
+      logError: (message) => wrapperLog.warn(message),
     });
     process.on("SIGUSR1", onSigusr1);
   }
@@ -153,7 +184,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   let outputTap: ((data: string) => void) | null = null;
 
   const leaderByte = resolveLeaderByte(process.env.CC_LHC_LEADER, (message) => {
-    stderr.write(`${message}\n`);
+    wrapperLog.warn(message);
   });
   let inputState: InputState = createInputState(leaderByte);
 
@@ -165,8 +196,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     () => {
       inputState = forceResetInput(inputState);
       altScreen.leave();
-      stdout.write(formatCommandOutput(OUTPUT_HOLD_OVERFLOW_MESSAGE));
-      stdout.write("\r\n");
+      // No terminal notice — the child owns the restored screen. The event is
+      // logged and counted; `status` will surface it.
+      wrapperLog.warn(OUTPUT_HOLD_OVERFLOW_MESSAGE);
       outputHold.flush();
     },
   );
@@ -196,6 +228,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
       isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
+      warnings: { count: wrapperLog.warningCount(), logPath: wrapperLog.path },
     };
   };
 
@@ -251,16 +284,18 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
-        printStats();
+        printExitStats();
         killAllInferenceChildren();
       }
       cleanup();
       resolve(exitCode);
     };
 
-    /** Runs the injection; returns receipt lines to print (empty on success). */
-    const performResumeInjection = async (plan: SessionRestartPlan): Promise<string[]> => {
-      if (noCapture || captureSession === undefined) return [];
+    /** Runs the injection; swapped=true means the panel should auto-dismiss. */
+    const performResumeInjection = async (
+      plan: SessionRestartPlan,
+    ): Promise<{ swapped: boolean; receipts: string[] }> => {
+      if (noCapture || captureSession === undefined) return { swapped: false, receipts: [] };
       const result = await executeResumeInjection({
         plan,
         captureSession,
@@ -281,25 +316,30 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
             lineageDbPath: defaultLineageDbPath(),
             knownRolloutPath: rolloutPath,
             replayedPrefixLines: plan.replayedPrefixLines,
+            log: (message) => wrapperLog.info(message),
+            logError: (message) => wrapperLog.warn(message),
           }),
         recordLineage: async ({ sessionId, threadId }) => {
           await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
-            stderr.write(`${message}\n`);
+            wrapperLog.warn(message);
           });
         },
         isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
         logResume: (message) => {
-          stderr.write(`${message}\n`);
+          wrapperLog.info(message);
         },
       });
       if (result.ok) {
-        // No raw success print: the receipt is a trailing runtime-note line in
-        // the rebuilt rollout (rendered natively in the transcript), and the
-        // injected repaint nudge would wipe anything written here anyway.
+        // No panel receipt on success: the swap receipt is a trailing
+        // runtime-note line in the rebuilt rollout, rendered natively in the
+        // resumed transcript.
         captureSession = result.captureSession;
-        return [];
+        return { swapped: true, receipts: [] };
       }
-      return [result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan)];
+      return {
+        swapped: false,
+        receipts: [result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan)],
+      };
     };
 
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
@@ -312,10 +352,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     const settleCommand = (messages: string[]): void => {
       if (inputState.mode !== "executing") {
         // Modal was detached (ctrl-C) or force-cancelled (overflow) while the
-        // command ran: the main screen is live again, so print raw —
-        // visibility is best-effort in this degenerate case.
-        for (const message of messages) stdout.write(formatCommandOutput(message));
-        if (messages.length > 0) stdout.write("\r\n");
+        // command ran: the child owns the live screen again, so the receipt
+        // goes to the wrapper log (doctrine — never write into CC's UI).
+        for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): ${message}`);
         return;
       }
       if (messages.length === 0) {
@@ -335,11 +374,15 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       }
       void dispatchLhcCommand(commandLine, commandRuntime())
         .then(async (outcome) => {
-          const messages = [...outcome.messages];
-          if (outcome.restart !== undefined) {
-            messages.push(...(await performResumeInjection(outcome.restart)));
+          const resume = outcome.restart === undefined ? null : await performResumeInjection(outcome.restart);
+          const receipts = settleReceipts(outcome.messages, resume);
+          if (receipts === null) {
+            // Confirmed swap: auto-dismiss — leave the alt screen and let the
+            // user watch the resumed session repaint.
+            settleCommand([]);
+            return;
           }
-          settleCommand(messages);
+          settleCommand(receipts);
         })
         .catch((cause: unknown) => {
           const message = cause instanceof Error ? cause.message : String(cause);

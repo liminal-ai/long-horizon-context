@@ -395,10 +395,33 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (watcher !== undefined) watcher.stop();
       await batchQueue;
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
+        let drainTimedOut = false;
         await awaitDrainSettled(sdk, threadRef, {
           ...(deps.drainSettledCapMs === undefined ? {} : { capMs: deps.drainSettledCapMs }),
-          logError,
+          logError: (message) => {
+            drainTimedOut = true;
+            logError(message);
+          },
         });
+        if (drainTimedOut) {
+          // Record-worthy: pending derivation work at capture stop means
+          // inference may be incomplete for this stretch. The note lives in
+          // the thread record (queryable, re-served on rebuild); it must
+          // NEVER go to the terminal — the child owns the screen.
+          try {
+            await sdk.intakeStream.messageEvents(threadRef, [
+              {
+                eventKind: "runtime_note",
+                idempotencyKey: `cc-lhc:drain-not-settled:${Date.now()}`,
+                actor: "system",
+                harness: "cc",
+                payload: { text: `[capture] ${DRAIN_NOT_SETTLED_MESSAGE}` },
+              },
+            ]);
+          } catch {
+            // Best-effort: the log line above already carries the event.
+          }
+        }
         const overview = await inspect.overview(threadRef);
         if (overview.ok) {
           stats.derivationsPending = overview.value.derivation.pending + overview.value.derivation.retrying;

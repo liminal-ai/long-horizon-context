@@ -114,6 +114,35 @@ describe("dispatchLhcCommand", () => {
     expect(stats.messages[0]).toContain("cc-lhc-capture");
   });
 
+  it("status appends a warning-count line only when warnings exist", async () => {
+    const sdk = {
+      threadView: {
+        status: async (): Promise<OpResult<ViewStatus>> => ({ ok: true, value: sampleStatus }),
+      },
+    } as unknown as Lhc;
+    const base = { sdk, threadRef: { threadId: "th_test" } as ThreadRef };
+
+    const withWarnings = await dispatchLhcCommand(
+      "/lhc-status",
+      fakeRuntime({ ...base, warnings: { count: 2, logPath: "/home/u/.cc-lhc/wrapper.log" } }),
+    );
+    expect(withWarnings.messages[withWarnings.messages.length - 1]).toBe(
+      "2 warnings since launch — see /home/u/.cc-lhc/wrapper.log",
+    );
+
+    const oneWarning = await dispatchLhcCommand(
+      "/lhc-status",
+      fakeRuntime({ ...base, warnings: { count: 1, logPath: "/tmp/w.log" } }),
+    );
+    expect(oneWarning.messages[oneWarning.messages.length - 1]).toBe("1 warning since launch — see /tmp/w.log");
+
+    const clean = await dispatchLhcCommand(
+      "/lhc-status",
+      fakeRuntime({ ...base, warnings: { count: 0, logPath: "/tmp/w.log" } }),
+    );
+    expect(clean.messages.join("\n")).not.toContain("since launch");
+  });
+
   it("returns an error string when a handler throws", async () => {
     const sdk = {
       threadView: {

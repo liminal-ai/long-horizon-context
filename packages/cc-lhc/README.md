@@ -54,7 +54,9 @@ While modal, stdin drives our line editor (backspace, ctrl-U kill; kitty CSI-u k
 | `compact` | Smart compact; rebuild + in-app resume |
 | `help` / `?` | List commands |
 
-Command receipts render as panel rows above a fresh prompt on the alternate screen (immune to the main-screen TUI's repaints by construction), so you read the receipt and dismiss with a single Esc — the alt screen closes, Claude Code's screen is restored byte-exactly, and the held output flushes onto it in order.
+Command receipts render as panel rows above a fresh prompt on the alternate screen (immune to the main-screen TUI's repaints by construction), so you read the receipt and dismiss with a single Esc — the alt screen closes, Claude Code's screen is restored byte-exactly, and the held output flushes onto it in order. A `compact`/`prune` that ends in a **confirmed swap auto-dismisses** — zero keypresses after Enter; the panel closes itself and you watch the resumed session repaint, with the swap receipt rendered natively in the transcript. Refusals, errors, no-ops, and `status`/`stats` stay until dismissed.
+
+**Output doctrine.** The wrapper never writes raw bytes into a UI it doesn't own: while claude owns the terminal, wrapper diagnostics (capture errors, resume logs, SIGUSR1 stats, overflow notices, detached-command receipts) go to `~/.cc-lhc/wrapper.log`, record-worthy events (drain-not-settled) additionally become thread runtime notes, and `status` reports "N warnings since launch — see <logpath>" whenever the log has warnings. Raw stderr is used only after the child has exited (the final stats line).
 
 **Turn gate.** `prune` and `compact` refuse with `turn in progress — rerun when idle` while a claude turn is open. Turn state is folded from the rollout tail the wrapper already parses — content first, `stop_reason` as refinement, because 2.1.201 writes assistant lines with no `stop_reason` at all: user prompt/tool_result lines open; an assistant line with tool_use blocks opens; otherwise `stop_reason` other than `tool_use` closes, and with no `stop_reason` a text-bearing assistant line closes (thinking-only lines are neutral); interrupt markers close. The turn state is rechecked at the last instant before `/resume` injection — if a background turn opened during the rebuild, the swap aborts cleanly (original session untouched; the rebuilt file may remain on disk unused). After a successful swap, if the OLD session file grew past the rebuild cutoff (a background turn raced the swap), a silent `runtime_note` is written to the thread record — the raced content reached the record via the old tail's final flush but is absent from the rebuilt live context.
 
@@ -64,7 +66,7 @@ Prune/compact rebuild a **new** rollout file under `~/.claude/projects/…` (ori
 
 - Exit is janky: the Claude Code intro/alt-screen content gets re-emitted into the scrollback multiple times (~7x observed) on child exit. Cosmetic; likely output-flush-after-restore ordering in run.ts onExit. Fix when it annoys someone.
 - The modal line editor is ASCII-only (commands are ASCII); non-ASCII bytes are ignored, arrow keys are dropped while modal.
-- The stderr resume log printed at injection time lands on the alt-screen panel for a moment (cosmetic; the next panel redraw clears it and it vanishes with the alt screen on dismiss).
+- `~/.cc-lhc/wrapper.log` is append-only with no rotation (POC-honest; safe to delete).
 - Rebuild emits text-only user/assistant rollout lines; `model_change` / `thinking_level_change` view entries are dropped; tool results become user text lines.
 - If rollout jsonl is written but `sessions-index.json` update fails afterward, an orphan rollout file may remain (harmless; index unchanged).
 - `sessions-index.json.bak` is single-slot — only the pre-write snapshot is kept.

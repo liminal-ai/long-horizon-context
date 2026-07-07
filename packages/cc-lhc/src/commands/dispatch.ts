@@ -18,6 +18,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   sourceSessionId: string | undefined;
   /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
   isTurnOpen?: () => boolean;
+  /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
+  warnings?: { count: number; logPath: string };
 }
 
 export interface SessionRestartPlan {
@@ -68,13 +70,20 @@ function formatStatus(status: ViewStatus, threadId: string | null): string {
   return lines.join("\n");
 }
 
+function warningsLine(runtime: LhcCommandRuntime): string[] {
+  const warnings = runtime.warnings;
+  if (warnings === undefined || warnings.count === 0) return [];
+  const plural = warnings.count === 1 ? "warning" : "warnings";
+  return [`${warnings.count} ${plural} since launch — see ${warnings.logPath}`];
+}
+
 async function handleStatus(runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   if (runtime.sdk === undefined || runtime.threadRef === undefined) {
-    return { messages: ["capture not ready"] };
+    return { messages: ["capture not ready", ...warningsLine(runtime)] };
   }
   const result: OpResult<ViewStatus> = await runtime.sdk.threadView.status(runtime.threadRef);
-  if (!result.ok) return { messages: [`status error: ${result.error.reason}`] };
-  return { messages: [formatStatus(result.value, runtime.stats.threadId)] };
+  if (!result.ok) return { messages: [`status error: ${result.error.reason}`, ...warningsLine(runtime)] };
+  return { messages: [formatStatus(result.value, runtime.stats.threadId), ...warningsLine(runtime)] };
 }
 
 function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {
