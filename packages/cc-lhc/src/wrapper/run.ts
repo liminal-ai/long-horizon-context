@@ -374,12 +374,16 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         clearTimeout(pendingEscTimer);
         pendingEscTimer = null;
       }
-      if (inputState.mode === "passthrough" || inputState.escape?.kind !== "pending_esc") return;
+      const kind = inputState.escape?.kind;
+      const holding = kind === "pending_esc" || (inputState.mode === "passthrough" && kind === "csi_candidate");
+      if (!holding) return;
       pendingEscTimer = setTimeout(() => {
         pendingEscTimer = null;
         const resolved = resolveBareEsc(inputState);
         if (resolved === null) return;
         inputState = resolved.state;
+        if (resolved.toPty !== undefined && resolved.toPty.length > 0)
+          ptyProcess.write(resolved.toPty.toString("latin1"));
         applyActions(resolved.actions);
       }, PENDING_ESC_RESOLVE_MS);
       pendingEscTimer.unref?.();
