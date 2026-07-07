@@ -399,6 +399,64 @@ describe("run", () => {
     await runPromise;
   }, 20_000);
 
+  it("logs a late swap failure when passthrough resumed after a dismissed user panel (generation mismatch)", async () => {
+    const logDir = mkdtempSync(join(tmpdir(), "cc-lhc-run-gen-mismatch-"));
+    const logPath = join(logDir, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+
+    runMocks.captureFactory = () => makeCaptureSession();
+    runMocks.dispatchLhcCommand.mockResolvedValue({
+      messages: ["compact view=v4"],
+      restart: SWAP_PLAN,
+    });
+    vi.spyOn(statFile, "statRolloutFile").mockImplementation(async () => ({ size: 100, mtimeMs: 1 }));
+
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      wrapperLog,
+      noInference: true,
+      resumeWindowMs: 5,
+      resumeConfirmExtraMs: 50,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "dismiss at injection");
+
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.filter((chunk) => chunk.includes(ENTER_ALT_SCREEN)).length >= 2, "user reopens panel");
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1b]));
+    await sleep(80);
+    await waitFor(() => output.filter((chunk) => chunk.includes(LEAVE_ALT_SCREEN)).length >= 2, "user dismisses panel");
+
+    await waitFor(
+      async () => (await readFile(logPath, "utf8")).includes("swap failed after panel dismissal"),
+      "late failure logged",
+    );
+
+    const joined = output.join("");
+    expect(joined.split(ENTER_ALT_SCREEN).length - 1).toBe(2);
+    expect(joined).not.toContain("resume did not take");
+
+    const logText = await readFile(logPath, "utf8");
+    expect(logText).toMatch(/\[warn\].*swap failed after panel dismissal \(user panel active\)/);
+    expect(logText).toMatch(/resume did not take/);
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
   it("keeps the panel open for turn-open refusal without an early dismiss", async () => {
     let turnOpen = false;
     runMocks.captureFactory = () => {
