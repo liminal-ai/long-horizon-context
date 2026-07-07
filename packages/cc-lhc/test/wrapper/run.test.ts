@@ -1,3 +1,4 @@
+import { spawn as defaultSpawn } from "@lydell/node-pty";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import * as statFile from "../../src/rollout/stat-file.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { DEFAULT_LEADER_BYTE } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN } from "../../src/wrapper/panel.js";
-import { onTerminalResize, OUTPUT_HOLD_OVERFLOW_MESSAGE, resizePty, run } from "../../src/wrapper/run.js";
+import { onTerminalResize, OUTPUT_HOLD_OVERFLOW_MESSAGE, resizePty, run, type PtySpawn } from "../../src/wrapper/run.js";
 import { createWrapperLog } from "../../src/wrapper/wrapper-log.js";
 
 const SWAP_PLAN: SessionRestartPlan = {
@@ -213,6 +214,155 @@ describe("run", () => {
     const logText = await readFile(logPath, "utf8");
     expect(logText).toMatch(/resume handoff failed \(swap confirmed\)/);
     expect(logText).toMatch(/sdk drain rejected/);
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
+  it("leaves the alt screen before the /resume pty write during a confirmed swap", async () => {
+    const timeline: string[] = [];
+    const ptyWrites: string[] = [];
+
+    runMocks.captureFactory = () => makeCaptureSession();
+    runMocks.dispatchLhcCommand.mockResolvedValue({
+      messages: ["compact view=v4"],
+      restart: SWAP_PLAN,
+    });
+    vi.spyOn(statFile, "statRolloutFile").mockImplementation(statRolloutGrowth());
+
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+    const originalWrite = stdout.write.bind(stdout);
+    vi.spyOn(stdout, "write").mockImplementation((chunk, ...args) => {
+      const text = String(chunk);
+      if (text.includes(LEAVE_ALT_SCREEN)) timeline.push("leave");
+      return originalWrite(chunk, ...args);
+    });
+
+    const spawnPty: PtySpawn = (file, args, opts) => {
+      const proc = defaultSpawn(file, args, opts);
+      const originalPtyWrite = proc.write.bind(proc);
+      proc.write = (data: string) => {
+        if (data.includes("/resume ")) {
+          timeline.push("resume-pty");
+          ptyWrites.push(data);
+        }
+        return originalPtyWrite(data);
+      };
+      return proc;
+    };
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      spawnPty,
+      noInference: true,
+      resumeWindowMs: 5,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    await waitFor(() => timeline.includes("leave"), "alt-screen leave at injection");
+    await waitFor(() => timeline.includes("resume-pty"), "/resume pty write");
+
+    const leaveIdx = timeline.indexOf("leave");
+    const resumeIdx = timeline.indexOf("resume-pty");
+    expect(leaveIdx).toBeGreaterThan(-1);
+    expect(resumeIdx).toBeGreaterThan(leaveIdx);
+    expect(ptyWrites.some((line) => line.includes(`/resume ${SWAP_PLAN.newSessionId}`))).toBe(true);
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
+  it("reopens the panel with a failure receipt when swap fails after dismissal", async () => {
+    runMocks.captureFactory = () => makeCaptureSession();
+    runMocks.dispatchLhcCommand.mockResolvedValue({
+      messages: ["compact view=v4"],
+      restart: SWAP_PLAN,
+    });
+    vi.spyOn(statFile, "statRolloutFile").mockImplementation(async () => ({ size: 100, mtimeMs: 1 }));
+
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      noInference: true,
+      resumeWindowMs: 5,
+      resumeConfirmExtraMs: 50,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+
+    await waitFor(() => output.join("").includes("resume did not take"), "failure receipt on reopened panel");
+    const joined = output.join("");
+    const firstLeave = joined.indexOf(LEAVE_ALT_SCREEN);
+    const reopenEnter = joined.indexOf(ENTER_ALT_SCREEN, firstLeave + 1);
+    expect(firstLeave).toBeGreaterThan(-1);
+    expect(reopenEnter).toBeGreaterThan(firstLeave);
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
+  it("keeps the panel open for turn-open refusal without an early dismiss", async () => {
+    let turnOpen = false;
+    runMocks.captureFactory = () => {
+      const session = makeCaptureSession();
+      session.isTurnOpen = () => turnOpen;
+      return session;
+    };
+    runMocks.dispatchLhcCommand.mockImplementation(async () => {
+      turnOpen = true;
+      return {
+        messages: ["compact view=v4"],
+        restart: SWAP_PLAN,
+      };
+    });
+
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      noInference: true,
+      resumeWindowMs: 5,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+
+    await waitFor(
+      () => output.join("").includes("turn opened during rebuild"),
+      "turn-open refusal receipt",
+    );
+    const joined = output.join("");
+    expect(joined.split(LEAVE_ALT_SCREEN).length - 1).toBe(0);
 
     process.kill(process.pid, "SIGTERM");
     await runPromise;

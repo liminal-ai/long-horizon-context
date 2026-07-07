@@ -174,6 +174,33 @@ describe("executeResumeInjection", () => {
     expect(order).toEqual(["log", "inject", "inject", "lineage", "stop", "capture:/tmp/new.jsonl"]);
   });
 
+  it("calls onBeforeInject immediately before the /resume pty write", async () => {
+    const order: string[] = [];
+    const captureSession = fakeCaptureSession(order);
+
+    await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      onBeforeInject: () => {
+        order.push("before-inject");
+      },
+      writeToPty: (data) => {
+        order.push(`pty:${data}`);
+      },
+      onOutput: () => () => {},
+      startCapture: () => ({ stats: {} }) as unknown as CaptureSession,
+      logResume: () => {},
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 130, mtimeMs: 2 }),
+    });
+
+    const beforeIdx = order.indexOf("before-inject");
+    const injectIdx = order.indexOf(`pty:/resume ${NEW_ID}\r`);
+    expect(beforeIdx).toBeGreaterThan(-1);
+    expect(injectIdx).toBeGreaterThan(beforeIdx);
+  });
+
   it("injects the repaint nudge only after a confirmed swap, never on failure", async () => {
     const written: string[] = [];
 

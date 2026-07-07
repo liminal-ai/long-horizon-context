@@ -80,6 +80,8 @@ export type RunOptions = {
   outputHoldCapBytes?: number;
   /** Test hook: shorten the resume tripwire window (defaults to 3s). */
   resumeWindowMs?: number;
+  /** Test hook: shorten post-tripwire growth polling (defaults to 5s). */
+  resumeConfirmExtraMs?: number;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -298,13 +300,21 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     /** Runs the injection; swapped=true means the panel should auto-dismiss. */
     const performResumeInjection = async (
       plan: SessionRestartPlan,
-    ): Promise<{ swapped: boolean; receipts: string[] }> => {
+      outcomeMessages: string[],
+    ): Promise<{ swapped: boolean; receipts: string[]; failurePanelShown?: boolean }> => {
       if (noCapture || captureSession === undefined) return { swapped: false, receipts: [] };
+      let dismissedForSwap = false;
       const result = await executeResumeInjection({
         plan,
         captureSession,
         writeToPty: (data) => {
           ptyProcess.write(data);
+        },
+        onBeforeInject: () => {
+          dismissedForSwap = true;
+          inputState = finishExecuting(inputState);
+          altScreen.leave();
+          outputHold.flush();
         },
         onOutput: (listener) => {
           outputTap = listener;
@@ -336,6 +346,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
           wrapperLog.warn(message);
         },
         ...(options.resumeWindowMs === undefined ? {} : { windowMs: options.resumeWindowMs }),
+        ...(options.resumeConfirmExtraMs === undefined ? {} : { confirmExtraMs: options.resumeConfirmExtraMs }),
       });
       if (result.ok) {
         // No panel receipt on success: the swap receipt is a trailing
@@ -344,10 +355,19 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         captureSession = result.captureSession;
         return { swapped: true, receipts: [] };
       }
-      return {
-        swapped: false,
-        receipts: [result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan)],
-      };
+      const failureReceipt =
+        result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan);
+      if (dismissedForSwap) {
+        outputHold.hold();
+        altScreen.enter();
+        inputState = showReceipts(
+          { ...createInputState(inputState.leaderByte), inPaste: inputState.inPaste },
+          [...outcomeMessages, failureReceipt],
+        );
+        renderModalPanel();
+        return { swapped: false, receipts: [], failurePanelShown: true };
+      }
+      return { swapped: false, receipts: [failureReceipt] };
     };
 
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
@@ -382,11 +402,15 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       }
       void dispatchLhcCommand(commandLine, commandRuntime())
         .then(async (outcome) => {
-          const resume = outcome.restart === undefined ? null : await performResumeInjection(outcome.restart);
+          const resume =
+            outcome.restart === undefined
+              ? null
+              : await performResumeInjection(outcome.restart, outcome.messages);
+          if (resume?.failurePanelShown === true) return;
           const receipts = settleReceipts(outcome.messages, resume);
           if (receipts === null) {
-            // Confirmed swap: auto-dismiss — leave the alt screen and let the
-            // user watch the resumed session repaint.
+            // Confirmed swap: auto-dismiss — panel already left at injection;
+            // settleCommand([]) is a no-op safety (alt-screen leave is idempotent).
             settleCommand([]);
             return;
           }

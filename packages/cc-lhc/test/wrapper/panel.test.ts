@@ -6,8 +6,10 @@ import {
   ENTER_ALT_SCREEN,
   LEAVE_ALT_SCREEN,
   PANEL_HINT,
+  PANEL_HINT_EXECUTING,
   PANEL_PROMPT,
   renderPanel,
+  swapCommandProgressLabel,
 } from "../../src/wrapper/panel.js";
 
 function modalState(overrides: Partial<InputState> = {}): InputState {
@@ -61,8 +63,23 @@ describe("renderPanel", () => {
   });
 
   it("hides the cursor while a command is executing", () => {
+    const out = renderPanel(modalState({ mode: "executing", line: "status" }), 80, 24);
+    expect(out).toContain(`${PANEL_PROMPT}status`);
+    expect(out).toContain(`\x1b[2m${PANEL_HINT_EXECUTING}\x1b[22m`);
+    expect(out).not.toContain(PANEL_HINT);
+    expect(out.endsWith("\x1b[?25h")).toBe(false);
+  });
+
+  it("shows a static swap progress line for compact/prune while executing", () => {
+    expect(swapCommandProgressLabel("compact")).toBe("compact — rebuilding…");
+    expect(swapCommandProgressLabel("prune 160000")).toBe("prune — rebuilding…");
+    expect(swapCommandProgressLabel("status")).toBeNull();
+
     const out = renderPanel(modalState({ mode: "executing", line: "compact" }), 80, 24);
-    expect(out).toContain(`${PANEL_PROMPT}compact`);
+    expect(out).toContain("compact — rebuilding…");
+    expect(out).not.toContain(PANEL_PROMPT);
+    expect(out).toContain(`\x1b[2m${PANEL_HINT_EXECUTING}\x1b[22m`);
+    expect(out).not.toContain(PANEL_HINT);
     expect(out.endsWith("\x1b[?25h")).toBe(false);
   });
 

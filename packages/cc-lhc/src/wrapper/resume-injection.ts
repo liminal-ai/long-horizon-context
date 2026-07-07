@@ -187,6 +187,8 @@ export interface ResumeInjectionInput {
   logLineageError?: (message: string) => void;
   /** Last-instant turn recheck; an open turn aborts before anything is injected. */
   isTurnOpen?: () => boolean;
+  /** Called after rebuild is on disk, immediately before `/resume` is written to the pty. */
+  onBeforeInject?: () => void;
   windowMs?: number;
   tripGraceMs?: number;
   confirmExtraMs?: number;
@@ -266,6 +268,7 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
 
   const injectedAt = new Date();
   try {
+    input.onBeforeInject?.();
     input.writeToPty(buildResumeInjection(input.plan.newSessionId));
     await Promise.race([trippedPromise, sleep(windowMs)]);
   } finally {
