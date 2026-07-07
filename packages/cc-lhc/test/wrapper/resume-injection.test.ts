@@ -461,6 +461,40 @@ describe("executeResumeInjection", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("returns ok and logs when post-confirm capture stop throws", async () => {
+    const order: string[] = [];
+    const handoffErrors: string[] = [];
+    const captureSession = fakeCaptureSession(order);
+    captureSession.stop = vi.fn(async () => {
+      order.push("stop");
+      throw new Error("sdk drain rejected");
+    });
+
+    const result = await executeResumeInjection({
+      plan: PLAN,
+      captureSession,
+      writeToPty: () => {},
+      onOutput: () => () => {},
+      startCapture: () => {
+        throw new Error("must not start capture after stop failure");
+      },
+      logResume: () => {},
+      logHandoffError: (message) => {
+        handoffErrors.push(message);
+      },
+      windowMs: 5,
+      sleep: async () => {},
+      statRollout: statSequence({ size: 100, mtimeMs: 1 }, { size: 130, mtimeMs: 2 }),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.captureSession).toBe(captureSession);
+    expect(handoffErrors.some((line) => line.includes("resume handoff failed (swap confirmed)"))).toBe(true);
+    expect(handoffErrors.some((line) => line.includes("sdk drain rejected"))).toBe(true);
+    expect(order).toContain("stop");
+  });
+
   it("throws when no capture session is available", async () => {
     await expect(
       executeResumeInjection({

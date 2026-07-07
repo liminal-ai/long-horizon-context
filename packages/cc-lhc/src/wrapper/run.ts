@@ -76,6 +76,10 @@ export type RunOptions = {
   noInference?: boolean;
   /** Test hook: substitute the wrapper log (defaults to ~/.cc-lhc/wrapper.log). */
   wrapperLog?: WrapperLog;
+  /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
+  outputHoldCapBytes?: number;
+  /** Test hook: shorten the resume tripwire window (defaults to 3s). */
+  resumeWindowMs?: number;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -191,7 +195,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   // While the modal (or an executing command) owns the screen, pty output is
   // held — claude keeps running; we just delay rendering its bytes.
   const outputHold = new OutputHold(
-    OUTPUT_HOLD_CAP_BYTES,
+    options.outputHoldCapBytes ?? OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
       inputState = forceResetInput(inputState);
@@ -328,6 +332,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         logResume: (message) => {
           wrapperLog.info(message);
         },
+        logHandoffError: (message) => {
+          wrapperLog.warn(message);
+        },
+        ...(options.resumeWindowMs === undefined ? {} : { windowMs: options.resumeWindowMs }),
       });
       if (result.ok) {
         // No panel receipt on success: the swap receipt is a trailing

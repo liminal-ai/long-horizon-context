@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { settleReceipts } from "../../src/wrapper/run.js";
-import { createWrapperLog } from "../../src/wrapper/wrapper-log.js";
+import { countWarnLinesInLog, createWrapperLog } from "../../src/wrapper/wrapper-log.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,9 +23,9 @@ describe("createWrapperLog", () => {
     log.info("resume injected");
     log.warn("drain not settled");
     log.warn("buffer overflow");
-    expect(log.warningCount()).toBe(2);
 
     await sleep(50);
+    expect(log.warningCount()).toBe(2);
     const contents = await readFile(path, "utf8");
     expect(contents).toMatch(/\[info\] resume injected\n/);
     expect(contents).toMatch(/\[warn\] drain not settled\n/);
@@ -33,13 +33,34 @@ describe("createWrapperLog", () => {
     expect(contents.split("\n").filter(Boolean)).toHaveLength(3);
   });
 
-  it("never throws when the path is unwritable", () => {
+  it("never throws when the path is unwritable", async () => {
     const log = createWrapperLog("/dev/null/impossible/wrapper.log");
     expect(() => {
       log.info("x");
       log.warn("y");
     }).not.toThrow();
-    expect(log.warningCount()).toBe(1);
+    await sleep(50);
+    expect(log.warningCount()).toBe(0);
+  });
+
+  it("derives warning count from the log file so a fresh instance still reports them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-wlog-durable-"));
+    const path = join(dir, "wrapper.log");
+    const writer = createWrapperLog(path);
+    writer.warn("drain not settled");
+    await sleep(50);
+    expect(writer.warningCount()).toBe(1);
+
+    const relaunched = createWrapperLog(path);
+    expect(relaunched.warningCount()).toBe(1);
+    expect(countWarnLinesInLog(path)).toBe(1);
+  });
+
+  it("does not count warnings whose append failed", async () => {
+    const log = createWrapperLog("/dev/null/impossible/wrapper.log");
+    log.warn("phantom");
+    await sleep(50);
+    expect(log.warningCount()).toBe(0);
   });
 });
 

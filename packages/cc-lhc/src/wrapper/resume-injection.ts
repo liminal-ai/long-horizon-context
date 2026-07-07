@@ -181,6 +181,8 @@ export interface ResumeInjectionInput {
   onOutput: (listener: (data: string) => void) => () => void;
   startCapture: (startedAt: Date, continueCapture: ContinueCapture, rolloutPath: string) => CaptureSession;
   logResume: (message: string) => void;
+  /** Post-confirm handoff failures — swap is already live; must not surface in the modal. */
+  logHandoffError?: (message: string) => void;
   recordLineage?: (input: { sessionId: string; threadId: string }) => Promise<void>;
   logLineageError?: (message: string) => void;
   /** Last-instant turn recheck; an open turn aborts before anything is injected. */
@@ -290,23 +292,31 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
 
   input.writeToPty(REPAINT_NUDGE);
 
-  // Lineage is recorded only once the swap is confirmed, so a failed resume
-  // leaves no session→thread row behind to misdirect later --resume/--continue
-  // resolution. The cost is the narrow crash-between-swap-and-record window;
-  // that is acceptable because the handoff capture below re-records the same
-  // mapping the moment it attaches to the rebuilt rollout.
-  const ctx = input.captureSession.getCommandContext();
-  const threadId = ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "";
-  if (input.recordLineage !== undefined && threadId !== "") {
-    try {
-      await input.recordLineage({ sessionId: input.plan.newSessionId, threadId });
-    } catch (cause) {
-      input.logLineageError?.(lineageWriteFailureMessage(cause));
+  // Once rollout growth confirms the swap, the panel must auto-dismiss even if
+  // capture handoff work fails — the live session already moved on.
+  let captureSession = input.captureSession;
+  try {
+    // Lineage is recorded only once the swap is confirmed, so a failed resume
+    // leaves no session→thread row behind to misdirect later --resume/--continue
+    // resolution. The cost is the narrow crash-between-swap-and-record window;
+    // that is acceptable because the handoff capture below re-records the same
+    // mapping the moment it attaches to the rebuilt rollout.
+    const ctx = input.captureSession.getCommandContext();
+    const threadId = ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "";
+    if (input.recordLineage !== undefined && threadId !== "") {
+      try {
+        await input.recordLineage({ sessionId: input.plan.newSessionId, threadId });
+      } catch (cause) {
+        input.logLineageError?.(lineageWriteFailureMessage(cause));
+      }
     }
-  }
 
-  const continueCapture = await pauseCaptureForResume(input.captureSession);
-  await recordSwapCollisionIfGrown(input.plan, continueCapture, statRollout);
-  const captureSession = input.startCapture(injectedAt, continueCapture, input.plan.rolloutPath);
+    const continueCapture = await pauseCaptureForResume(input.captureSession);
+    await recordSwapCollisionIfGrown(input.plan, continueCapture, statRollout);
+    captureSession = input.startCapture(injectedAt, continueCapture, input.plan.rolloutPath);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    input.logHandoffError?.(`resume handoff failed (swap confirmed): ${message}`);
+  }
   return { ok: true, captureSession };
 }
