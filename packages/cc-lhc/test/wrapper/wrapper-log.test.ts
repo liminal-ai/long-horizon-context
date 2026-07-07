@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +61,20 @@ describe("createWrapperLog", () => {
     log.warn("phantom");
     await sleep(50);
     expect(log.warningCount()).toBe(0);
+  });
+
+  it("counts only warn records, not message-body tokens or continuation lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-wlog-shape-"));
+    const path = join(dir, "wrapper.log");
+    const log = createWrapperLog(path);
+
+    log.warn("real warning");
+    log.info("note: prior line was [warn] but this is info");
+    appendFileSync(path, "continuation mentioning [warn] token\n");
+
+    await sleep(50);
+    expect(log.warningCount()).toBe(1);
+    expect(countWarnLinesInLog(path)).toBe(1);
   });
 });
 

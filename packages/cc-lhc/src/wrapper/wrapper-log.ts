@@ -14,14 +14,18 @@ export function defaultWrapperLogPath(): string {
   return join(ccLhcHome(), "wrapper.log");
 }
 
-/** Count `[warn]` lines in the log file — durable across wrapper relaunches. */
+/** Matches a single warn record line as written by `append` — not message-body tokens. */
+export const WRAPPER_LOG_WARN_RECORD =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[warn\] /;
+
+/** Count warn records in the log file — durable across wrapper relaunches. */
 export function countWarnLinesInLog(path: string): number {
   try {
     const contents = readFileSync(path, "utf8");
     if (contents.length === 0) return 0;
     let count = 0;
     for (const line of contents.split("\n")) {
-      if (line.includes(" [warn] ")) count += 1;
+      if (WRAPPER_LOG_WARN_RECORD.test(line)) count += 1;
     }
     return count;
   } catch {
