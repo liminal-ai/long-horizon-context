@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -11,7 +12,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultRegistryPath } from "../../src/intake/paths.js";
 import { DEFAULT_LEADER_BYTE } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN } from "../../src/wrapper/panel.js";
-import { onTerminalResize, resizePty, run, type PtySpawn } from "../../src/wrapper/run.js";
+import {
+  onTerminalResize,
+  OUTPUT_HOLD_OVERFLOW_MESSAGE,
+  resizePty,
+  run,
+  type PtySpawn,
+} from "../../src/wrapper/run.js";
+import { createWrapperLog } from "../../src/wrapper/wrapper-log.js";
 
 const FAKE_CODEX = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "fake-codex.mjs");
 const SESSION_ID = "550e8400-e29b-41d4-a716-446655440099";
@@ -584,7 +592,7 @@ describe("modal integration", () => {
     stdin.end();
   }, 10_000);
 
-  it("dismisses the panel before swap machinery runs", async () => {
+  it("keeps the panel open when swap rebuild fails before dismissal", async () => {
     const { codexHome } = tempEnvPair();
     process.env.CODEX_LHC_FAKE_MODE = "sleep";
     process.env.CODEX_LHC_FAKE_SLEEP_MS = "30000";
@@ -592,12 +600,8 @@ describe("modal integration", () => {
     const stderr = fakeStderr();
     const stdin = fakeStdin();
     const output: string[] = [];
-    const errLines: string[] = [];
     stdout.on("data", (chunk: Buffer) => {
       output.push(chunk.toString("latin1"));
-    });
-    stderr.on("data", (chunk: Buffer) => {
-      errLines.push(chunk.toString());
     });
 
     void run([], {
@@ -615,7 +619,7 @@ describe("modal integration", () => {
         ({
           ok: false,
           phase: "rebuild",
-          receipt: { ok: false, status: "rebuild_failed", messages: [], oldSessionId: "probe" },
+          receipt: { ok: false, status: "rebuild_failed", messages: ["swap rebuild failed"], oldSessionId: "probe" },
           error: new Error("probe"),
         }) as never,
       dispatchLhcCommand: async (_line, ctx) => {
@@ -628,10 +632,272 @@ describe("modal integration", () => {
     stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await vi.waitFor(() => expect(output.join("")).toContain(ENTER_ALT_SCREEN));
     stdin.write("compact\r");
-    await vi.waitFor(() => expect(output.join("")).toContain(LEAVE_ALT_SCREEN));
-    await vi.waitFor(() => expect(errLines.some((line) => line.includes("[codex-lhc] swap-receipt"))).toBe(true));
+    await vi.waitFor(() => expect(output.join("")).toContain("swap-receipt"));
+    expect(output.join("")).not.toContain(LEAVE_ALT_SCREEN);
     stdin.end();
   }, 10_000);
+
+  it("leaves the alt screen and flushes held output before respawn/kill on confirmed swap", async () => {
+    const { codexHome } = tempEnvPair();
+    process.env.CODEX_LHC_FAKE_MODE = "tick";
+    const timeline: string[] = [];
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+    const originalWrite = stdout.write.bind(stdout);
+    let sawLeave = false;
+    vi.spyOn(stdout, "write").mockImplementation((chunk, ...args) => {
+      const text = String(chunk);
+      if (text.includes(LEAVE_ALT_SCREEN)) {
+        timeline.push("leave");
+        sawLeave = true;
+      } else if (sawLeave && !timeline.includes("held-flush") && /tick\d/.test(text)) {
+        timeline.push("held-flush");
+      }
+      return originalWrite(chunk, ...args);
+    });
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty: (file, args, options) => {
+        writeInstantRollout(codexHome);
+        return spawnFakeCodex(file, args, options);
+      },
+      stdin,
+      stdout,
+      noInference: true,
+      captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+      dispatchLhcCommand: async (_line, ctx) => {
+        timeline.push("rebuild-done");
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        ctx.swap.onBeforeRespawn?.();
+        timeline.push("leave");
+        timeline.push("respawn-step");
+        return {
+          messages: ["compact view=v4"],
+          swapSettle: { confirmed: true, dismissedForRespawn: true },
+        };
+      },
+    });
+
+    await vi.waitFor(() => output.some((chunk) => /tick2/.test(chunk)), { timeout: 3000 });
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await vi.waitFor(() => output.join("").includes(ENTER_ALT_SCREEN));
+    stdin.write("compact\r");
+    await vi.waitFor(() => expect(timeline.includes("leave")).toBe(true));
+    await vi.waitFor(() => expect(timeline.includes("respawn-step")).toBe(true));
+
+    const rebuildIdx = timeline.indexOf("rebuild-done");
+    const leaveIdx = timeline.indexOf("leave");
+    const heldIdx = timeline.indexOf("held-flush");
+    const respawnIdx = timeline.indexOf("respawn-step");
+    expect(rebuildIdx).toBeGreaterThan(-1);
+    expect(leaveIdx).toBeGreaterThan(rebuildIdx);
+    expect(respawnIdx).toBeGreaterThan(leaveIdx);
+    expect(output.join("")).toContain(LEAVE_ALT_SCREEN);
+    if (heldIdx >= 0) expect(heldIdx).toBeGreaterThan(leaveIdx);
+    stdin.end();
+  }, 10_000);
+
+  it("reopens the panel with a failure receipt when swap fails after dismissal", async () => {
+    const { codexHome } = tempEnvPair();
+    process.env.CODEX_LHC_FAKE_MODE = "sleep";
+    process.env.CODEX_LHC_FAKE_SLEEP_MS = "30000";
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty: (file, args, options) => {
+        writeInstantRollout(codexHome);
+        return spawnFakeCodex(file, args, options);
+      },
+      stdin,
+      stdout,
+      noInference: true,
+      captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+      dispatchLhcCommand: async (_line, ctx) => {
+        ctx.swap.onBeforeRespawn?.();
+        const settle = ctx.swap.onSwapFailureAfterDismiss!(
+          "swap did not confirm for new-session",
+          ["compact view=v4"],
+        );
+        return { messages: ["compact view=v4"], swapSettle: settle };
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await vi.waitFor(() => output.join("").includes(ENTER_ALT_SCREEN));
+    stdin.write("compact\r");
+    await vi.waitFor(() => expect(output.join("")).toContain("swap did not confirm"));
+    const joined = output.join("");
+    const firstLeave = joined.indexOf(LEAVE_ALT_SCREEN);
+    const reopenEnter = joined.indexOf(ENTER_ALT_SCREEN, firstLeave + 1);
+    expect(firstLeave).toBeGreaterThan(-1);
+    expect(reopenEnter).toBeGreaterThan(firstLeave);
+    stdin.end();
+  }, 10_000);
+
+  it("logs a late swap failure when passthrough resumed after dismissed user panel (generation mismatch)", async () => {
+    const { codexHome, lhcHome } = tempEnvPair();
+    const logPath = join(lhcHome, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+    process.env.CODEX_LHC_FAKE_MODE = "sleep";
+    process.env.CODEX_LHC_FAKE_SLEEP_MS = "30000";
+    const stdout = fakeStdout(80, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    let releaseFailure!: () => void;
+    const failureGate = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty: (file, args, options) => {
+        writeInstantRollout(codexHome);
+        return spawnFakeCodex(file, args, options);
+      },
+      stdin,
+      stdout,
+      wrapperLog,
+      noInference: true,
+      captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+      dispatchLhcCommand: async (_line, ctx) => {
+        ctx.swap.onBeforeRespawn?.();
+        await failureGate;
+        return {
+          messages: ["compact view=v4"],
+          swapSettle: ctx.swap.onSwapFailureAfterDismiss!(
+            "swap did not confirm for new-session",
+            ["compact view=v4"],
+          ),
+        };
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await vi.waitFor(() => expect(output.join("")).toContain(ENTER_ALT_SCREEN));
+    stdin.write("compact\r");
+    await vi.waitFor(() => expect(output.join("")).toContain(LEAVE_ALT_SCREEN));
+
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await vi.waitFor(() => expect(output.filter((chunk) => chunk.includes(ENTER_ALT_SCREEN)).length).toBeGreaterThanOrEqual(2));
+    stdin.write(Buffer.from("status"));
+    await vi.waitFor(() => expect(output.join("")).toContain("long-horizon commands> status"));
+
+    releaseFailure();
+    await vi.waitFor(async () =>
+      (await readFile(logPath, "utf8")).includes("swap failed after panel dismissal"),
+    );
+
+    const joined = output.join("");
+    const secondEnter = joined.indexOf(ENTER_ALT_SCREEN, joined.indexOf(LEAVE_ALT_SCREEN) + 1);
+    const afterUserPanel = joined.slice(secondEnter);
+    expect(afterUserPanel).toContain("long-horizon commands> status");
+    expect(afterUserPanel).not.toContain("swap did not confirm");
+
+    const logText = await readFile(logPath, "utf8");
+    expect(logText).toMatch(/\[warn\].*swap failed after panel dismissal \(user panel active\)/);
+    expect(logText).toMatch(/swap did not confirm/);
+    stdin.end();
+  }, 20_000);
+
+  it("routes passthrough diagnostics to wrapper log with zero stdout/stderr writes", async () => {
+    process.env.CODEX_LHC_LEADER = "invalid";
+    const { codexHome, lhcHome } = tempEnvPair();
+    const logPath = join(lhcHome, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+    process.env.CODEX_LHC_FAKE_MODE = "tick";
+
+    const stdout = fakeStdout(80, 24);
+    const stderr = fakeStderr();
+    const stdin = fakeStdin();
+    const passthroughWrites: string[] = [];
+    let modalOpen = false;
+    const isChildTick = (chunk: string): boolean => /^(tick\d+\r\n)+$/.test(chunk);
+    const isAllowedPassthroughWrite = (chunk: string): boolean => {
+      if (chunk.includes(ENTER_ALT_SCREEN) || chunk.includes(LEAVE_ALT_SCREEN)) return true;
+      const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
+      if (stripped.length === 0) return true;
+      return isChildTick(stripped);
+    };
+
+    const trackPassthrough = (chunk: string): void => {
+      if (chunk.includes(ENTER_ALT_SCREEN)) modalOpen = true;
+      if (chunk.includes(LEAVE_ALT_SCREEN)) modalOpen = false;
+      if (!modalOpen) passthroughWrites.push(chunk);
+    };
+
+    const wrapperPassthroughWrites = (): string[] =>
+      passthroughWrites.filter((chunk) => !isAllowedPassthroughWrite(chunk));
+
+    const stdoutWrite = vi.spyOn(stdout, "write").mockImplementation((chunk, ...args) => {
+      trackPassthrough(String(chunk));
+      return (PassThrough.prototype.write as typeof stdout.write).call(stdout, chunk, ...args);
+    });
+    const stderrWrite = vi.spyOn(stderr, "write").mockImplementation((chunk, ...args) => {
+      trackPassthrough(String(chunk));
+      return (PassThrough.prototype.write as typeof stderr.write).call(stderr, chunk, ...args);
+    });
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty: (file, args, options) => {
+        writeInstantRollout(codexHome);
+        return spawnFakeCodex(file, args, options);
+      },
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog,
+      noInference: true,
+      outputHoldCapBytes: 32,
+      captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(wrapperPassthroughWrites()).toEqual([]);
+
+    process.kill(process.pid, "SIGUSR1");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(wrapperPassthroughWrites()).toEqual([]);
+
+    wrapperLog.warn("capture diagnostic");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(wrapperPassthroughWrites()).toEqual([]);
+
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await vi.waitFor(() => expect(modalOpen).toBe(true), { timeout: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(wrapperPassthroughWrites()).toEqual([]);
+    wrapperLog.warn(OUTPUT_HOLD_OVERFLOW_MESSAGE);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(wrapperPassthroughWrites()).toEqual([]);
+
+    const logText = await readFile(logPath, "utf8");
+    expect(logText).toMatch(/\[warn\].*CODEX_LHC_LEADER/);
+    expect(logText).toMatch(/\[info\].*codex-lhc-capture lines=/);
+    expect(logText).toMatch(/\[warn\] capture diagnostic/);
+    expect(logText).toMatch(new RegExp(`\\[warn\\] ${OUTPUT_HOLD_OVERFLOW_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
+    stdin.end();
+  }, 30_000);
 
   it("leaves the alt screen on signal exit while modal is open", async () => {
     tempEnvPair();

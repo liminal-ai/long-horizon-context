@@ -74,6 +74,7 @@ describe("passthrough", () => {
     expect(result.pty).toBe(pasted);
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("passthrough");
+    // Paste closed: the next leader press is a real keypress again.
     const after = feed(result.state, LEADER);
     expect(after.actions).toEqual([{ kind: "enter_modal" }]);
   });
@@ -107,36 +108,95 @@ describe("passthrough", () => {
     expect(result.actions).toEqual([]);
   });
 
-  it("keeps a pending ESC across the chunk boundary; the next byte resolves it", () => {
+  it("holds a pending ESC across the chunk boundary; the next byte resolves it", () => {
+    // The ESC is HELD, not forwarded — it may head the kitty-encoded leader.
     const result = feed(createInputState(), Buffer.from([0x1b]));
-    expect(result.pty).toBe("\x1b");
+    expect(result.pty).toBe("");
     expect(result.state.escape).toEqual({ kind: "pending_esc" });
+    expect(result.state.heldSeq).toEqual([0x1b]);
+    // The byte after a bare Esc resolves it: both flush; a raw leader here is
+    // suppressed once (forwarded literally) — the accepted trade for never
+    // misreading a split sequence; leader-again recovers.
     const suppressed = feed(result.state, LEADER);
-    expect(suppressed.pty).toBe("\x1d");
+    expect(suppressed.pty).toBe("\x1b\x1d");
     expect(suppressed.actions).toEqual([]);
     expect(suppressed.state.escape).toBeNull();
     const recovered = feed(suppressed.state, LEADER);
     expect(recovered.actions).toEqual([{ kind: "enter_modal" }]);
   });
 
+  it("flushes a truly bare held ESC via resolveBareEsc but RESUMES tracking", () => {
+    const held = feed(createInputState(), Buffer.from([0x1b]));
+    const resolved = resolveBareEsc(held.state);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.toPty!.toString("latin1")).toBe("\x1b");
+    expect(resolved!.actions).toEqual([]);
+    // tracking survives the flush, exactly as if the ESC had streamed unheld
+    expect(resolved!.state.escape).toEqual({ kind: "pending_esc" });
+    expect(resolved!.state.heldSeq).toEqual([]);
+    // nothing left to flush → a second fire is a no-op
+    expect(resolveBareEsc(resolved!.state)).toBeNull();
+    // a sequence arriving after the flush still tracks: paste opens, a raw
+    // leader inside it stays literal, and no byte is double-sent
+    const after = feed(resolved!.state, "[200~a\x1db\x1b[201~");
+    expect(after.pty).toBe("[200~a\x1db\x1b[201~");
+    expect(after.actions).toEqual([]);
+    // and a second bare ESC right after the flush is not double-forwarded
+    const doubleEsc = feed(resolved!.state, Buffer.from([0x1b]));
+    expect(doubleEsc.pty).toBe("");
+    expect(doubleEsc.state.heldSeq).toEqual([0x1b]);
+  });
+
+  it("a stalled paste-opener candidate flushes but keeps CSI tracking (reviewer probe)", () => {
+    // ESC[200 held; the timer fires before the ~ arrives
+    const stalled = feed(createInputState(), "\x1b[200");
+    const flushed = resolveBareEsc(stalled.state);
+    expect(flushed).not.toBeNull();
+    expect(flushed!.toPty!.toString("latin1")).toBe("\x1b[200");
+    expect(flushed!.state.escape).toEqual({ kind: "csi", params: "200" });
+    // the late ~ completes the paste marker; a literal raw leader inside the
+    // pasted body stays literal — no modal, every byte reaches the child
+    const after = feed(flushed!.state, "~x\x1dy");
+    expect(after.actions).toEqual([]);
+    expect(after.state.mode).toBe("passthrough");
+    expect(after.state.inPaste).toBe(true);
+    expect(after.pty).toBe("~x\x1dy");
+    const closed = feed(after.state, "\x1b[201~");
+    expect(closed.state.inPaste).toBe(false);
+
+    // a stalled kitty-shaped candidate also resumes as plain CSI: its late
+    // final is forwarded, never claimed as the leader
+    const kittyStall = feed(createInputState(), "\x1b[93;5");
+    const kittyFlushed = resolveBareEsc(kittyStall.state);
+    expect(kittyFlushed!.toPty!.toString("latin1")).toBe("\x1b[93;5");
+    const lateFinal = feed(kittyFlushed!.state, "u");
+    expect(lateFinal.pty).toBe("u");
+    expect(lateFinal.actions).toEqual([]);
+  });
+
   it("never opens modal on a leader inside a sequence split after its ESC", () => {
+    // OSC with a leader (and BEL terminator) in the payload
     const osc = feed(createInputState(), "\x1b", "]11;fo\x1dob\x07");
     expect(osc.pty).toBe("\x1b]11;fo\x1dob\x07");
     expect(osc.actions).toEqual([]);
 
+    // bracketed-paste open split after ESC, leader in the pasted content
     const paste = feed(createInputState(), "\x1b", "[200~ab\x1dcd", "\x1b[201~");
     expect(paste.pty).toBe("\x1b[200~ab\x1dcd\x1b[201~");
     expect(paste.actions).toEqual([]);
     expect(paste.state.inPaste).toBe(false);
 
+    // CSI with the leader byte among its params
     const csi = feed(createInputState(), "\x1b", "[38;5;\x1dm");
     expect(csi.pty).toBe("\x1b[38;5;\x1dm");
     expect(csi.actions).toEqual([]);
 
+    // legacy mouse report with a leader among its three payload bytes
     const mouse = feed(createInputState(), Buffer.from([0x1b]), Buffer.from([0x4d, 0x20, 0x1d, 0x21]));
     expect(mouse.pty).toBe("\x1bM \x1d!");
     expect(mouse.actions).toEqual([]);
 
+    // double-ESC then a split sequence keeps tracking
     const doubleEsc = feed(createInputState(), "\x1b", "\x1b", "[200~x\x1dy\x1b[201~");
     expect(doubleEsc.pty).toBe("\x1b\x1b[200~x\x1dy\x1b[201~");
     expect(doubleEsc.actions).toEqual([]);
@@ -155,6 +215,113 @@ describe("passthrough", () => {
     const entered = feed(ignored.state, Buffer.from([0x1f]));
     expect(entered.actions).toEqual([{ kind: "enter_modal" }]);
   });
+
+  describe("kitty-encoded leader (CSI ...u)", () => {
+    it("CSI 93;5u press enters modal and is NOT forwarded to the child", () => {
+      const result = feed(createInputState(), "\x1b[93;5u");
+      expect(result.pty).toBe("");
+      expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+      expect(result.state.mode).toBe("modal");
+    });
+
+    it("repeat (event 2) also enters modal; press with explicit :1 too", () => {
+      const repeat = feed(createInputState(), "\x1b[93;5:2u");
+      expect(repeat.actions).toEqual([{ kind: "enter_modal" }]);
+      expect(repeat.pty).toBe("");
+      const press = feed(createInputState(), "\x1b[93;5:1u");
+      expect(press.actions).toEqual([{ kind: "enter_modal" }]);
+    });
+
+    it("release (93;5:3u) is ignored and forwarded untouched", () => {
+      const result = feed(createInputState(), "\x1b[93;5:3u");
+      expect(result.actions).toEqual([]);
+      expect(result.pty).toBe("\x1b[93;5:3u");
+      expect(result.state.mode).toBe("passthrough");
+    });
+
+    it("split-chunk delivery (ESC alone, then [93;5u) still enters modal, nothing forwarded", () => {
+      const result = feed(createInputState(), "\x1b", "[93;5u");
+      expect(result.pty).toBe("");
+      expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+      // even byte-at-a-time
+      const oneByOne = feed(createInputState(), ..."\x1b[93;5u".split(""));
+      expect(oneByOne.pty).toBe("");
+      expect(oneByOne.actions).toEqual([{ kind: "enter_modal" }]);
+    });
+
+    it("non-leader CSI-u keys are forwarded untouched", () => {
+      const other = feed(createInputState(), "\x1b[94;5u");
+      expect(other.pty).toBe("\x1b[94;5u");
+      expect(other.actions).toEqual([]);
+      const noCtrl = feed(createInputState(), "\x1b[93u");
+      expect(noCtrl.pty).toBe("\x1b[93u");
+      expect(noCtrl.actions).toEqual([]);
+    });
+
+    it("ctrl+alt (93;7u) and other modifier chords are NOT claimed", () => {
+      const result = feed(createInputState(), "\x1b[93;7u");
+      expect(result.pty).toBe("\x1b[93;7u");
+      expect(result.actions).toEqual([]);
+    });
+
+    it("a custom leader is recognized in its kitty form (0x1f -> 95;5u; ctrl+letter maps to +96)", () => {
+      const punct = feed(createInputState(0x1f), "\x1b[95;5u");
+      expect(punct.actions).toEqual([{ kind: "enter_modal" }]);
+      expect(punct.pty).toBe("");
+      // ctrl-A (0x01) -> keycode 97
+      const letter = feed(createInputState(0x01), "\x1b[97;5u");
+      expect(letter.actions).toEqual([{ kind: "enter_modal" }]);
+      // and the default leader's encoding is NOT claimed for that config
+      const wrong = feed(createInputState(0x1f), "\x1b[93;5u");
+      expect(wrong.pty).toBe("\x1b[93;5u");
+      expect(wrong.actions).toEqual([]);
+    });
+
+    it("kitty leader inside a bracketed paste stays literal", () => {
+      const result = feed(createInputState(), "\x1b[200~text \x1b[93;5u more\x1b[201~");
+      expect(result.actions).toEqual([]);
+      expect(result.pty).toBe("\x1b[200~text \x1b[93;5u more\x1b[201~");
+    });
+
+    it("xterm modifyOtherKeys encoding (27;5;93~) enters modal and is NOT forwarded", () => {
+      // Observed live from tmux extended-keys: ctrl-] arrives as CSI 27;5;93~.
+      const result = feed(createInputState(), "\x1b[27;5;93~");
+      expect(result.pty).toBe("");
+      expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+      // colon-suffixed third field is a different key event: forwarded byte-identical
+      const suffixed = feed(createInputState(), "\x1b[27;5;93:3~");
+      expect(suffixed.pty).toBe("\x1b[27;5;93:3~");
+      expect(suffixed.actions).toEqual([]);
+      // other modifier or other key: forwarded untouched
+      const alt = feed(createInputState(), "\x1b[27;7;93~");
+      expect(alt.pty).toBe("\x1b[27;7;93~");
+      expect(alt.actions).toEqual([]);
+      const other = feed(createInputState(), "\x1b[27;5;94~");
+      expect(other.pty).toBe("\x1b[27;5;94~");
+      expect(other.actions).toEqual([]);
+    });
+
+    it("modifyOtherKeys leader-again cancels the modal", () => {
+      const opened = feed(createInputState(), LEADER);
+      const cancelled = feed(opened.state, "\x1b[27;5;93~");
+      expect(cancelled.actions).toEqual([{ kind: "exit_modal" }]);
+      expect(cancelled.pty).toBe("");
+    });
+
+    it("kitty leader-again cancels the modal (and is dropped while executing)", () => {
+      const opened = feed(createInputState(), LEADER);
+      const cancelled = feed(opened.state, "\x1b[93;5u");
+      expect(cancelled.actions).toEqual([{ kind: "exit_modal" }]);
+      expect(cancelled.state.mode).toBe("passthrough");
+      expect(cancelled.pty).toBe("");
+
+      const executing = feed(createInputState(), LEADER, "status\r");
+      const dropped = feed(executing.state, "\x1b[93;5u");
+      expect(dropped.actions).toEqual([]);
+      expect(dropped.state.mode).toBe("executing");
+      expect(dropped.pty).toBe("");
+    });
+  });
 });
 
 describe("modal line editor", () => {
@@ -169,6 +336,7 @@ describe("modal line editor", () => {
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
     expect(result.state.mode).toBe("executing");
+    // the submitted text stays visible on the panel's prompt line while running
     expect(result.state.line).toBe("status");
   });
 
@@ -190,6 +358,7 @@ describe("modal line editor", () => {
     expect(result.state.mode).toBe("modal");
     const then = feed(result.state, "stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
+    // stale help rows are cleared when a command starts
     expect(then.state.panelRows).toEqual([]);
   });
 
@@ -240,16 +409,20 @@ describe("modal line editor", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
     expect(resolved!.state.mode).toBe("passthrough");
+    // nothing pending → null
     expect(resolveBareEsc(resolved!.state)).toBeNull();
   });
 
   it("a split escape sequence while modal is never misread as cancel", () => {
+    // split arrow key: dropped, stays modal
     const arrow = feed(openModal(), "\x1b", "[A");
     expect(arrow.state.mode).toBe("modal");
     expect(arrow.pty).toBe("");
     expect(arrow.actions).toEqual([]);
+    // split kitty Enter still submits
     const kitty = feed(openModal(), "status", "\x1b", "[13;1u");
     expect(executed(kitty.actions)).toEqual(["/lhc-status"]);
+    // split OSC response forwards and stays modal
     const osc = feed(openModal(), "\x1b", "]11;rgb:aa\x07");
     expect(osc.pty).toBe("\x1b]11;rgb:aa\x07");
     expect(osc.state.mode).toBe("modal");
@@ -325,6 +498,7 @@ describe("executing mode", () => {
     expect(result.pty).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
+    // the running command stays visible on the panel's prompt line
     expect(result.state.line).toBe("status");
   });
 
@@ -332,6 +506,8 @@ describe("executing mode", () => {
     const detached = feed(startExecuting(), "\x03");
     expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
     expect(detached.state.mode).toBe("passthrough");
+    // subsequent input flows to claude; the late receipt path (settleCommand
+    // with mode !== executing) prints raw without touching input state
     const after = feed(detached.state, "hello");
     expect(after.pty).toBe("hello");
     expect(forceResetInput(after.state)).toBe(after.state);

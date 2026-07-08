@@ -276,6 +276,16 @@ if (mode === "concurrency") {
   process.exit(0);
 }
 
+if (mode === "tick") {
+  writeRolloutFile();
+  let i = 0;
+  setInterval(() => {
+    i += 1;
+    process.stdout.write(`tick${i}\r\n`);
+  }, 50);
+  await new Promise(() => {});
+}
+
 if (mode === "sleep") {
   const ms = Number.parseInt(process.env.CODEX_LHC_FAKE_SLEEP_MS ?? "120000", 10);
   await new Promise((resolve) => {

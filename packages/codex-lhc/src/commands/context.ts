@@ -22,6 +22,8 @@ export interface CommandSwapDeps {
   child: SwapChildControl;
   markSwapKill: (child: SwapChildHandle) => void;
   executeSessionSwap?: typeof executeSessionSwap;
+  onBeforeRespawn?: () => void;
+  onSwapFailureAfterDismiss?: (failureReceipt: string, outcomeMessages: string[]) => SwapSettleInfo;
   codexHome?: string;
   noInference?: boolean;
   captureDeps?: Partial<CaptureSessionDeps>;
@@ -41,12 +43,23 @@ export interface LhcCommandCtx {
   swap: CommandSwapDeps;
   print?: (line: string) => void;
   logError?: (message: string) => void;
+  /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
+  warnings?: { count: number; logPath: string };
+}
+
+export interface SwapSettleInfo {
+  confirmed: boolean;
+  dismissedForRespawn: boolean;
+  failureReceipts?: string[];
+  failurePanelShown?: boolean;
+  failureSettled?: boolean;
 }
 
 export interface CommandResult {
   messages: string[];
   captureSession?: CaptureSession;
   wrapperExitCode?: number;
+  swapSettle?: SwapSettleInfo;
 }
 
 export function formatReceiptLine(text: string): string {
@@ -117,15 +130,21 @@ function swapResultToCommandResult(
   receiptLines: string[],
   result: SessionSwapResult,
   logError: (message: string) => void,
+  dismissedForRespawn: boolean,
+  onSwapFailureAfterDismiss?: (failureReceipt: string, outcomeMessages: string[]) => SwapSettleInfo,
 ): CommandResult {
   const messages = [...receiptLines, ...result.receipt.messages];
 
   if (result.ok) {
-    return { messages, captureSession: result.captureSession };
+    return {
+      messages: receiptLines,
+      captureSession: result.captureSession,
+      swapSettle: { confirmed: true, dismissedForRespawn },
+    };
   }
 
   if (result.phase === "rebuild") {
-    return { messages };
+    return { messages, swapSettle: { confirmed: false, dismissedForRespawn: false } };
   }
 
   if (result.phase === "recovery" && !result.recovered) {
@@ -133,7 +152,17 @@ function swapResultToCommandResult(
     return { messages, wrapperExitCode: result.exitCode };
   }
 
-  return { messages, captureSession: result.captureSession };
+  if (dismissedForRespawn && onSwapFailureAfterDismiss !== undefined) {
+    const failureReceipt = result.receipt.messages.join("\n");
+    const settle = onSwapFailureAfterDismiss(failureReceipt, receiptLines);
+    return {
+      messages: receiptLines,
+      ...(result.captureSession === undefined ? {} : { captureSession: result.captureSession }),
+      swapSettle: settle,
+    };
+  }
+
+  return { messages, ...(result.captureSession === undefined ? {} : { captureSession: result.captureSession }) };
 }
 
 export async function runSwapAfterViewMutation(
@@ -160,6 +189,7 @@ export async function runSwapAfterViewMutation(
   ctx.swap.markSwapKill(currentChild);
 
   const logError = ctx.logError ?? (() => {});
+  let dismissedForRespawn = false;
   const result = await execute({
     session: ctx.session,
     threadRef,
@@ -176,7 +206,17 @@ export async function runSwapAfterViewMutation(
     ...(ctx.swap.captureDeps === undefined ? {} : { captureDeps: ctx.swap.captureDeps }),
     ...(ctx.swap.lineageDbPath === undefined ? {} : { lineageDbPath: ctx.swap.lineageDbPath }),
     logError,
+    onBeforeRespawn: () => {
+      dismissedForRespawn = true;
+      ctx.swap.onBeforeRespawn?.();
+    },
   });
 
-  return swapResultToCommandResult(receiptLines, result, logError);
+  return swapResultToCommandResult(
+    receiptLines,
+    result,
+    logError,
+    dismissedForRespawn,
+    ctx.swap.onSwapFailureAfterDismiss,
+  );
 }

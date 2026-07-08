@@ -114,6 +114,8 @@ export interface ExecuteSessionSwapInput {
   lineageDeps?: LineageDbDeps;
   log?: (message: string) => void;
   logError?: (message: string) => void;
+  /** Called after rebuild succeeds, immediately before capture stop and child kill/respawn. */
+  onBeforeRespawn?: () => void;
   writeRebuiltRolloutFn?: typeof writeRebuiltRollout;
   startCaptureSessionFn?: typeof startCaptureSession;
   statRollout?: (path: string) => Promise<RolloutGrowthStat | null>;
@@ -297,6 +299,8 @@ export async function executeSessionSwap(input: ExecuteSessionSwapInput): Promis
   const manualCommand = manualResumeCommand(rebuilt.sessionId);
   const continueCapture = captureContinuation(input.session, input.threadRef);
   const baseline = await statRollout(rebuilt.rolloutPath);
+
+  input.onBeforeRespawn?.();
 
   await input.session.stop();
   await terminateChild(input.child.current(), input.child.markSwapKill, sleep, terminateGraceMs);

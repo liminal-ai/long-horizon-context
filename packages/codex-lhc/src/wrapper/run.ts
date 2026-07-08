@@ -2,10 +2,10 @@ import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
   CAPTURE_NOT_READY_MESSAGE,
-  formatReceiptLine,
   type LhcCommandCtx,
+  type SwapSettleInfo,
 } from "../commands/context.js";
-import { dispatchLhcCommand, formatCommandOutput } from "../commands/dispatch.js";
+import { dispatchLhcCommand } from "../commands/dispatch.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import {
   hasResumeLastIntent,
@@ -31,6 +31,7 @@ import {
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
 import { executeSessionSwap, type ChildExit, type SwapChildControl, type SwapChildHandle } from "./session-swap.js";
+import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -53,6 +54,20 @@ export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entr
 export const PENDING_ESC_RESOLVE_MS = 50;
 /** Cap for stdin buffered while no live PTY child (kill→respawn window). */
 export const PTY_STDIN_BUFFER_CAP_BYTES = 4 * 1024;
+
+/**
+ * What the panel shows when a command settles. null means AUTO-DISMISS: a
+ * confirmed swap already carries its receipt as a runtime note rendered
+ * natively in the respawned transcript, so the panel closes itself and the
+ * user watches the session repaint. Refusals, errors, no-ops, and
+ * status/stats keep the stay-until-dismissed rhythm.
+ */
+export function settleReceipts(outcomeMessages: string[], swapSettle: SwapSettleInfo | undefined): string[] | null {
+  if (swapSettle === undefined) return outcomeMessages;
+  if (swapSettle.confirmed) return null;
+  if (swapSettle.failurePanelShown === true || swapSettle.failureSettled === true) return null;
+  return outcomeMessages;
+}
 
 export type PtySpawn = typeof defaultSpawn;
 
@@ -80,6 +95,10 @@ export type RunOptions = {
   captureDeps?: Partial<CaptureSessionDeps>;
   /** Test hook / future command seam: exposes child lifecycle replacement controls. */
   onChildControl?: (control: RunChildControl) => void;
+  /** Test hook: substitute the wrapper log (defaults to ~/.codex-lhc/wrapper.log). */
+  wrapperLog?: WrapperLog;
+  /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
+  outputHoldCapBytes?: number;
   /** Test hook: override modal command dispatch. */
   dispatchLhcCommand?: typeof dispatchLhcCommand;
   /** Test hook: stub session swap after modal dismiss. */
@@ -178,23 +197,33 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const rows = stdout.rows ?? DEFAULT_ROWS;
   const startedAt = new Date();
 
+  // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
+  // While the child owns the terminal, diagnostics go to the wrapper log
+  // (surface (c)); `status` reports the warning count so nothing is lost.
+  const wrapperLog = options.wrapperLog ?? createWrapperLog();
+
   let exited = false;
   let captureSession: CaptureSession | undefined;
   let currentChild: SpawnedCodexChild | undefined;
   let childControl: RunChildControl | undefined;
   const swapKilled = new WeakSet<SpawnedCodexChild>();
   const commandGuard = new CommandInFlightGuard();
-  let swapDismissedFromPanel = false;
+  let dismissedModalGeneration = 0;
 
   const altScreen = createAltScreenGuard((data) => stdout.write(data));
 
-  const printStats = (): void => {
+  // Exit stats print on stderr only from teardown, AFTER the child has
+  // exited and the screen is back with the shell — legitimate surface (d).
+  const printExitStats = (): void => {
     if (captureSession === undefined) return;
     stderr.write(`${formatCaptureStatsLine(captureSession.stats)}\n`);
   };
 
+  // SIGUSR1 can fire at any moment while codex owns the screen: the stats
+  // snapshot goes to the wrapper log, never the terminal.
   const onSigusr1 = (): void => {
-    printStats();
+    if (captureSession === undefined) return;
+    wrapperLog.info(formatCaptureStatsLine(captureSession.stats));
   };
 
   if (!noCapture) {
@@ -204,6 +233,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       lineageDbPath: defaultLineageDbPath(),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(resumeLast ? { resumeLast: true } : {}),
+      log: (message) => wrapperLog.info(message),
+      logError: (message) => wrapperLog.warn(message),
       ...options.captureDeps,
     });
     process.on("SIGUSR1", onSigusr1);
@@ -222,18 +253,19 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   }
 
   const leaderByte = resolveLeaderByte(process.env.CODEX_LHC_LEADER, (message) => {
-    stderr.write(`${message}\n`);
+    wrapperLog.warn(message);
   });
   let inputState: InputState = createInputState(leaderByte);
+  /** Bumped on every modal entry; tags dismiss-at-respawn so late failures reopen only if still idle. */
+  let modalGeneration = 0;
 
   const outputHold = new OutputHold(
-    OUTPUT_HOLD_CAP_BYTES,
+    options.outputHoldCapBytes ?? OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
       inputState = forceResetInput(inputState);
       altScreen.leave();
-      stdout.write(formatCommandOutput(OUTPUT_HOLD_OVERFLOW_MESSAGE));
-      stdout.write("\r\n");
+      wrapperLog.warn(OUTPUT_HOLD_OVERFLOW_MESSAGE);
       outputHold.flush();
     },
   );
@@ -242,10 +274,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     outputHold.feed(data);
   };
 
-  const dismissModalForSwap = (): void => {
-    if (inputState.mode === "passthrough" && !altScreen.active) return;
-    swapDismissedFromPanel = true;
-    inputState = forceResetInput(inputState);
+  const dismissModalForRespawn = (): void => {
+    dismissedModalGeneration = modalGeneration;
+    inputState = finishExecuting(inputState);
     altScreen.leave();
     outputHold.flush();
   };
@@ -274,13 +305,27 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       sourceSessionId: rollout.sessionId,
       isTurnOpen: () => captureSession!.isTurnOpen(),
       session: captureSession,
+      warnings: { count: wrapperLog.warningCount(), logPath: wrapperLog.path },
       swap: {
         child: swapChild,
         markSwapKill: (child) => childControl!.markSwapKill(child as SpawnedCodexChild),
-        executeSessionSwap: async (args) => {
-          dismissModalForSwap();
-          const execute = options.testExecuteSessionSwap ?? executeSessionSwap;
-          return execute(args);
+        executeSessionSwap: options.testExecuteSessionSwap ?? executeSessionSwap,
+        onBeforeRespawn: dismissModalForRespawn,
+        onSwapFailureAfterDismiss: (failureReceipt, outcomeMessages) => {
+          const idlePassthrough =
+            inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
+          if (!idlePassthrough) {
+            wrapperLog.warn(`swap failed after panel dismissal (user panel active): ${failureReceipt}`);
+            return { confirmed: false, dismissedForRespawn: true, failureSettled: true };
+          }
+          outputHold.hold();
+          altScreen.enter();
+          inputState = showReceipts(
+            { ...createInputState(inputState.leaderByte), inPaste: inputState.inPaste },
+            [...outcomeMessages, failureReceipt],
+          );
+          renderModalPanel();
+          return { confirmed: false, dismissedForRespawn: true, failurePanelShown: true };
         },
         noInference,
         ...(options.captureDeps === undefined ? {} : { captureDeps: options.captureDeps }),
@@ -288,7 +333,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       },
       print: () => {},
       logError: (message) => {
-        stderr.write(`${message}\n`);
+        wrapperLog.warn(message);
       },
     };
   };
@@ -341,30 +386,16 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
-        printStats();
+        printExitStats();
         killAllInferenceChildren();
       }
       cleanup();
       resolve(exitCode);
     };
 
-    const printSwapReceipts = (messages: string[]): void => {
-      for (const message of messages) {
-        for (const line of message.split("\n")) {
-          stderr.write(`${formatReceiptLine(line)}\n`);
-        }
-      }
-    };
-
     const settleCommand = (messages: string[]): void => {
-      if (swapDismissedFromPanel) {
-        swapDismissedFromPanel = false;
-        printSwapReceipts(messages);
-        return;
-      }
       if (inputState.mode !== "executing") {
-        for (const message of messages) stdout.write(formatCommandOutput(message));
-        if (messages.length > 0) stdout.write("\r\n");
+        for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): ${message}`);
         return;
       }
       if (messages.length === 0) {
@@ -391,7 +422,21 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       void commandDispatch(commandLine, ctx)
         .then((result) => {
           if (result.captureSession !== undefined) captureSession = result.captureSession;
-          settleCommand(result.messages);
+          if (result.swapSettle?.failurePanelShown === true || result.swapSettle?.failureSettled === true) {
+            if (result.wrapperExitCode !== undefined) {
+              void teardownAndExit(result.wrapperExitCode);
+            }
+            return;
+          }
+          const receipts = settleReceipts(result.messages, result.swapSettle);
+          if (receipts === null) {
+            settleCommand([]);
+            if (result.wrapperExitCode !== undefined) {
+              void teardownAndExit(result.wrapperExitCode);
+            }
+            return;
+          }
+          settleCommand(receipts);
           if (result.wrapperExitCode !== undefined) {
             void teardownAndExit(result.wrapperExitCode);
           }
@@ -408,6 +453,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
+          modalGeneration += 1;
           outputHold.hold();
           altScreen.enter();
         } else if (action.kind === "exit_modal") {
@@ -449,12 +495,15 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         clearTimeout(pendingEscTimer);
         pendingEscTimer = null;
       }
-      if (inputState.mode === "passthrough" || inputState.escape?.kind !== "pending_esc") return;
+      const kind = inputState.escape?.kind;
+      const holding = kind === "pending_esc" || (inputState.mode === "passthrough" && kind === "csi_candidate");
+      if (!holding) return;
       pendingEscTimer = setTimeout(() => {
         pendingEscTimer = null;
         const resolved = resolveBareEsc(inputState);
         if (resolved === null) return;
         inputState = resolved.state;
+        if (resolved.toPty !== undefined && resolved.toPty.length > 0) writeToChildPty(resolved.toPty);
         applyActions(resolved.actions);
       }, PENDING_ESC_RESOLVE_MS);
       pendingEscTimer.unref?.();

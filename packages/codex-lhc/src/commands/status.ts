@@ -18,7 +18,7 @@ export async function runStatusCommand(
 ): Promise<CommandResult> {
   const blocked = notReady(ctx);
   if (blocked !== null) {
-    const messages = [blocked];
+    const messages = [blocked, ...warningsLine(ctx)];
     printReceiptLines(commandPrint(ctx, options.stream), blocked);
     return { messages };
   }
@@ -31,13 +31,20 @@ export async function runStatusCommand(
   if (!result.ok) {
     const message = `status error: ${result.error.reason}`;
     printReceiptLines(print, message);
-    return { messages: [message] };
+    return { messages: [message, ...warningsLine(ctx)] };
   }
 
   const statusText = formatStatus(result.value, ctx.stats.threadId);
   const statsText = formatCaptureStatsLine(ctx.stats);
   printReceiptLines(print, `${statusText}\n${statsText}`);
-  return { messages: [statusText, statsText] };
+  return { messages: [statusText, statsText, ...warningsLine(ctx)] };
+}
+
+function warningsLine(ctx: LhcCommandCtx): string[] {
+  const warnings = ctx.warnings;
+  if (warnings === undefined || warnings.count === 0) return [];
+  const plural = warnings.count === 1 ? "warning" : "warnings";
+  return [`${warnings.count} ${plural} since launch — see ${warnings.logPath}`];
 }
 
 export { formatReceiptLine, CAPTURE_NOT_READY_MESSAGE };

@@ -11,6 +11,15 @@ import type { InputState } from "./modal.js";
 
 export const PANEL_PROMPT = "long-horizon commands> ";
 export const PANEL_HINT = "Enter run · Esc close · ctrl-C detach";
+/** Shown while a command runs — Esc is dropped in executing mode. */
+export const PANEL_HINT_EXECUTING = "ctrl-C detach";
+
+/** Static progress line for swap commands during rebuild; null for non-swap commands. */
+export function swapCommandProgressLabel(commandLine: string): string | null {
+  const name = commandLine.trim().split(/\s+/)[0] ?? "";
+  if (name === "compact" || name === "prune") return `${name} — rebuilding…`;
+  return null;
+}
 
 /** Switch to the alternate screen (saves main screen + cursor). */
 export const ENTER_ALT_SCREEN = "\x1b[?1049h";
@@ -82,9 +91,21 @@ export function renderPanel(state: InputState, cols: number, rows: number): stri
   const lines: PanelLine[] = [];
   for (const row of state.panelRows) lines.push({ text: truncate(row) });
   if (state.panelRows.length > 0) lines.push({ text: "" });
-  lines.push({ text: truncate(PANEL_PROMPT + state.line), prompt: true });
-  lines.push({ text: "" });
-  lines.push({ text: truncate(PANEL_HINT), dim: true });
+
+  const swapProgress =
+    state.mode === "executing" ? swapCommandProgressLabel(state.line) : null;
+  if (swapProgress !== null) {
+    lines.push({ text: truncate(swapProgress) });
+    lines.push({ text: "" });
+    lines.push({ text: truncate(PANEL_HINT_EXECUTING), dim: true });
+  } else {
+    lines.push({ text: truncate(PANEL_PROMPT + state.line), prompt: true });
+    lines.push({ text: "" });
+    lines.push({
+      text: truncate(state.mode === "executing" ? PANEL_HINT_EXECUTING : PANEL_HINT),
+      dim: true,
+    });
+  }
 
   const blockWidth = Math.max(...lines.map((line) => line.text.length));
   const left = Math.max(1, Math.floor((safeCols - blockWidth) / 2) + 1);

@@ -56,6 +56,14 @@ export function resolveLeaderByte(raw: string | undefined, warn: (message: strin
 export type EscapeTracking =
   | { kind: "pending_esc" }
   | { kind: "csi"; params: string }
+  /**
+   * Passthrough-only: a numeric CSI prefix HELD (not yet forwarded) because it
+   * may be the kitty encoding of the leader — claude pushes kitty disambiguate
+   * mode, and kitty-protocol terminals (iTerm2, Warp, Ghostty) deliver ctrl-]
+   * as CSI 93;5u, never as raw 0x1d. The held bytes forward intact the moment
+   * the sequence classifies as anything else.
+   */
+  | { kind: "csi_candidate"; params: string }
   | { kind: "string_term" }
   | { kind: "string_term_esc" }
   | { kind: "legacy_mouse"; remaining: number };
@@ -170,6 +178,45 @@ function kittyKeyPressCode(params: string): number | null {
   return code;
 }
 
+/**
+ * Kitty keycode for a control byte: 0x01-0x1a is ctrl+letter (byte+96, the
+ * lowercase codepoint), 0x1b-0x1f is ctrl+punctuation (byte+64). Default
+ * leader ctrl-] (0x1d) is keycode 93.
+ */
+export function kittyLeaderCode(leaderByte: number): number {
+  return leaderByte <= 0x1a ? leaderByte + 96 : leaderByte + 64;
+}
+
+/**
+ * True when a CSI ...u parameter string is the kitty encoding of the leader:
+ * matching keycode, ctrl-only modifier (field 5, optional :event suffix),
+ * press or repeat — releases and ctrl+alt/other chords are not claimed.
+ */
+export function isKittyLeaderParams(params: string, leaderByte: number): boolean {
+  const fields = params.split(";");
+  const code = Number.parseInt(fields[0] ?? "", 10); // tolerates :alternate suffixes
+  if (!Number.isFinite(code) || code !== kittyLeaderCode(leaderByte)) return false;
+  const [modifierPart, eventPart] = (fields[1] ?? "").split(":");
+  if (Number.parseInt(modifierPart ?? "", 10) !== 5) return false;
+  const event = eventPart === undefined || eventPart === "" ? 1 : Number.parseInt(eventPart, 10);
+  return event === 1 || event === 2;
+}
+
+/**
+ * True when CSI ...~ parameters are the xterm modifyOtherKeys encoding of the
+ * leader: CSI 27;5;<code>~ (ctrl-only, press events only — this encoding has
+ * no releases). Observed live: tmux with extended-keys delivers ctrl-] this
+ * way (27;5;93~) rather than as kitty CSI-u.
+ */
+export function isModifyOtherKeysLeaderParams(params: string, leaderByte: number): boolean {
+  const fields = params.split(";");
+  if (fields.length !== 3) return false;
+  const code = fields[2] ?? "";
+  // Exact digits only: "93:3" or other suffixed third fields are NOT this key.
+  if (!/^\d+$/.test(code)) return false;
+  return fields[0] === "27" && fields[1] === "5" && Number.parseInt(code, 10) === kittyLeaderCode(leaderByte);
+}
+
 /** CSI finals for cursor/navigation keys — user keys, dropped while modal. */
 function isNavigationCsi(finalByte: number): boolean {
   // A/B/C/D arrows, E/F/H home-end variants, ~ (del/pgup/pgdn/…)
@@ -220,6 +267,7 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
       if (byte === 0x1b) return state;
       return { ...state, escape: null };
     case "csi":
+    case "csi_candidate":
       if (isCsiFinal(byte)) {
         let inPaste = state.inPaste;
         if (byte === 0x7e && mode.params === "200") inPaste = true;
@@ -241,18 +289,104 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
   }
 }
 
+function enterModal(state: InputState): StepOutcome {
+  return {
+    state: { ...state, mode: "modal", escape: null, line: "", heldSeq: [], panelRows: [] },
+    actions: [{ kind: "enter_modal" }],
+  };
+}
+
+/** Param chars a kitty key sequence can contain: digits, ';', ':'. */
+function isCandidateParamByte(byte: number): boolean {
+  return (byte >= 0x30 && byte <= 0x39) || byte === 0x3b || byte === 0x3a;
+}
+
+const CSI_CANDIDATE_PARAMS_CAP = 32;
+
+/**
+ * Passthrough escape handling. ESC and a following numeric CSI prefix are
+ * HELD until the sequence classifies: the kitty-encoded leader must be
+ * swallowed whole (a half-forwarded sequence would corrupt the child's
+ * parser), and everything else forwards intact the moment it is ruled out.
+ * A truly bare Esc (or a stalled candidate) is flushed by run.ts's ~50ms
+ * timer via resolveBareEsc — kitty terminals never send a bare ESC, so the
+ * delay only exists on legacy input.
+ */
+function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
+  const mode = state.escape;
+  if (mode === null) return { state, toPty: Buffer.from([byte]) };
+  const held = [...state.heldSeq, byte];
+
+  switch (mode.kind) {
+    case "pending_esc":
+      if (byte === 0x5b) {
+        return { state: { ...state, escape: { kind: "csi_candidate", params: "" }, heldSeq: held } };
+      }
+      if (isStringTermIntroducer(byte)) {
+        return { state: { ...state, escape: { kind: "string_term" }, heldSeq: [] }, toPty: Buffer.from(held) };
+      }
+      if (byte === 0x4d) {
+        return {
+          state: { ...state, escape: { kind: "legacy_mouse", remaining: 3 }, heldSeq: [] },
+          toPty: Buffer.from(held),
+        };
+      }
+      if (byte === 0x1b) {
+        // The held ESC (if still held — a timer flush may have sent it
+        // already) was a bare keypress: forward it; hold the new one.
+        return { state: { ...state, heldSeq: [0x1b] }, toPty: Buffer.from(state.heldSeq) };
+      }
+      // Bare Esc keypress followed by a normal byte: forward both. A leader
+      // here stays suppressed for this chunk (leader-again recovers).
+      return { state: { ...state, escape: null, heldSeq: [] }, toPty: Buffer.from(held) };
+
+    case "csi_candidate": {
+      if (isCsiFinal(byte)) {
+        const isLeaderKey =
+          (byte === 0x75 && isKittyLeaderParams(mode.params, state.leaderByte)) ||
+          (byte === 0x7e && isModifyOtherKeysLeaderParams(mode.params, state.leaderByte));
+        if (isLeaderKey && !state.inPaste) {
+          // Encoded leader press/repeat (kitty CSI-u or xterm modifyOtherKeys):
+          // enter modal, swallow the sequence — nothing of it reaches the child.
+          return enterModal({ ...state, escape: null, heldSeq: [] });
+        }
+        let inPaste = state.inPaste;
+        if (byte === 0x7e && mode.params === "200") inPaste = true;
+        if (byte === 0x7e && mode.params === "201") inPaste = false;
+        return { state: { ...state, escape: null, heldSeq: [], inPaste }, toPty: Buffer.from(held) };
+      }
+      if (isCandidateParamByte(byte) && mode.params.length < CSI_CANDIDATE_PARAMS_CAP) {
+        return {
+          state: {
+            ...state,
+            escape: { kind: "csi_candidate", params: mode.params + String.fromCharCode(byte) },
+            heldSeq: held,
+          },
+        };
+      }
+      // Not a kitty key shape (mouse '<', private '?', over-long, …): forward
+      // the held prefix and finish the sequence forwarded-as-it-comes.
+      return {
+        state: { ...state, escape: { kind: "csi", params: mode.params + String.fromCharCode(byte) }, heldSeq: [] },
+        toPty: Buffer.from(held),
+      };
+    }
+
+    default:
+      return { state: trackForwardedEscapeByte(byte, state), toPty: Buffer.from([byte]) };
+  }
+}
+
 function passthroughByte(byte: number, state: InputState): StepOutcome {
   if (state.escape !== null) {
-    return { state: trackForwardedEscapeByte(byte, state), toPty: Buffer.from([byte]) };
+    return passthroughEscapeByte(byte, state);
   }
   if (byte === 0x1b) {
-    return { state: { ...state, escape: { kind: "pending_esc" } }, toPty: Buffer.from([byte]) };
+    // Held, not forwarded: this may head the kitty-encoded leader.
+    return { state: { ...state, escape: { kind: "pending_esc" }, heldSeq: [0x1b] } };
   }
   if (!state.inPaste && byte === state.leaderByte) {
-    return {
-      state: { ...state, mode: "modal", line: "", heldSeq: [], panelRows: [] },
-      actions: [{ kind: "enter_modal" }],
-    };
+    return enterModal(state);
   }
   return { state, toPty: Buffer.from([byte]) };
 }
@@ -294,7 +428,15 @@ function submitModalLine(state: InputState): StepOutcome {
  * frozen screen (dropped); everything else is presumed protocol traffic —
  * terminal responses belong to the child, so the held bytes forward verbatim.
  */
-function classifyModalCsi(params: string, finalByte: number): { key: ModalKey; forward: boolean } {
+function classifyModalCsi(params: string, finalByte: number, state: InputState): { key: ModalKey; forward: boolean } {
+  const encodedLeader =
+    (finalByte === 0x75 && isKittyLeaderParams(params, state.leaderByte)) ||
+    (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, state.leaderByte));
+  if (encodedLeader && !state.inPaste) {
+    // Encoded leader-again: same cancel as raw 0x1d (dropped while executing,
+    // like the raw form — applyModalKey gates on mode).
+    return { key: { kind: "cancel" }, forward: false };
+  }
   if (finalByte === 0x75) {
     const key = kittyKeyPressCode(params);
     if (key === 13) return { key: { kind: "enter" }, forward: false };
@@ -370,7 +512,7 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
           state: { ...state, escape: { kind: "csi", params: mode.params + String.fromCharCode(byte) }, heldSeq: held },
         };
       }
-      const { key, forward } = classifyModalCsi(mode.params, byte);
+      const { key, forward } = classifyModalCsi(mode.params, byte, state);
       let inPaste = state.inPaste;
       if (byte === 0x7e && mode.params === "200") inPaste = true;
       if (byte === 0x7e && mode.params === "201") inPaste = false;
@@ -394,6 +536,10 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       if (remaining <= 0) return { state: { ...state, escape: null, heldSeq: [] } };
       return { state: { ...state, escape: { kind: "legacy_mouse", remaining }, heldSeq: held } };
     }
+
+    case "csi_candidate":
+      // Passthrough-only tracking state; modal builds its own held CSI. Drop.
+      return { state: { ...state, escape: null, heldSeq: [] } };
   }
 }
 
@@ -476,15 +622,35 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
  * → drop it (Esc does not detach; ctrl-C does). Null when nothing is pending
  * or the state has since moved on.
  */
-export function resolveBareEsc(state: InputState): { state: InputState; actions: InputAction[] } | null {
+export function resolveBareEsc(
+  state: InputState,
+): { state: InputState; actions: InputAction[]; toPty?: Buffer } | null {
+  if (state.mode === "passthrough") {
+    // Passthrough holds a bare ESC (and any numeric CSI prefix after it) in
+    // case it heads the kitty-encoded leader; a stall means the bytes were a
+    // real keypress, a slow terminal, or protocol traffic. Flush them to the
+    // child unchanged but RESUME tracking exactly as if they had streamed
+    // through unheld — a stalled paste-opener prefix (ESC[200) must still
+    // complete into inPaste when its ~ arrives, or a literal leader in the
+    // pasted body would open the modal and eat bytes.
+    if (state.heldSeq.length === 0) return null;
+    if (state.escape?.kind === "pending_esc") {
+      return { state: { ...state, heldSeq: [] }, actions: [], toPty: Buffer.from(state.heldSeq) };
+    }
+    if (state.escape?.kind === "csi_candidate") {
+      return {
+        state: { ...state, escape: { kind: "csi", params: state.escape.params }, heldSeq: [] },
+        actions: [],
+        toPty: Buffer.from(state.heldSeq),
+      };
+    }
+    return null;
+  }
   if (state.escape?.kind !== "pending_esc") return null;
   const cleared: InputState = { ...state, escape: null, heldSeq: [] };
   if (state.mode === "modal") {
     const cancelled = cancelModal(cleared);
     return { state: cancelled.state, actions: cancelled.actions ?? [] };
   }
-  if (state.mode === "executing") {
-    return { state: cleared, actions: [] };
-  }
-  return null;
+  return { state: cleared, actions: [] };
 }

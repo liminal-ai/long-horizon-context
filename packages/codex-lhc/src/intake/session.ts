@@ -256,7 +256,7 @@ export async function awaitDrainSettled(
   if (pending === 0) return;
 
   const pendingPart = pending === undefined ? "" : ` (${pending} derivation pending)`;
-  logError(`${DRAIN_NOT_SETTLED_MESSAGE}, work remains pending${pendingPart}`);
+  logError(`${DRAIN_NOT_SETTLED_MESSAGE}${pendingPart}`);
 }
 
 /** Start capture synchronously; `stop()` is always safe even before discovery resolves. */
@@ -433,10 +433,29 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (watcher !== undefined) watcher.stop();
       await batchQueue;
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
+        let drainTimedOut = false;
         await awaitDrainSettled(sdk, threadRef, {
           ...(deps.drainSettledCapMs === undefined ? {} : { capMs: deps.drainSettledCapMs }),
-          logError,
+          logError: (message) => {
+            drainTimedOut = true;
+            logError(message);
+          },
         });
+        if (drainTimedOut) {
+          try {
+            await sdk.intakeStream.messageEvents(threadRef, [
+              {
+                eventKind: "runtime_note",
+                idempotencyKey: `codex-lhc:drain-not-settled:${Date.now()}`,
+                actor: "system",
+                harness: "codex",
+                payload: { text: `[capture] ${DRAIN_NOT_SETTLED_MESSAGE}` },
+              },
+            ]);
+          } catch {
+            // Best-effort: the log line above already carries the event.
+          }
+        }
         const overview = await inspect.overview(threadRef);
         if (overview.ok) {
           stats.derivationsPending = overview.value.derivation.pending + overview.value.derivation.retrying;
