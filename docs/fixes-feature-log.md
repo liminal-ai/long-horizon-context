@@ -82,6 +82,8 @@ Gotchas the code reveals: active-branch extraction disabled (cross-file parent r
 - `src/io/session-directory-scanner.ts` + `session-file-writer.ts` — path format `sessions/YYYY/MM/DD/rollout-YYYY-MM-DDTHH-MM-SS-<threadId>.jsonl`
 Gotchas the code reveals: `function_call.arguments` is a JSON-encoded string, not an object; tool outputs may be plain strings or `ContentItem[]`; `event_msg` does not define turns — `turn_context` does; unknown record subtypes are preserved, not rejected; resume only works for clones in the default sessions tree.
 
+**DONE (2026-07-07):** Built as `packages/codex-lhc` — copy-adapted from `cc-lhc` with seam hygiene, not the anticipated shared-core second adapter (deliberate; extraction deferred until both hosts run). Three live-proven milestones: non-interactive capture (`codex exec`), SIGUSR2 compact+swap driver, and ctrl-] panel compact+swap. 220 tests green. Key discoveries folded into the host: synthetic-resume minimal rollout shape (session_meta + response_item messages; file placement alone registers); interactive `codex resume` confirms by child-alive when the rebuilt file does not grow; global `~/.codex/sessions` tree required a cwd filter after a concurrent-session capture bug. Inference lane is `claude -p` (Sonnet-no-thinking, concurrency 3). Control surface is cc-lhc's alt-screen leader-key panel (not the interim SIGUSR2 trigger). Onboard: `docs/onboard/06-host-codex-lhc.md`; package README carries known warts.
+
 ## Deferred / later
 
 ### 23. Dialog band between smooth and detailed

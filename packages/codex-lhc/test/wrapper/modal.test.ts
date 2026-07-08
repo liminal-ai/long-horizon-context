@@ -1,0 +1,455 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  createInputState,
+  DEFAULT_LEADER_BYTE,
+  finishExecuting,
+  forceResetInput,
+  type InputAction,
+  type InputState,
+  MODAL_ASCII_NOTE,
+  MODAL_HELP_LINE,
+  MODAL_UNKNOWN_PREFIX,
+  mapModalCommand,
+  processInputChunk,
+  resolveBareEsc,
+  resolveLeaderByte,
+  showReceipts,
+} from "../../src/wrapper/modal.js";
+import { OutputHold } from "../../src/wrapper/output-hold.js";
+
+const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
+
+interface FeedResult {
+  state: InputState;
+  pty: string;
+  actions: InputAction[];
+}
+
+function feed(state: InputState, ...chunks: Array<string | Buffer>): FeedResult {
+  let current = state;
+  let pty = "";
+  const actions: InputAction[] = [];
+  for (const chunk of chunks) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk, "latin1") : chunk;
+    const result = processInputChunk(buffer, current);
+    current = result.state;
+    pty += result.toPty.toString("latin1");
+    actions.push(...result.actions);
+  }
+  return { state: current, pty, actions };
+}
+
+function executed(actions: InputAction[]): string[] {
+  return actions.filter((action) => action.kind === "execute").map((action) => action.commandLine);
+}
+
+describe("passthrough", () => {
+  it("forwards ordinary bytes verbatim with no echo and no actions", () => {
+    const result = feed(createInputState(), "hello world\r", "\x7f\x03\x15");
+    expect(result.pty).toBe("hello world\r\x7f\x03\x15");
+    expect(result.actions).toEqual([]);
+    expect(result.state.mode).toBe("passthrough");
+  });
+
+  it("forwards escape sequences verbatim (CSI, OSC, DCS, legacy mouse)", () => {
+    const chunks = ["\x1b[1;5A", "\x1b]11;rgb:11/22/33\x07", "\x1bP>|term\x1b\\", "\x1bM abc".slice(0, 5)];
+    const result = feed(createInputState(), ...chunks);
+    expect(result.pty).toBe(chunks.join(""));
+    expect(result.actions).toEqual([]);
+  });
+
+  it("enters modal on the leader byte: byte withheld, fresh panel state", () => {
+    const result = feed(createInputState(), "ab", LEADER);
+    expect(result.pty).toBe("ab");
+    expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+    expect(result.state.mode).toBe("modal");
+    expect(result.state.line).toBe("");
+    expect(result.state.panelRows).toEqual([]);
+  });
+
+  it("keeps the leader literal inside a bracketed paste", () => {
+    const pasted = `\x1b[200~before\x1dafter\x1b[201~`;
+    const result = feed(createInputState(), pasted);
+    expect(result.pty).toBe(pasted);
+    expect(result.actions).toEqual([]);
+    expect(result.state.mode).toBe("passthrough");
+    const after = feed(result.state, LEADER);
+    expect(after.actions).toEqual([{ kind: "enter_modal" }]);
+  });
+
+  it("keeps the leader literal inside a paste split across chunks", () => {
+    const result = feed(createInputState(), "\x1b[200~pa", "st\x1de", "\x1b[201~");
+    expect(result.pty).toBe("\x1b[200~pa" + "st\x1de" + "\x1b[201~");
+    expect(result.actions).toEqual([]);
+  });
+
+  it("never opens modal on a leader byte inside an in-flight OSC response", () => {
+    const result = feed(createInputState(), "\x1b]11;fo", "\x1dob\x07");
+    expect(result.pty).toBe("\x1b]11;fo\x1dob\x07");
+    expect(result.actions).toEqual([]);
+    expect(result.state.escape).toBeNull();
+  });
+
+  it("never opens modal on a leader byte inside an in-flight CSI or DCS", () => {
+    const csi = feed(createInputState(), "\x1b[", "\x1d", "m");
+    expect(csi.pty).toBe("\x1b[\x1dm");
+    expect(csi.actions).toEqual([]);
+
+    const dcs = feed(createInputState(), "\x1bP1$r", "\x1d", "\x1b\\");
+    expect(dcs.pty).toBe("\x1bP1$r\x1d\x1b\\");
+    expect(dcs.actions).toEqual([]);
+  });
+
+  it("never opens modal on a leader byte inside a legacy mouse report", () => {
+    const result = feed(createInputState(), Buffer.from([0x1b, 0x4d, 0x20, 0x1d, 0x21]));
+    expect(result.pty).toBe("\x1bM \x1d!");
+    expect(result.actions).toEqual([]);
+  });
+
+  it("keeps a pending ESC across the chunk boundary; the next byte resolves it", () => {
+    const result = feed(createInputState(), Buffer.from([0x1b]));
+    expect(result.pty).toBe("\x1b");
+    expect(result.state.escape).toEqual({ kind: "pending_esc" });
+    const suppressed = feed(result.state, LEADER);
+    expect(suppressed.pty).toBe("\x1d");
+    expect(suppressed.actions).toEqual([]);
+    expect(suppressed.state.escape).toBeNull();
+    const recovered = feed(suppressed.state, LEADER);
+    expect(recovered.actions).toEqual([{ kind: "enter_modal" }]);
+  });
+
+  it("never opens modal on a leader inside a sequence split after its ESC", () => {
+    const osc = feed(createInputState(), "\x1b", "]11;fo\x1dob\x07");
+    expect(osc.pty).toBe("\x1b]11;fo\x1dob\x07");
+    expect(osc.actions).toEqual([]);
+
+    const paste = feed(createInputState(), "\x1b", "[200~ab\x1dcd", "\x1b[201~");
+    expect(paste.pty).toBe("\x1b[200~ab\x1dcd\x1b[201~");
+    expect(paste.actions).toEqual([]);
+    expect(paste.state.inPaste).toBe(false);
+
+    const csi = feed(createInputState(), "\x1b", "[38;5;\x1dm");
+    expect(csi.pty).toBe("\x1b[38;5;\x1dm");
+    expect(csi.actions).toEqual([]);
+
+    const mouse = feed(createInputState(), Buffer.from([0x1b]), Buffer.from([0x4d, 0x20, 0x1d, 0x21]));
+    expect(mouse.pty).toBe("\x1bM \x1d!");
+    expect(mouse.actions).toEqual([]);
+
+    const doubleEsc = feed(createInputState(), "\x1b", "\x1b", "[200~x\x1dy\x1b[201~");
+    expect(doubleEsc.pty).toBe("\x1b\x1b[200~x\x1dy\x1b[201~");
+    expect(doubleEsc.actions).toEqual([]);
+  });
+
+  it("opens modal on a leader in its own chunk right after a completed sequence", () => {
+    const result = feed(createInputState(), "\x1b[A", LEADER);
+    expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+  });
+
+  it("honors a custom leader byte", () => {
+    const state = createInputState(0x1f);
+    const ignored = feed(state, LEADER);
+    expect(ignored.pty).toBe("\x1d");
+    expect(ignored.actions).toEqual([]);
+    const entered = feed(ignored.state, Buffer.from([0x1f]));
+    expect(entered.actions).toEqual([{ kind: "enter_modal" }]);
+  });
+});
+
+describe("modal line editor", () => {
+  function openModal(): InputState {
+    return feed(createInputState(), LEADER).state;
+  }
+
+  it("builds the line from typed printables, executes a known command on Enter", () => {
+    const typed = feed(openModal(), "status");
+    expect(typed.state.line).toBe("status");
+    const result = feed(typed.state, "\r");
+    expect(result.pty).toBe("");
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+    expect(result.state.mode).toBe("executing");
+    expect(result.state.line).toBe("status");
+  });
+
+  it("passes the prune target through", () => {
+    const result = feed(openModal(), "prune 50000\r");
+    expect(executed(result.actions)).toEqual(["/lhc-prune 50000"]);
+  });
+
+  it("treats a malformed prune argument as unknown and stays modal", () => {
+    const result = feed(openModal(), "prune lots\r");
+    expect(executed(result.actions)).toEqual([]);
+    expect(result.state.panelRows).toEqual([`${MODAL_UNKNOWN_PREFIX}prune lots`, MODAL_HELP_LINE]);
+    expect(result.state.mode).toBe("modal");
+  });
+
+  it("shows help (with the ASCII-only note) as panel rows on help/? and stays modal", () => {
+    const result = feed(openModal(), "?\r");
+    expect(result.state.panelRows).toEqual([MODAL_HELP_LINE, MODAL_ASCII_NOTE]);
+    expect(result.state.mode).toBe("modal");
+    const then = feed(result.state, "stats\r");
+    expect(executed(then.actions)).toEqual(["/lhc-stats"]);
+    expect(then.state.panelRows).toEqual([]);
+  });
+
+  it("shows help for an unknown command, stays modal, and still executes next", () => {
+    const unknown = feed(openModal(), "bogus\r");
+    expect(unknown.state.panelRows[0]).toBe(`${MODAL_UNKNOWN_PREFIX}bogus`);
+    const result = feed(unknown.state, "status\r");
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+  });
+
+  it("cancels on Enter with an empty line", () => {
+    const result = feed(openModal(), "\r");
+    expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(result.state.mode).toBe("passthrough");
+  });
+
+  it("backspace edits the line", () => {
+    const edited = feed(openModal(), "stx\x7f");
+    expect(edited.state.line).toBe("st");
+    const result = feed(edited.state, "atus\r");
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+  });
+
+  it("backspace on an empty line does nothing", () => {
+    const result = feed(openModal(), "\x7f");
+    expect(result.state.mode).toBe("modal");
+    expect(result.state.line).toBe("");
+  });
+
+  it("ctrl-U kills the whole line", () => {
+    const result = feed(openModal(), "garbage\x15stats\r");
+    expect(executed(result.actions)).toEqual(["/lhc-stats"]);
+  });
+
+  it("a bare Esc followed by a byte cancels; the byte belongs to passthrough", () => {
+    const opened = feed(openModal(), "sta");
+    const result = feed(opened.state, Buffer.from([0x1b]), "x");
+    expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(result.pty).toBe("x");
+    expect(result.state.mode).toBe("passthrough");
+  });
+
+  it("a truly bare Esc resolves to cancel via resolveBareEsc (run.ts timer)", () => {
+    const opened = feed(openModal(), "sta", Buffer.from([0x1b]));
+    expect(opened.state.mode).toBe("modal");
+    expect(opened.state.escape).toEqual({ kind: "pending_esc" });
+    const resolved = resolveBareEsc(opened.state);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(resolved!.state.mode).toBe("passthrough");
+    expect(resolveBareEsc(resolved!.state)).toBeNull();
+  });
+
+  it("a split escape sequence while modal is never misread as cancel", () => {
+    const arrow = feed(openModal(), "\x1b", "[A");
+    expect(arrow.state.mode).toBe("modal");
+    expect(arrow.pty).toBe("");
+    expect(arrow.actions).toEqual([]);
+    const kitty = feed(openModal(), "status", "\x1b", "[13;1u");
+    expect(executed(kitty.actions)).toEqual(["/lhc-status"]);
+    const osc = feed(openModal(), "\x1b", "]11;rgb:aa\x07");
+    expect(osc.pty).toBe("\x1b]11;rgb:aa\x07");
+    expect(osc.state.mode).toBe("modal");
+  });
+
+  it("cancels on ctrl-C and on leader-again", () => {
+    const viaCtrlC = feed(openModal(), "\x03");
+    expect(viaCtrlC.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(viaCtrlC.state.mode).toBe("passthrough");
+
+    const viaLeader = feed(openModal(), LEADER);
+    expect(viaLeader.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(viaLeader.state.mode).toBe("passthrough");
+  });
+
+  it("dismissal resets the panel state entirely (rows and line)", () => {
+    const result = feed(openModal(), "bogus\r", "\x03");
+    expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(result.state.mode).toBe("passthrough");
+    expect(result.state.panelRows).toEqual([]);
+    expect(result.state.line).toBe("");
+  });
+
+  it("handles kitty CSI-u Enter/Esc/Backspace; ignores releases", () => {
+    const enter = feed(openModal(), "status", "\x1b[13;1u");
+    expect(executed(enter.actions)).toEqual(["/lhc-status"]);
+
+    const esc = feed(openModal(), "sta", "\x1b[27;1u");
+    expect(esc.actions).toEqual([{ kind: "exit_modal" }]);
+
+    const backspace = feed(openModal(), "stx", "\x1b[127;1u", "atus", "\x1b[13;1u");
+    expect(executed(backspace.actions)).toEqual(["/lhc-status"]);
+
+    const release = feed(openModal(), "status", "\x1b[13;1:3u");
+    expect(executed(release.actions)).toEqual([]);
+    expect(release.state.mode).toBe("modal");
+  });
+
+  it("drops navigation keys and mouse reports while modal", () => {
+    const result = feed(openModal(), "\x1b[A", "\x1b[3~", "\x1b[<35;10;5M", "status\r");
+    expect(result.pty).toBe("");
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+  });
+
+  it("forwards protocol CSI and string responses to the pty while modal", () => {
+    const result = feed(openModal(), "\x1b[24;80R", "\x1b]11;rgb:aa/bb/cc\x07");
+    expect(result.pty).toBe("\x1b[24;80R\x1b]11;rgb:aa/bb/cc\x07");
+    expect(result.state.mode).toBe("modal");
+  });
+
+  it("appends pasted printables, ignores pasted newlines and control bytes", () => {
+    const result = feed(openModal(), "\x1b[200~sta\rtus\x1d\x1b[201~", "\r");
+    expect(result.pty).toBe("");
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+  });
+
+  it("ignores non-ASCII bytes in the editor (line stays ASCII)", () => {
+    const chunk = Buffer.concat([Buffer.from("sta"), Buffer.from([0xc3, 0xa9]), Buffer.from("tus\r")]);
+    const result = feed(openModal(), chunk);
+    expect(executed(result.actions)).toEqual(["/lhc-status"]);
+  });
+});
+
+describe("executing mode", () => {
+  function startExecuting(): InputState {
+    const opened = feed(createInputState(), LEADER, "status\r");
+    expect(opened.state.mode).toBe("executing");
+    return opened.state;
+  }
+
+  it("drops user input while a command runs (Esc and leader included)", () => {
+    const result = feed(startExecuting(), "abc\r", LEADER, Buffer.from([0x1b]), "q");
+    expect(result.pty).toBe("");
+    expect(result.actions).toEqual([]);
+    expect(result.state.mode).toBe("executing");
+    expect(result.state.line).toBe("status");
+  });
+
+  it("ctrl-C while executing DETACHES: modal leaves, output resumes, command unaffected", () => {
+    const detached = feed(startExecuting(), "\x03");
+    expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(detached.state.mode).toBe("passthrough");
+    const after = feed(detached.state, "hello");
+    expect(after.pty).toBe("hello");
+    expect(forceResetInput(after.state)).toBe(after.state);
+  });
+
+  it("resolveBareEsc while executing clears the pending ESC without detaching", () => {
+    const pending = feed(startExecuting(), Buffer.from([0x1b]));
+    expect(pending.state.escape).toEqual({ kind: "pending_esc" });
+    const resolved = resolveBareEsc(pending.state);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.actions).toEqual([]);
+    expect(resolved!.state.mode).toBe("executing");
+    expect(resolved!.state.escape).toBeNull();
+  });
+
+  it("still forwards protocol responses while executing", () => {
+    const result = feed(startExecuting(), "\x1b[24;80R");
+    expect(result.pty).toBe("\x1b[24;80R");
+  });
+
+  it("finishExecuting restores a fresh passthrough state", () => {
+    const finished = finishExecuting(startExecuting());
+    expect(finished.mode).toBe("passthrough");
+    expect(finished.line).toBe("");
+    expect(finished.panelRows).toEqual([]);
+    const after = feed(finished, "x");
+    expect(after.pty).toBe("x");
+  });
+
+  it("showReceipts returns to modal with receipt rows; one keypress dismisses", () => {
+    const shown = showReceipts(startExecuting(), ["line one\nline two", "three"]);
+    expect(shown.mode).toBe("modal");
+    expect(shown.line).toBe("");
+    expect(shown.panelRows).toEqual(["line one", "line two", "three"]);
+    const dismissed = feed(shown, "\x03");
+    expect(dismissed.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(dismissed.state.mode).toBe("passthrough");
+    expect(dismissed.state.panelRows).toEqual([]);
+  });
+
+  it("forceResetInput is a no-op in passthrough and a reset elsewhere", () => {
+    const passthrough = createInputState();
+    expect(forceResetInput(passthrough)).toBe(passthrough);
+    const executing = forceResetInput(startExecuting());
+    expect(executing.mode).toBe("passthrough");
+  });
+});
+
+describe("mapModalCommand", () => {
+  it("maps the surface", () => {
+    expect(mapModalCommand("status")).toBe("/lhc-status");
+    expect(mapModalCommand("stats")).toBe("/lhc-stats");
+    expect(mapModalCommand("compact")).toBe("/lhc-compact");
+    expect(mapModalCommand("prune")).toBe("/lhc-prune");
+    expect(mapModalCommand("prune 1234")).toBe("/lhc-prune 1234");
+    expect(mapModalCommand("status extra")).toBeNull();
+    expect(mapModalCommand("prune 12 34")).toBeNull();
+    expect(mapModalCommand("lhc-status")).toBeNull();
+    expect(mapModalCommand("")).toBeNull();
+  });
+});
+
+describe("resolveLeaderByte", () => {
+  it("defaults to ctrl-]", () => {
+    expect(resolveLeaderByte(undefined)).toBe(0x1d);
+    expect(resolveLeaderByte("")).toBe(0x1d);
+  });
+
+  it("accepts hex, caret notation, and a literal control char", () => {
+    expect(resolveLeaderByte("0x1f")).toBe(0x1f);
+    expect(resolveLeaderByte("^_")).toBe(0x1f);
+    expect(resolveLeaderByte("\x1f")).toBe(0x1f);
+  });
+
+  it("rejects printables and forbidden control bytes, warns, and falls back", () => {
+    for (const raw of ["g", "^G", "0x1b", "^M", "^C", "0x00", "leader"]) {
+      const warnings: string[] = [];
+      expect(resolveLeaderByte(raw, (message) => warnings.push(message))).toBe(0x1d);
+      expect(warnings).toHaveLength(1);
+    }
+  });
+});
+
+describe("OutputHold", () => {
+  it("writes through when not holding, holds and flushes in order", () => {
+    const written: string[] = [];
+    const hold = new OutputHold(
+      1024,
+      (data) => written.push(data),
+      () => {},
+    );
+    hold.feed("a");
+    hold.hold();
+    hold.feed("b");
+    hold.feed("c");
+    expect(written).toEqual(["a"]);
+    hold.flush();
+    expect(written).toEqual(["a", "bc"]);
+    hold.feed("d");
+    expect(written).toEqual(["a", "bc", "d"]);
+  });
+
+  it("fires onOverflow past the cap; flush releases everything", () => {
+    const written: string[] = [];
+    let overflows = 0;
+    const hold: OutputHold = new OutputHold(
+      5,
+      (data) => written.push(data),
+      () => {
+        overflows += 1;
+        hold.flush();
+      },
+    );
+    hold.hold();
+    hold.feed("123");
+    hold.feed("456");
+    expect(overflows).toBe(1);
+    expect(written).toEqual(["123456"]);
+    expect(hold.holding).toBe(false);
+  });
+});
