@@ -161,7 +161,7 @@ function grew(before: RolloutGrowthStat | null, after: RolloutGrowthStat | null,
   return after.size > before.size || after.mtimeMs > before.mtimeMs || after.lineCount > lineCountBaseline;
 }
 
-async function terminateChild(
+export async function terminateChild(
   child: SwapChildHandle,
   markSwapKill: ((child: SwapChildHandle) => void) | undefined,
   sleep: (ms: number) => Promise<void>,

@@ -31,7 +31,14 @@ import {
 } from "./modal.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
-import { executeSessionSwap, type ChildExit, type SwapChildControl, type SwapChildHandle } from "./session-swap.js";
+import {
+  DEFAULT_SWAP_TERMINATE_GRACE_MS,
+  executeSessionSwap,
+  terminateChild,
+  type ChildExit,
+  type SwapChildControl,
+  type SwapChildHandle,
+} from "./session-swap.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
@@ -408,6 +415,16 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         killAllInferenceChildren();
       }
       if (pendingExitReport !== undefined) {
+        if (currentChild !== undefined && currentChild.isAlive()) {
+          await terminateChild(
+            currentChild,
+            (child) => {
+              swapKilled.add(child as SpawnedCodexChild);
+            },
+            (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+            DEFAULT_SWAP_TERMINATE_GRACE_MS,
+          );
+        }
         for (const line of pendingExitReport) {
           stderr.write(`${formatReceiptLine(line)}\n`);
         }
@@ -506,11 +523,13 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
     const flushPtyStdinBuffer = (child: SpawnedCodexChild): void => {
       if (ptyStdinBuffer.length === 0) return;
+      const pending = ptyStdinBuffer;
       if (child.isAlive()) {
         try {
-          child.pty.write(ptyStdinBuffer);
-        } catch {
-          // isAlive-then-write race: child exited between check and write.
+          child.pty.write(pending);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          wrapperLog.warn(`stdin flush to replacement failed; ${pending.length} bytes dropped: ${detail}`);
         }
       }
       ptyStdinBuffer = Buffer.alloc(0);
@@ -524,7 +543,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       if (currentChild !== undefined && currentChild.isAlive()) {
         try {
           currentChild.pty.write(data);
-        } catch {
+        } catch (err) {
+          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          const detail = err instanceof Error ? err.message : String(err);
+          wrapperLog.warn(`pty write failed; ${chunk.length} bytes buffered: ${detail}`);
           bufferPtyStdin(data);
         }
         return;

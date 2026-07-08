@@ -20,6 +20,7 @@ import {
   resizePty,
   run,
   type PtySpawn,
+  type RunChildControl,
 } from "../../src/wrapper/run.js";
 import { executeSessionSwap } from "../../src/wrapper/session-swap.js";
 import { createWrapperLog } from "../../src/wrapper/wrapper-log.js";
@@ -501,6 +502,99 @@ describe("run", () => {
     stdin.end();
   }, 20_000);
 
+  it("logs and buffers stdin when pty.write throws in passthrough", async () => {
+    const { lhcHome } = tempEnvPair();
+    const logPath = join(lhcHome, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+    process.env.CODEX_LHC_FAKE_MODE = "sleep";
+    process.env.CODEX_LHC_FAKE_SLEEP_MS = "120000";
+    const stdout = fakeStdout(80, 24);
+    const stderr = fakeStderr();
+    const stdin = fakeStdin();
+    let throwOnWrite = true;
+
+    const spawnPty: PtySpawn = (file, args, options) => {
+      const pty = spawnFakeCodex(file, args, options);
+      const origWrite = pty.write.bind(pty);
+      pty.write = (data: string | Buffer) => {
+        if (throwOnWrite) throw new Error("pty write probe");
+        return origWrite(data);
+      };
+      return pty;
+    };
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty,
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog,
+      noCapture: true,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdin.write("probe-bytes");
+    await vi.waitFor(async () =>
+      (await readFile(logPath, "utf8")).includes("pty write failed; 11 bytes buffered: pty write probe"),
+    );
+    stdin.end();
+  }, 10_000);
+
+  it("logs when stdin flush to replacement throws", async () => {
+    const { lhcHome, codexHome } = tempEnvPair();
+    const logPath = join(lhcHome, "wrapper.log");
+    const wrapperLog = createWrapperLog(logPath);
+    process.env.CODEX_LHC_FAKE_MODE = "sleep";
+    process.env.CODEX_LHC_FAKE_SLEEP_MS = "120000";
+    const stdout = fakeStdout(80, 24);
+    const stderr = fakeStderr();
+    const stdin = fakeStdin();
+    let control: RunChildControl | undefined;
+
+    void run([], {
+      codexBin: process.execPath,
+      spawnPty: (file, args, options) => {
+        writeInstantRollout(codexHome);
+        return spawnFakeCodex(file, args, options);
+      },
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog,
+      noInference: true,
+      captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+      onChildControl: (ctrl) => {
+        control = ctrl;
+      },
+      dispatchLhcCommand: async (_line, ctx) => {
+        ctx.swap.onBeforeRespawn?.();
+        stdin.write("flush-probe");
+        expect(control).toBeDefined();
+        const origSpawn = control!.spawnReplacement.bind(control);
+        control!.spawnReplacement = (argv) => {
+          const child = origSpawn(argv);
+          child.pty.write = () => {
+            throw new Error("flush probe");
+          };
+          return child;
+        };
+        control!.spawnReplacement([]);
+        return { messages: [], swapSettle: { confirmed: true, dismissedForRespawn: true } };
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    stdin.write("compact\r");
+    await vi.waitFor(async () =>
+      (await readFile(logPath, "utf8")).includes(
+        "stdin flush to replacement failed; 11 bytes dropped: flush probe",
+      ),
+    );
+    stdin.end();
+  }, 10_000);
+
   it("dedupes replayed rollout content on a second run against the same thread", async () => {
     const { codexHome } = tempEnvPair();
     const stdout = fakeStdout(80, 24);
@@ -856,8 +950,7 @@ describe("modal integration", () => {
     const stdout = fakeStdout(80, 24);
     const stderr = fakeStderr();
     const stdin = fakeStdin();
-    const errLines: string[] = [];
-    stderr.on("data", (chunk: Buffer) => errLines.push(chunk.toString()));
+    const timeline: string[] = [];
 
     const exitPromise = run([], {
       codexBin: process.execPath,
@@ -870,6 +963,18 @@ describe("modal integration", () => {
       stderr,
       noInference: true,
       captureDeps: { discoverDeps: { codexHome, pollMs: 20 } },
+      onChildControl: (ctrl) => {
+        const child = ctrl.getCurrent();
+        expect(child.isAlive()).toBe(true);
+        const origKill = child.kill.bind(child);
+        child.kill = (signal) => {
+          timeline.push(`child-kill:${signal}`);
+          origKill(signal);
+        };
+        void child.waitForExit().then(() => {
+          timeline.push("child-exited");
+        });
+      },
       dispatchLhcCommand: async (_line, ctx) => {
         ctx.swap.onBeforeRespawn?.();
         return {
@@ -884,6 +989,15 @@ describe("modal integration", () => {
       },
     });
 
+    const origStderrWrite = stderr.write.bind(stderr);
+    vi.spyOn(stderr, "write").mockImplementation((chunk, ...args) => {
+      const text = String(chunk);
+      if (text.includes(formatReceiptLine("swap recovery failed"))) {
+        timeline.push("exit-report-written");
+      }
+      return origStderrWrite(chunk, ...args);
+    });
+
     await new Promise((resolve) => setTimeout(resolve, 50));
     stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
     stdin.write("compact\r");
@@ -891,7 +1005,11 @@ describe("modal integration", () => {
     const exitCode = await exitPromise;
 
     expect(exitCode).toBe(1);
-    expect(errLines.some((line) => line.includes(formatReceiptLine("swap recovery failed")))).toBe(true);
+    expect(timeline.some((entry) => entry.startsWith("child-kill:"))).toBe(true);
+    const childExitIdx = timeline.indexOf("child-exited");
+    const reportIdx = timeline.indexOf("exit-report-written");
+    expect(childExitIdx).toBeGreaterThan(-1);
+    expect(reportIdx).toBeGreaterThan(childExitIdx);
   }, 10_000);
 
   it("shows recovery failure in the panel when dismissal has not happened", async () => {
