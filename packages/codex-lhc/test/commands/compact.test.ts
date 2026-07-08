@@ -221,6 +221,64 @@ describe("runCompactCommand", () => {
     await session.stop();
   });
 
+  it("routes recovery_failed after dismissal through onSwapFailureAfterDismiss with terminalExit", async () => {
+    const { codexHome } = tempEnv();
+    const rollout = writeBasicRollout(codexHome);
+    const { session } = await startCapturedSession(codexHome, rollout);
+    const swap = new FakeSwapChildControl();
+    const onSwapFailureAfterDismiss = vi.fn(
+      (failureReceipt: string, outcomeMessages: string[], options?: { terminalExit?: boolean }) => {
+        expect(options?.terminalExit).toBe(true);
+        return {
+          confirmed: false,
+          dismissedForRespawn: true,
+          failureSettled: true,
+          exitReport: [...outcomeMessages, failureReceipt],
+        };
+      },
+    );
+    const executeSessionSwap = vi.fn(async (input: { onBeforeRespawn?: () => void }) => {
+      input.onBeforeRespawn?.();
+      return {
+        ok: false,
+        phase: "recovery",
+        recovered: false,
+        exitCode: 1,
+        error: new Error("recovery spawn failed"),
+        rebuilt: {
+          sessionId: "new",
+          rolloutPath: "/tmp/new.jsonl",
+          lineCount: 1,
+          replayedPrefixLines: 1,
+        },
+        receipt: {
+          ok: false,
+          status: "recovery_failed",
+          oldSessionId: "old",
+          messages: ["swap recovery failed"],
+        },
+      };
+    }) as typeof import("../../src/wrapper/session-swap.js").executeSessionSwap;
+
+    const result = await runCompactCommand(
+      buildCommandCtx(session, swap, {
+        swap: {
+          child: swap,
+          markSwapKill: () => {},
+          executeSessionSwap,
+          onSwapFailureAfterDismiss,
+        },
+      }),
+    );
+
+    expect(onSwapFailureAfterDismiss).toHaveBeenCalledOnce();
+    expect(result.wrapperExitCode).toBe(1);
+    expect(result.swapSettle?.exitReport).toEqual(
+      expect.arrayContaining(["swap recovery failed"]),
+    );
+    await session.stop();
+  });
+
   it("keeps the wrapper alive when the old child exits during swap", async () => {
     tempEnv();
     process.env.CODEX_LHC_FAKE_MODE = "sleep";

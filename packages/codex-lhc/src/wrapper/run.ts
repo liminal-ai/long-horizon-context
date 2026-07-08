@@ -2,6 +2,7 @@ import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
   CAPTURE_NOT_READY_MESSAGE,
+  formatReceiptLine,
   type LhcCommandCtx,
   type SwapSettleInfo,
 } from "../commands/context.js";
@@ -209,6 +210,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const swapKilled = new WeakSet<SpawnedCodexChild>();
   const commandGuard = new CommandInFlightGuard();
   let dismissedModalGeneration = 0;
+  /** While true, stdin is buffered instead of forwarded to the terminating child. */
+  let swapRespawnPending = false;
 
   const altScreen = createAltScreenGuard((data) => stdout.write(data));
 
@@ -275,6 +278,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   };
 
   const dismissModalForRespawn = (): void => {
+    swapRespawnPending = true;
     dismissedModalGeneration = modalGeneration;
     inputState = finishExecuting(inputState);
     altScreen.leave();
@@ -311,12 +315,20 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         markSwapKill: (child) => childControl!.markSwapKill(child as SpawnedCodexChild),
         executeSessionSwap: options.testExecuteSessionSwap ?? executeSessionSwap,
         onBeforeRespawn: dismissModalForRespawn,
-        onSwapFailureAfterDismiss: (failureReceipt, outcomeMessages) => {
+        onSwapFailureAfterDismiss: (failureReceipt, outcomeMessages, options) => {
           const idlePassthrough =
             inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
           if (!idlePassthrough) {
             wrapperLog.warn(`swap failed after panel dismissal (user panel active): ${failureReceipt}`);
             return { confirmed: false, dismissedForRespawn: true, failureSettled: true };
+          }
+          if (options?.terminalExit === true) {
+            return {
+              confirmed: false,
+              dismissedForRespawn: true,
+              failureSettled: true,
+              exitReport: [...outcomeMessages, failureReceipt],
+            };
           }
           outputHold.hold();
           altScreen.enter();
@@ -332,6 +344,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         lineageDbPath: defaultLineageDbPath(),
       },
       print: () => {},
+      log: (message) => {
+        wrapperLog.info(message);
+      },
       logError: (message) => {
         wrapperLog.warn(message);
       },
@@ -367,6 +382,8 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   process.on("SIGHUP", forwardSignal);
 
   return new Promise((resolve) => {
+    let pendingExitReport: string[] | undefined;
+
     const teardownAndExit = async (exitCode: number): Promise<void> => {
       if (exited) return;
       exited = true;
@@ -382,12 +399,19 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       process.removeListener("SIGINT", forwardSignal);
       process.removeListener("SIGTERM", forwardSignal);
       process.removeListener("SIGHUP", forwardSignal);
+      process.removeListener("exit", cleanup);
       altScreen.leave();
       outputHold.flush();
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
         printExitStats();
         killAllInferenceChildren();
+      }
+      if (pendingExitReport !== undefined) {
+        for (const line of pendingExitReport) {
+          stderr.write(`${formatReceiptLine(line)}\n`);
+        }
+        pendingExitReport = undefined;
       }
       cleanup();
       resolve(exitCode);
@@ -422,6 +446,9 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       void commandDispatch(commandLine, ctx)
         .then((result) => {
           if (result.captureSession !== undefined) captureSession = result.captureSession;
+          if (result.swapSettle?.exitReport !== undefined) {
+            pendingExitReport = result.swapSettle.exitReport;
+          }
           if (result.swapSettle?.failurePanelShown === true || result.swapSettle?.failureSettled === true) {
             if (result.wrapperExitCode !== undefined) {
               void teardownAndExit(result.wrapperExitCode);
@@ -446,6 +473,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
           settleCommand([`command error: ${message}`]);
         })
         .finally(() => {
+          swapRespawnPending = false;
           commandGuard.release();
         });
     };
@@ -478,13 +506,27 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
     const flushPtyStdinBuffer = (child: SpawnedCodexChild): void => {
       if (ptyStdinBuffer.length === 0) return;
-      if (child.isAlive()) child.pty.write(ptyStdinBuffer);
+      if (child.isAlive()) {
+        try {
+          child.pty.write(ptyStdinBuffer);
+        } catch {
+          // isAlive-then-write race: child exited between check and write.
+        }
+      }
       ptyStdinBuffer = Buffer.alloc(0);
     };
 
     const writeToChildPty = (data: Buffer | string): void => {
+      if (swapRespawnPending) {
+        bufferPtyStdin(data);
+        return;
+      }
       if (currentChild !== undefined && currentChild.isAlive()) {
-        currentChild.pty.write(data);
+        try {
+          currentChild.pty.write(data);
+        } catch {
+          bufferPtyStdin(data);
+        }
         return;
       }
       bufferPtyStdin(data);
@@ -551,6 +593,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
           void onExit(replacement, exit);
         },
       });
+      swapRespawnPending = false;
       flushPtyStdinBuffer(currentChild);
       return currentChild;
     };

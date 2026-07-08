@@ -476,12 +476,12 @@ describe("executeSessionSwap", () => {
     const old = await captureOldThread(codexHome, oldRollout);
     const control = new FakeChildControl(codexHome);
     control.appendOnResume = false;
-    control.resumeSleepMs = "10";
-    let spawnCalls = 0;
+    control.resumeSleepMs = "5";
     const originalSpawn = control.spawn.bind(control);
     control.spawn = async (argv: string[]) => {
-      spawnCalls += 1;
-      if (spawnCalls === 2) throw new Error("recovery spawn failed");
+      const resumeIdx = argv.indexOf("resume");
+      const sessionId = resumeIdx >= 0 ? argv[resumeIdx + 1] : undefined;
+      if (sessionId === OLD_SESSION_ID) throw new Error("recovery spawn failed");
       return originalSpawn(argv);
     };
 
@@ -496,8 +496,8 @@ describe("executeSessionSwap", () => {
       codexHome,
       noInference: true,
       terminateGraceMs: 20,
-      confirmWindowMs: 80,
-      confirmPollMs: 20,
+      confirmWindowMs: 150,
+      confirmPollMs: 50,
       logError: () => {},
     });
 
@@ -506,5 +506,56 @@ describe("executeSessionSwap", () => {
     expect(result.phase).toBe("recovery");
     expect(result.exitCode).toBe(1);
     expect(result.receipt.messages.at(-1)).toContain("codex resume");
+  });
+
+  it("passes log hooks through to post-swap direct capture", async () => {
+    const { codexHome } = tempEnv();
+    const oldRollout = writeOldRollout(codexHome);
+    const old = await captureOldThread(codexHome, oldRollout);
+    const control = new FakeChildControl(codexHome);
+    const captureErrors: string[] = [];
+    const consoleErrors: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      consoleErrors.push(args.map(String).join(" "));
+    };
+
+    try {
+      const result = await executeSessionSwap({
+        session: old.session,
+        threadRef: old.threadRef,
+        view: old.view,
+        sourceRolloutPath: oldRollout,
+        sourceSessionId: OLD_SESSION_ID,
+        op: "compact",
+        child: control,
+        codexHome,
+        noInference: true,
+        terminateGraceMs: 20,
+        confirmWindowMs: 1_000,
+        confirmPollMs: 25,
+        log: () => {},
+        logError: (message) => captureErrors.push(message),
+        startCaptureSessionFn: (captureInput) => {
+          if (captureInput === undefined) throw new Error("expected capture input");
+          captureInput.logError?.("post-swap capture probe");
+          return startCaptureSession({
+            ...captureInput,
+            knownRolloutPath: captureInput.knownRolloutPath!,
+          });
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(captureErrors).toContain("post-swap capture probe");
+      expect(consoleErrors).toEqual([]);
+      if (result.ok) {
+        await result.captureSession.stop();
+        if (result.child.isAlive()) result.child.kill("SIGKILL");
+        await result.child.waitForExit().catch(() => {});
+      }
+    } finally {
+      console.error = origConsoleError;
+    }
   });
 });

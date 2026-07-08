@@ -239,6 +239,8 @@ function startDirectCapture(
     knownRolloutPath: rolloutPath,
     replayedPrefixLines,
     continueCapture,
+    ...(input.log === undefined ? {} : { log: input.log }),
+    ...(input.logError === undefined ? {} : { logError: input.logError }),
   });
 }
 
