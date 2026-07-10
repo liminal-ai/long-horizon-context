@@ -16,6 +16,10 @@ Tracking fixes, tighten-ups, and feature work on the road to v1 (loosely) of lhc
 
 ## Architecture
 
+### 34. Thread manager + viewer
+**What:** Thread manager and viewer interface, legible to agents and humans, accessible from hosts (pi-lhc, cc-lhc, codex-lhc, t3code) for selecting threads or thread views to resume. Probably a small feature epic.
+**Origin:** Lee, 2026-07-10, after a thread lookup burned multiple turns of registry/schema spelunking.
+
 ### 32. Offline batch repair/refinement lane
 **What:** A slow, scheduled (offline/overnight) derivation pass that walks whole transcripts with a big model at batch-API pricing (~50% off) and re-derives quality problems live lanes can't fix. First target: voice-transcription noise — Wispr garbles like ".l8c"/"Sequel Light"/"Daria" survive live smoothing (single-prompt scope can't infer referents) and then get preserved as vocabulary by faithful compressors (observed in the 2026-07-05 375k compact: garbles carried into brief/detailed bands verbatim). Batch scope fixes this: read the whole thread first, build the thread's glossary, then normalize garbles against it — grounded inference instead of guessing. Re-derivation cascades ride the existing queue (fixed smoothed prompt → re-derive consuming turn compression → chunk brief follows).
 **Constraint (bake in from day one):** repairs write to the derivation store whenever, but swap into the *served* view only at rebuild boundaries (compact/rehydrate/prune-restart) — same rule as memory-index injection — or the nightly sweep torches the prefix cache every morning.
