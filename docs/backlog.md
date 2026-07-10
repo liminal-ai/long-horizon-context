@@ -1,11 +1,20 @@
-# Fixes & Feature Log (legible alternate)
+# Backlog
 
-Tracking fixes, tighten-ups, and feature work on the road to v1.
+Fixes, tighten-ups, and feature work on the road to v1.
 
 
 
 
 ## Architecture
+
+### 35. SDK hygiene slice from the July code review
+
+**Problem:** A code-review pass over the SDK core found the version-fenced work-completion logic — the most correctness-critical code in the system — existing in two copies: one live, one dead with zero call sites, and the copies have already drifted. Three smaller findings ride along: the write-transaction helper leaves error-wrapping to caller convention instead of guaranteeing it; compact stamps its snapshot timestamp from the wall clock instead of the injectable clock seam prune uses; and compact's isolation from concurrent intake is logical rather than lock-level, which deserves a comment so future readers don't assume SQLite serializes it.
+
+**Solution:** One small slice: delete the dead completion/failure duplicate from the work queue; centralize error wrapping inside the transaction helper so infra failures always surface through the result contract; thread the clock seam into compact; add the isolation comment.
+
+**Status:** Not started. All four verified against code 2026-07-10; the dead copy is the only correctness hazard, the rest are riders.
+
 
 ### 34. Thread manager + viewer
 
