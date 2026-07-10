@@ -219,6 +219,22 @@ export interface SelectionConfig {
   percentages: { full: number; smooth: number; detailed: number; brief: number };
 }
 
+// Message kinds that can anchor a host session rebuild past the compact point.
+// Excludes runtime_note (and any future non-mappable kinds). Shared with the
+// first-kept-message lookup in compact-compute so "empty tail" means the same
+// thing in both places.
+export const PI_MAPPABLE_MESSAGE_KINDS = [
+  "user_prompt",
+  "assistant_text",
+  "assistant_thinking",
+  "tool_call",
+  "tool_result",
+  "model_change",
+  "thinking_level_change",
+] as const;
+
+const PI_MAPPABLE_KIND_SET: ReadonlySet<string> = new Set(PI_MAPPABLE_MESSAGE_KINDS);
+
 function straddlingTurnStaysInFull(
   fullSideTokens: number,
   turnTokens: number,
@@ -309,8 +325,13 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       .filter((message) => candidate.closedAt !== null && message.order > candidate.closedAt)
       .reduce((total, message) => total + message.tokenEstimate, 0);
     const fullSideTokens = Math.max(0, Math.min(turnTokens, fullBudget - newerTokens));
+    // Empty = no mappable live messages past the candidate — runtime_note alone
+    // does not count as a rebuildable tail.
     const evictionWouldEmptyFull = !messages.some(
-      (message) => candidate.closedAt !== null && message.order > candidate.closedAt,
+      (message) =>
+        candidate.closedAt !== null &&
+        message.order > candidate.closedAt &&
+        PI_MAPPABLE_KIND_SET.has(message.kind),
     );
     if (straddlingTurnStaysInFull(fullSideTokens, turnTokens, evictionWouldEmptyFull)) {
       return previousClose(candidate);

@@ -36,12 +36,7 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
-import {
-  compactStopped,
-  compactWouldWriteSnapshot,
-  computeArrangement,
-  readStoredCompactPoint,
-} from "./internal/compact-compute.js";
+import { compactStopped, computeArrangement } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
@@ -486,6 +481,12 @@ function buildRenderedBands(
   });
 }
 
+// Preview helper for wouldProduceBands: true when compact would write a
+// non-empty banded snapshot that differs from the stored view (or is the first
+// write). A different compact point in either direction counts as a write —
+// including regression, which compact always accepts. Same-point still
+// compares arrangement/gaps so repair previews report true when the stored
+// snapshot is incomplete.
 function selectionWouldWriteSnapshot(
   transaction: DbReadTransaction,
   selection: { compactPoint: number; entries: ArrangementEntry[] },
@@ -493,7 +494,7 @@ function selectionWouldWriteSnapshot(
   if (selection.compactPoint <= 0) return false;
   const stored = readStoredView(transaction.db);
   if (stored === null) return true;
-  if (selection.compactPoint !== stored.compactPoint) return selection.compactPoint > stored.compactPoint;
+  if (selection.compactPoint !== stored.compactPoint) return true;
 
   const arrangement = selection.entries.map((entry) => ({
     band: entry.band,
@@ -584,18 +585,6 @@ export async function compact(
     if (!computed.ok) return computed;
 
     const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
-
-    if (!compactWouldWriteSnapshot(db, selection.compactPoint)) {
-      const stored = readStoredCompactPoint(db);
-      return {
-        ok: false,
-        error: {
-          errorClass: "caller_error",
-          code: "compact_unchanged",
-          reason: `compact point ${selection.compactPoint} would regress stored compact point ${stored}`,
-        },
-      };
-    }
 
     const warnings: CompactReceipt["warnings"] = selection.entries
       .filter((entry) => entry.derivationUsed === "stored_member_concat")

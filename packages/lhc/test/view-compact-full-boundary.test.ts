@@ -21,11 +21,20 @@ const EMPTY_DERIVATION_COUNTS: SelectionInputs["derivationCounts"] = {};
 
 function selectionInputs(
   turns: SelectionTurn[],
-  messages: Array<Pick<SelectionMessage, "messageId" | "order" | "tokenEstimate" | "turnId">>,
+  messages: Array<Pick<SelectionMessage, "messageId" | "order" | "tokenEstimate" | "turnId"> & {
+    kind?: string;
+  }>,
 ): SelectionInputs {
   return {
     turns,
-    messages: messages.map((message) => ({ ...message, kind: "assistant_text", text: message.messageId })),
+    messages: messages.map((message) => ({
+      messageId: message.messageId,
+      order: message.order,
+      tokenEstimate: message.tokenEstimate,
+      turnId: message.turnId,
+      kind: message.kind ?? "assistant_text",
+      text: message.messageId,
+    })),
     chunks: [],
     derivations: new Map(),
     maxEventOrder: Math.max(0, ...turns.map((turn) => turn.closedAt ?? turn.openedAt)),
@@ -151,5 +160,59 @@ describe("compact full-band boundary rounding", () => {
     });
 
     expect(selection.compactPoint).toBe(6);
+  });
+
+  it("treats a runtime_note-only post-eviction tail as empty and keeps the straddling turn", () => {
+    // Same mid-thread token layout as compactPointAt(60) (would evict t2 on
+    // token split alone), but the only newer message is a runtime_note — not
+    // mappable, so the emptiness override keeps t2 in full.
+    const turns: SelectionTurn[] = [
+      { turnId: "t1", turnOrder: 1, status: "closed", openedAt: 1, closedAt: 3 },
+      { turnId: "t2", turnOrder: 2, status: "closed", openedAt: 4, closedAt: 7 },
+      { turnId: "t3", turnOrder: 3, status: "open", openedAt: 8, closedAt: null },
+    ];
+    const messages = [
+      { messageId: "m1", order: 1, tokenEstimate: 10, turnId: "t1" },
+      { messageId: "m2-old", order: 4, tokenEstimate: 40, turnId: "t2" },
+      { messageId: "m2-mid", order: 5, tokenEstimate: 30, turnId: "t2" },
+      { messageId: "m2-new", order: 6, tokenEstimate: 30, turnId: "t2" },
+      { messageId: "m-note", order: 8, tokenEstimate: 20, turnId: "t3", kind: "runtime_note" },
+    ];
+
+    const selection = selectArrangement(selectionInputs(turns, messages), {
+      lowerBound: 60,
+      percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+    });
+
+    expect(selection.compactPoint).toBe(3);
+  });
+
+  it("runtime_note-only tail keeps straddling turn; preview anchor is non-null", async () => {
+    const { sdk, filePath } = await newSdk();
+    // t1 small, t2 oversized (token-split would want eviction), open turn holds
+    // only a runtime_note — not mappable, so emptiness override keeps t2 in full.
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "small first turn" } }),
+      validEvent("assistant_text", { payload: { text: "done" } }),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "large final turn" } }),
+      validEvent("assistant_text", { payload: { text: "oversized ".repeat(1_000) } }),
+      validEvent("turn_end"),
+      validEvent("runtime_note", { payload: { text: "harness note only" } }),
+    ]);
+    if (!captured.ok) throw new Error(captured.error.reason);
+
+    const preview = okPreview(
+      await sdk.threadView.previewCompact(
+        { filePath },
+        { params: { lowerBound: 120, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+      ),
+    );
+
+    // Override keeps t2 in full (compact point at t1 close); anchor is t2's
+    // first mappable message — never null solely because of a runtime_note tail.
+    expect(preview.compactPoint).toBe(3);
+    expect(preview.firstKeptMessageId).toBe("m4");
+    expect(preview.firstKeptMessageId).not.toBeNull();
   });
 });

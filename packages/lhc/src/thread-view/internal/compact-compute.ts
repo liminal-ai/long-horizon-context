@@ -7,21 +7,12 @@ import type { DbReadTransaction, OpResult, ViewProfile } from "../../shared-tech
 import * as turnsDomain from "../../turns/index.js";
 import {
   CanonicalCorruptionError,
+  PI_MAPPABLE_MESSAGE_KINDS,
   readSelectionInputs,
   type SelectionInputs,
   type SelectionResult,
   selectArrangement,
 } from "./select.js";
-
-const PI_MAPPABLE_MESSAGE_KINDS = [
-  "user_prompt",
-  "assistant_text",
-  "assistant_thinking",
-  "tool_call",
-  "tool_result",
-  "model_change",
-  "thinking_level_change",
-] as const;
 
 export interface ArrangementComputeResult {
   selection: SelectionResult;
@@ -32,21 +23,6 @@ export interface ArrangementComputeResult {
 
 export function compactStopped(signal: { aborted: boolean } | undefined): boolean {
   return signal?.aborted === true;
-}
-
-/** Stored compact point from the active view snapshot, or null when never compacted. */
-export function readStoredCompactPoint(db: DatabaseSync): number | null {
-  const row = db.prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`).get() as
-    | { compact_point: number | bigint }
-    | undefined;
-  return row === undefined ? null : Number(row.compact_point);
-}
-
-/** Whether compact may replace the stored view: first write always allowed; later writes refuse only a strictly lower compact point. */
-export function compactWouldWriteSnapshot(db: DatabaseSync, selectionCompactPoint: number): boolean {
-  const stored = readStoredCompactPoint(db);
-  if (stored === null) return true;
-  return selectionCompactPoint >= stored;
 }
 
 /** messageId of the first PI-mappable live message past the compact point. */
@@ -146,7 +122,9 @@ export function computeArrangement(
     percentages: merged.percentages,
   });
   const viewId = `v${inputs.maxEventOrder}`;
-  const firstKeptMessageId = selection.compactPoint > 0 ? firstPiMappableMessagePast(db, selection.compactPoint) : null;
+  // At compact point 0 this is the thread's first mappable message (rebuild
+  // still needs an anchor). Null only when the thread has no mappable messages.
+  const firstKeptMessageId = firstPiMappableMessagePast(db, selection.compactPoint);
 
   return {
     ok: true,

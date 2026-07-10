@@ -127,7 +127,10 @@ describe("preview exactness golden cases (fixed expected compactPoint)", () => {
 
     expect(previewResult.compactPoint).toBe(0);
     expect(previewResult.wouldProduceBands).toBe(false);
+    // Point 0: anchor is the thread's first mappable message, not null.
+    expect(previewResult.firstKeptMessageId).toBe("m1");
     expect(compact.value.compactPoint).toBe(0);
+    expect(compact.value.firstKeptMessageId).toBe("m1");
     expect(previewResult.compactPoint).toBe(compact.value.compactPoint);
   });
 
@@ -205,13 +208,12 @@ describe("previewCompact agreement with compact", () => {
     expect(preview.value.preview.firstKeptMessageId).toBe(compact.value.firstKeptMessageId);
   });
 
-  it("TC-5.6b: permissive re-compact cannot move compact point backward; preview and compact stay coherent", async () => {
+  it("TC-5.6b: re-compact may move compact point backward; preview and compact stay coherent", async () => {
     const local = await derivedThreadFixture(store);
     const first = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: TARGET_PARAMS });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.compactPoint).toBe(48);
-    const viewBefore = viewRowCount(local.filePath);
 
     const preview = await local.sdk.threadView.previewCompact(
       { filePath: local.filePath },
@@ -223,17 +225,19 @@ describe("previewCompact agreement with compact", () => {
     if (preview.value.kind !== "ok") return;
     expect(preview.value.preview.compactPoint).toBe(0);
     expect(preview.value.preview.wouldProduceBands).toBe(false);
+    // Point 0 still anchors on the first mappable message.
+    expect(preview.value.preview.firstKeptMessageId).toBe("m1");
 
     const second = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: ALL_FITS_PARAMS });
-    expect(second.ok).toBe(false);
-    if (second.ok) return;
-    expect(second.error.code).toBe("compact_unchanged");
-    expect(viewRowCount(local.filePath)).toBe(viewBefore);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.compactPoint).toBe(0);
+    expect(second.value.firstKeptMessageId).toBe("m1");
 
     const described = await local.sdk.threadView.describe({ filePath: local.filePath });
     expect(described.ok).toBe(true);
     if (!described.ok) return;
-    expect(described.value?.compactPoint).toBe(48);
+    expect(described.value?.compactPoint).toBe(0);
   });
 
   it("same-point preview reports bands when recomputed arrangement repairs the stored snapshot", async () => {
@@ -301,12 +305,10 @@ describe("previewCompact agreement with compact", () => {
       if (!second.preview.ok) continue;
       expect(second.preview.value.kind).toBe("ok");
       if (second.preview.value.kind !== "ok") continue;
-      if (second.compact.ok) {
-        expect(second.preview.value.preview.compactPoint).toBeGreaterThanOrEqual(compact.value.compactPoint);
-      } else {
-        expect(second.compact.error.code).toBe("compact_unchanged");
-        expect(second.preview.value.preview.wouldProduceBands).toBe(false);
-      }
+      expect(second.compact.ok, scenario.label).toBe(true);
+      if (!second.compact.ok) continue;
+      // Same params re-compact always writes; point is free to stay or move.
+      expect(second.preview.value.preview.compactPoint, scenario.label).toBe(second.compact.value.compactPoint);
     }
   });
 

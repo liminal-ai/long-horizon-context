@@ -448,7 +448,6 @@ interface ErrorResult {
 | `unknown_profile` | caller | Named compact profile not configured |
 | `invalid_view_config` | caller | Band sum ≠ 100, or other profile violation |
 | `compact_stopped` | caller | Caller aborted compact before snapshot write |
-| `compact_unchanged` | caller | Selection would not advance the stored compact point |
 | `invalid_bounds` | caller | Bad list bounds option |
 | `unknown_format` | caller | Materialize format not `"pi-session"` |
 | `turn_state_corrupt` | corruption | Multiple open turns or other turn invariant violation |
