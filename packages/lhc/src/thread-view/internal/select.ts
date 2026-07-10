@@ -219,6 +219,16 @@ export interface SelectionConfig {
   percentages: { full: number; smooth: number; detailed: number; brief: number };
 }
 
+function straddlingTurnStaysInFull(
+  fullSideTokens: number,
+  turnTokens: number,
+  evictionWouldEmptyFull: boolean,
+): boolean {
+  if (evictionWouldEmptyFull) return true;
+  const smoothSideTokens = turnTokens - fullSideTokens;
+  return fullSideTokens >= smoothSideTokens;
+}
+
 export function selectArrangement(inputs: SelectionInputs, config: SelectionConfig): SelectionResult {
   const { messages, turns, chunks, derivations } = inputs;
   const lookup = (subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
@@ -283,10 +293,26 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       // the open turn's start.
       return previousClose(candidate);
     }
-    // Fully covered down to the turn's start ⇒ the tail begins at this turn;
-    // otherwise snap FORWARD to the next turn start — the partially-covered
-    // turn falls whole to the bands.
+    // Fully covered down to the turn's start ⇒ the tail begins at this turn.
     if (oldestTaken.order <= turnStartOrder(candidate)) {
+      return previousClose(candidate);
+    }
+
+    // A partially-covered closed turn straddles the full-budget line. Keep it
+    // whole in full when evicting it would leave no live tail; otherwise round
+    // toward the side holding at least half of the turn's tokens (ties stay in
+    // full). The split is at the exact budget line, even when that line falls
+    // inside the crossing message's estimate.
+    const candidateMessages = messagesByTurn.get(candidate.turnId) ?? [];
+    const turnTokens = candidateMessages.reduce((total, message) => total + message.tokenEstimate, 0);
+    const newerTokens = messages
+      .filter((message) => candidate.closedAt !== null && message.order > candidate.closedAt)
+      .reduce((total, message) => total + message.tokenEstimate, 0);
+    const fullSideTokens = Math.max(0, Math.min(turnTokens, fullBudget - newerTokens));
+    const evictionWouldEmptyFull = !messages.some(
+      (message) => candidate.closedAt !== null && message.order > candidate.closedAt,
+    );
+    if (straddlingTurnStaysInFull(fullSideTokens, turnTokens, evictionWouldEmptyFull)) {
       return previousClose(candidate);
     }
     return candidate.closedAt ?? 0;

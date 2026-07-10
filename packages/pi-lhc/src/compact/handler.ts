@@ -101,7 +101,7 @@ export async function handleSessionBeforeCompact(
     // floor gate above and real failures below.
     const preview = outcome.preview;
     if (preview.firstKeptMessageId === null) {
-      return await cancel("mapping_failed", "no PI-mappable first kept message");
+      return await cancel("mapping_failed", "compact arrangement kept no messages (unexpected — report this)");
     }
 
     const sessionView = await deps.getSessionView();
