@@ -718,11 +718,11 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: docs/onboard/01-core-concepts.md "Render / materialize / LlmRequestContext"; packages/lhc/src/thread-view/internal/snapshot.ts:120-128; packages/lhc/src/thread-view/index.ts:530
 - Confidence: high
 
-### VIEW-21: Compact monotonicity — first write always allowed; equal compact point allowed for snapshot repair; only strictly-lower refused
-- Decision: A later compact may replace the snapshot when its compact point is equal or greater (`selectionCompactPoint >= stored`); only a strictly lower point is refused as compact_unchanged (reason worded as regression). Same-point rewrites are the deliberate snapshot-repair path; previewCompact reports wouldProduceBands when the recomputed arrangement differs from the stored snapshot even at the same point.
-- Why: monotonic progress without blocking repair — re-writing an identical-point snapshot is cheap and was explicitly unblocked after it prevented a needed re-compact. [rationale: documented]
+### VIEW-21: Compact always writes what it computed — no monotonicity refusal (supersedes the compact_unchanged guard, removed 2026-07-10)
+- Decision: Compact writes the computed arrangement unconditionally — forward, equal, or backward compact points all succeed. The former strictly-lower refusal (`compact_unchanged`) was removed: after band rounding (VIEW-era change, commit e194df5) a backward-moving point is a legitimate correct outcome, and the guard blocked it. previewCompact still reports wouldProduceBands when the recomputed arrangement differs from the stored snapshot.
+- Why: Lee's ruling (2026-07-10, consistent with the earlier "blocking me from recompacting is dumb" rulings): compact is cheap; guards that refuse work because "nothing would change" add branches without benefit. The old guard's concurrency-fence role is covered by hosts serializing compact against intake; a stale snapshot corrupts nothing and the next compact replaces it.
 - Status: firm
-- Evidence: packages/lhc/src/thread-view/internal/compact-compute.ts:45-50; packages/lhc/src/thread-view/index.ts:399-408; commits 1e06152, 062ee71 (preview-repair)
+- Evidence: commit f4f9601 (guard removal); packages/lhc/src/thread-view/index.ts (unconditional snapshot write); packages/lhc/test/view-compact-full-boundary.test.ts (backward-point compact succeeds)
 - Confidence: high
 
 ### VIEW-22: Preview and compact share one arrangement computation

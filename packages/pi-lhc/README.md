@@ -145,7 +145,7 @@ When PI fires `session_before_compact`, the handler runs 8 sequential checks:
 | 2 | Flush all pending capture | — |
 | 3 | `state.health.lastCaptureFailure` is clear | `capture_incomplete` |
 | 4 | `getLlmRequestContext` succeeds and serving tokens ≥ 50k floor | `no_op` or `compact_error` |
-| 5 | `previewCompact` succeeds and `wouldProduceBands` is true | `no_op` or `compact_error` |
+| 5 | `previewCompact` succeeds (`wouldProduceBands` is informational only — an explicit compact always proceeds) | `compact_error` |
 | 6 | `firstKeptMessageId` is non-null | `mapping_failed` |
 | 7 | `mapFirstKeptToEntryId` resolves an LHC message id to a PI entry id | `mapping_failed` |
 | 8 | `compact` succeeds and `renderedBands` is present | `compact_error` or `invalid_compact_result` |
