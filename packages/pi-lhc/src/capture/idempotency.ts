@@ -81,9 +81,7 @@ export function parseEventKeySource(key: string): ParsedEventKeySource | null {
   const entry = /^pi:.*:entry:([^:]+):block:(\d+):kind:([^:]+)$/.exec(key);
   if (entry?.[1] !== undefined && entry[2] !== undefined && entry[3] !== undefined) {
     const entryId = decode(entry[1]);
-    return entryId === null
-      ? null
-      : { entryId, blockIndex: Number(entry[2]), kind: entry[3] };
+    return entryId === null ? null : { entryId, blockIndex: Number(entry[2]), kind: entry[3] };
   }
 
   const tool = /^pi:.*:tool:([^:]+):kind:([^:]+)$/.exec(key);
@@ -95,9 +93,7 @@ export function parseEventKeySource(key: string): ParsedEventKeySource | null {
   const response = /^pi:.*:resp:([^:]+):block:(\d+):kind:([^:]+)$/.exec(key);
   if (response?.[1] !== undefined && response[2] !== undefined && response[3] !== undefined) {
     const responseId = decode(response[1]);
-    return responseId === null
-      ? null
-      : { responseId, blockIndex: Number(response[2]), kind: response[3] };
+    return responseId === null ? null : { responseId, blockIndex: Number(response[2]), kind: response[3] };
   }
 
   return null;

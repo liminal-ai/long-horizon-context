@@ -45,10 +45,7 @@ function isToolTierOmissionId(resultToolCallId: string, noteToolCallId: string):
  * or the tool-tier `:omission:<n>` toolCallId suffix (fallback when entry id
  * was unavailable at capture). Never English-text matching.
  */
-export function isToolResultOmissionNote(
-  toolResult: SessionToolResultMessage,
-  candidate: SessionUserMessage,
-): boolean {
+export function isToolResultOmissionNote(toolResult: SessionToolResultMessage, candidate: SessionUserMessage): boolean {
   const resultKey = primarySourceKey(toolResult.sourceMessages);
   const noteKey = primarySourceKey(candidate.sourceMessages);
   if (resultKey === null || noteKey === null) return false;
@@ -72,9 +69,7 @@ export function isToolResultOmissionNote(
 }
 
 function omissionBody(content: string): string {
-  return content.startsWith(SESSION_RUNTIME_NOTE_PREFIX)
-    ? content.slice(SESSION_RUNTIME_NOTE_PREFIX.length)
-    : content;
+  return content.startsWith(SESSION_RUNTIME_NOTE_PREFIX) ? content.slice(SESSION_RUNTIME_NOTE_PREFIX.length) : content;
 }
 
 function appendOmissionNote(content: string, noteText: string): string {
@@ -87,9 +82,7 @@ function appendOmissionNote(content: string, noteText: string): string {
  * into the preceding tool result's content so parallel results stay consecutive
  * PI toolResult messages. Unrelated runtime notes remain independent user entries.
  */
-export function foldToolResultOmissionNotes(
-  entries: readonly SessionThreadViewEntry[],
-): SessionThreadViewEntry[] {
+export function foldToolResultOmissionNotes(entries: readonly SessionThreadViewEntry[]): SessionThreadViewEntry[] {
   const out: SessionThreadViewEntry[] = [];
 
   for (let i = 0; i < entries.length; i += 1) {

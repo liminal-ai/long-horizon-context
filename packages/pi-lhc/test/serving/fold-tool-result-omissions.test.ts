@@ -1,13 +1,16 @@
 import type { SessionThreadViewEntry, SessionToolResultMessage, SessionUserMessage } from "lhc";
 import { describe, expect, it } from "vitest";
 import { eventKey } from "../../src/capture/idempotency.js";
-import {
-  foldToolResultOmissionNotes,
-  isToolResultOmissionNote,
-} from "../../src/serving/fold-tool-result-omissions.js";
+import { applySessionThreadViewToSessionManager } from "../../src/serving/context.js";
+import { foldToolResultOmissionNotes, isToolResultOmissionNote } from "../../src/serving/fold-tool-result-omissions.js";
 
-function entryKey(entryId: string, blockIndex: number, kind: "tool_result" | "runtime_note"): string {
-  return eventKey({ piSessionId: "sess", entryId, blockIndex, kind });
+function entryKey(
+  entryId: string,
+  blockIndex: number,
+  kind: "tool_result" | "runtime_note",
+  piSessionId = "sess",
+): string {
+  return eventKey({ piSessionId, entryId, blockIndex, kind });
 }
 
 function toolKey(toolCallId: string, kind: "tool_result" | "runtime_note"): string {
@@ -77,6 +80,55 @@ describe("isToolResultOmissionNote", () => {
     );
     expect(isToolResultOmissionNote(result, note)).toBe(false);
   });
+
+  it.each([
+    {
+      name: "entry id with colons",
+      resultKey: entryKey("id:with:colons", 0, "tool_result"),
+      noteKey: entryKey("id:with:colons", 1, "runtime_note"),
+      expectAssoc: true,
+    },
+    {
+      name: "entry id with delimiter-like :tool:/:kind: text",
+      resultKey: entryKey("x:tool:y:kind:z", 0, "tool_result"),
+      noteKey: entryKey("x:tool:y:kind:z", 1, "runtime_note"),
+      expectAssoc: true,
+    },
+    {
+      name: "session id with :entry: delimiter text still uses final entry segment",
+      resultKey: entryKey("e1", 0, "tool_result", "s:entry:weird"),
+      noteKey: entryKey("e1", 1, "runtime_note", "s:entry:weird"),
+      expectAssoc: true,
+    },
+    {
+      name: "tool-tier id with colons + omission sibling",
+      resultKey: toolKey("T:colon", "tool_result"),
+      noteKey: toolKey("T:colon:omission:12", "runtime_note"),
+      expectAssoc: true,
+    },
+    {
+      name: "malformed percent escape in entry id",
+      resultKey: "pi:sess:entry:%zz:block:0:kind:tool_result",
+      noteKey: "pi:sess:entry:%zz:block:1:kind:runtime_note",
+      expectAssoc: false,
+    },
+    {
+      name: "partial entry key (missing kind)",
+      resultKey: "pi:sess:entry:e1:block:0",
+      noteKey: entryKey("e1", 1, "runtime_note"),
+      expectAssoc: false,
+    },
+    {
+      name: "non-PI key",
+      resultKey: "not-a-pi-key",
+      noteKey: entryKey("e1", 1, "runtime_note"),
+      expectAssoc: false,
+    },
+  ])("structural boundary: $name → $expectAssoc", ({ resultKey, noteKey, expectAssoc }) => {
+    const result = toolResult("call_b", "body", resultKey);
+    const note = runtimeNoteUser("omission", noteKey, "m-n");
+    expect(isToolResultOmissionNote(result, note)).toBe(expectAssoc);
+  });
 });
 
 describe("foldToolResultOmissionNotes", () => {
@@ -107,14 +159,7 @@ describe("foldToolResultOmissionNotes", () => {
     }
 
     const folded = foldToolResultOmissionNotes(entries);
-    expect(rolesOf(folded)).toEqual([
-      "user",
-      "assistant",
-      "toolResult",
-      "toolResult",
-      "toolResult",
-      "toolResult",
-    ]);
+    expect(rolesOf(folded)).toEqual(["user", "assistant", "toolResult", "toolResult", "toolResult", "toolResult"]);
 
     for (let n = 1; n <= 4; n += 1) {
       const result = folded[n + 1];
@@ -182,5 +227,67 @@ describe("foldToolResultOmissionNotes", () => {
       role: "user",
       content: "[runtime note] capture gap: batch rejected",
     });
+  });
+
+  it.each([
+    {
+      name: "malformed percent escape",
+      noteKey: "pi:sess:entry:%zz:block:1:kind:runtime_note",
+    },
+    {
+      name: "partial key",
+      noteKey: "pi:sess:entry:e1:block:1",
+    },
+    {
+      name: "non-PI key",
+      noteKey: "other:system:note",
+    },
+  ])("does not fold a note whose key fails closed ($name)", ({ noteKey }) => {
+    const entries: SessionThreadViewEntry[] = [
+      toolResult("call_1", "body", entryKey("e1", 0, "tool_result"), "ra"),
+      runtimeNoteUser("looks like omission", noteKey, "na"),
+    ];
+    const folded = foldToolResultOmissionNotes(entries);
+    expect(rolesOf(folded)).toEqual(["toolResult", "user"]);
+  });
+});
+
+describe("folded omission seed-entry mapping", () => {
+  it("maps folded omission-note sources to the tool-result PI entry id, not a synthetic user entry", () => {
+    // Verifier seed-map probe: result source ra + folded note na1 → same pi_1;
+    // unrelated task note stays its own PI user entry.
+    const entries: SessionThreadViewEntry[] = [
+      toolResult("call_1", "body", entryKey("e1", 0, "tool_result"), "ra"),
+      runtimeNoteUser("unsupported content omitted: image part", entryKey("e1", 1, "runtime_note"), "na1"),
+      runtimeNoteUser(
+        "<task-notification>task t-9 completed</task-notification>",
+        entryKey("task-entry", 0, "runtime_note"),
+        "task-msg",
+      ),
+    ];
+
+    let appendCount = 0;
+    const appendedRoles: string[] = [];
+    const sessionManager = {
+      appendMessage(message: { role: string }) {
+        appendedRoles.push(message.role);
+        appendCount += 1;
+        return appendCount === 1 ? "pi_1" : `pi_user_${appendCount}`;
+      },
+      appendCustomEntry() {
+        return "seed_map";
+      },
+    };
+
+    const seeded = applySessionThreadViewToSessionManager(sessionManager as never, entries, "th_fold");
+    expect(appendedRoles).toEqual(["toolResult", "user"]);
+    expect(seeded.seedEntryMapRows).toEqual([
+      { lhcMessageId: "ra", piEntryId: "pi_1" },
+      { lhcMessageId: "na1", piEntryId: "pi_1" },
+      { lhcMessageId: "task-msg", piEntryId: "pi_user_2" },
+    ]);
+    // Omission note is not dropped and does not receive its own synthetic user entry id.
+    expect(seeded.seedEntryMapRows.filter((row) => row.lhcMessageId === "na1")).toHaveLength(1);
+    expect(seeded.seedEntryMapRows.find((row) => row.lhcMessageId === "na1")?.piEntryId).toBe("pi_1");
   });
 });

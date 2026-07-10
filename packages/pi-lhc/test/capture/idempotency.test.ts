@@ -8,7 +8,7 @@
 import { createDeterministicInferenceCallbacks, intakeStream, type MessageEventInput } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture } from "../../src/capture/converter.js";
-import { eventKey } from "../../src/capture/idempotency.js";
+import { eventKey, parseEventKeySource } from "../../src/capture/idempotency.js";
 import { mapMessage } from "../../src/capture/map-message.js";
 import { mapModelSelect } from "../../src/capture/runtime-changes.js";
 import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
@@ -122,6 +122,59 @@ describe("Story 2: idempotency key construction (deterministic goldens)", () => 
 
     expect(firstReload.idempotencyKey).toBe(first.idempotencyKey);
     expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
+});
+
+describe("parseEventKeySource structural boundaries", () => {
+  it.each([
+    {
+      name: "entry id with colons",
+      key: eventKey({ piSessionId: "sess", entryId: "id:with:colons", blockIndex: 2, kind: "runtime_note" }),
+      expected: { entryId: "id:with:colons", blockIndex: 2, kind: "runtime_note" },
+    },
+    {
+      name: "entry id with % and delimiter-like segments",
+      key: eventKey({
+        piSessionId: "sess",
+        entryId: "a%b:tool:x:kind:y",
+        blockIndex: 0,
+        kind: "tool_result",
+      }),
+      expected: { entryId: "a%b:tool:x:kind:y", blockIndex: 0, kind: "tool_result" },
+    },
+    {
+      name: "session id containing :entry: still parses final entry segment",
+      key: eventKey({ piSessionId: "s:entry:weird", entryId: "e1", blockIndex: 1, kind: "tool_result" }),
+      expected: { entryId: "e1", blockIndex: 1, kind: "tool_result" },
+    },
+    {
+      name: "tool id with colons",
+      key: eventKey({ piSessionId: "sess", toolCallId: "T:colon", blockIndex: 0, kind: "tool_result" }),
+      expected: { toolCallId: "T:colon", kind: "tool_result" },
+    },
+    {
+      name: "tool-tier omission sibling id",
+      key: eventKey({
+        piSessionId: "sess",
+        toolCallId: "T:colon:omission:12",
+        blockIndex: 0,
+        kind: "runtime_note",
+      }),
+      expected: { toolCallId: "T:colon:omission:12", kind: "runtime_note" },
+    },
+  ])("decodes URI-encoded ids: $name", ({ key, expected }) => {
+    expect(parseEventKeySource(key)).toEqual(expected);
+  });
+
+  it.each([
+    { name: "malformed percent escape", key: "pi:sess:entry:%zz:block:0:kind:tool_result" },
+    { name: "malformed tool percent escape", key: "pi:sess:tool:%E0%A4%A:kind:tool_result" },
+    { name: "partial entry key (no kind)", key: "pi:sess:entry:e1:block:0" },
+    { name: "partial tool key (no kind)", key: "pi:sess:tool:call_a" },
+    { name: "non-PI key", key: "other:system:entry:e1:block:0:kind:tool_result" },
+    { name: "nonnumeric block index", key: "pi:sess:entry:e1:block:x:kind:tool_result" },
+  ])("fails closed: $name", ({ key }) => {
+    expect(parseEventKeySource(key)).toBeNull();
   });
 });
 
