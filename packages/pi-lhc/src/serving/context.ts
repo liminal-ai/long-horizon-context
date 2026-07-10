@@ -8,6 +8,7 @@ import type {
   SessionThreadViewMessage,
 } from "lhc";
 import { LHC_SEED_ENTRY_MAP_TYPE, type LhcSeedEntryMapRow } from "../compact/seed-entry-map.js";
+import { foldToolResultOmissionNotes } from "./fold-tool-result-omissions.js";
 
 function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadViewMessage {
   return "role" in entry;
@@ -88,7 +89,11 @@ export function applySessionThreadViewToSessionManager(
   let messageIndex = 0;
   const seedRows: LhcSeedEntryMapRow[] = [];
 
-  for (const entry of entries) {
+  // Fold PI tool-result omission runtime_notes into their sibling tool results
+  // so parallel results remain consecutive (Anthropic tool protocol).
+  const reconstructed = foldToolResultOmissionNotes(entries);
+
+  for (const entry of reconstructed) {
     if (isModelChangeEntry(entry)) {
       const piEntryId = sessionManager.appendModelChange(entry.provider, entry.modelId);
       collectSeedRows(seedRows, piEntryId, entry.sourceMessages);

@@ -165,6 +165,169 @@ describe("session thread view seeding", () => {
     });
   });
 
+  it("folds parallel tool-result omission runtime_notes so results stay consecutive on rehydrate", async () => {
+    // Exact production shape: assistant with 4 parallel image-read calls; each
+    // PI toolResult fans out as tool_result + omission runtime_note sharing the
+    // same PI entry identity (legacy entryId → capture entry-tier keys).
+    const started = await startCapture(store);
+    const { connector, ctx, threadRef } = started;
+
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("read four images")), ctx);
+    await connector.handlers.message_end(
+      makeMessageEnd(
+        makeAssistantMessage({
+          toolCalls: [1, 2, 3, 4].map((n) => ({
+            id: `call_${n}`,
+            name: "read",
+            arguments: { path: `img${n}.png` },
+          })),
+        }),
+        "pi-asst-parallel",
+      ),
+      ctx,
+    );
+
+    for (const n of [1, 2, 3, 4]) {
+      await connector.handlers.message_end(
+        makeMessageEnd(
+          {
+            role: "toolResult",
+            toolCallId: `call_${n}`,
+            content: [
+              { type: "text", text: `meta ${n}` },
+              { type: "image", mimeType: "image/png" },
+            ],
+          },
+          `pi-tool-result-${n}`,
+        ),
+        ctx,
+      );
+    }
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
+
+    const instance = connector.getInstance();
+    expect(instance).not.toBeNull();
+    if (instance === null) return;
+
+    // SessionThreadView still surfaces omission notes as independent user
+    // entries — the fold is PI reconstruction only.
+    const sessionView = await instance.sdk.threadView.getSessionThreadView(threadRef);
+    expect(sessionView.ok).toBe(true);
+    if (!sessionView.ok) return;
+    const viewRoles = sessionView.value.entries
+      .filter((entry) => "role" in entry)
+      .map((entry) => ("role" in entry ? entry.role : ""));
+    expect(viewRoles).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "user",
+      "toolResult",
+      "user",
+      "toolResult",
+      "user",
+      "toolResult",
+      "user",
+    ]);
+
+    const sessionManager = {
+      messages: [] as Array<{ role: string; content?: unknown; toolCallId?: string }>,
+      appendMessage(message: { role: string; content?: unknown; toolCallId?: string }) {
+        this.messages.push(message);
+        return `seed_${this.messages.length}`;
+      },
+      appendCustomEntry() {
+        return "seed_map";
+      },
+    };
+
+    const rehydrated = await rehydratePiSessionFromLhc(instance, threadRef, sessionManager as never);
+    expect(rehydrated.ok).toBe(true);
+    if (!rehydrated.ok) return;
+
+    // Invariant: assistant(with tool calls) immediately followed by 4 consecutive
+    // toolResult messages — no interleaved runtime-note user entries.
+    expect(sessionManager.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "toolResult",
+      "toolResult",
+      "toolResult",
+    ]);
+
+    const assistant = sessionManager.messages[1];
+    expect(Array.isArray(assistant?.content)).toBe(true);
+    expect((assistant?.content as Array<{ type: string }>).filter((p) => p.type === "toolCall")).toHaveLength(4);
+
+    for (let n = 1; n <= 4; n += 1) {
+      const result = sessionManager.messages[n + 1];
+      expect(result).toMatchObject({ role: "toolResult", toolCallId: `call_${n}` });
+      const textParts = (result?.content as Array<{ type: string; text?: string }>) ?? [];
+      const text = textParts.map((p) => p.text ?? "").join("");
+      expect(text).toContain(`meta ${n}`);
+      expect(text).toContain("[tool-result omission]");
+      expect(text).toContain("unsupported content omitted: image part");
+    }
+  });
+
+  it("keeps structurally unassociated runtime notes as independent user entries after a tool result", async () => {
+    const started = await startCapture(store);
+    const { connector, ctx, threadRef } = started;
+
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("run tool")), ctx);
+    await connector.handlers.message_end(
+      makeMessageEnd(
+        makeAssistantMessage({ toolCalls: [{ id: "call_a", name: "read_file", arguments: { path: "a.txt" } }] }),
+        "pi-asst-a",
+      ),
+      ctx,
+    );
+    await connector.handlers.message_end(
+      makeMessageEnd(makeToolResult({ id: "call_a", content: "file body" }), "pi-tr-a"),
+      ctx,
+    );
+    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
+
+    const instance = connector.getInstance();
+    expect(instance).not.toBeNull();
+    if (instance === null) return;
+
+    // Adjacent runtime_note with a different PI entry identity — must not fold.
+    const note = await instance.sdk.intakeStream.messageEvents(threadRef, [
+      {
+        eventKind: "runtime_note",
+        idempotencyKey: "pi:sess:entry:task-note:block:0:kind:runtime_note",
+        actor: "system",
+        harness: "pi",
+        payload: { text: "<task-notification>task t-1 completed</task-notification>" },
+      },
+    ]);
+    expect(note.ok).toBe(true);
+
+    const sessionManager = {
+      messages: [] as Array<{ role: string; content?: unknown; toolCallId?: string }>,
+      appendMessage(message: { role: string; content?: unknown; toolCallId?: string }) {
+        this.messages.push(message);
+        return `seed_${this.messages.length}`;
+      },
+      appendCustomEntry() {
+        return "seed_map";
+      },
+    };
+
+    const rehydrated = await rehydratePiSessionFromLhc(instance, threadRef, sessionManager as never);
+    expect(rehydrated.ok).toBe(true);
+    if (!rehydrated.ok) return;
+
+    expect(sessionManager.messages.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "user"]);
+    const noteMsg = sessionManager.messages[3];
+    expect(noteMsg).toMatchObject({
+      role: "user",
+      content: "[runtime note] <task-notification>task t-1 completed</task-notification>",
+    });
+  });
+
   it("restores model and thinking-level changes through SessionManager entries", async () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;

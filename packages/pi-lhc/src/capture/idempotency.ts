@@ -63,6 +63,10 @@ export interface ParsedEventKeySource {
   entryId?: string;
   toolCallId?: string;
   responseId?: string;
+  /** Present on entry- and response-tier keys. */
+  blockIndex?: number;
+  /** Event kind segment from the key (`tool_result`, `runtime_note`, …). */
+  kind?: string;
 }
 
 function decode(value: string): string | null {
@@ -74,22 +78,26 @@ function decode(value: string): string | null {
 }
 
 export function parseEventKeySource(key: string): ParsedEventKeySource | null {
-  const entry = /^pi:.*:entry:([^:]+):block:\d+:kind:[^:]+$/.exec(key);
-  if (entry?.[1] !== undefined) {
+  const entry = /^pi:.*:entry:([^:]+):block:(\d+):kind:([^:]+)$/.exec(key);
+  if (entry?.[1] !== undefined && entry[2] !== undefined && entry[3] !== undefined) {
     const entryId = decode(entry[1]);
-    return entryId === null ? null : { entryId };
+    return entryId === null
+      ? null
+      : { entryId, blockIndex: Number(entry[2]), kind: entry[3] };
   }
 
-  const tool = /^pi:.*:tool:([^:]+):kind:[^:]+$/.exec(key);
-  if (tool?.[1] !== undefined) {
+  const tool = /^pi:.*:tool:([^:]+):kind:([^:]+)$/.exec(key);
+  if (tool?.[1] !== undefined && tool[2] !== undefined) {
     const toolCallId = decode(tool[1]);
-    return toolCallId === null ? null : { toolCallId };
+    return toolCallId === null ? null : { toolCallId, kind: tool[2] };
   }
 
-  const response = /^pi:.*:resp:([^:]+):block:\d+:kind:[^:]+$/.exec(key);
-  if (response?.[1] !== undefined) {
+  const response = /^pi:.*:resp:([^:]+):block:(\d+):kind:([^:]+)$/.exec(key);
+  if (response?.[1] !== undefined && response[2] !== undefined && response[3] !== undefined) {
     const responseId = decode(response[1]);
-    return responseId === null ? null : { responseId };
+    return responseId === null
+      ? null
+      : { responseId, blockIndex: Number(response[2]), kind: response[3] };
   }
 
   return null;
