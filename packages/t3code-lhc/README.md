@@ -18,6 +18,7 @@ lives in a maintained T3 Code fork rather than in this repository.
 
 See also:
 
+- [Linux deployment handoff](./linux-deployment-handoff.md)
 - [Claude Code and Codex design](./claude-code-codex-lhc.md)
 - [Deferred Grok and Cursor design](./grok-cursor-lhc.md)
 
