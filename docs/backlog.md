@@ -82,8 +82,8 @@ Reload fidelity: the served context after a reload/rehydrate/fork-seed must be b
 
 ### 26. Host-environment cleanup: config directory + key-file consolidation
 
-**Problem:** Two housekeeping debts from wiring the PI extensions: (a) the PI extension doesn't have its own config directory — it rides the global PI and LHC directories; (b) API keys are split across two locations — the PI agent's auth file (provider keys plus a search API key) and the LHC environment file (OpenRouter/Cerebras keys for derivation lanes).
+**Problem:** Two housekeeping debts from wiring the PI extensions: (a) the PI extension didn't have its own config directory — it rode the global PI and LHC directories; (b) API keys were split across two locations — the PI agent's auth file and the LHC environment file.
 
-**Solution:** (a) The PI extension gets its own config directory holding its config and thread files. (b) API keys consolidate to one location.
+**Solution (shipped):** Unify into one home (`PI_LHC_HOME` → `~/.pi-lhc`): `home.ts` module (`registry.sqlite`, `threads/`, `pi/agent/` via `PI_CODING_AGENT_DIR`), offline migration (`scripts/migrate-to-pi-lhc.mjs`) + backup rail (`scripts/pi-lhc-backup.sh`), and fresh-install setup (`.setup/pi-lhc-standalone.md`). Auth for agent and derivation lanes both live under the home's `pi/agent/`.
 
-**Status:** Not started. Neither blocks anything now. Natural companion to item 18's rework.
+**Status:** Shipped 2026-07-11 (home unification slices 1–4).

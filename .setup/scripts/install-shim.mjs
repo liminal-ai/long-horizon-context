@@ -1,38 +1,56 @@
 #!/usr/bin/env node
-// Installs the cc-lhc launcher shim pointing at this repo's built dist.
-// Usage: node .setup/scripts/install-shim.mjs [--bin-dir <dir>]
-// POSIX: writes an executable bash shim. Windows: writes cc-lhc.cmd.
+// Installs a launcher shim pointing at this repo's built dist.
+// Usage: node .setup/scripts/install-shim.mjs [--target cc-lhc|pi-lhc] [--bin-dir <dir>]
+// Default --target is cc-lhc. POSIX: executable bash shim. Windows: .cmd file.
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const TARGETS = {
+  "cc-lhc": { name: "cc-lhc", packageDir: "cc-lhc" },
+  "pi-lhc": { name: "pi-lhc", packageDir: "pi-lhc" },
+};
+
+function parseTarget(argv) {
+  const idx = argv.indexOf("--target");
+  if (idx === -1) return "cc-lhc";
+  const val = argv[idx + 1];
+  if (val === undefined || !(val in TARGETS)) {
+    console.error(`unknown --target value: ${val ?? "(missing)"} (expected cc-lhc or pi-lhc)`);
+    process.exit(1);
+  }
+  return val;
+}
+
+const targetKey = parseTarget(process.argv);
+const target = TARGETS[targetKey];
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const distBin = join(repoRoot, "packages", "cc-lhc", "dist", "bin.js");
+const distBin = join(repoRoot, "packages", target.packageDir, "dist", "bin.js");
 
 const argIdx = process.argv.indexOf("--bin-dir");
 const binDir = argIdx !== -1 ? resolve(process.argv[argIdx + 1]) : join(homedir(), ".local", "bin");
 
 if (!existsSync(distBin)) {
   console.error(`missing built launcher: ${distBin}`);
-  console.error(`run: pnpm --filter cc-lhc run build (from ${repoRoot})`);
+  console.error(`run: pnpm --filter ${target.packageDir} run build (from ${repoRoot})`);
   process.exit(1);
 }
 
 mkdirSync(binDir, { recursive: true });
 
 if (process.platform === "win32") {
-  const target = join(binDir, "cc-lhc.cmd");
-  writeFileSync(target, `@echo off\r\nnode "${distBin}" %*\r\n`);
-  console.log(`wrote ${target}`);
+  const dest = join(binDir, `${target.name}.cmd`);
+  writeFileSync(dest, `@echo off\r\nnode "${distBin}" %*\r\n`);
+  console.log(`wrote ${dest}`);
 } else {
-  const target = join(binDir, "cc-lhc");
+  const dest = join(binDir, target.name);
   writeFileSync(
-    target,
-    `#!/usr/bin/env bash\nset -euo pipefail\nDIST_BIN="${distBin}"\nif [[ ! -f "$DIST_BIN" ]]; then\n  echo "cc-lhc: missing built launcher at $DIST_BIN" >&2\n  echo "run: cd ${repoRoot} && pnpm --filter cc-lhc run build" >&2\n  exit 1\nfi\nexec node "$DIST_BIN" "$@"\n`,
+    dest,
+    `#!/usr/bin/env bash\nset -euo pipefail\nDIST_BIN="${distBin}"\nif [[ ! -f "$DIST_BIN" ]]; then\n  echo "${target.name}: missing built launcher at $DIST_BIN" >&2\n  echo "run: cd ${repoRoot} && pnpm --filter ${target.packageDir} run build" >&2\n  exit 1\nfi\nexec node "$DIST_BIN" "$@"\n`,
   );
-  chmodSync(target, 0o755);
-  console.log(`wrote ${target}`);
+  chmodSync(dest, 0o755);
+  console.log(`wrote ${dest}`);
 }
 
 const pathEntries = (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":");

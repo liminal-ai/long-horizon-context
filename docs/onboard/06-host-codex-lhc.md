@@ -132,7 +132,7 @@ codex-lhc owns state under `~/.codex-lhc` (`CODEX_LHC_HOME`, `intake/paths.ts:6-
 | `codex-lhc.sqlite` | Session lineage and replay-dedupe signatures |
 | `threads/<uuid>.sqlite` | Per-thread LHC databases |
 
-Nothing codex-related is written under `~/.lhc` or `~/.cc-lhc`. Rebuilt rollouts live under `~/.codex/sessions/`.
+Nothing codex-related is written under `~/.pi-lhc`, `~/.cc-lhc`, or the legacy `~/.lhc`. Rebuilt rollouts live under `~/.codex/sessions/`.
 
 ## Known warts (POC)
 

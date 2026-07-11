@@ -51,13 +51,24 @@ Clone --recursive https://github.com/liminal-ai/long-horizon-context.git, then r
 
 The setup doc is written for an agent to execute: prerequisite checks and shim install are scripted (`.setup/scripts/`), each step carries its own verification, and the vendored PI submodule is checked out but never built for this profile.
 
+## Installing the PI Harness (pi-lhc)
+
+To set up pi-lhc on a machine that will use PI, give an AI coding agent this instruction — or follow it yourself:
+
+```
+Clone --recursive https://github.com/liminal-ai/long-horizon-context.git, then read
+.setup/pi-lhc-standalone.md in the clone and follow it to set up pi-lhc.
+```
+
+The setup doc is written for an agent to execute: prerequisite checks and shim install are scripted (`.setup/scripts/`), each step carries its own verification, and — unlike cc-lhc — the vendored PI submodule **must be built** (`cd vendor/pi && npm ci && npm run build`) before `pi-lhc` is built. Fresh state lives under `~/.pi-lhc` (override `PI_LHC_HOME`); machines with existing `~/.lhc` / `~/.pi/agent` state use `scripts/migrate-to-pi-lhc.mjs`.
+
 ---
 
 ## Core Concepts
 
 ### Threads and Events
 
-A **thread** is one durable conversation, stored as a SQLite file and tracked in a central registry (`~/.lhc/registry.sqlite`). Every piece of content entering LHC is an **event** — a typed, immutable record with an idempotency key:
+A **thread** is one durable conversation, stored as a SQLite file and tracked in a central registry. Hosts own the registry location: pi-lhc uses `~/.pi-lhc/registry.sqlite` (override `PI_LHC_HOME`), cc-lhc uses `~/.cc-lhc/`. Every piece of content entering LHC is an **event** — a typed, immutable record with an idempotency key:
 
 | Event Kind | Source |
 |---|---|
@@ -297,7 +308,7 @@ packages/lhc/src/
 ├── threads/                  Thread creation, registry, resolution
 │   └── internal/
 │       ├── create.ts         SQLite schema (15 tables), file creation, migration
-│       └── registry.ts       ~/.lhc/registry.sqlite CRUD
+│       └── registry.ts       registry CRUD (host supplies path; SDK default ~/.lhc)
 ├── intake-stream/            Event recording pipeline
 │   └── internal/
 │       ├── pipeline.ts       Batch transaction: validate → record → project → queue

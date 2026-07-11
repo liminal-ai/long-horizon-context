@@ -23,6 +23,8 @@ Known open items:
 
 The `pi-lhc` binary provides launcher-owned startup: it resolves the LHC thread and seeds the PI session from the thread view **before** PI creates its session. This means the agent starts with full context history from the first message.
 
+**Home:** all host state lives under `~/.pi-lhc` (override `PI_LHC_HOME`) — `registry.sqlite`, `threads/`, and `pi/agent/` (PI's full config dir via `PI_CODING_AGENT_DIR`; a pre-set non-empty value of that env var takes precedence over the home). Plain `pi` keeps a separate `~/.pi`. Fresh install: [`.setup/pi-lhc-standalone.md`](../../.setup/pi-lhc-standalone.md). Existing `~/.lhc` / `~/.pi/agent` state: `scripts/migrate-to-pi-lhc.mjs`.
+
 ```
 pi-lhc [LHC flags] [PI runtime flags] [--print message]
 ```
@@ -31,7 +33,7 @@ pi-lhc [LHC flags] [PI runtime flags] [--print message]
 
 | Flag | Behavior |
 |---|---|
-| (none) | Create a new thread in `~/.lhc/threads/`, registered under the current working directory. |
+| (none) | Create a new thread in `~/.pi-lhc/threads/` (override `PI_LHC_HOME`), registered under the current working directory. |
 | `--lhc-thread <id>` | Attach to an existing thread by full or partial id. Ambiguous prefixes fail. |
 | `--lhc-resume` | CWD-scoped picker: lists threads registered under this directory with title and creation time. One candidate auto-selects; multiple candidates present an interactive picker. |
 | `--lhc-continue` | Attach to the most recently created thread (any CWD). |

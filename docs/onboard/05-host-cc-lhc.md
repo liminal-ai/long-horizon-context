@@ -138,7 +138,7 @@ sequenceDiagram
 
 ## State layout
 
-cc-lhc owns its complete state under `~/.cc-lhc` (override `CC_LHC_HOME`), fully isolated from pi-lhc's `~/.lhc` (`intake/paths.ts`):
+cc-lhc owns its complete state under `~/.cc-lhc` (override `CC_LHC_HOME`), fully isolated from pi-lhc's `~/.pi-lhc` (`intake/paths.ts`):
 
 | Path | Purpose |
 | --- | --- |
@@ -146,7 +146,7 @@ cc-lhc owns its complete state under `~/.cc-lhc` (override `CC_LHC_HOME`), fully
 | `cc-lhc.sqlite` | Session lineage (`rollout_session_id → thread_id`) and replay-dedupe signatures |
 | `threads/<uuid>.sqlite` | Per-thread LHC databases |
 
-Nothing cc-related is written under `~/.lhc`. The rebuilt rollout files it writes live where Claude Code expects them, under `~/.claude/projects/`.
+Nothing cc-related is written under `~/.pi-lhc` (or the legacy `~/.lhc`). The rebuilt rollout files it writes live where Claude Code expects them, under `~/.claude/projects/`.
 
 ## Known warts (POC)
 

@@ -1,6 +1,6 @@
 # Host: pi-lhc
 
-Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+Last verified against code: 2026-07-11. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
 This document describes the `pi-lhc` host as it is, including its known debt. Host code is less shaped than the core SDK, and a cleanup rework is expected — the pi-lhc pass is tracked as item 18 in [docs/fixes-feature-log.md](../fixes-feature-log.md) (named compact profiles, connector cleanup, native-inference re-plumb). Where this doc names hardcoded thresholds or awkward seams, they are real and known, not hidden.
 
@@ -18,7 +18,7 @@ The extension retains almost no state. The registered connector holds a plain-da
 
 ### Launcher startup
 
-The `pi-lhc` binary (`bin.ts`) computes a default new-thread path at `~/.lhc/threads/<uuid>.sqlite` and calls `runPiLhcLauncher` (`launcher/run.ts:66`). The launcher splits its own `--lhc-*` flags out of argv before PI's parser ever sees them (`launcher/parse-args.ts:54`), so PI's native `--session`/`--resume`/`--continue` stay untouched — and are in fact rejected outright if a user passes them, because LHC owns session identity now (`parse-args.ts:113`).
+The `pi-lhc` binary (`bin.ts`) resolves the home via `piLhcHome()` (`home.ts` — `PI_LHC_HOME` when set, else `~/.pi-lhc`), computes a default new-thread path at `<home>/threads/<uuid>.sqlite` (`defaultNewThreadFilePath`), sets `PI_CODING_AGENT_DIR` to `<home>/pi/agent` (a non-empty operator preset takes precedence — PI config then stays wherever it points), and calls `runPiLhcLauncher` (`launcher/run.ts`). The launcher splits its own `--lhc-*` flags out of argv before PI's parser ever sees them (`launcher/parse-args.ts`), so PI's native `--session`/`--resume`/`--continue` stay untouched — and are in fact rejected outright if a user passes them, because LHC owns session identity now.
 
 Thread resolution has four outcomes, split across two layers: `--lhc-resume`'s interactive picker is handled in `launcher/resolve-startup.ts`, and the id / `--lhc-continue` / new-thread branches in `lifecycle/thread-resolution.ts:64`.
 
@@ -175,9 +175,22 @@ Launcher **flags** (`--lhc-thread`, `--lhc-resume`, `--lhc-continue`, `--lhc-hel
 
 ## State layout
 
-LHC state lives under `~/.lhc` (`DEFAULT_LHC_DIR`): the thread registry, and per-thread databases at `~/.lhc/threads/<uuid>.sqlite` (`index.ts:261`, `bin.ts:8`). The directory is `mkdir`'d recursively because SQLite will not create parent directories. Two custom PI session-entry types are durable state pi-lhc writes into the PI session: `pi-lhc.thread` (reattach target) and `pi-lhc.seed-entry-map` (compact continuity).
+All runtime state lives under one home, resolved by `home.ts` (one carve-out: a pre-set non-empty `PI_CODING_AGENT_DIR` redirects the PI config dir out of the home — see the `pi/agent/` row):
 
-There is no dotenv usage in this package; the only `process.env` write is `PI_OFFLINE=1` under `--offline`. Auth for derivation lanes is threaded through PI's providers. A planned consolidation (fixes-log item 26) gives pi-lhc its own `~/.pi-lhc` config dir instead of riding global `~/.pi` + `~/.lhc`, and consolidates the split API-key locations; neither blocks anything today.
+| Path | Purpose |
+| --- | --- |
+| `~/.pi-lhc/` (override `PI_LHC_HOME`) | Host home root |
+| `registry.sqlite` | LHC thread registry |
+| `threads/<uuid>.sqlite` | Per-thread LHC databases (`defaultNewThreadFilePath`) |
+| `pi/agent/` | Entire PI config dir — auth, models, settings, sessions, extensions, skills — via `PI_CODING_AGENT_DIR` (`ensurePiAgentDirEnv`; a pre-set non-empty env value takes precedence over the home) |
+| `backup.sh` | Optional snapshot rail (copied from `scripts/pi-lhc-backup.sh` on fresh install, or installed by migration) |
+| `.env` | Optional env file (migration copies from legacy `~/.lhc/.env` when present) |
+
+Parent directories are `mkdir`'d recursively because SQLite will not create them. Two custom PI session-entry types are durable state pi-lhc writes into the PI session: `pi-lhc.thread` (reattach target) and `pi-lhc.seed-entry-map` (compact continuity).
+
+Plain `pi` on the same machine keeps a separate `~/.pi` — intentional divergence after a one-time seed. Machines with legacy split state (`~/.lhc` + `~/.pi/agent`) migrate offline with `scripts/migrate-to-pi-lhc.mjs` (`--dry-run` then `--yes`; refuses while a pi-lhc process is alive). Fresh installs install the backup rail from `scripts/pi-lhc-backup.sh` into the home (setup doc step 7); the script WAL-checkpoints then commits/pushes if the home is a git repo with `origin`/`main`.
+
+The only `process.env` writes from the launcher are `PI_CODING_AGENT_DIR` (home-owned agent dir, written only when not already set) and `PI_OFFLINE=1` under `--offline`. Auth for derivation lanes is threaded through PI's providers under the resolved agent dir — the home's `pi/agent/` unless a preset redirected it.
 
 ## Known debt
 

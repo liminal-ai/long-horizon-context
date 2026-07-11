@@ -1,8 +1,21 @@
 #!/usr/bin/env node
-// Prerequisite check for cc-lhc standalone setup. Exits 0 when all pass.
-// Usage: node .setup/scripts/check-prereqs.mjs [--skip-claude-call]
+// Prerequisite check for standalone setup. Exits 0 when all pass.
+// Usage: node .setup/scripts/check-prereqs.mjs [--for cc-lhc|pi-lhc] [--skip-claude-call]
+// Default --for is cc-lhc (Claude Code on PATH + auth). pi-lhc skips Claude Code checks.
 import { execFileSync } from "node:child_process";
 
+function parseFor(argv) {
+  const idx = argv.indexOf("--for");
+  if (idx === -1) return "cc-lhc";
+  const val = argv[idx + 1];
+  if (val !== "cc-lhc" && val !== "pi-lhc") {
+    console.error(`unknown --for value: ${val ?? "(missing)"} (expected cc-lhc or pi-lhc)`);
+    process.exit(1);
+  }
+  return val;
+}
+
+const target = parseFor(process.argv);
 const skipClaudeCall = process.argv.includes("--skip-claude-call");
 let failures = 0;
 
@@ -32,16 +45,20 @@ check("node >=24.17.0 <25", nodeOk, `found v${process.versions.node}`);
 const pnpmV = run("pnpm", ["--version"]);
 check("pnpm 11.x", pnpmV !== null && pnpmV.startsWith("11."), pnpmV ?? "not found — try: corepack enable && corepack prepare pnpm@11.8.0 --activate");
 
-// 4. claude present
-const claudeV = run("claude", ["--version"]);
-check("claude on PATH", claudeV !== null, claudeV ?? "Claude Code not found");
+// 4–5. Claude Code (cc-lhc only)
+if (target === "cc-lhc") {
+  const claudeV = run("claude", ["--version"]);
+  check("claude on PATH", claudeV !== null, claudeV ?? "Claude Code not found");
 
-// 5. claude auth (real -p call; skippable)
-if (claudeV !== null && !skipClaudeCall) {
-  const out = run("claude", ["-p", "reply with exactly: ok"]);
-  check("claude -p auth", out !== null && out.length > 0, out === null ? "call failed — check Claude Code login" : undefined);
-} else if (skipClaudeCall) {
-  console.log("SKIP  claude -p auth (--skip-claude-call)");
+  if (claudeV !== null && !skipClaudeCall) {
+    const out = run("claude", ["-p", "reply with exactly: ok"]);
+    check("claude -p auth", out !== null && out.length > 0, out === null ? "call failed — check Claude Code login" : undefined);
+  } else if (skipClaudeCall) {
+    console.log("SKIP  claude -p auth (--skip-claude-call)");
+  }
+} else {
+  console.log("SKIP  claude on PATH (pi-lhc — no Claude Code required)");
+  console.log("SKIP  claude -p auth (pi-lhc — model auth is via PI login later)");
 }
 
 process.exit(failures === 0 ? 0 : 1);
