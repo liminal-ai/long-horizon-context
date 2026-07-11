@@ -24,7 +24,7 @@ const API_CONFIG = {
 
 const EXA_API_KEYS_URL = "https://dashboard.exa.ai/api-keys";
 const TRANSIENT_STATUS_CODES = new Set([500, 502, 503, 504]);
-const MISSING_KEY_MESSAGE = `Exa API key not configured. Add an "exa" entry to ~/.pi/agent/auth.json as { "type": "api-key", "key": "..." }. API keys are available at ${EXA_API_KEYS_URL}.`;
+const MISSING_KEY_MESSAGE = `Exa API key not configured. Add an "exa" entry to auth.json in your PI agent directory (~/.pi-lhc/pi/agent under pi-lhc; ~/.pi/agent under plain pi) as { "type": "api-key", "key": "..." }. API keys are available at ${EXA_API_KEYS_URL}.`;
 
 type AgentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 type AgentEffort = "low" | "medium" | "high" | "xhigh" | "auto";
