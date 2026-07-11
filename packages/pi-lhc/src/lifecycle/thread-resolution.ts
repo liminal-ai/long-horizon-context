@@ -15,9 +15,9 @@ export interface LaunchFlags {
 /** What the resolver needs from the host beyond the launch flags: the cwd a new
  *  thread is registered under, the registry to resolve through, and where a new
  *  thread's file is created. Injected so the resolver is exercised against a
- *  real temp registry in tests and the default `~/.lhc` registry in normal use —
- *  `registryPath` is a per-operation argument, never an `initLhc` config field
- *  */
+ *  real temp registry in tests and the production `~/.pi-lhc` registry when the
+ *  entry point fills it — `registryPath` is a per-operation argument, never an
+ *  `initLhc` config field. */
 export interface ResolveDeps {
   cwd: string;
   registryPath?: string;
