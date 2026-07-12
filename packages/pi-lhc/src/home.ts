@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /** pi-lhc home directory: `PI_LHC_HOME` override when set, `~/.pi-lhc` otherwise. */
 export function piLhcHome(): string {
   const override = process.env.PI_LHC_HOME;
-  return override !== undefined && override !== "" ? override : join(homedir(), ".pi-lhc");
+  return override !== undefined && override !== "" ? resolve(override) : join(homedir(), ".pi-lhc");
 }
 
 export function defaultRegistryPath(): string {

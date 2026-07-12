@@ -82,6 +82,9 @@ importers:
       '@earendil-works/pi-agent-core':
         specifier: file:../../vendor/pi/packages/agent
         version: file:vendor/pi/packages/agent(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: file:../../vendor/pi/packages/ai
+        version: file:vendor/pi/packages/ai(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-coding-agent':
         specifier: file:../../vendor/pi/packages/coding-agent
         version: file:vendor/pi/packages/coding-agent(ws@8.21.0)(zod@4.4.3)

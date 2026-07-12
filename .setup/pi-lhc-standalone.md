@@ -1,6 +1,6 @@
 # Setup: pi-lhc standalone
 
-Audience: an AI coding agent (or a person) setting up pi-lhc on a machine that will use PI. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
+Audience: an AI coding agent (or a person) setting up pi-lhc on a Linux or macOS machine that will use PI. (On Windows, use WSL; native Windows is not currently supported.) Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
 > Kickoff lives in the repo README ("Installing the PI Harness"). Everything below assumes the agent is reading this file inside a completed clone.
 
@@ -33,11 +33,13 @@ All lines must PASS (or intentional SKIP) before continuing. The script needs on
 From the repo root. Build the vendored PI submodule **first** — `pi-lhc` links against its built `dist/`:
 
 ```bash
-pnpm install
 cd vendor/pi && npm ci && npm run build && cd ../..
+pnpm install
 pnpm --filter lhc run build
 pnpm --filter pi-lhc run build
 ```
+
+The order is mandatory on a clean clone: pnpm snapshots the local `file:` PI packages when it installs them, so their built `dist/` must already exist. Running `pnpm install` first produces incomplete package snapshots and pi-lhc will not compile.
 
 Do not run the root `pnpm build` unless you want every package — the filtered builds above are enough.
 
@@ -53,7 +55,7 @@ Do not run the root `pnpm build` unless you want every package — the filtered 
 node .setup/scripts/install-shim.mjs --target pi-lhc
 ```
 
-Writes a launcher to `~/.local/bin/pi-lhc` (or `pi-lhc.cmd` on Windows) pointing at this clone's built dist — it resolves the repo path itself. Use `--bin-dir <dir>` to install elsewhere. The script warns if the target directory is not on PATH; if it warns, add the directory in your shell profile.
+Writes a launcher to `~/.local/bin/pi-lhc` pointing at this clone's built dist — it resolves the repo path itself. Use `--bin-dir <dir>` to install elsewhere. The script warns if the target directory is not on PATH; if it warns, add the directory in your shell profile.
 
 **Verify:** `pi-lhc --lhc-help` from any directory prints the launcher help.
 
@@ -67,7 +69,7 @@ From a project directory (not this repo):
 pi-lhc
 ```
 
-This launches PI wrapped by the LHC launcher. First launch creates `~/.pi-lhc/` with `registry.sqlite`, `threads/`, and `pi/agent/` (PI's entire config directory, via `PI_CODING_AGENT_DIR`). Override the home location with `PI_LHC_HOME` if needed. One precedence rule: if `PI_CODING_AGENT_DIR` is already set in your environment, pi-lhc respects it and PI config lands **there**, not under the home — `unset PI_CODING_AGENT_DIR` before this step unless you want that.
+This launches PI wrapped by the LHC launcher. First launch creates `~/.pi-lhc/` with `registry.sqlite`, `threads/`, and `pi/agent/` (PI's entire config directory, via `PI_CODING_AGENT_DIR`). Override the home location with `PI_LHC_HOME` if needed; use an absolute path so launches from different project directories cannot resolve to different homes. One precedence rule: if `PI_CODING_AGENT_DIR` is already set in your environment, pi-lhc respects it and PI config lands **there**, not under the home — `unset PI_CODING_AGENT_DIR` before this step unless you want that.
 
 **Verify after first launch (even if you exit immediately):**
 - `ls ~/.pi-lhc/` shows `registry.sqlite`, `threads/`, and `pi/agent/` (or the corresponding paths under `$PI_LHC_HOME`). If you deliberately kept a `PI_CODING_AGENT_DIR` preset, `pi/agent/` will be at that location instead — the other two entries still land in the home.
@@ -78,7 +80,14 @@ PI's persistent login flow runs inside pi-lhc and writes credentials into `~/.pi
 
 Plain `pi` on the same machine keeps its own separate `~/.pi` — intended divergence. Machines that already have state under `~/.lhc` and `~/.pi/agent` migrate instead via the migration script (see "Migrating an existing machine" below): LHC state is **moved**, PI agent config is copied.
 
-**Verify (after a persistent `/login`, not the per-session alternatives):** `ls ~/.pi-lhc/pi/agent/auth.json` (or the equivalent under `$PI_LHC_HOME`) exists. Finding it under `~/.pi/agent/` instead means the session was not running under pi-lhc's home.
+**Verify (after a persistent `/login`, not the per-session alternatives):** confirm the auth file contains at least one provider entry (PI creates an empty `{}` file even before login, so existence alone is not enough):
+
+```bash
+AUTH="${PI_CODING_AGENT_DIR:-${PI_LHC_HOME:-$HOME/.pi-lhc}/pi/agent}/auth.json"
+AUTH="$AUTH" node -e 'const a=JSON.parse(require("node:fs").readFileSync(process.env.AUTH,"utf8")); if (!Object.keys(a).length) process.exit(1)'
+```
+
+Finding the populated file under `~/.pi/agent/` instead means the session was not running under pi-lhc's home.
 
 ## Step 7: Backup rail install
 
@@ -91,7 +100,7 @@ chmod +x ~/.pi-lhc/backup.sh
 
 (Use `$PI_LHC_HOME` instead of `~/.pi-lhc` if you overrode the home.)
 
-The script runs from the home directory: it WAL-checkpoints `registry.sqlite` and every `threads/*.sqlite`, then `git add -A`, commits if there is anything new, and `git push -q origin main`. It assumes the home is already a git repo with a remote named `origin` and a `main` branch. If you want offsite snapshots, initialize that yourself before relying on the rail:
+The script runs from the home directory: it uses Node's built-in SQLite support to WAL-checkpoint `registry.sqlite` and every `threads/*.sqlite`, then `git add -A`, commits if there is anything new, and `git push -q origin main`. It assumes the home is already a git repo with a remote named `origin` and a `main` branch. If you want offsite snapshots, initialize that yourself before relying on the rail:
 
 ```bash
 cd ~/.pi-lhc

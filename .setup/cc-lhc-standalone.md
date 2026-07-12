@@ -1,6 +1,6 @@
 # Setup: cc-lhc standalone
 
-Audience: an AI coding agent (or a person) setting up cc-lhc on a machine that has Claude Code and will NOT use PI. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
+Audience: an AI coding agent (or a person) setting up cc-lhc on a Linux or macOS machine that has Claude Code and will NOT use PI. (On Windows, use WSL; native Windows is not currently supported.) Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
 > Kickoff lives in the repo README ("Installing the Claude Code Harness"). Everything below assumes the agent is reading this file inside a completed clone.
 
@@ -48,7 +48,7 @@ Do not run the root `pnpm build` — it builds every package including PI-depend
 node .setup/scripts/install-shim.mjs
 ```
 
-Writes a launcher to `~/.local/bin/cc-lhc` (or `cc-lhc.cmd` on Windows) pointing at this clone's built dist — it resolves the repo path itself. Use `--bin-dir <dir>` to install elsewhere. The script warns if the target directory is not on PATH; if it warns, add the directory in your shell profile.
+Writes a launcher to `~/.local/bin/cc-lhc` pointing at this clone's built dist — it resolves the repo path itself. Use `--bin-dir <dir>` to install elsewhere. The script warns if the target directory is not on PATH; if it warns, add the directory in your shell profile.
 
 **Verify:** `cc-lhc --version` from any directory prints the Claude Code version banner.
 
@@ -62,7 +62,7 @@ From a project directory (not this repo):
 cc-lhc
 ```
 
-This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). Use Claude Code as usual for a few exchanges, then press **ctrl-]** — the screen switches to a command panel with a `long-horizon commands> ` prompt — and type `status` then Enter. Thread info appears as receipt rows in the panel; press Esc once to dismiss (Claude Code's screen comes back exactly as it was). Exit normally.
+This launches Claude Code normally, wrapped. First launch creates `~/.cc-lhc/` (registry, thread store). If you set `CC_LHC_HOME`, use an absolute path so launches from different project directories cannot resolve to different homes. Use Claude Code as usual for a few exchanges, then press **ctrl-]** — the screen switches to a command panel with a `long-horizon commands> ` prompt — and type `status` then Enter. Thread info appears as receipt rows in the panel; press Esc once to dismiss (Claude Code's screen comes back exactly as it was). Exit normally.
 
 **Verify after exit:**
 - `ls ~/.cc-lhc/threads/` shows at least one `.sqlite` file.

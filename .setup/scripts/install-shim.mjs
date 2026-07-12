@@ -29,7 +29,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const distBin = join(repoRoot, "packages", target.packageDir, "dist", "bin.js");
 
 const argIdx = process.argv.indexOf("--bin-dir");
+if (argIdx !== -1 && process.argv[argIdx + 1] === undefined) {
+  console.error("missing value for --bin-dir");
+  process.exit(1);
+}
 const binDir = argIdx !== -1 ? resolve(process.argv[argIdx + 1]) : join(homedir(), ".local", "bin");
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
 if (!existsSync(distBin)) {
   console.error(`missing built launcher: ${distBin}`);
@@ -47,7 +55,7 @@ if (process.platform === "win32") {
   const dest = join(binDir, target.name);
   writeFileSync(
     dest,
-    `#!/usr/bin/env bash\nset -euo pipefail\nDIST_BIN="${distBin}"\nif [[ ! -f "$DIST_BIN" ]]; then\n  echo "${target.name}: missing built launcher at $DIST_BIN" >&2\n  echo "run: cd ${repoRoot} && pnpm --filter ${target.packageDir} run build" >&2\n  exit 1\nfi\nexec node "$DIST_BIN" "$@"\n`,
+    `#!/usr/bin/env bash\nset -euo pipefail\nDIST_BIN=${shellQuote(distBin)}\nREPO_ROOT=${shellQuote(repoRoot)}\nif [[ ! -f "$DIST_BIN" ]]; then\n  echo "${target.name}: missing built launcher at $DIST_BIN" >&2\n  echo "run: cd $REPO_ROOT && pnpm --filter ${target.packageDir} run build" >&2\n  exit 1\nfi\nexec node "$DIST_BIN" "$@"\n`,
   );
   chmodSync(dest, 0o755);
   console.log(`wrote ${dest}`);
