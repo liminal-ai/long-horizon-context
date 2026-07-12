@@ -237,7 +237,7 @@ The submodule build comes first — `pi-lhc` links against `vendor/pi`'s built `
 
 ### Vendored PI (submodule)
 
-`vendor/pi` is a git submodule pointing at [leegmoore/pi](https://github.com/leegmoore/pi), a fork of upstream [earendil-works/pi](https://github.com/earendil-works/pi). The checked-out `patches` branch is upstream `main` plus local patch commits — currently one: `fix(ai): preserve signed thinking blocks with empty text in Anthropic history` (tagged `pi-thinking-signature-fix`), needed for reasoning continuity on `display: "omitted"` models (Fable 5 / Sonnet 5 / Opus 4.7+). Patches are dropped as upstream fixes land.
+`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA — which may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. There are currently **no local patches** (the previous thinking-signature patch was retired when upstream merged #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
 
 Syncing with upstream (done in a separate working clone, then the pin bumped here):
 

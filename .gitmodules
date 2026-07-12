@@ -1,4 +1,4 @@
 [submodule "vendor/pi"]
 	path = vendor/pi
-	url = https://github.com/leegmoore/pi.git
-	branch = patches
+	url = https://github.com/earendil-works/pi.git
+	branch = main
