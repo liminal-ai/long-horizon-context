@@ -24,7 +24,7 @@ Run the checker from the repo root:
 node .setup/scripts/check-prereqs.mjs
 ```
 
-It verifies: **git**; **Node 24.x** (`>=24.17.0 <25` — if wrong, install via your version manager: `nvm install 24`, `mise use node@24`, etc.); **pnpm 11.x** (if missing: `corepack enable && corepack prepare pnpm@11.8.0 --activate`); **Claude Code on PATH**; and **Claude Code auth** via a real `claude -p` call (add `--skip-claude-call` to skip that one — but cc-lhc's background summarization uses `claude -p` under your existing login, so if it fails, fix Claude Code auth before continuing).
+It verifies: **git**; **Node ≥ 24.17.0** (stable `node:sqlite` floor; newer majors pass with an untested note — if below, install via your version manager: `nvm install 24`, `mise use node@24`, etc.); **pnpm 11.x** (if missing: `corepack enable && corepack prepare pnpm@11.8.0 --activate`); **Claude Code on PATH**; and **Claude Code auth** via a real `claude -p` call (add `--skip-claude-call` to skip that one — but cc-lhc's background summarization uses `claude -p` under your existing login, so if it fails, fix Claude Code auth before continuing).
 
 All lines must PASS before continuing. The script needs only Node, so if even Node is missing/wrong-version, fix that first by hand.
 

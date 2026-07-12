@@ -30,7 +30,7 @@
     "verify:all": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:all"
   },
   "engines": {
-    "node": ">=24.17.0 <25"
+    "node": ">=24.17.0"
   },
   "dependencies": {
     "effect": "^3.21.2",

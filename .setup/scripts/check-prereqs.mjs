@@ -36,10 +36,14 @@ function check(name, ok, detail) {
 const gitV = run("git", ["--version"]);
 check("git", gitV !== null, gitV ?? "not found on PATH");
 
-// 2. node 24.x (>=24.17.0 <25)
+// 2. node >=24.17.0 (stable node:sqlite floor; newer majors allowed but untested)
 const [maj, min] = process.versions.node.split(".").map(Number);
-const nodeOk = maj === 24 && (min > 17 || (min === 17 && Number(process.versions.node.split(".")[2]) >= 0));
-check("node >=24.17.0 <25", nodeOk, `found v${process.versions.node}`);
+const nodeOk = maj > 24 || (maj === 24 && min >= 17);
+const nodeNote =
+  maj > 24
+    ? `found v${process.versions.node} (untested major — tested floor is 24.17; report issues)`
+    : `found v${process.versions.node}`;
+check("node >=24.17.0", nodeOk, nodeNote);
 
 // 3. pnpm 11.x
 const pnpmV = run("pnpm", ["--version"]);

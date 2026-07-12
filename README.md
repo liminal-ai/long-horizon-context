@@ -221,7 +221,7 @@ When PI requests compaction, the connector:
 
 ### Prerequisites
 
-- **Node.js** ≥ 24.17.0, < 25 (uses `node:sqlite` built-in)
+- **Node.js** ≥ 24.17.0 (uses the stable `node:sqlite` built-in; majors above 24 are untested but not blocked)
 - **pnpm** 11.8.0+
 
 ### Setup

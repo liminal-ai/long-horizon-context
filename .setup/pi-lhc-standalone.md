@@ -24,7 +24,7 @@ Run the checker from the repo root with the pi-lhc lane:
 node .setup/scripts/check-prereqs.mjs --for pi-lhc
 ```
 
-It verifies: **git**; **Node 24.x** (`>=24.17.0 <25` — if wrong, install via your version manager: `nvm install 24`, `mise use node@24`, etc.); **pnpm 11.x** (if missing: `corepack enable && corepack prepare pnpm@11.8.0 --activate`). Claude Code checks are skipped for this lane — pi-lhc needs no Claude Code. Model auth comes later via PI's own login (step 6).
+It verifies: **git**; **Node ≥ 24.17.0** (stable `node:sqlite` floor; newer majors pass with an untested note — if below, install via your version manager: `nvm install 24`, `mise use node@24`, etc.); **pnpm 11.x** (if missing: `corepack enable && corepack prepare pnpm@11.8.0 --activate`). Claude Code checks are skipped for this lane — pi-lhc needs no Claude Code. Model auth comes later via PI's own login (step 6).
 
 All lines must PASS (or intentional SKIP) before continuing. The script needs only Node, so if even Node is missing/wrong-version, fix that first by hand.
 
