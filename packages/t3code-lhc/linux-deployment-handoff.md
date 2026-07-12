@@ -175,35 +175,33 @@ fork and must run from that checkout until it is upstreamed or packaged separate
 
 ## Repository locations and remotes
 
-> **Layout update (2026-07-12, t3code commit `268be9c8`):** the external sibling-layout
-> requirement is gone. The t3code fork now vendors the LHC repo as a git submodule at
-> `vendor/lhc`, and the `lhc` dependency is a repo-internal link:
+> **Layout update (2026-07-12, t3code commit `b9ad155a`): two independent roots.**
+> `long-horizon-context` and the t3code fork are peer repositories; neither's location
+> constrains the other. The fork carries a **read-only, pinned** vendor copy of the
+> LHC repo solely to statically link the SDK:
 >
 > ```json
-> "lhc": "link:../../vendor/lhc/packages/lhc"
+> "lhc": "link:../../vendor/long-horizon-context/packages/lhc"
 > ```
->
-> One recursive clone yields a fully self-contained, buildable tree — no machine may
-> impose any layout on any other:
 >
 > ```text
-> git clone --recursive -b lhc https://github.com/liminal-ai/t3code.git t3code
-> t3code/
->   packages/lhc-host/          # consumes ../../vendor/lhc/packages/lhc
->   vendor/lhc/                 # submodule -> liminal-ai/long-horizon-context (pinned)
->     packages/{lhc,pi-lhc,cc-lhc}
->     pi-extensions/
->     vendor/pi/                # nested submodule -> earendil-works/pi (pinned)
+> <anywhere>/t3code-lhc/                 # clone -b lhc liminal-ai/t3code
+>   packages/lhc-host/                   # consumes the vendored SDK
+>   vendor/long-horizon-context/         # submodule -> liminal-ai/long-horizon-context (pin)
+>     packages/lhc/                      # the only thing t3code consumes
+>     vendor/pi/                         # checked out (workspace install needs the dirs),
+>                                        #   NEVER built for this profile
+>
+> <anywhere>/long-horizon-context/       # the real root: development happens HERE only
+>   packages/{lhc,pi-lhc,cc-lhc}, pi-extensions/, vendor/pi (built, for pi-lhc)
 > ```
 >
-> Build order inside the clone is unchanged from the standalone docs: build
-> `vendor/lhc/vendor/pi` first, then `pnpm install` + filtered builds in `vendor/lhc`,
-> then `pnpm install` + builds at the t3code root. Bump the `vendor/lhc` pin to advance
-> the SDK; the pin records which LHC revision the app was validated against.
->
-> Standalone LHC clones (machines running only pi-lhc/cc-lhc, no t3code) remain
-> supported via `.setup/pi-lhc-standalone.md` / `.setup/cc-lhc-standalone.md`.
-> The historical layout description below is retained for context only.
+> Rules: never edit inside `vendor/long-horizon-context` — push to the LHC repo from a
+> standalone clone, then advance the pin (`git -C vendor/long-horizon-context fetch &&
+> checkout <sha>`, rebuild `packages/lhc`, commit the pin). Build steps in the vendor
+> copy: `pnpm install` + `pnpm --filter lhc run build` only — no vendor/pi build.
+> Standalone harness installs (pi-lhc/cc-lhc) use `.setup/*-standalone.md` against the
+> real root. The historical layout description below is retained for context only.
 
 ### T3 Code fork
 
