@@ -175,67 +175,47 @@ fork and must run from that checkout until it is upstreamed or packaged separate
 
 ## Repository locations and remotes
 
-The current linked dependency assumes this exact relative checkout layout under the Linux
-user's home directory:
-
-```text
-~/code/
-  pi-long-horizon/
-    liminal-context/          # LHC SDK repository
-  t3code-lhc/
-    t3code/                   # LHC-enabled T3 Code fork
-```
-
-### LHC repository
-
-```text
-Local path:  ~/code/pi-long-horizon/liminal-context
-Origin:      https://github.com/liminal-ai/long-horizon-context.git
-Branch:      main
-```
-
-At handoff time the expected revision is at least:
-
-```text
-aedb94e  pi-lhc: format fold path and tighten omission regressions
-```
-
-Fetch before deploying and record the actual commit used. The relevant SDK package is:
-
-```text
-~/code/pi-long-horizon/liminal-context/packages/lhc
-```
+> **Layout update (2026-07-12, t3code commit `268be9c8`):** the external sibling-layout
+> requirement is gone. The t3code fork now vendors the LHC repo as a git submodule at
+> `vendor/lhc`, and the `lhc` dependency is a repo-internal link:
+>
+> ```json
+> "lhc": "link:../../vendor/lhc/packages/lhc"
+> ```
+>
+> One recursive clone yields a fully self-contained, buildable tree — no machine may
+> impose any layout on any other:
+>
+> ```text
+> git clone --recursive -b lhc https://github.com/liminal-ai/t3code.git t3code
+> t3code/
+>   packages/lhc-host/          # consumes ../../vendor/lhc/packages/lhc
+>   vendor/lhc/                 # submodule -> liminal-ai/long-horizon-context (pinned)
+>     packages/{lhc,pi-lhc,cc-lhc}
+>     pi-extensions/
+>     vendor/pi/                # nested submodule -> earendil-works/pi (pinned)
+> ```
+>
+> Build order inside the clone is unchanged from the standalone docs: build
+> `vendor/lhc/vendor/pi` first, then `pnpm install` + filtered builds in `vendor/lhc`,
+> then `pnpm install` + builds at the t3code root. Bump the `vendor/lhc` pin to advance
+> the SDK; the pin records which LHC revision the app was validated against.
+>
+> Standalone LHC clones (machines running only pi-lhc/cc-lhc, no t3code) remain
+> supported via `.setup/pi-lhc-standalone.md` / `.setup/cc-lhc-standalone.md`.
+> The historical layout description below is retained for context only.
 
 ### T3 Code fork
 
 ```text
-Local path:  ~/code/t3code-lhc/t3code
 Origin:      https://github.com/liminal-ai/t3code.git
 Branch:      lhc
 Upstream:    https://github.com/pingdotgg/t3code.git
+Contains:    vendor/lhc submodule (LHC SDK, harnesses, extensions)
 ```
 
-At handoff time the expected revision is at least:
-
-```text
-2ac199185  docs(lhc): record Cursor and Grok session-rebuild findings
-```
-
-The LHC host implementation is:
-
-```text
-~/code/t3code-lhc/t3code/packages/lhc-host
-```
-
-Its package dependency is deliberately local:
-
-```json
-"lhc": "link:../../../../pi-long-horizon/liminal-context/packages/lhc"
-```
-
-From `packages/lhc-host`, that relative path resolves correctly only when the two repositories
-have the layout shown above. Either preserve that layout or deliberately change and re-lock the
-link. Preserving it is recommended for the first deployment.
+The LHC host implementation is `packages/lhc-host`; its `lhc` dependency resolves
+inside the clone as shown above.
 
 ## Required onboarding reading
 
