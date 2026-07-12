@@ -10,13 +10,19 @@ function stripCcLhcFlags(argv: string[]): {
   let noCapture = false;
   let noInference = process.env.CC_LHC_NO_INFERENCE === "1";
   for (const arg of argv) {
-    if (arg === "--no-capture") {
-      noCapture = true;
-      continue;
-    }
-    if (arg === "--no-inference") {
-      noInference = true;
-      continue;
+    // Contract: every --lhc-* flag belongs to cc-lhc and is consumed here;
+    // everything else passes through to claude verbatim.
+    if (arg.startsWith("--lhc-")) {
+      if (arg === "--lhc-no-capture") {
+        noCapture = true;
+        continue;
+      }
+      if (arg === "--lhc-no-inference") {
+        noInference = true;
+        continue;
+      }
+      console.error(`Unknown cc-lhc flag: ${arg} (cc-lhc owns the --lhc-* namespace)`);
+      process.exit(2);
     }
     out.push(arg);
   }

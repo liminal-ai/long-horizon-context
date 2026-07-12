@@ -220,9 +220,24 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
   return item.message?.role === "assistant";
 }
 
-function skipType(item: RolloutLineItem): boolean {
-  const type = item.type;
-  return type === "summary" || type === "file-history-snapshot";
+// Housekeeping record types Claude Code writes into session files. None carry
+// conversation content: queue-operation duplicates the prompt already captured
+// via the user record; attachment records are tool/agent/skill listing deltas
+// injected by the runtime; ai-title and last-prompt are session metadata.
+// Counted as meta so skipped_unknown stays a meaningful drift gauge.
+const META_LINE_TYPES = new Set([
+  "summary",
+  "file-history-snapshot",
+  "queue-operation",
+  "attachment",
+  "ai-title",
+  "last-prompt",
+]);
+
+function isMetaLineType(item: RolloutLineItem): boolean {
+  if (typeof item.type === "string" && META_LINE_TYPES.has(item.type)) return true;
+  // Older Claude Code versions write attachment records without a top-level type.
+  return item.attachment !== undefined;
 }
 
 export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult {
@@ -233,8 +248,8 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
     return { events: [], stats };
   }
 
-  if (skipType(item)) {
-    stats.unknown += 1;
+  if (isMetaLineType(item)) {
+    stats.meta += 1;
     return { events: [], stats };
   }
 

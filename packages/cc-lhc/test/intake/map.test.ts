@@ -93,18 +93,35 @@ describe("mapRolloutLine", () => {
     expect(result.stats.sidechain).toBe(1);
   });
 
-  it("skips summary and file-history-snapshot", () => {
+  it("counts summary and file-history-snapshot as meta", () => {
     const summary = fixtures.find((item) => item.type === "summary");
     const snapshot = fixtures.find((item) => item.type === "file-history-snapshot");
     expect(summary).toBeDefined();
     expect(snapshot).toBeDefined();
-    expect(mapRolloutLine(summary!).stats.unknown).toBe(1);
-    expect(mapRolloutLine(snapshot!).stats.unknown).toBe(1);
+    expect(mapRolloutLine(summary!).stats.meta).toBe(1);
+    expect(mapRolloutLine(snapshot!).stats.meta).toBe(1);
   });
 
-  it("skips unknown record types (mode, attachment, system)", () => {
-    const unknowns = fixtures.filter((item) => item.type === "mode" || item.attachment !== undefined || item.type === "system");
-    expect(unknowns.length).toBeGreaterThanOrEqual(3);
+  it("counts housekeeping record types as meta (attachment, queue-operation, ai-title, last-prompt)", () => {
+    const attachments = fixtures.filter((item) => item.attachment !== undefined);
+    expect(attachments.length).toBeGreaterThanOrEqual(1);
+    const inline = [
+      { type: "queue-operation", operation: "enqueue", content: "x" },
+      { type: "ai-title", aiTitle: "t" },
+      { type: "last-prompt", lastPrompt: "x" },
+      { type: "attachment", attachment: { type: "skill_listing" } },
+    ] as RolloutLineItem[];
+    for (const item of [...attachments, ...inline]) {
+      const result = mapRolloutLine(item);
+      expect(result.events).toHaveLength(0);
+      expect(result.stats.meta).toBe(1);
+      expect(result.stats.unknown).toBe(0);
+    }
+  });
+
+  it("skips genuinely unknown record types (mode, system)", () => {
+    const unknowns = fixtures.filter((item) => item.type === "mode" || item.type === "system");
+    expect(unknowns.length).toBeGreaterThanOrEqual(2);
     for (const item of unknowns) {
       const result = mapRolloutLine(item);
       expect(result.events).toHaveLength(0);

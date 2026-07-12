@@ -74,7 +74,7 @@ If ctrl-] does not open the command panel, capture a debug log (`CC_LHC_INPUT_DE
 
 - **Claude Code version drift:** cc-lhc's rollout parser was built against Claude Code 2.1.201. On other versions it degrades safely — unknown record shapes are skipped and counted, never fatal. After a real session, check the modal `stats` command: a high `skipped_unknown` relative to `lines` means the local version writes shapes we don't map yet. Report the version and the counts.
 - **Exit pause:** quitting can take up to ~30s if background summarization is still draining. It's a pause, not a hang.
-- **Opting out:** `cc-lhc --no-capture` runs Claude Code wrapped but without recording, and plain `claude` is always untouched.
+- **Opting out:** `cc-lhc --lhc-no-capture` runs Claude Code wrapped but without recording, and plain `claude` is always untouched. (cc-lhc owns the `--lhc-*` flag namespace and consumes those flags; all other arguments pass through to `claude` verbatim.)
 
 ## Update
 
