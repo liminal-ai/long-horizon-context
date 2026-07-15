@@ -58,7 +58,6 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks, chunkPolicy?: SdkConf
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   };
@@ -213,7 +212,7 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
+    double.failKind("prompt_smoothing", 1, { reason: "scripted smoothing failure" });
     await sendTurn(sdk, filePath, "raw prompt one", "answer text");
 
     const report = await drain(sdk, filePath);
@@ -264,7 +263,7 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
+    double.failKind("prompt_smoothing", 1, { reason: "scripted smoothing failure" });
     await sendTurn(sdk, filePath, "gapped prompt", "gapped answer");
     await drain(sdk, filePath);
     const gapped = formOf(filePath, "t1", "turn_rendering");
@@ -600,15 +599,14 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(brief?.metadata?.sizeDisposition).toBeDefined();
   });
 
-  it("the brief item fails past budget alone: detailed ready, brief failed, brief re-queueable by itself", async () => {
+  it("the brief item fails alone: detailed ready, brief failed, brief re-derivable by itself", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
-    double.failKind("chunk_summary_brief", 3, {
-      retryable: true,
+    double.failKind("chunk_summary_brief", 1, {
       reason: "scripted brief failure",
     });
-    await sendTurn(sdk, filePath, "independent retry", "answer");
+    await sendTurn(sdk, filePath, "independent failure", "answer");
 
     const report = await drain(sdk, filePath);
     expect(report.ran.map((entry) => [entry.kind, entry.disposition])).toEqual([

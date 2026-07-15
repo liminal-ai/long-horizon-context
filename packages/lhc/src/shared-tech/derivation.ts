@@ -36,12 +36,11 @@ export interface Derivation {
   derivedAt?: string;
 }
 
-// Mechanically stamped derivation metadata: tool outcomes and retry-exhaustion
-// attempts/last-error copied from the work item before its row is deleted. The
-// queue is not an audit table; durable outcome detail lives here.
+// Mechanically stamped derivation metadata: tool outcomes, fallback detail,
+// and inference provenance. The queue is not an audit table; durable outcome
+// detail lives on the derivation and in derivation logs.
 export interface DerivationMetadata {
   outcome?: ToolOutcome;
-  attempts?: number;
   lastError?: string;
   discardReason?: string;
   fallbackFloor?: string;
@@ -57,21 +56,15 @@ export interface DerivationMetadata {
 
 // One row of an owner's repair report: the derivation's durable state joined
 // with the queue's mechanical detail for the live item still working toward it,
-// if any. The five operational situations read from this one row:
-// never-attempted, retrying, ready, failed, blocked. No caller ever needs a
-// queue API.
+// if any.
 export interface DerivationReportEntry extends Derivation {
   queue?: {
     status: "queued" | "claimed";
-    attempts: number;
-    lastError?: string;
-    eligibleAt?: string;
   };
 }
 
 // ── inference callback boundary ──────────────────────────────────
-// Every operation returns content or a structured failure carrying
-// retryable-or-not; classification is the adapter's duty.
+// Every operation returns content or a structured failure.
 // Provenance: the three config-known assignment strings, stamped by the
 // inference adapter (it alone knows the assignment) and copied by handlers
 // into derivation metadata. Never derived from model output.
@@ -91,7 +84,7 @@ export type InferenceResult =
       requestMessages?: InferenceRequestMessage[];
       rawResponse?: string;
     }
-  | { ok: false; retryable: boolean; reason: string; requestMessages?: InferenceRequestMessage[] };
+  | { ok: false; reason: string; requestMessages?: InferenceRequestMessage[] };
 
 // Message kinds a rendering part can carry — mirrors the intake event-kind
 // vocabulary minus turn_end (turn_end never projects a message). Mirrored
@@ -207,7 +200,6 @@ export interface SdkConfig {
   inference?: InferenceConfig;
   mode: "background" | "manual";
   clock?: () => Date;
-  retry?: { budget: number; backoffBaseMs: number; backoffCapMs: number }; // 3 / 5000 / 60000
   guards?: DerivationGuards;
   toolResult?: {
     smallTierTokens: number;
@@ -224,7 +216,6 @@ export interface ResolvedSdkConfig {
   inferenceCallbacks: InferenceCallbacks;
   mode: "background" | "manual";
   clock: () => Date;
-  retry: { budget: number; backoffBaseMs: number; backoffCapMs: number };
   guards: ResolvedDerivationGuards;
   compressionTargets: {
     minRatio: number;
@@ -285,7 +276,7 @@ export interface CompletionTx {
 export type HandlerOutcome =
   | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (transaction: CompletionTx) => void }
   | { ok: false; deferred: true; reason: string; onDeferred: (transaction: CompletionTx) => void }
-  | { ok: false; retryable: boolean; reason: string }
+  | { ok: false; reason: string }
   | { ok: false; blocked: true; reason: string }; // source damage → derivation blocked, item terminal
 
 // item is the queue util's WorkItemRecord; typed structurally here so the

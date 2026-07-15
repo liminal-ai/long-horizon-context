@@ -59,7 +59,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
     lease: { durationMs: 200 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: SELF_CHUNK,
@@ -283,12 +282,11 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
     enqueueChunkSummaryWork(filePath, "w-c1-chunk_summary_detailed-v1", "c1", "chunk_summary_detailed");
     await drain(sdk, filePath, { maxItems: 1 });
 
-    expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
-    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toMatchObject({
-      attempts: 1,
-      lastError: expect.stringContaining("member_projection_not_ready"),
+    expect(formOf(filePath, "c1", "chunk_summary_detailed")).toMatchObject({
+      state: "failed",
+      reason: expect.stringContaining("member_projection_not_ready"),
     });
-    execSql(filePath, `DELETE FROM work_item WHERE work_item_id = ?`, "w-c1-chunk_summary_detailed-v1");
+    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toBeUndefined();
 
     setCompressionState(filePath, "t2", { state: "blocked", reason: "source damaged" });
     resetChunkSummary(filePath, "c2", "chunk_summary_detailed");

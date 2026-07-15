@@ -41,7 +41,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
     lease: { durationMs: 200 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: SELF_CHUNK,
@@ -185,7 +184,6 @@ describe("Story 5: chunk_summary_brief from detailed material", () => {
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
     expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
     expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_brief-v1")).toMatchObject({
-      attempts: 0,
       status: "queued",
     });
     expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toBeDefined();
@@ -210,7 +208,6 @@ describe("Story 5: chunk_summary_brief from detailed material", () => {
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
     expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
     expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_brief-v1")).toMatchObject({
-      attempts: 0,
       status: "queued",
     });
     expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toBeDefined();
@@ -270,18 +267,17 @@ describe("Story 5: chunk_summary_brief from detailed material", () => {
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
     expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
     expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_brief-v1")).toMatchObject({
-      attempts: 0,
       status: "queued",
     });
 
     await drain(sdk, filePath, { maxItems: 1 });
 
-    expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
-    expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
-    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toMatchObject({
-      attempts: 1,
-      lastError: expect.stringContaining("member_projection_not_ready"),
+    expect(formOf(filePath, "c1", "chunk_summary_detailed")).toMatchObject({
+      state: "failed",
+      reason: expect.stringContaining("member_projection_not_ready"),
     });
+    expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("pending");
+    expect(liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v1")).toBeUndefined();
   });
 
   it("blocks when detailed is blocked or failed", async () => {

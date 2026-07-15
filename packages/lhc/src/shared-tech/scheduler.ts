@@ -30,7 +30,6 @@ import {
   type ClaimedWorkItem,
   claimNext,
   countLiveItems,
-  retryClaimedItem,
   type WorkKind,
   type WorkSourceRef,
 } from "./work-queue/index.js";
@@ -50,11 +49,9 @@ export interface DrainReport {
     kind: WorkKind;
     sourceRef: WorkSourceRef;
     disposition: "done" | "failed_terminal" | "stale_discarded" | "lost_lease";
-    attempts: number;
     reason?: string;
   }>;
-  stoppedBecause: "empty" | "in_flight" | "waiting" | "max_items";
-  waitingUntil?: string; // head's eligible_at when stoppedBecause = "waiting"
+  stoppedBecause: "empty" | "in_flight" | "max_items";
   claimExpiresAt?: string; // head's claim_expires_at when stoppedBecause = "in_flight"
   remaining: number; // live items left behind the stop point
 }
@@ -76,7 +73,6 @@ export interface DrainDeps {
 function ranEntry(
   item: ClaimedWorkItem,
   disposition: "done" | "failed_terminal" | "stale_discarded" | "lost_lease",
-  attempts: number,
   reason?: string,
 ): DrainReport["ran"][number] {
   const entry: DrainReport["ran"][number] = {
@@ -84,7 +80,6 @@ function ranEntry(
     kind: item.kind as WorkKind,
     sourceRef: item.sourceRef,
     disposition,
-    attempts,
   };
   if (reason !== undefined) entry.reason = reason;
   return entry;
@@ -107,20 +102,19 @@ function logDerivationExecution(
 }
 
 // The drain loop against an open handle. Claim → dispatch → complete, one
-// item at a time, until the head stops it (empty / in_flight / waiting) or
+// item at a time, until the head stops it (empty / in_flight) or
 // maxItems is reached. The handler runs with NO open transaction; the only
-// exits from a handler failure are failAttempt and the terminal paths — the
-// drain never catches an error and records success.
+// exit from a handler failure is a terminal path — the drain never catches an
+// error and records success.
 export async function drainOpenDb(
   db: DatabaseSync,
   deps: DrainDeps,
   opts?: { maxItems?: number },
   identity?: { threadId: string; filePath: string },
 ): Promise<DrainReport> {
-  const { clock, lease, retry, inferenceCallbacks } = deps.config;
+  const { clock, lease, inferenceCallbacks } = deps.config;
   const ran: DrainReport["ran"] = [];
   let stoppedBecause: DrainReport["stoppedBecause"];
-  let waitingUntil: string | undefined;
   let claimExpiresAt: string | undefined;
 
   for (;;) {
@@ -138,12 +132,22 @@ export async function drainOpenDb(
       claimExpiresAt = claim.claimExpiresAt;
       break;
     }
-    if (claim.outcome === "waiting") {
-      stoppedBecause = "waiting";
-      waitingUntil = claim.waitingUntil;
-      break;
-    }
     const item = claim.item;
+    if (claim.outcome === "expired") {
+      const reason = "claim_expired";
+      const terminal = applyDerivationTerminalFailure(
+        db,
+        { ...item, workItemId: item.workItemId },
+        { reason, state: "failed", now: clock().toISOString() },
+      );
+      if (terminal !== "lost_lease") {
+        logDerivationExecution(identity, db, item.derivations, "terminal_failed", { reason });
+      }
+      ran.push(
+        terminal === "lost_lease" ? ranEntry(item, "lost_lease", reason) : ranEntry(item, "failed_terminal", reason),
+      );
+      continue;
+    }
 
     const lookedUp = deps.lookupDispatcher(item.operation, item.kind);
     if (!lookedUp.ok) {
@@ -152,18 +156,17 @@ export async function drainOpenDb(
       // when resolvable from the payload, and the drain continues.
       const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
+        { ...item, workItemId: item.workItemId },
         {
           reason: lookedUp.error.code,
           state: "failed",
-          attempts: item.attempts,
           now: clock().toISOString(),
         },
       );
       ran.push(
         terminal === "lost_lease"
-          ? ranEntry(item, "lost_lease", item.attempts, lookedUp.error.code)
-          : ranEntry(item, "failed_terminal", item.attempts, lookedUp.error.code),
+          ? ranEntry(item, "lost_lease", lookedUp.error.code)
+          : ranEntry(item, "failed_terminal", lookedUp.error.code),
       );
       continue;
     }
@@ -180,18 +183,17 @@ export async function drainOpenDb(
     if (dispatchItem === undefined) {
       const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
+        { ...item, workItemId: item.workItemId },
         {
           reason: "unknown_work_kind",
           state: "failed",
-          attempts: item.attempts,
           now: clock().toISOString(),
         },
       );
       ran.push(
         terminal === "lost_lease"
-          ? ranEntry(item, "lost_lease", item.attempts, "unknown_work_kind")
-          : ranEntry(item, "failed_terminal", item.attempts, "unknown_work_kind"),
+          ? ranEntry(item, "lost_lease", "unknown_work_kind")
+          : ranEntry(item, "failed_terminal", "unknown_work_kind"),
       );
       continue;
     }
@@ -200,11 +202,10 @@ export async function drainOpenDb(
       outcome = await lookedUp.value(run, dispatchItem);
     } catch (cause) {
       if (cause instanceof DerivationCompletionError) throw cause;
-      // A throwing handler is a bug by the error contract, but the queue
-      // must not wedge on it: route it through the normal retry path so it
-      // counts attempts and exhausts visibly.
+      // A throwing handler is a bug by the error contract, but the queue must
+      // not wedge on it: record the attempt as failed and continue.
       const detail = cause instanceof Error ? cause.message : String(cause);
-      outcome = { disposition: "failed", retryable: true, reason: `handler threw: ${detail}` };
+      outcome = { disposition: "failed", reason: `handler threw: ${detail}` };
     }
 
     if (
@@ -212,30 +213,28 @@ export async function drainOpenDb(
       outcome.disposition === "stale_discarded" ||
       outcome.disposition === "lost_lease"
     ) {
-      ran.push(ranEntry(item, outcome.disposition, item.attempts));
+      ran.push(ranEntry(item, outcome.disposition));
       continue;
     }
     if (outcome.disposition === "blocked") {
       const terminal = applyDerivationTerminalFailure(
         db,
-        { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
+        { ...item, workItemId: item.workItemId },
         {
           reason: outcome.reason,
           state: "blocked",
-          attempts: item.attempts + 1,
           now: clock().toISOString(),
         },
       );
       if (terminal !== "lost_lease") {
         logDerivationExecution(identity, db, item.derivations, "terminal_failed", {
           reason: outcome.reason,
-          attempts: item.attempts + 1,
         });
       }
       ran.push(
         terminal === "lost_lease"
-          ? ranEntry(item, "lost_lease", item.attempts + 1, outcome.reason)
-          : ranEntry(item, "failed_terminal", item.attempts + 1, outcome.reason),
+          ? ranEntry(item, "lost_lease", outcome.reason)
+          : ranEntry(item, "failed_terminal", outcome.reason),
       );
       continue;
     }
@@ -243,50 +242,29 @@ export async function drainOpenDb(
       throw new Error(`unknown durable work disposition ${(outcome as { disposition: string }).disposition}`);
     }
     if (outcome.disposition === "failed") {
-      const attempts = item.attempts + 1;
-      if (outcome.retryable && attempts < retry.budget) {
-        const backoffMs = Math.min(retry.backoffBaseMs * 2 ** attempts, retry.backoffCapMs);
-        const eligibleAt = new Date(Date.parse(clock().toISOString()) + backoffMs).toISOString();
-        const owned = retryClaimedItem(db, item, { reason: outcome.reason, attempts, eligibleAt });
-        if (!owned) {
-          ran.push(ranEntry(item, "lost_lease", attempts, outcome.reason));
-        } else {
-          logDerivationExecution(identity, db, item.derivations, "retry_scheduled", {
-            reason: outcome.reason,
-            attempts,
-          });
-        }
-      } else {
-        const terminal = applyDerivationTerminalFailure(
-          db,
-          { ...item, workItemId: item.workItemId, claimEpoch: item.claimEpoch },
-          {
-            reason: outcome.reason,
-            state: "failed",
-            attempts,
-            now: clock().toISOString(),
-          },
-        );
-        if (terminal !== "lost_lease") {
-          logDerivationExecution(identity, db, item.derivations, "terminal_failed", {
-            reason: outcome.reason,
-            attempts,
-          });
-        }
-        ran.push(
-          terminal === "lost_lease"
-            ? ranEntry(item, "lost_lease", attempts, outcome.reason)
-            : ranEntry(item, "failed_terminal", attempts, outcome.reason),
-        );
+      const terminal = applyDerivationTerminalFailure(
+        db,
+        { ...item, workItemId: item.workItemId },
+        {
+          reason: outcome.reason,
+          state: "failed",
+          now: clock().toISOString(),
+        },
+      );
+      if (terminal !== "lost_lease") {
+        logDerivationExecution(identity, db, item.derivations, "terminal_failed", {
+          reason: outcome.reason,
+        });
       }
+      ran.push(
+        terminal === "lost_lease"
+          ? ranEntry(item, "lost_lease", outcome.reason)
+          : ranEntry(item, "failed_terminal", outcome.reason),
+      );
     }
-    // Under budget the item went back to queued (possibly backing off); the
-    // next claimNext re-reads the head — a backing-off head ends the drain
-    // with "waiting" and gates everything behind it.
   }
 
   const report: DrainReport = { ran, stoppedBecause, remaining: countLiveItems(db) };
-  if (waitingUntil !== undefined) report.waitingUntil = waitingUntil;
   if (claimExpiresAt !== undefined) report.claimExpiresAt = claimExpiresAt;
   return report;
 }
@@ -339,9 +317,9 @@ interface ThreadDrainState {
   pending: boolean;
   passes: number; // test-only observability (TC-1.2); must not become API
   waiters: Array<() => void>;
-  // At most one pending wake per thread; used for both backoff eligibility and
-  // claim expiry. A poke or newer wake clears it. unref'd so it never keeps
-  // the process alive. Background only — manual never reaches the drain loop.
+  // At most one pending wake per thread for claim expiry. A poke or newer wake
+  // clears it. unref'd so it never keeps the process alive. Background only —
+  // manual never reaches the drain loop.
   wakeTimer: ReturnType<typeof scheduleTimer> | undefined;
 }
 
@@ -417,11 +395,9 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
     }
   }
 
-  // Arm the lone scheduler wake: when a background pass stops on retry backoff
-  // or an unexpired claim, schedule one nudge at the row's next check time
-  // through the existing poke path. The delay reads the SDK clock seam; a bad
-  // timestamp degrades to the minimum delay, while correctness still rides
-  // claimNext's durable gate.
+  // Arm the lone scheduler wake when a background pass stops on an unexpired
+  // claim. The delay reads the SDK clock seam; a bad timestamp degrades to the
+  // minimum delay, while correctness still rides claimNext's durable gate.
   function armWake(st: ThreadDrainState, wakeAt: string): void {
     clearWake(st);
     const nowMs = deps.config.clock().getTime();
@@ -436,7 +412,6 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
   }
 
   function nextWakeAt(report: DrainReport | undefined): string | undefined {
-    if (report?.stoppedBecause === "waiting") return report.waitingUntil;
     if (report?.stoppedBecause === "in_flight") return report.claimExpiresAt;
     return undefined;
   }
@@ -452,15 +427,14 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
         st.passes += 1;
         // A failed pass (storage error) has no caller to report to in
         // background mode; the durable rows are untouched and the next poke
-        // or touch retries. A pass stopping on "waiting" or "in_flight" leaves
-        // a head that has a known next-check timestamp handled below.
+        // or touch tries again. A pass stopping on "in_flight" leaves a head
+        // that has a known next-check timestamp handled below.
         const result = await runDrain(st.filePath, deps);
         lastReport = result.ok ? result.value : undefined;
       } while (st.pending);
     } finally {
       st.running = false;
-      // Honor retry eligibility and claim expiry in background mode. Either
-      // stop can leave a head that no later poke is guaranteed to revisit, so
+      // Honor claim expiry in background mode. No later poke is guaranteed, so
       // keep the thread unsettled until the timer fires and re-enters schedule.
       const wakeAt = nextWakeAt(lastReport);
       if (st.wakeTimer === undefined && wakeAt !== undefined) {
@@ -473,8 +447,7 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
 
   function schedule(threadId: string): void {
     const st = stateFor(threadId);
-    // A poke (or the wake itself) supersedes any pending backoff wake — we are
-    // about to drain or coalesce, so the timer's job is done (one wake max).
+    // A poke (or the wake itself) supersedes any pending claim-expiry wake.
     clearWake(st);
     if (st.filePath === "") return; // never touched here: no path to drain
     if (st.running) {
@@ -507,8 +480,8 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
     },
     drainSettled(threadId: string): Promise<void> {
       const st = states.get(threadId);
-      // A pending backoff wake counts as unsettled (Fix 1): the retry it will
-      // fire is part of this drain cycle, so the awaitable must span it.
+      // A pending claim-expiry wake counts as unsettled, so the awaitable spans
+      // the cleanup pass that follows it.
       if (st === undefined || (!st.running && !st.pending && st.wakeTimer === undefined)) {
         return Promise.resolve();
       }

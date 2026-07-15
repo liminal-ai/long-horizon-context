@@ -32,7 +32,6 @@ import {
   enqueue,
   hasLiveItem,
   type ImmediateDerivationBoundary,
-  retryClaimedItem,
   type WorkKind,
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
@@ -53,12 +52,12 @@ function sourceDamaged(reason: string): Extract<HandlerOutcome, { ok: false }> {
   return { ok: false, blocked: true, reason: `source_damaged: ${reason}` };
 }
 
-function inferenceFailed(result: { retryable: boolean; reason: string }): Extract<HandlerOutcome, { ok: false }> {
-  return { ok: false, retryable: result.retryable, reason: result.reason };
+function inferenceFailed(result: { reason: string }): Extract<HandlerOutcome, { ok: false }> {
+  return { ok: false, reason: result.reason };
 }
 
 function dependencyNotReady(reason: string): Extract<HandlerOutcome, { ok: false }> {
-  return { ok: false, retryable: true, reason };
+  return { ok: false, reason };
 }
 
 function renderingPartLabel(kind: RenderingPart["kind"]): string {
@@ -157,22 +156,6 @@ function logFallback(
       floorUsed: entry.floorUsed,
     },
   );
-}
-
-function readClaimedWorkAttempts(db: DatabaseSync, workItemId: string): number {
-  const row = db
-    .prepare(`SELECT attempts FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-    .get(workItemId) as { attempts: number } | undefined;
-  return row === undefined ? 0 : Number(row.attempts);
-}
-
-function compressionExhausted(
-  compressionResult: { ok: false; retryable: boolean; reason: string },
-  attempts: number,
-  retryBudget: number,
-): boolean {
-  const nextAttempt = attempts + 1;
-  return !compressionResult.retryable || nextAttempt >= retryBudget;
 }
 
 const turnDerivationHandler: WorkHandler = async (run, item) => {
@@ -308,7 +291,6 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
       ? ({ ok: true, text: assemblyText } as const)
       : await run.inferenceCallbacks.compressDetailedTurn({ dialogueText: assemblyText, ...targetTokens });
 
-  const claimAttempts = readClaimedWorkAttempts(db, item.workItemId);
   let compressionText = assemblyText;
   let compressionUsedFallback = false;
   let compressionFailureReason: string | undefined;
@@ -324,16 +306,12 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
         eventKind: "inference_failed",
         payload: {
           reason: compressionResult.reason,
-          attempts: claimAttempts + 1,
           ...(compressionResult.requestMessages !== undefined
             ? { requestMessages: compressionResult.requestMessages }
             : {}),
         },
       },
     );
-    if (!compressionExhausted(compressionResult, claimAttempts, run.config.retry.budget)) {
-      return inferenceFailed(compressionResult);
-    }
     compressionUsedFallback = true;
     compressionFailureReason = compressionResult.reason;
   } else {
@@ -370,7 +348,6 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
     compressionMetadata.provenance = compressionResult.provenance;
   }
   if (compressionUsedFallback) {
-    compressionMetadata.attempts = claimAttempts + 1;
     compressionMetadata.inferenceAttempted = true;
     compressionMetadata.inferenceSucceeded = false;
     compressionMetadata.fallbackUsed = true;
@@ -415,7 +392,6 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
                 payload: {
                   fallbackFloor: "pre_detailed_assembly",
                   ...(compressionFailureReason !== undefined ? { reason: compressionFailureReason } : {}),
-                  attempts: claimAttempts + 1,
                 },
               },
             );
@@ -663,23 +639,20 @@ export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> 
 
 function deferClaimedTurnWork(
   db: DatabaseSync,
-  item: { workItemId: string; claimEpoch: number },
+  item: { workItemId: string },
   onDeferred: (transaction: { db: DatabaseSync; onCommit: (fn: () => void) => void }) => void,
 ): boolean {
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
     const owned = db
-      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
-      .get(item.workItemId, item.claimEpoch);
+      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
+      .get(item.workItemId);
     if (owned === undefined) {
       db.exec("COMMIT;");
       return false;
     }
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
-      item.workItemId,
-      item.claimEpoch,
-    );
+    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(item.workItemId);
     onDeferred({ db, onCommit: postCommitHook.add });
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -716,14 +689,6 @@ function workInFlight(
     errorClass: "caller_error",
     code: "derivation_work_in_flight",
     reason: `${kind} work for ${sourceId} at sourceVersion ${sourceVersion} is already live`,
-  });
-}
-
-function retryScheduled(reason: string): { outcome: "failed"; error: ErrorResult } {
-  return failed({
-    errorClass: "system_error",
-    code: "derivation_retry_scheduled",
-    reason,
   });
 }
 
@@ -784,6 +749,15 @@ export async function deriveTurnOwnedInOpenDb(
     { now: config.clock().toISOString(), leaseDurationMs: config.lease.durationMs },
   );
   if (claim.outcome !== "claimed") {
+    if (claim.outcome === "expired") {
+      applyDerivationTerminalFailure(
+        db,
+        { sourceVersion, derivations, workItemId: claim.item.workItemId },
+        { reason: "claim_expired", state: "failed", now: config.clock().toISOString() },
+      );
+      pokeThreadScheduler(db);
+      return failed({ errorClass: "system_error", code: "provider_failure", reason: "claim_expired" });
+    }
     if (claim.outcome === "queued") pokeThreadScheduler(db);
     return workInFlight(kind, sourceRef, sourceVersion);
   }
@@ -796,7 +770,6 @@ export async function deriveTurnOwnedInOpenDb(
     sourceVersion,
     derivations,
     workItemId: claim.item.workItemId,
-    claimEpoch: claim.item.claimEpoch,
   };
   if (outcome.ok) {
     try {
@@ -823,30 +796,16 @@ export async function deriveTurnOwnedInOpenDb(
     return { outcome: "derived", sourceVersion };
   }
   if ("deferred" in outcome) {
-    const deferred = deferClaimedTurnWork(
-      db,
-      { workItemId: claim.item.workItemId, claimEpoch: claim.item.claimEpoch },
-      outcome.onDeferred,
-    );
+    const deferred = deferClaimedTurnWork(db, { workItemId: claim.item.workItemId }, outcome.onDeferred);
     if (!deferred) return workInFlight(kind, sourceRef, sourceVersion);
     pokeThreadScheduler(db);
-    return retryScheduled(outcome.reason);
+    return workInFlight(kind, sourceRef, sourceVersion);
   }
-  const attempts = claim.item.attempts + 1;
   const now = config.clock().toISOString();
-  if (!("blocked" in outcome) && outcome.retryable && attempts < config.retry.budget) {
-    const backoffMs = Math.min(config.retry.backoffBaseMs * 2 ** attempts, config.retry.backoffCapMs);
-    const eligibleAt = new Date(Date.parse(now) + backoffMs).toISOString();
-    const owned = retryClaimedItem(db, claim.item, { reason: outcome.reason, attempts, eligibleAt });
-    if (!owned) return workInFlight(kind, sourceRef, sourceVersion);
-    pokeThreadScheduler(db);
-    return retryScheduled(outcome.reason);
-  }
   try {
     const disposition = applyDerivationTerminalFailure(db, attempt, {
       reason: outcome.reason,
       state: "blocked" in outcome ? "blocked" : "failed",
-      attempts,
       now,
     });
     if (disposition === "lost_lease") {
@@ -873,7 +832,6 @@ export async function dispatchTurnOwnedWork(
   run: HandlerRunContext,
   item: {
     workItemId: string;
-    claimEpoch: number;
     kind: WorkKind;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
@@ -882,7 +840,7 @@ export async function dispatchTurnOwnedWork(
 ): Promise<DurableWorkDispatchResult> {
   const db = run.openDb();
   const handler = turnWorkHandlers[item.kind];
-  if (handler === undefined) return { disposition: "failed", retryable: false, reason: "unknown_work_kind" };
+  if (handler === undefined) return { disposition: "failed", reason: "unknown_work_kind" };
   const outcome = await runWorkHandler(
     db,
     run.config,
@@ -901,7 +859,6 @@ export async function dispatchTurnOwnedWork(
         sourceVersion: item.sourceVersion,
         derivations: item.derivations,
         workItemId: item.workItemId,
-        claimEpoch: item.claimEpoch,
       },
       outcome.derivations ?? [],
       run.config.clock().toISOString(),
@@ -914,5 +871,5 @@ export async function dispatchTurnOwnedWork(
     return deferred ? { disposition: "done" } : { disposition: "lost_lease" };
   }
   if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
-  return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };
+  return { disposition: "failed", reason: outcome.reason };
 }

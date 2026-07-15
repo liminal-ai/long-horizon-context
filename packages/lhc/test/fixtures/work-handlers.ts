@@ -2,7 +2,7 @@
 // matching inference callback operation with deterministic input derived from the
 // item's source id and handing the resulting form content back through the
 // HandlerOutcome contract. Real handlers (Stories 2–3) read records; these
-// exist so the drain's mechanics — claim, retry, terminal paths, report —
+// exist so the drain's mechanics — claim, terminal paths, report —
 // are exercised against the real handler seam with the double scripted per
 // test. Registered by assigning into the SDK's assembled map, the same map
 // production domain tables merge into (DD-6).
@@ -48,11 +48,11 @@ export function testWorkHandlers(
       await hooks.onHandlerStart?.(item);
       const sourceId = item.sourceRef["messageId"] ?? item.sourceRef["turnId"] ?? item.sourceRef["chunkId"];
       if (sourceId === undefined) {
-        return { ok: false, retryable: false, reason: "test handler: unrecognized sourceRef" };
+        return { ok: false, reason: "test handler: unrecognized sourceRef" };
       }
       const derived = await deriveForTestWork(run, kind, inferenceCallbacks, sourceId);
       if (!derived.ok) {
-        return { ok: false, retryable: derived.retryable, reason: derived.reason };
+        return { ok: false, reason: derived.reason };
       }
       return {
         ok: true,
@@ -75,7 +75,7 @@ async function deriveForTestWork(
       derivations: HandlerDerivationWrite[];
       onApplied?: (transaction: { db: import("node:sqlite").DatabaseSync; onCommit: (fn: () => void) => void }) => void;
     }
-  | { ok: false; retryable: boolean; reason: string }
+  | { ok: false; reason: string }
 > {
   if (kind === "prompt_smoothing") {
     return inferenceWrite(
@@ -186,7 +186,7 @@ async function deriveForTestWork(
       }),
     );
   }
-  return { ok: false, retryable: false, reason: `test handler: unsupported work kind ${kind}` };
+  return { ok: false, reason: `test handler: unsupported work kind ${kind}` };
 }
 
 function inferenceWrite(
@@ -194,7 +194,7 @@ function inferenceWrite(
   subjectId: string,
   derivationType: DerivationType,
   result: InferenceResult,
-): { ok: true; derivations: HandlerDerivationWrite[] } | { ok: false; retryable: boolean; reason: string } {
+): { ok: true; derivations: HandlerDerivationWrite[] } | { ok: false; reason: string } {
   if (!result.ok) return result;
   return {
     ok: true,
@@ -211,7 +211,7 @@ export function testWorkDispatchers(
     (kind: WorkKind): DurableWorkDispatcher =>
     async (run, item) => {
       const handler = handlers[kind];
-      if (handler === undefined) return { disposition: "failed", retryable: false, reason: "missing_test_handler" };
+      if (handler === undefined) return { disposition: "failed", reason: "missing_test_handler" };
       const outcome = await handler(run, {
         workItemId: item.workItemId,
         kind,
@@ -224,7 +224,6 @@ export function testWorkDispatchers(
             sourceVersion: item.sourceVersion,
             derivations: item.derivations,
             workItemId: item.workItemId,
-            claimEpoch: item.claimEpoch,
           },
           outcome.derivations ?? [],
           run.clock().toISOString(),
@@ -233,13 +232,13 @@ export function testWorkDispatchers(
         return { disposition };
       }
       if ("deferred" in outcome) {
-        return { disposition: "failed", retryable: false, reason: "unsupported_deferred_test_handler" };
+        return { disposition: "failed", reason: "unsupported_deferred_test_handler" };
       }
       if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
-      return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };
+      return { disposition: "failed", reason: outcome.reason };
     };
   const wrapFromItem: DurableWorkDispatcher = async (run, item) => {
-    if (!(item.kind in handlers)) return { disposition: "failed", retryable: false, reason: "missing_test_handler" };
+    if (!(item.kind in handlers)) return { disposition: "failed", reason: "missing_test_handler" };
     return wrap(item.kind as WorkKind)(run, item);
   };
   return {

@@ -49,7 +49,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, config: Partial<Pick<Sdk
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     ...config,
   });
@@ -243,7 +242,6 @@ describe("Story 3: detailed turn compression", () => {
       mode: "manual",
       inference: { call: host.call },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
     const filePath = await newThread();
@@ -289,36 +287,7 @@ describe("Story 3: detailed turn compression", () => {
     );
   });
 
-  it("retries compression while budget remains and does not land fallback yet", async () => {
-    const double = createInferenceCallbacksDouble();
-    double.failKind("detailed_turn_compression", 99, {
-      retryable: true,
-      reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
-    });
-    const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1 } } });
-    const filePath = await newThread();
-
-    await sendTurn(sdk, filePath, "retry compression", tokenText(120));
-    await drain(sdk, filePath, { maxItems: 2 });
-    const db = openRaw(filePath);
-    try {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = 'w-t1-detailed_turn_compression-v1'`).run();
-    } finally {
-      db.close();
-    }
-
-    const retrying = await sdk.turns.deriveTurn({ filePath }, "t1");
-    expect(retrying.ok).toBe(true);
-    if (!retrying.ok) return;
-    expect(retrying.value).toMatchObject({
-      outcome: "failed",
-      error: { code: "derivation_retry_scheduled" },
-    });
-
-    expect(formOf(filePath, "t1", "detailed_turn_compression")?.state).toBe("pending");
-  });
-
-  it("terminal compression failure logs requestMessages on inference_failed", async () => {
+  it("compression failure logs requestMessages on inference_failed", async () => {
     const log: ModelCallInput[] = [];
     const call: ModelCall = (input) => {
       log.push(structuredClone(input));
@@ -328,7 +297,6 @@ describe("Story 3: detailed turn compression", () => {
       mode: "manual",
       inference: { call },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
-      retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
     const filePath = await newThread();
@@ -349,17 +317,15 @@ describe("Story 3: detailed turn compression", () => {
         eventKind: "inference_failed",
         payload: {
           reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
-          attempts: 1,
           requestMessages: compressionCall?.messages,
         },
       }),
     );
   });
 
-  it("terminal compression failure lands compression ready with pre_detailed_assembly fallback", async () => {
+  it("the first compression failure lands ready with the pre_detailed_assembly fallback", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("detailed_turn_compression", 99, {
-      retryable: true,
       reason: "provider_failure: empty_output: model returned empty or whitespace-only text",
     });
     const sdk = sdkFor(double, { guards: { detailedTurnCompression: { tinyTurnTokens: 1 } } });
@@ -399,11 +365,11 @@ describe("Story 3: detailed turn compression", () => {
     expect(derivationLog.ok).toBe(true);
     if (!derivationLog.ok) return;
     expect(derivationLog.value.map((entry) => entry.eventKind)).toEqual(
-      expect.arrayContaining(["inference_failed", "retry_scheduled", "fallback_applied"]),
+      expect.arrayContaining(["inference_failed", "fallback_applied"]),
     );
     const failedEvents = derivationLog.value.filter((entry) => entry.eventKind === "inference_failed");
     const fallbackEvent = derivationLog.value.find((entry) => entry.eventKind === "fallback_applied");
-    expect(failedEvents.length).toBeGreaterThanOrEqual(1);
+    expect(failedEvents).toHaveLength(1);
     expect(failedEvents.at(-1)?.payload.reason).toContain("empty_output");
     expect(fallbackEvent?.payload).toMatchObject({
       fallbackFloor: "pre_detailed_assembly",

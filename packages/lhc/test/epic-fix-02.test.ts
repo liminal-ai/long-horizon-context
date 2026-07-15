@@ -16,7 +16,6 @@ import {
   countLiveItems,
   initLhc,
   type Lhc,
-  queueDetail,
   type SdkConfig,
   setSchedulerPoke,
   setThreadTouch,
@@ -56,15 +55,6 @@ async function until(pred: () => boolean, what: string, timeoutMs = 3000): Promi
   }
 }
 
-function liveDetail(filePath: string): ReturnType<typeof queueDetail> {
-  const db = openRaw(filePath);
-  try {
-    return queueDetail(db);
-  } finally {
-    db.close();
-  }
-}
-
 async function newThread(name: string): Promise<string> {
   const created = await threads.newThread({
     filePath: store.threadPath(name),
@@ -78,7 +68,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacksDouble, mode: SdkConfig["m
   return initLhc({
     inferenceCallbacks,
     mode,
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 1000 },
   });
 }
@@ -207,72 +196,6 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
   });
 });
 
-// ── Fix 1 (P2): background backoff stall — the scheduler wakes for eligible_at ─
-describe("FIX-1: background mode honors the backoff eligibility gate", () => {
-  it("a retryable failure backs off, the scheduler wakes on its own, and the retry completes", async () => {
-    const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
-    double.failNext(1, { retryable: true });
-    const sdk = initLhc({
-      inferenceCallbacks: double,
-      mode: "background",
-      retry: { budget: 3, backoffBaseMs: 25, backoffCapMs: 60000 },
-      lease: { durationMs: 1000 },
-    });
-    const filePath = await newThread("wake");
-
-    const batch = await sdk.intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
-    expect(batch.ok).toBe(true);
-    const startedAt = Date.now();
-
-    // No explicit drain and no poke after the failure: only the scheduler's own
-    // backoff wake can run the retry. drainSettled spans it (the wake counts as
-    // unsettled), so awaiting it awaits the retry.
-    await sdk.drainSettled({ filePath });
-    const elapsed = Date.now() - startedAt;
-
-    // The form derived on the second attempt — the retry actually ran.
-    expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`)).toEqual([
-      "m1/smoothed_prompt/ready",
-    ]);
-    // Two model calls = attempts 2 (fail, then succeed).
-    expect(captured.filter((c) => c.op === "smoothPrompt")).toHaveLength(2);
-    // The wake honored eligibility: it fired no earlier than the backoff delay.
-    expect(elapsed).toBeGreaterThanOrEqual(25);
-    expect(liveCount(filePath)).toBe(0);
-  });
-
-  it("does not retry before eligible_at: the durable gate holds, no retry in the window", async () => {
-    const double = createInferenceCallbacksDouble();
-    const captured = double.captureInputs();
-    double.failNext(1, { retryable: true });
-    const sdk = initLhc({
-      inferenceCallbacks: double,
-      mode: "background",
-      // A long backoff parks the head far past the window we observe.
-      retry: { budget: 3, backoffBaseMs: 60000, backoffCapMs: 60000 },
-      lease: { durationMs: 1000 },
-    });
-    const filePath = await newThread("noearly");
-
-    const batch = await sdk.intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
-    expect(batch.ok).toBe(true);
-
-    // Let the first (failing) pass run and arm the wake, then wait through a
-    // window far shorter than the backoff.
-    await sleep(120);
-
-    // Exactly one attempt — the retry has NOT run before eligible_at, the form
-    // is still pending behind the backing-off head.
-    expect(captured.filter((c) => c.op === "smoothPrompt")).toHaveLength(1);
-    expect(readDerivedForms(filePath).map((f) => f.state)).toEqual(["pending"]);
-    const detail = liveDetail(filePath);
-    expect(detail[0]?.status).toBe("queued");
-    expect(detail[0]?.attempts).toBe(1);
-    expect(Date.parse(detail[0]?.eligibleAt ?? "")).toBeGreaterThan(Date.now());
-  });
-});
-
 // ── Fix 2 (P2): tool activity composes into grouped run parts (AC-3.4) ────────
 describe("FIX-2: consecutive tool activity groups into run parts", () => {
   it("prompt, call, result, call, result, text, call, result → exactly two run parts (sizes 2 and 1)", async () => {
@@ -383,8 +306,7 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
     const drained = await drainPromise;
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
-    // The straggler completion is reported stale_discarded — not an error, not a
-    // retry.
+    // The straggler completion is reported stale_discarded, not an error.
     const m3Item = drained.value.ran.find((r) => r.workItemId === "w-m3-tool_result_summary-v1");
     expect(m3Item?.disposition).toBe("stale_discarded");
 

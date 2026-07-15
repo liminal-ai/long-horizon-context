@@ -49,7 +49,6 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   });
 }
@@ -216,8 +215,8 @@ describe("TC-2.5 / AC-2.5: message-level input discipline — the message and it
   });
 });
 
-describe("TC-2.6 / AC-2.6: inference callback exhaustion lands the form failed; the message stays readable", () => {
-  it("smoothing exhausts the retry budget → form failed with the inference callback reason; read-back unaffected", async () => {
+describe("TC-2.6 / AC-2.6: inference callback failure lands the form failed; the message stays readable", () => {
+  it("smoothing failure lands failed with the inference callback reason; read-back is unaffected", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
@@ -225,22 +224,20 @@ describe("TC-2.6 / AC-2.6: inference callback exhaustion lands the form failed; 
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text } })]);
 
     double.failKind("prompt_smoothing", 99, {
-      retryable: true,
-      reason: "scripted exhaustion (smoothPrompt)",
+      reason: "scripted failure (smoothPrompt)",
     });
     const report = await drain(sdk, filePath);
     expect(report.ran).toEqual([
       expect.objectContaining({
         workItemId: "w-m1-prompt_smoothing-v1",
         disposition: "failed_terminal",
-        attempts: 3,
-        reason: "scripted exhaustion (smoothPrompt)",
+        reason: "scripted failure (smoothPrompt)",
       }),
     ]);
 
     const form = formOf(filePath, "m1", "smoothed_prompt");
     expect(form?.state).toBe("failed");
-    expect(form?.reason).toBe("scripted exhaustion (smoothPrompt)");
+    expect(form?.reason).toBe("scripted failure (smoothPrompt)");
     expect(form?.content).toBeUndefined();
 
     const listed = await sdk.messages.list({ filePath });
@@ -248,6 +245,35 @@ describe("TC-2.6 / AC-2.6: inference callback exhaustion lands the form failed; 
     if (!listed.ok) return;
     expect(listed.value).toHaveLength(1);
     expect(listed.value[0]?.blocks[0]?.content["text"]).toBe(text);
+  });
+});
+
+describe("message handler source damage", () => {
+  it("message source damage lands blocked rather than failed", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const filePath = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`UPDATE message_block SET content = '{}' WHERE message_id = 'm1' AND block_index = 0`).run();
+    } finally {
+      db.close();
+    }
+
+    const report = await drain(sdk, filePath);
+    expect(report.ran).toEqual([
+      expect.objectContaining({
+        workItemId: "w-m1-prompt_smoothing-v1",
+        disposition: "failed_terminal",
+        reason: "source_damaged: prompt m1 has no text block",
+      }),
+    ]);
+    expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
+      state: "blocked",
+      reason: "source_damaged: prompt m1 has no text block",
+    });
   });
 });
 

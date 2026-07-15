@@ -67,7 +67,6 @@ function manualSdk(
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: overrides.mode ?? "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 5000 },
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
@@ -388,7 +387,7 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
     ]);
 
     // Let both complete. The straggler's completion is a normal completion
-    // reported stale_discarded — not an error, not a retry — and the drain
+    // reported stale_discarded — not an error — and the drain
     // continues into the replacement work.
     const drained = await drainPromise;
     expect(drained.ok).toBe(true);

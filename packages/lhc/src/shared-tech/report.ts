@@ -21,9 +21,6 @@ export interface RawReportRow {
   gaps: string | null;
   derived_at: string | null;
   queue_status: string | null;
-  queue_attempts: number | bigint | null;
-  queue_last_error: string | null;
-  queue_eligible_at: string | null;
 }
 
 export function reportEntryFromRow(subjectKind: SubjectKind, row: RawReportRow): DerivationReportEntry {
@@ -42,12 +39,7 @@ export function reportEntryFromRow(subjectKind: SubjectKind, row: RawReportRow):
   if (row.gaps !== null) entry.gaps = JSON.parse(row.gaps) as DependencyGap[];
   if (row.derived_at !== null) entry.derivedAt = row.derived_at;
   if (row.queue_status !== null) {
-    entry.queue = {
-      status: row.queue_status as "queued" | "claimed",
-      attempts: Number(row.queue_attempts ?? 0),
-    };
-    if (row.queue_last_error !== null) entry.queue.lastError = row.queue_last_error;
-    if (row.queue_eligible_at !== null) entry.queue.eligibleAt = row.queue_eligible_at;
+    entry.queue = { status: row.queue_status as "queued" | "claimed" };
   }
   return entry;
 }

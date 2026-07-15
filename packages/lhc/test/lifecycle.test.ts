@@ -130,7 +130,7 @@ describe("TC-5.1 / AC-5.1: the full sequence completes ok through one SDK config
     expect(status.threshold).toBe(300);
     expect(status.tailTokens).toBeGreaterThan(status.threshold);
     expect(status.compactRecommended).toBe(true);
-    expect(status.derivation).toEqual({ pending: 0, retrying: 0, failed: 0, blocked: 0 });
+    expect(status.derivation).toEqual({ pending: 0, failed: 0, blocked: 0 });
     expect(status.view).toBeNull(); // not yet compacted at this checkpoint
   });
 });
@@ -191,7 +191,7 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     // with the queued replacement work live and unclaimed (the background
     // drain has not started — the snapshot precedes its first pass).
     const health = ok(mutate.healthAfterMutate);
-    const pendingTotal = health.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
+    const pendingTotal = health.owners.reduce((sum, row) => sum + row.counts.pending, 0);
     expect(pendingTotal).toBe(cleared.length);
     // Queue visibility is counted per report entry (AC-4.5's by-construction
     // consistency), so queued equals the pending entries — all unclaimed.
@@ -205,7 +205,6 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     const after = ok(run.phases.health2);
     for (const row of after.owners) {
       expect(row.counts.pending).toBe(0);
-      expect(row.counts.retrying).toBe(0);
       expect(row.counts.failed).toBe(0);
       expect(row.counts.blocked).toBe(0);
       expect(row.counts.ready).toBeGreaterThan(0);

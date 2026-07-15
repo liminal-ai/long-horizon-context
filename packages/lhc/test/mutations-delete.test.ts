@@ -60,7 +60,6 @@ function manualSdk(
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: overrides.mode ?? "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 5000 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   };

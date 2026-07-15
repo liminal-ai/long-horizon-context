@@ -43,7 +43,7 @@ import { type TempStore, validEvent } from "./index.js";
 // ── the one SDK configuration (AC-5.1) ────────────────────────────
 //
 // Deterministic callbacks injected at construction (the only direct-callback
-// path since the CLI retired), background mode, zero-backoff retry so a
+// path since the CLI retired), background mode, so a
 // deterministic run never arms a wake timer, the Epic 03 fixture's pinned
 // chunk policy (12 fixed-shape turns cut into 4 chunks, c1–c3 closed), and
 // a named "lifecycle" profile so compact runs profile-addressed (story
@@ -63,7 +63,6 @@ export function createLifecycleSdk(inference?: InferenceConfig, guards?: SdkConf
   return initLhc({
     ...(inference !== undefined ? { inference } : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
     mode: "background",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     ...(guards === undefined ? {} : { guards }),
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },

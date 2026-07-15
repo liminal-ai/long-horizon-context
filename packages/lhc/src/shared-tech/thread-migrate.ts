@@ -4,6 +4,7 @@ import { CURRENT_THREAD_SCHEMA_VERSION, getSchemaVersion } from "./storage.js";
 export const THREAD_SCHEMA_VERSION_1 = 1;
 export const THREAD_SCHEMA_VERSION_2 = 2;
 export const THREAD_SCHEMA_VERSION_3 = 3;
+export const THREAD_SCHEMA_VERSION_4 = 4;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -165,6 +166,15 @@ function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
   }
 }
 
+function migrateOneShotWorkQueue(db: DatabaseSync): void {
+  db.exec("DROP INDEX idx_work_item_queue;");
+  db.exec("ALTER TABLE work_item DROP COLUMN attempts;");
+  db.exec("ALTER TABLE work_item DROP COLUMN last_error;");
+  db.exec("ALTER TABLE work_item DROP COLUMN eligible_at;");
+  db.exec("ALTER TABLE work_item DROP COLUMN claim_epoch;");
+  db.exec("CREATE INDEX idx_work_item_queue ON work_item (status);");
+}
+
 export function migrateThreadSchema(db: DatabaseSync): void {
   let version = getSchemaVersion(db);
   if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
@@ -187,7 +197,8 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     }
     if (version === THREAD_SCHEMA_VERSION_3) {
       migrateQueuedTurnDerivationWorkItems(db);
-      version = CURRENT_THREAD_SCHEMA_VERSION;
+      migrateOneShotWorkQueue(db);
+      version = THREAD_SCHEMA_VERSION_4;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

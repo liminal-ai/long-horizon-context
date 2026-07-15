@@ -11,9 +11,8 @@ import type { ThreadRef } from "../../threads/index.js";
 import * as threads from "../../threads/index.js";
 import * as turns from "../../turns/index.js";
 
-// One report entry's operational bucket, matching the vocabulary status
-// reads (shared/derivation.ts): pending with attempts spent is retrying.
-// Unlike ViewStatus, overview counts ready too.
+// One report entry's operational bucket. Unlike ViewStatus, overview counts
+// ready too.
 export function bucketEntries(entries: readonly DerivationReportEntry[], counts: InspectOverview["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
@@ -21,8 +20,7 @@ export function bucketEntries(entries: readonly DerivationReportEntry[], counts:
         counts.ready += 1;
         break;
       case "pending":
-        if ((entry.queue?.attempts ?? 0) > 0) counts.retrying += 1;
-        else counts.pending += 1;
+        counts.pending += 1;
         break;
       case "failed":
         counts.failed += 1;
@@ -100,7 +98,6 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
   const derivation: InspectOverview["derivation"] = {
     ready: 0,
     pending: 0,
-    retrying: 0,
     failed: 0,
     blocked: 0,
   };

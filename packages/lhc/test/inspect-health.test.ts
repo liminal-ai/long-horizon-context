@@ -12,8 +12,8 @@ import {
   mixedStateVariantThread,
   mutationInFlightVariant,
   PERMANENT_FAILURE_REASON,
+  RATE_LIMIT_FAILURE_REASON,
   type TempStore,
-  TRANSIENT_EXHAUST_REASON,
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
@@ -33,7 +33,7 @@ function healthValue(result: { ok: boolean }): HealthReport {
   return (result as { ok: true; value: HealthReport }).value;
 }
 
-const ZERO = { ready: 0, pending: 0, retrying: 0, failed: 0, blocked: 0 };
+const ZERO = { ready: 0, pending: 0, failed: 0, blocked: 0 };
 
 async function createThread(): Promise<string> {
   const filePath = store.threadPath();
@@ -69,7 +69,7 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
     // Queue visibility from the same report's live joins: exactly the one
     // still-queued smoothing item, consistent with the pending count.
     expect(report.queue).toEqual({ queued: 1, claimed: 0 });
-    const pendingTotal = report.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
+    const pendingTotal = report.owners.reduce((sum, row) => sum + row.counts.pending, 0);
     expect(report.queue.queued + report.queue.claimed).toBe(pendingTotal);
   });
 });
@@ -80,8 +80,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
     const { filePath, sdk } = fixture;
     const report = healthValue(await sdk.inspect.health({ filePath }));
 
-    // Actionable failure detail: subject, form, reason, attempts, last error
-    // — enough to target a requeue without raw SQL.
+    // Actionable failure detail is enough to target a re-derive without raw SQL.
     const failed = report.failures.filter(
       (entry) => entry.reason.startsWith("rate_limit") || entry.reason.startsWith("content_refusal"),
     );
@@ -91,9 +90,7 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
         subjectKind: "message",
         subjectId: fixture.failedTransientMessageId,
         derivationType: "tool_result_summary",
-        reason: TRANSIENT_EXHAUST_REASON,
-        attempts: 3,
-        lastError: TRANSIENT_EXHAUST_REASON,
+        reason: RATE_LIMIT_FAILURE_REASON,
       },
       {
         owner: "messages",
@@ -101,8 +98,6 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
         subjectId: fixture.failedPermanentMessageId,
         derivationType: "tool_result_summary",
         reason: PERMANENT_FAILURE_REASON,
-        attempts: 1,
-        lastError: PERMANENT_FAILURE_REASON,
       },
     ]);
 
@@ -167,7 +162,6 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
       subjectId: "1",
       derivationType: "capture_gap",
       reason: gap.payload.text,
-      attempts: 0,
     });
     expect(report.repairPreview).toEqual([]);
   });

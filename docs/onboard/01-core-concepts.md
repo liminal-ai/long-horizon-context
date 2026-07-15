@@ -44,7 +44,7 @@ The working vocabulary of the project. Each entry says what the term means and, 
 - `chunk_summary_detailed` — assembles a chunk summary from member `detailed_turn_compression` content (dialogue-derived); deterministic (owned by turns)
 - `chunk_summary_brief` — summarizes a chunk, keeping outcomes only; inference-backed (owned by turns)
 
-**Derivation states.** Every derivation carries one of four states: `pending` (expected or in flight), `ready` (usable), `failed` (terminal, with a reason), `blocked` (source damage; retry won't help). Retry-in-progress is not a state — a derivation stays `pending` while attempts remain. Mechanical retry detail (attempt counts, backoff) lives on the queue row, not the derivation. State belongs to the derivation itself, never to its subject — a chunk does not have "a state"; its detailed derivation and its brief derivation each carry their own.
+**Derivation states.** Every derivation carries one of four states: `pending` (enqueued, not yet run), `ready` (derived, including via fallback), `failed` (the attempt did not work; a re-derive might), `blocked` (the source is damaged; a re-derive will not help). State belongs to the derivation itself, never to its subject — a chunk does not have "a state"; its detailed derivation and its brief derivation each carry their own.
 
 **Source version.** A monotonic version on each derivation row, incremented when the source content changes — through an edit, a delete, or a cascade from a changed dependency. When a derivation is in flight and the source changes, the rebuild writes at the next version. The in-flight derivation finishes against the old version and is discarded as stale. This prevents a late-finishing pre-change derivation from overwriting a post-change rebuild.
 

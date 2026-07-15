@@ -97,7 +97,6 @@ export async function assertRoutingThroughSdk(
   const sdk = initLhc({
     inference: { call: logged, assignments },
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     // Tiny target: each placed turn crosses it, so the prior turn's chunk
     // closes during the drain and the chunk-summary kinds run too.

@@ -257,17 +257,17 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Evidence: packages/lhc/src/turns/internal/derive.ts:663-668; packages/lhc/src/messages/internal/handlers.ts:296-299; fixes-feature-log Done: Slices A/B/C
 - Confidence: high
 
-### DERIV-3: Four derivation states; retry progress is queue business, not a state
-- Decision: pending / ready / failed / blocked. A derivation stays pending while attempts remain; attempt counts/backoff live on the work-item row; a domain's derivation report joins the two. State belongs to the derivation, never to its subject.
-- Why: keeps the durable record's vocabulary about usability, mechanics about scheduling. [rationale: documented]
-- Rejected: a `retrying` derivation state; "chunk is failed" subject-state shorthand.
+### DERIV-3: Four derivation states; queue work is one shot
+- Decision: pending / ready / failed / blocked. Pending means enqueued and not yet run. Ready includes deterministic fallback. Failed means the attempt did not work and a re-derive might; blocked means the source is damaged and a re-derive will not help. State belongs to the derivation, never to its subject.
+- Why: derivations have deterministic serving fallbacks and a shelf life, so losing one costs fidelity while retrying one can stall every item behind the strict-FIFO head. [rationale: documented]
+- Rejected: queue retries/backoff; a `retrying` derivation state; "chunk is failed" subject-state shorthand.
 - Status: firm
 - Evidence: docs/onboard/01-core-concepts.md "Derivation states"; packages/lhc/src/shared-tech/derivation.ts:11,71-83
 - Confidence: high
 
-### DERIV-4: `blocked` means source damage — retry won't help
-- Decision: A handler that cannot read its source coherently returns blocked (terminal) with reason — never a retry loop against a record that cannot improve. A deleted source never reaches this path (its derivation row is gone), so a miss is genuine corruption.
-- Why: transient failure and structural damage need different treatment; damage needs triage. [rationale: documented]
+### DERIV-4: `blocked` means source damage — re-derivation won't help
+- Decision: A handler that cannot read its source coherently returns blocked (terminal) with reason. An attempt failure lands failed. A deleted source never reaches the blocked path (its derivation row is gone), so a miss is genuine corruption.
+- Why: failed is eligible for a future offline re-derivation pass; blocked requires source triage because running the derivation again cannot help. [rationale: documented]
 - Status: firm
 - Evidence: packages/lhc/src/messages/internal/handlers.ts:26-33; packages/lhc/src/turns/internal/derive.ts:53-55
 - Confidence: high

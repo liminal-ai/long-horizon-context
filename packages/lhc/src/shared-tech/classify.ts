@@ -1,19 +1,7 @@
-// Failure classification is a pure table from the model-call failure vocabulary
-// onto retryable-or-not. The queue machinery consumes `retryable` exactly as it
-// always has: no queue changes, no new states. `safeCall` contains the host
-// function: a thrown exception classifies `other` and the adapter-owned timeout
-// race classifies `timeout`, so host behavior cannot crash a drain.
-import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult } from "./inference-types.js";
-
-export const FAILURE_CLASSIFICATION: Record<ModelCallFailureKind, { retryable: boolean }> = {
-  rate_limit: { retryable: true },
-  timeout: { retryable: true },
-  network: { retryable: true },
-  empty_output: { retryable: true },
-  other: { retryable: true },
-  auth: { retryable: false },
-  invalid_request: { retryable: false },
-};
+// `safeCall` contains the host function: a thrown exception becomes `other`
+// and the adapter-owned timeout race becomes `timeout`, so host behavior cannot
+// crash a drain.
+import type { ModelCall, ModelCallInput, ModelCallResult } from "./inference-types.js";
 
 /** try/catch + timeout race around the host function. */
 export async function safeCall(call: ModelCall, input: ModelCallInput, timeoutMs: number): Promise<ModelCallResult> {

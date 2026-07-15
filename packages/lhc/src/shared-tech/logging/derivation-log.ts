@@ -9,7 +9,6 @@ export type DerivationLogEventKind =
   | "inference_failed"
   | "inference_succeeded"
   | "fallback_applied"
-  | "retry_scheduled"
   | "terminal_failed";
 
 export interface DerivationLogTarget {
@@ -20,7 +19,6 @@ export interface DerivationLogTarget {
 
 export interface DerivationLogPayload {
   reason?: string;
-  attempts?: number;
   fallbackFloor?: string;
   provenance?: { provider: string; model: string; prompt: string };
   [key: string]: unknown;

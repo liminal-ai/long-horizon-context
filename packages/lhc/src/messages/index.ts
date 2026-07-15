@@ -264,7 +264,7 @@ export async function show(threadRef: ThreadRef, messageId: string): Promise<OpR
 
 // This owner's repair report: every message-owned derivation's durable state
 // joined with live queue detail in one query — the five operational
-// situations (waiting, retrying, ready, failed, blocked) read from the rows
+// situations (pending, ready, failed, blocked) read from the rows
 // without any queue API. Needs no inference; reads degrade, never block.
 export async function report(
   threadRef: ThreadRef,

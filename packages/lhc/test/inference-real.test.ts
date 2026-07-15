@@ -278,7 +278,6 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     const sdk = initLhc({
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     });
 
     const overCapPrompt = tokenText(760, "overcap");
@@ -328,7 +327,6 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     const sdk = initLhc({
       inference: { call: recorded.call, assignments: realAssignments(realModel), maxInputChars: 3000 },
       mode: "manual",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     });
     const filePath = await newRealThread(sdk, store, "real-tool-result-classifier");
     const bashFailure = [
@@ -383,7 +381,6 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     const sdk = initLhc({
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       guards: { detailedTurnCompression: { tinyTurnTokens: 500 } },
     });
     const filePath = await newRealThread(sdk, store, "real-smooth-compression");
@@ -435,7 +432,6 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     const sdk = initLhc({
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });
@@ -603,14 +599,14 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     // Checkpoint 1 — post-drain status: derivation fully settled before the
     // first compact.
     const status = ok(run.phases.status);
-    expect(status.derivation).toEqual({ pending: 0, retrying: 0, failed: 0, blocked: 0 });
+    expect(status.derivation).toEqual({ pending: 0, failed: 0, blocked: 0 });
 
     // Checkpoint 2 — immediately after the mutations: exactly the cleared
     // set is in flight, queued and unclaimed (cleared → pending around
     // mutations).
     const clearedCount = ok(run.phases.mutate.edit).cleared.length + ok(run.phases.mutate.delete).cleared.length;
     const healthAfterMutate = ok(run.phases.mutate.healthAfterMutate);
-    const inFlight = healthAfterMutate.owners.reduce((sum, row) => sum + row.counts.pending + row.counts.retrying, 0);
+    const inFlight = healthAfterMutate.owners.reduce((sum, row) => sum + row.counts.pending, 0);
     expect(inFlight).toBe(clearedCount);
     expect(healthAfterMutate.queue).toEqual({ queued: clearedCount, claimed: 0 });
     expect(healthAfterMutate.failures).toEqual([]);
@@ -620,7 +616,6 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     const health2: HealthReport = ok(run.phases.health2);
     for (const row of health2.owners) {
       expect(row.counts.pending).toBe(0);
-      expect(row.counts.retrying).toBe(0);
       expect(row.counts.failed).toBe(0);
       expect(row.counts.blocked).toBe(0);
       expect(row.counts.ready).toBeGreaterThan(0);

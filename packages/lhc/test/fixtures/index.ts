@@ -185,7 +185,7 @@ export {
   mixedStateVariantThread,
   mutationInFlightVariant,
   PERMANENT_FAILURE_REASON,
-  TRANSIENT_EXHAUST_REASON,
+  RATE_LIMIT_FAILURE_REASON,
 } from "./view-thread.js";
 export {
   registerTestWorkHandlers,

@@ -52,7 +52,6 @@ function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   });
 }
@@ -137,7 +136,7 @@ describe("Flow 5: Derivation Logging", () => {
   it("TC-5.3a keeps fallback events in the log, not on ready derivations", async () => {
     const filePath = await newThread();
     const double = createInferenceCallbacksDouble();
-    double.failKind("prompt_smoothing", 4, { retryable: true, reason: "scripted smoothing failure" });
+    double.failKind("prompt_smoothing", 1, { reason: "scripted smoothing failure" });
     const target = manualSdk(double);
     await sendTurn(target, filePath);
     const report = await drain(target, filePath);
@@ -332,7 +331,6 @@ describe("Flow 5: Derivation Logging", () => {
     const background = initLhc({
       inferenceCallbacks: double,
       mode: "background",
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 1000 },
     });
     registerTestWorkHandlers(background, double);

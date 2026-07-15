@@ -39,7 +39,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   });
 }
@@ -212,7 +211,6 @@ describe("Story 2: tool-result rendering", () => {
   it.skip("terminal summary failure lands failed with reason while the source result remains intact", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("tool_result_summary", 99, {
-      retryable: true,
       reason: "scripted tool summary failure",
     });
     const sdk = sdkFor(double);

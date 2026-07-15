@@ -274,7 +274,7 @@ export async function multiStateThread(store: TempStore): Promise<{ filePath: st
   setFormState(
     filePath,
     { subjectKind: "turn", subjectId: "t1", derivationType: "turn_rendering" },
-    { state: "failed", reason: "provider_failure: scripted exhaustion (fixture)" },
+    { state: "failed", reason: "provider_failure: scripted failure (fixture)" },
   );
   setFormState(
     filePath,
@@ -315,11 +315,11 @@ export async function damagedSourceThread(store: TempStore): Promise<{ filePath:
 
 // TC-3.2's fallback-rendering state as one shared builder (coverage.md
 // cross-story debt: TC-4.4 consumes this exact scenario; don't rebuild it by
-// hand). Expects a manual-mode SDK with retry budget 3 and zero backoff:
-// scripts the double to exhaust the prompt's smoothing, then drains — the
-// smoothing lands failed (its work row deleted at exhaustion, DD-1) and the
+// hand). Expects a manual-mode SDK:
+// scripts the prompt's smoothing to fail, then drains — the smoothing lands
+// failed (its work row deleted) and the
 // turn rendering lands ready from the raw floor.
-export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing exhaustion";
+export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing failure";
 
 export async function gappedRenderingThread(
   store: TempStore,
@@ -327,8 +327,7 @@ export async function gappedRenderingThread(
   double: InferenceCallbacksDouble,
 ): Promise<{ filePath: string; messageId: string; turnId: string }> {
   const filePath = await newThreadFile(store);
-  double.failKind("prompt_smoothing", 3, {
-    retryable: true,
+  double.failKind("prompt_smoothing", 1, {
     reason: GAPPED_SMOOTHING_REASON,
   });
   await send(filePath, [

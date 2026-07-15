@@ -141,8 +141,7 @@ export function reportMessageDerivations(
     .prepare(
       `SELECT df.subject_id, df.derivation_type, df.state, df.content, df.reason, df.metadata,
               df.source_version, df.gaps, df.derived_at,
-              w.status AS queue_status, w.attempts AS queue_attempts,
-              w.last_error AS queue_last_error, w.eligible_at AS queue_eligible_at
+              w.status AS queue_status
        FROM derivation df
        LEFT JOIN work_item w
          ON w.status IN ('queued', 'claimed')

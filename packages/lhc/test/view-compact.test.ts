@@ -4,7 +4,7 @@
 // through the real SDK surface (initLhc().threadView.compact) against real
 // temp thread files; the inference callbacks double appears only in fixture setup —
 // degraded states are reached through production paths (scripted inference callback
-// exhaustion at build, edit-cascade pending clears), never by writing
+// failure at build, edit-cascade pending clears), never by writing
 // derivation directly.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -385,7 +385,7 @@ describe("architecture-risk: coverage edge accounting", () => {
       chunks,
       derivations: new Map([
         ["t3/detailed_turn_compression", { state: "ready", content: "compressed ".repeat(200) }],
-        ["t4/detailed_turn_compression", { state: "failed", reason: "compression exhausted" }],
+        ["t4/detailed_turn_compression", { state: "failed", reason: "compression failed" }],
         ["t4/pre_detailed_assembly", { state: "ready", content: `User:\n${"large ".repeat(500)}\n\n⏺ more` }],
         ["t5/turn_rendering", { state: "ready", content: "newest banded turn" }],
         ["c1/chunk_summary_detailed", { state: "ready", content: "closed chunk summary" }],
@@ -552,14 +552,14 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
 // ── degraded thread (TC-2.3 + the TC-2.5 view-health completion legs) ──
 
 // The fixture conversation rebuilt with manufactured derived damage, all
-// through production paths: c1's brief summary exhausts through scripted
-// retryable inference callback failures at build; post-build edits clear t8's turn
+// through production paths: c1's brief summary fails through a scripted
+// inference callback failure at build; post-build edits clear t8's turn
 // forms and all of c2's dependent chain to pending (the Epic 02 cascade) —
 // a pending turn rendering for the smooth band, and a chunk with no usable
 // form at all (summaries pending, zero ready member projections) for the
 // gap rung.
 const TOOL_HEAVY_TURNS = new Set([5, 6, 7, 8]);
-const C1_BRIEF_EXHAUST_REASON = "rate_limit: scripted c1 brief exhaustion (test)";
+const C1_BRIEF_FAILURE_REASON = "rate_limit: scripted c1 brief failure (test)";
 
 function degradedTurnEvents(turn: number): MessageEventInput[] {
   const events: MessageEventInput[] = [
@@ -599,7 +599,6 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4400 },
   });
@@ -611,10 +610,9 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
   for (let turn = 1; turn <= 12; turn += 1) {
     if (turn === 4) {
       // c1 closes during turn 4's drain (placement of t4): its brief summary
-      // exhausts through real retry mechanics — a FAILED chunk summary.
-      double.failKind("chunk_summary_brief", 3, {
-        retryable: true,
-        reason: C1_BRIEF_EXHAUST_REASON,
+      // lands failed.
+      double.failKind("chunk_summary_brief", 1, {
+        reason: C1_BRIEF_FAILURE_REASON,
       });
     }
     const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));

@@ -174,7 +174,6 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
       validEvent("turn_end"),
     ]);
     double.failKind("tool_result_summary", 1, {
-      retryable: false,
       reason: "content_refusal: scripted permanent failure (boundary test)",
     });
     const drained = await sdk.work.drain({ filePath });

@@ -165,7 +165,7 @@ export interface ViewStatus {
   tailTokens: number;
   threshold: number;
   compactRecommended: boolean;
-  derivation: { pending: number; retrying: number; failed: number; blocked: number };
+  derivation: { pending: number; failed: number; blocked: number };
   view: { degraded: number; gaps: number; builtAt: string } | null;
   visibility: { boundaryPosition: number; zoneTokens: number; maxTokens: number };
 }

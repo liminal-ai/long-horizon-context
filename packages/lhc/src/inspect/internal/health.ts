@@ -12,7 +12,7 @@ import * as turns from "../../turns/index.js";
 type Owner = "capture" | "messages" | "turns";
 
 function emptyCounts(): HealthReport["owners"][number]["counts"] {
-  return { ready: 0, pending: 0, retrying: 0, failed: 0, blocked: 0 };
+  return { ready: 0, pending: 0, failed: 0, blocked: 0 };
 }
 
 function captureGapText(event: intakeStream.EventRecord): string | null {
@@ -20,22 +20,14 @@ function captureGapText(event: intakeStream.EventRecord): string | null {
   return event.payload.text.startsWith("capture gap:") ? event.payload.text : null;
 }
 
-// Failure detail reads attempts and last error from wherever mechanics durably
-// put them: retry exhaustion copies them onto derivation metadata before the
-// queue row is deleted; a still-live item carries them on the queue join.
-// Never synthesized.
 function failureOf(owner: Owner, entry: DerivationReportEntry): HealthReport["failures"][number] {
-  const failure: HealthReport["failures"][number] = {
+  return {
     owner,
     subjectKind: entry.subjectKind,
     subjectId: entry.subjectId,
     derivationType: entry.derivationType,
     reason: entry.reason ?? "",
-    attempts: entry.metadata?.attempts ?? entry.queue?.attempts ?? 0,
   };
-  const lastError = entry.metadata?.lastError ?? entry.queue?.lastError;
-  if (lastError !== undefined) failure.lastError = lastError;
-  return failure;
 }
 
 export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthReport>> {
@@ -72,7 +64,6 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
         subjectId: String(event.eventOrder),
         derivationType: "capture_gap",
         reason: text,
-        attempts: 0,
       });
     }
   }
@@ -90,8 +81,7 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
           row.counts.ready += 1;
           break;
         case "pending":
-          if ((entry.queue?.attempts ?? 0) > 0) row.counts.retrying += 1;
-          else row.counts.pending += 1;
+          row.counts.pending += 1;
           break;
         case "failed":
           row.counts.failed += 1;
@@ -110,9 +100,9 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
           failures.push(failureOf(owner, entry));
           break;
       }
-      // Live queue visibility, per report entry: every pending or retrying
-      // entry rides a live item, so queued + claimed here equals pending +
-      // retrying above by construction. Counts are per derivation-report entry:
+      // Live queue visibility, per report entry: every pending entry rides a
+      // live item, so queued + claimed here equals pending above by
+      // construction. Counts are per derivation-report entry:
       // one work item may back multiple entries, so a raw work-item count would
       // break that identity.
       if (entry.queue !== undefined) {

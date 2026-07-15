@@ -3,8 +3,8 @@
 // no network, no queue interaction, and no writes. Profile resolution consumed
 // by initLhc is re-exported at the bottom.
 import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../messages/index.js";
 import type {
   Band,
@@ -120,16 +120,13 @@ export async function getSessionThreadView(ref: ThreadRef): Promise<OpResult<Ses
 
 // ── status ───────────────────────────────────────────────────────
 
-// Derivation counts bucket from one report entry the way the report's own
-// vocabulary reads (shared/derivation.ts): never-attempted or first-flight
-// pending, retrying (pending with attempts spent), failed, blocked. Ready
-// Ready derivations are healthy and not an operational situation.
+// Derivation counts bucket from one report entry. Ready derivations are healthy
+// and not an operational situation.
 function bucketDerivation(entries: readonly DerivationReportEntry[], counts: ViewStatus["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
       case "pending":
-        if ((entry.queue?.attempts ?? 0) > 0) counts.retrying += 1;
-        else counts.pending += 1;
+        counts.pending += 1;
         break;
       case "failed":
         counts.failed += 1;
@@ -201,7 +198,6 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   if (!turnReport.ok) return turnReport;
   const derivation: ViewStatus["derivation"] = {
     pending: 0,
-    retrying: 0,
     failed: 0,
     blocked: 0,
   };
@@ -244,7 +240,9 @@ function pruneCallerError(code: "invalid_target_tokens", reason: string): { ok: 
   return { ok: false, error: { errorClass: "caller_error", code, reason } };
 }
 
-function validatePruneTarget(targetTokens: number | undefined): { ok: true; value: number } | { ok: false; error: ErrorResult } {
+function validatePruneTarget(
+  targetTokens: number | undefined,
+): { ok: true; value: number } | { ok: false; error: ErrorResult } {
   if (targetTokens === undefined) return { ok: true, value: viewConfig().visibility.targetTokens };
   if (!Number.isFinite(targetTokens) || !Number.isInteger(targetTokens) || targetTokens < 0) {
     return pruneCallerError(
@@ -344,10 +342,7 @@ function computePruneBoundary(
   return previousBoundary;
 }
 
-function pruneInTransaction(
-  transaction: DbWriteTransaction,
-  targetTokens: number,
-): PruneReceipt {
+function pruneInTransaction(transaction: DbWriteTransaction, targetTokens: number): PruneReceipt {
   const { db } = transaction;
   const snapshot = readViewSnapshot(db);
   const compactPoint = snapshot?.compactPoint ?? 0;
@@ -404,10 +399,7 @@ function pruneInTransaction(
 // visibility zone render short. Deterministic, no inference, one write
 // transaction. Explicit commands always execute and report — a zone already
 // under target returns a no-op receipt, never an error.
-export async function prune(
-  ref: ThreadRef,
-  params?: { targetTokens?: number },
-): Promise<OpResult<PruneReceipt>> {
+export async function prune(ref: ThreadRef, params?: { targetTokens?: number }): Promise<OpResult<PruneReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;

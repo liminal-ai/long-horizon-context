@@ -8,7 +8,6 @@ import {
   type Lhc,
   type MessageEventInput,
   messages,
-  queueDetail,
   type SdkConfig,
   threads,
 } from "../src/index.js";
@@ -38,14 +37,10 @@ async function newThread(): Promise<string> {
   return created.value.filePath;
 }
 
-function sdkFor(
-  inferenceCallbacks: InferenceCallbacks,
-  overrides: Partial<Pick<SdkConfig, "retry" | "guards">> = {},
-): Lhc {
+function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<Pick<SdkConfig, "guards">> = {}): Lhc {
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: "manual",
-    retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   };
   if (overrides.guards !== undefined) config.guards = overrides.guards;
@@ -192,38 +187,6 @@ describe("Flow 1: deterministic prompt smoothing and length gate", () => {
 });
 
 describe("Flow 1: pending and failed smoothing recovery inputs", () => {
-  it("retryable smoothing failure leaves the derivation pending and requeued", async () => {
-    const double = createInferenceCallbacksDouble();
-    double.failKind("prompt_smoothing", 1, {
-      retryable: true,
-      reason: "temporary inference callback failure",
-    });
-    const sdk = sdkFor(double, {
-      retry: { budget: 3, backoffBaseMs: 60_000, backoffCapMs: 60_000 },
-    });
-    const filePath = await newThread();
-
-    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "retry me" } })]);
-    const report = await drain(sdk, filePath);
-
-    expect(report.stoppedBecause).toBe("waiting");
-    expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({ state: "pending" });
-    const db = openRaw(filePath);
-    try {
-      expect(queueDetail(db)).toEqual([
-        expect.objectContaining({
-          workItemId: "w-m1-prompt_smoothing-v1",
-          kind: "prompt_smoothing",
-          status: "queued",
-          attempts: 1,
-          lastError: "temporary inference callback failure",
-        }),
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
   it("pending smoothing uses a composition floor without re-running message inference", async () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
@@ -250,11 +213,10 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
     expect(captured.filter((entry) => entry.op === "smoothPrompt")).toEqual([]);
   });
 
-  it("terminal smoothing failure lands failed with reason, then turn composition consumes the floor", async () => {
+  it("smoothing failure lands failed with reason, then turn composition consumes the floor", async () => {
     const double = createInferenceCallbacksDouble();
     double.failKind("prompt_smoothing", 99, {
-      retryable: true,
-      reason: "scripted exhaustion",
+      reason: "scripted failure",
     });
     const sdk = sdkFor(double);
     const filePath = await newThread();
@@ -272,8 +234,7 @@ describe("Flow 1: pending and failed smoothing recovery inputs", () => {
       expect.objectContaining({
         workItemId: "w-m1-prompt_smoothing-v1",
         disposition: "failed_terminal",
-        attempts: 3,
-        reason: "scripted exhaustion",
+        reason: "scripted failure",
       }),
     );
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({ state: "ready" });

@@ -4,7 +4,7 @@
 // with a marker/hold protocol, and drains the thread:
 //   - prints `HANDLER_START <n> <workItemId>` when the nth handler begins —
 //     by drain mechanics that means item n's claim committed and item n-1's
-//     completion landed (the reclaim window for a kill is open);
+//     completion landed (a kill can leave item n's claim to expire);
 //   - from item `holdFrom` on, sleeps `holdMs` inside the handler before the
 //     model call, keeping that item claimed-and-running while the parent
 //     kills this process (TC-1.3) or drains from a second process (TC-1.4);
@@ -35,7 +35,6 @@ async function main(): Promise<void> {
     inferenceCallbacks: double,
     mode: "manual",
     lease: { durationMs: config.leaseMs },
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
   });
   let started = 0;
   registerTestWorkHandlers(sdk, double, {

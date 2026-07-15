@@ -7,7 +7,6 @@ function makeRun(inferenceCallbacks: InferenceCallbacks): HandlerRunContext {
   const sdk = initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
   });
   return {
     threadId: "th_test",
@@ -77,7 +76,6 @@ describe("tool_result_summary inference diagnostics", () => {
       ...createDeterministicInferenceCallbacks(),
       summarizeToolResult: async () => ({
         ok: false,
-        retryable: true,
         reason: "provider_failure: rate_limit: too many requests",
       }),
     };
@@ -94,7 +92,6 @@ describe("tool_result_summary inference diagnostics", () => {
     );
     expect(derived).toEqual({
       ok: false,
-      retryable: true,
       reason: "provider_failure: rate_limit: too many requests",
     });
   });

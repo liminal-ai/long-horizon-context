@@ -5,8 +5,7 @@
 // (equivalence, AC-2.1). The canned text for the tool lanes deliberately
 // claims the wrong outcome — the stamped outcome must come from the record,
 // never model prose (architecture risk: adapter parses model output).
-// Empty or whitespace-only success text is a classified retryable failure,
-// never a ready form.
+// Empty or whitespace-only success text is a failure, never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, type Derivation, initLhc, type Lhc } from "../src/index.js";
 import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
@@ -35,7 +34,6 @@ function freshStore(): TempStore {
   return store;
 }
 
-const RETRY = { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 };
 // Tiny target: each placed turn crosses it, so turn 1's chunk closes during
 // the drain and the two chunk-summary kinds run too.
 const CHUNK_POLICY = { targetProjectedTokens: 5, maxProjectedTokens: 4400 };
@@ -109,7 +107,6 @@ function inferenceSdk(call: ModelCall): { sdk: Lhc; assignments: ReturnType<type
   const sdk = initLhc({
     inference: { call, assignments },
     mode: "manual",
-    retry: RETRY,
     chunkPolicy: CHUNK_POLICY,
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });
@@ -168,7 +165,6 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const deterministicSdk = initLhc({
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "manual",
-      retry: RETRY,
       chunkPolicy: CHUNK_POLICY,
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     });
@@ -196,12 +192,9 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
 });
 
 describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.4)", () => {
-  it("a whitespace-only success classifies empty_output retryable; the retry lands ready", async () => {
+  it("a whitespace-only success fails on the first attempt as empty_output", async () => {
     let calls = 0;
-    const script = scriptedCall([
-      { ok: true, text: "  " },
-      { ok: true, text: "the real smoothing" },
-    ]);
+    const script = scriptedCall([{ ok: true, text: "  " }]);
     const log: ModelCallInput[] = [];
     const call: ModelCall = (input) => {
       calls += 1;
@@ -213,11 +206,9 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
     const forms = await drainAll(sdk, filePath);
 
     const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
-    expect(smoothed?.state).toBe("ready");
-    expect(smoothed?.content).toBe("the real smoothing");
-    // Two boundary calls: the whitespace-only first attempt was rejected and
-    // retried — it never landed as a ready form.
-    expect(calls).toBe(2);
+    expect(smoothed?.state).toBe("failed");
+    expect(smoothed?.reason).toContain("empty_output");
+    expect(calls).toBe(1);
 
     const derivationLog = await sdk.logging.queryDerivationLog(
       { filePath },
@@ -235,30 +226,6 @@ describe("TC-2.3: empty or whitespace-only output is a classified failure (AC-2.
         },
       }),
     );
-  });
-
-  it("an all-whitespace script exhausts the budget: failed, reason provider_failure, last error naming empty_output", async () => {
-    let calls = 0;
-    const script = scriptedCall([
-      { ok: true, text: "" },
-      { ok: true, text: "   " },
-      { ok: true, text: "\n\t " },
-    ]);
-    const call: ModelCall = (input) => {
-      calls += 1;
-      return script(input);
-    };
-    const { sdk } = inferenceSdk(call);
-    const forms = await drainAll(sdk, await seedSmoothingOnly(sdk, freshStore()));
-
-    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
-    expect(smoothed?.state).toBe("failed");
-    expect(smoothed?.content).toBeUndefined();
-    expect(smoothed?.reason?.startsWith("provider_failure")).toBe(true);
-    expect(smoothed?.reason).toContain("empty_output");
-    expect(smoothed?.metadata?.attempts).toBe(RETRY.budget);
-    expect(smoothed?.metadata?.lastError).toContain("empty_output");
-    expect(calls).toBe(RETRY.budget);
   });
 
   it("success text is shaped: surrounding whitespace never reaches the form content", async () => {

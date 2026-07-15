@@ -5,7 +5,7 @@ import { getSchemaVersion } from "../src/shared-tech/storage.js";
 import {
   THREAD_SCHEMA_VERSION_1,
   THREAD_SCHEMA_VERSION_2,
-  THREAD_SCHEMA_VERSION_3,
+  THREAD_SCHEMA_VERSION_4,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -28,11 +28,19 @@ afterEach(() => {
 function simulateV1Thread(filePath: string): void {
   const db = new DatabaseSync(filePath);
   try {
+    addLegacyQueueColumns(db);
     db.exec("DROP TABLE IF EXISTS derivation_log;");
     db.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_1};`);
   } finally {
     db.close();
   }
+}
+
+function addLegacyQueueColumns(db: DatabaseSync): void {
+  db.exec("ALTER TABLE work_item ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;");
+  db.exec("ALTER TABLE work_item ADD COLUMN last_error TEXT;");
+  db.exec("ALTER TABLE work_item ADD COLUMN eligible_at TEXT;");
+  db.exec("ALTER TABLE work_item ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;");
 }
 
 const receiptAccountWithPromptFilename = "edit packages/lhc/src/shared-tech/prompts/smooth-turn-compression-v1.ts";
@@ -55,6 +63,7 @@ function simulateV2ThreadWithOldDerivationNames(filePath: string): void {
   });
   const db = new DatabaseSync(filePath);
   try {
+    addLegacyQueueColumns(db);
     db.prepare(
       `INSERT INTO derivation
          (subject_kind, subject_id, derivation_type, state, content, source_version)
@@ -140,12 +149,12 @@ async function fixturePoisonedTurnDerivationWorkItem(
         `UPDATE work_item
          SET status = 'claimed',
              claimed_at = '2020-01-01T00:00:00.000Z',
-             claim_expires_at = '2020-01-01T00:00:00.000Z',
-             claim_epoch = 1
+             claim_expires_at = '2020-01-01T00:00:00.000Z'
          WHERE kind = 'turn_derivation'`,
       ).run();
     }
     if (opts.downgradeToV2 === true) {
+      addLegacyQueueColumns(db);
       db.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_2};`);
     }
   } finally {
@@ -162,7 +171,6 @@ async function drainTurnDerivationsGreen(filePath: string): Promise<void> {
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   });
   const drain = await sdk.work.drain({ filePath });
@@ -215,7 +223,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(3);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -244,7 +252,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(3);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -315,7 +323,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_3);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -341,7 +349,7 @@ describe("thread schema migration", () => {
     await drainTurnDerivationsGreen(filePath);
   });
 
-  it("normalizes claimed old-shape turn_derivation items with expired leases and drains cleanly", async () => {
+  it("normalizes a claimed old-shape item, then fails its expired lease without rerunning it", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -379,7 +387,19 @@ describe("thread schema migration", () => {
       db.close();
     }
 
-    await drainTurnDerivationsGreen(filePath);
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok).toBe(true);
+    if (!drained.ok) return;
+    expect(drained.value.ran).toContainEqual(
+      expect.objectContaining({
+        workItemId: "w-t1-turn_derivation-v1",
+        disposition: "failed_terminal",
+        reason: "claim_expired",
+      }),
+    );
+    expect(formOf(filePath, "turn_rendering")).toMatchObject({ state: "failed", reason: "claim_expired" });
+    expect(formOf(filePath, "pre_detailed_assembly")).toMatchObject({ state: "failed", reason: "claim_expired" });
   });
 
   it("heals a crash-window partial normalization on reopen (new-shape payload, missing assembly row)", async () => {

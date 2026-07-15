@@ -304,7 +304,7 @@ function rawWorkAndForms(filePath: string): Record<string, unknown> {
   const db = openRaw(filePath);
   try {
     return {
-      workItems: db.prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`).all(),
+      workItems: db.prepare(`SELECT work_item_id, status FROM work_item ORDER BY work_item_id`).all(),
       derivations: db
         .prepare(
           `SELECT subject_id, derivation_type, state, source_version FROM derivation

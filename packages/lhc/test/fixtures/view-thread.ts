@@ -3,8 +3,8 @@
 // real Epic 02 machinery (intake → enqueue → drain → handlers) against the
 // deterministic inference callbacks double into known form states. States are reached
 // through production paths, never hand-written rows (the anti-shim line
-// FC-0.3 enforces): the failed states come from scripted inference callback failures
-// consumed by the real retry/exhaustion mechanics, and blocked comes from
+// FC-0.3 enforces): the failed states come from scripted inference callback failures,
+// and blocked comes from
 // real source damage on a sacrificial sibling thread. Every later Epic 03
 // story compacts against what this builder returns.
 import { DatabaseSync } from "node:sqlite";
@@ -26,7 +26,7 @@ import { type ChunkSnapshot, readChunks } from "./threads.js";
 // rate-limit class reads transient, a content-refusal class reads permanent —
 // FC-0.4's distinguishable-on-read-back guarantee, proven here before
 // Story 3 depends on it.
-export const TRANSIENT_EXHAUST_REASON = "rate_limit: scripted transient exhaustion (fixture)";
+export const RATE_LIMIT_FAILURE_REASON = "rate_limit: scripted failure (fixture)";
 export const PERMANENT_FAILURE_REASON = "content_refusal: scripted permanent failure (fixture)";
 
 // Chunk policy pinned so the 12 fixed-shape turns cut into exactly 4 chunks
@@ -82,7 +82,7 @@ export interface DerivedThreadFixture {
   turnIds: string[]; // t1..t12
   chunks: ChunkSnapshot;
   // The two manufactured failed subjects (tool_result_summary forms), reached
-  // through real retry exhaustion / terminal failure — absent when failures
+  // through real terminal failure — absent when failures
   // are disabled for a variant.
   failedTransientMessageId?: string;
   failedPermanentMessageId?: string;
@@ -117,18 +117,10 @@ function setMessageDerivationFailed(filePath: string, subjectId: string, reason:
   try {
     db.prepare(
       `UPDATE derivation
-       SET state = 'failed', content = NULL, reason = ?, metadata = ?, derived_at = ?
+       SET state = 'failed', content = NULL, reason = ?, metadata = NULL, derived_at = ?
        WHERE subject_kind = 'message' AND subject_id = ?
          AND derivation_type = 'tool_result_summary'`,
-    ).run(
-      reason,
-      JSON.stringify({
-        attempts: reason === TRANSIENT_EXHAUST_REASON ? 3 : 1,
-        lastError: reason,
-      }),
-      "2026-01-01T00:00:00.000Z",
-      subjectId,
-    );
+    ).run(reason, "2026-01-01T00:00:00.000Z", subjectId);
   } finally {
     db.close();
   }
@@ -144,7 +136,6 @@ export async function derivedThreadFixture(
   const sdk = initLhc({
     inferenceCallbacks: double,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
@@ -165,19 +156,15 @@ export async function derivedThreadFixture(
 
   for (let turn = 1; turn <= TURN_COUNT; turn += 1) {
     if (failures && turn === 6) {
-      // Retryable failures consumed to exhaustion by the head-first drain:
-      // the first tool_result_summary item of this batch takes all three
-      // attempts and lands failed with the transient reason class.
-      double.failKind("tool_result_summary", 3, {
-        retryable: true,
-        reason: TRANSIENT_EXHAUST_REASON,
+      // The first tool_result_summary item of this batch lands failed with the
+      // rate-limit reason class.
+      double.failKind("tool_result_summary", 1, {
+        reason: RATE_LIMIT_FAILURE_REASON,
       });
     }
     if (failures && turn === 7) {
-      // One non-retryable failure: terminal on the first attempt — the
-      // permanent reason class, attempts 1.
+      // The first tool_result_summary item lands with the permanent reason class.
       double.failKind("tool_result_summary", 1, {
-        retryable: false,
         reason: PERMANENT_FAILURE_REASON,
       });
     }
@@ -212,7 +199,7 @@ export async function derivedThreadFixture(
 
   if (failures) {
     if (fixture.failedTransientMessageId !== undefined) {
-      setMessageDerivationFailed(filePath, fixture.failedTransientMessageId, TRANSIENT_EXHAUST_REASON);
+      setMessageDerivationFailed(filePath, fixture.failedTransientMessageId, RATE_LIMIT_FAILURE_REASON);
     }
     if (fixture.failedPermanentMessageId !== undefined) {
       setMessageDerivationFailed(filePath, fixture.failedPermanentMessageId, PERMANENT_FAILURE_REASON);
@@ -222,7 +209,7 @@ export async function derivedThreadFixture(
     // lives in the tests; this guards the builder's own contract).
     const report = await sdk.messages.report({ filePath });
     if (!report.ok) throw new Error(`fixture report failed: ${report.error.reason}`);
-    const transient = failedEntries(report.value, TRANSIENT_EXHAUST_REASON);
+    const transient = failedEntries(report.value, RATE_LIMIT_FAILURE_REASON);
     const permanent = failedEntries(report.value, PERMANENT_FAILURE_REASON);
     if (
       transient.length !== 1 ||
@@ -318,7 +305,7 @@ export async function mutationInFlightVariant(store: TempStore): Promise<Mutatio
 
 // The mixed-state variant (TC-4.1's substrate): one thread carrying every
 // operational state at once — ready (the drained body), failed-transient and
-// failed-permanent (the scripted exhaustions), blocked (a turn derivation
+// failed-permanent (the scripted failures), blocked (a turn derivation
 // meeting real source damage), and pending with live queued work (a partial
 // drain stopping short). All states reached through intake, mutation, and
 // drain behavior; the only below-SDK write is the sanctioned two-open-turns

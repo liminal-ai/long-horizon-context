@@ -39,7 +39,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 999999 },
     ...overrides,
@@ -152,8 +151,7 @@ async function seedFourClosedTurns(sdk: Lhc, filePath: string): Promise<void> {
 describe("Story 4: chunk derivation and compact recovery", () => {
   it("queues detailed and brief chunk summaries as independent work items and states", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("chunk_summary_brief", 3, {
-      retryable: true,
+    double.failKind("chunk_summary_brief", 1, {
       reason: "timeout: scripted brief failure",
     });
     const sdk = sdkFor(double);
@@ -274,9 +272,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
   });
 
   it("background chunk summary work requeues on not-ready member projection", async () => {
-    const sdk = sdkFor(createInferenceCallbacksDouble(), {
-      retry: { budget: 3, backoffBaseMs: 1000, backoffCapMs: 1000 },
-    });
+    const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
@@ -289,13 +285,12 @@ describe("Story 4: chunk derivation and compact recovery", () => {
 
     await drain(sdk, filePath, { maxItems: 1 });
 
-    expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
-    const item = liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v99");
-    expect(item).toMatchObject({
-      status: "queued",
-      attempts: 1,
-      lastError: expect.stringContaining("member_projection_not_ready"),
+    expect(formOf(filePath, "c1", "chunk_summary_detailed")).toMatchObject({
+      state: "failed",
+      reason: expect.stringContaining("member_projection_not_ready"),
     });
+    const item = liveQueue(filePath).find((row) => row.workItemId === "w-c1-chunk_summary_detailed-v99");
+    expect(item).toBeUndefined();
   });
 
   it("background chunk summaries block when a chunk member references a missing turn", async () => {

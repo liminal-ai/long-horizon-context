@@ -23,7 +23,6 @@ export interface InspectOverview {
   derivation: {
     ready: number;
     pending: number;
-    retrying: number;
     failed: number;
     blocked: number;
   };
@@ -79,7 +78,6 @@ export interface HealthReport {
     counts: {
       ready: number;
       pending: number;
-      retrying: number;
       failed: number;
       blocked: number;
     };
@@ -92,8 +90,6 @@ export interface HealthReport {
     subjectId: string;
     derivationType: string;
     reason: string;
-    attempts: number;
-    lastError?: string;
   }>;
   // What a requeue pass would touch: failed and not blocked, reported, never
   // executed.
@@ -104,7 +100,7 @@ export interface HealthReport {
     derivationType: string;
   }>;
   // Live queue visibility from the owners' queue detail, counted per report
-  // entry so the section is consistent by construction with the pending/
-  // retrying state counts in the same report.
+  // entry so the section is consistent by construction with the pending state
+  // counts in the same report.
   queue: { queued: number; claimed: number };
 }

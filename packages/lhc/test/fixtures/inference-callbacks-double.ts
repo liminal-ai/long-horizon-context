@@ -47,7 +47,6 @@ function resolveOpName(kind: string): InferenceCallbackOpName {
 
 interface FailScript {
   remaining: number;
-  retryable: boolean;
   reason: string;
 }
 
@@ -64,22 +63,20 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
   private readonly captured: CapturedInput[] = [];
 
   // Fail the next n calls to any operation, then succeed.
-  failNext(n: number, opts?: { retryable?: boolean; reason?: string }): void {
+  failNext(n: number, failure?: { reason?: string }): void {
     this.failNextScript = {
       remaining: n,
-      retryable: opts?.retryable ?? true,
-      reason: opts?.reason ?? "scripted failure (failNext)",
+      reason: failure?.reason ?? "scripted failure (failNext)",
     };
   }
 
   // Fail the next n calls to one operation (kind names and op names both
-  // accepted). retryable: false scripts a terminal failure.
-  failKind(kind: string, n: number, opts?: { retryable?: boolean; reason?: string }): void {
+  // accepted).
+  failKind(kind: string, n: number, failure?: { reason?: string }): void {
     const op = resolveOpName(kind);
     this.failByOp.set(op, {
       remaining: n,
-      retryable: opts?.retryable ?? true,
-      reason: opts?.reason ?? `scripted failure (${op})`,
+      reason: failure?.reason ?? `scripted failure (${op})`,
     });
   }
 
@@ -103,7 +100,7 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     for (const script of scripts) {
       if (script !== null && script.remaining > 0) {
         script.remaining -= 1;
-        return { ok: false, retryable: script.retryable, reason: script.reason };
+        return { ok: false, reason: script.reason };
       }
     }
     // Output format shared with src/shared-tech/deterministic.ts so this double

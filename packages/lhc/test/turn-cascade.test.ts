@@ -41,7 +41,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkCo
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     ...overrides,
     guards: {
@@ -121,7 +120,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("falls pending derivations to deterministic floors when re-derivation does not complete", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
+    double.failKind("smoothed_prompt", 1, { reason: "recovery unavailable" });
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -152,7 +151,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("falls back to original prompt source when the deterministic floor is unavailable", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
+    double.failKind("smoothed_prompt", 1, { reason: "recovery unavailable" });
     const sdk = sdkFor(double);
     const filePath = await newThread();
     const original = " \t\n  ";
@@ -175,7 +174,7 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("falls failed derivations through the same floor path when re-derivation does not complete", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
+    double.failKind("smoothed_prompt", 1, { reason: "recovery unavailable" });
     const sdk = sdkFor(double);
     const filePath = await newThread();
 
@@ -464,9 +463,8 @@ describe("Story 3: turn construction recovery cascade", () => {
 
   it("constructs a turn with every component present when multiple derivations are not ready", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("smoothed_prompt", 1, { retryable: true, reason: "recovery unavailable" });
+    double.failKind("smoothed_prompt", 1, { reason: "recovery unavailable" });
     double.failKind("tool_result_summary", 1, {
-      retryable: true,
       reason: "recovery unavailable",
     });
     const sdk = sdkFor(double);

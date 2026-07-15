@@ -71,15 +71,11 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
       source_ref TEXT NOT NULL,
       status TEXT NOT NULL,
       queued_at TEXT NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT,
       claimed_at TEXT,
       claim_expires_at TEXT,
-      eligible_at TEXT,
-      payload TEXT NOT NULL,
-      claim_epoch INTEGER NOT NULL DEFAULT 0
+      payload TEXT NOT NULL
     );`,
-    `CREATE INDEX idx_work_item_queue ON work_item (status, eligible_at);`,
+    `CREATE INDEX idx_work_item_queue ON work_item (status);`,
     `CREATE INDEX idx_message_block_tool_call_id
        ON message_block (block_type, json_extract(content, '$.toolCallId'));`,
     `CREATE TABLE derivation (

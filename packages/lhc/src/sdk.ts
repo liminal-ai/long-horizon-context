@@ -80,7 +80,6 @@ export type {
 export type {
   Band,
   CompactReceipt,
-  PruneReceipt,
   CompletionTx,
   DependencyGap,
   Derivation,
@@ -114,6 +113,7 @@ export type {
   OpResult,
   PreviewCompactOutcome,
   PreviewCompactResult,
+  PruneReceipt,
   RenderingPart,
   ResolvedSdkConfig,
   ResolvedViewConfig,
@@ -253,10 +253,7 @@ export interface ThreadViewSurface {
   getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
   getSessionThreadView(ref: threadsDomain.ThreadRef): Promise<OpResult<SessionThreadView>>;
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
-  prune(
-    ref: threadsDomain.ThreadRef,
-    params?: { targetTokens?: number },
-  ): Promise<OpResult<PruneReceipt>>;
+  prune(ref: threadsDomain.ThreadRef, params?: { targetTokens?: number }): Promise<OpResult<PruneReceipt>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   previewCompact(
     ref: threadsDomain.ThreadRef,
@@ -328,12 +325,6 @@ const INIT_CONFIG_PREFIX = "initLhc config";
 function requirePositive(value: number, name: string): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: ${name} must be a positive number, got ${value}`);
-  }
-}
-
-function requireNonNegative(value: number, name: string): void {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: ${name} must be a non-negative number, got ${value}`);
   }
 }
 
@@ -537,7 +528,6 @@ export function initLhc(config: SdkConfig): Lhc {
     inferenceCallbacks,
     mode: config.mode,
     clock: config.clock ?? (() => new Date()),
-    retry: config.retry ?? { budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 },
     guards,
     compressionTargets,
     briefTargets,
@@ -552,12 +542,6 @@ export function initLhc(config: SdkConfig): Lhc {
     // budgets validated, throwing with the violated setting named.
     view: resolveViewConfig(config.view),
   };
-  requirePositive(resolved.retry.budget, "retry.budget");
-  requireNonNegative(resolved.retry.backoffBaseMs, "retry.backoffBaseMs");
-  requireNonNegative(resolved.retry.backoffCapMs, "retry.backoffCapMs");
-  if (resolved.retry.backoffCapMs < resolved.retry.backoffBaseMs) {
-    throw new TypeError(`${INIT_CONFIG_PREFIX}: retry.backoffCapMs must be >= retry.backoffBaseMs`);
-  }
   requirePositive(resolved.guards.smoothedPrompt.maxInferenceTokens, "guards.smoothedPrompt.maxInferenceTokens");
   requirePositive(resolved.guards.smoothedPrompt.suspiciousOutputRatio, "guards.smoothedPrompt.suspiciousOutputRatio");
   requirePositive(resolved.guards.toolResultSummary.timeoutMs, "guards.toolResultSummary.timeoutMs");

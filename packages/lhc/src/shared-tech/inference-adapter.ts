@@ -8,7 +8,7 @@
 // fact; those stay handler-authored from the record. Host containment lives in
 // safeCall.
 
-import { FAILURE_CLASSIFICATION, safeCall } from "./classify.js";
+import { safeCall } from "./classify.js";
 import type { InferenceCallbacks, InferenceRequestMessage, InferenceResult } from "./derivation.js";
 import type { ModelAssignment, ModelCallFailureKind, ResolvedInferenceConfig } from "./inference-types.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
@@ -32,22 +32,19 @@ function boundContent(content: string, maxInputChars: number): string {
   return content.slice(0, head) + marker + (tail > 0 ? content.slice(content.length - tail) : "");
 }
 
-// Failure mapping: the queue consumes `retryable` exactly as it always has, and
-// the reason string is machine-readable by the established
-// code-before-first-colon convention. Retryable failures lead with
-// `provider_failure`, the code exhausted derivations already use; terminal
-// kinds lead with the kind itself and land failed immediately.
-function classifiedFailure(
+// Failure reasons preserve the established code-before-first-colon contract.
+// Provider and output failures lead with `provider_failure`; caller/config
+// failures lead with their own kind.
+function inferenceFailure(
   kind: ModelCallFailureKind,
   message: string,
   requestMessages?: InferenceRequestMessage[],
 ): InferenceResult {
-  const { retryable } = FAILURE_CLASSIFICATION[kind];
   const detail = message === "" ? kind : `${kind}: ${message}`;
+  const reason = kind === "auth" || kind === "invalid_request" ? detail : `provider_failure: ${detail}`;
   return {
     ok: false,
-    retryable,
-    reason: retryable ? `provider_failure: ${detail}` : detail,
+    reason,
     ...(requestMessages !== undefined ? { requestMessages } : {}),
   };
 }
@@ -81,13 +78,13 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
   const callKind = async (kind: string, input: unknown): Promise<InferenceResult> => {
     const assignment = config.assignments[kind];
     if (assignment === undefined) {
-      return classifiedFailure("invalid_request", `no assignment for derivation type "${kind}"`);
+      return inferenceFailure("invalid_request", `no assignment for derivation type "${kind}"`);
     }
     // Construction validated the name; a miss here is registry drift after
     // construction and is terminal, never retried into.
     const template = PROMPT_REGISTRY[assignment.prompt] as PromptTemplate<unknown> | undefined;
     if (template === undefined) {
-      return classifiedFailure("invalid_request", `prompt template "${assignment.prompt}" not in registry`);
+      return inferenceFailure("invalid_request", `prompt template "${assignment.prompt}" not in registry`);
     }
     const messages = template.render(withTargetRatios(input, assignment));
     // safeCall contains the host: thrown exceptions arrive as structured
@@ -104,15 +101,15 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
       config.timeoutMs,
     );
     if (!result.ok) {
-      return classifiedFailure(result.kind, result.message, messages);
+      return inferenceFailure(result.kind, result.message, messages);
     }
     // Shaping: surrounding whitespace never becomes derivation content — and a
     // model that returned nothing but whitespace has not produced a
-    // derivation: a classified retryable failure, never a ready derivation.
+    // derivation: a failure, never a ready derivation.
     // `empty_output` is adapter-generated; hosts never return it.
     const text = result.text.trim();
     if (text === "") {
-      return classifiedFailure("empty_output", "model returned empty or whitespace-only text", messages);
+      return inferenceFailure("empty_output", "model returned empty or whitespace-only text", messages);
     }
     // Provenance is the assignment's three config-known strings, copied, never
     // authored from model output.

@@ -15,9 +15,9 @@ import {
   fireViewInjection,
   openRaw,
   PERMANENT_FAILURE_REASON,
+  RATE_LIMIT_FAILURE_REASON,
   setViewInjectionHook,
   type TempStore,
-  TRANSIENT_EXHAUST_REASON,
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
@@ -48,7 +48,7 @@ describe("FC-0.1: current view storage on a current thread file", () => {
     const db = openRaw(fixture.filePath);
     try {
       const version = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
-      expect(Number(version?.user_version ?? 0)).toBe(3);
+      expect(Number(version?.user_version ?? 0)).toBe(4);
 
       const tables = (
         db
@@ -228,26 +228,20 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
 });
 
 describe("FC-0.4: the two failed forms carry distinguishable reason classes (Story 3 dependency)", () => {
-  it("transient exhaustion persists the final failure's reason class and its attempt count", async () => {
+  it("failed derivations persist the attempt's reason class", async () => {
     const report = await messages.report({ filePath: fixture.filePath }, { notReady: true });
     expect(report.ok).toBe(true);
     if (!report.ok) return;
     const transient = report.value.find((entry) => entry.subjectId === fixture.failedTransientMessageId);
     const permanent = report.value.find((entry) => entry.subjectId === fixture.failedPermanentMessageId);
 
-    // Not a bare retry-exhausted marker: the persisted reason is the final
-    // inference callback failure's, classifiable by the sweep's reason-code table.
-    expect(transient?.reason).toBe(TRANSIENT_EXHAUST_REASON);
+    expect(transient?.reason).toBe(RATE_LIMIT_FAILURE_REASON);
     expect(transient?.reason).toMatch(/^rate_limit:/);
-    expect(transient?.metadata?.attempts).toBe(3);
-    expect(transient?.metadata?.lastError).toBe(TRANSIENT_EXHAUST_REASON);
 
     expect(permanent?.reason).toBe(PERMANENT_FAILURE_REASON);
     expect(permanent?.reason).toMatch(/^content_refusal:/);
-    expect(permanent?.metadata?.attempts).toBe(1);
 
-    // The classes are distinguishable on read-back — attempt count is NOT
-    // the discriminator (it distinguishes retrying-vs-exhausted only).
+    // The classes are distinguishable on read-back.
     expect(transient?.reason).not.toBe(permanent?.reason);
   });
 });

@@ -1,7 +1,6 @@
 // Story 4 (Epic 02): derivation state, report, and repair — Flow 4. The
 // four-state lifecycle proven on forms the pipeline landed for real
-// (TC-4.1), retrying-vs-first-wait read from the report's queue join without
-// any queue API (TC-4.2, architecture risk), exact owner scoping and the
+// (TC-4.1), exact owner scoping and the
 // exact not-ready set (TC-4.3), explicit re-queue through the owning
 // surfaces landing ready with the failure cleared (TC-4.4, background mode
 // proving the poke), requeue idempotency against live work (TC-4.5), the
@@ -59,12 +58,11 @@ async function newThread(): Promise<string> {
 
 function manualSdk(
   inferenceCallbacks: InferenceCallbacks,
-  overrides: Partial<Pick<SdkConfig, "retry" | "chunkPolicy" | "clock">> = {},
+  overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock">> = {},
 ): Lhc {
   const config: SdkConfig = {
     inferenceCallbacks,
     mode: "manual",
-    retry: overrides.retry ?? { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
   };
   if (overrides.chunkPolicy !== undefined) config.chunkPolicy = overrides.chunkPolicy;
@@ -127,12 +125,12 @@ async function reportOf(
 }
 
 // ── the mixed-state thread: every form state landed for real ─────
-// Three prompt turns through real intake; the double exhausts the first
+// Three prompt turns through real intake; the double fails the first
 // prompt's smoothing (failed), the below-SDK corruption blocks both turn
 // derivations, maxItems leaves the third prompt's smoothing untouched
 // (pending with a live queued item), and the second prompt smooths clean
 // (ready). No below-SDK state writes — the pipeline produced every state.
-const MIXED_FAILED_REASON = "provider_failure: scripted exhaustion";
+const MIXED_FAILED_REASON = "provider_failure: scripted failure";
 
 async function mixedStateThread(): Promise<{
   sdk: Lhc;
@@ -143,8 +141,7 @@ async function mixedStateThread(): Promise<{
   const double = createInferenceCallbacksDouble();
   const sdk = manualSdk(double);
   const filePath = await newThread();
-  double.failKind("prompt_smoothing", 3, {
-    retryable: true,
+  double.failKind("prompt_smoothing", 1, {
     reason: MIXED_FAILED_REASON,
   });
   await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "first prompt" } }), validEvent("turn_end")]);
@@ -159,7 +156,7 @@ async function mixedStateThread(): Promise<{
 }
 
 describe("TC-4.1 / AC-4.1: every landed form reads back in exactly one of the four states", () => {
-  it("ready, failed-via-exhaustion, pending-via-unprocessed-queue, and blocked-via-damage land and read back; failed carries the stable reason", async () => {
+  it("ready, failed-via-attempt, pending-via-unprocessed-queue, and blocked-via-damage land and read back; failed carries the stable reason", async () => {
     const { sdk, filePath, drainReport } = await mixedStateThread();
     expect(drainReport.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "failed_terminal"],
@@ -175,10 +172,8 @@ describe("TC-4.1 / AC-4.1: every landed form reads back in exactly one of the fo
 
     const failed = entryOf(messageEntries, "m1", "smoothed_prompt");
     expect(failed?.state).toBe("failed");
-    // The stable reason code, plus the final attempts/last-error copied onto
-    // the form at exhaustion (DD-1: the queue row is gone; this is durable).
     expect(failed?.reason).toBe(MIXED_FAILED_REASON);
-    expect(failed?.metadata).toEqual({ attempts: 3, lastError: MIXED_FAILED_REASON });
+    expect(failed?.metadata).toBeUndefined();
 
     expect(entryOf(messageEntries, "m3", "smoothed_prompt")?.state).toBe("ready");
     expect(entryOf(messageEntries, "m5", "smoothed_prompt")?.state).toBe("pending");
@@ -189,47 +184,6 @@ describe("TC-4.1 / AC-4.1: every landed form reads back in exactly one of the fo
     for (const entry of [...messageEntries, ...turnEntries]) {
       expect(["pending", "ready", "failed", "blocked"]).toContain(entry.state);
     }
-  });
-});
-
-describe("TC-4.2 / AC-4.2 (architecture risk): retrying reads from pending + queue detail in the report row itself", () => {
-  it("a form mid-retry reports pending with attempts=1 and the last error joined in — no queue API, distinguishable from first-wait", async () => {
-    const double = createInferenceCallbacksDouble();
-    // Frozen clock + non-zero backoff hold the retry window open
-    // deterministically: the failed attempt re-queues with eligible_at past
-    // the (never-advancing) clock, so the drain stops on "waiting" and the
-    // item sits mid-retry for the report to join.
-    const frozen = new Date("2026-06-11T10:00:00.000Z");
-    const sdk = manualSdk(double, {
-      clock: () => frozen,
-      retry: { budget: 3, backoffBaseMs: 50, backoffCapMs: 60000 },
-    });
-    const filePath = await newThread();
-    double.failNext(1, { retryable: true, reason: "transient inference callback blip" });
-    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "retry me" } }), validEvent("turn_end")]);
-
-    const report = await drain(sdk, filePath);
-    expect(report.stoppedBecause).toBe("waiting");
-    expect(report.ran).toEqual([]);
-
-    const entries = await reportOf(sdk, filePath, "messages");
-    const retrying = entryOf(entries, "m1", "smoothed_prompt");
-    expect(retrying?.state).toBe("pending");
-    expect(retrying?.queue).toMatchObject({
-      status: "queued",
-      attempts: 1,
-      lastError: "transient inference callback blip",
-    });
-    expect(retrying?.queue?.eligibleAt).toBeDefined();
-
-    // First-wait contrast: the turn derivation behind the backing-off head
-    // has never been attempted — pending with attempts 0 and no error. The
-    // two situations read apart from the same single artifact state.
-    const turnEntries = await reportOf(sdk, filePath, "turns");
-    const waiting = entryOf(turnEntries, "t1", "turn_rendering");
-    expect(waiting?.state).toBe("pending");
-    expect(waiting?.queue).toMatchObject({ status: "queued", attempts: 0 });
-    expect(waiting?.queue?.lastError).toBeUndefined();
   });
 });
 
@@ -285,9 +239,8 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
       validEvent("turn_end"),
     ]);
     await drain(sdk, filePath);
-    double.failKind("chunk_summary_brief", 3, {
-      retryable: true,
-      reason: "provider_failure: scripted brief exhaustion",
+    double.failKind("chunk_summary_brief", 1, {
+      reason: "provider_failure: scripted brief failure",
     });
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "chunk two prompt" } }),
@@ -330,7 +283,7 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
-    // DD-1 ground truth: the exhausted item's row is gone, which is what
+    // The failed item's row is gone, which is what
     // lets the deterministic id insert below without collision.
     expect(liveCount(filePath)).toBe(0);
     const before = formOf(filePath, messageId, "smoothed_prompt");
@@ -348,7 +301,7 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     expect(repaired?.state).toBe("ready");
     expect(repaired?.sourceVersion).toBe(2);
     expect(repaired?.content).toContain("smoothed(");
-    // No failure residue: reason and the copied attempts/last-error are gone.
+    // No failure residue remains.
     expect(repaired?.reason).toBeUndefined();
     expect(repaired?.metadata).toMatchObject({
       inferenceAttempted: true,
@@ -417,6 +370,38 @@ describe("TC-4.5 / AC-4.5: derive returns one result per message id", () => {
 });
 
 describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the drain continues, and derive refuses with the stored reason", () => {
+  it("turns.deriveTurn lands synchronous source damage as blocked rather than failed", async () => {
+    const double = createInferenceCallbacksDouble();
+    const sdk = manualSdk(double);
+    const filePath = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt"), validEvent("turn_end")]);
+    await drain(sdk, filePath);
+
+    corruptTwoOpenTurns(filePath);
+    const result = await sdk.turns.deriveTurn({ filePath }, "t1");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      turnId: "t1",
+      outcome: "failed",
+      error: {
+        code: "provider_failure",
+        reason: expect.stringContaining("source_damaged"),
+      },
+    });
+    expect(formOf(filePath, "t1", "turn_rendering")).toMatchObject({
+      state: "blocked",
+      sourceVersion: 2,
+      reason: expect.stringContaining("source_damaged"),
+    });
+    expect(formOf(filePath, "t1", "pre_detailed_assembly")).toMatchObject({
+      state: "blocked",
+      sourceVersion: 2,
+      reason: expect.stringContaining("source_damaged"),
+    });
+    expect(liveCount(filePath)).toBe(0);
+  });
+
   it("a turn derivation over the two-open-turns corruption blocks naming the damage; blocked is not failed — derive is refused", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
@@ -529,9 +514,8 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
       validEvent("turn_end"),
     ]);
     await drain(sdk, filePath);
-    double.failKind("chunk_summary_brief", 3, {
-      retryable: true,
-      reason: "provider_failure: scripted brief exhaustion",
+    double.failKind("chunk_summary_brief", 1, {
+      reason: "provider_failure: scripted brief failure",
     });
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "chunk read prompt two" } }),
@@ -563,6 +547,6 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     // The failed summary's read carries its stored reason — degraded, not
     // blocking, and never an error.
     const failedBrief = chunksRead.value[1]?.derivations?.find((form) => form.derivationType === "chunk_summary_brief");
-    expect(failedBrief?.reason).toBe("provider_failure: scripted brief exhaustion");
+    expect(failedBrief?.reason).toBe("provider_failure: scripted brief failure");
   });
 });

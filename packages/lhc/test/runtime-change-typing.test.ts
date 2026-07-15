@@ -29,7 +29,6 @@ function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
     inferenceCallbacks,
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     lease: { durationMs: 200 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
   });

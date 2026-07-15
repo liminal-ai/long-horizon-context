@@ -58,7 +58,6 @@ function sdkWithModelCall(
     sdk: initLhc({
       mode: "manual",
       inference: { call: host.call },
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
       ...config,
     }),
@@ -211,7 +210,6 @@ describe("smoothed_prompt guard config", () => {
     const sdk = initLhc({
       mode: "manual",
       inferenceCallbacks: double,
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
     const filePath = await newThread();
@@ -231,7 +229,6 @@ describe("smoothed_prompt guard config", () => {
     const sdk = initLhc({
       mode: "manual",
       inferenceCallbacks: double,
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
     const filePath = await newThread();
@@ -253,7 +250,6 @@ describe("smoothed_prompt guard config", () => {
     const sdk = initLhc({
       mode: "manual",
       inferenceCallbacks: double,
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
       lease: { durationMs: 200 },
     });
     const filePath = await newThread();

@@ -107,7 +107,7 @@ function overviewValue(result: { ok: boolean }): InspectOverview {
   return (result as { ok: true; value: InspectOverview }).value;
 }
 
-const ZERO_DERIVATION = { ready: 0, pending: 0, retrying: 0, failed: 0, blocked: 0 };
+const ZERO_DERIVATION = { ready: 0, pending: 0, failed: 0, blocked: 0 };
 
 describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", () => {
   it("fresh-empty: full shape with zeros and nulls, never omitted fields", async () => {
@@ -206,7 +206,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
     expect(overview.turns).toEqual({ open: 1, closed: 12 });
     expect(overview.chunks).toEqual({ count: 4, unchunkedTurns: 0 });
     // 12 smoothings + 6 ready result summaries + 36 turn forms + 6 chunk
-    // summaries ready; the scripted transient and permanent exhaustions stay failed.
+    // summaries ready; the scripted rate-limit and permanent failures stay failed.
     expect(overview.derivation).toEqual({ ...ZERO_DERIVATION, ready: 60, failed: 2 });
     expect(overview.view).toEqual({
       viewId: compacted.value.viewId,

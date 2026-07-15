@@ -151,7 +151,7 @@ const smoothPromptHandler: WorkHandler = async (run, item) => {
         },
       },
     );
-    return { ok: false, retryable: derived.retryable, reason: derived.reason };
+    return { ok: false, reason: derived.reason };
   }
   const outcome: HandlerOutcome = { ok: true, derivations: [derived.write] };
   if (derived.warningLog !== undefined) {
@@ -286,7 +286,7 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
         },
       },
     );
-    return { ok: false, retryable: derived.retryable, reason: derived.reason };
+    return { ok: false, reason: derived.reason };
   }
   const handlerOutcome: HandlerOutcome = { ok: true, derivations: [derived.write] };
   if (derived.write.metadata?.inferenceSucceeded === true) {

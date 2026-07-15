@@ -104,7 +104,6 @@ describe("TC-1.1: a complete valid config operates (AC-1.1, AC-1.3)", () => {
     const sdk = initLhc({
       mode: "manual",
       inference: { call, assignments: validAssignments() },
-      retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     });
 
     const filePath = store.threadPath();

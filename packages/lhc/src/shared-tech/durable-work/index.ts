@@ -23,19 +23,17 @@ interface DerivationAttemptBase {
   derivations: readonly EnqueueDerivationTarget[];
 }
 
-export type DerivationAttempt = DerivationAttemptBase &
-  ({ workItemId?: undefined; claimEpoch?: undefined } | { workItemId: string; claimEpoch: number });
+export type DerivationAttempt = DerivationAttemptBase & { workItemId?: string };
 
 export type DurableWorkDispatchResult =
   | { disposition: "done" | "stale_discarded" | "lost_lease" }
-  | { disposition: "failed"; retryable: boolean; reason: string }
+  | { disposition: "failed"; reason: string }
   | { disposition: "blocked"; reason: string };
 
 export type DurableWorkDispatcher = (
   run: HandlerRunContext,
   item: {
     workItemId: string;
-    claimEpoch: number;
     kind: string;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
@@ -57,14 +55,6 @@ export class DerivationCompletionError extends Error {
 
 function targetKey(target: Pick<EnqueueDerivationTarget, "subjectKind" | "subjectId" | "derivationType">): string {
   return `${target.subjectKind}/${target.subjectId}/${target.derivationType}`;
-}
-
-function assertAttemptClaimPair(attempt: DerivationAttempt): void {
-  const hasWorkItemId = attempt.workItemId !== undefined;
-  const hasClaimEpoch = attempt.claimEpoch !== undefined;
-  if (hasWorkItemId !== hasClaimEpoch) {
-    throw new TypeError("DerivationAttempt requires workItemId and claimEpoch together");
-  }
 }
 
 export function assertExactDerivationWrites(
@@ -144,14 +134,13 @@ export function applyDerivationSuccess(
   derivedAt: string,
   onApplied?: (transaction: CompletionTx) => void,
 ): "done" | "stale_discarded" | "lost_lease" {
-  assertAttemptClaimPair(attempt);
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
     if (attempt.workItemId !== undefined) {
       const owned = db
-        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
-        .get(attempt.workItemId, attempt.claimEpoch);
+        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
+        .get(attempt.workItemId);
       if (owned === undefined) {
         db.exec("COMMIT;");
         return "lost_lease";
@@ -195,10 +184,7 @@ export function applyDerivationSuccess(
       onApplied({ db, onCommit: postCommitHook.add });
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
-        attempt.workItemId,
-        attempt.claimEpoch,
-      );
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(attempt.workItemId);
     }
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -212,15 +198,14 @@ export function applyDerivationSuccess(
 export function applyDerivationTerminalFailure(
   db: DatabaseSync,
   attempt: DerivationAttempt,
-  opts: { reason: string; state: "failed" | "blocked"; attempts: number; now: string },
+  failure: { reason: string; state: "failed" | "blocked"; now: string },
 ): "done" | "lost_lease" {
-  assertAttemptClaimPair(attempt);
   db.exec("BEGIN IMMEDIATE;");
   try {
     if (attempt.workItemId !== undefined) {
       const owned = db
-        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`)
-        .get(attempt.workItemId, attempt.claimEpoch);
+        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
+        .get(attempt.workItemId);
       if (owned === undefined) {
         db.exec("COMMIT;");
         return "lost_lease";
@@ -228,18 +213,16 @@ export function applyDerivationTerminalFailure(
     }
     const update = db.prepare(
       `UPDATE derivation
-       SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
+       SET state = ?, content = NULL, reason = ?, metadata = NULL, gaps = NULL, derived_at = ?
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
-    const metadata = JSON.stringify({ attempts: opts.attempts, lastError: opts.reason });
     let hits = 0;
     let misses = 0;
     for (const target of attempt.derivations) {
       const changed = update.run(
-        opts.state,
-        opts.reason,
-        metadata,
-        opts.now,
+        failure.state,
+        failure.reason,
+        failure.now,
         target.subjectKind,
         target.subjectId,
         target.derivationType,
@@ -261,10 +244,7 @@ export function applyDerivationTerminalFailure(
       );
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND claim_epoch = ?`).run(
-        attempt.workItemId,
-        attempt.claimEpoch,
-      );
+      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(attempt.workItemId);
     }
     db.exec("COMMIT;");
     return "done";
@@ -307,7 +287,7 @@ export async function runWorkHandler(
     );
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
-    return { ok: false, retryable: false, reason: `handler threw: ${reason}` };
+    return { ok: false, reason: `handler threw: ${reason}` };
   }
 }
 

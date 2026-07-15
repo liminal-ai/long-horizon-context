@@ -86,10 +86,11 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
   try {
     return {
       workItems: (
-        db
-          .prepare(`SELECT work_item_id, status, attempts FROM work_item ORDER BY work_item_id`)
-          .all() as unknown as Array<{ work_item_id: string; status: string; attempts: number | bigint }>
-      ).map((row) => ({ id: row.work_item_id, status: row.status, attempts: Number(row.attempts) })),
+        db.prepare(`SELECT work_item_id, status FROM work_item ORDER BY work_item_id`).all() as unknown as Array<{
+          work_item_id: string;
+          status: string;
+        }>
+      ).map((row) => ({ id: row.work_item_id, status: row.status })),
       derivations: db
         .prepare(`SELECT subject_id, derivation_type, state FROM derivation ORDER BY subject_id, derivation_type`)
         .all(),
@@ -352,9 +353,7 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     expect(context.ok).toBe(true);
     if (!context.ok) return;
     const short = context.value.messages.find((m) => messageText(m)?.startsWith("[tool result"));
-    expect(messageText(short)).toBe(
-      `[tool result · read_file · abridged]\n${"x".repeat(500)}… [truncated 60 chars]`,
-    );
+    expect(messageText(short)).toBe(`[tool result · read_file · abridged]\n${"x".repeat(500)}… [truncated 60 chars]`);
   });
 });
 
@@ -391,10 +390,10 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     expect(status.value.compactRecommended).toBe(true);
 
     // Derivation counts by state, from the owners' report surfaces: the
-    // fixture's two scripted failures (transient-exhausted + permanent), all
-    // other derivations drained ready — nothing pending, retrying, or blocked here
+    // fixture's two scripted failures (rate-limit + permanent), all
+    // other derivations drained ready — nothing pending or blocked here
     // (the blocked leg reads the sacrificial sibling below).
-    expect(status.value.derivation).toEqual({ pending: 0, retrying: 0, failed: 2, blocked: 0 });
+    expect(status.value.derivation).toEqual({ pending: 0, failed: 2, blocked: 0 });
 
     // Pre-compact: view health is null, not a zeroed shape (AC-2.8 leg owned
     // here; the view-health legs complete in Story 2).

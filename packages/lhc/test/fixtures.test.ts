@@ -175,9 +175,9 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     expect(texts.map((t) => t.slice(0, t.indexOf("(")))).toEqual([...OPERATION_MARKERS]);
   });
 
-  it("FC-0.2: failNext drives fail-N-then-succeed with the scripted retryability", async () => {
+  it("FC-0.2: failNext drives fail-N-then-succeed", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failNext(2, { retryable: true });
+    double.failNext(2);
     const r1 = await double.smoothPrompt({ text: "x" });
     const r2 = await double.summarizeChunkBrief({
       text: "y",
@@ -187,8 +187,8 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
       targetMaxTokens: 3,
     });
     const r3 = await double.smoothPrompt({ text: "x" });
-    expect(r1).toMatchObject({ ok: false, retryable: true });
-    expect(r2).toMatchObject({ ok: false, retryable: true });
+    expect(r1).toMatchObject({ ok: false });
+    expect(r2).toMatchObject({ ok: false });
     expect(r3.ok).toBe(true);
     // ...and exactly N calls consumed the script: the recovered output is
     // the deterministic one a fresh double produces.
@@ -196,11 +196,11 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     expect(r3).toEqual(fresh);
   });
 
-  it("FC-0.2: failKind scripts terminal failure per operation, by kind alias, without touching other kinds", async () => {
+  it("FC-0.2: failKind scripts failure per operation, by kind alias, without touching other kinds", async () => {
     const double = createInferenceCallbacksDouble();
-    double.failKind("prompt_smoothing", 99, { retryable: false, reason: "content refusal" });
+    double.failKind("prompt_smoothing", 99, { reason: "content refusal" });
     const failed = await double.smoothPrompt({ text: "x" });
-    expect(failed).toEqual({ ok: false, retryable: false, reason: "content refusal" });
+    expect(failed).toEqual({ ok: false, reason: "content refusal" });
     const other = await double.summarizeToolResult({ toolName: "t", content: "c" });
     expect(other.ok).toBe(true);
   });
@@ -262,7 +262,6 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
     const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
     expect(sdk.config.inferenceCallbacks).toBe(double);
     expect(sdk.config.mode).toBe("manual");
-    expect(sdk.config.retry).toEqual({ budget: 3, backoffBaseMs: 5000, backoffCapMs: 60000 });
     expect(sdk.config.lease).toEqual({ durationMs: 120000 });
     expect(sdk.config.chunkPolicy).toEqual({
       targetProjectedTokens: 2200,
@@ -295,13 +294,6 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
         chunkPolicy: { targetProjectedTokens: 4400, maxProjectedTokens: 2200 },
       }),
     ).toThrow(/chunkPolicy/);
-    expect(() =>
-      initLhc({
-        inferenceCallbacks: double,
-        mode: "manual",
-        retry: { budget: 0, backoffBaseMs: 0, backoffCapMs: 0 },
-      }),
-    ).toThrow(/retry.budget/);
   });
 });
 

@@ -236,22 +236,21 @@ export async function dispatchMessageDeriveWork(
   run: HandlerRunContext,
   item: {
     workItemId: string;
-    claimEpoch: number;
     sourceVersion: number;
     derivations: readonly EnqueueDerivationTarget[];
   },
 ): Promise<DurableWorkDispatchResult> {
   const db = run.openDb();
   const target = item.derivations[0];
-  if (target === undefined) return { disposition: "failed", retryable: false, reason: "missing_derivation_target" };
+  if (target === undefined) return { disposition: "failed", reason: "missing_derivation_target" };
   const record = readMessageById(db, target.subjectId);
   if (record === undefined || record.deleted === true) {
     return { disposition: "blocked", reason: `source_damaged: message ${target.subjectId} not found` };
   }
   const mapped = derivationForKind(record.kind);
-  if (mapped === undefined) return { disposition: "failed", retryable: false, reason: "not_derivable" };
+  if (mapped === undefined) return { disposition: "failed", reason: "not_derivable" };
   const handler = messageWorkHandlers[mapped.workKind];
-  if (handler === undefined) return { disposition: "failed", retryable: false, reason: "unknown_work_kind" };
+  if (handler === undefined) return { disposition: "failed", reason: "unknown_work_kind" };
   const outcome = await runWorkHandler(
     db,
     run.config,
@@ -270,7 +269,6 @@ export async function dispatchMessageDeriveWork(
         sourceVersion: item.sourceVersion,
         derivations: item.derivations,
         workItemId: item.workItemId,
-        claimEpoch: item.claimEpoch,
       },
       outcome.derivations ?? [],
       run.config.clock().toISOString(),
@@ -279,8 +277,8 @@ export async function dispatchMessageDeriveWork(
     return { disposition };
   }
   if ("deferred" in outcome) {
-    return { disposition: "failed", retryable: false, reason: "unsupported_deferred_message_derivation" };
+    return { disposition: "failed", reason: "unsupported_deferred_message_derivation" };
   }
   if ("blocked" in outcome) return { disposition: "blocked", reason: outcome.reason };
-  return { disposition: "failed", retryable: outcome.retryable, reason: outcome.reason };
+  return { disposition: "failed", reason: outcome.reason };
 }
