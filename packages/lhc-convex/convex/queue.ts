@@ -975,6 +975,7 @@ export const complete = internalMutation({
           owner: "turns",
           kind: "detailed_turn_compression",
           sourceRef: { turnId },
+          sourceVersion: item.sourceVersion,
           derivations: [{ scope: "turn", subject: turnId, deriv: "detailed_turn_compression" }],
         });
         const nextChunkOrder = await applyTurnPlacement(
