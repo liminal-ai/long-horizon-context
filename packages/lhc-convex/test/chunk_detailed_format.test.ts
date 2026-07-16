@@ -26,7 +26,7 @@
 //    deriveDetailedChunk/deriveBriefChunk actions (same handler as the drain).
 import { describe, expect, test } from "vitest";
 import { estimateTokens, type Lhc, type MessageEventInput } from "../src/client/index.js";
-import { serviceFixture, type ServiceFixture, validEvent } from "./fixtures/index.js";
+import { type ServiceFixture, serviceFixture, validEvent } from "./fixtures/index.js";
 
 const SMOOTHED = "canned smoothed_prompt text from the fake host";
 const FIXED = "fixed projected turn text";

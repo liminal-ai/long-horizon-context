@@ -35,14 +35,13 @@ async function readForms(fixture: ServiceFixture, thread: string): Promise<Array
 async function liveCount(fixture: ServiceFixture, thread: string): Promise<number> {
   return await fixture.test.run(async (ctx) => {
     const rows = await ctx.db.query("workItems").collect();
-    return rows.filter(
-      (row) => row.instance === fixture.instance && row.thread === thread && row.status !== "done",
-    ).length;
+    return rows.filter((row) => row.instance === fixture.instance && row.thread === thread && row.status !== "done")
+      .length;
   });
 }
 
-function formKey(entry: { subjectKind: string; subjectId: string; derivationType: string }): string {
-  return `${entry.subjectKind}/${entry.subjectId}/${entry.derivationType}`;
+function formKey(entry: Record<string, unknown>): string {
+  return `${String(entry["subjectKind"])}/${String(entry["subjectId"])}/${String(entry["derivationType"])}`;
 }
 
 async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {

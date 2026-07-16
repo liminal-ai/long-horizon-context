@@ -29,7 +29,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { Lhc, MessageEventInput } from "../src/client/index.js";
 import { truncateForFallback } from "../src/shared/tool_result_rendering.js";
 import { capturedCalls, resetCapturedCalls } from "./convex/model.js";
-import { serviceFixture, type ServiceFixture, validEvent } from "./fixtures/index.js";
+import { type ServiceFixture, serviceFixture, validEvent } from "./fixtures/index.js";
 
 type Fixture = ServiceFixture;
 
@@ -45,7 +45,10 @@ beforeEach(() => {
 function makeFixture(overrides: Parameters<typeof serviceFixture>[0] = {}): Fixture {
   return serviceFixture({
     ...overrides,
-    guards: { ...overrides.guards, detailedTurnCompression: { tinyTurnTokens: 1, ...overrides.guards?.detailedTurnCompression } },
+    guards: {
+      ...overrides.guards,
+      detailedTurnCompression: { tinyTurnTokens: 1, ...overrides.guards?.detailedTurnCompression },
+    },
   });
 }
 
@@ -74,9 +77,7 @@ async function renderingContent(sdk: Lhc, filePath: string): Promise<string> {
 // turn_rendering is `${label}${suffix}\n${text}` sections joined by "\n\n";
 // dropping the label line of each section yields the per-part body.
 async function renderingBodies(sdk: Lhc, filePath: string): Promise<string[]> {
-  return (await renderingContent(sdk, filePath))
-    .split("\n\n")
-    .map((part) => part.split("\n").slice(1).join("\n"));
+  return (await renderingContent(sdk, filePath)).split("\n\n").map((part) => part.split("\n").slice(1).join("\n"));
 }
 
 async function deleteWork(fixture: Fixture, thread: string, kind: string): Promise<void> {

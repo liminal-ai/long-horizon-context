@@ -11,7 +11,7 @@
 // only the caller_error and state_corruption legs port; see the ledger.
 import { describe, expect, test } from "vitest";
 import type { Lhc, MessageEventInput, TurnRecord } from "../src/client/index.js";
-import { serviceFixture, type ServiceFixture, validEvent } from "./fixtures/index.js";
+import { type ServiceFixture, serviceFixture, validEvent } from "./fixtures/index.js";
 
 async function send(sdk: Lhc, filePath: string, batch: MessageEventInput[]) {
   const result = await sdk.intakeStream.messageEvents({ filePath }, batch);
@@ -208,7 +208,11 @@ describe("Flow 3 (SDK): turn boundaries", () => {
   test("TC-3.5: post-close messages attach to the current empty turn", async () => {
     const fixture = serviceFixture();
     const { filePath } = await fixture.createThread();
-    await send(fixture.sdk, filePath, [validEvent("user_prompt"), validEvent("assistant_text"), validEvent("turn_end")]);
+    await send(fixture.sdk, filePath, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
     const closedBefore = (await readTurns(fixture.sdk, filePath))[0]!;
 
     await send(fixture.sdk, filePath, [validEvent("assistant_text")]);

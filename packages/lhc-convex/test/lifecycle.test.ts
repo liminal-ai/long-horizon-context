@@ -57,8 +57,14 @@ function turnEvents(turn: number): MessageEventInput[] {
     return `lc-t${turn}-e${seq}`;
   };
   const events: MessageEventInput[] = [
-    validEvent("user_prompt", { idempotencyKey: key(), payload: { text: `turn ${turn}: please investigate area ${turn}` } }),
-    validEvent("assistant_thinking", { idempotencyKey: key(), payload: { text: `considering what area ${turn} contains` } }),
+    validEvent("user_prompt", {
+      idempotencyKey: key(),
+      payload: { text: `turn ${turn}: please investigate area ${turn}` },
+    }),
+    validEvent("assistant_thinking", {
+      idempotencyKey: key(),
+      payload: { text: `considering what area ${turn} contains` },
+    }),
   ];
   if (TOOL_HEAVY_TURNS.has(turn)) {
     for (const run of [1, 2]) {
@@ -116,7 +122,10 @@ function makeSdk(test: ConvexHarness, instance: string): Lhc {
     inference: { call: dummyModelCall, assignments: ASSIGNMENTS },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4_400 },
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
-    view: { profiles: [{ ...LIFECYCLE_PROFILE, percentages: { ...LIFECYCLE_PROFILE.percentages } }], compactThreshold: 300 },
+    view: {
+      profiles: [{ ...LIFECYCLE_PROFILE, percentages: { ...LIFECYCLE_PROFILE.percentages } }],
+      compactThreshold: 300,
+    },
   });
 }
 
@@ -143,7 +152,9 @@ function clearedKeys(...mutations: MutationResult[]): string[] {
     .map((target) => `${target["subjectKind"]}:${target["subjectId"]}:${target["derivationType"]}`)
     .sort();
 }
-function pendingKeys(...reports: Array<readonly { state: string; subjectKind: string; subjectId: string; derivationType: string }[]>): string[] {
+function pendingKeys(
+  ...reports: Array<readonly { state: string; subjectKind: string; subjectId: string; derivationType: string }[]>
+): string[] {
   return reports
     .flat()
     .filter((entry) => entry.state === "pending")
@@ -250,7 +261,10 @@ async function runLifecycle(opts: { freshSdkBetweenGroups?: boolean } = {}): Pro
   const llmContext2 = await sdk.threadView.getLlmRequestContext(ref);
   ok(llmContext2, "llmContext2");
 
-  return { threadId, phases: { create, intake, status, compact1, llmContext1, inspect1, mutate, health2, compact2, llmContext2 } };
+  return {
+    threadId,
+    phases: { create, intake, status, compact1, llmContext1, inspect1, mutate, health2, compact2, llmContext2 },
+  };
 }
 
 let run: LifecycleRun;
@@ -370,7 +384,9 @@ describe("TC-5.1 / AC-5.2: checkpoint coherence across the sequence", () => {
     expect(llmContext1.messages.some((m) => messageText(m) === DELETED_MESSAGE_TEXT)).toBe(true);
 
     expect(
-      llmContext2.messages.some((m) => !isBandMessage(m) && m.role === "user" && messageText(m) === EDITED_MESSAGE_TEXT),
+      llmContext2.messages.some(
+        (m) => !isBandMessage(m) && m.role === "user" && messageText(m) === EDITED_MESSAGE_TEXT,
+      ),
     ).toBe(true);
     expect(llmContext2.messages.some((m) => messageText(m).includes(DELETED_MESSAGE_TEXT))).toBe(false);
     expect(llmContext2.messages.some((m) => messageText(m) === "turn 12: please investigate area 12")).toBe(false);

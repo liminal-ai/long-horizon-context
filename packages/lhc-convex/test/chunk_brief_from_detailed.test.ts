@@ -32,7 +32,7 @@ import { describe, expect, test } from "vitest";
 import { estimateTokens, type Lhc } from "../src/client/index.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "../src/shared/prompts/index.js";
 import { capturedCalls, resetCapturedCalls } from "./convex/model.js";
-import { serviceFixture, type ServiceFixture, validEvent } from "./fixtures/index.js";
+import { type ServiceFixture, serviceFixture, validEvent } from "./fixtures/index.js";
 
 const BRIEF_MODEL = "model-chunk_summary_brief";
 

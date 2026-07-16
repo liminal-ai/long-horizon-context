@@ -31,7 +31,7 @@
 import { describe, expect, test } from "vitest";
 import type { Lhc, MessageEventInput } from "../src/client/index.js";
 import { capturedCalls, resetCapturedCalls } from "./convex/model.js";
-import { serviceFixture, type ServiceFixture, validEvent } from "./fixtures/index.js";
+import { type ServiceFixture, serviceFixture, validEvent } from "./fixtures/index.js";
 
 const COMPACT_PARAMS = {
   lowerBound: 120,
