@@ -1,4 +1,4 @@
-# Round 4 coverage ledger
+# Coverage ledger — FINAL
 
 Statuses are evidence-based:
 
@@ -6,14 +6,31 @@ Statuses are evidence-based:
 - **n/a**: the entire file targets substrate behavior that does not exist in the Convex component;
 - **open**: some or all assertions are not yet ported, with the missing capability named.
 
-Round 4 totals: **36 ported / 1 n/a / 15 open**.
+**FINAL totals: 51 ported / 1 n/a / 0 open.** Every frozen service-test file is
+ported (active assertions green, unweakened) or explicitly substrate-absent /
+harness-limited with a reason in its row. Full suite: 371 passed, 3 skipped
+(all matching frozen upstream skips or documented substrate stubs). Typecheck,
+lint, build, and `convex codegen` all clean; `packages/lhc` zero diff; all
+`test/goldens/` byte-identical to frozen.
 
-Round 5 (final cleanup cluster — the 10 substrate-heavy suites) totals for the
-service-test table: **51 ported / 1 n/a / 0 open**. Every remaining non-ported
-leg is explicitly substrate-absent or harness-limited with a reason in its row;
-no portable leg is left open. **No source (`src/`/`convex/`) change was needed
-in this slice** — the divergences found are substrate/shape differences, not
-correctness bugs, and are documented in-test and in the affected rows:
+Two real correctness bugs were found by the port and FIXED in `convex/queue.ts`
+(both mutation-probed): the closed-chunk cascade `sourceVersion` bug (below) and
+a one-char prompt-template drift in `chunk_brief_v2` (`token_counting` vs
+`token-counting`) whose golden had been regenerated to mask it — template and
+golden restored to byte-identical with frozen.
+
+Documented fidelity gaps (NOT weakened — the affected assertion legs are left
+open/n-a with reasons; surfaced for a parity decision by the owner): several
+operator/warning logs the port omits where frozen writes one
+(suspicious-smoothing discard, failed-member floor, compact degrade); config
+validation does not reject `aimRatio` outside `[min,max]` (positivity and
+`max>=min` are checked); brief fails (vs frozen blocks) when its detailed is
+failed/blocked; a missing member turn is not flagged as corruption for chunk
+summaries. All are edge-case observability / damaged-input divergences, not
+normal-flow correctness — normal-flow correctness is pinned by the ported
+suites and the byte-identical goldens.
+
+The pre-final divergences documented in-test and in the affected rows:
 `health.queue.queued` counts queued WORK ITEMS (not derivation entries) while
 `inspect_health`'s earlier fixture coincidentally had them 1:1; an unknown work
 kind lands `blocked` (not `failed_terminal`); the client's `componentRef`
