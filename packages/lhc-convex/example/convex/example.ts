@@ -4,10 +4,13 @@ import { initLhc, type ModelCallHandle } from "@liminal/lhc-convex";
 import { components, internal } from "./_generated/api";
 import { action, type ActionCtx } from "./_generated/server";
 
-async function configuredLhc(ctx: ActionCtx) {
-  const call = (await createFunctionHandle(internal.fakeModel.call)) as ModelCallHandle;
+// The host picks which ModelCall it hands the component: the canned fake, or a
+// real OpenAI call. Same handle contract either way.
+async function configuredLhc(ctx: ActionCtx, host: "fake" | "openai" = "fake", model = "gpt-5.4-mini") {
+  const target = host === "openai" ? internal.openaiModel.call : internal.fakeModel.call;
+  const call = (await createFunctionHandle(target)) as ModelCallHandle;
   return initLhc(components.lhc, ctx, {
-    componentInstanceId: "example",
+    componentInstanceId: host === "openai" ? `example-openai-${model}` : "example",
     mode: "background",
     // The fake host caps its summaries at 240 chars, so the shipped defaults
     // (2200/4400) would need dozens of turns to close a chunk. These thresholds
@@ -16,22 +19,24 @@ async function configuredLhc(ctx: ActionCtx) {
     inference: {
       call,
       assignments: {
-        smoothed_prompt: { provider: "openai", model: "gpt-5.4-mini", prompt: "smoothing-v1" },
-        tool_result_summary: { provider: "openai", model: "gpt-5.4-mini", prompt: "tool-result-v2" },
-        detailed_turn_compression: {
-          provider: "openai",
-          model: "gpt-5.4-mini",
-          prompt: "detailed-turn-compression-v3",
-        },
-        chunk_summary_brief: { provider: "openai", model: "gpt-5.4-mini", prompt: "chunk-brief-v3" },
+        smoothed_prompt: { provider: "openai", model, prompt: "smoothing-v1" },
+        tool_result_summary: { provider: "openai", model, prompt: "tool-result-v2" },
+        detailed_turn_compression: { provider: "openai", model, prompt: "detailed-turn-compression-v3" },
+        chunk_summary_brief: { provider: "openai", model, prompt: "chunk-brief-v3" },
       },
     },
   });
 }
 
+const hostArgs = {
+  host: v.optional(v.union(v.literal("fake"), v.literal("openai"))),
+  model: v.optional(v.string()),
+};
+
 export const createThread = action({
-  args: { alias: v.string() },
-  handler: async (ctx, args) => (await configuredLhc(ctx)).threads.newThread({ filePath: args.alias }),
+  args: { alias: v.string(), ...hostArgs },
+  handler: async (ctx, args) =>
+    (await configuredLhc(ctx, args.host, args.model)).threads.newThread({ filePath: args.alias }),
 });
 
 export const appendPrompt = action({
@@ -60,9 +65,9 @@ export const context = action({
 // Observability for driving the host against a live backend: whether the
 // scheduled drain is pending and what the queue and derived forms look like.
 export const status = action({
-  args: { threadId: v.string() },
+  args: { threadId: v.string(), ...hostArgs },
   handler: async (ctx, args) => {
-    const lhc = await configuredLhc(ctx);
+    const lhc = await configuredLhc(ctx, args.host, args.model);
     const ref = { threadId: args.threadId };
     const [work, overview, health] = await Promise.all([
       lhc.work.status(ref),
@@ -83,10 +88,10 @@ export const compact = action({
 });
 
 export const appendTurn = action({
-  args: { threadId: v.string(), text: v.string(), reply: v.string() },
+  args: { threadId: v.string(), text: v.string(), reply: v.string(), ...hostArgs },
   handler: async (ctx, args) => {
     const stamp = Date.now();
-    return (await configuredLhc(ctx)).intakeStream.messageEvents({ threadId: args.threadId }, [
+    return (await configuredLhc(ctx, args.host, args.model)).intakeStream.messageEvents({ threadId: args.threadId }, [
       {
         eventKind: "user_prompt",
         idempotencyKey: `example:${args.threadId}:${stamp}:prompt`,
@@ -109,5 +114,15 @@ export const appendTurn = action({
         payload: {},
       },
     ]);
+  },
+});
+
+export const forms = action({
+  args: { threadId: v.string(), ...hostArgs },
+  handler: async (ctx, args) => {
+    const lhc = await configuredLhc(ctx, args.host, args.model);
+    const ref = { threadId: args.threadId };
+    const [messages, turns] = await Promise.all([lhc.messages.report(ref), lhc.turns.report(ref)]);
+    return { messages, turns };
   },
 });

@@ -10,6 +10,7 @@
 
 import type * as example from "../example.js";
 import type * as fakeModel from "../fakeModel.js";
+import type * as openaiModel from "../openaiModel.js";
 
 import type {
   ApiFromModules,
@@ -20,6 +21,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   example: typeof example;
   fakeModel: typeof fakeModel;
+  openaiModel: typeof openaiModel;
 }>;
 
 /**
