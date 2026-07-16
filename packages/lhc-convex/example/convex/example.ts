@@ -118,11 +118,14 @@ export const appendTurn = action({
 });
 
 export const forms = action({
-  args: { threadId: v.string(), ...hostArgs },
+  args: { threadId: v.string(), chunkId: v.optional(v.string()), ...hostArgs },
   handler: async (ctx, args) => {
     const lhc = await configuredLhc(ctx, args.host, args.model);
     const ref = { threadId: args.threadId };
-    const [messages, turns] = await Promise.all([lhc.messages.report(ref), lhc.turns.report(ref)]);
+    const [messages, turns] = await Promise.all([
+      lhc.messages.report(ref),
+      args.chunkId === undefined ? lhc.turns.report(ref) : lhc.turns.report(ref, { chunkId: args.chunkId }),
+    ]);
     return { messages, turns };
   },
 });
