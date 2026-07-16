@@ -243,9 +243,10 @@ export async function resolveThread(
     .take(2);
   if (matches.length === 1) return { ok: true, thread: matches[0]! };
   if (matches.length > 1) {
+    const matchIds = matches.map((match) => match.thread);
     return callerError(
       "ambiguous_thread_id",
-      `thread id "${prefix}" is ambiguous: it matches multiple threads; use a longer id`,
+      `thread id "${prefix}" is ambiguous: it matches ${matchIds.length} threads (${matchIds.join(", ")}); use a longer id`,
     );
   }
   return callerError("thread_not_found", `no thread registered with id ${prefix}`);

@@ -19,6 +19,6 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true
   },
-  "include": ["convex.config.ts", "convex/**/*", "src/**/*"],
+  "include": ["convex.config.ts", "convex/**/*", "src/**/*", "test/**/*"],
   "exclude": ["dist"]
 }

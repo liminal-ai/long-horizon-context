@@ -1,10 +1,13 @@
 import type { FunctionHandle } from "convex/server";
 import { v } from "convex/values";
 import type { ModelCallInput, ModelCallResult } from "../src/client/types.js";
+import { classifyToolResult } from "../src/shared/classify_tool_result.js";
+import { safeModelCall } from "../src/shared/model_call.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "../src/shared/prompts/index.js";
 import { cleanPrompt } from "../src/shared/smoothing.js";
 import { estimateTokens } from "../src/shared/token_counting/index.js";
 import { truncateForFallback } from "../src/shared/tool_result_rendering.js";
+import { toolResultTargetTokens } from "../src/shared/tool_result_summary.js";
 import {
   composeDerivationKey,
   composePreDetailedAssembly,
@@ -98,7 +101,41 @@ export const readSource = internalQuery({
           q.eq("instance", args.instance).eq("thread", args.thread).eq("message", messageId),
         )
         .take(100);
-      return { message, blocks };
+      if (args.kind !== "tool_result_summary") return { message, blocks };
+      const resultBlock = blocks.find((block) => block.blockType === "tool_result");
+      const resultContent = resultBlock?.content as Record<string, unknown> | undefined;
+      const toolCallId = resultContent?.["toolCallId"];
+      if (typeof toolCallId !== "string") return { message, blocks };
+      const threadBlocks = await ctx.db
+        .query("messageBlocks")
+        .withIndex("by_instance_and_thread_and_message_and_blockIndex", (q) =>
+          q.eq("instance", args.instance).eq("thread", args.thread),
+        )
+        .take(32_000);
+      const callBlock = threadBlocks.find((block) => {
+        if (block.blockType !== "tool_call") return false;
+        const content = block.content as Record<string, unknown>;
+        return content["toolCallId"] === toolCallId;
+      });
+      if (callBlock === undefined) return { message, blocks };
+      const callMessage = await ctx.db
+        .query("messages")
+        .withIndex("by_instance_and_thread_and_message", (q) =>
+          q.eq("instance", args.instance).eq("thread", args.thread).eq("message", callBlock.message),
+        )
+        .unique();
+      if (callMessage === null || callMessage.deletedAt !== undefined) return { message, blocks };
+      const callContent = callBlock.content as Record<string, unknown>;
+      return {
+        message,
+        blocks,
+        pairedCall: {
+          toolName: typeof callContent["toolName"] === "string" ? callContent["toolName"] : "unknown_tool",
+          ...(typeof callContent["arguments"] === "object" && callContent["arguments"] !== null
+            ? { toolInput: callContent["arguments"] as Record<string, unknown> }
+            : {}),
+        },
+      };
     }
     if (args.kind === "turn_derivation" || args.kind === "detailed_turn_compression") {
       const turnId = sourceRef["turnId"];
@@ -273,6 +310,16 @@ function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
     .join("\n\n");
 }
 
+function boundContent(content: string, maxInputChars: number): string {
+  if (content.length <= maxInputChars) return content;
+  const marker = `\n\n[... truncated: tool result was ${String(content.length)} chars; head and tail retained ...]\n\n`;
+  if (marker.length > maxInputChars) return content.slice(0, maxInputChars);
+  const keep = maxInputChars - marker.length;
+  const head = Math.ceil(keep / 2);
+  const tail = keep - head;
+  return content.slice(0, head) + marker + (tail > 0 ? content.slice(content.length - tail) : "");
+}
+
 async function callModel(
   ctx: ActionCtx,
   instance: Doc<"instances">,
@@ -296,21 +343,16 @@ async function callModel(
     return { ok: false, reason: `invalid_request: prompt template ${assignment.prompt} not found` };
   const messages = template.render(input);
   const handle = instance.modelCallHandle as FunctionHandle<"action", ModelCallInput, ModelCallResult>;
-  let result: ModelCallResult;
-  try {
-    result = await ctx.runAction(handle, {
-      provider: assignment.provider,
-      model: assignment.model,
-      messages,
-      ...(assignment.thinking === undefined ? {} : { thinking: assignment.thinking }),
-    });
-  } catch (cause) {
-    return {
-      ok: false,
-      reason: `provider_failure: other: ${cause instanceof Error ? cause.message : String(cause)}`,
-      requestMessages: messages,
-    };
-  }
+  const result = await safeModelCall(
+    () =>
+      ctx.runAction(handle, {
+        provider: assignment.provider,
+        model: assignment.model,
+        messages,
+        ...(assignment.thinking === undefined ? {} : { thinking: assignment.thinking }),
+      }),
+    config.timeoutMs,
+  );
   if (!result.ok) {
     const detail = result.message === "" ? result.kind : `${result.kind}: ${result.message}`;
     return {
@@ -352,7 +394,11 @@ async function handleWork(
   if (item.kind === "prompt_smoothing") {
     const message = source["message"] as Doc<"messages">;
     if (message.kind !== "user_prompt") return { state: "blocked", reason: `source_damaged: expected user_prompt` };
-    const text = String(blockContent(source)["text"] ?? "");
+    const sourceText = blockContent(source)["text"];
+    if (typeof sourceText !== "string") {
+      return { state: "blocked", reason: `source_damaged: prompt ${message.message} has no text block` };
+    }
+    const text = sourceText;
     const cleaned = cleanPrompt(text);
     const tokens = estimateTokens(cleaned);
     if (/^\[[^\]]{1,80}\]$/.test(cleaned.trim()) || tokens > config.guards.smoothedPrompt.maxInferenceTokens) {
@@ -398,6 +444,92 @@ async function handleWork(
     const message = source["message"] as Doc<"messages">;
     if (message.kind !== "tool_result") return { state: "blocked", reason: "source_damaged: expected tool_result" };
     const block = blockContent(source);
+    const content = block["content"];
+    if (typeof content !== "string") {
+      return { state: "blocked", reason: `source_damaged: tool result ${message.message} has no tool_result block` };
+    }
+    const outcome = block["isError"] === true ? "failed" : "succeeded";
+    if (outcome === "failed") {
+      return {
+        state: "ready",
+        writes: [
+          {
+            scope: "message",
+            subject: message.message,
+            deriv: "tool_result_summary",
+            content: truncateForFallback(content),
+            metadata: { outcome },
+          },
+        ],
+      };
+    }
+    const tokens = estimateTokens(content);
+    if (tokens <= config.toolResult.smallTierTokens) {
+      return {
+        state: "ready",
+        writes: [
+          {
+            scope: "message",
+            subject: message.message,
+            deriv: "tool_result_summary",
+            content,
+            metadata: { outcome },
+          },
+        ],
+      };
+    }
+    const pairedCall = source["pairedCall"] as
+      | { toolName: string; toolInput?: Record<string, unknown> }
+      | undefined;
+    const classification = classifyToolResult({
+      toolName: pairedCall?.toolName ?? "unknown_tool",
+      ...(pairedCall?.toolInput === undefined ? {} : { toolInput: pairedCall.toolInput }),
+      rawOutput: content,
+      outcome,
+    });
+    const inference = await callModel(ctx, instance, "tool_result_summary", {
+      toolName: pairedCall?.toolName ?? "unknown_tool",
+      content: boundContent(content, config.maxInputChars),
+      outcome,
+      targetTokens: toolResultTargetTokens(tokens, config.toolResult),
+      operationClass: classification.operationClass,
+      responseShape: classification.responseShape,
+      promptMode: classification.promptMode,
+      facts: classification.facts,
+    });
+    if (!inference.ok) {
+      return {
+        state: "ready",
+        writes: [
+          {
+            scope: "message",
+            subject: message.message,
+            deriv: "tool_result_summary",
+            content: truncateForFallback(content),
+            metadata: {
+              outcome,
+              inferenceAttempted: true,
+              inferenceSucceeded: false,
+              fallbackUsed: true,
+              fallbackFloor: "deterministic_truncation",
+              lastError: inference.reason,
+            },
+          },
+        ],
+        derivationLogs: [
+          {
+            scope: "message",
+            subject: message.message,
+            deriv: "tool_result_summary",
+            eventKind: "inference_failed",
+            payload: {
+              reason: inference.reason,
+              ...(inference.requestMessages === undefined ? {} : { requestMessages: inference.requestMessages }),
+            },
+          },
+        ],
+      };
+    }
     return {
       state: "ready",
       writes: [
@@ -405,8 +537,21 @@ async function handleWork(
           scope: "message",
           subject: message.message,
           deriv: "tool_result_summary",
-          content: truncateForFallback(String(block["content"] ?? "")),
-          metadata: { outcome: block["isError"] === true ? "failed" : "succeeded" },
+          content: inference.text,
+          metadata: { outcome, ...inference.metadata },
+        },
+      ],
+      derivationLogs: [
+        {
+          scope: "message",
+          subject: message.message,
+          deriv: "tool_result_summary",
+          eventKind: "inference_succeeded",
+          payload: {
+            provenance: inference.metadata["provenance"],
+            requestMessages: inference.requestMessages,
+            rawResponse: inference.rawResponse,
+          },
         },
       ],
     };

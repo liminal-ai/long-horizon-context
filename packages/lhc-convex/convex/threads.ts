@@ -102,6 +102,7 @@ export const list = query({
             .query("threads")
             .withIndex("by_instance_and_cwd_and_createdAt", (q) => q.eq("instance", args.instance).eq("cwd", args.cwd))
             .take(32_000);
+    rows.sort((left, right) => left._creationTime - right._creationTime);
     return {
       ok: true as const,
       value: rows.map((row) => ({
