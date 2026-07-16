@@ -186,12 +186,20 @@ function derivedTurnEvents(turn: number): MessageEventInput[] {
   return events;
 }
 
-export async function derivedThreadFixture(): Promise<DerivedThreadFixture> {
+// Optional overrides let a caller bake a non-default view config (e.g. a low
+// compactThreshold) or host mode into the committed derived corpus without
+// re-deriving it by hand — the frozen suite overlays those at read time via a
+// second SDK, which the per-instance Convex config cannot do.
+export async function derivedThreadFixture(
+  overrides: Pick<ServiceFixtureOptions, "view" | "mode"> = {},
+): Promise<DerivedThreadFixture> {
   const fixture = serviceFixture({
     models: { smoothed_prompt: `success:${"smoothed ".repeat(8).trim()}` },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4_400 },
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
+    ...(overrides.view === undefined ? {} : { view: overrides.view }),
+    ...(overrides.mode === undefined ? {} : { mode: overrides.mode }),
   });
   const { filePath, threadId } = await fixture.createThread();
   for (let turn = 1; turn <= 12; turn += 1) {
