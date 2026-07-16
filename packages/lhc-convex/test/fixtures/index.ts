@@ -89,6 +89,12 @@ export interface ServiceFixture {
   ): Promise<{ threadId: string; filePath: string }>;
 }
 
+export interface DerivedThreadFixture extends ServiceFixture {
+  filePath: string;
+  threadId: string;
+  turnIds: string[];
+}
+
 interface ServiceFixtureOptions extends Partial<Omit<SdkConfig, "componentInstanceId" | "inference">> {
   models?: Partial<
     Record<"smoothed_prompt" | "tool_result_summary" | "detailed_turn_compression" | "chunk_summary_brief", string>
@@ -150,4 +156,63 @@ export function serviceFixture(overrides: ServiceFixtureOptions = {}): ServiceFi
       return created.value;
     },
   };
+}
+
+const TOOL_HEAVY_TURNS = new Set([5, 6, 7, 8]);
+
+function derivedTurnEvents(turn: number): MessageEventInput[] {
+  const events: MessageEventInput[] = [
+    validEvent("user_prompt", { payload: { text: `turn ${turn}: please investigate area ${turn}` } }),
+    validEvent("assistant_thinking", { payload: { text: `considering what area ${turn} contains` } }),
+  ];
+  if (TOOL_HEAVY_TURNS.has(turn)) {
+    for (const run of [1, 2]) {
+      const toolCallId = `call-fx-${turn}-${run}`;
+      events.push(
+        validEvent("tool_call", {
+          payload: { toolCallId, toolName: "read_file", arguments: { path: `area-${turn}/file-${run}.txt` } },
+        }),
+        validEvent("tool_result", {
+          payload: {
+            toolCallId,
+            content: `contents of area-${turn}/file-${run}.txt: detail ${turn}.${run} with enough text to summarize`,
+            isError: false,
+          },
+        }),
+      );
+    }
+  }
+  events.push(validEvent("assistant_text", { payload: { text: `findings for area ${turn}` } }), validEvent("turn_end"));
+  return events;
+}
+
+export async function derivedThreadFixture(): Promise<DerivedThreadFixture> {
+  const fixture = serviceFixture({
+    models: { smoothed_prompt: `success:${"smoothed ".repeat(8).trim()}` },
+    guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
+    chunkPolicy: { targetProjectedTokens: 90, maxProjectedTokens: 4_400 },
+    toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
+  });
+  const { filePath, threadId } = await fixture.createThread();
+  for (let turn = 1; turn <= 12; turn += 1) {
+    const accepted = await fixture.sdk.intakeStream.messageEvents({ filePath }, derivedTurnEvents(turn));
+    if (!accepted.ok) throw new Error(`derived fixture intake failed: ${accepted.error.reason}`);
+    const drained = await fixture.sdk.work.drain({ filePath });
+    if (!drained.ok || drained.value.remaining !== 0) throw new Error("derived fixture drain did not settle");
+  }
+  const chunks = await fixture.sdk.turns.listChunks({ filePath });
+  if (!chunks.ok) throw new Error(chunks.error.reason);
+  if (chunks.value.length !== 4 || chunks.value.filter((chunk) => chunk.status === "closed").length !== 3) {
+    throw new Error(
+      `derived fixture chunk policy no longer produces three closed chunks and one open chunk: ${JSON.stringify(
+        chunks.value.map(({ chunkId, status, accumulatedProjectedTokens, memberTurnIds }) => ({
+          chunkId,
+          status,
+          accumulatedProjectedTokens,
+          memberTurnIds,
+        })),
+      )}`,
+    );
+  }
+  return { ...fixture, filePath, threadId, turnIds: Array.from({ length: 12 }, (_, index) => `t${index + 1}`) };
 }

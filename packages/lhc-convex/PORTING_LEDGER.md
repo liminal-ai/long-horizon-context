@@ -1,4 +1,4 @@
-# Round 2 coverage ledger
+# Round 4 coverage ledger
 
 Statuses are evidence-based:
 
@@ -6,7 +6,7 @@ Statuses are evidence-based:
 - **n/a**: the entire file targets substrate behavior that does not exist in the Convex component;
 - **open**: some or all assertions are not yet ported, with the missing capability named.
 
-Round 3 totals: **14 ported / 1 n/a / 37 open**.
+Round 4 totals: **17 ported / 1 n/a / 34 open**.
 
 ## Frozen service tests (52 non-network files)
 
@@ -17,7 +17,7 @@ Round 3 totals: **14 ported / 1 n/a / 37 open**.
 | `chunk-compact-recovery.test.ts` | open | Needs controllable failed detailed-turn work and recovery/requeue fixture support. |
 | `chunk-detailed-format.test.ts` | open | Needs the frozen multi-turn chunk corpus recreated through public intake and drain APIs. |
 | `derivation-messages.test.ts` | **ported** | Six active frozen assertions run in `test/derivation_messages.test.ts`; the three frozen tests already marked skipped remain skipped. |
-| `derivation-turns.test.ts` | open | Needs turn-work failure scripting, source-damage injection, and exact turn-owned write inspection. |
+| `derivation-turns.test.ts` | **ported** | All 14 frozen assertions run in `test/derivation_turns.test.ts`: independent turn writes, fallback/recovery without auto-cascade, grouped tool outcomes, placement and chunk boundaries, independent chunk summaries, and deterministic replay. |
 | `detailed-turn-compression.test.ts` | open | Needs model-call capture plus tiny/failure/fallback turn fixtures. |
 | `epic-fix-02.test.ts` | open | Needs multi-instance scheduler isolation and cascade-group inspection helpers. |
 | `epic-fix.test.ts` | open | SQLite path/ref edge cases need separation from the still-applicable Convex thread-ref behavior. |
@@ -54,9 +54,9 @@ Round 3 totals: **14 ported / 1 n/a / 37 open**.
 | `view-boundary-turn-end.test.ts` | **ported** | Both frozen assertions run in `test/view_boundary_turn_end.test.ts`. |
 | `view-boundary.test.ts` | open | Needs all boundary advancement, cap, and tool-result position fixtures beyond the turn-end regression pair. |
 | `view-compact-full-boundary.test.ts` | **ported** | All nine frozen assertions run in `test/view_compact_full_boundary.test.ts`. |
-| `view-compact-preview.test.ts` | open | Needs the complete profile/error/abort/degraded preview matrix. |
+| `view-compact-preview.test.ts` | **ported** | All 13 frozen assertions run in `test/view_compact_preview.test.ts`, including the committed 12-turn corpus points, preview/compact agreement, backward re-compact, stored-arrangement repair, read-only/background behavior, and dangling open-turn anchoring. |
 | `view-compact.test.ts` | open | Needs full compact persistence, replacement, source-state, bands, and failure matrix. |
-| `view-fixture.test.ts` | open | Needs the frozen committed derived-thread fixture recreated in Convex and compared field-for-field. |
+| `view-fixture.test.ts` | **ported** | Ten substrate-applicable assertions run in `test/view_fixture.test.ts` against the committed 12-turn/4-chunk fixture: config normalization, ready/failed/blocked state fidelity, reason classes, and corruption refusal. The SQLite DDL/CHECK assertion and two process-local compact injection-hook assertions are n/a on Convex: schema validation and mutation atomicity are platform-owned, and no test-only runtime seam is introduced. |
 | `view-llm-request-context.test.ts` | open | Session-view parity is covered separately, but the 15 exact LLM-context rendering cases remain open. |
 | `view-prune.test.ts` | **ported** | All eight frozen assertions run in `test/view_prune.test.ts`. |
 | `view-render-targets.test.ts` | open | Needs exact full/smooth/detailed/brief target rendering fixtures; ruled-out `materialize` cases must remain excluded explicitly. |
