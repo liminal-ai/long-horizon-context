@@ -3,6 +3,25 @@ import { internalAction } from "../../convex/_generated/server.js";
 
 const scriptCalls = new Map<string, number>();
 
+// Capture of every model call this fake host receives, in call order. The
+// routing keys (provider, model, thinking) and rendered messages are the only
+// facts a test can observe about how the component reached the host, so a
+// suite that needs the frozen recordingCall's log reads this array. Module
+// state is shared with the test process because convex-test runs the action
+// in-process against the same module registry.
+export interface CapturedModelCall {
+  provider: string;
+  model: string;
+  thinking?: "none" | "minimal" | "medium" | "high";
+  messages: Array<{ role: "system" | "user"; content: string }>;
+}
+
+export const capturedCalls: CapturedModelCall[] = [];
+
+export function resetCapturedCalls(): void {
+  capturedCalls.length = 0;
+}
+
 export const call = internalAction({
   args: {
     provider: v.string(),
@@ -16,6 +35,12 @@ export const call = internalAction({
     thinking: v.optional(v.union(v.literal("none"), v.literal("minimal"), v.literal("medium"), v.literal("high"))),
   },
   handler: async (_ctx, args) => {
+    capturedCalls.push({
+      provider: args.provider,
+      model: args.model,
+      ...(args.thinking === undefined ? {} : { thinking: args.thinking }),
+      messages: args.messages,
+    });
     if (args.model === "fail") return { ok: false as const, kind: "other" as const, message: "scripted failure" };
     if (args.model.startsWith("failure:")) {
       const [, kind = "other", ...messageParts] = args.model.split(":");

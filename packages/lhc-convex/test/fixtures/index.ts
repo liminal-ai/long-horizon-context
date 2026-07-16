@@ -14,11 +14,11 @@ import {
   type SdkConfig,
 } from "../../src/client/index.js";
 
-const modules = {
+export const modules = {
   ...import.meta.glob("../../convex/**/*.ts"),
   "../../convex/test_model.ts": () => import("../convex/model.js"),
 };
-const dummyModelCall = "test_model:call" as ModelCallHandle;
+export const dummyModelCall = "test_model:call" as ModelCallHandle;
 
 export type ConvexHarness = TestConvex<SchemaDefinition<GenericSchema, boolean>>;
 export type EventByKind<K extends EventKind> = Extract<MessageEventInput, { eventKind: K }>;
@@ -68,7 +68,7 @@ export function conversationTurn(): MessageEventInput[] {
   return eventBatch(["user_prompt", "assistant_text", "tool_call", "tool_result", "turn_end"]);
 }
 
-function executor(test: ConvexHarness): LhcExecutor {
+export function executor(test: ConvexHarness): LhcExecutor {
   return {
     runQuery: ((reference: Parameters<ConvexHarness["query"]>[0], args: unknown) =>
       test.query(reference, args as never)) as LhcExecutor["runQuery"],
