@@ -1,0 +1,58 @@
+{
+  "name": "@liminal/lhc-convex",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Long Horizon Context as a reusable Convex component.",
+  "type": "module",
+  "files": [
+    "convex/**/*.ts",
+    "convex/_generated/*.js",
+    "!convex/**/*.test.ts",
+    "convex.config.ts",
+    "dist",
+    "src/**/*.ts",
+    "!src/**/*.test.ts"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/client/index.d.ts",
+      "default": "./dist/src/client/index.js"
+    },
+    "./test": "./src/test.ts",
+    "./_generated/component.js": {
+      "types": "./dist/convex/_generated/component.d.ts"
+    },
+    "./convex.config.js": {
+      "types": "./dist/convex/convex.config.d.ts",
+      "default": "./dist/convex/convex.config.js"
+    }
+  },
+  "types": "./dist/src/client/index.d.ts",
+  "module": "./dist/src/client/index.js",
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "build": "tsc -p tsconfig.build.json",
+    "build:codegen": "pnpm run build && convex codegen --typecheck disable && pnpm run build",
+    "typecheck": "tsc --noEmit && tsc -p example && tsc -p example/convex",
+    "test": "vitest run",
+    "test:all": "pnpm run test",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome check ."
+  },
+  "peerDependencies": {
+    "convex": "^1.42.2"
+  },
+  "dependencies": {
+    "js-tiktoken": "^1.0.21"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "@types/node": "^24.12.4",
+    "convex": "^1.42.2",
+    "convex-test": "^0.0.49",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12",
+    "vitest": "^4.1.8"
+  }
+}
