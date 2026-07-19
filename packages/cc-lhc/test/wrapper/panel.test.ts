@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createInputState, type InputState, showReceipts } from "../../src/wrapper/modal.js";
 import {
+  commandProgressLabel,
   createAltScreenGuard,
   ENTER_ALT_SCREEN,
   LEAVE_ALT_SCREEN,
@@ -9,7 +10,6 @@ import {
   PANEL_HINT_EXECUTING,
   PANEL_PROMPT,
   renderPanel,
-  swapCommandProgressLabel,
 } from "../../src/wrapper/panel.js";
 
 function modalState(overrides: Partial<InputState> = {}): InputState {
@@ -62,24 +62,27 @@ describe("renderPanel", () => {
     expect(out.endsWith(`\x1b[11;51H\x1b[?25h`)).toBe(true);
   });
 
-  it("hides the cursor while a command is executing", () => {
+  it("hides the cursor and shows a progress line while a command is executing", () => {
     const out = renderPanel(modalState({ mode: "executing", line: "status" }), 80, 24);
-    expect(out).toContain(`${PANEL_PROMPT}status`);
+    // every executing command gets a progress line — a frozen prompt line is
+    // indistinguishable from a hang
+    expect(out).toContain("status — running…");
+    expect(out).not.toContain(PANEL_PROMPT);
     expect(out).toContain(`\x1b[2m${PANEL_HINT_EXECUTING}\x1b[22m`);
     expect(out).not.toContain(PANEL_HINT);
     expect(out.endsWith("\x1b[?25h")).toBe(false);
   });
 
-  it("shows a static swap progress line for compact/prune while executing", () => {
-    expect(swapCommandProgressLabel("compact")).toBe("compact — rebuilding…");
-    expect(swapCommandProgressLabel("prune 160000")).toBe("prune — rebuilding…");
-    expect(swapCommandProgressLabel("status")).toBeNull();
+  it("labels progress per command and appends elapsed seconds from the ticker", () => {
+    expect(commandProgressLabel("compact")).toBe("compact — rebuilding…");
+    expect(commandProgressLabel("prune 160000")).toBe("prune — rebuilding…");
+    expect(commandProgressLabel("status")).toBe("status — running…");
+    expect(commandProgressLabel("stats", 0)).toBe("stats — running…");
+    expect(commandProgressLabel("stats", 3)).toBe("stats — running… (3s)");
 
-    const out = renderPanel(modalState({ mode: "executing", line: "compact" }), 80, 24);
-    expect(out).toContain("compact — rebuilding…");
+    const out = renderPanel(modalState({ mode: "executing", line: "compact" }), 80, 24, 7);
+    expect(out).toContain("compact — rebuilding… (7s)");
     expect(out).not.toContain(PANEL_PROMPT);
-    expect(out).toContain(`\x1b[2m${PANEL_HINT_EXECUTING}\x1b[22m`);
-    expect(out).not.toContain(PANEL_HINT);
     expect(out.endsWith("\x1b[?25h")).toBe(false);
   });
 

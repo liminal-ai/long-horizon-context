@@ -308,7 +308,7 @@ describe("passthrough", () => {
       expect(cancelled.pty).toBe("");
     });
 
-    it("kitty leader-again cancels the modal (and is dropped while executing)", () => {
+    it("kitty leader-again cancels the modal (and detaches while executing)", () => {
       const opened = feed(createInputState(), LEADER);
       const cancelled = feed(opened.state, "\x1b[93;5u");
       expect(cancelled.actions).toEqual([{ kind: "exit_modal" }]);
@@ -316,10 +316,10 @@ describe("passthrough", () => {
       expect(cancelled.pty).toBe("");
 
       const executing = feed(createInputState(), LEADER, "status\r");
-      const dropped = feed(executing.state, "\x1b[93;5u");
-      expect(dropped.actions).toEqual([]);
-      expect(dropped.state.mode).toBe("executing");
-      expect(dropped.pty).toBe("");
+      const detached = feed(executing.state, "\x1b[93;5u");
+      expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
+      expect(detached.state.mode).toBe("passthrough");
+      expect(detached.pty).toBe("");
     });
   });
 });
@@ -493,12 +493,12 @@ describe("executing mode", () => {
     return opened.state;
   }
 
-  it("drops user input while a command runs (Esc and leader included)", () => {
-    const result = feed(startExecuting(), "abc\r", LEADER, Buffer.from([0x1b]), "q");
+  it("drops editor input while a command runs (typed text, Enter, backspace)", () => {
+    const result = feed(startExecuting(), "abc\r", "\x7f", "q");
     expect(result.pty).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
-    // the running command stays visible on the panel's prompt line
+    // the running command stays visible on the panel's progress line
     expect(result.state.line).toBe("status");
   });
 
@@ -507,20 +507,68 @@ describe("executing mode", () => {
     expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
     expect(detached.state.mode).toBe("passthrough");
     // subsequent input flows to claude; the late receipt path (settleCommand
-    // with mode !== executing) prints raw without touching input state
+    // with mode !== executing) logs or lands on a reopened panel without
+    // touching input state
     const after = feed(detached.state, "hello");
     expect(after.pty).toBe("hello");
     expect(forceResetInput(after.state)).toBe(after.state);
   });
 
-  it("resolveBareEsc while executing clears the pending ESC without detaching", () => {
+  it("the raw leader while executing DETACHES like ctrl-C", () => {
+    const detached = feed(startExecuting(), LEADER);
+    expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(detached.state.mode).toBe("passthrough");
+    expect(detached.pty).toBe("");
+  });
+
+  it("kitty and modifyOtherKeys ctrl-C DETACH while executing — the only ctrl-C a kitty terminal sends", () => {
+    // claude pushes kitty disambiguate mode, so iTerm2/Warp/Ghostty deliver
+    // ctrl-C as CSI 99;5u — before the fix nothing could detach there.
+    const kitty = feed(startExecuting(), "\x1b[99;5u");
+    expect(kitty.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(kitty.state.mode).toBe("passthrough");
+    expect(kitty.pty).toBe("");
+
+    const modifyOtherKeys = feed(startExecuting(), "\x1b[27;5;99~");
+    expect(modifyOtherKeys.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(modifyOtherKeys.pty).toBe("");
+
+    // release events and other modifiers stay inert
+    const release = feed(startExecuting(), "\x1b[99;5:3u");
+    expect(release.actions).toEqual([]);
+    expect(release.state.mode).toBe("executing");
+  });
+
+  it("kitty ctrl-C cancels while modal, same as raw 0x03", () => {
+    const opened = feed(createInputState(), LEADER, "sta");
+    const cancelled = feed(opened.state, "\x1b[99;5u");
+    expect(cancelled.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(cancelled.state.mode).toBe("passthrough");
+    expect(cancelled.pty).toBe("");
+  });
+
+  it("kitty Esc DETACHES while executing", () => {
+    const detached = feed(startExecuting(), "\x1b[27u");
+    expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(detached.state.mode).toBe("passthrough");
+    expect(detached.pty).toBe("");
+  });
+
+  it("resolveBareEsc while executing DETACHES (a bare Esc is a dismiss keypress)", () => {
     const pending = feed(startExecuting(), Buffer.from([0x1b]));
     expect(pending.state.escape).toEqual({ kind: "pending_esc" });
     const resolved = resolveBareEsc(pending.state);
     expect(resolved).not.toBeNull();
-    expect(resolved!.actions).toEqual([]);
-    expect(resolved!.state.mode).toBe("executing");
+    expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(resolved!.state.mode).toBe("passthrough");
     expect(resolved!.state.escape).toBeNull();
+  });
+
+  it("Esc followed by a normal byte while executing detaches and routes the byte to passthrough", () => {
+    const result = feed(startExecuting(), Buffer.from([0x1b, 0x71]));
+    expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(result.state.mode).toBe("passthrough");
+    expect(result.pty).toBe("q");
   });
 
   it("still forwards protocol responses while executing", () => {
@@ -553,6 +601,60 @@ describe("executing mode", () => {
     expect(forceResetInput(passthrough)).toBe(passthrough);
     const executing = forceResetInput(startExecuting());
     expect(executing.mode).toBe("passthrough");
+  });
+});
+
+describe("string-sequence wedge escape hatch", () => {
+  function openModal(): InputState {
+    return feed(createInputState(), LEADER).state;
+  }
+
+  it("a genuine OSC response while modal still forwards verbatim and stays modal", () => {
+    const response = "\x1b]11;rgb:11/22/33\x07";
+    const result = feed(openModal(), response);
+    expect(result.pty).toBe(response);
+    expect(result.state.mode).toBe("modal");
+    expect(result.state.escape).toBeNull();
+  });
+
+  it("ctrl-C escapes a wedged string sequence: cancel + ST closes the child's introducer", () => {
+    // alt-] (ESC ]) or a truncated OSC response used to wedge the modal
+    // permanently: every later key forwarded as presumed protocol, no dismiss
+    // key worked. A raw 0x03 cannot occur inside a legal string payload, so
+    // it is proof of a keypress — the hatch.
+    const wedged = feed(openModal(), Buffer.from([0x1b, 0x5d]), "junk");
+    expect(wedged.state.escape).toEqual({ kind: "string_term" });
+    const escaped = feed(wedged.state, "\x03");
+    expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(escaped.state.mode).toBe("passthrough");
+    expect(escaped.state.escape).toBeNull();
+    expect(escaped.pty).toBe("\x1b\\");
+  });
+
+  it("the leader escapes a wedged string sequence too", () => {
+    const wedged = feed(openModal(), Buffer.from([0x1b, 0x5d]));
+    const escaped = feed(wedged.state, LEADER);
+    expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(escaped.state.mode).toBe("passthrough");
+    expect(escaped.pty.endsWith("\x1b\\")).toBe(true);
+  });
+
+  it("hatch one byte deeper (after the string's own ESC) completes ST with a lone backslash", () => {
+    const wedged = feed(openModal(), Buffer.from([0x1b, 0x5d]), Buffer.from([0x1b]));
+    expect(wedged.state.escape).toEqual({ kind: "string_term_esc" });
+    const escaped = feed(wedged.state, "\x03");
+    expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
+    // the ESC already forwarded + this backslash = a complete ST for the child
+    expect(escaped.pty).toBe("\\");
+  });
+
+  it("hatch also works while executing (detach)", () => {
+    const executing = feed(createInputState(), LEADER, "status\r");
+    const wedged = feed(executing.state, Buffer.from([0x1b, 0x5d]));
+    expect(wedged.state.escape).toEqual({ kind: "string_term" });
+    const escaped = feed(wedged.state, "\x03");
+    expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(escaped.state.mode).toBe("passthrough");
   });
 });
 
