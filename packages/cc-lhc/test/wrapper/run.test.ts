@@ -503,6 +503,59 @@ describe("run", () => {
     await runPromise;
   }, 20_000);
 
+  it("names the in-flight command in busy refusals and lands its late receipt on a reopened panel", async () => {
+    runMocks.captureFactory = () => makeCaptureSession();
+    let resolveSlow: (outcome: { messages: string[] }) => void = () => {};
+    runMocks.dispatchLhcCommand.mockImplementation(async (line: string) => {
+      if (line === "/lhc-status") {
+        return new Promise<{ messages: string[] }>((resolve) => {
+          resolveSlow = resolve;
+        });
+      }
+      return { messages: ["stats line"] };
+    });
+
+    const stdout = fakeStdout(120, 24);
+    const stdin = fakeStdin();
+    const output: string[] = [];
+    stdout.on("data", (chunk: Buffer) => {
+      output.push(chunk.toString("latin1"));
+    });
+
+    const runPromise = run(["-c", "sleep 30"], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      noInference: true,
+    });
+
+    await sleep(100);
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
+    (stdin as unknown as PassThrough).write(Buffer.from("status\r"));
+    // every executing command shows a progress line, not a frozen prompt
+    // (ASCII-only matcher: the em-dash/ellipsis mangle under latin1 decoding)
+    await waitFor(() => output.join("").includes("running"), "progress line");
+
+    // detach with ctrl-C, reopen, and try another command: the busy refusal
+    // names what is still running
+    (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
+    await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "detach restore");
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    await waitFor(() => output.filter((chunk) => chunk.includes(ENTER_ALT_SCREEN)).length >= 2, "panel reopened");
+    (stdin as unknown as PassThrough).write(Buffer.from("stats\r"));
+    await waitFor(() => output.join("").includes("status still running ("), "named busy refusal");
+
+    // the detached command settles while the reopened panel is up: its
+    // receipt lands there, labelled as late
+    resolveSlow({ messages: ["tail=42"] });
+    await waitFor(() => output.join("").includes("status finished:"), "late receipt label");
+    expect(output.join("")).toContain("tail=42");
+
+    process.kill(process.pid, "SIGTERM");
+    await runPromise;
+  }, 20_000);
+
   it("routes passthrough diagnostics to wrapper log with zero stdout/stderr writes", async () => {
     process.env.CC_LHC_LEADER = "invalid";
 

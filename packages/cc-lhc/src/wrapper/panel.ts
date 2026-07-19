@@ -11,14 +11,19 @@ import type { InputState } from "./modal.js";
 
 export const PANEL_PROMPT = "long-horizon commands> ";
 export const PANEL_HINT = "Enter run · Esc close · ctrl-C detach";
-/** Shown while a command runs — Esc is dropped in executing mode. */
-export const PANEL_HINT_EXECUTING = "ctrl-C detach";
+/** Shown while a command runs — Esc/ctrl-C/leader all detach in executing mode. */
+export const PANEL_HINT_EXECUTING = "Esc/ctrl-C detach · command keeps running";
 
-/** Static progress line for swap commands during rebuild; null for non-swap commands. */
-export function swapCommandProgressLabel(commandLine: string): string | null {
+/**
+ * Progress line while a command executes. Every command gets one — a panel
+ * that keeps showing the prompt with a frozen line is indistinguishable from
+ * a hang, which is exactly how the modal used to read during a slow `status`.
+ */
+export function commandProgressLabel(commandLine: string, elapsedSeconds?: number): string {
   const name = commandLine.trim().split(/\s+/)[0] ?? "";
-  if (name === "compact" || name === "prune") return `${name} — rebuilding…`;
-  return null;
+  const verb = name === "compact" || name === "prune" ? "rebuilding…" : "running…";
+  const elapsed = elapsedSeconds !== undefined && elapsedSeconds >= 1 ? ` (${elapsedSeconds}s)` : "";
+  return `${name === "" ? "command" : name} — ${verb}${elapsed}`;
 }
 
 /** Switch to the alternate screen (saves main screen + cursor). */
@@ -76,13 +81,14 @@ interface PanelLine {
 
 /**
  * Full positioned redraw of the panel, centered for the given terminal size:
- * receipt/notice rows, the prompt line with the current input (or the running
- * command while executing), and a dim key-hint line. Idempotent — run.ts
- * calls it after every input chunk and on resize while the modal is open.
- * The real cursor sits at the end of the input while editing and is hidden
- * while a command runs.
+ * receipt/notice rows, the prompt line with the current input (or a progress
+ * line while executing — with elapsed seconds when run.ts's ticker supplies
+ * them), and a dim key-hint line. Idempotent — run.ts calls it after every
+ * input chunk, on resize, and on each ticker beat while a command runs. The
+ * real cursor sits at the end of the input while editing and is hidden while
+ * a command runs.
  */
-export function renderPanel(state: InputState, cols: number, rows: number): string {
+export function renderPanel(state: InputState, cols: number, rows: number, elapsedSeconds?: number): string {
   const safeCols = Math.max(20, cols);
   const safeRows = Math.max(5, rows);
   const maxWidth = safeCols - 2;
@@ -92,19 +98,14 @@ export function renderPanel(state: InputState, cols: number, rows: number): stri
   for (const row of state.panelRows) lines.push({ text: truncate(row) });
   if (state.panelRows.length > 0) lines.push({ text: "" });
 
-  const swapProgress =
-    state.mode === "executing" ? swapCommandProgressLabel(state.line) : null;
-  if (swapProgress !== null) {
-    lines.push({ text: truncate(swapProgress) });
+  if (state.mode === "executing") {
+    lines.push({ text: truncate(commandProgressLabel(state.line, elapsedSeconds)) });
     lines.push({ text: "" });
     lines.push({ text: truncate(PANEL_HINT_EXECUTING), dim: true });
   } else {
     lines.push({ text: truncate(PANEL_PROMPT + state.line), prompt: true });
     lines.push({ text: "" });
-    lines.push({
-      text: truncate(state.mode === "executing" ? PANEL_HINT_EXECUTING : PANEL_HINT),
-      dim: true,
-    });
+    lines.push({ text: truncate(PANEL_HINT), dim: true });
   }
 
   const blockWidth = Math.max(...lines.map((line) => line.text.length));

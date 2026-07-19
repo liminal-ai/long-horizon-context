@@ -2,6 +2,7 @@ import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
   dispatchLhcCommand,
+  type DispatchOutcome,
   formatCommandOutput,
   type LhcCommandRuntime,
   type SessionRestartPlan,
@@ -11,7 +12,7 @@ import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
 import { defaultLineageDbPath, safeRecordSessionThread } from "../intake/lineage-db.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
-import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
+import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
   createInputState,
@@ -21,6 +22,7 @@ import {
   processInputChunk,
   resolveBareEsc,
   resolveLeaderByte,
+  showLateReceipts,
   showReceipts,
 } from "./modal.js";
 import { OutputHold } from "./output-hold.js";
@@ -242,7 +244,35 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
   const renderModalPanel = (): void => {
     if (inputState.mode === "passthrough") return;
-    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS));
+    const inFlight = commandGuard.current();
+    const elapsedSeconds =
+      inputState.mode === "executing" && inFlight !== null
+        ? Math.floor((Date.now() - inFlight.startedAtMs) / 1000)
+        : undefined;
+    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS, elapsedSeconds));
+  };
+
+  // Once-a-second repaint while a command executes: the progress line's
+  // elapsed counter is the panel's liveness signal — without it a slow
+  // `status` is indistinguishable from a hang. Self-cancels the moment the
+  // mode leaves executing (settle, detach, overflow reset, signal restore).
+  let executingTicker: NodeJS.Timeout | null = null;
+  const stopExecutingTicker = (): void => {
+    if (executingTicker !== null) {
+      clearInterval(executingTicker);
+      executingTicker = null;
+    }
+  };
+  const startExecutingTicker = (): void => {
+    stopExecutingTicker();
+    executingTicker = setInterval(() => {
+      if (inputState.mode !== "executing") {
+        stopExecutingTicker();
+        return;
+      }
+      renderModalPanel();
+    }, 1_000);
+    executingTicker.unref?.();
   };
 
   const handleSigwinch = (): void => {
@@ -280,6 +310,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         clearTimeout(pendingEscTimer);
         pendingEscTimer = null;
       }
+      stopExecutingTicker();
       stdin.removeListener("data", forwardInput);
       stdin.removeListener("end", onStdinGone);
       stdin.removeListener("close", onStdinGone);
@@ -392,30 +423,55 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     // screen, so receipts stay readable whatever the main-screen TUI is doing.
     // One keypress (Esc/ctrl-C/leader) dismisses: leave the alt screen (the
     // terminal restores CC's layout exactly), then flush the held output.
-    const settleCommand = (messages: string[]): void => {
-      if (inputState.mode !== "executing") {
-        // Modal was detached (ctrl-C) or force-cancelled (overflow) while the
-        // command ran: the child owns the live screen again, so the receipt
-        // goes to the wrapper log (doctrine — never write into CC's UI).
-        for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): ${message}`);
+    const settleCommand = (messages: string[], label: string): void => {
+      stopExecutingTicker();
+      if (inputState.mode === "executing") {
+        if (messages.length === 0) {
+          inputState = finishExecuting(inputState);
+          altScreen.leave();
+          outputHold.flush();
+          return;
+        }
+        inputState = showReceipts(inputState, messages);
+        renderModalPanel();
         return;
       }
-      if (messages.length === 0) {
-        inputState = finishExecuting(inputState);
-        altScreen.leave();
-        outputHold.flush();
+      if (inputState.mode === "modal") {
+        // The user detached and REOPENED the panel: land the late receipt
+        // where they are looking instead of vanishing it into the log,
+        // preserving whatever they are mid-typing.
+        if (messages.length === 0) return;
+        inputState = showLateReceipts(inputState, label, messages);
+        renderModalPanel();
         return;
       }
-      inputState = showReceipts(inputState, messages);
-      renderModalPanel();
+      // Detached (ctrl-C/Esc/leader) or force-cancelled (overflow) and never
+      // reopened: the child owns the live screen, so the receipt goes to the
+      // wrapper log (doctrine — never write into CC's UI).
+      for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
     };
 
     const runModalCommand = (commandLine: string): void => {
-      if (!commandGuard.tryAcquire()) {
-        settleCommand([COMMAND_BUSY_MESSAGE]);
+      const label = commandLine.replace(/^\/lhc-/, "");
+      if (!commandGuard.tryAcquire(label, Date.now())) {
+        const inFlight = commandGuard.current();
+        settleCommand([inFlight === null ? "busy — command in progress" : formatBusyMessage(inFlight, Date.now())], label);
         return;
       }
-      void dispatchLhcCommand(commandLine, commandRuntime())
+      startExecutingTicker();
+      // A synchronous throw (runtime-snapshot construction, dispatch setup)
+      // must not escape into the stdin data handler as an uncaught exception —
+      // settle it exactly like an async failure.
+      let dispatched: Promise<DispatchOutcome>;
+      try {
+        dispatched = dispatchLhcCommand(commandLine, commandRuntime());
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        settleCommand([`command error: ${message}`], label);
+        commandGuard.release();
+        return;
+      }
+      void dispatched
         .then(async (outcome) => {
           const resume =
             outcome.restart === undefined
@@ -426,16 +482,17 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
           if (receipts === null) {
             // Confirmed swap: auto-dismiss — panel already left at injection;
             // settleCommand([]) is a no-op safety (alt-screen leave is idempotent).
-            settleCommand([]);
+            settleCommand([], label);
             return;
           }
-          settleCommand(receipts);
+          settleCommand(receipts, label);
         })
         .catch((cause: unknown) => {
           const message = cause instanceof Error ? cause.message : String(cause);
-          settleCommand([`command error: ${message}`]);
+          settleCommand([`command error: ${message}`], label);
         })
         .finally(() => {
+          stopExecutingTicker();
           commandGuard.release();
         });
     };

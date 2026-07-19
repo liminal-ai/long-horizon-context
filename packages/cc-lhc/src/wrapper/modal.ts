@@ -14,8 +14,14 @@
 // for the duration and renders the panel on the ALTERNATE SCREEN (panel.ts) —
 // this module emits no terminal bytes of its own, it only evolves state.
 // Enter executes a command (mode becomes EXECUTING until the command
-// settles), Esc/ctrl-C/leader cancel. Ambiguity about "whose input box is
-// this" cannot exist by construction — while modal, it is ours.
+// settles), Esc/ctrl-C/leader cancel. While EXECUTING the same three keys
+// DETACH — the panel closes and output resumes while the command keeps
+// running — in every encoding a terminal may deliver them (raw byte, kitty
+// CSI-u, xterm modifyOtherKeys). A stuck command must never hold the screen
+// hostage: the freeze this fixed was a kitty terminal (claude pushes kitty
+// disambiguate mode) sending ctrl-C as CSI 99;5u, which the executing gate
+// dropped — leaving NO working escape key. Ambiguity about "whose input box
+// is this" cannot exist by construction — while modal, it is ours.
 //
 // Leader default is ctrl-] (0x1d), telnet's escape-to-control-channel
 // precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
@@ -147,6 +153,19 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
     heldSeq: [],
     escape: null,
     panelRows: lines.flatMap((line) => line.split("\n")),
+  };
+}
+
+/**
+ * Receipts from a command that settled AFTER the user detached and reopened
+ * the panel: land them above the prompt they are looking at, labelled so the
+ * late arrival is legible, without clobbering the line they may be typing.
+ * (A settle in passthrough still goes to the wrapper log — run.ts decides.)
+ */
+export function showLateReceipts(state: InputState, label: string, lines: string[]): InputState {
+  return {
+    ...state,
+    panelRows: [`${label} finished:`, ...lines.flatMap((line) => line.split("\n"))],
   };
 }
 
@@ -433,8 +452,18 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
     (finalByte === 0x75 && isKittyLeaderParams(params, state.leaderByte)) ||
     (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, state.leaderByte));
   if (encodedLeader && !state.inPaste) {
-    // Encoded leader-again: same cancel as raw 0x1d (dropped while executing,
-    // like the raw form — applyModalKey gates on mode).
+    // Encoded leader-again: same cancel as raw 0x1d (detach while executing).
+    return { key: { kind: "cancel" }, forward: false };
+  }
+  // Encoded ctrl-C — the leader matchers are generic ctrl-byte matchers, so
+  // byte 0x03 reuses them (kitty keycode 99, ctrl-only modifier). Without
+  // this, a kitty-protocol terminal (claude pushes kitty disambiguate mode)
+  // had NO working detach key while a command executed: raw 0x03 never
+  // arrives there, and CSI 99;5u fell through to "none" — the freeze repro.
+  const encodedCtrlC =
+    (finalByte === 0x75 && isKittyLeaderParams(params, 0x03)) ||
+    (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, 0x03));
+  if (encodedCtrlC && !state.inPaste) {
     return { key: { kind: "cancel" }, forward: false };
   }
   if (finalByte === 0x75) {
@@ -452,7 +481,14 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
 }
 
 function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
-  if (state.mode === "executing") return { state };
+  if (state.mode === "executing") {
+    // Cancel-family keys DETACH a running command (Esc, ctrl-C, leader — any
+    // encoding): the panel closes and output resumes; the command keeps
+    // running and its receipt lands late (reopened panel or wrapper log).
+    // Editor keys stay dropped — there is no line to edit while executing.
+    if (key.kind === "cancel") return cancelModal(state);
+    return { state };
+  }
   switch (key.kind) {
     case "enter":
       return submitModalLine(state);
@@ -490,13 +526,9 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       }
       // Any other byte resolves the held ESC as a bare Esc keypress — this
       // works across chunk boundaries, so a sequence split after its ESC is
-      // never misread. While executing, Esc is dropped (ctrl-C detaches);
-      // while modal, Esc cancels and the current byte belongs to passthrough.
+      // never misread. Modal or executing, Esc cancels/detaches and the
+      // current byte belongs to passthrough.
       const cleared: InputState = { ...state, escape: null, heldSeq: [] };
-      if (state.mode === "executing") {
-        if (byte === 0x03) return cancelModal(cleared);
-        return { state: cleared };
-      }
       const cancelled = cancelModal(cleared);
       const after = passthroughByte(byte, cancelled.state);
       return {
@@ -522,12 +554,30 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
     }
 
     case "string_term":
+      // Escape hatch for the wedge repro: a raw ctrl-C or leader byte CANNOT
+      // occur inside a legal OSC/DCS/PM/APC payload (BEL and ESC are the only
+      // controls those strings admit), so seeing one proves this "sequence"
+      // was a user keypress burst (alt-], a truncated response) — without the
+      // hatch every later key forwarded to the child as presumed protocol and
+      // the modal wedged with no escape at all. Close the introducer already
+      // sent to the child with ST (a bare ST is a no-op for a parser that is
+      // not inside a string), consume the byte, and cancel/detach.
+      if (byte === 0x03 || byte === state.leaderByte) {
+        const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
+        return { state: hatch.state, toPty: Buffer.from([0x1b, 0x5c]), actions: hatch.actions ?? [] };
+      }
       if (byte === 0x07) return { state: { ...state, escape: null }, toPty: Buffer.from([byte]) };
       if (byte === 0x1b)
         return { state: { ...state, escape: { kind: "string_term_esc" } }, toPty: Buffer.from([byte]) };
       return { state, toPty: Buffer.from([byte]) };
 
     case "string_term_esc":
+      // Same hatch one byte deeper: the string's ESC is already forwarded, so
+      // a lone backslash completes ST for the child.
+      if (byte === 0x03 || byte === state.leaderByte) {
+        const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
+        return { state: hatch.state, toPty: Buffer.from([0x5c]), actions: hatch.actions ?? [] };
+      }
       if (byte === 0x5c) return { state: { ...state, escape: null }, toPty: Buffer.from([byte]) };
       return { state: { ...state, escape: { kind: "pending_esc" } }, toPty: Buffer.from([byte]) };
 
@@ -567,13 +617,14 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   if (byte === 0x03) {
     // Modal: cancel. Executing: DETACH — the modal UI is torn down and output
     // resumes, but the in-flight command keeps running (the single-flight
-    // guard still serializes); its receipt prints raw on completion and may
-    // be repainted over. This is the escape hatch for a hung command.
+    // guard still serializes); its receipt lands late — in a reopened panel
+    // or the wrapper log. This is the escape hatch for a hung command.
     return cancelModal(state);
   }
 
   if (byte === state.leaderByte) {
-    if (state.mode === "executing") return { state };
+    // Leader-again dismisses in every mode — while executing it detaches,
+    // same as Esc and ctrl-C (a running command must never trap the screen).
     return cancelModal(state);
   }
 
@@ -619,8 +670,8 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
 /**
  * Resolve a pending ESC that no further byte has resolved (run.ts calls this
  * from a ~50ms timer): it was a bare Esc keypress. Modal → cancel; executing
- * → drop it (Esc does not detach; ctrl-C does). Null when nothing is pending
- * or the state has since moved on.
+ * → detach (the command keeps running). Null when nothing is pending or the
+ * state has since moved on.
  */
 export function resolveBareEsc(
   state: InputState,
@@ -648,9 +699,6 @@ export function resolveBareEsc(
   }
   if (state.escape?.kind !== "pending_esc") return null;
   const cleared: InputState = { ...state, escape: null, heldSeq: [] };
-  if (state.mode === "modal") {
-    const cancelled = cancelModal(cleared);
-    return { state: cancelled.state, actions: cancelled.actions ?? [] };
-  }
-  return { state: cleared, actions: [] };
+  const cancelled = cancelModal(cleared);
+  return { state: cancelled.state, actions: cancelled.actions ?? [] };
 }
