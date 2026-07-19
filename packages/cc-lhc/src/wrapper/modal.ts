@@ -28,7 +28,7 @@
 // BEL on stdin inside an OSC response is protocol, not a keypress.
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
-export const MODAL_HELP_LINE = "commands: status | stats | prune [targetTokens] | compact | help — Esc cancels";
+export const MODAL_HELP_LINE = "commands: status | stats | prune [targetTokens] | compact | export | help — Esc cancels";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
 
@@ -120,6 +120,7 @@ export function mapModalCommand(line: string): string | null {
     case "status":
     case "stats":
     case "compact":
+    case "export":
       return args.length === 0 ? `/lhc-${name}` : null;
     case "prune":
       if (args.length === 0) return "/lhc-prune";

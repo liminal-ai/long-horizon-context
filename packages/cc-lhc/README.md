@@ -53,6 +53,7 @@ While a command is running the panel shows a progress line (`status — running�
 | `status` | Thread-view status: tail tokens vs threshold, zone, derivation counts |
 | `stats` | One-line capture stats |
 | `prune [targetTokens]` | Advance the visibility boundary; rebuild + in-app resume |
+| `export` | Write canonical transcript dumps (rollout + thread view) to cwd for before/after fidelity diffs |
 | `compact` | Smart compact; rebuild + in-app resume |
 | `help` / `?` | List commands |
 
@@ -69,6 +70,6 @@ Prune/compact rebuild a **new** rollout file under `~/.claude/projects/…` (ori
 - Exit is janky: the Claude Code intro/alt-screen content gets re-emitted into the scrollback multiple times (~7x observed) on child exit. Cosmetic; likely output-flush-after-restore ordering in run.ts onExit. Fix when it annoys someone.
 - The modal line editor is ASCII-only (commands are ASCII); non-ASCII bytes are ignored, arrow keys are dropped while modal.
 - `~/.cc-lhc/wrapper.log` is append-only with no rotation (POC-honest; safe to delete).
-- Rebuild emits text-only user/assistant rollout lines; `model_change` / `thinking_level_change` view entries are dropped; tool results become user text lines.
+- Rebuild emits NATIVE rollout lines: per-block assistant lines (`thinking` / `text` / `tool_use` with verbatim id+name+input, one block per line under a shared synthetic message id, `stop_reason: "tool_use"` on call lines) and tool results as `tool_result` blocks paired by `tool_use_id` — no bracket-label text in the tail (that echo-trained the model to emit `[tool …]` markers before real calls). `model_change` entries stamp the model on subsequent assistant lines. Remaining fidelity caveats: thinking blocks re-emit with `signature: ""` (signatures are not captured — a one-time cache miss, and untested against resume as of 2026-07-19), the native `toolUseResult` metadata field is not reconstructed, and `thinking_level_change` has no rollout representation.
 - If rollout jsonl is written but `sessions-index.json` update fails afterward, an orphan rollout file may remain (harmless; index unchanged).
 - `sessions-index.json.bak` is single-slot — only the pre-write snapshot is kept.

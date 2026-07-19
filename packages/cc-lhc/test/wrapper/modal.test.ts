@@ -663,6 +663,8 @@ describe("mapModalCommand", () => {
     expect(mapModalCommand("status")).toBe("/lhc-status");
     expect(mapModalCommand("stats")).toBe("/lhc-stats");
     expect(mapModalCommand("compact")).toBe("/lhc-compact");
+    expect(mapModalCommand("export")).toBe("/lhc-export");
+    expect(mapModalCommand("export extra")).toBeNull();
     expect(mapModalCommand("prune")).toBe("/lhc-prune");
     expect(mapModalCommand("prune 1234")).toBe("/lhc-prune 1234");
     expect(mapModalCommand("status extra")).toBeNull();

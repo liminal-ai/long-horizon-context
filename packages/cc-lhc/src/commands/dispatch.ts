@@ -3,6 +3,7 @@ import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
 import { runCompactCommand } from "./compact.js";
+import { runExportCommand } from "./export.js";
 import { runPruneCommand } from "./prune.js";
 
 export interface CaptureCommandContext {
@@ -98,6 +99,7 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
         "stats — capture stats line",
         "compact — compact thread view and resume in-place (refused mid-turn)",
         "prune [targetTokens] — prune visibility zone and resume in-place (refused mid-turn)",
+        "export — write canonical transcript dumps (rollout + thread view) to cwd",
         "help — this list",
       ].join("\n"),
     ],
@@ -110,6 +112,7 @@ const HANDLERS: Record<string, CommandHandler> = {
   "lhc-help": (line, runtime) => Promise.resolve(handleHelp(runtime)),
   "lhc-prune": runPruneCommand,
   "lhc-compact": runCompactCommand,
+  "lhc-export": runExportCommand,
 };
 
 export function parseLhcCommandName(commandLine: string): string | null {

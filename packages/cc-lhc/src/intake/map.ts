@@ -54,7 +54,13 @@ export function contentBlocks(content: unknown): ContentBlock[] {
   return content.filter((block): block is ContentBlock => isRecord(block) && typeof block.type === "string");
 }
 
-function stringifyToolResultContent(content: unknown): string {
+/**
+ * Exported for the transcript-dump normalizer: dumps must render native
+ * (pre-swap) tool-result content through the SAME stringification the intake
+ * stores and the rebuild re-emits, or before/after transcript diffs would
+ * flag every non-string tool result as a mismatch.
+ */
+export function stringifyToolResultContent(content: unknown): string {
   if (typeof content === "string") return content;
   try {
     return JSON.stringify(content);
@@ -203,7 +209,8 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
   return events;
 }
 
-function isSyntheticNoResponse(item: RolloutLineItem): boolean {
+/** Exported for the transcript-dump normalizer: dumps skip the same synthetic resume line intake skips. */
+export function isSyntheticNoResponse(item: RolloutLineItem): boolean {
   const message = item.message;
   if (message === undefined || message.model !== SYNTHETIC_MODEL) return false;
   const blocks = contentBlocks(message.content);
