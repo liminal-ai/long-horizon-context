@@ -14,6 +14,8 @@ runtime notes do not. Runs are never reordered.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -25,7 +27,10 @@ from ...shared_tech.derivation import (
     RenderingPart,
     RenderingPartKind,
     ToolOutcome,
+    RenderingPartBlock,
 )
+from ...messages.internal.smoothing import clean_prompt
+from ...shared_tech.tool_result_rendering import truncate_for_fallback
 
 # PART_PLANS derivation keys are the durable message-owned derivation names
 # composition reads; fallback callables are the private helpers (Phase 2 bodies).
@@ -59,7 +64,7 @@ class ComposeDerivationRow:
 
 
 def compose_derivation_key(message_id: str, derivation: str) -> str:
-    raise NotImplementedError
+    return f"{message_id}/{derivation}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,29 +86,54 @@ class CompositionInput:
 
 
 def _text_of(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    if not message.blocks:
+        return ""
+    text = message.blocks[0].content.get("text")
+    return text if isinstance(text, str) else ""
 
 
 def _model_change_text(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    block = message.blocks[0].content if message.blocks else {}
+    previous = block.get("previousModel")
+    next_model = block.get("newModel")
+    if isinstance(previous, str) and isinstance(next_model, str):
+        return f"model_change {previous} -> {next_model}"
+    return "model_change"
 
 
 def _thinking_level_change_text(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    block = message.blocks[0].content if message.blocks else {}
+    previous = block.get("previousLevel")
+    next_level = block.get("newLevel")
+    if isinstance(previous, str) and isinstance(next_level, str):
+        return f"thinking_level_change {previous} -> {next_level}"
+    return "thinking_level_change"
 
 
 def _prompt_fallback_text(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    original = _text_of(message)
+    floor = clean_prompt(original)
+    return original if not floor and original else floor
 
 
 # Mechanical outcome from the record alone: a tool call's outcome comes from
 # its paired result among the turn's messages.
 def _record_outcomes(messages: Sequence[ComposeMessage]) -> dict[str, bool]:
-    raise NotImplementedError
+    result: dict[str, bool] = {}
+    for message in messages:
+        if message.kind != "tool_result":
+            continue
+        block = message.blocks[0].content if message.blocks else {}
+        call_id = block.get("toolCallId")
+        if isinstance(call_id, str):
+            result[call_id] = block.get("isError") is True
+    return result
 
 
 def _outcome_from_record(result_by_call_id: Mapping[str, bool], call_id: object) -> ToolOutcome:
-    raise NotImplementedError
+    if not isinstance(call_id, str) or call_id not in result_by_call_id:
+        return "unknown"
+    return "failed" if result_by_call_id[call_id] else "succeeded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,11 +143,21 @@ class _PartPlan:
 
 
 def _tool_call_fallback_text(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    block = message.blocks[0].content if message.blocks else {}
+    tool_name = block.get("toolName")
+    if not isinstance(tool_name, str):
+        tool_name = "unknown_tool"
+    arguments = block.get("arguments")
+    if arguments is None:
+        arguments = {}
+    serialized = json.dumps(arguments, separators=(",", ":"), ensure_ascii=False)
+    return truncate_for_fallback(f"{tool_name}({serialized})")
 
 
 def _tool_result_fallback_text(message: ComposeMessage) -> str:
-    raise NotImplementedError
+    block = message.blocks[0].content if message.blocks else {}
+    content = block.get("content")
+    return truncate_for_fallback(content if isinstance(content, str) else "")
 
 
 _PART_PLANS: dict[RenderingPartKind, _PartPlan] = {
@@ -167,7 +207,75 @@ def _build_atom(
     derivations: Mapping[str, ComposeDerivationRow],
     result_by_call_id: dict[str, bool],
 ) -> _BuiltAtom:
-    raise NotImplementedError
+    plan = _PART_PLANS[message.kind]
+    derivation = (
+        None
+        if plan.derivation is None
+        else derivations.get(compose_derivation_key(message.message_id, plan.derivation))
+    )
+    ready = (
+        derivation is not None
+        and derivation.state == "ready"
+        and derivation.content is not None
+    )
+    block = message.blocks[0].content if message.blocks else {}
+    blocks = None
+    if message.kind in ("model_change", "thinking_level_change"):
+        blocks = [
+            RenderingPartBlock(block_type=b.block_type, content=b.content)
+            for b in message.blocks
+        ]
+    outcome: ToolOutcome | None = None
+    if message.kind == "tool_call":
+        if ready and derivation is not None and derivation.metadata is not None:
+            outcome = derivation.metadata.outcome
+        if outcome is None:
+            outcome = _outcome_from_record(result_by_call_id, block.get("toolCallId"))
+    elif message.kind == "tool_result":
+        if ready and derivation is not None and derivation.metadata is not None:
+            outcome = derivation.metadata.outcome
+        if outcome is None:
+            outcome = "failed" if block.get("isError") is True else "succeeded"
+    part = RenderingPart(
+        message_id=message.message_id,
+        kind=message.kind,
+        text=derivation.content if ready and derivation is not None else plan.fallback_text(message),
+        fallback=plan.derivation is not None and not ready,
+        blocks=blocks,
+        outcome=outcome,
+    )
+    atom = _ComposeAtom(
+        part=part,
+        is_tool=message.kind in _TOOL_KINDS,
+        is_break=message.kind in _RUN_BREAK_KINDS,
+        tool_name=(
+            str(block["toolName"])
+            if message.kind == "tool_call" and isinstance(block.get("toolName"), str)
+            else None
+        ),
+        tool_call_id=(
+            str(block["toolCallId"])
+            if message.kind in _TOOL_KINDS and isinstance(block.get("toolCallId"), str)
+            else None
+        ),
+    )
+    if not part.fallback or plan.derivation is None:
+        return _BuiltAtom(atom=atom)
+    gap = DependencyGap(
+        subject_kind="message",
+        subject_id=message.message_id,
+        derivation_type=plan.derivation,
+    )
+    recovery = RecoveryReceipt(
+        subject_kind="message",
+        subject_id=message.message_id,
+        derivation_type=plan.derivation,
+        content=part.text,
+        source_version=derivation.source_version if derivation is not None else 1,
+        reason="failed_floor" if derivation is not None and derivation.state == "failed" else "not_ready",
+        floor_used=part.text,
+    )
+    return _BuiltAtom(atom=atom, gap=gap, recovery=recovery)
 
 
 _RUN_OUTCOME_ORDER: tuple[ToolOutcome, ...] = ("succeeded", "failed", "unknown")
@@ -186,17 +294,58 @@ class _RunTally:
 # outcomes stay explicit; the run-level outcome is failed if any failed, else
 # unknown if any unknown, else succeeded.
 def _tally_run(members: Sequence[_ComposeAtom]) -> _RunTally:
-    raise NotImplementedError
+    calls = [member for member in members if member.part.kind == "tool_call"]
+    call_ids = {member.tool_call_id for member in calls if member.tool_call_id is not None}
+    orphan_results = [
+        member
+        for member in members
+        if member.part.kind == "tool_result"
+        and (member.tool_call_id is None or member.tool_call_id not in call_ids)
+    ]
+    counts: dict[ToolOutcome, int] = {"succeeded": 0, "failed": 0, "unknown": 0}
+    for member in [*calls, *orphan_results]:
+        counts[member.part.outcome or "unknown"] += 1
+    outcome: ToolOutcome = (
+        "failed" if counts["failed"] else "unknown" if counts["unknown"] else "succeeded"
+    )
+    tool_names: list[str] = []
+    for call in calls:
+        if call.tool_name is not None and call.tool_name not in tool_names:
+            tool_names.append(call.tool_name)
+    return _RunTally(counts, outcome, len(calls), tool_names)
 
 
 def _run_tally_text(counts: Mapping[ToolOutcome, int]) -> str:
-    raise NotImplementedError
+    segments = [f"{counts[outcome]} {outcome}" for outcome in _RUN_OUTCOME_ORDER if counts[outcome] > 0]
+    return ", ".join(segments) if segments else "no outcomes"
 
 
 # One RenderingPart for a maximal tool run: a run-level header over member
 # accounts in record order, each tool member stating its own outcome.
 def _compose_run(members: Sequence[_ComposeAtom]) -> RenderingPart:
-    raise NotImplementedError
+    if not members:
+        raise RuntimeError("composeRun: a tool run has no members")
+    tally = _tally_run(members)
+    tools = ", ".join(tally.tool_names) if tally.tool_names else "tools"
+    plural = "" if tally.call_count == 1 else "s"
+    header = (
+        f"tool run · {tools} · {tally.call_count} call{plural} · "
+        f"{_run_tally_text(tally.counts)}"
+    )
+    detail = "\n".join(
+        f"{member.part.text} ⇒ {member.part.outcome or 'unknown'}"
+        if member.is_tool
+        else member.part.text
+        for member in members
+    )
+    lead = members[0]
+    return RenderingPart(
+        message_id=lead.part.message_id,
+        kind=lead.part.kind,
+        text=f"[{header}]\n{detail}",
+        fallback=any(member.is_tool and member.part.fallback for member in members),
+        outcome=tally.outcome,
+    )
 
 
 # Compose the ordered RenderingParts. Per-message atoms build first
@@ -207,15 +356,50 @@ def compose_rendering_input(
     messages: Sequence[ComposeMessage],
     derivations: Mapping[str, ComposeDerivationRow],
 ) -> CompositionInput:
-    raise NotImplementedError
+    result_by_call_id = _record_outcomes(messages)
+    atoms: list[_ComposeAtom] = []
+    gaps: list[DependencyGap] = []
+    recoveries: list[RecoveryReceipt] = []
+    for message in messages:
+        built = _build_atom(message, derivations, result_by_call_id)
+        atoms.append(built.atom)
+        if built.gap is not None:
+            gaps.append(built.gap)
+        if built.recovery is not None:
+            recoveries.append(built.recovery)
+    parts: list[RenderingPart] = []
+    i = 0
+    while i < len(atoms):
+        atom = atoms[i]
+        if not atom.is_tool:
+            parts.append(atom.part)
+            i += 1
+            continue
+        j = i
+        last_tool_idx = i
+        while j + 1 < len(atoms) and not atoms[j + 1].is_break:
+            j += 1
+            if atoms[j].is_tool:
+                last_tool_idx = j
+        parts.append(_compose_run(atoms[i : last_tool_idx + 1]))
+        parts.extend(atom.part for atom in atoms[last_tool_idx + 1 : j + 1])
+        i = j + 1
+    return CompositionInput(parts, gaps, recoveries)
 
 
 def _format_dialogue_section(part: RenderingPart) -> str:
-    raise NotImplementedError
+    return f"User:\n{part.text}" if part.kind == "user_prompt" else f"⏺ {part.text}"
 
 
 def _compose_dialogue_text(parts: Sequence[RenderingPart]) -> str:
-    raise NotImplementedError
+    dialogue = [part for part in parts if part.kind in _DIALOG_KINDS]
+    if not dialogue:
+        return ""
+    text = _format_dialogue_section(dialogue[0])
+    for previous, current in zip(dialogue, dialogue[1:]):
+        separator = "\n" if previous.kind == current.kind == "assistant_text" else "\n\n"
+        text += separator + _format_dialogue_section(current)
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,4 +415,17 @@ def compose_pre_detailed_assembly(
     messages: Sequence[ComposeMessage],
     derivations: Mapping[str, ComposeDerivationRow],
 ) -> PreDetailedAssembly:
-    raise NotImplementedError
+    result_by_call_id = _record_outcomes(messages)
+    parts: list[RenderingPart] = []
+    gaps: list[DependencyGap] = []
+    recoveries: list[RecoveryReceipt] = []
+    for message in messages:
+        if message.kind not in _DIALOG_KINDS:
+            continue
+        built = _build_atom(message, derivations, result_by_call_id)
+        parts.append(built.atom.part)
+        if built.gap is not None:
+            gaps.append(built.gap)
+        if built.recovery is not None:
+            recoveries.append(built.recovery)
+    return PreDetailedAssembly(_compose_dialogue_text(parts), gaps, recoveries)

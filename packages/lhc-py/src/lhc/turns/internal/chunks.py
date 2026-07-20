@@ -82,15 +82,21 @@ class _OpenChunkRow:
 
 
 def _member_count(db: Database, chunk_id: str) -> int:
-    raise NotImplementedError
+    row = db.prepare(_SQL_MEMBER_COUNT).get(chunk_id)
+    return int(row["n"]) if row is not None else 0
 
 
 def _close_chunk(db: Database, chunk_id: str) -> None:
-    raise NotImplementedError
+    db.prepare(_SQL_CLOSE_CHUNK).run(chunk_id)
 
 
 def _open_next_chunk(db: Database) -> str:
-    raise NotImplementedError
+    row = db.prepare(_SQL_MAX_CHUNK_ORDER).get()
+    value = row["max_order"] if row is not None else None
+    order = int(value if value is not None else 0) + 1
+    chunk_id = f"c{order}"
+    db.prepare(_SQL_INSERT_OPEN_CHUNK).run(chunk_id, order)
+    return chunk_id
 
 
 # The close policy: when the open chunk's accumulated count plus the incoming
@@ -104,13 +110,67 @@ def place_turn(
     projected_tokens: int,
     policy: ChunkPolicy,
 ) -> PlacementResult:
-    raise NotImplementedError
+    existing = db.prepare(_SQL_SELECT_EXISTING_PLACEMENT).get(turn_id)
+    if existing is not None:
+        return PlacementResult(
+            chunk_id=str(existing["chunk_id"]),
+            member_idx=int(existing["member_idx"]),
+            closed_chunk_ids=[],
+            already_placed=True,
+        )
+    closed: list[str] = []
+    row = db.prepare(_SQL_SELECT_OPEN_CHUNK).get()
+    open_chunk = (
+        _OpenChunkRow(
+            chunk_id=str(row["chunk_id"]),
+            accumulated_projected_tokens=int(row["accumulated_projected_tokens"]),
+        )
+        if row is not None
+        else None
+    )
+    target = getattr(policy, "target_projected_tokens")
+    maximum = getattr(policy, "max_projected_tokens")
+    if (
+        open_chunk is not None
+        and _member_count(db, open_chunk.chunk_id) > 0
+        and open_chunk.accumulated_projected_tokens + projected_tokens >= target
+    ):
+        _close_chunk(db, open_chunk.chunk_id)
+        closed.append(open_chunk.chunk_id)
+        open_chunk = None
+    chunk_id = open_chunk.chunk_id if open_chunk is not None else _open_next_chunk(db)
+    member_idx = _member_count(db, chunk_id)
+    db.prepare(_SQL_INSERT_CHUNK_MEMBER).run(chunk_id, turn_id, member_idx)
+    db.prepare(_SQL_ACCUMULATE_PROJECTED_TOKENS).run(projected_tokens, chunk_id)
+    if projected_tokens >= maximum:
+        _close_chunk(db, chunk_id)
+        closed.append(chunk_id)
+    return PlacementResult(chunk_id, member_idx, closed, False)
 
 
 # Closing queues the two summary kinds as independent work items. Both enqueues
 # ride the caller's ambient completion transaction.
 def enqueue_chunk_summaries(transaction: DbWriteTransaction, chunk_id: str) -> list[WorkItemRecord]:
-    raise NotImplementedError
+    from ...shared_tech.work_queue import EnqueueDerivationTarget, EnqueueInput, enqueue
+
+    return [
+        enqueue(
+            transaction,
+            EnqueueInput(
+                owner="turns",
+                kind=kind,
+                source_ref={"chunkId": chunk_id},
+                derivations=[
+                    EnqueueDerivationTarget(
+                        subject_kind="chunk",
+                        subject_id=chunk_id,
+                        derivation_type=kind,
+                    )
+                ],
+            ),
+        )
+        for kind in ("chunk_summary_detailed", "chunk_summary_brief")
+    ]
 
 
 # The chunk structure for compact selection: every chunk in chunk order with

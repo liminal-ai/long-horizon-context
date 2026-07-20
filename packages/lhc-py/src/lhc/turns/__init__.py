@@ -8,12 +8,18 @@ this package re-exports the public API and private index helpers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Union
 
 from ..shared_tech.derivation import Derivation, DerivationReportEntry, ResolvedSdkConfig
 from ..shared_tech.errors import ErrorResult, OpErr, OpResult
 from ..shared_tech.storage import Database
-from ..shared_tech.work_queue import WorkItemRecord
+from ..shared_tech.work_queue import (
+    EnqueueDerivationTarget,
+    EnqueueInput,
+    WorkItemRecord,
+    enqueue,
+)
 from ..threads import ThreadRef
 @dataclass(frozen=True, slots=True)
 class TurnRecord:
@@ -42,7 +48,14 @@ from .internal.chunk_recovery import (
     CompactChunkReady,
 )
 from .internal.chunks import ChunkStructureRow
-from .internal.store import TurnStructureRow
+from .internal.store import (
+    TurnStructureRow,
+    close_turn,
+    count_turn_members,
+    insert_open_turn,
+    next_turn_order,
+    select_open_turn_ids,
+)
 
 if TYPE_CHECKING:
     from ..intake_stream import EventKind
@@ -86,7 +99,13 @@ class TurnStateCorruptionError(Exception):
 
 
 def _current_open_turn_id(transaction: DbWriteTransaction) -> str:
-    raise NotImplementedError
+    open_turn_ids = select_open_turn_ids(transaction.db)
+    if len(open_turn_ids) != 1:
+        joined = ", ".join(open_turn_ids)
+        raise TurnStateCorruptionError(
+            f"thread has {len(open_turn_ids)} open turns ({joined}); the invariant is exactly one"
+        )
+    return open_turn_ids[0]
 
 
 # Closing a turn durably queues that turn's derivation work in the same
@@ -96,7 +115,27 @@ def _close_turn_and_queue_work(
     turn_id: str,
     event_order: int,
 ) -> WorkItemRecord:
-    raise NotImplementedError
+    close_turn(transaction.db, turn_id, event_order)
+    return enqueue(
+        transaction,
+        EnqueueInput(
+            owner="turns",
+            kind="turn_derivation",
+            source_ref={"turnId": turn_id},
+            derivations=[
+                EnqueueDerivationTarget(
+                    subject_kind="turn",
+                    subject_id=turn_id,
+                    derivation_type="turn_rendering",
+                ),
+                EnqueueDerivationTarget(
+                    subject_kind="turn",
+                    subject_id=turn_id,
+                    derivation_type="pre_detailed_assembly",
+                ),
+            ],
+        ),
+    )
 
 
 # Cross-domain surface, called by intake-stream inside the batch transaction
@@ -112,7 +151,53 @@ def create(
     transaction: DbWriteTransaction,
     recorded_event: RecordedTurnEvent,
 ) -> TurnTransitionOutcome:
-    raise NotImplementedError
+    open_turn_id = _current_open_turn_id(transaction)
+    has_members = count_turn_members(transaction.db, open_turn_id) > 0
+    if recorded_event.event_kind == "turn_end":
+        if not has_members:
+            return TurnTransitionOutcome(
+                transitions=[],
+                turn_id=open_turn_id,
+                queued_work=[],
+            )
+        item = _close_turn_and_queue_work(
+            transaction, open_turn_id, recorded_event.event_order
+        )
+        turn_id = insert_open_turn(
+            transaction.db,
+            next_turn_order(transaction.db),
+            recorded_event.event_order,
+        )
+        return TurnTransitionOutcome(
+            transitions=[
+                TurnTransition(action="closed", turn_id=open_turn_id),
+                TurnTransition(action="opened", turn_id=turn_id),
+            ],
+            turn_id=turn_id,
+            queued_work=[item],
+        )
+    if recorded_event.event_kind == "user_prompt" and has_members:
+        item = _close_turn_and_queue_work(
+            transaction, open_turn_id, recorded_event.event_order
+        )
+        turn_id = insert_open_turn(
+            transaction.db,
+            next_turn_order(transaction.db),
+            recorded_event.event_order,
+        )
+        return TurnTransitionOutcome(
+            transitions=[
+                TurnTransition(action="closed", turn_id=open_turn_id),
+                TurnTransition(action="opened", turn_id=turn_id),
+            ],
+            turn_id=turn_id,
+            queued_work=[item],
+        )
+    return TurnTransitionOutcome(
+        transitions=[],
+        turn_id=open_turn_id,
+        queued_work=[],
+    )
 
 
 def _thread_not_found(file_path: str) -> OpErr:
@@ -218,11 +303,85 @@ _ConfigRequiredResult = Union[ResolvedSdkConfig, _ConfigRequiredError]
 
 
 def _config_required(operation: str) -> _ConfigRequiredResult:
-    raise NotImplementedError
+    from ..shared_tech.context import resolve_instance_config
+
+    config = resolve_instance_config()
+    if config is not None:
+        return config
+    return _ConfigRequiredError(
+        error=ErrorResult(
+            error_class="caller_error",
+            code="inference_unavailable",
+            reason=f"{operation} requires an initialized LHC SDK inference configuration",
+        )
+    )
 
 
 async def derive_turn(thread_ref: ThreadRef, turn_id: str) -> OpResult[TurnDeriveResult]:
-    raise NotImplementedError
+    from ..shared_tech.errors import OpOk, storage_failure
+    from ..threads import open_thread_database, resolve_thread_ref
+    from .internal.derive import derive_turn_owned_in_open_db
+
+    config = _config_required("turns.deriveTurn")
+    if isinstance(config, _ConfigRequiredError):
+        return OpErr(error=config.error)
+    resolved = await resolve_thread_ref(thread_ref)
+    if not resolved.ok:
+        return resolved
+    file_path = resolved.value.file_path
+    if not Path(file_path).exists():
+        return OpErr(
+            error=ErrorResult(
+                error_class="caller_error",
+                code="thread_not_found",
+                reason=f"no thread file exists at {file_path}",
+            )
+        )
+    opened = open_thread_database(file_path)
+    if not opened.ok:
+        return opened
+    db = opened.value
+    try:
+        assembly_result = await derive_turn_owned_in_open_db(
+            db,
+            config,
+            "turn_derivation",
+            {"turnId": turn_id},
+            [
+                EnqueueDerivationTarget(
+                    subject_kind="turn",
+                    subject_id=turn_id,
+                    derivation_type="turn_rendering",
+                ),
+                EnqueueDerivationTarget(
+                    subject_kind="turn",
+                    subject_id=turn_id,
+                    derivation_type="pre_detailed_assembly",
+                ),
+            ],
+        )
+        if assembly_result.outcome == "failed":
+            return OpOk(TurnDeriveFailed(turn_id=turn_id, error=assembly_result.error))
+        result = await derive_turn_owned_in_open_db(
+            db,
+            config,
+            "detailed_turn_compression",
+            {"turnId": turn_id},
+            [
+                EnqueueDerivationTarget(
+                    subject_kind="turn",
+                    subject_id=turn_id,
+                    derivation_type="detailed_turn_compression",
+                )
+            ],
+        )
+        if result.outcome == "failed":
+            return OpOk(TurnDeriveFailed(turn_id=turn_id, error=result.error))
+        return OpOk(TurnDerived(turn_id=turn_id, source_version=result.source_version))
+    except BaseException as cause:
+        return storage_failure(f"derive failed: {cause}")
+    finally:
+        db.close()
 
 
 async def _derive_chunk(
@@ -230,15 +389,69 @@ async def _derive_chunk(
     chunk_id: str,
     derivation_type: Literal["chunk_summary_detailed", "chunk_summary_brief"],
 ) -> OpResult[ChunkDeriveResult]:
-    raise NotImplementedError
+    from ..shared_tech.errors import OpOk, storage_failure
+    from ..threads import open_thread_database, resolve_thread_ref
+    from .internal.derive import derive_turn_owned_in_open_db
+
+    operation = (
+        "turns.deriveDetailedChunk"
+        if derivation_type == "chunk_summary_detailed"
+        else "turns.deriveBriefChunk"
+    )
+    config = _config_required(operation)
+    if isinstance(config, _ConfigRequiredError):
+        return OpErr(error=config.error)
+    resolved = await resolve_thread_ref(thread_ref)
+    if not resolved.ok:
+        return resolved
+    file_path = resolved.value.file_path
+    if not Path(file_path).exists():
+        return OpErr(
+            error=ErrorResult(
+                error_class="caller_error",
+                code="thread_not_found",
+                reason=f"no thread file exists at {file_path}",
+            )
+        )
+    opened = open_thread_database(file_path)
+    if not opened.ok:
+        return opened
+    db = opened.value
+    try:
+        result = await derive_turn_owned_in_open_db(
+            db,
+            config,
+            derivation_type,
+            {"chunkId": chunk_id},
+            [
+                EnqueueDerivationTarget(
+                    subject_kind="chunk",
+                    subject_id=chunk_id,
+                    derivation_type=derivation_type,
+                )
+            ],
+        )
+        if result.outcome == "failed":
+            return OpOk(ChunkDeriveFailed(chunk_id=chunk_id, error=result.error))
+        return OpOk(
+            ChunkDerived(
+                chunk_id=chunk_id,
+                derivation_type=derivation_type,
+                source_version=result.source_version,
+            )
+        )
+    except BaseException as cause:
+        return storage_failure(f"derive failed: {cause}")
+    finally:
+        db.close()
 
 
 async def derive_detailed_chunk(thread_ref: ThreadRef, chunk_id: str) -> OpResult[ChunkDeriveResult]:
-    raise NotImplementedError
+    return await _derive_chunk(thread_ref, chunk_id, "chunk_summary_detailed")
 
 
 async def derive_brief_chunk(thread_ref: ThreadRef, chunk_id: str) -> OpResult[ChunkDeriveResult]:
-    raise NotImplementedError
+    return await _derive_chunk(thread_ref, chunk_id, "chunk_summary_brief")
 
 
 __all__ = [

@@ -42,13 +42,6 @@ class TargetRatios(TypedDict, total=False):
     targetAimRatio: float
 
 
-class _CallInput(ModelCallInput):
-    """ModelCallInput with the dict-style reads accepted by Python hosts."""
-
-    def __getitem__(self, key: str) -> object:
-        return getattr(self, key)
-
-
 # A pathological tool result must not blow a small-context model. Content over
 # the bound keeps its head and tail around a marker, and the bounded whole
 # stays within maxInputChars; bounding happens before prompt rendering, so the
@@ -132,7 +125,7 @@ async def _call_kind(
             "invalid_request", f'prompt template "{assignment.prompt}" not in registry'
         )
     messages = template.render(_with_target_ratios(input, assignment))  # type: ignore[arg-type]
-    call_input = _CallInput(
+    call_input = ModelCallInput(
         provider=assignment.provider,
         model=assignment.model,
         messages=messages,

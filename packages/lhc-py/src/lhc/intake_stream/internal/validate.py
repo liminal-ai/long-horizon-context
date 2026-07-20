@@ -7,6 +7,8 @@ Wave 3 fix-round ruling; decode bodies stay NotImplementedError until Phase 2.
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict, Union
 
 from ...shared_tech.errors import ErrorResult
@@ -120,11 +122,109 @@ class _ToolResultPayloadSchema(TypedDict):
 
 # NOTE (Phase 2): Effect `ParseResult.ParseError` has no Python counterpart.
 # Closest stand-in: the structured decode failure object Phase 2 will produce.
-_ParseError = object
+@dataclass(frozen=True, slots=True)
+class _ParseError:
+    path: tuple[str, ...]
+    message: str
 
 
 def _first_issue(error: _ParseError) -> str:
-    raise NotImplementedError
+    if not error.path:
+        return error.message
+    return f'"{".".join(error.path)}" {error.message}'
+
+
+def _actual(value: object) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, (int, float)) and type(value) is not bool:
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _type_label(kind: str) -> str:
+    # Effect ArrayFormatter type labels for the Expected { readonly ... } shape.
+    if kind == "nonempty":
+        return "minLength(1)"
+    if kind == "string":
+        return "string"
+    if kind == "boolean":
+        return "boolean"
+    if kind == "record":
+        return "{ readonly [x: string]: unknown }"
+    if kind == "unknown":
+        return "unknown"
+    if kind == "event_kind":
+        return '"user_prompt"'
+    return kind
+
+
+def _expected_shape(fields: tuple[tuple[str, str, bool], ...]) -> str:
+    parts: list[str] = []
+    for name, kind, optional in fields:
+        label = _type_label(kind)
+        if optional:
+            parts.append(f"readonly {name}?: {label} | undefined")
+        else:
+            parts.append(f"readonly {name}: {label}")
+    return "{ " + "; ".join(parts) + " }"
+
+
+def _struct_issue(
+    value: object,
+    fields: tuple[tuple[str, str, bool], ...],
+) -> _ParseError | None:
+    expected = " | ".join(f'"{name}"' for name, _, _ in fields)
+    if not isinstance(value, dict):
+        return _ParseError((), f"Expected {_expected_shape(fields)}, actual {_actual(value)}")
+
+    allowed = {name for name, _, _ in fields}
+    for name in value:
+        if name not in allowed:
+            return _ParseError((str(name),), f"is unexpected, expected: {expected}")
+
+    for name, kind, optional in fields:
+        if name not in value:
+            if not optional:
+                return _ParseError((name,), "is missing")
+            continue
+        item = value[name]
+        if kind == "string":
+            if not isinstance(item, str):
+                return _ParseError((name,), f"Expected string, actual {_actual(item)}")
+        elif kind == "nonempty":
+            if not isinstance(item, str):
+                return _ParseError((name,), f"Expected string, actual {_actual(item)}")
+            if item == "":
+                return _ParseError(
+                    (name,),
+                    'Expected a string at least 1 character(s) long, actual ""',
+                )
+        elif kind == "boolean":
+            if type(item) is not bool:
+                return _ParseError((name,), f"Expected boolean, actual {_actual(item)}")
+        elif kind == "record":
+            if not isinstance(item, dict):
+                return _ParseError(
+                    (name,),
+                    f"Expected {{ readonly [x: string]: unknown }}, actual {_actual(item)}",
+                )
+        elif kind == "event_kind":
+            if not isinstance(item, str) or item not in EVENT_KINDS:
+                return _ParseError(
+                    (name,),
+                    f'Expected "user_prompt", actual {_actual(item)}',
+                )
+        elif kind == "unknown":
+            continue
+
+    return None
 
 
 def _decode_issue(
@@ -140,24 +240,150 @@ def _decode_issue(
     ),
     value: object,
 ) -> str | None:
-    raise NotImplementedError
+    if schema is _ThreadRefByIdSchema:
+        issue = _struct_issue(
+            value,
+            (("threadId", "nonempty", False), ("registryPath", "string", True)),
+        )
+    elif schema is _ThreadRefByPathSchema:
+        issue = _struct_issue(value, (("filePath", "nonempty", False),))
+    elif schema is _EventEnvelopeSchema:
+        # payload is Schema.Unknown: required key when present is never typed,
+        # and a missing key is tolerated (presence checked after decode).
+        issue = _struct_issue(
+            value,
+            (
+                ("eventKind", "event_kind", False),
+                ("idempotencyKey", "nonempty", False),
+                ("actor", "nonempty", False),
+                ("harness", "nonempty", False),
+                ("payload", "unknown", True),
+            ),
+        )
+    elif schema is _TextPayloadSchema:
+        issue = _struct_issue(value, (("text", "string", False),))
+    elif schema is _ModelChangePayloadSchema:
+        issue = _struct_issue(
+            value,
+            (("previousModel", "nonempty", False), ("newModel", "nonempty", False)),
+        )
+    elif schema is _ThinkingLevelChangePayloadSchema:
+        issue = _struct_issue(
+            value,
+            (("previousLevel", "nonempty", False), ("newLevel", "nonempty", False)),
+        )
+    elif schema is _ToolCallPayloadSchema:
+        issue = _struct_issue(
+            value,
+            (
+                ("toolCallId", "nonempty", False),
+                ("toolName", "nonempty", False),
+                ("arguments", "record", False),
+            ),
+        )
+    else:
+        issue = _struct_issue(
+            value,
+            (
+                ("toolCallId", "nonempty", False),
+                ("content", "string", False),
+                ("isError", "boolean", True),
+            ),
+        )
+    return _first_issue(issue) if issue is not None else None
 
 
 def _caller_error(reason: str, event_index: int | None = None) -> ErrorResult:
-    raise NotImplementedError
+    return ErrorResult(
+        error_class="caller_error",
+        code="invalid_event",
+        reason=reason,
+        event_index=event_index,
+    )
 
 
 # Envelope-level: the thread reference must decode against the closed union.
-# Returns None when valid.
+# Returns None when valid. Effect Union with errors:"first" reports the first
+# member's issue — mirror by always surfacing the by-id branch failure text
+# when neither member decodes.
 def validate_thread_ref(ref: object) -> ErrorResult | None:
-    raise NotImplementedError
+    by_id = _decode_issue(_ThreadRefByIdSchema, ref)
+    if by_id is None:
+        return None
+    if _decode_issue(_ThreadRefByPathSchema, ref) is None:
+        return None
+    return _caller_error(f"envelope: invalid thread reference — {by_id}")
 
 
 # Whole-batch validation: array order, first failure wins. Returns None
 # when every event is valid.
 def validate_events(events: object) -> ErrorResult | None:
-    raise NotImplementedError
+    if not isinstance(events, (list, tuple)):
+        return _caller_error("envelope: events must be a JSON array")
+    if len(events) == 0:
+        return ErrorResult(
+            error_class="caller_error",
+            code="empty_batch",
+            reason="envelope: events array is empty; a batch must carry at least one event",
+        )
+    for index, event in enumerate(events):
+        failure = _validate_one_event(event, index)
+        if failure is not None:
+            return failure
+    return None
 
 
 def _validate_one_event(event: object, index: int) -> ErrorResult | None:
-    raise NotImplementedError
+    if not isinstance(event, dict):
+        return _caller_error("event: each event must be a JSON object", index)
+
+    for field in _SERVER_GENERATED_FIELDS:
+        if field in event:
+            return _caller_error(
+                f'event: server-generated field "{field}" must not be supplied by the caller',
+                index,
+            )
+
+    kind = event.get("eventKind")
+    if isinstance(kind, str) and kind not in EVENT_KINDS:
+        return _caller_error(f'event: unknown event kind "{kind}"', index)
+
+    issue = _decode_issue(_EventEnvelopeSchema, event)
+    if issue is not None:
+        return _caller_error(f"event: {issue}", index)
+
+    # Schema.Unknown tolerates a missing payload key; presence is layer 3.
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return _caller_error("event: payload must be a JSON object", index)
+
+    if kind == "turn_end":
+        if payload:
+            first_key = next(iter(payload))
+            return _caller_error(
+                f'payload: turn_end events carry an empty payload; found field "{first_key}"',
+                index,
+            )
+        return None
+
+    payload_schema: type[
+        _TextPayloadSchema
+        | _ModelChangePayloadSchema
+        | _ThinkingLevelChangePayloadSchema
+        | _ToolCallPayloadSchema
+        | _ToolResultPayloadSchema
+    ]
+    if kind == "tool_call":
+        payload_schema = _ToolCallPayloadSchema
+    elif kind == "tool_result":
+        payload_schema = _ToolResultPayloadSchema
+    elif kind == "model_change":
+        payload_schema = _ModelChangePayloadSchema
+    elif kind == "thinking_level_change":
+        payload_schema = _ThinkingLevelChangePayloadSchema
+    else:
+        payload_schema = _TextPayloadSchema
+    issue = _decode_issue(payload_schema, payload)
+    if issue is not None:
+        return _caller_error(f"payload: {issue}", index)
+    return None

@@ -686,9 +686,9 @@ def _deferred_message_sdk(now: dict[str, float]):
             disposition = apply_derivation_success(
                 run.open_db(),
                 DerivationAttempt(
-                    source_version=item["sourceVersion"],
-                    derivations=item["derivations"],
-                    work_item_id=item["workItemId"],
+                    source_version=item.source_version,
+                    derivations=item.derivations,
+                    work_item_id=item.work_item_id,
                 ),
                 writes,
                 run.clock().isoformat().replace("+00:00", "Z"),
@@ -750,9 +750,9 @@ async def test_a_queued_turn_derivation_success_missing_one_expected_write_rolls
         disposition = apply_derivation_success(
             run.open_db(),
             DerivationAttempt(
-                source_version=item["sourceVersion"],
-                derivations=item["derivations"],
-                work_item_id=item["workItemId"],
+                source_version=item.source_version,
+                derivations=item.derivations,
+                work_item_id=item.work_item_id,
             ),
             [
                 HandlerDerivationWrite(
@@ -860,9 +860,9 @@ async def test_a_queued_terminal_failure_that_hits_only_part_of_its_targets_roll
         disposition = apply_derivation_success(
             run.open_db(),
             DerivationAttempt(
-                source_version=item["sourceVersion"],
-                derivations=item["derivations"],
-                work_item_id=item["workItemId"],
+                source_version=item.source_version,
+                derivations=item.derivations,
+                work_item_id=item.work_item_id,
             ),
             [
                 HandlerDerivationWrite(
@@ -911,9 +911,9 @@ async def test_an_extra_handler_write_target_fails_closed_before_any_completion_
         disposition = apply_derivation_success(
             run.open_db(),
             DerivationAttempt(
-                source_version=item["sourceVersion"],
-                derivations=item["derivations"],
-                work_item_id=item["workItemId"],
+                source_version=item.source_version,
+                derivations=item.derivations,
+                work_item_id=item.work_item_id,
             ),
             [
                 HandlerDerivationWrite(

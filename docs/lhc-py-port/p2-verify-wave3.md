@@ -1,0 +1,13 @@
+You are the VERIFIER for PHASE 2 Wave 3 of the lhc-py port (threads + intake bodies). You audited P2 Waves 1–2. Contract: docs/lhc-py-port/phase2-brief.md. Audit UNCOMMITTED changes since commit 919e94d (`git diff 919e94d --name-only`). Adversarial. VERIFICATION ONLY — no edits.
+
+STATE: gate went 74 → 238/455 green, wrong=0. Wave 3 scope implemented: threads/ (new_thread, open_thread_database, resolve, create, registry), intake_stream/ (pipeline walk, validate three-layer), persist, plus early-landed messages/turns create+compose+floor-recovery and enqueue_chunk_summaries wiring, fixture bodies (threads builders, lifecycle partial).
+
+CHECKLIST:
+A. TESTS UNTOUCHED: `git diff 919e94d -- packages/lhc-py/tests/` shows ONLY tests/fixtures/*.py. Any test_*.py/conftest/goldens diff = automatic blocker.
+B. SHAPE FROZEN + shims scrutiny (ORCHESTRATOR FLAG — examine each hard): the implementor added compat surfaces: (a) cross-type `TurnTransition.__eq__`, (b) `ModelCallInput` Mapping surface (keys/__getitem__/__iter__/__len__), (c) `DurableWorkDispatcherItem.__getitem__` camelCase. For EACH: is it satisfying a TEST that in TS uses plain property access — i.e. masking an unfaithful Python translation — or is it a legitimate host-surface parity need? If a fixture in tests/fixtures/ uses bracket access where the TS fixture uses dot access, the FIXTURE should be fixed (it's implementor-editable) and the shim removed. Twin-dataclass NOMINAL-TYPING BOUNDARY comments call for explicit conversion, not __eq__ blurring. Recommend concretely per shim: keep (with TS justification) or remove+fix-fixture.
+C. TS FIDELITY side-by-side (walk fully): create.ts schema/metadata writes (byte-exact SQL, ISO timestamps); registry.ts resolve paths + error taxonomy; validate.ts three layers (closed structs, unknown-field rejection, server-generated-field denial by name, turn_end empty-payload, firstIssue message formatting EXACTLY — tests assert strings); pipeline.ts batch walk (dedup skipReason, event ordering, materialization, thread position, stored JSON byte-format: separators + ensure_ascii=False + insertion order); early-landed messages/turns create/compose/floor-recovery vs their TS; enqueue_chunk_summaries wiring point after place_turn vs TS.
+D. JS TRAPS: ?? vs or; date handling; JSON round-trips; iteration order; integer affinity.
+E. NO SHORTCUTS: no hardcoded test values; no test-shaped special cases.
+F. Gate: cd packages/lhc-py && uv run python scripts/check_gate.py → 238 green / wrong=0 / 470 collected; no regression below 238.
+
+VERDICT: PASS/FAIL; FINDINGS numbered file:line [blocker]/[minor] with TS evidence + expected fix; per-shim rulings recommendation; GATE verbatim; COVERAGE NOTE honest.

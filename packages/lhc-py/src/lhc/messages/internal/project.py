@@ -7,7 +7,11 @@ summarizes.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+
+from ...shared_tech.token_counting import estimate_tokens
+
 # Runtime import (not TYPE_CHECKING): Phase 2 bodies construct these records.
 # Safe because the parent __init__ defines them BEFORE importing this module
 # (see the IMPORT-ORDER CONSTRAINT note there).
@@ -22,4 +26,86 @@ class ProjectedMessage:
 
 # turn_end is recorded in the event order but produces no message.
 def project_event(event: RecordedEvent) -> ProjectedMessage | None:
-    raise NotImplementedError
+    kind = event["eventKind"]
+    payload = event["payload"]
+    if kind in (
+        "user_prompt",
+        "assistant_text",
+        "assistant_thinking",
+        "runtime_note",
+    ):
+        text = payload["text"]
+        return ProjectedMessage(
+            blocks=[Block(block_type="text", content={"text": text})],
+            token_estimate=estimate_tokens(text),
+        )
+    if kind == "model_change":
+        previous_model = payload["previousModel"]
+        new_model = payload["newModel"]
+        return ProjectedMessage(
+            blocks=[
+                Block(
+                    block_type="model_change",
+                    content={
+                        "previousModel": previous_model,
+                        "newModel": new_model,
+                    },
+                )
+            ],
+            token_estimate=estimate_tokens(f"{previous_model} {new_model}"),
+        )
+    if kind == "thinking_level_change":
+        previous_level = payload["previousLevel"]
+        new_level = payload["newLevel"]
+        return ProjectedMessage(
+            blocks=[
+                Block(
+                    block_type="thinking_level_change",
+                    content={
+                        "previousLevel": previous_level,
+                        "newLevel": new_level,
+                    },
+                )
+            ],
+            token_estimate=estimate_tokens(f"{previous_level} {new_level}"),
+        )
+    if kind == "tool_call":
+        arguments = payload["arguments"]
+        serialized_arguments = json.dumps(
+            arguments, separators=(",", ":"), ensure_ascii=False
+        )
+        return ProjectedMessage(
+            blocks=[
+                Block(
+                    block_type="tool_call",
+                    content={
+                        "toolCallId": payload["toolCallId"],
+                        "toolName": payload["toolName"],
+                        "arguments": arguments,
+                    },
+                )
+            ],
+            token_estimate=estimate_tokens(serialized_arguments),
+        )
+    if kind == "tool_result":
+        content = payload["content"]
+        return ProjectedMessage(
+            blocks=[
+                Block(
+                    block_type="tool_result",
+                    content={
+                        "toolCallId": payload["toolCallId"],
+                        "content": content,
+                        "isError": (
+                            payload["isError"]
+                            if payload.get("isError") is not None
+                            else False
+                        ),
+                    },
+                )
+            ],
+            token_estimate=estimate_tokens(content),
+        )
+    if kind == "turn_end":
+        return None
+    raise ValueError(f"unknown event kind {kind}")

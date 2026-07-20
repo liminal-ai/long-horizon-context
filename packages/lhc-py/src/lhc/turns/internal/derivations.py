@@ -9,13 +9,15 @@ util's version-checked completion path; this module has no write path.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from ...shared_tech.derivation import Derivation, DerivationReportEntry, DerivationState
 from ...shared_tech.storage import Database
-from .compose import ComposeDerivationRow, ComposeMessage
+from .compose import ComposeBlock, ComposeDerivationRow, ComposeMessage, compose_derivation_key
+from ...shared_tech.derivation import DerivationMetadata
 
 _SQL_READ_TURN_SOURCE = """SELECT status, deleted_at FROM turns WHERE turn_id = ?"""
 
@@ -118,13 +120,37 @@ class TurnSource:
 
 
 def read_turn_source(db: Database, turn_id: str) -> TurnSource | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_TURN_SOURCE).get(turn_id)
+    if row is None:
+        return None
+    return TurnSource(
+        turn_id=turn_id,
+        status=str(row["status"]),  # type: ignore[arg-type]
+        deleted=row["deleted_at"] is not None,
+    )
 
 
 # Member messages in message order, blocks attached, deleted messages filtered.
 # Composition always reads the live member set.
 def read_member_messages(db: Database, turn_id: str) -> list[ComposeMessage]:
-    raise NotImplementedError
+    result: list[ComposeMessage] = []
+    block_stmt = db.prepare(_SQL_READ_MESSAGE_BLOCKS)
+    for row in db.prepare(_SQL_READ_MEMBER_MESSAGES).all(turn_id):
+        blocks = [
+            ComposeBlock(
+                block_type=str(block["block_type"]),
+                content=json.loads(str(block["content"])),
+            )
+            for block in block_stmt.all(row["message_id"])
+        ]
+        result.append(
+            ComposeMessage(
+                message_id=str(row["message_id"]),
+                kind=str(row["kind"]),  # type: ignore[arg-type]
+                blocks=blocks,
+            )
+        )
+    return result
 
 
 # The message-owned derivation rows for a set of member messages, keyed for
@@ -134,7 +160,31 @@ def read_message_derivation_rows(
     db: Database,
     message_ids: Sequence[str],
 ) -> dict[str, ComposeDerivationRow]:
-    raise NotImplementedError
+    if not message_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in message_ids)
+    rows = db.prepare(
+        _SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX
+        + placeholders
+        + _SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX
+    ).all(*message_ids)
+    result: dict[str, ComposeDerivationRow] = {}
+    from ...shared_tech.derivation import decode_derivation_metadata
+
+    for row in rows:
+        metadata = None
+        if row["metadata"] is not None:
+            metadata = decode_derivation_metadata(json.loads(str(row["metadata"])))
+        subject_id = str(row["subject_id"])
+        derivation_type = str(row["derivation_type"])
+        result[compose_derivation_key(subject_id, derivation_type)] = ComposeDerivationRow(
+            state=str(row["state"]),  # type: ignore[arg-type]
+            source_version=int(row["source_version"]),
+            content=str(row["content"]) if row["content"] is not None else None,
+            metadata=metadata,
+            reason=str(row["reason"]) if row["reason"] is not None else None,
+        )
+    return result
 
 
 # Stored member material in turn order for chunk summaries: every chunk_member
@@ -214,7 +264,17 @@ def read_turn_derivation_row(
     subject_id: str,
     derivation: str,
 ) -> TurnDerivationRowView | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_TURN_DERIVATION_ROW).get(
+        subject_kind, subject_id, derivation
+    )
+    if row is None:
+        return None
+    return TurnDerivationRowView(
+        state=str(row["state"]),  # type: ignore[arg-type]
+        source_version=int(row["source_version"]),
+        content=str(row["content"]) if row["content"] is not None else None,
+        reason=str(row["reason"]) if row["reason"] is not None else None,
+    )
 
 
 def read_chunk_summary_derivation(
@@ -222,7 +282,17 @@ def read_chunk_summary_derivation(
     chunk_id: str,
     derivation_type: Literal["chunk_summary_detailed", "chunk_summary_brief"],
 ) -> TurnDerivationRowView | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_CHUNK_SUMMARY_DERIVATION).get(
+        chunk_id, derivation_type
+    )
+    if row is None:
+        return None
+    return TurnDerivationRowView(
+        state=str(row["state"]),  # type: ignore[arg-type]
+        source_version=int(row["source_version"]),
+        content=str(row["content"]) if row["content"] is not None else None,
+        reason=str(row["reason"]) if row["reason"] is not None else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,4 +315,4 @@ def report_turn_derivations(
 
 
 def chunk_exists(db: Database, chunk_id: str) -> bool:
-    raise NotImplementedError
+    return db.prepare(_SQL_CHUNK_EXISTS).get(chunk_id) is not None

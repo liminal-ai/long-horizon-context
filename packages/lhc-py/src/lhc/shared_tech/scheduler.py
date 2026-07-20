@@ -268,7 +268,27 @@ async def drain_open_db(
         )
         try:
             outcome = await looked_up.value(run, dispatch_item)
+            if isinstance(outcome, dict):
+                from .durable_work import (
+                    DurableWorkDispatchBlocked,
+                    DurableWorkDispatchFailed,
+                    DurableWorkDispatchSettled,
+                )
+
+                disposition = outcome.get("disposition")
+                if disposition in ("done", "stale_discarded", "lost_lease"):
+                    outcome = DurableWorkDispatchSettled(disposition=disposition)
+                elif disposition == "blocked":
+                    outcome = DurableWorkDispatchBlocked(
+                        reason=str(outcome.get("reason", ""))
+                    )
+                elif disposition == "failed":
+                    outcome = DurableWorkDispatchFailed(
+                        reason=str(outcome.get("reason", ""))
+                    )
         except DerivationCompletionError:
+            raise
+        except NotImplementedError:
             raise
         except BaseException as cause:
             from .durable_work import DurableWorkDispatchFailed
@@ -360,6 +380,8 @@ async def run_drain(
                 reason=str(cause),
             )
         )
+    except NotImplementedError:
+        raise
     except BaseException as cause:
         return storage_failure(f"drain failed: {cause}")
     finally:

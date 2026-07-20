@@ -208,9 +208,9 @@ async def test_with_no_explicit_overrides_every_inference_op_routes_to_the_defau
         await run(sdk)
     assert len(log) == len(_INFERENCE_OPS)
     for entry in log:
-        assert entry["provider"] == "codex"
-        assert entry["model"] == "gpt-5.4-mini"
-        assert entry["thinking"] == "none"
+        assert entry.provider == "codex"
+        assert entry.model == "gpt-5.4-mini"
+        assert entry.thinking == "none"
 
 
 async def test_preserves_thinking_none_when_override_omits_thinking() -> None:
@@ -228,7 +228,7 @@ async def test_preserves_thinking_none_when_override_omits_thinking() -> None:
         }
     )
     await sdk.config.inference_callbacks.smooth_prompt({"text": "x"})
-    assert log[0]["thinking"] == "none"
+    assert log[0].thinking == "none"
 
 
 def test_preserves_detailed_turn_compression_target_ratios_when_override_omits_them() -> None:
@@ -270,4 +270,4 @@ async def test_allows_explicit_thinking_override() -> None:
         }
     )
     await sdk.config.inference_callbacks.smooth_prompt({"text": "x"})
-    assert log[0]["thinking"] == "high"
+    assert log[0].thinking == "high"

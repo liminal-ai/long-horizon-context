@@ -57,11 +57,11 @@ async def test_a_seeded_drain_exercises_all_seven_kinds_each_call_carrying_exact
     forms = run["derivations"]
 
     for kind in INFERENCE_DERIVATION_TYPES:
-        lane = [input for input in log if input["model"] == f"{FAKE_MODEL_PREFIX}{kind}"]
+        lane = [input for input in log if input.model == f"{FAKE_MODEL_PREFIX}{kind}"]
         assert len(lane) > 0
         for input in lane:
-            assert input["provider"] == f"{FAKE_PROVIDER_PREFIX}{kind}"
-            assert input["model"] == assignments[kind].model
+            assert input.provider == f"{FAKE_PROVIDER_PREFIX}{kind}"
+            assert input.model == assignments[kind].model
         # The landed content is the canned text the kind's lane returned —
         # routing proven end to end, not just at the call log.
         ready = [form for form in forms if form.derivation_type == kind and form.state == "ready"]
@@ -83,9 +83,9 @@ async def test_every_logged_messages_value_is_single_turn_shape() -> None:
 
     assert len(log) > 0
     for input in log:
-        assert len(input["messages"]) > 0
-        assert any(message["role"] == "user" for message in input["messages"])
-        for message in input["messages"]:
+        assert len(input.messages) > 0
+        assert any(message["role"] == "user" for message in input.messages)
+        for message in input.messages:
             assert message["role"] in ("system", "user")
             assert isinstance(message["content"], str)
 
@@ -119,10 +119,10 @@ async def test_a_three_lane_mixed_config_routes_each_call_by_item_kind_with_no_c
         # Models stay unique per kind, so the lane each item actually used is
         # readable from the log: every call for this kind's model must carry
         # this kind's lane provider — no bleed from the other lanes.
-        calls = [input for input in log if input["model"] == assignments[kind].model]
+        calls = [input for input in log if input.model == assignments[kind].model]
         assert len(calls) > 0
         for input in calls:
-            assert input["provider"] == lanes[kind]
+            assert input.provider == lanes[kind]
         ready = [form for form in forms if form.derivation_type == kind and form.state == "ready"]
         assert len(ready) > 0
         for form in ready:

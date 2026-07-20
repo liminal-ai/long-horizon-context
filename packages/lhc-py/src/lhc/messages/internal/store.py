@@ -7,6 +7,7 @@ validation and row applies also live here: row-level mechanics, no policy.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
@@ -96,7 +97,23 @@ class MessageRow:
 
 
 def insert_message(db: Database, row: MessageRow) -> None:
-    raise NotImplementedError
+    db.prepare(_SQL_INSERT_MESSAGE).run(
+        row.message_id,
+        row.source_event_order,
+        row.kind,
+        row.token_estimate,
+        row.actor,
+        row.harness,
+        row.turn_id,
+    )
+    insert_block = db.prepare(_SQL_INSERT_MESSAGE_BLOCK)
+    for index, block in enumerate(row.blocks):
+        insert_block.run(
+            row.message_id,
+            index,
+            block.block_type,
+            json.dumps(block.content, separators=(",", ":"), ensure_ascii=False),
+        )
 
 
 # Mutation validation reads the live (deleted-filtered) message joined to its
@@ -158,7 +175,18 @@ class _RawBlockRow:
 
 
 def _record_from_row(row: _RawMessageRow, blocks: list[Block]) -> MessageRecord:
-    raise NotImplementedError
+    return MessageRecord(
+        message_id=row.message_id,
+        source_event_order=row.source_event_order,
+        kind=row.kind,  # type: ignore[arg-type]
+        blocks=blocks,
+        token_estimate=row.token_estimate,
+        actor=row.actor,
+        harness=row.harness,
+        recorded_at=row.recorded_at,
+        turn_id=row.turn_id,
+        deleted=True if row.deleted_at is not None else None,
+    )
 
 
 # Bounds are in source-event-order coordinates: the coordinate the reports
@@ -173,7 +201,66 @@ MessageReadOptions = TypedDict(
 
 
 def read_messages(db: Database, opts: MessageReadOptions | None = None) -> list[MessageRecord]:
-    raise NotImplementedError
+    options = opts if opts is not None else {}
+    conditions: list[str] = []
+    params: list[int] = []
+    if options.get("includeDeleted") is not True:
+        conditions.append("m.deleted_at IS NULL")
+    if options.get("from") is not None:
+        conditions.append("m.source_event_order >= ?")
+        params.append(options["from"])
+    if options.get("to") is not None:
+        conditions.append("m.source_event_order <= ?")
+        params.append(options["to"])
+    if options.get("limit") is not None:
+        params.append(options["limit"])
+
+    sql = _SQL_READ_MESSAGES_SELECT
+    if conditions:
+        sql += f" WHERE {' AND '.join(conditions)}"
+    sql += " ORDER BY m.source_event_order"
+    if options.get("limit") is not None:
+        sql += " LIMIT ?"
+    raw_rows = db.prepare(sql).all(*params)
+    message_rows = [
+        _RawMessageRow(
+            message_id=str(row["message_id"]),
+            source_event_order=int(row["source_event_order"]),
+            kind=str(row["kind"]),
+            token_estimate=int(row["token_estimate"]),
+            actor=str(row["actor"]),
+            harness=str(row["harness"]),
+            turn_id=str(row["turn_id"]),
+            deleted_at=(
+                str(row["deleted_at"]) if row["deleted_at"] is not None else None
+            ),
+            recorded_at=str(row["recorded_at"]),
+        )
+        for row in raw_rows
+    ]
+    if not message_rows:
+        return []
+
+    ids = [row.message_id for row in message_rows]
+    placeholders = ", ".join("?" for _ in ids)
+    block_rows = db.prepare(
+        _SQL_READ_BLOCKS_FOR_IDS_PREFIX
+        + placeholders
+        + _SQL_READ_BLOCKS_FOR_IDS_SUFFIX
+    ).all(*ids)
+    blocks_by_message: dict[str, list[Block]] = {}
+    for row in block_rows:
+        message_id = str(row["message_id"])
+        blocks_by_message.setdefault(message_id, []).append(
+            Block(
+                block_type=str(row["block_type"]),  # type: ignore[arg-type]
+                content=json.loads(str(row["content"])),
+            )
+        )
+    return [
+        _record_from_row(row, blocks_by_message.get(row.message_id, []))
+        for row in message_rows
+    ]
 
 
 # The show operation's by-id read returns the canonical record: full blocks
@@ -198,4 +285,34 @@ class MessageRecordWithDeleted:
 
 
 def read_message_by_id(db: Database, message_id: str) -> MessageRecordWithDeleted | None:
-    raise NotImplementedError
+    row = db.prepare(
+        """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
+                  m.turn_id, m.deleted_at, e.recorded_at
+           FROM message m JOIN event e ON e.event_order = m.source_event_order
+           WHERE m.message_id = ?"""
+    ).get(message_id)
+    if row is None:
+        return None
+    block_rows = db.prepare(
+        """SELECT message_id, block_type, content FROM message_block
+           WHERE message_id = ? ORDER BY block_index"""
+    ).all(message_id)
+    blocks = [
+        Block(
+            block_type=str(block["block_type"]),  # type: ignore[arg-type]
+            content=json.loads(str(block["content"])),
+        )
+        for block in block_rows
+    ]
+    return MessageRecordWithDeleted(
+        message_id=str(row["message_id"]),
+        source_event_order=int(row["source_event_order"]),
+        kind=str(row["kind"]),  # type: ignore[arg-type]
+        blocks=blocks,
+        token_estimate=int(row["token_estimate"]),
+        actor=str(row["actor"]),
+        harness=str(row["harness"]),
+        recorded_at=str(row["recorded_at"]),
+        turn_id=str(row["turn_id"]),
+        deleted=row["deleted_at"] is not None,
+    )

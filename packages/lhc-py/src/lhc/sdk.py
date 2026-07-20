@@ -87,7 +87,7 @@ from .shared_tech.durable_work import (
     apply_derivation_success,
 )
 from .shared_tech.errors import ErrorClass, ErrorCode, ErrorResult, OpErr, OpOk, OpResult, storage_failure
-from .shared_tech.storage import Database
+from .shared_tech.storage import Database, open_database
 from .shared_tech.inference_adapter import create_inference_callbacks
 from .shared_tech.inference_types import (
     InferenceConfig,
@@ -1038,6 +1038,18 @@ def init_lhc(config: SdkConfig) -> Lhc:
 
     class _Logging:
         async def write(self, ref: ThreadRef, entry: LogEntry) -> OpResult[None]:
+            if isinstance(entry, dict):
+                entry = LogEntry(
+                    level=entry["level"],
+                    message=entry["message"],
+                    derivation_type=entry.get(
+                        "derivationType", entry.get("derivation_type")
+                    ),
+                    subject_id=entry.get("subjectId", entry.get("subject_id")),
+                    reason=entry.get("reason"),
+                    floor_used=entry.get("floorUsed", entry.get("floor_used")),
+                )
+
             async def _op() -> OpResult[None]:
                 try:
                     written = await create_db_write_transaction(
@@ -1055,6 +1067,16 @@ def init_lhc(config: SdkConfig) -> Lhc:
         async def query(
             self, ref: ThreadRef, q: LogQuery
         ) -> OpResult[list[StoredLogEntry]]:
+            if isinstance(q, dict):
+                q = LogQuery(
+                    level=q.get("level"),
+                    derivation_type=q.get(
+                        "derivationType", q.get("derivation_type")
+                    ),
+                    subject_id=q.get("subjectId", q.get("subject_id")),
+                    reason=q.get("reason"),
+                )
+
             async def _op() -> OpResult[list[StoredLogEntry]]:
                 try:
                     return await create_db_read_transaction(
@@ -1069,6 +1091,16 @@ def init_lhc(config: SdkConfig) -> Lhc:
         async def query_derivation_log(
             self, ref: ThreadRef, q: DerivationLogQuery
         ) -> OpResult[list[StoredDerivationLogEntry]]:
+            if isinstance(q, dict):
+                q = DerivationLogQuery(
+                    subject_kind=q.get("subjectKind", q.get("subject_kind")),
+                    subject_id=q.get("subjectId", q.get("subject_id")),
+                    derivation_type=q.get(
+                        "derivationType", q.get("derivation_type")
+                    ),
+                    event_kind=q.get("eventKind", q.get("event_kind")),
+                )
+
             async def _op() -> OpResult[list[StoredDerivationLogEntry]]:
                 try:
                     return await create_db_read_transaction(

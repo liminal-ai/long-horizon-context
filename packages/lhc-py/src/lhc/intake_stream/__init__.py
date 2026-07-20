@@ -152,8 +152,8 @@ class BatchEventOutcome:
 
 
 # NOMINAL-TYPING BOUNDARY: same shape as turns.TurnTransition, but a distinct class —
-# dataclass __eq__ requires identical type, so Phase 2 must convert
-# explicitly at this boundary (or tests comparing across it will fail).
+# dataclass __eq__ requires identical type, so callers comparing across the
+# boundary must convert explicitly (tests import the intake twin).
 @dataclass(frozen=True, slots=True)
 class TurnTransition:
     action: Literal["opened", "closed"]
@@ -294,8 +294,12 @@ async def message_events(
     thread_ref: ThreadRef,
     events: Sequence[MessageEventInput],
 ) -> OpResult[BatchResult]:
-    raise NotImplementedError
+    from .internal.pipeline import run_message_events
+
+    return await run_message_events(thread_ref, events)
 
 
 async def list_events(thread_ref: ThreadRef) -> OpResult[list[EventRecord]]:
-    raise NotImplementedError
+    from .internal.pipeline import run_list_events
+
+    return await run_list_events(thread_ref)

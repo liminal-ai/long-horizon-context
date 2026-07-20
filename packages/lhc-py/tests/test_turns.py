@@ -16,7 +16,8 @@ import pytest
 
 from lhc import Derivation, MessageEventInput, intake_stream, messages, threads, turns
 from lhc.threads import NewThreadInput
-from lhc.turns import TurnRecord, TurnTransition
+from lhc.intake_stream import TurnTransition
+from lhc.turns import TurnRecord
 from fixtures import (
     TempStore,
     corrupt_two_open_turns,
@@ -226,7 +227,7 @@ async def test_tc_3_4_turn_end_on_an_empty_open_turn_is_recorded_but_inert_the_n
     if not events.ok:
         return
     assert len(events.value) == 1
-    assert events.value[0].event_order == 1
+    assert events.value[0]["eventOrder"] == 1
 
     assert await _read_turns(file_path) == [
         TurnRecord(

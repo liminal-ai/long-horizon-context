@@ -5,12 +5,25 @@ Thread-file create/open/delete and the one random id generator.
 
 from __future__ import annotations
 
+import secrets
+import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
-from ...shared_tech.errors import OpErr, OpResult
-from ...shared_tech.storage import CURRENT_THREAD_SCHEMA_VERSION, Database
-from ...shared_tech.thread_migrate import THREAD_SCHEMA_VERSION_1
+from ...shared_tech.context import fire_thread_touch
+from ...shared_tech.errors import ErrorResult, OpErr, OpOk, OpResult, storage_failure
+from ...shared_tech.storage import (
+    CURRENT_THREAD_SCHEMA_VERSION,
+    Database,
+    open_database,
+)
+from ...shared_tech.thread_migrate import (
+    THREAD_SCHEMA_VERSION_1,
+    derivation_log_schema_statements,
+    is_supported_thread_schema_version,
+    migrate_thread_schema,
+)
 from ...shared_tech.token_counting import TOKEN_ESTIMATOR_ID
 
 # SQL literals from threadSchemaStatements()'s return array in TS — held so
@@ -148,19 +161,37 @@ _ = (TOKEN_ESTIMATOR_ID, CURRENT_THREAD_SCHEMA_VERSION, THREAD_SCHEMA_VERSION_1)
 
 
 def generate_thread_id() -> str:
-    raise NotImplementedError
+    return f"th_{secrets.token_hex(8)}"
 
 
 def _thread_schema_statements(thread_id: str, created_at: str) -> list[str]:
-    raise NotImplementedError
+    statements: list[str] = []
+    for template in _THREAD_SCHEMA_STATEMENT_TEMPLATES:
+        if template.startswith("INSERT INTO turns"):
+            statements.extend(derivation_log_schema_statements())
+        statements.append(
+            template.format(
+                thread_id=thread_id,
+                created_at=created_at,
+                token_estimator=TOKEN_ESTIMATOR_ID,
+                schema_version=CURRENT_THREAD_SCHEMA_VERSION,
+            )
+        )
+    return statements
 
 
 def _not_a_thread_file(file_path: str, detail: str) -> OpErr:
-    raise NotImplementedError
+    return OpErr(
+        error=ErrorResult(
+            error_class="caller_error",
+            code="thread_not_found",
+            reason=f"file at {file_path} exists but is not an lhc thread file ({detail})",
+        )
+    )
 
 
 def _error_detail(cause: object) -> str:
-    raise NotImplementedError
+    return str(cause)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,16 +202,79 @@ class _ValidateThreadFileOk:
 
 
 def _validate_thread_file(file_path: str) -> _ValidateThreadFileOk | OpErr:
-    raise NotImplementedError
+    # DatabaseSync(..., { readOnly: true }) refuses an absent path and never
+    # mutates the candidate (no WAL pragma). Probe through a genuine read-only
+    # sqlite URI; open the mutable adapter only after validation succeeds.
+    if not Path(file_path).exists():
+        return storage_failure("could not inspect thread file: unable to open database file")
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{file_path}?mode=ro", uri=True, isolation_level=None
+        )
+        connection.row_factory = sqlite3.Row
+        version_row = connection.execute("PRAGMA user_version").fetchone()
+        schema_version = int(version_row[0]) if version_row is not None else 0
+        if schema_version == 0:
+            return _not_a_thread_file(file_path, "no lhc schema version")
+        if not is_supported_thread_schema_version(schema_version):
+            return _not_a_thread_file(
+                file_path,
+                f"schema version {schema_version}, expected "
+                f"{THREAD_SCHEMA_VERSION_1}..{CURRENT_THREAD_SCHEMA_VERSION}",
+            )
+        table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_metadata'"
+        ).fetchone()
+        if table is None:
+            return _not_a_thread_file(file_path, "no thread_metadata table")
+        row = connection.execute(
+            "SELECT thread_id FROM thread_metadata WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return _not_a_thread_file(file_path, "no thread metadata row")
+        return _ValidateThreadFileOk()
+    except BaseException as cause:
+        detail = _error_detail(cause)
+        if "not a database" in detail:
+            return _not_a_thread_file(file_path, detail)
+        return storage_failure(f"could not inspect thread file: {detail}")
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def open_thread_database(file_path: str) -> OpResult[Database]:
-    raise NotImplementedError
+    valid = _validate_thread_file(file_path)
+    if not valid.ok:
+        return valid
+    db: Database | None = None
+    try:
+        db = open_database(file_path)
+        migrate_thread_schema(db)
+    except BaseException as cause:
+        if db is not None:
+            db.close()
+        return storage_failure(f"could not open thread file: {_error_detail(cause)}")
+    fire_thread_touch(file_path, db)
+    return OpOk(db)
 
 
 def create_thread_file(file_path: str, thread_id: str, created_at: str) -> None:
-    raise NotImplementedError
+    db = open_database(file_path)
+    try:
+        db.exec("BEGIN IMMEDIATE;")
+        try:
+            for statement in _thread_schema_statements(thread_id, created_at):
+                db.exec(statement)
+            db.exec("COMMIT;")
+        except BaseException:
+            db.exec("ROLLBACK;")
+            raise
+    finally:
+        db.close()
 
 
 def delete_thread_file(file_path: str) -> None:
-    raise NotImplementedError
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{file_path}{suffix}").unlink(missing_ok=True)

@@ -45,7 +45,7 @@ _scheduler_poke: SchedulerPoke | None = None
 _thread_touch: ThreadTouch | None = None
 
 
-def _run_preserving_seam(token: Any, result: T) -> T:
+def _run_preserving_seam(token: Any, seam: InstanceSeam, result: T) -> T:
     """Reset the ContextVar after sync return, or after an awaitable completes.
 
     TS AsyncLocalStorage.run spans the whole async operation. Resetting when a
@@ -53,12 +53,18 @@ def _run_preserving_seam(token: Any, result: T) -> T:
     first await — detect awaitables and defer reset into their finally.
     """
     if inspect.isawaitable(result):
+        # A coroutine may be scheduled in a new asyncio Task, whose Context is
+        # a copy of this one. ContextVar tokens cannot be reset in that copied
+        # Context, so restore the caller now and establish a task-local token
+        # when the coroutine actually starts running.
+        _seam_store.reset(token)
 
         async def _preserve() -> Any:
+            task_token = _seam_store.set(seam)
             try:
                 return await cast(Awaitable[Any], result)
             finally:
-                _seam_store.reset(token)
+                _seam_store.reset(task_token)
 
         return cast(T, _preserve())
     _seam_store.reset(token)
@@ -72,7 +78,7 @@ def run_with_instance_seam(seam: InstanceSeam, operation: Callable[[], T]) -> T:
     except BaseException:
         _seam_store.reset(token)
         raise
-    return _run_preserving_seam(token, result)
+    return _run_preserving_seam(token, seam, result)
 
 
 def set_scheduler_poke(poke: SchedulerPoke | None) -> None:

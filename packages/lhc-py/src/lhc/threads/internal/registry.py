@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...shared_tech.storage import Database
+from ...shared_tech.storage import Database, open_database
 
 DEFAULT_REGISTRY_PATH = str(Path.home() / ".lhc" / "registry.sqlite")
 
@@ -32,23 +32,41 @@ _ROW_ORDER = "ORDER BY created_at, rowid"
 
 
 def resolve_registry_path(registry_path: str | None = None) -> str:
-    raise NotImplementedError
+    return DEFAULT_REGISTRY_PATH if registry_path is None else registry_path
 
 
 def _has_no_schema(db: Database) -> bool:
-    raise NotImplementedError
+    row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 1").get()
+    return row is None
 
 
 # First write creates the current registry file and schema lazily.
 def open_registry_for_write(registry_path: str) -> Database:
-    raise NotImplementedError
+    Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
+    db = open_database(registry_path)
+    try:
+        if _has_no_schema(db):
+            db.exec("BEGIN IMMEDIATE;")
+            try:
+                for statement in _REGISTRY_SCHEMA_STATEMENTS:
+                    db.exec(statement)
+                db.exec("COMMIT;")
+            except BaseException:
+                db.exec("ROLLBACK;")
+                raise
+    except BaseException:
+        db.close()
+        raise
+    return db
 
 
 # Reads never create the registry: callers map null to empty list /
 # thread_not_found. The existence check is the non-creation guarantee —
 # openDatabase would create the file.
 def open_registry_for_read(registry_path: str) -> Database | None:
-    raise NotImplementedError
+    if not Path(registry_path).exists():
+        return None
+    return open_database(registry_path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,20 +88,45 @@ class _RawRow:
 
 
 def _to_registry_row(raw: _RawRow) -> RegistryRow:
-    raise NotImplementedError
+    return RegistryRow(
+        thread_id=raw.thread_id,
+        file_path=raw.file_path,
+        created_at=raw.created_at,
+        title=raw.title,
+        cwd=raw.cwd,
+    )
+
+
+def _raw_row(raw: dict[str, object]) -> _RawRow:
+    title = raw["title"]
+    cwd = raw["cwd"]
+    return _RawRow(
+        thread_id=str(raw["thread_id"]),
+        file_path=str(raw["file_path"]),
+        title=None if title is None else str(title),
+        cwd=None if cwd is None else str(cwd),
+        created_at=str(raw["created_at"]),
+    )
 
 
 def insert_thread_row(db: Database, row: RegistryRow) -> None:
-    raise NotImplementedError
+    db.prepare(
+        "INSERT INTO threads (thread_id, file_path, title, cwd, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(row.thread_id, row.file_path, row.title, row.cwd, row.created_at)
 
 
 def select_thread_row(db: Database, thread_id: str) -> RegistryRow | None:
-    raise NotImplementedError
+    raw = db.prepare(f"SELECT {_ROW_COLUMNS} FROM threads WHERE thread_id = ?").get(thread_id)
+    return None if raw is None else _to_registry_row(_raw_row(raw))
 
 
 # Partial-id resolve (A-8): every thread whose id begins with the given prefix.
 def select_thread_rows_by_prefix(db: Database, prefix: str) -> list[RegistryRow]:
-    raise NotImplementedError
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    raws = db.prepare(
+        f"SELECT {_ROW_COLUMNS} FROM threads WHERE thread_id LIKE ? ESCAPE '\\' {_ROW_ORDER}"
+    ).all(f"{escaped}%")
+    return [_to_registry_row(_raw_row(raw)) for raw in raws]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,4 +140,10 @@ def select_all_thread_rows(
     db: Database,
     opts: SelectAllThreadRowsOpts | None = None,
 ) -> list[RegistryRow]:
-    raise NotImplementedError
+    if opts is None or opts.cwd is None:
+        raws = db.prepare(f"SELECT {_ROW_COLUMNS} FROM threads {_ROW_ORDER}").all()
+    else:
+        raws = db.prepare(
+            f"SELECT {_ROW_COLUMNS} FROM threads WHERE cwd = ? {_ROW_ORDER}"
+        ).all(opts.cwd)
+    return [_to_registry_row(_raw_row(raw)) for raw in raws]

@@ -50,23 +50,29 @@ _SQL_SELECT_TURN_STRUCTURE = (
 
 
 def select_open_turn_ids(db: Database) -> list[str]:
-    raise NotImplementedError
+    return [str(row["turn_id"]) for row in db.prepare(_SQL_SELECT_OPEN_TURN_IDS).all()]
 
 
 def count_turn_members(db: Database, turn_id: str) -> int:
-    raise NotImplementedError
+    row = db.prepare(_SQL_COUNT_TURN_MEMBERS).get(turn_id)
+    value = row.get("n") if row is not None else None
+    return int(value if value is not None else 0)
 
 
 def next_turn_order(db: Database) -> int:
-    raise NotImplementedError
+    row = db.prepare(_SQL_NEXT_TURN_ORDER).get()
+    value = row.get("max_order") if row is not None else None
+    return int(value if value is not None else 0) + 1
 
 
 def insert_open_turn(db: Database, turn_order: int, opened_at_event_order: int) -> str:
-    raise NotImplementedError
+    turn_id = f"t{turn_order}"
+    db.prepare(_SQL_INSERT_OPEN_TURN).run(turn_id, turn_order, opened_at_event_order)
+    return turn_id
 
 
 def close_turn(db: Database, turn_id: str, closed_at_event_order: int) -> None:
-    raise NotImplementedError
+    db.prepare(_SQL_CLOSE_TURN).run(closed_at_event_order, turn_id)
 
 
 @dataclass(frozen=True, slots=True)

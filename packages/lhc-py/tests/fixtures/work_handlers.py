@@ -399,8 +399,7 @@ def register_test_work_handlers(
     )
 
 
-def _iso_millis(clock: Callable[[], datetime]) -> str:
-    value = clock()
+def _iso_millis(value: datetime) -> str:
     utc = value.astimezone(timezone.utc)
     milliseconds = utc.microsecond // 1000
     return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"

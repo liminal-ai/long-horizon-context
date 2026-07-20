@@ -10,11 +10,18 @@ re-derived on read.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from ...shared_tech.derivation import Derivation, DerivationReportEntry, DerivationState
+from ...shared_tech.derivation import (
+    DependencyGap,
+    Derivation,
+    DerivationMetadata,
+    DerivationReportEntry,
+    DerivationState,
+)
 from ...shared_tech.storage import Database
 
 _SQL_SELECT_MESSAGE_KIND = """SELECT kind FROM message WHERE message_id = ?"""
@@ -73,7 +80,17 @@ class MessageSource:
 
 
 def read_message_source(db: Database, message_id: str) -> MessageSource | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_SELECT_MESSAGE_KIND).get(message_id)
+    if row is None:
+        return None
+    blocks = [
+        MessageSourceBlock(
+            block_type=str(block["block_type"]),
+            content=json.loads(str(block["content"])),
+        )
+        for block in db.prepare(_SQL_SELECT_MESSAGE_BLOCKS).all(message_id)
+    ]
+    return MessageSource(message_id=message_id, kind=str(row["kind"]), blocks=blocks)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +119,50 @@ def read_message_derivations(
     db: Database,
     message_ids: Sequence[str] | None = None,
 ) -> dict[str, list[Derivation]]:
-    raise NotImplementedError
+    sql = _SQL_READ_MESSAGE_DERIVATIONS_BASE
+    params: list[object] = []
+    if message_ids is not None:
+        if not message_ids:
+            return {}
+        sql += f" AND subject_id IN ({', '.join('?' for _ in message_ids)})"
+        params.extend(message_ids)
+    sql += " ORDER BY subject_id, derivation_type"
+
+    from ...shared_tech.derivation import decode_derivation_metadata
+
+    result: dict[str, list[Derivation]] = {}
+    for row in db.prepare(sql).all(*params):
+        metadata = None
+        if row["metadata"] is not None:
+            metadata = decode_derivation_metadata(json.loads(str(row["metadata"])))
+        gaps = None
+        if row["gaps"] is not None:
+            gaps = [
+                DependencyGap(
+                    subject_kind=gap["subjectKind"],
+                    subject_id=gap["subjectId"],
+                    derivation_type=gap["derivationType"],
+                )
+                for gap in json.loads(str(row["gaps"]))
+            ]
+        subject_id = str(row["subject_id"])
+        result.setdefault(subject_id, []).append(
+            Derivation(
+                subject_kind="message",
+                subject_id=subject_id,
+                derivation_type=str(row["derivation_type"]),
+                state=str(row["state"]),  # type: ignore[arg-type]
+                source_version=int(row["source_version"]),
+                content=str(row["content"]) if row["content"] is not None else None,
+                reason=str(row["reason"]) if row["reason"] is not None else None,
+                gaps=gaps,
+                metadata=metadata,
+                derived_at=(
+                    str(row["derived_at"]) if row["derived_at"] is not None else None
+                ),
+            )
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +179,16 @@ def read_message_derivation_row(
     message_id: str,
     derivation_type: str,
 ) -> MessageDerivationRowView | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_MESSAGE_DERIVATION_ROW).get(
+        message_id, derivation_type
+    )
+    if row is None:
+        return None
+    return MessageDerivationRowView(
+        state=str(row["state"]),  # type: ignore[arg-type]
+        source_version=int(row["source_version"]),
+        reason=str(row["reason"]) if row["reason"] is not None else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +218,11 @@ def _find_paired_block(
     block_type: Literal["tool_call", "tool_result"],
     tool_call_id: str,
 ) -> dict[str, object] | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_FIND_PAIRED_BLOCK).get(block_type, tool_call_id)
+    if row is None:
+        return None
+    value = json.loads(str(row["content"]))
+    return value if isinstance(value, dict) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +232,14 @@ class PairedToolResult:
 
 
 def find_paired_tool_result(db: Database, tool_call_id: str) -> PairedToolResult | None:
-    raise NotImplementedError
+    block = _find_paired_block(db, "tool_result", tool_call_id)
+    if block is None:
+        return None
+    content = block.get("content")
+    return PairedToolResult(
+        content=content if isinstance(content, str) else "",
+        is_error=block.get("isError") is True,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,4 +249,12 @@ class PairedToolCall:
 
 
 def find_paired_tool_call(db: Database, tool_call_id: str) -> PairedToolCall | None:
-    raise NotImplementedError
+    block = _find_paired_block(db, "tool_call", tool_call_id)
+    if block is None:
+        return None
+    tool_name = block.get("toolName")
+    arguments = block.get("arguments")
+    return PairedToolCall(
+        tool_name=tool_name if isinstance(tool_name, str) else "",
+        tool_input=arguments if isinstance(arguments, dict) else None,
+    )

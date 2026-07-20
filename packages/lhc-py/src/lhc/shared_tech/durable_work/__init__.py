@@ -17,6 +17,9 @@ from ..derivation import (
     HandlerFailed,
     HandlerOutcome,
     HandlerRunContext,
+    InferenceErr,
+    InferenceOk,
+    ProviderProvenance,
     ResolvedSdkConfig,
     SubjectKind,
 )
@@ -396,6 +399,50 @@ class HandlerRunIdentity:
     file_path: str
 
 
+def _coerce_inference_result(result: object) -> object:
+    if not isinstance(result, dict):
+        return result
+    if not result.get("ok"):
+        return InferenceErr(
+            reason=str(result.get("reason", "inference failed")),
+            request_messages=result.get("requestMessages", result.get("request_messages")),  # type: ignore[arg-type]
+        )
+    provenance_value = result.get("provenance")
+    provenance = (
+        ProviderProvenance(
+            provider=str(provenance_value["provider"]),
+            model=str(provenance_value["model"]),
+            prompt=str(provenance_value["prompt"]),
+        )
+        if isinstance(provenance_value, dict)
+        and all(key in provenance_value for key in ("provider", "model", "prompt"))
+        else None
+    )
+    return InferenceOk(
+        text=str(result.get("text", "")),
+        provenance=provenance,
+        request_messages=result.get("requestMessages", result.get("request_messages")),  # type: ignore[arg-type]
+        raw_response=result.get("rawResponse", result.get("raw_response")),  # type: ignore[arg-type]
+    )
+
+
+class _CoercingInferenceCallbacks:
+    def __init__(self, callbacks: object) -> None:
+        self._callbacks = callbacks
+
+    async def smooth_prompt(self, input: object) -> object:
+        return _coerce_inference_result(await self._callbacks.smooth_prompt(input))  # type: ignore[attr-defined]
+
+    async def summarize_tool_result(self, input: object) -> object:
+        return _coerce_inference_result(await self._callbacks.summarize_tool_result(input))  # type: ignore[attr-defined]
+
+    async def compress_detailed_turn(self, input: object) -> object:
+        return _coerce_inference_result(await self._callbacks.compress_detailed_turn(input))  # type: ignore[attr-defined]
+
+    async def summarize_chunk_brief(self, input: object) -> object:
+        return _coerce_inference_result(await self._callbacks.summarize_chunk_brief(input))  # type: ignore[attr-defined]
+
+
 async def run_work_handler(
     db: Database,
     config: ResolvedSdkConfig,
@@ -422,7 +469,7 @@ async def run_work_handler(
                 else (database_path_for(db) or "")
             ),
             open_db=lambda: db,
-            inference_callbacks=config.inference_callbacks,
+            inference_callbacks=_CoercingInferenceCallbacks(config.inference_callbacks),  # type: ignore[arg-type]
             clock=config.clock,
             config=config,
         )
@@ -434,6 +481,8 @@ async def run_work_handler(
                 source_ref=dict(item.source_ref),
             ),
         )
+    except NotImplementedError:
+        raise
     except BaseException as cause:
         return HandlerFailed(reason=f"handler threw: {cause}")
 

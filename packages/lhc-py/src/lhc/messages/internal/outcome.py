@@ -18,4 +18,6 @@ class PairedResult:
 
 
 def derive_tool_outcome(paired_result: PairedResult | None) -> ToolOutcome:
-    raise NotImplementedError
+    if paired_result is None:
+        return "unknown"
+    return "failed" if paired_result.is_error else "succeeded"

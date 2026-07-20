@@ -12,6 +12,8 @@ Empty or whitespace-only success text is a failure, never a ready form.
 
 from __future__ import annotations
 
+import copy
+
 import re
 
 import pytest
@@ -255,7 +257,7 @@ async def test_a_whitespace_only_success_fails_on_the_first_attempt_as_empty_out
     async def call(input: ModelCallInput):
         nonlocal calls
         calls += 1
-        log.append(dict(input))
+        log.append(copy.deepcopy(input))
         return await script(input)
 
     sdk, _assignments = _inference_sdk(call)
@@ -280,7 +282,7 @@ async def test_a_whitespace_only_success_fails_on_the_first_attempt_as_empty_out
     assert failed is not None
     assert failed.event_kind == "inference_failed"
     assert "empty_output" in failed.payload["reason"]
-    assert failed.payload["requestMessages"] == log[0]["messages"]
+    assert failed.payload["requestMessages"] == log[0].messages
 
 
 async def test_success_text_is_shaped_surrounding_whitespace_never_reaches_the_form_content() -> None:

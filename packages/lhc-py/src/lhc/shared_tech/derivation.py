@@ -186,6 +186,59 @@ class DerivationMetadata:
     provenance: ProviderProvenance | None = None
 
 
+def decode_derivation_metadata(raw: object) -> DerivationMetadata:
+    """Decode stored derivation.metadata JSON into DerivationMetadata.
+
+    TS casts JSON.parse(...) as DerivationMetadata; Python must map camelCase
+    keys and nested provenance explicitly.
+    """
+    if not isinstance(raw, dict):
+        return DerivationMetadata()
+    provenance_raw = raw.get("provenance")
+    provenance = None
+    if isinstance(provenance_raw, dict):
+        provider = provenance_raw.get("provider")
+        model = provenance_raw.get("model")
+        prompt = provenance_raw.get("prompt")
+        if (
+            isinstance(provider, str)
+            and isinstance(model, str)
+            and isinstance(prompt, str)
+        ):
+            provenance = ProviderProvenance(
+                provider=provider, model=model, prompt=prompt
+            )
+    size = raw.get("sizeDisposition")
+    size_disposition: Literal["in_range", "under_min", "over_max"] | None = None
+    if size in ("in_range", "under_min", "over_max"):
+        size_disposition = size  # type: ignore[assignment]
+    return DerivationMetadata(
+        outcome=raw.get("outcome") if isinstance(raw.get("outcome"), str) else None,  # type: ignore[arg-type]
+        last_error=raw.get("lastError") if isinstance(raw.get("lastError"), str) else None,
+        discard_reason=(
+            raw.get("discardReason") if isinstance(raw.get("discardReason"), str) else None
+        ),
+        fallback_floor=(
+            raw.get("fallbackFloor") if isinstance(raw.get("fallbackFloor"), str) else None
+        ),
+        fallback_used=(
+            raw.get("fallbackUsed") if isinstance(raw.get("fallbackUsed"), bool) else None
+        ),
+        inference_attempted=(
+            raw.get("inferenceAttempted")
+            if isinstance(raw.get("inferenceAttempted"), bool)
+            else None
+        ),
+        inference_succeeded=(
+            raw.get("inferenceSucceeded")
+            if isinstance(raw.get("inferenceSucceeded"), bool)
+            else None
+        ),
+        size_disposition=size_disposition,
+        provenance=provenance,
+    )
+
+
 # The read shape for one derivation's state row.
 @dataclass(frozen=True, slots=True)
 class Derivation:
