@@ -12,7 +12,7 @@ from typing import Literal, TypedDict
 import pytest
 
 from lhc import InferenceCallbacks, Lhc, MessageEventInput, init_lhc, queue_detail, threads
-from lhc.sdk import DrainOpts
+from lhc.shared_tech.scheduler import DrainOpts
 from lhc.shared_tech.derivation import ChunkPolicyConfig, DerivationState, LeaseConfig, SdkConfig
 from lhc.shared_tech.logging import LogQuery
 from lhc.shared_tech.view import (

@@ -13,7 +13,7 @@ from typing import Literal, TypedDict
 import pytest
 
 from lhc import BatchResult, InferenceCallbacks, Lhc, MessageEventInput, init_lhc, threads
-from lhc.sdk import DrainOpts
+from lhc.shared_tech.scheduler import DrainOpts
 from lhc.shared_tech.derivation import (
     CompressDetailedTurnInput,
     InferenceOk,

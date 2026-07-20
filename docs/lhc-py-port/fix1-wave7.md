@@ -1,0 +1,17 @@
+You are the IMPLEMENTOR for Wave 7 fix round 1 — the FINAL fix round of the lhc-py Phase 1 port. Sol's completion audit: FAIL, 7 blockers + 3 minors. Same contract: /srv/work/long-horizon-context/docs/lhc-py-port-phase1-brief.md, branch lhc-py-port, no commits/pushes, nothing outside packages/lhc-py/. Fix ALL, re-run the gate, report per finding.
+
+FINDINGS:
+1. [blocker] src/lhc/__init__.py:31 — TS index exports 139 names; Python exports 141. `DrainOpts` and `TestingWorkRegistration` are NOT TS exports: make them private (underscore or just not re-exported) and remove from sdk.__all__ and lhc.__all__. Verify the final export set mechanically equals the TS list (139 names).
+2. [blocker] src/lhc/shared_tech/__init__.py:248 — TS `export *` over 15 modules yields 126 unique names; Python re-exports 218. Restrict __all__/re-exports to exactly the TS-exported names (drop the 92 internal/helper extras).
+3. [blocker] src/lhc/sdk.py:271 — complete the domain protocols faithfully: LhcThreads adds open_thread_database, and resolve/list_threads/resolve_thread_ref get real named types (no `object`); LhcMessages adds create, read_live_messages; LhcTurns adds create, get_chunk_text, read_turn_chunk_structure, TurnStateCorruptionError surface, and report takes TurnReportOpts (not object). Every runtime namespace member present with faithful signatures.
+4. [blocker] tests/fixtures/seam_conformance.py:33 — `thinking` uses the closed ThinkingLevel union (not str|None beyond what TS allows); RoutingRunResult is identifier-shaped in TS → frozen slotted dataclass with file_path (not camelCase TypedDict); FAILURE_KINDS is TS-private → underscore it, and keep it a Set-faithful structure (mutable set like TS Set semantics if TS mutates it — check TS; if TS never mutates, frozenset with a NOTE is fine but name stays private).
+5. [blocker] tests/test_report_repair.py:548 — TS toEqual on the COMPLETE refused result: compare against a fully constructed declared result dataclass incl. nested ErrorResult (no five-field subset).
+6. [blocker] tests/test_inspect_view.py:81 — restore helper fidelity: generic result_value[T] via TypeVar (not Any); servedText helper keeps TS name/shape (served_text, original narrowing); line ~245 returns a declared frozen dataclass matching { filePath, sdk } (no invented tuple).
+7. [blocker] packages/lhc-py/README.md — Phase 1 completion note: replace "Phase 1 in progress" with final state: gate summary counts from your final gate run (collected/passed/notimpl/wrong), ledger 100% (72 sources, 53 tests, 18 fixtures, 2 EXCLUDED network tests), and a one-paragraph Phase 2 handoff (implement bodies in dependency order, drive tests green; the gate's notimpl→passed is the progress meter; conventions in docs/lhc-py-port-phase1-brief.md; TS oracle certification pattern for constants).
+8. [minor] tests/test_report_repair.py:347 — remove the vacuous `if False` filter; line 348 is the faithful assertion.
+9. [minor] tests/test_inspect_overview.py:353 — `?? 0` → explicit `is None` fallback, not `or 0`.
+10. [minor] src/lhc/inspect/internal/view_report.py:19 — BAND_ORDER → _BAND_ORDER (TS-private).
+
+GATE: cd packages/lhc-py && uv run python scripts/check_gate.py → GATE PASS, wrong=0, collection clean.
+
+FINAL REPORT: per-finding status, gate output verbatim, the mechanical export-count check result (py names == 139 TS names), any disputes with TS line justification.

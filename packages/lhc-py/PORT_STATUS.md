@@ -9,11 +9,11 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 
 | # | source | python | skel | notes |
 |---|---|---|---|---|
-| 1 | `src/index.ts` | `src/lhc/__init__.py` | ◐ | Wave 1 PARTIAL — re-exports Wave 1 tests need |
-| 2 | `src/inspect/index.ts` | `src/lhc/inspect/__init__.py` | ☐ |  |
-| 3 | `src/inspect/internal/health.ts` | `src/lhc/inspect/internal/health.py` | ☐ |  |
-| 4 | `src/inspect/internal/overview.ts` | `src/lhc/inspect/internal/overview.py` | ☐ |  |
-| 5 | `src/inspect/internal/view-report.ts` | `src/lhc/inspect/internal/view_report.py` | ☐ |  |
+| 1 | `src/index.ts` | `src/lhc/__init__.py` | ☑ | Wave 7 — mirrors sdk exactly (`export * from "./sdk.js"`) |
+| 2 | `src/inspect/index.ts` | `src/lhc/inspect/__init__.py` | ☑ | Wave 7 — overview/health/view + type re-exports |
+| 3 | `src/inspect/internal/health.ts` | `src/lhc/inspect/internal/health.py` | ☑ | Wave 7 |
+| 4 | `src/inspect/internal/overview.ts` | `src/lhc/inspect/internal/overview.py` | ☑ | Wave 7 |
+| 5 | `src/inspect/internal/view-report.ts` | `src/lhc/inspect/internal/view_report.py` | ☑ | Wave 7 |
 | 6 | `src/intake-stream/index.ts` | `src/lhc/intake_stream/__init__.py` | ☑ | Wave 3 — full type surface + message_events/list_events skeletons |
 | 7 | `src/intake-stream/internal/pipeline.ts` | `src/lhc/intake_stream/internal/pipeline.py` | ☑ | Wave 3 — walk-hook/clock seam + run_message_events/run_list_events/_recorded_keys/_max_event_order skeletons |
 | 8 | `src/intake-stream/internal/validate.ts` | `src/lhc/intake_stream/internal/validate.py` | ☑ | Wave 3 — EVENT_KINDS + closed TypedDict Schema surface (`_DECODE_OPTIONS` verbatim; Phase 2 NOTES for minLength/closedness/ParseError) |
@@ -28,14 +28,14 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 17 | `src/messages/internal/smoothing.ts` | `src/lhc/messages/internal/smoothing.py` | ☑ | Wave 4 |
 | 18 | `src/messages/internal/store.ts` | `src/lhc/messages/internal/store.py` | ☑ | Wave 4 — SQL hoisted; `MessageRecordWithDeleted` for `readMessageById` intersection |
 | 19 | `src/messages/internal/work.ts` | `src/lhc/messages/internal/work.py` | ☑ | Wave 4 — MESSAGE_WORK_* maps real |
-| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ◐ | Wave 1–6 PARTIAL — protocols include Wave 4–6 surfaces (messages/turns/thread_view compact+prune+preview+materialize+session/describe); full SDK assembly still Wave 7 |
+| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ☑ | Wave 7 — full surface (protocols, namespaces, init_lhc, re-exports) |
 | 21 | `src/shared-tech/classify.ts` | `src/lhc/shared_tech/classify.py` | ☑ |  |
 | 22 | `src/shared-tech/context.ts` | `src/lhc/shared_tech/context.py` | ☑ |  |
 | 23 | `src/shared-tech/derivation.ts` | `src/lhc/shared_tech/derivation.py` | ☑ | Wave 1 complete |
 | 24 | `src/shared-tech/deterministic.ts` | `src/lhc/shared_tech/deterministic.py` | ☑ | exemplar |
 | 25 | `src/shared-tech/durable-work/index.ts` | `src/lhc/shared_tech/durable_work/__init__.py` | ☑ | Wave 2 import seam complete: dispatcher/operation types + apply_derivation_success signature match TS; bodies remain NotImplementedError skeletons |
 | 26 | `src/shared-tech/errors.ts` | `src/lhc/shared_tech/errors.py` | ☑ | exemplar |
-| 27 | `src/shared-tech/index.ts` | `src/lhc/shared_tech/__init__.py` | ☐ |  |
+| 27 | `src/shared-tech/index.ts` | `src/lhc/shared_tech/__init__.py` | ☑ | Wave 7 — re-exports classify…view (not work-queue/logging/prompts/token-counting) |
 | 28 | `src/shared-tech/inference-adapter.ts` | `src/lhc/shared_tech/inference_adapter.py` | ☑ | Wave 2 import seam complete — out-of-order helpers/target_ratios_of; bodies remain NotImplementedError skeletons |
 | 29 | `src/shared-tech/inference-types.ts` | `src/lhc/shared_tech/inference_types.py` | ☑ |  |
 | 30 | `src/shared-tech/inspect.ts` | `src/lhc/shared_tech/inspect.py` | ☑ |  |
@@ -93,8 +93,8 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 5 | `test/derivation-messages.test.ts` | `tests/test_derivation_messages.py` | ☑ | ☑ | Wave 4; 3 it.skip preserved |
 | 6 | `test/derivation-turns.test.ts` | `tests/test_derivation_turns.py` | ☑ | ☑ | Wave 5 |
 | 7 | `test/detailed-turn-compression.test.ts` | `tests/test_detailed_turn_compression.py` | ☑ | ☑ | Wave 5 |
-| 8 | `test/epic-fix-02.test.ts` | `tests/test_epic_fix_02.py` | ☐ | ☐ |  |
-| 9 | `test/epic-fix.test.ts` | `tests/test_epic_fix.py` | ☐ | ☐ |  |
+| 8 | `test/epic-fix-02.test.ts` | `tests/test_epic_fix_02.py` | ☑ | ☑ | Wave 7 |
+| 9 | `test/epic-fix.test.ts` | `tests/test_epic_fix.py` | ☑ | ☑ | Wave 7 |
 | 10 | `test/fixtures.test.ts` | `tests/test_fixtures.py` | ☑ | ☑ |  |
 | 11 | `test/idempotency.test.ts` | `tests/test_idempotency.py` | ☑ | ☑ |  |
 | 12 | `test/inference-adapter.test.ts` | `tests/test_inference_adapter.py` | ☑ | ☑ |  |
@@ -103,9 +103,9 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 15 | `test/inference-prompts.test.ts` | `tests/test_inference_prompts.py` | ☑ | ☑ |  |
 | 16 | `test/inference-real.test.ts` | — | — | — | EXCLUDED (live network) |
 | 17 | `test/inference-routing.test.ts` | `tests/test_inference_routing.py` | ☑ | ☑ |  |
-| 18 | `test/inspect-health.test.ts` | `tests/test_inspect_health.py` | ☐ | ☐ |  |
-| 19 | `test/inspect-overview.test.ts` | `tests/test_inspect_overview.py` | ☐ | ☐ |  |
-| 20 | `test/inspect-view.test.ts` | `tests/test_inspect_view.py` | ☐ | ☐ |  |
+| 18 | `test/inspect-health.test.ts` | `tests/test_inspect_health.py` | ☑ | ☑ | Wave 7 |
+| 19 | `test/inspect-overview.test.ts` | `tests/test_inspect_overview.py` | ☑ | ☑ | Wave 7 |
+| 20 | `test/inspect-view.test.ts` | `tests/test_inspect_view.py` | ☑ | ☑ | Wave 7 |
 | 21 | `test/intake-message-materialization.test.ts` | `tests/test_intake_message_materialization.py` | ☑ | ☑ |  |
 | 22 | `test/intake.test.ts` | `tests/test_intake.py` | ☑ | ☑ |  |
 | 23 | `test/lifecycle.test.ts` | `tests/test_lifecycle.py` | ☑ | ☑ |  |
@@ -113,7 +113,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 25 | `test/messages-read.test.ts` | `tests/test_messages_read.py` | ☑ | ☑ | Wave 4 |
 | 26 | `test/mutations-delete.test.ts` | `tests/test_mutations_delete.py` | ☑ | ☑ | Wave 4 |
 | 27 | `test/mutations.test.ts` | `tests/test_mutations.py` | ☑ | ☑ | Wave 4 |
-| 28 | `test/report-repair.test.ts` | `tests/test_report_repair.py` | ☐ | ☐ |  |
+| 28 | `test/report-repair.test.ts` | `tests/test_report_repair.py` | ☑ | ☑ | Wave 7 |
 | 29 | `test/runtime-change-typing.test.ts` | `tests/test_runtime_change_typing.py` | ☑ | ☑ |  |
 | 30 | `test/smoothed-prompt-guards.test.ts` | `tests/test_smoothed_prompt_guards.py` | ☑ | ☑ | Wave 4 |
 | 31 | `test/smoothing-recovery.test.ts` | `tests/test_smoothing_recovery.py` | ☑ | ☑ | Wave 4 |
@@ -156,7 +156,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | `test/fixtures/pi-session-structure.jsonl` | `tests/fixtures/pi-session-structure.jsonl` | ☑ | copied verbatim |
 | `test/fixtures/pi-session-structure.provenance.md` | `tests/fixtures/pi-session-structure.provenance.md` | ☑ | copied verbatim |
 | `test/fixtures/read-only-delta.ts` | `tests/fixtures/read_only_delta.py` | ☑ |  |
-| `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.py` | ☐ |  |
+| `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.py` | ☑ | Wave 7 — probe_input REAL; assert helpers skeletal |
 | `test/fixtures/threads.ts` | `tests/fixtures/threads.py` | ☑ | ☑ — `_new_thread_file`/`_send` + chunk/form-state/gapped; builders skeleton |
 | `test/fixtures/view-boundary.ts` | `tests/fixtures/view_boundary.py` | ☑ | Wave 6; fix-r1: frozen TurnedToolResultsSpec |
 | `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.py` | ☑ | Wave 6 — re-exports seam; seed_view_boundary skeletal |

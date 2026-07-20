@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 
 from lhc import Lhc, MessageEventInput, init_lhc
-from lhc.sdk import DrainOpts
+from lhc.shared_tech.scheduler import DrainOpts
 from lhc.shared_tech.derivation import SdkConfig, ToolResultConfig
 from lhc.shared_tech.view import (
     LlmRequestContextMessage,

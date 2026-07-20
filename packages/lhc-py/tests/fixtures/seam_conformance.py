@@ -10,18 +10,27 @@ the ModelCall boundary and the SDK, so they are skeletons.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 from lhc.sdk import Lhc
 from lhc.shared_tech.derivation import Derivation
-from lhc.shared_tech.inference_types import ModelAssignment, ModelCall, ModelCallInput, ModelCallMessage
+from lhc.shared_tech.inference_types import (
+    ModelAssignment,
+    ModelCall,
+    ModelCallInput,
+    ModelCallMessage,
+    ThinkingLevel,
+)
 
 from .model_call import InferenceDerivationType
 
 if TYPE_CHECKING:
     from . import TempStore
 
-FAILURE_KINDS = frozenset(
+# TS `const FAILURE_KINDS = new Set([...])` — private; never mutated after init.
+# frozenset is fine (TS only calls `.has`); NOTE: mutable set would also match.
+_FAILURE_KINDS = frozenset(
     {"rate_limit", "timeout", "network", "empty_output", "other", "auth", "invalid_request"}
 )
 
@@ -30,12 +39,12 @@ class _ProbeInputOverrides(TypedDict, total=False):
     provider: str
     model: str
     messages: list[ModelCallMessage]
-    thinking: str | None
+    thinking: ThinkingLevel | None
 
 
 def probe_input(overrides: _ProbeInputOverrides | None = None) -> ModelCallInput:
     """Pure data construction — real. See `model-call.ts`'s validAssignments for the pattern."""
-    base: dict[str, object] = {
+    fields: dict[str, object] = {
         "provider": "probe-provider",
         "model": "probe-model",
         "messages": [
@@ -44,8 +53,8 @@ def probe_input(overrides: _ProbeInputOverrides | None = None) -> ModelCallInput
         ],
     }
     if overrides:
-        base.update(overrides)
-    return base  # type: ignore[return-value]
+        fields.update(overrides)
+    return ModelCallInput(**fields)  # type: ignore[arg-type]
 
 
 # AC-1.2's result contract on one probe call: a ModelCall resolves to either
@@ -56,9 +65,10 @@ async def assert_model_call_contract(call: ModelCall, probe: ModelCallInput | No
     raise NotImplementedError
 
 
-class RoutingRunResult(TypedDict):
+@dataclass(frozen=True, slots=True)
+class RoutingRunResult:
     sdk: Lhc
-    filePath: str
+    file_path: str
     derivations: list[Derivation]
     log: list[ModelCallInput]
 
@@ -83,7 +93,6 @@ async def assert_routing_through_sdk(
 
 
 __all__ = [
-    "FAILURE_KINDS",
     "RoutingRunResult",
     "assert_model_call_contract",
     "assert_routing_through_sdk",

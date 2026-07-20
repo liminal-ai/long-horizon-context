@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-from lhc import init_lhc, intake_stream, list_items, messages, thread_view
+from lhc import init_lhc, intake_stream, messages, thread_view
 from lhc.messages import MessageListOptions, MessageReportOpts, RemoveInput
 from lhc.sdk import Lhc
 from lhc.shared_tech.derivation import SdkConfig
 from lhc.shared_tech.errors import OpResult
-from lhc.shared_tech.work_queue import WorkOwner
+from lhc.shared_tech.work_queue import WorkOwner, list_items
 from lhc.threads import NewThreadInput
 from fixtures import (
     InferenceCallbacksDouble,

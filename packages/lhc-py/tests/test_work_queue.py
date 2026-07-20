@@ -25,7 +25,6 @@ from lhc import (
     WorkOwner,
     create_db_write_transaction,
     intake_stream,
-    list_items,
     lookup_work_dispatcher,
     lookup_work_handler,
     map_work_q_handlers,
@@ -45,6 +44,7 @@ from lhc.shared_tech.work_queue import (
     WorkSourceRefTurn,
     _WorkKindRegistryEntry,
     enqueue,
+    list_items,
 )
 from lhc.threads import NewThreadInput
 from fixtures import (
