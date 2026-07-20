@@ -4,6 +4,18 @@
 self-contained; you do not need prior context on this repo beyond what is
 written here.
 
+## Environment
+
+- Repo: `/srv/work/long-horizon-context` (pnpm monorepo). The TS SDK you are
+  porting is `packages/lhc/`; your target is `packages/lhc-py/`. All relative
+  paths in this document are from the repo root unless they start with
+  `src/lhc/`, `tests/`, or `scripts/` — those are inside `packages/lhc-py/`.
+- Branch: `lhc-py-port` **already exists** with Wave 0 committed —
+  `git checkout lhc-py-port`. Do not create a new branch, do not work on main.
+  Commit locally; do not push unless asked.
+- Toolchain: `uv` and Python 3.12.3 are installed; `uv sync` has been run.
+  You never need node/pnpm — the TS side is read-only reference.
+
 ## Current state — Wave 0 is DONE. Resume at Wave 1.
 
 `packages/lhc-py/` already exists with a working scaffold, committed and
@@ -141,7 +153,9 @@ module docstring; `it("...")` → `def test_...` with the original description
 as the docstring. `beforeEach/afterEach` → pytest fixtures in the test module
 (or `tests/fixtures/` when shared). `toBe`/`toEqual` → `assert ==` (deep
 equality works because everything is dataclasses); `toThrow(TypeError)` →
-`pytest.raises(TypeError)`. Port fixture helper signatures fully; helper
+`pytest.raises(TypeError)`. Async tests (`it` with `await`) → plain
+`async def test_...` — pytest-asyncio runs them automatically (auto mode is
+configured in pyproject.toml; no decorator needed). Port fixture helper signatures fully; helper
 bodies are skeletons **except** pure data-construction helpers (event/fixture
 literals like `validEvent`) — those are real, so tests fail on SDK calls, not
 fixture construction.
