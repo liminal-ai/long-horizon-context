@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "You write a brief summary of a sequence of conversation turns. State what was worked on and what was accomplished, and reflect the tool outcomes given. No detail beyond outcomes, no speculation, three sentences maximum."
+  },
+  {
+    "role": "user",
+    "content": "Turns, in order:\n\n1. turn one: read notes/plan.md\n\n2. turn two: edited src/app.ts\n\nTool outcomes, in order: succeeded"
+  }
+]

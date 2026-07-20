@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "Summarize this tool response for long-horizon coding context.\n\nUse the parsed fields as authoritative facts. Do not infer success or failure from prose. Do not mention details that are not in the parsed fields or raw response.\n\nUse parsed field values, but do not mention parsed field labels such as failureType, failedField, retryGuidance, matchCount, targetPath, responseShape, operationClass, mutationDetailsAvailable, searchNoMatches, noOutput, subtoolResults, or testSummary. Preserve paths, commands, identifiers, counts, and exit codes verbatim. Do not quote or label the raw response. Do not add diagnostic conclusions, root-cause analysis, or recommended code changes beyond what the parsed fields or raw response directly support.\n\nTarget length: about 120 tokens.\nPrompt mode: content_summary\n\nMode guidance:\nSummarize what the file/output contains that matters for future work. Preserve file path, major sections/exports/config, and important values. Do not restate full contents.\n\nParsed fields:\n{\n  \"toolName\": \"read_file\",\n  \"outcome\": \"succeeded\",\n  \"targetPath\": \"notes/plan.md\"\n}"
+  },
+  {
+    "role": "user",
+    "content": "Tool: read_file\nOutcome: succeeded\n\nRaw tool response excerpt:\n```text\ncontents of notes/plan.md: 3 open items\n```\n\nReturn only the summary."
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "You summarize tool output for an engineering record. Preserve the outcome/status exactly as \"succeeded\". Target about 120 tokens. Preserve paths and counts. No commentary, no speculation."
+  },
+  {
+    "role": "user",
+    "content": "Tool: read_file\nOutcome: succeeded\n\nOutput:\ncontents of notes/plan.md: 3 open items"
+  }
+]

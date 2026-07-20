@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "You summarize a tool invocation for an engineering record. State which tool was called and what it was asked to do. Preserve concrete facts: paths, identifiers, and the arguments that matter. If the paired result is provided, use it only to clarify what the call did — never to invent an outcome. No commentary, no speculation, 60 words maximum."
+  },
+  {
+    "role": "user",
+    "content": "Tool: read_file\n\nArguments:\n{\"path\":\"notes/plan.md\"}\n\nPaired result (isError: false):\nplan contents: ship story three"
+  }
+]

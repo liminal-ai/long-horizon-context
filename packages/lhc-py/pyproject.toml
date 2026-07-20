@@ -1,0 +1,20 @@
+[project]
+name = "lhc-py"
+version = "0.0.1"
+description = "Python port of the LHC SDK (packages/lhc). Phase 1: skeletons + tests."
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lhc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
