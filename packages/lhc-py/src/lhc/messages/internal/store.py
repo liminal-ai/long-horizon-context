@@ -1,0 +1,199 @@
+"""Ported from packages/lhc/src/messages/internal/store.ts. Phase 1 skeleton.
+
+Message and block row operations. Writes run on the caller's handle inside
+the batch transaction; reads run on a fresh handle per operation. Edit/delete
+validation and row applies also live here: row-level mechanics, no policy.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, TypedDict
+
+from ...shared_tech.derivation import Derivation
+from ...shared_tech.storage import Database
+
+if TYPE_CHECKING:
+    from .. import Block, MessageKind, MessageRecord
+
+_SQL_INSERT_MESSAGE = (
+    """INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)"""
+)
+
+_SQL_INSERT_MESSAGE_BLOCK = (
+    """INSERT INTO message_block (message_id, block_index, block_type, content)
+     VALUES (?, ?, ?, ?)"""
+)
+
+_SQL_READ_MUTABLE_MESSAGE = (
+    """SELECT m.message_id, m.kind, m.turn_id, m.source_event_order,
+              t.status AS turn_status,
+              NOT EXISTS (
+                SELECT 1 FROM message prior
+                WHERE prior.turn_id = m.turn_id
+                  AND prior.deleted_at IS NULL
+                  AND prior.source_event_order < m.source_event_order
+              ) AS is_first_member
+       FROM message m LEFT JOIN turns t ON t.turn_id = m.turn_id
+       WHERE m.message_id = ? AND m.deleted_at IS NULL"""
+)
+
+_SQL_MARK_MESSAGE_DELETED = """UPDATE message SET deleted_at = ? WHERE message_id = ?"""
+
+_SQL_SELECT_BLOCKS_FOR_EDIT = (
+    """SELECT block_index, block_type, content FROM message_block
+       WHERE message_id = ? ORDER BY block_index"""
+)
+
+_SQL_UPDATE_MESSAGE_BLOCK = (
+    """UPDATE message_block SET content = ? WHERE message_id = ? AND block_index = ?"""
+)
+
+_SQL_UPDATE_TOKEN_ESTIMATE = """UPDATE message SET token_estimate = ? WHERE message_id = ?"""
+
+_SQL_READ_MESSAGES_SELECT = (
+    """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
+              m.turn_id, m.deleted_at, e.recorded_at
+       FROM message m JOIN event e ON e.event_order = m.source_event_order"""
+)
+
+_SQL_READ_BLOCKS_FOR_IDS_PREFIX = (
+    """SELECT message_id, block_type, content FROM message_block
+       WHERE message_id IN ("""
+)
+
+_SQL_READ_BLOCKS_FOR_IDS_SUFFIX = """)
+       ORDER BY message_id, block_index"""
+
+_SQL_READ_MESSAGE_BY_ID = (
+    """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
+              m.turn_id, m.deleted_at, e.recorded_at
+       FROM message m JOIN event e ON e.event_order = m.source_event_order
+       WHERE m.message_id = ?"""
+)
+
+_SQL_READ_BLOCKS_BY_MESSAGE_ID = (
+    """SELECT message_id, block_type, content FROM message_block
+       WHERE message_id = ? ORDER BY block_index"""
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MessageRow:
+    message_id: str
+    source_event_order: int
+    kind: MessageKind
+    token_estimate: int
+    actor: str
+    harness: str
+    # Membership stamp, settled at intake: the current open turn after turn
+    # intake. Written once here, never updated.
+    turn_id: str
+    blocks: list[Block]
+
+
+def insert_message(db: Database, row: MessageRow) -> None:
+    raise NotImplementedError
+
+
+# Mutation validation reads the live (deleted-filtered) message joined to its
+# turn's status. A deleted target misses here and refuses as message_not_found.
+# turnStatus is null only when the stored membership references no readable
+# turn; the closed-turn target boundary refuses it the same as an open turn.
+# initiatesTurn carries the prompt-protection fact: with initial empty turns,
+# the initiator is the first live member of a turn, not necessarily the turn's
+# open event.
+@dataclass(frozen=True, slots=True)
+class MutableMessageView:
+    message_id: str
+    kind: str
+    turn_id: str
+    turn_status: Literal["open", "closed"] | None
+    initiates_turn: bool
+
+
+def read_mutable_message(db: Database, message_id: str) -> MutableMessageView | None:
+    raise NotImplementedError
+
+
+# Delete applies the message-record tombstone: the deleted_at stamp every
+# normal message read filters on. Source events are never touched; event
+# read-back keeps showing them.
+def mark_message_deleted(db: Database, message_id: str, deleted_at: str) -> None:
+    raise NotImplementedError
+
+
+# Edit applies new content to each block's content-bearing field — the same
+# field per block type that internal/project.ts wrote and counted — and the
+# token estimate re-stamps from the same estimator, so placement arithmetic
+# stays current after edits. Events are untouched; the log keeps the original.
+def apply_message_edit(db: Database, message_id: str, content: str) -> None:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class _RawMessageRow:
+    message_id: str
+    source_event_order: int
+    kind: str
+    token_estimate: int
+    actor: str
+    harness: str
+    turn_id: str
+    deleted_at: str | None
+    # The source event's recorded_at, joined from the durable event row on
+    # source_event_order = event_order (every message has exactly one source
+    # event).
+    recorded_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RawBlockRow:
+    message_id: str
+    block_type: str
+    content: str
+
+
+def _record_from_row(row: _RawMessageRow, blocks: list[Block]) -> MessageRecord:
+    raise NotImplementedError
+
+
+# Bounds are in source-event-order coordinates: the coordinate the reports
+# name, so drill-down uses what the operator already holds. limit caps the
+# count after bounds. Defaults preserve visible messages, unbounded, in record
+# order. Same camelCase key shape as MessageListOptions ("from" is a keyword).
+MessageReadOptions = TypedDict(
+    "MessageReadOptions",
+    {"from": int, "to": int, "limit": int, "includeDeleted": bool},
+    total=False,
+)
+
+
+def read_messages(db: Database, opts: MessageReadOptions | None = None) -> list[MessageRecord]:
+    raise NotImplementedError
+
+
+# The show operation's by-id read returns the canonical record: full blocks
+# verbatim, never view-shortened, with the deleted flag honest. It is
+# deliberately unfiltered on deleted_at: show on a deleted message is the audit
+# read, never not-found.
+# TS: (MessageRecord & { deleted: boolean }) | undefined — deleted is always
+# present (true/false), never optional.
+@dataclass(frozen=True, slots=True)
+class MessageRecordWithDeleted:
+    message_id: str
+    source_event_order: int
+    kind: MessageKind
+    blocks: list[Block]
+    token_estimate: int
+    actor: str
+    harness: str
+    recorded_at: str
+    turn_id: str
+    deleted: bool
+    derivations: list[Derivation] | None = None
+
+
+def read_message_by_id(db: Database, message_id: str) -> MessageRecordWithDeleted | None:
+    raise NotImplementedError

@@ -17,18 +17,18 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 6 | `src/intake-stream/index.ts` | `src/lhc/intake_stream/__init__.py` | ☑ | Wave 3 — full type surface + message_events/list_events skeletons |
 | 7 | `src/intake-stream/internal/pipeline.ts` | `src/lhc/intake_stream/internal/pipeline.py` | ☑ | Wave 3 — walk-hook/clock seam + run_message_events/run_list_events/_recorded_keys/_max_event_order skeletons |
 | 8 | `src/intake-stream/internal/validate.ts` | `src/lhc/intake_stream/internal/validate.py` | ☑ | Wave 3 — EVENT_KINDS + closed TypedDict Schema surface (`_DECODE_OPTIONS` verbatim; Phase 2 NOTES for minLength/closedness/ParseError) |
-| 9 | `src/messages/index.ts` | `src/lhc/messages/__init__.py` | ◐ | Wave 1–3 PARTIAL — Block/MessageRecord/MessageCreated exact; list/derive/create + MutationResult; full mutate/project/store still Wave 4 |
-| 10 | `src/messages/internal/cascade.ts` | `src/lhc/messages/internal/cascade.py` | ☐ | CascadeClear pre-declared on messages/__init__ for lifecycle; cascade module itself still Wave 4 |
+| 9 | `src/messages/index.ts` | `src/lhc/messages/__init__.py` | ☑ | Wave 4 — full surface (show/report/edit/remove/read_live_messages + private helpers); CascadeClear/MessageDeriveResult re-exported from internal homes |
+| 10 | `src/messages/internal/cascade.ts` | `src/lhc/messages/internal/cascade.py` | ☑ | Wave 4 — CascadeClear canonical home; rebuild maps + SQL hoisted |
 | 11 | `src/messages/internal/classify-tool-result.ts` | `src/lhc/messages/internal/classify_tool_result.py` | ☑ | exemplar |
-| 12 | `src/messages/internal/derivations.ts` | `src/lhc/messages/internal/derivations.py` | ☐ |  |
-| 13 | `src/messages/internal/derive.ts` | `src/lhc/messages/internal/derive.py` | ☐ |  |
-| 14 | `src/messages/internal/handlers.ts` | `src/lhc/messages/internal/handlers.py` | ☐ |  |
-| 15 | `src/messages/internal/outcome.ts` | `src/lhc/messages/internal/outcome.py` | ☐ |  |
-| 16 | `src/messages/internal/project.ts` | `src/lhc/messages/internal/project.py` | ☐ |  |
-| 17 | `src/messages/internal/smoothing.ts` | `src/lhc/messages/internal/smoothing.py` | ☐ |  |
-| 18 | `src/messages/internal/store.ts` | `src/lhc/messages/internal/store.py` | ☐ |  |
-| 19 | `src/messages/internal/work.ts` | `src/lhc/messages/internal/work.py` | ☐ |  |
-| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ◐ | Wave 1+2 PARTIAL — typed protocol surfaces + Scheduler.touch/test_pass_count + messages.derive / turns.derive_* for Wave 2 tests; full SDK still later waves |
+| 12 | `src/messages/internal/derivations.ts` | `src/lhc/messages/internal/derivations.py` | ☑ | Wave 4 |
+| 13 | `src/messages/internal/derive.ts` | `src/lhc/messages/internal/derive.py` | ☑ | Wave 4 — MessageDeriveResult canonical home |
+| 14 | `src/messages/internal/handlers.ts` | `src/lhc/messages/internal/handlers.py` | ☑ | Wave 4 — `_LoadSourceItem` narrow shape matches TS `{ sourceRef: Record<string,string> }` |
+| 15 | `src/messages/internal/outcome.ts` | `src/lhc/messages/internal/outcome.py` | ☑ | Wave 4 |
+| 16 | `src/messages/internal/project.ts` | `src/lhc/messages/internal/project.py` | ☑ | Wave 4 |
+| 17 | `src/messages/internal/smoothing.ts` | `src/lhc/messages/internal/smoothing.py` | ☑ | Wave 4 |
+| 18 | `src/messages/internal/store.ts` | `src/lhc/messages/internal/store.py` | ☑ | Wave 4 — SQL hoisted; `MessageRecordWithDeleted` for `readMessageById` intersection |
+| 19 | `src/messages/internal/work.ts` | `src/lhc/messages/internal/work.py` | ☑ | Wave 4 — MESSAGE_WORK_* maps real |
+| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ◐ | Wave 1–4 PARTIAL — LhcMessages includes clean_prompt + Wave 4 surfaces; full SDK assembly still Wave 7 |
 | 21 | `src/shared-tech/classify.ts` | `src/lhc/shared_tech/classify.py` | ☑ |  |
 | 22 | `src/shared-tech/context.ts` | `src/lhc/shared_tech/context.py` | ☑ |  |
 | 23 | `src/shared-tech/derivation.ts` | `src/lhc/shared_tech/derivation.py` | ☑ | Wave 1 complete |
@@ -60,7 +60,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/lhc/shared_tech/tool_result_rendering.py` | ☑ |  |
 | 50 | `src/shared-tech/view.ts` | `src/lhc/shared_tech/view.py` | ☑ |  |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/lhc/shared_tech/work_queue/__init__.py` | ☑ | Wave 2 import seam complete — WorkSourceRef closed union + count_live_items/queue_detail/WorkKind; bodies remain NotImplementedError skeletons |
-| 52 | `src/thread-view/index.ts` | `src/lhc/thread_view/__init__.py` | ☐ |  |
+| 52 | `src/thread-view/index.ts` | `src/lhc/thread_view/__init__.py` | ◐ | Wave 4 forward stub — `status` only (messages-read); full surface Wave 6 |
 | 53 | `src/thread-view/internal/assemble.ts` | `src/lhc/thread_view/internal/assemble.py` | ☐ |  |
 | 54 | `src/thread-view/internal/boundary.ts` | `src/lhc/thread_view/internal/boundary.py` | ☐ |  |
 | 55 | `src/thread-view/internal/compact-compute.ts` | `src/lhc/thread_view/internal/compact_compute.py` | ☐ |  |
@@ -74,7 +74,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 63 | `src/threads/index.ts` | `src/lhc/threads/__init__.py` | ☑ | Wave 3 — full surface (new_thread/resolve/list_threads/info/resolve_thread_ref + helpers) |
 | 64 | `src/threads/internal/create.ts` | `src/lhc/threads/internal/create.py` | ☑ | Wave 3 — schema statement templates as constants; bodies NotImplementedError |
 | 65 | `src/threads/internal/registry.ts` | `src/lhc/threads/internal/registry.py` | ☑ | Wave 3 — full registry surface + SelectAllThreadRowsOpts |
-| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ◐ | Wave 1–3 PARTIAL — list_turns/derive_* + create/TurnStateCorruptionError for intake pipeline; full turns still Wave 5 |
+| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ◐ | Wave 1–4 PARTIAL — list_turns/derive_* + create + Wave 4 `list_chunks`/`ChunkRecord`/`TurnRecord.derivations`; full turns still Wave 5 |
 | 67 | `src/turns/internal/chunk-recovery.ts` | `src/lhc/turns/internal/chunk_recovery.py` | ☐ |  |
 | 68 | `src/turns/internal/chunks.ts` | `src/lhc/turns/internal/chunks.py` | ☐ |  |
 | 69 | `src/turns/internal/compose.ts` | `src/lhc/turns/internal/compose.py` | ☐ |  |
@@ -90,7 +90,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/test_chunk_brief_from_detailed.py` | ☐ | ☐ |  |
 | 3 | `test/chunk-compact-recovery.test.ts` | `tests/test_chunk_compact_recovery.py` | ☐ | ☐ |  |
 | 4 | `test/chunk-detailed-format.test.ts` | `tests/test_chunk_detailed_format.py` | ☐ | ☐ |  |
-| 5 | `test/derivation-messages.test.ts` | `tests/test_derivation_messages.py` | ☐ | ☐ |  |
+| 5 | `test/derivation-messages.test.ts` | `tests/test_derivation_messages.py` | ☑ | ☑ | Wave 4; 3 it.skip preserved |
 | 6 | `test/derivation-turns.test.ts` | `tests/test_derivation_turns.py` | ☐ | ☐ |  |
 | 7 | `test/detailed-turn-compression.test.ts` | `tests/test_detailed_turn_compression.py` | ☐ | ☐ |  |
 | 8 | `test/epic-fix-02.test.ts` | `tests/test_epic_fix_02.py` | ☐ | ☐ |  |
@@ -110,20 +110,20 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 22 | `test/intake.test.ts` | `tests/test_intake.py` | ☑ | ☑ |  |
 | 23 | `test/lifecycle.test.ts` | `tests/test_lifecycle.py` | ☑ | ☑ |  |
 | 24 | `test/logging-surface.test.ts` | `tests/test_logging_surface.py` | ☑ | ☑ |  |
-| 25 | `test/messages-read.test.ts` | `tests/test_messages_read.py` | ☐ | ☐ |  |
-| 26 | `test/mutations-delete.test.ts` | `tests/test_mutations_delete.py` | ☐ | ☐ |  |
-| 27 | `test/mutations.test.ts` | `tests/test_mutations.py` | ☐ | ☐ |  |
+| 25 | `test/messages-read.test.ts` | `tests/test_messages_read.py` | ☑ | ☑ | Wave 4 |
+| 26 | `test/mutations-delete.test.ts` | `tests/test_mutations_delete.py` | ☑ | ☑ | Wave 4 |
+| 27 | `test/mutations.test.ts` | `tests/test_mutations.py` | ☑ | ☑ | Wave 4 |
 | 28 | `test/report-repair.test.ts` | `tests/test_report_repair.py` | ☐ | ☐ |  |
 | 29 | `test/runtime-change-typing.test.ts` | `tests/test_runtime_change_typing.py` | ☑ | ☑ |  |
-| 30 | `test/smoothed-prompt-guards.test.ts` | `tests/test_smoothed_prompt_guards.py` | ☐ | ☐ |  |
-| 31 | `test/smoothing-recovery.test.ts` | `tests/test_smoothing_recovery.py` | ☐ | ☐ |  |
+| 30 | `test/smoothed-prompt-guards.test.ts` | `tests/test_smoothed_prompt_guards.py` | ☑ | ☑ | Wave 4 |
+| 31 | `test/smoothing-recovery.test.ts` | `tests/test_smoothing_recovery.py` | ☑ | ☑ | Wave 4 |
 | 32 | `test/thread-migrate.test.ts` | `tests/test_thread_migrate.py` | ☑ | ☑ |  |
 | 33 | `test/threads-a8.test.ts` | `tests/test_threads_a8.py` | ☑ | ☑ |  |
 | 34 | `test/threads.test.ts` | `tests/test_threads.py` | ☑ | ☑ |  |
 | 35 | `test/tool-result-classification.test.ts` | `tests/test_tool_result_classification.py` | ☑ | ☑ | exemplar |
 | 36 | `test/tool-result-rendering.test.ts` | `tests/test_tool_result_rendering.py` | ☑ | ☑ |  |
-| 37 | `test/tool-result-summary-inference.test.ts` | `tests/test_tool_result_summary_inference.py` | ☐ | ☐ |  |
-| 38 | `test/turn-cascade.test.ts` | `tests/test_turn_cascade.py` | ☐ | ☐ |  |
+| 37 | `test/tool-result-summary-inference.test.ts` | `tests/test_tool_result_summary_inference.py` | ☑ | ☑ | Wave 4 |
+| 38 | `test/turn-cascade.test.ts` | `tests/test_turn_cascade.py` | ☑ | ☑ | Wave 4 |
 | 39 | `test/turns.test.ts` | `tests/test_turns.py` | ☐ | ☐ |  |
 | 40 | `test/validation.test.ts` | `tests/test_validation.py` | ☑ | ☑ |  |
 | 41 | `test/view-boundary-turn-end.test.ts` | `tests/test_view_boundary_turn_end.py` | ☐ | ☐ |  |

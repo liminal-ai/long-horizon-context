@@ -10,9 +10,24 @@ from __future__ import annotations
 from typing import Literal, Protocol, TypedDict
 
 from .intake_stream import BatchResult, MessageEventInput
-from .messages import MessageDeriveResult, MessageListOptions, MessageRecord
+from .messages import (
+    EditInput,
+    MessageDeriveResult,
+    MessageDetail,
+    MessageListOptions,
+    MessageRecord,
+    MessageReportOpts,
+    MutationResult,
+    RemoveInput,
+)
 from .shared_tech.context import set_scheduler_poke, set_thread_touch
-from .shared_tech.derivation import InferenceCallbacks, ResolvedSdkConfig, SdkConfig, WorkHandler
+from .shared_tech.derivation import (
+    DerivationReportEntry,
+    InferenceCallbacks,
+    ResolvedSdkConfig,
+    SdkConfig,
+    WorkHandler,
+)
 from .shared_tech.deterministic import create_deterministic_inference_callbacks
 from .shared_tech.durable_work import (
     DurableWorkDispatcher,
@@ -29,13 +44,12 @@ from .shared_tech.logging import (
     StoredLogEntry,
     write_log,
 )
-from .shared_tech.view import LlmRequestContext
+from .shared_tech.view import LlmRequestContext, ViewStatus
 from .shared_tech.storage import Database
 from .shared_tech.scheduler import DrainReport
 from .shared_tech.work_queue import WorkHandlerMap, WorkKind
 from .threads import NewThreadInput, NewThreadResult, ThreadRef
-from .turns import ChunkDeriveResult, TurnDeriveResult
-
+from .turns import ChunkDeriveResult, ChunkRecord, TurnDeriveResult, TurnRecord
 
 class DrainOpts(TypedDict, total=False):
     maxItems: int
@@ -100,17 +114,35 @@ class LhcMessages(Protocol):
         filter: MessageListOptions | None = None,
     ) -> OpResult[list[MessageRecord]]: ...
 
+    async def show(self, ref: ThreadRef, message_id: str) -> OpResult[MessageDetail]: ...
+
+    async def report(
+        self,
+        ref: ThreadRef,
+        opts: MessageReportOpts | None = None,
+    ) -> OpResult[list[DerivationReportEntry]]: ...
+
     async def derive(
         self,
         ref: ThreadRef,
         message_ids: list[str],
     ) -> OpResult[list[MessageDeriveResult]]: ...
 
+    async def edit(self, ref: ThreadRef, edit: EditInput) -> OpResult[MutationResult]: ...
+
+    async def remove(self, ref: ThreadRef, removal: RemoveInput) -> OpResult[MutationResult]: ...
+
+    # Re-exported from messages domain (smoothing.clean_prompt) onto the SDK
+    # surface — sync, pure.
+    def clean_prompt(self, text: str) -> str: ...
+
 
 class LhcTurns(Protocol):
-    """Wave 2 import seam: work-execution.test.ts's sync-derive collision suite
-    calls sdk.turns.deriveTurn / deriveBriefChunk / deriveDetailedChunk.
-    """
+    """Wave 2/4/5 import seam: sync-derive suite + Wave 4 list_chunks/list_turns."""
+
+    async def list_turns(self, ref: ThreadRef) -> OpResult[list[TurnRecord]]: ...
+
+    async def list_chunks(self, ref: ThreadRef) -> OpResult[list[ChunkRecord]]: ...
 
     async def derive_turn(self, ref: ThreadRef, turn_id: str) -> OpResult[TurnDeriveResult]: ...
 
@@ -121,6 +153,8 @@ class LhcTurns(Protocol):
 
 class LhcThreadView(Protocol):
     async def get_llm_request_context(self, ref: ThreadRef) -> OpResult[LlmRequestContext]: ...
+
+    async def status(self, ref: ThreadRef) -> OpResult[ViewStatus]: ...
 
 
 class Lhc(Protocol):

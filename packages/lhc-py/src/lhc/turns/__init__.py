@@ -1,7 +1,8 @@
 """Ported from packages/lhc/src/turns/index.ts. Phase 1 — PARTIAL (Wave 1/2/3 import seam).
 
 Wave 3 adds `create` + TurnStateCorruptionError for the intake pipeline import
-seam. Full turns surface lands in Wave 5.
+seam. Full turns surface lands in Wave 5. Wave 4 tests need `list_chunks` +
+`ChunkRecord` as a forward stub so collection stays clean.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Union
 
+from ..shared_tech.derivation import Derivation
 from ..shared_tech.errors import ErrorResult, OpResult
 from ..shared_tech.work_queue import WorkItemRecord
 from ..threads import ThreadRef
@@ -28,6 +30,18 @@ class TurnRecord:
     closed_at_event_order: int | None = None
     chunk_id: str | None = None
     member_idx: int | None = None
+    # Stored turn-owned derivations, attached only when rows exist.
+    derivations: list[Derivation] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkRecord:
+    chunk_id: str
+    chunk_order: int
+    status: Literal["open", "closed"]
+    accumulated_projected_tokens: int
+    member_turn_ids: list[str]
+    derivations: list[Derivation] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +77,13 @@ def create(
 
 
 async def list_turns(thread_ref: ThreadRef) -> OpResult[list[TurnRecord]]:
+    raise NotImplementedError
+
+
+# Returns stored chunk records whatever their derivation states. Derivations
+# attach only where rows exist; freshly opened chunks have none.
+# Wave 5 owns the body; Wave 4 tests import the signature for collection.
+async def list_chunks(thread_ref: ThreadRef) -> OpResult[list[ChunkRecord]]:
     raise NotImplementedError
 
 
