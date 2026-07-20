@@ -1,25 +1,65 @@
-"""Ported from packages/lhc/src/turns/index.ts. Phase 1 — PARTIAL (Wave 1/2 import seam).
+"""Ported from packages/lhc/src/turns/index.ts. Phase 1 — PARTIAL (Wave 1/2/3 import seam).
 
-Wave 1 tests import turns.list_turns. Wave 2 adds the derive_turn /
-derive_brief_chunk / derive_detailed_chunk import seam (work-execution.test.ts
-calls sdk.turns.deriveTurn / deriveBriefChunk). Full turns surface lands in
-Wave 5.
+Wave 3 adds `create` + TurnStateCorruptionError for the intake pipeline import
+seam. Full turns surface lands in Wave 5.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Union
+from typing import TYPE_CHECKING, Literal, Union
 
 from ..shared_tech.errors import ErrorResult, OpResult
+from ..shared_tech.work_queue import WorkItemRecord
 from ..threads import ThreadRef
+
+if TYPE_CHECKING:
+    from ..intake_stream import EventKind
+    from ..shared_tech.persist import DbWriteTransaction
 
 
 @dataclass(frozen=True, slots=True)
 class TurnRecord:
     turn_id: str
+    turn_order: int
     status: Literal["open", "closed"]
     member_message_ids: list[str]
+    opened_at_event_order: int
+    closed_at_event_order: int | None = None
+    chunk_id: str | None = None
+    member_idx: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTransition:
+    action: Literal["opened", "closed"]
+    turn_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTransitionOutcome:
+    transitions: list[TurnTransition]
+    turn_id: str
+    queued_work: list[WorkItemRecord]
+
+
+class TurnStateCorruptionError(Exception):
+    error_class: Literal["state_corruption"] = "state_corruption"
+    code: Literal["turn_state_corrupt"] = "turn_state_corrupt"
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedTurnEvent:
+    event_kind: EventKind
+    event_order: int
+
+
+# Cross-domain surface, called by intake-stream inside the batch transaction.
+def create(
+    transaction: DbWriteTransaction,
+    recorded_event: RecordedTurnEvent,
+) -> TurnTransitionOutcome:
+    raise NotImplementedError
 
 
 async def list_turns(thread_ref: ThreadRef) -> OpResult[list[TurnRecord]]:
@@ -61,8 +101,6 @@ class ChunkDeriveFailed:
 ChunkDeriveResult = Union[ChunkDerived, ChunkDeriveFailed]
 
 
-# Turn-owned synchronous derivation (Wave 5 completes the body): assembles
-# turn_rendering + pre_detailed_assembly, then detailed_turn_compression.
 async def derive_turn(thread_ref: ThreadRef, turn_id: str) -> OpResult[TurnDeriveResult]:
     raise NotImplementedError
 

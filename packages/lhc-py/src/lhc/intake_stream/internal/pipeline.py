@@ -1,18 +1,24 @@
 """Ported from packages/lhc/src/intake-stream/internal/pipeline.ts. Phase 1 skeleton.
 
-OUT-OF-ORDER (Wave 2/3): only the test seam — `IntakeWalkHook`,
-`set_intake_walk_hook`, `set_intake_clock` — is ported here so
-`tests/fixtures/intake_seam.py` has a real module to re-export from. The
-batch transaction pipeline itself (`run_message_events`, `run_list_events`,
-`recorded_keys`, `max_event_order`) lands with the rest of Wave 3.
+Batch transaction pipeline. Walk-hook / clock test seams keep their module
+state; pipeline bodies stay NotImplementedError.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
+from ...messages import create as _create_message
+from ...shared_tech.errors import OpResult
 from ...shared_tech.storage import Database
+from ...threads import ThreadRef
+from ...turns import TurnStateCorruptionError, create as _create_turn
+from .. import BatchResult, EventRecord, MessageEventInput
+
+# Closed over by Phase 2 walk; named for TS import fidelity.
+_ = (_create_message, _create_turn, TurnStateCorruptionError)
 
 # Test seam (set only through test/fixtures): called after each event is
 # processed inside the walk, so atomicity under mid-walk failure can be
@@ -37,4 +43,39 @@ _injected_clock: Callable[[], datetime] | None = None
 
 
 def set_intake_clock(clock: Callable[[], datetime] | None) -> None:
+    raise NotImplementedError
+
+
+def _detail(cause: object) -> str:
+    raise NotImplementedError
+
+
+def _recorded_keys(db: Database, keys: Sequence[str]) -> set[str]:
+    raise NotImplementedError
+
+
+def _max_event_order(db: Database) -> int:
+    raise NotImplementedError
+
+
+async def run_message_events(
+    thread_ref: ThreadRef,
+    events: Sequence[MessageEventInput],
+    clock: Callable[[], datetime] | None = None,
+) -> OpResult[BatchResult]:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class _RawEventRow:
+    event_order: int
+    event_kind: str
+    idempotency_key: str
+    actor: str
+    harness: str
+    payload: str
+    recorded_at: str
+
+
+async def run_list_events(thread_ref: ThreadRef) -> OpResult[list[EventRecord]]:
     raise NotImplementedError

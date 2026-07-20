@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from lhc import InferenceCallbacks, Lhc, MessageEventInput, init_lhc, messages, threads
-from lhc.messages import MessageBlock
+from lhc.messages import Block
 from lhc.shared_tech.derivation import LeaseConfig, SdkConfig
 from lhc.shared_tech.inference_types import DerivationGuards, DetailedTurnCompressionGuards
 from fixtures import (
@@ -77,7 +77,7 @@ async def test_projects_model_changes_as_typed_model_change_blocks(store: TempSt
     assert len(listed.value) == 1
     assert listed.value[0].kind == "model_change"
     assert listed.value[0].blocks == [
-        MessageBlock(
+        Block(
             block_type="model_change",
             content={"previousModel": "gpt-5", "newModel": "gpt-5.1"},
         )
@@ -107,7 +107,7 @@ async def test_projects_thinking_level_changes_as_typed_thinking_level_change_bl
     assert len(listed.value) == 1
     assert listed.value[0].kind == "thinking_level_change"
     assert listed.value[0].blocks == [
-        MessageBlock(
+        Block(
             block_type="thinking_level_change",
             content={"previousLevel": "medium", "newLevel": "high"},
         )

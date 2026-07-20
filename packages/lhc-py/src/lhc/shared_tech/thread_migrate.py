@@ -5,10 +5,13 @@ Thread-file schema migrations applied on open.
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from .storage import CURRENT_THREAD_SCHEMA_VERSION, Database, get_schema_version
-from .work_queue import EnqueueDerivationTarget
+
+if TYPE_CHECKING:
+    from .work_queue import EnqueueDerivationTarget
+
 
 THREAD_SCHEMA_VERSION_1 = 1
 THREAD_SCHEMA_VERSION_2 = 2

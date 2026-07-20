@@ -14,11 +14,11 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 3 | `src/inspect/internal/health.ts` | `src/lhc/inspect/internal/health.py` | ☐ |  |
 | 4 | `src/inspect/internal/overview.ts` | `src/lhc/inspect/internal/overview.py` | ☐ |  |
 | 5 | `src/inspect/internal/view-report.ts` | `src/lhc/inspect/internal/view_report.py` | ☐ |  |
-| 6 | `src/intake-stream/index.ts` | `src/lhc/intake_stream/__init__.py` | ◐ | Wave 1 PARTIAL — discriminated EventRecord variants + message_events/list_events stubs |
-| 7 | `src/intake-stream/internal/pipeline.ts` | `src/lhc/intake_stream/internal/pipeline.py` | ◐ | Wave 2 out-of-order — only IntakeWalkHook / set_intake_walk_hook / set_intake_clock test seam; batch pipeline (run_message_events etc.) still Wave 3 |
-| 8 | `src/intake-stream/internal/validate.ts` | `src/lhc/intake_stream/internal/validate.py` | ☐ |  |
-| 9 | `src/messages/index.ts` | `src/lhc/messages/__init__.py` | ◐ | Wave 1+2 PARTIAL — list + MessageDeriveResult/derive stubs for work-execution; full messages surface still later waves |
-| 10 | `src/messages/internal/cascade.ts` | `src/lhc/messages/internal/cascade.py` | ☐ |  |
+| 6 | `src/intake-stream/index.ts` | `src/lhc/intake_stream/__init__.py` | ☑ | Wave 3 — full type surface + message_events/list_events skeletons |
+| 7 | `src/intake-stream/internal/pipeline.ts` | `src/lhc/intake_stream/internal/pipeline.py` | ☑ | Wave 3 — walk-hook/clock seam + run_message_events/run_list_events/_recorded_keys/_max_event_order skeletons |
+| 8 | `src/intake-stream/internal/validate.ts` | `src/lhc/intake_stream/internal/validate.py` | ☑ | Wave 3 — EVENT_KINDS + closed TypedDict Schema surface (`_DECODE_OPTIONS` verbatim; Phase 2 NOTES for minLength/closedness/ParseError) |
+| 9 | `src/messages/index.ts` | `src/lhc/messages/__init__.py` | ◐ | Wave 1–3 PARTIAL — Block/MessageRecord/MessageCreated exact; list/derive/create + MutationResult; full mutate/project/store still Wave 4 |
+| 10 | `src/messages/internal/cascade.ts` | `src/lhc/messages/internal/cascade.py` | ☐ | CascadeClear pre-declared on messages/__init__ for lifecycle; cascade module itself still Wave 4 |
 | 11 | `src/messages/internal/classify-tool-result.ts` | `src/lhc/messages/internal/classify_tool_result.py` | ☑ | exemplar |
 | 12 | `src/messages/internal/derivations.ts` | `src/lhc/messages/internal/derivations.py` | ☐ |  |
 | 13 | `src/messages/internal/derive.ts` | `src/lhc/messages/internal/derive.py` | ☐ |  |
@@ -55,7 +55,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 44 | `src/shared-tech/report.ts` | `src/lhc/shared_tech/report.py` | ☑ |  |
 | 45 | `src/shared-tech/scheduler.ts` | `src/lhc/shared_tech/scheduler.py` | ☑ | Wave 2 import seam complete — DrainReport is its canonical home (re-exported from lhc.__init__); Scheduler protocol extended with touch/test_pass_count; bodies remain NotImplementedError skeletons |
 | 46 | `src/shared-tech/storage.ts` | `src/lhc/shared_tech/storage.py` | ☑ |  |
-| 47 | `src/shared-tech/thread-migrate.ts` | `src/lhc/shared_tech/thread_migrate.py` | ☑ | Wave 2 import seam complete — THREAD_SCHEMA_VERSION_1..4 + get_schema_version seam; bodies remain NotImplementedError skeletons |
+| 47 | `src/shared-tech/thread-migrate.ts` | `src/lhc/shared_tech/thread_migrate.py` | ☑ | Wave 2+3 — EnqueueDerivationTarget via TYPE_CHECKING only (breaks work_queue↔threads cycle); bodies NotImplementedError |
 | 48 | `src/shared-tech/token-counting/index.ts` | `src/lhc/shared_tech/token_counting/__init__.py` | ☑ |  |
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/lhc/shared_tech/tool_result_rendering.py` | ☑ |  |
 | 50 | `src/shared-tech/view.ts` | `src/lhc/shared_tech/view.py` | ☑ |  |
@@ -71,10 +71,10 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 60 | `src/thread-view/internal/select.ts` | `src/lhc/thread_view/internal/select.py` | ☐ |  |
 | 61 | `src/thread-view/internal/session-view.ts` | `src/lhc/thread_view/internal/session_view.py` | ☐ |  |
 | 62 | `src/thread-view/internal/snapshot.ts` | `src/lhc/thread_view/internal/snapshot.py` | ☐ |  |
-| 63 | `src/threads/index.ts` | `src/lhc/threads/__init__.py` | ◐ | Wave 1 PARTIAL — ThreadRef/new_thread/open_thread_database |
-| 64 | `src/threads/internal/create.ts` | `src/lhc/threads/internal/create.py` | ◐ | Wave 1 PARTIAL — persist import seam |
-| 65 | `src/threads/internal/registry.ts` | `src/lhc/threads/internal/registry.py` | ◐ | Wave 1 PARTIAL — persist import seam |
-| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ◐ | Wave 1+2 PARTIAL — list_turns + derive_turn/derive_*_chunk stubs for work-execution; full turns surface still later waves |
+| 63 | `src/threads/index.ts` | `src/lhc/threads/__init__.py` | ☑ | Wave 3 — full surface (new_thread/resolve/list_threads/info/resolve_thread_ref + helpers) |
+| 64 | `src/threads/internal/create.ts` | `src/lhc/threads/internal/create.py` | ☑ | Wave 3 — schema statement templates as constants; bodies NotImplementedError |
+| 65 | `src/threads/internal/registry.ts` | `src/lhc/threads/internal/registry.py` | ☑ | Wave 3 — full registry surface + SelectAllThreadRowsOpts |
+| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ◐ | Wave 1–3 PARTIAL — list_turns/derive_* + create/TurnStateCorruptionError for intake pipeline; full turns still Wave 5 |
 | 67 | `src/turns/internal/chunk-recovery.ts` | `src/lhc/turns/internal/chunk_recovery.py` | ☐ |  |
 | 68 | `src/turns/internal/chunks.ts` | `src/lhc/turns/internal/chunks.py` | ☐ |  |
 | 69 | `src/turns/internal/compose.ts` | `src/lhc/turns/internal/compose.py` | ☐ |  |
@@ -106,9 +106,9 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 18 | `test/inspect-health.test.ts` | `tests/test_inspect_health.py` | ☐ | ☐ |  |
 | 19 | `test/inspect-overview.test.ts` | `tests/test_inspect_overview.py` | ☐ | ☐ |  |
 | 20 | `test/inspect-view.test.ts` | `tests/test_inspect_view.py` | ☐ | ☐ |  |
-| 21 | `test/intake-message-materialization.test.ts` | `tests/test_intake_message_materialization.py` | ☐ | ☐ |  |
-| 22 | `test/intake.test.ts` | `tests/test_intake.py` | ☐ | ☐ |  |
-| 23 | `test/lifecycle.test.ts` | `tests/test_lifecycle.py` | ☐ | ☐ |  |
+| 21 | `test/intake-message-materialization.test.ts` | `tests/test_intake_message_materialization.py` | ☑ | ☑ |  |
+| 22 | `test/intake.test.ts` | `tests/test_intake.py` | ☑ | ☑ |  |
+| 23 | `test/lifecycle.test.ts` | `tests/test_lifecycle.py` | ☑ | ☑ |  |
 | 24 | `test/logging-surface.test.ts` | `tests/test_logging_surface.py` | ☑ | ☑ |  |
 | 25 | `test/messages-read.test.ts` | `tests/test_messages_read.py` | ☐ | ☐ |  |
 | 26 | `test/mutations-delete.test.ts` | `tests/test_mutations_delete.py` | ☐ | ☐ |  |
@@ -118,8 +118,8 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 30 | `test/smoothed-prompt-guards.test.ts` | `tests/test_smoothed_prompt_guards.py` | ☐ | ☐ |  |
 | 31 | `test/smoothing-recovery.test.ts` | `tests/test_smoothing_recovery.py` | ☐ | ☐ |  |
 | 32 | `test/thread-migrate.test.ts` | `tests/test_thread_migrate.py` | ☑ | ☑ |  |
-| 33 | `test/threads-a8.test.ts` | `tests/test_threads_a8.py` | ☐ | ☐ |  |
-| 34 | `test/threads.test.ts` | `tests/test_threads.py` | ☐ | ☐ |  |
+| 33 | `test/threads-a8.test.ts` | `tests/test_threads_a8.py` | ☑ | ☑ |  |
+| 34 | `test/threads.test.ts` | `tests/test_threads.py` | ☑ | ☑ |  |
 | 35 | `test/tool-result-classification.test.ts` | `tests/test_tool_result_classification.py` | ☑ | ☑ | exemplar |
 | 36 | `test/tool-result-rendering.test.ts` | `tests/test_tool_result_rendering.py` | ☑ | ☑ |  |
 | 37 | `test/tool-result-summary-inference.test.ts` | `tests/test_tool_result_summary_inference.py` | ☐ | ☐ |  |
@@ -146,10 +146,10 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 |---|---|---|---|
 | `test/fixtures/corrupt.ts` | `tests/fixtures/corrupt.py` | ☑ |  |
 | `test/fixtures/drain-runner.ts` | `tests/fixtures/drain_runner.py` | ☑ |  |
-| `test/fixtures/index.ts` | `tests/fixtures/__init__.py` | ☑ | ☑ — Wave 1: valid_event/temp_store REAL; re-exports |
+| `test/fixtures/index.ts` | `tests/fixtures/__init__.py` | ☑ | ☑ — Wave 1: valid_event/temp_store REAL; Wave 3: full lifecycle re-exports |
 | `test/fixtures/inference-callbacks-double.ts` | `tests/fixtures/inference_callbacks_double.py` | ☑ | ☑ — KIND_ALIASES + `_run`; methods skeleton |
 | `test/fixtures/intake-seam.ts` | `tests/fixtures/intake_seam.py` | ☑ |  |
-| `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.py` | ☐ |  |
+| `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.py` | ☑ | data/constants + turn builders real; create_lifecycle_sdk/run_lifecycle skeletal |
 | `test/fixtures/model-call.ts` | `tests/fixtures/model_call.py` | ☑ | ☑ — Literals + full override apply; call builders skeleton |
 | `test/fixtures/openrouter-call.ts` | — | — | EXCLUDED (live network) |
 | `test/fixtures/pi-session-format.ts` | `tests/fixtures/pi_session_format.py` | ☐ |  |

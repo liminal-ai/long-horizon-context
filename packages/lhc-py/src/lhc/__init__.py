@@ -38,6 +38,7 @@ from .shared_tech.inference_types import ModelAssignment
 from .shared_tech.logging import LogEntry, LogLevel
 from .shared_tech.persist import create_db_read_transaction, create_db_write_transaction
 from .shared_tech.scheduler import DrainReport
+from .shared_tech.token_counting import TOKEN_ESTIMATOR_ID
 from .shared_tech.work_queue import (
     WORK_KIND_REGISTRY,
     WorkItemRecord,
@@ -50,6 +51,7 @@ from .shared_tech.work_queue import (
 from .threads import ThreadRef
 
 __all__ = [
+    "TOKEN_ESTIMATOR_ID",
     "WORK_KIND_REGISTRY",
     "BatchResult",
     "Derivation",
