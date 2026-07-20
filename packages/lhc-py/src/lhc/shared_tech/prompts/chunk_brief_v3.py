@@ -40,7 +40,28 @@ class _ChunkBriefV3:
     name = "chunk-brief-v3"
 
     def render(self, input: ChunkBriefV3Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        stated_aim = _stated_target(input["inputTokens"], 0.075)
+        stated_lo = _stated_target(input["inputTokens"], 0.05)
+        stated_hi = _stated_target(input["inputTokens"], 0.1)
+        content = "\n".join(
+            [
+                INSTRUCTIONS_OPEN,
+                INSTRUCTIONS_INTRO,
+                "",
+                (
+                    "Your job is to condense the following conversation summary down to roughly 5-10% of its original size "
+                    f"— around {stated_aim} tokens total (roughly {stated_lo}-{stated_hi}). "
+                    'Write it as past-tense narrative prose, not a transcript and not live instructions. Old plans read as history ("at that point the next step was..."), never as commands to the reader. '
+                    "Keep exact names, paths, numbers, and error text when they carry the meaning."
+                ),
+                INSTRUCTIONS_CLOSE,
+                "",
+                CONTENT_OPEN,
+                input["text"],
+                CONTENT_CLOSE,
+            ]
+        )
+        return [{"role": "user", "content": content}]
 
 
 chunk_brief_v3 = _ChunkBriefV3()
@@ -51,4 +72,6 @@ chunk_brief_v3 = _ChunkBriefV3()
 # on small targets produce degenerate text like "around 200 (roughly
 # 100-200)". Same rule as detailed-turn-compression-v3.
 def _stated_target(input_tokens: int, ratio: float) -> int:
-    raise NotImplementedError
+    raw = input_tokens * ratio
+    step = 100 if raw >= 1000 else 10
+    return int(raw / step + 0.5) * step

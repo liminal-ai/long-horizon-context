@@ -25,7 +25,15 @@ class _SmoothingV1:
     name = "smoothing-v1"
 
     def render(self, i: SmoothPromptV1Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        return [
+            {"role": "user", "content": SMOOTHING_V1_SYSTEM_INSTRUCTIONS},
+            {
+                "role": "user",
+                "content": SMOOTHING_V1_USER_WRAPPER_PREFIX
+                + i["text"]
+                + SMOOTHING_V1_USER_WRAPPER_SUFFIX,
+            },
+        ]
 
 
 smoothing_v1 = _SmoothingV1()

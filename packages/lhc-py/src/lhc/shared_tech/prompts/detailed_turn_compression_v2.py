@@ -49,7 +49,46 @@ class _DetailedTurnCompressionV2:
     name = "detailed-turn-compression-v2"
 
     def render(self, dialogue: DetailedTurnCompressionV2Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        system_content = "\n".join(
+            [
+                SYSTEM_PART_00,
+                SYSTEM_PART_01,
+                f"It is about {dialogue['inputTokens']} tokens long.",
+                SYSTEM_PART_03,
+                f"Compress it to about {dialogue['targetAimTokens']} tokens (roughly 30-50% of the input). The final output must fall within {dialogue['targetMinTokens']}-{dialogue['targetMaxTokens']} tokens.",
+                SYSTEM_PART_05,
+                SYSTEM_PART_06,
+                SYSTEM_PART_07,
+                SYSTEM_PART_08,
+                SYSTEM_PART_09,
+                SYSTEM_PART_10,
+                SYSTEM_PART_11,
+                SYSTEM_PART_12,
+                SYSTEM_PART_13,
+                SYSTEM_PART_14,
+                SYSTEM_PART_15,
+                SYSTEM_PART_16,
+                SYSTEM_PART_17,
+                SYSTEM_PART_18,
+                f"Before returning, estimate whether the output is within {dialogue['targetMinTokens']}-{dialogue['targetMaxTokens']} tokens.",
+                SYSTEM_PART_20,
+                SYSTEM_PART_21,
+                SYSTEM_PART_22,
+                f"The final answer must be within {dialogue['targetMinTokens']}-{dialogue['targetMaxTokens']} tokens.",
+                SYSTEM_PART_24,
+                SYSTEM_PART_25,
+                SYSTEM_PART_26,
+            ]
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {
+                "role": "user",
+                "content": USER_WRAPPER_PREFIX
+                + dialogue["dialogueText"]
+                + USER_WRAPPER_SUFFIX,
+            },
+        ]
 
 
 detailed_turn_compression_v2 = _DetailedTurnCompressionV2()

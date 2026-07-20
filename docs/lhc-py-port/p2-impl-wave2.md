@@ -1,0 +1,11 @@
+You are the IMPLEMENTOR for PHASE 2 Wave 2 of the lhc-py port (infra). Contract: docs/lhc-py-port/phase2-brief.md. Branch lhc-py-port, no commits, nothing outside packages/lhc-py/. TESTS IMMUTABLE (tests/test_*.py, conftest.py, goldens/); tests/fixtures/ helper bodies are yours. Signatures/types FROZEN — bodies only (private _helpers allowed per ruling R1; _jsstr UTF-16 helpers exist per R2 — use them wherever TS does .length/.slice/charCodeAt on user text).
+
+WAVE 2 SCOPE: implement bodies in shared_tech/work_queue/, shared_tech/durable_work/, shared_tech/scheduler.py, shared_tech/inference_adapter.py (complete it), shared_tech/thread_migrate.py — faithful side-by-side TS translation (packages/lhc/src/shared-tech/...). Plus any tests/fixtures/ helper bodies these tests exercise (drain_runner, corrupt, read_only_delta, work_handlers, seam scripting).
+
+TESTS TO GO GREEN: test_work_queue (16), test_work_execution (26), test_inference_adapter (5: 2 live + 3 skip), test_inference_construction (7), test_inference_routing (4: 1 live + 3 skip), test_inference_classification (8), test_assignment_config (12), test_idempotency (5), test_thread_migrate (5). Cross-wave reds: name the blocking dependency exactly.
+
+JS TRAPS (bite hard in this wave): `??` vs `or`; transaction boundaries in durable-work (BEGIN IMMEDIATE/COMMIT/ROLLBACK exactly as TS — storage.exec no longer implicitly commits, rely on it); JSON payload round-trips = json.dumps(..., separators=(",", ":"), ensure_ascii=False) with insertion order; Date.toISOString = UTC ms + Z (deterministic clock plumbed through); claim/lease expiry comparisons (string ISO compare in TS?  check and mirror); Math.random absent — TS uses deterministic ids, mirror exactly; async fan-out (Promise.all → asyncio.gather where TS is concurrent, sequential where TS awaits in a loop).
+
+VERIFY: cd packages/lhc-py && uv run python scripts/check_gate.py → wrong=0 ALWAYS, no regression below 52 green, collection clean. A `wrong` test means your implementation disagrees with a ported assertion — fix the implementation, never the test. If you believe the TEST is unfaithful to TS, STOP on it and report (orchestrator rules).
+
+FINAL REPORT: per-file greens (X/N), total X/455, gate verbatim, blocked tests with the dependency named, suspected test/shape bugs (report only), judgment calls numbered.

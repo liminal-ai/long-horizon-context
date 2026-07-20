@@ -23,6 +23,7 @@ from lhc import (
 )
 from lhc.shared_tech.derivation import LeaseConfig, SdkConfig
 from lhc.shared_tech.logging import LogEntry as LogEntryDataclass
+from lhc.shared_tech.persist import DbReadTransaction
 from fixtures import (
     create_inference_callbacks_double,
     open_raw,
@@ -132,7 +133,7 @@ async def test_tc_5_2a_writes_internal_and_external_callers_through_the_same_sto
     db = open_raw(file_path)
     try:
         write_log(
-            {"db": db, "threadId": "logging-test", "filePath": file_path},  # type: ignore[arg-type]
+            DbReadTransaction(db=db, thread_id="logging-test", file_path=file_path),
             LogEntryDataclass(
                 level="info",
                 message="internal caller",
@@ -290,12 +291,11 @@ async def test_tc_5_5a_contains_logging_write_failures(store, sdk) -> None:
                     raise RuntimeError("log store unavailable")
 
             write_log(
-                {
-                    "db": BoomDb(),
-                    "clock": lambda: __import__("datetime").datetime(2026, 1, 1),
-                    "threadId": "logging-test",
-                    "filePath": file_path,
-                },  # type: ignore[arg-type]
+                DbReadTransaction(
+                    db=BoomDb(),  # type: ignore[arg-type]
+                    thread_id="logging-test",
+                    file_path=file_path,
+                ),
                 LogEntryDataclass(level="warning", message="will be dropped"),
             )
 

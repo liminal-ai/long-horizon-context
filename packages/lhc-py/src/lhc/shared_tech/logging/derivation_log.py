@@ -6,12 +6,13 @@ compact (pending | ready | failed | blocked); this table carries the story.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
 
 from ..derivation import SubjectKind
 from ..persist import DbReadTransaction, DbWriteTransaction
-from ..storage import Database
+from ..storage import Database, database_path_for, open_database
 
 DerivationLogEventKind = Literal[
     "inference_failed",
@@ -69,15 +70,75 @@ class DerivationLogQuery:
 
 
 def _insert_derivation_log(path: str, entry: DerivationLogEntry) -> None:
-    raise NotImplementedError
+    db: Database | None = None
+    try:
+        db = open_database(path)
+        db.prepare(
+            """INSERT INTO derivation_log (subject_kind, subject_id, derivation_type, event_kind, payload)
+       VALUES (?, ?, ?, ?, ?)"""
+        ).run(
+            entry.target.subject_kind,
+            entry.target.subject_id,
+            entry.target.derivation_type,
+            entry.event_kind,
+            json.dumps(entry.payload, separators=(",", ":"), ensure_ascii=False),
+        )
+    except Exception:
+        # Fail-soft: logging must not affect derivation execution.
+        pass
+    finally:
+        if db is not None:
+            db.close()
 
 
 def append_derivation_log(
     transaction: DbReadTransaction | DbWriteTransaction,
     entry: DerivationLogEntry,
 ) -> None:
-    raise NotImplementedError
+    path = database_path_for(transaction.db)
+    if path is None:
+        return
+    if isinstance(transaction, DbWriteTransaction):
+        transaction.post_commit_hook.add(lambda: _insert_derivation_log(path, entry))
+        return
+    _insert_derivation_log(path, entry)
 
 
 def query_derivation_log(db: Database, q: DerivationLogQuery) -> list[StoredDerivationLogEntry]:
-    raise NotImplementedError
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if q.subject_kind is not None:
+        conditions.append("subject_kind = ?")
+        params.append(q.subject_kind)
+    if q.subject_id is not None:
+        conditions.append("subject_id = ?")
+        params.append(q.subject_id)
+    if q.derivation_type is not None:
+        conditions.append("derivation_type = ?")
+        params.append(q.derivation_type)
+    if q.event_kind is not None:
+        conditions.append("event_kind = ?")
+        params.append(q.event_kind)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"""
+    SELECT log_id, subject_kind, subject_id, derivation_type, event_kind, payload, recorded_at
+    FROM derivation_log
+    {where_clause}
+    ORDER BY log_id ASC
+  """
+
+    rows = db.prepare(sql).all(*params)
+    return [
+        StoredDerivationLogEntry(
+            log_id=int(row["log_id"]),  # type: ignore[arg-type]
+            subject_kind=row["subject_kind"],  # type: ignore[arg-type]
+            subject_id=str(row["subject_id"]),
+            derivation_type=str(row["derivation_type"]),
+            event_kind=row["event_kind"],  # type: ignore[arg-type]
+            payload=json.loads(str(row["payload"])),
+            recorded_at=str(row["recorded_at"]),
+        )
+        for row in rows
+    ]

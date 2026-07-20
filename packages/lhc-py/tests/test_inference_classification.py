@@ -148,7 +148,7 @@ async def test_a_hanging_host_classifies_timeout_under_the_adapter_owned_race_an
     hang = hanging_call()
 
     async def call(input: ModelCallInput):
-        if input["model"] == hanging_lane:
+        if input.model == hanging_lane:
             return await hang(input)
         return await canned(input)
 
@@ -198,10 +198,10 @@ async def test_passes_a_structured_failure_through_untouched() -> None:
 async def test_classifies_a_thrown_exception_as_other_carrying_the_message() -> None:
     """classifies a thrown exception as `other`, carrying the message"""
     result = await safe_call(throwing_call(Exception("kaboom")), _PROBE_INPUT, 1000)
-    assert result["ok"] is False
-    if not result["ok"]:
-        assert result["kind"] == "other"
-        assert "kaboom" in result["message"]
+    assert result.ok is False
+    if not result.ok:
+        assert result.kind == "other"
+        assert "kaboom" in result.message
 
 
 async def test_classifies_a_synchronously_throwing_host_as_other_the_promise_contract_is_not_trusted() -> None:
@@ -211,16 +211,16 @@ async def test_classifies_a_synchronously_throwing_host_as_other_the_promise_con
         raise Exception("sync kaboom")
 
     result = await safe_call(sync, _PROBE_INPUT, 1000)
-    assert result["ok"] is False
-    if not result["ok"]:
-        assert result["kind"] == "other"
-        assert "sync kaboom" in result["message"]
+    assert result.ok is False
+    if not result.ok:
+        assert result.kind == "other"
+        assert "sync kaboom" in result.message
 
 
 async def test_classifies_a_never_settling_host_as_timeout_after_the_race() -> None:
     """classifies a never-settling host as `timeout` after the race"""
     result = await safe_call(hanging_call(), _PROBE_INPUT, 50)
-    assert result["ok"] is False
-    if not result["ok"]:
-        assert result["kind"] == "timeout"
-        assert "50" in result["message"]
+    assert result.ok is False
+    if not result.ok:
+        assert result.kind == "timeout"
+        assert "50" in result.message

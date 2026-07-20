@@ -10,9 +10,11 @@ two SDKs would share.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TypeVar
+import inspect
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from typing import Any, TypeVar, cast
 
 from .derivation import ResolvedSdkConfig
 from .storage import Database
@@ -36,16 +38,51 @@ class InstanceSeam:
     config: ResolvedSdkConfig | None = None
 
 
+_seam_store: ContextVar[InstanceSeam | None] = ContextVar("lhc_instance_seam", default=None)
+
+# The below-SDK default seam (the former module-global poke/touch slots).
+_scheduler_poke: SchedulerPoke | None = None
+_thread_touch: ThreadTouch | None = None
+
+
+def _run_preserving_seam(token: Any, result: T) -> T:
+    """Reset the ContextVar after sync return, or after an awaitable completes.
+
+    TS AsyncLocalStorage.run spans the whole async operation. Resetting when a
+    coroutine is *returned* (before it is awaited) drops the seam across the
+    first await — detect awaitables and defer reset into their finally.
+    """
+    if inspect.isawaitable(result):
+
+        async def _preserve() -> Any:
+            try:
+                return await cast(Awaitable[Any], result)
+            finally:
+                _seam_store.reset(token)
+
+        return cast(T, _preserve())
+    _seam_store.reset(token)
+    return result
+
+
 def run_with_instance_seam(seam: InstanceSeam, operation: Callable[[], T]) -> T:
-    raise NotImplementedError
+    token = _seam_store.set(seam)
+    try:
+        result = operation()
+    except BaseException:
+        _seam_store.reset(token)
+        raise
+    return _run_preserving_seam(token, result)
 
 
 def set_scheduler_poke(poke: SchedulerPoke | None) -> None:
-    raise NotImplementedError
+    global _scheduler_poke
+    _scheduler_poke = poke
 
 
 def set_thread_touch(touch: ThreadTouch | None) -> None:
-    raise NotImplementedError
+    global _thread_touch
+    _thread_touch = touch
 
 
 # The poke target for a context built now: the running SDK's seam if one is
@@ -53,18 +90,28 @@ def set_thread_touch(touch: ThreadTouch | None) -> None:
 # the enqueue carries its target rather than reading a shared slot at fire
 # time — except, deliberately, through the default fallback for direct calls.
 def resolve_instance_poke() -> SchedulerPoke:
-    raise NotImplementedError
+    seam = _seam_store.get()
+    if seam is not None:
+        return seam.poke
+
+    def _fallback(thread_id: str) -> None:
+        if _scheduler_poke is not None:
+            _scheduler_poke(thread_id)
+
+    return _fallback
 
 
 # The view config for the operation now running: the SDK seam's resolved
 # config when one is in scope, undefined for direct domain calls (the
 # thread-view surface defaults those itself — see InstanceSeam.view).
 def resolve_instance_view_config() -> ResolvedViewConfig | None:
-    raise NotImplementedError
+    seam = _seam_store.get()
+    return seam.view if seam is not None else None
 
 
 def resolve_instance_config() -> ResolvedSdkConfig | None:
-    raise NotImplementedError
+    seam = _seam_store.get()
+    return seam.config if seam is not None else None
 
 
 # Reads-only operation scope: runs fn under the current seam with the
@@ -74,7 +121,25 @@ def resolve_instance_config() -> ResolvedSdkConfig | None:
 # calls with no seam in scope delegate to below-SDK defaults, minus the touch.
 # Write paths never use this.
 def run_with_thread_touch_suppressed(operation: Callable[[], T]) -> T:
-    raise NotImplementedError
+    seam = _seam_store.get()
+    if seam is None:
+
+        def _poke(thread_id: str) -> None:
+            if _scheduler_poke is not None:
+                _scheduler_poke(thread_id)
+
+        def _touch(file_path: str, db: Database) -> None:
+            if _thread_touch is not None:
+                _thread_touch(file_path, db)
+
+        base = InstanceSeam(poke=_poke, touch=_touch)
+    else:
+        base = seam
+
+    def _noop_touch(_file_path: str, _db: Database) -> None:
+        return None
+
+    return run_with_instance_seam(replace(base, touch=_noop_touch), operation)
 
 
 # Thread-file open announcement: open_thread_database fires this on every open,
@@ -82,4 +147,9 @@ def run_with_thread_touch_suppressed(operation: Callable[[], T]) -> T:
 # any, else the below-SDK default. The background scheduler learns
 # threadId→filePath and runs first-touch catch-up off this seam.
 def fire_thread_touch(file_path: str, db: Database) -> None:
-    raise NotImplementedError
+    seam = _seam_store.get()
+    if seam is not None:
+        seam.touch(file_path, db)
+        return
+    if _thread_touch is not None:
+        _thread_touch(file_path, db)

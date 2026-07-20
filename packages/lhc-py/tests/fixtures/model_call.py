@@ -6,12 +6,15 @@ return ModelCall functions are skeletons.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 from typing import Literal, NotRequired, TypedDict
 
 from lhc.shared_tech.inference_types import (
     ModelAssignment,
     ModelCall,
     ModelCallInput,
+    ModelCallOk,
     ModelCallResult,
     ThinkingLevel,
 )
@@ -117,21 +120,54 @@ class RecordingCallBundle(TypedDict):
 # is cloned into `log` in call order. An unknown model is a test bug and
 # throws loudly.
 def recording_call(responses: dict[DerivationType, str]) -> RecordingCallBundle:
-    raise NotImplementedError
+    log: list[ModelCallInput] = []
+    known = set(INFERENCE_DERIVATION_TYPES)
+
+    async def call(input: ModelCallInput) -> ModelCallResult:
+        log.append(copy.deepcopy(input))
+        kind = (
+            input.model[len(FAKE_MODEL_PREFIX) :]
+            if input.model.startswith(FAKE_MODEL_PREFIX)
+            else input.model
+        )
+        if kind not in known:
+            raise RuntimeError(f'recordingCall: no canned response for model "{input.model}"')
+        return ModelCallOk(text=responses[kind])  # type: ignore[index]
+
+    return {"call": call, "log": log}
 
 
 # Returns script entries in order; a call past the end of the script is a
 # test bug and throws loudly.
 def scripted_call(script: list[ModelCallResult]) -> ModelCall:
-    raise NotImplementedError
+    next_index = 0
+
+    async def call(input: ModelCallInput) -> ModelCallResult:
+        nonlocal next_index
+        if next_index >= len(script):
+            raise RuntimeError(
+                f'scriptedCall: script exhausted after {len(script)} calls (model "{input.model}")'
+            )
+        entry = script[next_index]
+        next_index += 1
+        return entry
+
+    return call
 
 
 # A host whose function throws — the AC-3.3 containment leg.
 def throwing_call(error: Exception) -> ModelCall:
-    raise NotImplementedError
+    async def call(_input: ModelCallInput) -> ModelCallResult:
+        raise error
+
+    return call
 
 
 # A host that never settles — the DD-6 timeout leg (tests pass a small
 # timeoutMs).
 def hanging_call() -> ModelCall:
-    raise NotImplementedError
+    async def call(_input: ModelCallInput) -> ModelCallResult:
+        await asyncio.Future()  # never settles
+        raise AssertionError("unreachable")
+
+    return call

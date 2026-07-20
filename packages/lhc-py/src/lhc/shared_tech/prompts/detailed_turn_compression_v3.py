@@ -34,7 +34,30 @@ class _DetailedTurnCompressionV3:
     name = "detailed-turn-compression-v3"
 
     def render(self, dialogue: DetailedTurnCompressionV3Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        stated_aim = _stated_target(dialogue["inputTokens"], 0.25)
+        stated_lo = _stated_target(dialogue["inputTokens"], 0.2)
+        stated_hi = _stated_target(dialogue["inputTokens"], 0.3)
+        content = "\n".join(
+            [
+                INSTRUCTIONS_OPEN,
+                INSTRUCTIONS_INTRO,
+                "",
+                (
+                    "Your job is to summarize the following dialogue between a user and an llm assistant to 20% to 30% of its original size and turn the back and forth dialog into a narrative generally 3rd person voicing of the events unfolding across the back and forth. "
+                    "keep it in narrative past tense voicing targetting approximately 20%-30% of original size. "
+                    f"That comes out to around {stated_aim} tokens total (roughly {stated_lo}-{stated_hi}). "
+                    "Retain maximal meaning despite compression. > represents the user and ⏺ represents the agent."
+                ),
+                "",
+                INSTRUCTIONS_PROSE,
+                INSTRUCTIONS_CLOSE,
+                "",
+                CONTENT_OPEN,
+                dialogue["dialogueText"],
+                CONTENT_CLOSE,
+            ]
+        )
+        return [{"role": "user", "content": content}]
 
 
 detailed_turn_compression_v3 = _DetailedTurnCompressionV3()
@@ -46,4 +69,6 @@ detailed_turn_compression_v3 = _DetailedTurnCompressionV3()
 # near the 80-token tiny-turn floor. Reproduces the lab-validated numbers
 # (5618 input → 1400/1100/1700). Same rule as chunk-brief-v3.
 def _stated_target(input_tokens: int, ratio: float) -> int:
-    raise NotImplementedError
+    raw = input_tokens * ratio
+    step = 100 if raw >= 1000 else 10
+    return int(raw / step + 0.5) * step

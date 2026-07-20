@@ -26,7 +26,17 @@ class _ChunkBriefV2:
     name = "chunk-brief-v2"
 
     def render(self, input: ChunkBriefV2Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        user_content = (
+            USER_PROMPT.replace("{{inputTokens}}", str(input["inputTokens"]))
+            .replace("{{targetMinTokens}}", str(input["targetMinTokens"]))
+            .replace("{{targetMaxTokens}}", str(input["targetMaxTokens"]))
+            .replace("{{targetMidTokens}}", str(input["targetAimTokens"]))
+            + f'\n\n<actual-input>\n{input["text"]}\n</actual-input>'
+        )
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
 
 
 chunk_brief_v2 = _ChunkBriefV2()

@@ -7,17 +7,22 @@ skeletons in Phase 1.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 from lhc.shared_tech.derivation import (
     CompressDetailedTurnInput,
     InferenceCallbacks,
+    InferenceErr,
+    InferenceOk,
     InferenceResult,
     SmoothPromptInput,
     SummarizeChunkBriefInput,
     SummarizeToolResultInput,
 )
+from lhc.shared_tech.deterministic import deterministic_text
 
 InferenceCallbackOpName = Literal[
     "smoothPrompt",
@@ -58,27 +63,51 @@ class FailNextFailure(TypedDict, total=False):
 
 
 def _resolve_op_name(kind: str) -> InferenceCallbackOpName:
-    raise NotImplementedError
+    op = KIND_ALIASES.get(kind)
+    if op is None:
+        raise RuntimeError(f'inference callbacks double: unknown operation/kind "{kind}"')
+    return op
 
 
 class InferenceCallbacksDouble:
     """Implements InferenceCallbacks; bodies raise NotImplementedError in Phase 1."""
 
+    def __init__(self) -> None:
+        # Instance scripting state (TS private fields) — underscore attrs, not
+        # new public dataclass fields (Phase 1 class form preserved).
+        self._fail_next_script: FailScript | None = None
+        self._fail_by_op: dict[InferenceCallbackOpName, FailScript] = {}
+        self._delay_by_op: dict[InferenceCallbackOpName, int] = {}
+        self._capturing = False
+        self._captured: list[CapturedInput] = []
+
     # Fail the next n calls to any operation, then succeed.
     def fail_next(self, n: int, failure: FailNextFailure | None = None) -> None:
-        raise NotImplementedError
+        reason = (
+            failure["reason"]
+            if failure is not None and "reason" in failure
+            else "scripted failure (failNext)"
+        )
+        self._fail_next_script = {"remaining": n, "reason": reason}
 
     # Fail the next n calls to one operation (kind names and op names both
     # accepted).
     def fail_kind(self, kind: str, n: int, failure: FailNextFailure | None = None) -> None:
-        raise NotImplementedError
+        op = _resolve_op_name(kind)
+        reason = (
+            failure["reason"]
+            if failure is not None and "reason" in failure
+            else f"scripted failure ({op})"
+        )
+        self._fail_by_op[op] = {"remaining": n, "reason": reason}
 
     def delay_kind(self, kind: str, ms: int) -> None:
-        raise NotImplementedError
+        self._delay_by_op[_resolve_op_name(kind)] = ms
 
     # Start capturing inputs; returns the live log (appended in call order).
     def capture_inputs(self) -> list[CapturedInput]:
-        raise NotImplementedError
+        self._capturing = True
+        return self._captured
 
     async def _run(
         self,
@@ -87,23 +116,36 @@ class InferenceCallbacksDouble:
         text: str,
         suffix: str = "",
     ) -> InferenceResult:
-        raise NotImplementedError
+        if self._capturing:
+            self._captured.append(CapturedInput(op=op, input=copy.deepcopy(input)))
+        delay = self._delay_by_op.get(op)
+        if delay is not None and delay > 0:
+            await asyncio.sleep(delay / 1000.0)
+        scripts: list[FailScript | None] = [
+            self._fail_next_script,
+            self._fail_by_op.get(op),
+        ]
+        for script in scripts:
+            if script is not None and script["remaining"] > 0:
+                script["remaining"] -= 1
+                return InferenceErr(reason=script["reason"])
+        return InferenceOk(text=deterministic_text(op, input, text) + suffix)
 
     async def smooth_prompt(self, i: SmoothPromptInput) -> InferenceResult:
-        raise NotImplementedError
+        return await self._run("smoothPrompt", i, i["text"])
 
     async def summarize_tool_result(self, i: SummarizeToolResultInput) -> InferenceResult:
-        raise NotImplementedError
+        return await self._run("summarizeToolResult", i, i["content"])
 
     async def compress_detailed_turn(self, i: CompressDetailedTurnInput) -> InferenceResult:
-        raise NotImplementedError
+        return await self._run("compressDetailedTurn", i, i["dialogueText"])
 
     async def summarize_chunk_brief(self, i: SummarizeChunkBriefInput) -> InferenceResult:
-        raise NotImplementedError
+        return await self._run("summarizeChunkBrief", i, i["text"])
 
 
 def create_inference_callbacks_double() -> InferenceCallbacksDouble:
-    raise NotImplementedError
+    return InferenceCallbacksDouble()
 
 
 # Structural satisfaction of InferenceCallbacks Protocol (documentation only).

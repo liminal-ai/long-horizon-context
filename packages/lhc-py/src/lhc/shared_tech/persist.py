@@ -58,7 +58,17 @@ class DbWriteTransaction:
 
 
 def create_post_commit_hook_set() -> PostCommitHookSet:
-    raise NotImplementedError
+    operations: list[Callable[[], None]] = []
+
+    class _HookSet:
+        def add(self, operation: Callable[[], None]) -> None:
+            operations.append(operation)
+
+        def flush(self) -> None:
+            while operations:
+                operations.pop(0)()
+
+    return _HookSet()
 
 
 def _thread_not_found(thread_id: str) -> OpErr:

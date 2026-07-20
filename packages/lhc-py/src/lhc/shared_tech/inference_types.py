@@ -154,4 +154,35 @@ DEFAULT_GUARDS = ResolvedDerivationGuards(
 
 
 def resolve_guards(guards: DerivationGuards | None = None) -> ResolvedDerivationGuards:
-    raise NotImplementedError
+    g = guards if guards is not None else DerivationGuards()
+    sp = g.smoothed_prompt
+    tr = g.tool_result_summary
+    dt = g.detailed_turn_compression
+    return ResolvedDerivationGuards(
+        smoothed_prompt=ResolvedSmoothedPromptGuards(
+            max_inference_tokens=(
+                sp.max_inference_tokens
+                if sp is not None and sp.max_inference_tokens is not None
+                else DEFAULT_GUARDS.smoothed_prompt.max_inference_tokens
+            ),
+            suspicious_output_ratio=(
+                sp.suspicious_output_ratio
+                if sp is not None and sp.suspicious_output_ratio is not None
+                else DEFAULT_GUARDS.smoothed_prompt.suspicious_output_ratio
+            ),
+        ),
+        tool_result_summary=ResolvedToolResultSummaryGuards(
+            timeout_ms=(
+                tr.timeout_ms
+                if tr is not None and tr.timeout_ms is not None
+                else DEFAULT_GUARDS.tool_result_summary.timeout_ms
+            ),
+        ),
+        detailed_turn_compression=ResolvedDetailedTurnCompressionGuards(
+            tiny_turn_tokens=(
+                dt.tiny_turn_tokens
+                if dt is not None and dt.tiny_turn_tokens is not None
+                else DEFAULT_GUARDS.detailed_turn_compression.tiny_turn_tokens
+            ),
+        ),
+    )

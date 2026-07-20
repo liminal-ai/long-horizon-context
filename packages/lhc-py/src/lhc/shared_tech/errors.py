@@ -84,4 +84,10 @@ OpResult = Union[OpOk[T], OpErr]
 # Infrastructure failures (SQLite, fs) are expected operational outcomes,
 # caught at the operation boundary and wrapped with the underlying detail.
 def storage_failure(reason: str) -> OpErr:
-    raise NotImplementedError
+    return OpErr(
+        error=ErrorResult(
+            error_class="system_error",
+            code="storage_failure",
+            reason=reason,
+        )
+    )

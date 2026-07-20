@@ -27,7 +27,21 @@ class _ToolResultV1:
     name = "tool-result-v1"
 
     def render(self, i: ToolResultV1Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f'You summarize tool output for an engineering record. Preserve the outcome/status exactly as "{i["outcome"]}". '
+                    f'Target about {i["targetTokens"]} tokens. {i["guidance"]} No commentary, no speculation.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f'Tool: {i["toolName"]}\nOutcome: {i["outcome"]}\n\nOutput:\n{i["content"]}'
+                ),
+            },
+        ]
 
 
 tool_result_v1 = _ToolResultV1()

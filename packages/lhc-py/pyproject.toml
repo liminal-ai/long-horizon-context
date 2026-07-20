@@ -3,7 +3,9 @@ name = "lhc-py"
 version = "0.0.1"
 description = "Python port of the LHC SDK (packages/lhc). Phase 1: skeletons + tests."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tiktoken>=0.13.0",
+]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]

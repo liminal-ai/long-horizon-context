@@ -7,8 +7,15 @@ certification.
 
 from __future__ import annotations
 
+import tiktoken
+
 TOKEN_ESTIMATOR_ID = "js-tiktoken:o200k_base"
+
+_encoder: tiktoken.Encoding | None = None
 
 
 def estimate_tokens(text: str) -> int:
-    raise NotImplementedError
+    global _encoder
+    if _encoder is None:
+        _encoder = tiktoken.get_encoding("o200k_base")
+    return len(_encoder.encode(text))

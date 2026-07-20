@@ -5,8 +5,11 @@ MODE_GUIDANCE and static prompt fragments are real and byte-identical; functions
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TypedDict
 
+from .._jsstr import js_len, js_slice
 from ..derivation import ToolOutcome, ToolResultFacts, ToolResultPromptMode, ToolResultResponseShape
 from ..inference_types import ModelCallMessage
 
@@ -57,15 +60,66 @@ class _ToolResultV2:
     name = "tool-result-v2"
 
     def render(self, i: ToolResultV2Input) -> list[ModelCallMessage]:
-        raise NotImplementedError
+        facts = _facts_for_prompt(i["facts"])
+        guidance = MODE_GUIDANCE.get(i["promptMode"], MODE_GUIDANCE["generic_summary"])
+        system_content = "\n".join(
+            [
+                TOOL_RESULT_V2_INTRO,
+                "",
+                TOOL_RESULT_V2_FACTS_RULE,
+                "",
+                TOOL_RESULT_V2_FIELD_RULE,
+                "",
+                f"{TOOL_RESULT_V2_TARGET_LENGTH_PREFIX}{i['targetTokens']}{TOOL_RESULT_V2_TARGET_LENGTH_SUFFIX}",
+                f"{TOOL_RESULT_V2_PROMPT_MODE_PREFIX}{i['promptMode']}",
+                "",
+                TOOL_RESULT_V2_MODE_GUIDANCE_HEADER,
+                guidance,
+                "",
+                TOOL_RESULT_V2_PARSED_FIELDS_HEADER,
+                # JS JSON.stringify(facts, null, 2) — no ASCII escaping.
+                json.dumps(facts, indent=2, ensure_ascii=False),
+            ]
+        )
+        user_content = (
+            f"{TOOL_RESULT_V2_USER_TOOL_PREFIX}{i['toolName']}"
+            f"{TOOL_RESULT_V2_USER_OUTCOME_PREFIX}{i['outcome']}"
+            f"{TOOL_RESULT_V2_USER_EXCERPT_OPEN}"
+            f"{_raw_output_for_prompt(i['content'], i['responseShape'])}"
+            f"{TOOL_RESULT_V2_USER_EXCERPT_CLOSE}"
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
 
 
 tool_result_v2 = _ToolResultV2()
 
 
 def _facts_for_prompt(facts: ToolResultFacts) -> dict[str, object]:
-    raise NotImplementedError
+    excluded = {"operationClass", "responseShape", "outputChars", "outputWords"}
+    return {key: value for key, value in facts.items() if key not in excluded}
 
 
 def _raw_output_for_prompt(raw_output: str, response_shape: ToolResultResponseShape) -> str:
-    raise NotImplementedError
+    lines = re.split(r"\r?\n", raw_output)
+    if response_shape == "search_result" and len(lines) > 60:
+        return (
+            "\n".join(lines[:60])
+            + TOOL_RESULT_V2_SEARCH_OMIT_PREFIX
+            + str(len(lines) - 60)
+            + TOOL_RESULT_V2_SEARCH_OMIT_SUFFIX
+        )
+    # TS: rawOutput.length / slice — UTF-16 code units.
+    if js_len(raw_output) > 20_000:
+        head = js_slice(raw_output, 0, 12_000)
+        tail = js_slice(raw_output, js_len(raw_output) - 4_000)
+        return (
+            head
+            + TOOL_RESULT_V2_MIDDLE_OMIT_PREFIX
+            + str(js_len(raw_output) - js_len(head) - js_len(tail))
+            + TOOL_RESULT_V2_MIDDLE_OMIT_SUFFIX
+            + tail
+        )
+    return raw_output
