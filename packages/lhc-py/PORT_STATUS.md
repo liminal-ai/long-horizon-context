@@ -28,7 +28,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 17 | `src/messages/internal/smoothing.ts` | `src/lhc/messages/internal/smoothing.py` | ☑ | Wave 4 |
 | 18 | `src/messages/internal/store.ts` | `src/lhc/messages/internal/store.py` | ☑ | Wave 4 — SQL hoisted; `MessageRecordWithDeleted` for `readMessageById` intersection |
 | 19 | `src/messages/internal/work.ts` | `src/lhc/messages/internal/work.py` | ☑ | Wave 4 — MESSAGE_WORK_* maps real |
-| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ◐ | Wave 1–4 PARTIAL — LhcMessages includes clean_prompt + Wave 4 surfaces; full SDK assembly still Wave 7 |
+| 20 | `src/sdk.ts` | `src/lhc/sdk.py` | ◐ | Wave 1–5 PARTIAL — protocols include Wave 4/5 surfaces (messages/turns/thread_view.compact); full SDK assembly still Wave 7 |
 | 21 | `src/shared-tech/classify.ts` | `src/lhc/shared_tech/classify.py` | ☑ |  |
 | 22 | `src/shared-tech/context.ts` | `src/lhc/shared_tech/context.py` | ☑ |  |
 | 23 | `src/shared-tech/derivation.ts` | `src/lhc/shared_tech/derivation.py` | ☑ | Wave 1 complete |
@@ -60,7 +60,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/lhc/shared_tech/tool_result_rendering.py` | ☑ |  |
 | 50 | `src/shared-tech/view.ts` | `src/lhc/shared_tech/view.py` | ☑ |  |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/lhc/shared_tech/work_queue/__init__.py` | ☑ | Wave 2 import seam complete — WorkSourceRef closed union + count_live_items/queue_detail/WorkKind; bodies remain NotImplementedError skeletons |
-| 52 | `src/thread-view/index.ts` | `src/lhc/thread_view/__init__.py` | ◐ | Wave 4 forward stub — `status` only (messages-read); full surface Wave 6 |
+| 52 | `src/thread-view/index.ts` | `src/lhc/thread_view/__init__.py` | ◐ | Wave 4–5 forward stub — status + compact/get_llm_request_context; CompactAbortSignal frozen dataclass |
 | 53 | `src/thread-view/internal/assemble.ts` | `src/lhc/thread_view/internal/assemble.py` | ☐ |  |
 | 54 | `src/thread-view/internal/boundary.ts` | `src/lhc/thread_view/internal/boundary.py` | ☐ |  |
 | 55 | `src/thread-view/internal/compact-compute.ts` | `src/lhc/thread_view/internal/compact_compute.py` | ☐ |  |
@@ -74,25 +74,25 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 63 | `src/threads/index.ts` | `src/lhc/threads/__init__.py` | ☑ | Wave 3 — full surface (new_thread/resolve/list_threads/info/resolve_thread_ref + helpers) |
 | 64 | `src/threads/internal/create.ts` | `src/lhc/threads/internal/create.py` | ☑ | Wave 3 — schema statement templates as constants; bodies NotImplementedError |
 | 65 | `src/threads/internal/registry.ts` | `src/lhc/threads/internal/registry.py` | ☑ | Wave 3 — full registry surface + SelectAllThreadRowsOpts |
-| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ◐ | Wave 1–4 PARTIAL — list_turns/derive_* + create + Wave 4 `list_chunks`/`ChunkRecord`/`TurnRecord.derivations`; full turns still Wave 5 |
-| 67 | `src/turns/internal/chunk-recovery.ts` | `src/lhc/turns/internal/chunk_recovery.py` | ☐ |  |
-| 68 | `src/turns/internal/chunks.ts` | `src/lhc/turns/internal/chunks.py` | ☐ |  |
-| 69 | `src/turns/internal/compose.ts` | `src/lhc/turns/internal/compose.py` | ☐ |  |
-| 70 | `src/turns/internal/derivations.ts` | `src/lhc/turns/internal/derivations.py` | ☐ |  |
-| 71 | `src/turns/internal/derive.ts` | `src/lhc/turns/internal/derive.py` | ☐ |  |
-| 72 | `src/turns/internal/store.ts` | `src/lhc/turns/internal/store.py` | ☐ |  |
+| 66 | `src/turns/index.ts` | `src/lhc/turns/__init__.py` | ☑ | Wave 5 — full surface; `__all__` matches index.ts exports only |
+| 67 | `src/turns/internal/chunk-recovery.ts` | `src/lhc/turns/internal/chunk_recovery.py` | ☑ | Wave 5 |
+| 68 | `src/turns/internal/chunks.ts` | `src/lhc/turns/internal/chunks.py` | ☑ | Wave 5 |
+| 69 | `src/turns/internal/compose.ts` | `src/lhc/turns/internal/compose.py` | ☑ | Wave 5 |
+| 70 | `src/turns/internal/derivations.ts` | `src/lhc/turns/internal/derivations.py` | ☑ | Wave 5 |
+| 71 | `src/turns/internal/derive.ts` | `src/lhc/turns/internal/derive.py` | ☑ | Wave 5 — factories `_chunk_detailed_handler()`/`_chunk_brief_handler()` restored; table binds separate WorkHandler stubs |
+| 72 | `src/turns/internal/store.ts` | `src/lhc/turns/internal/store.py` | ☑ | Wave 5 |
 
 ## Test files
 
 | # | source | python | test | gate | notes |
 |---|---|---|---|---|---|
 | 1 | `test/assignment-config.test.ts` | `tests/test_assignment_config.py` | ☑ | ☑ |  |
-| 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/test_chunk_brief_from_detailed.py` | ☐ | ☐ |  |
-| 3 | `test/chunk-compact-recovery.test.ts` | `tests/test_chunk_compact_recovery.py` | ☐ | ☐ |  |
-| 4 | `test/chunk-detailed-format.test.ts` | `tests/test_chunk_detailed_format.py` | ☐ | ☐ |  |
+| 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/test_chunk_brief_from_detailed.py` | ☑ | ☑ | Wave 5 |
+| 3 | `test/chunk-compact-recovery.test.ts` | `tests/test_chunk_compact_recovery.py` | ☑ | ☑ | Wave 5 |
+| 4 | `test/chunk-detailed-format.test.ts` | `tests/test_chunk_detailed_format.py` | ☑ | ☑ | Wave 5 |
 | 5 | `test/derivation-messages.test.ts` | `tests/test_derivation_messages.py` | ☑ | ☑ | Wave 4; 3 it.skip preserved |
-| 6 | `test/derivation-turns.test.ts` | `tests/test_derivation_turns.py` | ☐ | ☐ |  |
-| 7 | `test/detailed-turn-compression.test.ts` | `tests/test_detailed_turn_compression.py` | ☐ | ☐ |  |
+| 6 | `test/derivation-turns.test.ts` | `tests/test_derivation_turns.py` | ☑ | ☑ | Wave 5 |
+| 7 | `test/detailed-turn-compression.test.ts` | `tests/test_detailed_turn_compression.py` | ☑ | ☑ | Wave 5 |
 | 8 | `test/epic-fix-02.test.ts` | `tests/test_epic_fix_02.py` | ☐ | ☐ |  |
 | 9 | `test/epic-fix.test.ts` | `tests/test_epic_fix.py` | ☐ | ☐ |  |
 | 10 | `test/fixtures.test.ts` | `tests/test_fixtures.py` | ☑ | ☑ |  |
@@ -124,7 +124,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 36 | `test/tool-result-rendering.test.ts` | `tests/test_tool_result_rendering.py` | ☑ | ☑ |  |
 | 37 | `test/tool-result-summary-inference.test.ts` | `tests/test_tool_result_summary_inference.py` | ☑ | ☑ | Wave 4 |
 | 38 | `test/turn-cascade.test.ts` | `tests/test_turn_cascade.py` | ☑ | ☑ | Wave 4 |
-| 39 | `test/turns.test.ts` | `tests/test_turns.py` | ☐ | ☐ |  |
+| 39 | `test/turns.test.ts` | `tests/test_turns.py` | ☑ | ☑ | Wave 5 |
 | 40 | `test/validation.test.ts` | `tests/test_validation.py` | ☑ | ☑ |  |
 | 41 | `test/view-boundary-turn-end.test.ts` | `tests/test_view_boundary_turn_end.py` | ☐ | ☐ |  |
 | 42 | `test/view-boundary.test.ts` | `tests/test_view_boundary.py` | ☐ | ☐ |  |

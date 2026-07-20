@@ -1,0 +1,248 @@
+"""Ported from packages/lhc/src/turns/internal/derivations.ts. Phase 1 skeleton.
+
+Turn-domain reads for derivation: the turn handler's source turn, its
+deleted-filtered member messages, the message-level derivation rows used for
+composition, and the stored member material chunk summaries consume.
+Completion writes for turn- and chunk-owned derivations ride the work-queue
+util's version-checked completion path; this module has no write path.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
+
+from ...shared_tech.derivation import Derivation, DerivationReportEntry, DerivationState
+from ...shared_tech.storage import Database
+from .compose import ComposeDerivationRow, ComposeMessage
+
+_SQL_READ_TURN_SOURCE = """SELECT status, deleted_at FROM turns WHERE turn_id = ?"""
+
+_SQL_READ_MEMBER_MESSAGES = (
+    """SELECT message_id, kind FROM message
+       WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order"""
+)
+
+_SQL_READ_MESSAGE_BLOCKS = (
+    """SELECT block_type, content FROM message_block
+     WHERE message_id = ? ORDER BY block_index"""
+)
+
+_SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX = (
+    """SELECT subject_id, derivation_type, state, content, reason, metadata, source_version
+       FROM derivation
+       WHERE subject_kind = 'message' AND subject_id IN ("""
+)
+
+_SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX = """)"""
+
+_SQL_READ_MEMBER_PROJECTIONS = (
+    """SELECT cm.turn_id, t.turn_id AS existing_turn_id, t.deleted_at,
+              df.state, df.content,
+              af.state AS assembly_state, af.content AS assembly_content,
+              rf.state AS rendering_state, rf.content AS rendering_content
+       FROM chunk_member cm
+       LEFT JOIN turns t ON t.turn_id = cm.turn_id
+       LEFT JOIN derivation df ON df.subject_kind = 'turn'
+         AND df.subject_id = cm.turn_id AND df.derivation_type = 'detailed_turn_compression'
+       LEFT JOIN derivation af ON af.subject_kind = 'turn'
+         AND af.subject_id = cm.turn_id AND af.derivation_type = 'pre_detailed_assembly'
+       LEFT JOIN derivation rf ON rf.subject_kind = 'turn'
+         AND rf.subject_id = cm.turn_id AND rf.derivation_type = 'turn_rendering'
+       WHERE cm.chunk_id = ? ORDER BY cm.member_idx"""
+)
+
+_SQL_READ_OWNED_DERIVATIONS = (
+    """SELECT subject_id, derivation_type, state, content, reason, metadata,
+              source_version, gaps, derived_at
+       FROM derivation WHERE subject_kind = ?
+       ORDER BY subject_id, derivation_type"""
+)
+
+_SQL_READ_CHUNK_ROWS = (
+    """SELECT chunk_id, chunk_order, status, accumulated_projected_tokens
+       FROM chunk ORDER BY chunk_order"""
+)
+
+_SQL_READ_CHUNK_ROW_MEMBERS = (
+    """SELECT cm.turn_id FROM chunk_member cm
+     JOIN turns t ON t.turn_id = cm.turn_id AND t.deleted_at IS NULL
+     WHERE cm.chunk_id = ? ORDER BY cm.member_idx"""
+)
+
+_SQL_READ_TURN_DERIVATION_ROW = (
+    """SELECT state, content, reason, source_version FROM derivation
+       WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?"""
+)
+
+_SQL_READ_CHUNK_SUMMARY_DERIVATION = (
+    """SELECT state, content, reason, source_version FROM derivation
+       WHERE subject_kind = 'chunk' AND subject_id = ? AND derivation_type = ?"""
+)
+
+# The derivation_type→kind CASE is the turns owner's own queue-site mapping.
+# turn_rendering and pre_detailed_assembly map to turn_derivation;
+# detailed_turn_compression maps to its same-named kind; chunk summaries map
+# to their same-named kinds.
+_SQL_REPORT_TURN_DERIVATIONS = (
+    """SELECT df.subject_kind, df.subject_id, df.derivation_type, df.state, df.content, df.reason,
+              df.metadata, df.source_version, df.gaps, df.derived_at,
+              w.status AS queue_status
+       FROM derivation df
+       LEFT JOIN work_item w
+         ON w.status IN ('queued', 'claimed')
+        AND w.kind = CASE
+          WHEN df.derivation_type IN ('turn_rendering', 'pre_detailed_assembly') THEN 'turn_derivation'
+          WHEN df.derivation_type = 'detailed_turn_compression' THEN 'detailed_turn_compression'
+          WHEN df.subject_kind = 'chunk' THEN df.derivation_type
+          ELSE 'turn_derivation'
+        END
+        AND json_extract(
+              w.source_ref,
+              CASE WHEN df.subject_kind = 'turn' THEN '$.turnId' ELSE '$.chunkId' END
+            ) = df.subject_id
+        AND COALESCE(json_extract(w.payload, '$.sourceVersion'), 1) = df.source_version
+       WHERE {conditions}
+       ORDER BY df.subject_kind DESC, df.subject_id, df.derivation_type"""
+)
+
+_SQL_CHUNK_EXISTS = """SELECT 1 FROM chunk WHERE chunk_id = ?"""
+
+
+@dataclass(frozen=True, slots=True)
+class TurnSource:
+    turn_id: str
+    status: Literal["open", "closed"]
+    deleted: bool
+
+
+def read_turn_source(db: Database, turn_id: str) -> TurnSource | None:
+    raise NotImplementedError
+
+
+# Member messages in message order, blocks attached, deleted messages filtered.
+# Composition always reads the live member set.
+def read_member_messages(db: Database, turn_id: str) -> list[ComposeMessage]:
+    raise NotImplementedError
+
+
+# The message-owned derivation rows for a set of member messages, keyed for
+# composition. This is a cross-owner read only; message handlers remain the
+# only writers for message derivations.
+def read_message_derivation_rows(
+    db: Database,
+    message_ids: Sequence[str],
+) -> dict[str, ComposeDerivationRow]:
+    raise NotImplementedError
+
+
+# Stored member material in turn order for chunk summaries: every chunk_member
+# row by member_idx, joined to its canonical turn, stored
+# detailed_turn_compression row, and pre_detailed_assembly for failed floors.
+# Missing turns are returned as source corruption so background summaries
+# block instead of silently summarizing a shortened member list; SDK
+# soft-deleted turns stay filtered because sanctioned delete rebuilds chunk
+# summaries from survivors.
+@dataclass(frozen=True, slots=True)
+class MemberProjection:
+    turn_id: str
+    state: str | None = None  # None: no compression row exists for the member
+    content: str | None = None
+    assembly_state: str | None = None
+    assembly_content: str | None = None
+    rendering_state: str | None = None
+    rendering_content: str | None = None
+    source_corruption_reason: str | None = None
+
+
+def read_member_projections(db: Database, chunk_id: str) -> list[MemberProjection]:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class _RawOwnedDerivationRow:
+    subject_id: str
+    derivation_type: str
+    state: str
+    content: str | None
+    reason: str | None
+    metadata: str | None
+    source_version: int
+    gaps: str | None
+    derived_at: str | None
+
+
+# Every derivation row this owner holds for one subject kind, grouped by subject
+# id. Rows come back exactly as the pipeline landed them; nothing is derived at
+# read time.
+def read_owned_derivations(
+    db: Database,
+    subject_kind: Literal["turn", "chunk"],
+) -> dict[str, list[Derivation]]:
+    raise NotImplementedError
+
+
+# Chunk read-back rows for the list_chunks surface: stored chunk state plus
+# live (deleted-filtered) membership in member order.
+@dataclass(frozen=True, slots=True)
+class ChunkReadRow:
+    chunk_id: str
+    chunk_order: int
+    status: Literal["open", "closed"]
+    accumulated_projected_tokens: int
+    member_turn_ids: list[str]
+
+
+def read_chunk_rows(db: Database) -> list[ChunkReadRow]:
+    raise NotImplementedError
+
+
+# One derivation row by exact key for this owner's subjects — the requeue
+# operation's refusal read (missing row, blocked state, current version).
+@dataclass(frozen=True, slots=True)
+class TurnDerivationRowView:
+    state: DerivationState
+    source_version: int
+    content: str | None = None
+    reason: str | None = None
+
+
+def read_turn_derivation_row(
+    db: Database,
+    subject_kind: Literal["turn", "chunk"],
+    subject_id: str,
+    derivation: str,
+) -> TurnDerivationRowView | None:
+    raise NotImplementedError
+
+
+def read_chunk_summary_derivation(
+    db: Database,
+    chunk_id: str,
+    derivation_type: Literal["chunk_summary_detailed", "chunk_summary_brief"],
+) -> TurnDerivationRowView | None:
+    raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class TurnReportOptions:
+    not_ready: bool | None = None
+    turn_id: str | None = None
+    chunk_id: str | None = None
+
+
+# The turns owner's report: one query over turn- and chunk-owned derivation rows
+# LEFT JOINed with the live work_item targeting each derivation at its current
+# source version. turn_rendering and pre_detailed_assembly map to turn_derivation;
+# detailed_turn_compression maps to its same-named kind; chunk summaries map
+# to their same-named kinds.
+def report_turn_derivations(
+    db: Database,
+    opts: TurnReportOptions | None = None,
+) -> list[DerivationReportEntry]:
+    raise NotImplementedError
+
+
+def chunk_exists(db: Database, chunk_id: str) -> bool:
+    raise NotImplementedError
