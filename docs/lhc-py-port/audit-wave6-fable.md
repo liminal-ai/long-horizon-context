@@ -1,0 +1,12 @@
+You are an INDEPENDENT SECOND AUDITOR for Wave 6 (thread-view) of the lhc-py Phase 1 port — the most important wave. Another verifier (GPT-5.6 Sol) is auditing the same diff in parallel; your job is to catch what a first auditor typically misses. VERIFICATION ONLY — no edits, no commits.
+
+Context: Phase 1 ports shape, not behavior — every TS module becomes a Python skeleton (real signatures/types/constants, bodies exactly `raise NotImplementedError`), every vitest file becomes a pytest file with all assertions intact at exactly TS strictness. Contract: docs/lhc-py-port-phase1-brief.md (read it). Repo /srv/work/long-horizon-context, branch lhc-py-port. Audit scope: everything changed since commit 86a05f4 (`git diff 86a05f4 --name-only`) — thread_view/__init__.py + 10 internals, view fixtures, 11 test_view_*.py files.
+
+Focus where first audits are weakest (skip what the gate already proves — imports/collection):
+1. STRUCTURAL DRIFT in the hardest files: select.py, compact_compute.py, session_view.py vs their TS counterparts — walk export-by-export, helper-by-helper. Look for merged/split helpers, dropped overloads, reordered required params, optional-vs-required drift, return-type simplifications.
+2. TEST SEMANTICS, not test counts: pick the 4 most assertion-dense view tests (view-compact, view-llm-request-context, view-compact-preview, view-fixture) and walk EVERY assertion against the TS: exact-vs-partial equality direction (toEqual exact / toMatchObject extras-allowed / objectContaining), array order sensitivity, negated assertions, error-message matches (regex vs substring), boolean vs truthiness.
+3. GOLDEN plumbing: test_view_select_golden.py + test_view_fixture.py read tests/goldens/* files with the same names/paths/encodings the TS tests use, compare with the same normalization (or none), and goldens are unmodified in the diff.
+4. Renderer/prompt text: any string constants in render.py/snapshot.py — verbatim vs TS (real newlines, exact punctuation), private when TS doesn't export.
+5. Cross-module consistency: types thread_view re-exports or consumes from turns/messages — same names, no duplicate parallel definitions drifting from the canonical homes.
+
+Report: numbered findings file:line [blocker]/[minor] with the TS evidence line; then a COVERAGE NOTE stating exactly what you walked fully vs skimmed. If clean, say VERDICT: PASS with the coverage note. Honesty over volume — do not pad.

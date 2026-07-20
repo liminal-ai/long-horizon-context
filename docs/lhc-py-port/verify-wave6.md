@@ -1,0 +1,15 @@
+You are the VERIFIER for Wave 6 of the lhc-py Phase 1 port — thread-view, the biggest and most important wave. You audited Waves 1–5 (all findings resolved and committed). Now audit the UNCOMMITTED Wave 6 changes on branch lhc-py-port. Adversarial posture: credit for real findings, not volume. VERIFICATION ONLY — no edits.
+
+Contract: /srv/work/long-horizon-context/docs/lhc-py-port-phase1-brief.md. All work under packages/lhc-py/.
+
+WAVE 6 SCOPE to audit (sources: thread_view/__init__.py completed from ◐ to full src/thread-view/index.ts surface; thread_view/internal/ assemble, boundary, compact_compute, materialize, profiles, render, seam, select, session_view, snapshot; fixture helpers; tests: the 11 view-* files → test_view_boundary, test_view_boundary_turn_end, test_view_compact_full_boundary, test_view_compact_preview, test_view_compact, test_view_fixture, test_view_llm_request_context, test_view_prune, test_view_render_targets, test_view_select_golden, test_view_session_thread_view):
+
+A. Fidelity vs TS: for EVERY file changed since commit 86a05f4 (git diff 86a05f4 --name-only), compare fully against its TS source. Missing exports/_helpers, wrong signatures, dropped optional fields, wrong Literal members, invented names/renames, broad-type reductions, invented defaults on required fields, weakened OR over-strict assertions (strictness must match TS in BOTH directions: toEqual exact, toMatchObject allows extras).
+B. profiles.py is CONSTANT DATA: byte-compare tables/strings against thread-view/internal/profiles.ts values. Where template/prompt text exists, verify verbatim (real newlines, no literal \\n). If practical, render TS values via `node --experimental-strip-types` and compare — regex extraction is NOT a valid oracle.
+C. Rule compliance: bodies exactly `raise NotImplementedError`; constants real; dot-accessed shapes frozen dataclasses snake_case; TypedDict verbatim camelCase only for data shapes; per-variant dataclasses + Union for discriminated unions; intersections get dedicated shapes; JS Math.round → _js_round pattern where tests need it.
+D. Test fidelity: every vitest assertion preserved with exact TS strictness; golden tests (view-select-golden, view-fixture) compare against tests/goldens/ VERBATIM — goldens unmodified (git diff must show no goldens changes); raw-SQLite SQL verbatim; skipped tests full bodies; async mirrors source; JSON via json.dumps(..., separators=(",", ":")); declared dataclasses not dict stand-ins; Date control reaches from-imported aliases.
+E. Ledger honesty and gate: cd packages/lhc-py && uv run python scripts/check_gate.py.
+
+Policy reminders (do not re-litigate): later-wave ◐ stubs may stay partial — audit faithfulness of what exists. Non-representable TS machinery: closed private TypedDicts + NOTE (Phase 2), no invented DSLs.
+
+VERDICT FORMAT: VERDICT: PASS/FAIL; FINDINGS numbered file:line [blocker]/[minor] with expected fix; GATE OUTPUT verbatim; COVERAGE NOTE (fully-compared vs skimmed — honest, this wave is large).

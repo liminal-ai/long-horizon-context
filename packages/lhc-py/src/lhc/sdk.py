@@ -44,11 +44,19 @@ from .shared_tech.logging import (
     StoredLogEntry,
     write_log,
 )
-from .shared_tech.view import CompactReceipt, LlmRequestContext, ViewStatus
+from .shared_tech.view import (
+    CompactReceipt,
+    LlmRequestContext,
+    PreviewCompactOutcome,
+    PruneReceipt,
+    SessionThreadView,
+    StoredView,
+    ViewStatus,
+)
 from .shared_tech.storage import Database
 from .shared_tech.scheduler import DrainReport
 from .shared_tech.work_queue import WorkHandlerMap, WorkKind
-from .thread_view import CompactOpts
+from .thread_view import CompactOpts, MaterializeOpts, MaterializeResult, PruneParams
 from .threads import NewThreadInput, NewThreadResult, ThreadRef
 from .turns import ChunkDeriveResult, ChunkRecord, TurnDeriveResult, TurnRecord
 
@@ -153,13 +161,29 @@ class LhcTurns(Protocol):
 
 
 class LhcThreadView(Protocol):
-    """Wave 4/5/6 import seam: status + Wave 5 compact/get_llm_request_context."""
+    """Wave 4/5/6 import seam: status, compact, context, prune, preview, materialize, session view."""
 
     async def get_llm_request_context(self, ref: ThreadRef) -> OpResult[LlmRequestContext]: ...
+
+    async def get_session_thread_view(self, ref: ThreadRef) -> OpResult[SessionThreadView]: ...
 
     async def status(self, ref: ThreadRef) -> OpResult[ViewStatus]: ...
 
     async def compact(self, ref: ThreadRef, opts: CompactOpts) -> OpResult[CompactReceipt]: ...
+
+    async def preview_compact(
+        self, ref: ThreadRef, opts: CompactOpts
+    ) -> OpResult[PreviewCompactOutcome]: ...
+
+    async def prune(
+        self, ref: ThreadRef, params: PruneParams | None = None
+    ) -> OpResult[PruneReceipt]: ...
+
+    async def materialize(
+        self, ref: ThreadRef, opts: MaterializeOpts
+    ) -> OpResult[MaterializeResult]: ...
+
+    async def describe(self, ref: ThreadRef) -> OpResult[StoredView | None]: ...
 
 
 class Lhc(Protocol):
