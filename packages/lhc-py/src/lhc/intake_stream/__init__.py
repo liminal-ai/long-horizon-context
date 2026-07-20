@@ -6,6 +6,7 @@ Bodies remain NotImplementedError; pipeline owns the walk.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict, Union
 
@@ -150,6 +151,9 @@ class BatchEventOutcome:
     skip_reason: Literal["duplicate_idempotency_key"] | None = None
 
 
+# NOMINAL-TYPING BOUNDARY: same shape as turns.TurnTransition, but a distinct class —
+# dataclass __eq__ requires identical type, so Phase 2 must convert
+# explicitly at this boundary (or tests comparing across it will fail).
 @dataclass(frozen=True, slots=True)
 class TurnTransition:
     action: Literal["opened", "closed"]
@@ -288,7 +292,7 @@ EventRecord = Union[
 
 async def message_events(
     thread_ref: ThreadRef,
-    events: list[MessageEventInput] | tuple[MessageEventInput, ...],
+    events: Sequence[MessageEventInput],
 ) -> OpResult[BatchResult]:
     raise NotImplementedError
 

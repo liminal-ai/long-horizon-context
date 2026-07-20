@@ -10,15 +10,24 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from ...messages import create as _create_message
+from typing import TYPE_CHECKING
+
 from ...shared_tech.errors import OpResult
 from ...shared_tech.storage import Database
 from ...threads import ThreadRef
 from ...turns import TurnStateCorruptionError, create as _create_turn
 from .. import BatchResult, EventRecord, MessageEventInput
 
+if TYPE_CHECKING:
+    # IMPORT-CYCLE SEAM: messages/__init__ imports ..intake_stream at runtime,
+    # so a top-level runtime import of messages here detonates the cycle the
+    # moment intake_stream/__init__ imports this pipeline at module top
+    # (Phase 2). Phase 2's walk body must import messages.create lazily:
+    #     from ... import messages as _messages  # inside the walk function
+    from ...messages import create as _create_message
+
 # Closed over by Phase 2 walk; named for TS import fidelity.
-_ = (_create_message, _create_turn, TurnStateCorruptionError)
+_ = (_create_turn, TurnStateCorruptionError)
 
 # Test seam (set only through test/fixtures): called after each event is
 # processed inside the walk, so atomicity under mid-walk failure can be

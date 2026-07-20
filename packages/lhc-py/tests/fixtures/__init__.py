@@ -63,8 +63,8 @@ from .threads import (
     thread_with_tool_run,
 )
 from .work_handlers import (
+    make_test_work_handlers,
     register_test_work_handlers,
-    test_work_handlers,
 )
 from .lifecycle import (
     DELETE_TARGET,
@@ -260,6 +260,7 @@ __all__ = [
     "read_chunks",
     "read_derived_forms",
     "recording_call",
+    "make_test_work_handlers",
     "register_test_work_handlers",
     "run_lifecycle",
     "scripted_call",
@@ -270,7 +271,6 @@ __all__ = [
     "set_intake_walk_hook",
     "set_view_injection_hook",
     "temp_store",
-    "test_work_handlers",
     "thread_with_closed_turns",
     "thread_with_tool_run",
     "throwing_call",

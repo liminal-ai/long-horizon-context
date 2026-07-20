@@ -4,6 +4,12 @@ Name-keyed prompt registry: one module per template exporting
 `{ name, render(input) → messages }`. Config selects by name, and dial-in
 swaps by adding a module and editing config, with no handler, adapter, or
 host changes. Versioning is in the name (`smoothing-v1`).
+
+Intentional name shadow: after import, package attributes like
+`chunk_brief_v2` are the template *instances*, not the submodules. The
+submodules remain reachable via importlib / sys.modules
+(`lhc.shared_tech.prompts.chunk_brief_v2` as a module path). See
+tests/test_prompts_shadow.py.
 """
 
 from __future__ import annotations

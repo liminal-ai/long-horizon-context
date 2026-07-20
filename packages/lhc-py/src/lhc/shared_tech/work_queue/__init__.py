@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Union
+from typing import TYPE_CHECKING, Literal, TypedDict, Union
 
-from ..derivation import CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler
+from ..derivation import CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler, WorkItemRef
 from ..persist import DbWriteTransaction
 from ..storage import Database
 
@@ -31,19 +31,18 @@ WorkKind = Literal[
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class WorkSourceRefMessage:
-    message_id: str
+# Persisted JSON byte-for-byte (JSON.stringify(sourceRef) into work_item.source_ref).
+# TypedDict + verbatim camelCase keys — same precedent as ThreadRef.
+class WorkSourceRefMessage(TypedDict):
+    messageId: str
 
 
-@dataclass(frozen=True, slots=True)
-class WorkSourceRefTurn:
-    turn_id: str
+class WorkSourceRefTurn(TypedDict):
+    turnId: str
 
 
-@dataclass(frozen=True, slots=True)
-class WorkSourceRefChunk:
-    chunk_id: str
+class WorkSourceRefChunk(TypedDict):
+    chunkId: str
 
 
 WorkSourceRef = Union[WorkSourceRefMessage, WorkSourceRefTurn, WorkSourceRefChunk]
@@ -98,6 +97,27 @@ class EnqueueDerivationTarget:
     derivation_type: str
 
 
+# ── persisted work_item.payload JSON (canonical stored shape) ─────
+# CamelCase TypedDicts: the byte-for-byte JSON written into work_item.payload.
+# thread_migrate and _parse_work_payload both consume this shape.
+
+
+class _QueuedDerivationTarget(TypedDict):
+    """EnqueueDerivationTarget's stored-payload shape (camelCase JSON keys)."""
+
+    subjectKind: str
+    subjectId: str
+    derivationType: str
+
+
+class _QueuedWorkItemPayload(TypedDict, total=False):
+    """Persisted work_item.payload JSON (camelCase keys)."""
+
+    sourceVersion: int
+    operation: str
+    derivations: list[_QueuedDerivationTarget]
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemInput:
     owner: WorkOwner
@@ -105,7 +125,7 @@ class WorkItemInput:
     source_ref: WorkSourceRef
     operation: DurableWorkOperation | None = None
     source_version: int | None = None  # defaults to 1 — first version of a fresh source
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget] | None = None
+    derivations: Sequence[EnqueueDerivationTarget] | None = None
 
 
 def _source_id_of(source_ref: WorkSourceRef) -> str:
@@ -130,7 +150,7 @@ class EnqueueInput:
     owner: WorkOwner
     kind: WorkKind
     source_ref: WorkSourceRef
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget]
+    derivations: Sequence[EnqueueDerivationTarget]
     operation: DurableWorkOperation | None = None
     source_version: int | None = None
 
@@ -164,34 +184,34 @@ class ImmediateClaimInput:
     owner: WorkOwner
     kind: WorkKind
     source_ref: WorkSourceRef
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget]
-    expected_derivations: tuple[ImmediateDerivationBoundary, ...] | list[ImmediateDerivationBoundary]
+    derivations: Sequence[EnqueueDerivationTarget]
+    expected_derivations: Sequence[ImmediateDerivationBoundary]
     operation: DurableWorkOperation | None = None
     source_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ImmediateClaimClaimed:
-    outcome: Literal["claimed"]
     item: ClaimedWorkItem
+    outcome: Literal["claimed"] = "claimed"
 
 
 @dataclass(frozen=True, slots=True)
 class ImmediateClaimExpired:
-    outcome: Literal["expired"]
     item: ClaimedWorkItem
+    outcome: Literal["expired"] = "expired"
 
 
 @dataclass(frozen=True, slots=True)
 class ImmediateClaimQueued:
-    outcome: Literal["queued"]
     work_item_id: str
+    outcome: Literal["queued"] = "queued"
 
 
 @dataclass(frozen=True, slots=True)
 class ImmediateClaimInFlight:
-    outcome: Literal["in_flight"]
     work_item_id: str
+    outcome: Literal["in_flight"] = "in_flight"
 
 
 ImmediateClaimOutcome = Union[
@@ -246,31 +266,38 @@ class ClaimedWorkItem:
     source_ref: WorkSourceRef
     queued_at: str
     source_version: int
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget]
+    derivations: Sequence[EnqueueDerivationTarget]
     operation: DurableWorkOperation | None = None
+
+
+# Phase 2 conversion seam: ClaimedWorkItem (runtime snake dataclass) →
+# WorkItemRef (handler TypedDict with camelCase keys). No named conversion
+# exists in TS; this is the Python seam point.
+def work_item_ref_of(item: ClaimedWorkItem) -> WorkItemRef:
+    raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimOutcomeClaimed:
-    outcome: Literal["claimed"]
     item: ClaimedWorkItem
+    outcome: Literal["claimed"] = "claimed"
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimOutcomeExpired:
-    outcome: Literal["expired"]
     item: ClaimedWorkItem
+    outcome: Literal["expired"] = "expired"
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimOutcomeEmpty:
-    outcome: Literal["empty"]
+    outcome: Literal["empty"] = "empty"
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimOutcomeInFlight:
-    outcome: Literal["in_flight"]
     claim_expires_at: str
+    outcome: Literal["in_flight"] = "in_flight"
 
 
 ClaimOutcome = Union[
@@ -293,6 +320,12 @@ class _RawClaimRow:
 
 @dataclass(frozen=True, slots=True)
 class _WorkPayload:
+    """Parsed in-memory form of `_QueuedWorkItemPayload`.
+
+    Phase 2 builds this FROM the stored camelCase TypedDict (JSON.parse of
+    work_item.payload), then maps operation strings through operation_intent.
+    """
+
     source_version: int | None = None
     operation: DurableWorkOperation | None = None
     derivations: list[EnqueueDerivationTarget] | None = None
@@ -302,6 +335,9 @@ def _parse_work_payload(row: _RawClaimRow) -> _WorkPayload:
     raise NotImplementedError
 
 
+# IMPORT-CYCLE SEAM: DurableWorkOperation is TYPE_CHECKING-only here because
+# durable_work imports this module at top level. The Phase 2 body must import
+# lazily: `from .durable_work import ...` inside this function.
 def _operation_intent_for_row(kind: str, source_ref: WorkSourceRef) -> DurableWorkOperation | None:
     raise NotImplementedError
 

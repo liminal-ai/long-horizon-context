@@ -80,7 +80,10 @@ class InferenceWriteErr:
 InferenceWriteResult = Union[InferenceWriteOk, InferenceWriteErr]
 
 
-def test_work_handlers(
+# TS fixture names: `testWorkHandlers` / `testWorkDispatchers`. Renamed with
+# `make_` prefix so pytest does not collect these factories as tests if the
+# module is imported into a test file.
+def make_test_work_handlers(
     inference_callbacks: InferenceCallbacks,
     hooks: TestHandlerHooks | None = None,
 ) -> dict[WorkKind, WorkHandler]:
@@ -105,7 +108,7 @@ def _inference_write(
     raise NotImplementedError
 
 
-def test_work_dispatchers(
+def make_test_work_dispatchers(
     inference_callbacks: InferenceCallbacks,
     hooks: TestHandlerHooks | None = None,
 ) -> DurableWorkDispatcherMap:

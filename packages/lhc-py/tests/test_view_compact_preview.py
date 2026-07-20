@@ -31,6 +31,8 @@ from fixtures import (
     valid_event,
 )
 
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
 TARGET_PARAMS = ViewCompactParams(
     lower_bound=400,
     percentages=PartialViewProfilePercentages(full=25, smooth=25, detailed=25, brief=25),

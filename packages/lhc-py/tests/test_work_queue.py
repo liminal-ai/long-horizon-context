@@ -142,13 +142,13 @@ async def test_tc_2_7_a_prompt_and_a_tool_result_each_durably_queue_their_kind_o
         work_item_id="w-m1-prompt_smoothing-v1",
         owner="messages",
         kind="prompt_smoothing",
-        source_ref=WorkSourceRefMessage(message_id="m1"),
+        source_ref=WorkSourceRefMessage(messageId="m1"),
     ) in result.queued_work
     assert QueuedWorkItem(
         work_item_id="w-m2-tool_result_summary-v1",
         owner="messages",
         kind="tool_result_summary",
-        source_ref=WorkSourceRefMessage(message_id="m2"),
+        source_ref=WorkSourceRefMessage(messageId="m2"),
     ) in result.queued_work
 
     # Durable read-back through the owning domain: deterministic ids, status
@@ -158,7 +158,7 @@ async def test_tc_2_7_a_prompt_and_a_tool_result_each_durably_queue_their_kind_o
             work_item_id="w-m1-prompt_smoothing-v1",
             owner="messages",
             kind="prompt_smoothing",
-            source_ref=WorkSourceRefMessage(message_id="m1"),
+            source_ref=WorkSourceRefMessage(messageId="m1"),
             status="queued",
             queued_at=_FIXED_INSTANT,
         ),
@@ -166,7 +166,7 @@ async def test_tc_2_7_a_prompt_and_a_tool_result_each_durably_queue_their_kind_o
             work_item_id="w-m2-tool_result_summary-v1",
             owner="messages",
             kind="tool_result_summary",
-            source_ref=WorkSourceRefMessage(message_id="m2"),
+            source_ref=WorkSourceRefMessage(messageId="m2"),
             status="queued",
             queued_at=_FIXED_INSTANT,
         ),
@@ -231,7 +231,7 @@ async def test_tc_2_6_a_mixed_batchs_result_is_complete(store: TempStore) -> Non
             work_item_id="w-t1-turn_derivation-v1",
             owner="turns",
             kind="turn_derivation",
-            source_ref=WorkSourceRefTurn(turn_id="t1"),
+            source_ref=WorkSourceRefTurn(turnId="t1"),
         )
     ]
     assert result.thread_position == ThreadPosition(last_event_order=3)
@@ -256,14 +256,14 @@ async def test_tc_3_3_work_half_explicit_close_durably_queues_turn_derivation_ow
         work_item_id="w-t1-turn_derivation-v1",
         owner="turns",
         kind="turn_derivation",
-        source_ref=WorkSourceRefTurn(turn_id="t1"),
+        source_ref=WorkSourceRefTurn(turnId="t1"),
     ) in result.queued_work
     assert _queued_for(file_path, "turns") == [
         WorkItemRecord(
             work_item_id="w-t1-turn_derivation-v1",
             owner="turns",
             kind="turn_derivation",
-            source_ref=WorkSourceRefTurn(turn_id="t1"),
+            source_ref=WorkSourceRefTurn(turnId="t1"),
             status="queued",
             queued_at=_FIXED_INSTANT,
         )
@@ -296,7 +296,7 @@ async def test_tc_3_6_work_half_implicit_close_queues_the_same_work_item_contrac
             work_item_id="w-t1-turn_derivation-v1",
             owner="turns",
             kind="turn_derivation",
-            source_ref=WorkSourceRefTurn(turn_id="t1"),
+            source_ref=WorkSourceRefTurn(turnId="t1"),
             status="queued",
             queued_at="",
         )
@@ -548,7 +548,7 @@ async def test_enqueue_via_create_db_write_transaction_rollback_drops_effects_co
             EnqueueInput(
                 owner="turns",
                 kind="chunk_summary_brief",
-                source_ref=WorkSourceRefChunk(chunk_id="c1"),
+                source_ref=WorkSourceRefChunk(chunkId="c1"),
                 derivations=[
                     EnqueueDerivationTarget(
                         subject_kind="chunk", subject_id="c1", derivation_type="chunk_summary_brief"
@@ -572,7 +572,7 @@ async def test_enqueue_via_create_db_write_transaction_rollback_drops_effects_co
             EnqueueInput(
                 owner="turns",
                 kind="chunk_summary_brief",
-                source_ref=WorkSourceRefChunk(chunk_id="c1"),
+                source_ref=WorkSourceRefChunk(chunkId="c1"),
                 derivations=[
                     EnqueueDerivationTarget(
                         subject_kind="chunk", subject_id="c1", derivation_type="chunk_summary_brief"
@@ -606,7 +606,7 @@ async def test_re_enqueueing_at_a_later_source_version_resets_the_form_row_to_pe
             EnqueueInput(
                 owner="messages",
                 kind="prompt_smoothing",
-                source_ref=WorkSourceRefMessage(message_id="mx"),
+                source_ref=WorkSourceRefMessage(messageId="mx"),
                 derivations=[
                     EnqueueDerivationTarget(
                         subject_kind="message", subject_id="mx", derivation_type="smoothed_prompt"
@@ -626,7 +626,7 @@ async def test_re_enqueueing_at_a_later_source_version_resets_the_form_row_to_pe
             EnqueueInput(
                 owner="messages",
                 kind="prompt_smoothing",
-                source_ref=WorkSourceRefMessage(message_id="mx"),
+                source_ref=WorkSourceRefMessage(messageId="mx"),
                 source_version=2,
                 derivations=[
                     EnqueueDerivationTarget(

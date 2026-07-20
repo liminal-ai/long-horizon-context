@@ -15,20 +15,6 @@ from ..shared_tech.errors import ErrorResult, OpErr, OpResult
 from ..shared_tech.storage import Database
 from ..shared_tech.work_queue import WorkItemRecord
 from ..threads import ThreadRef
-from .internal.chunk_recovery import (
-    CompactChunkBlocked,
-    CompactChunkConcat,
-    CompactChunkMaterial,
-    CompactChunkReady,
-)
-from .internal.chunks import ChunkStructureRow
-from .internal.store import TurnStructureRow
-
-if TYPE_CHECKING:
-    from ..intake_stream import EventKind
-    from ..shared_tech.persist import DbReadTransaction, DbWriteTransaction
-
-
 @dataclass(frozen=True, slots=True)
 class TurnRecord:
     turn_id: str
@@ -44,6 +30,25 @@ class TurnRecord:
     # Stored turn-owned derivations, attached only when rows exist. Reads
     # return stored state verbatim and never block on derivation readiness.
     derivations: list[Derivation] | None = None
+
+# IMPORT-ORDER CONSTRAINT: the internal modules below construct the record
+# types defined above via runtime `from .. import ...` while this package is
+# still partially initialized. The record definitions MUST stay above these
+# imports — reordering breaks every import of this package.
+from .internal.chunk_recovery import (
+    CompactChunkBlocked,
+    CompactChunkConcat,
+    CompactChunkMaterial,
+    CompactChunkReady,
+)
+from .internal.chunks import ChunkStructureRow
+from .internal.store import TurnStructureRow
+
+if TYPE_CHECKING:
+    from ..intake_stream import EventKind
+    from ..shared_tech.persist import DbReadTransaction, DbWriteTransaction
+
+
 
 
 @dataclass(frozen=True, slots=True)

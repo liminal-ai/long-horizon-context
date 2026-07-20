@@ -8,13 +8,15 @@ validation and row applies also live here: row-level mechanics, no policy.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from ...shared_tech.derivation import Derivation
 from ...shared_tech.storage import Database
 
-if TYPE_CHECKING:
-    from .. import Block, MessageKind, MessageRecord
+# Runtime import (not TYPE_CHECKING): Phase 2 bodies construct these records.
+# Safe because the parent __init__ defines them BEFORE importing this module
+# (see the IMPORT-ORDER CONSTRAINT note there).
+from .. import Block, MessageKind, MessageRecord
 
 _SQL_INSERT_MESSAGE = (
     """INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)

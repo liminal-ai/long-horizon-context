@@ -9,12 +9,14 @@ because no UPDATE touches closed rows.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from ...shared_tech.storage import Database
 
-if TYPE_CHECKING:
-    from .. import TurnRecord
+# Runtime import (not TYPE_CHECKING): Phase 2 bodies construct these records.
+# Safe because the parent __init__ defines them BEFORE importing this module
+# (see the IMPORT-ORDER CONSTRAINT note there).
+from .. import TurnRecord
 
 _SQL_SELECT_OPEN_TURN_IDS = """SELECT turn_id FROM turns WHERE status = 'open' ORDER BY turn_order"""
 

@@ -1,4 +1,11 @@
 """Ported from packages/lhc/src/shared-tech/persist.ts. Phase 1 skeleton.
+
+LAYERING NOTE: this module imports the threads domain — faithful to the TS,
+where persist.ts is the sanctioned exception to "shared-tech may not import
+the domains" (derivation.ts comment). The resulting shared_tech <-> threads
+cycle survives ONLY because threads/__init__ imports shared_tech SUBMODULES
+directly (e.g. `from ..shared_tech.errors import ...`), never the package.
+That constraint is load-bearing; see the matching note in threads/__init__.
 """
 
 from __future__ import annotations

@@ -72,7 +72,7 @@ DurableWorkOperationName = Literal[
 @dataclass(frozen=True, slots=True)
 class DerivationAttempt:
     source_version: int
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget]
+    derivations: Sequence[EnqueueDerivationTarget]
     work_item_id: str | None = None
 
 
@@ -106,7 +106,7 @@ class DurableWorkDispatcherItem:
     kind: str
     source_ref: WorkSourceRef
     source_version: int
-    derivations: tuple[EnqueueDerivationTarget, ...] | list[EnqueueDerivationTarget]
+    derivations: Sequence[EnqueueDerivationTarget]
     operation: DurableWorkOperation
 
 

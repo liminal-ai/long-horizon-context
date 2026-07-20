@@ -3,6 +3,10 @@
 Full messages surface: create/list/show/report/derive/edit/remove plus the
 mutation result contract. Internal modules own store/project/cascade/handlers;
 this package re-exports the public API and private index helpers.
+
+WARNING: this module exports `async def list(...)`, which shadows the builtin
+`list` at module level (TS fidelity). Phase 2 bodies in this module must use
+`_builtin_list` / `builtins.list`, never bare `list` for the type.
 """
 
 from __future__ import annotations
@@ -16,14 +20,6 @@ from ..shared_tech.errors import ErrorResult, OpErr, OpResult
 from ..shared_tech.storage import Database
 from ..shared_tech.work_queue import WorkItemRecord, WorkKind
 from ..threads import ThreadRef
-from .internal.cascade import CascadeClear
-from .internal.derive import (
-    MessageDeriveFailed,
-    MessageDeriveResult,
-    MessageDerived,
-    MessageNotDerivable,
-)
-from .internal.smoothing import clean_prompt
 
 if TYPE_CHECKING:
     from ..shared_tech.persist import DbWriteTransaction
@@ -83,6 +79,19 @@ class MessageRecord:
 # its server-stamped order and timestamp.
 RecordedEvent = EventRecord
 
+# IMPORT-ORDER CONSTRAINT: the internal modules below construct the record
+# types defined above via runtime `from .. import ...` while this package is
+# still partially initialized. The record definitions MUST stay above these
+# imports — reordering breaks every import of this package.
+from .internal.cascade import CascadeClear
+from .internal.derive import (
+    MessageDeriveFailed,
+    MessageDeriveResult,
+    MessageDerived,
+    MessageNotDerivable,
+)
+from .internal.smoothing import clean_prompt
+
 
 @dataclass(frozen=True, slots=True)
 class MessageCreated:
@@ -140,6 +149,9 @@ def _invalid_bounds(reason: str) -> ErrorResult:
 # silent empty list a caller could mistake for an empty window.
 def _validate_list_options(opts: MessageListOptions) -> ErrorResult | None:
     raise NotImplementedError
+
+
+_builtin_list = list  # Phase 2 bodies in this module must use _builtin_list / builtins.list
 
 
 async def list(thread_ref: ThreadRef, filter: MessageListOptions | None = None) -> OpResult[list[MessageRecord]]:
@@ -221,6 +233,9 @@ class MutationChanged:
     turn_ids: list[str]
 
 
+# NOMINAL-TYPING BOUNDARY: same shape as messages.internal.cascade.CascadeQueued, but a distinct class —
+# dataclass __eq__ requires identical type, so Phase 2 must convert
+# explicitly at this boundary (or tests comparing across it will fail).
 @dataclass(frozen=True, slots=True)
 class MutationQueuedWork:
     work_item_id: str

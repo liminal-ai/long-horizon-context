@@ -41,15 +41,27 @@ from fixtures import (
     temp_store,
 )
 
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
 _FROZEN_AT = datetime(2026, 6, 12, 0, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(scope="module")
 def _freeze_date_only():
-    """Mirror `vi.useFakeTimers({ toFake: ["Date"] })` + setSystemTime — Date only."""
+    """Mirror `vi.useFakeTimers({ toFake: ["Date"] })` + setSystemTime — Date only.
+
+    Phase 2 preference: inject the clock through the SDK seam rather than
+    patching datetime (this freeze exists only to match the TS harness).
+    """
     real_datetime = datetime
 
-    class FrozenDateTime(real_datetime):
+    class _FrozenDateTimeMeta(type(real_datetime)):
+        def __instancecheck__(cls, instance: object) -> bool:
+            # Preserve isinstance(real_dt, datetime) after patching the name
+            # `datetime` to FrozenDateTime.
+            return isinstance(instance, real_datetime)
+
+    class FrozenDateTime(real_datetime, metaclass=_FrozenDateTimeMeta):
         @classmethod
         def now(cls, tz: Any = None) -> datetime:
             if tz is None:

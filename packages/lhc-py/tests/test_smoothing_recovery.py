@@ -200,7 +200,7 @@ async def test_does_not_call_inference_callbacks_during_intake_intake_only_queue
             work_item_id="w-m1-prompt_smoothing-v1",
             owner="messages",
             kind="prompt_smoothing",
-            source_ref=WorkSourceRefMessage(message_id="m1"),
+            source_ref=WorkSourceRefMessage(messageId="m1"),
         )
     ]
 

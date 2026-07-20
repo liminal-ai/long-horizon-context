@@ -6,6 +6,7 @@ protocols, and the type/value re-exports mirrors of sdk.ts.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar, TypedDict
 from weakref import WeakKeyDictionary
@@ -311,7 +312,7 @@ class LhcIntakeStream(Protocol):
     async def message_events(
         self,
         ref: ThreadRef,
-        events: list[MessageEventInput] | tuple[MessageEventInput, ...],
+        events: Sequence[MessageEventInput],
     ) -> OpResult[BatchResult]: ...
 
     async def list_events(self, ref: ThreadRef) -> OpResult[list[EventRecord]]: ...
@@ -439,6 +440,9 @@ class _WorkRegistration:
     work_dispatchers: DurableWorkDispatcherMap
 
 
+# Phase 2's Lhc implementation must be weak-referenceable and hashable
+# (plain class or dataclass(slots=True, weakref_slot=True, eq=False));
+# frozen+slots dataclass will not work as a WeakKeyDictionary key.
 _work_registration_by_sdk: WeakKeyDictionary[Lhc, _WorkRegistration] = WeakKeyDictionary()
 
 _INIT_CONFIG_PREFIX = "initLhc config"

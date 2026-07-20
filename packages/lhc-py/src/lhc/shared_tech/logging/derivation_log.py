@@ -30,13 +30,16 @@ class DerivationLogTarget:
 
 @dataclass(frozen=True, slots=True)
 class DerivationLogPayload:
-    """Payload may carry arbitrary additional keys (TS index signature)."""
+    """Documentation of known payload keys (TS index signature allows extras).
+
+    Call sites and DerivationLogEntry.payload use dict[str, object]; this
+    dataclass documents the known optional keys only — do not pass it into
+    append/query APIs.
+    """
 
     reason: str | None = None
     fallback_floor: str | None = None
     provenance: dict[str, str] | None = None  # {provider, model, prompt}
-    # Extra keys allowed at runtime via dict conversion in Phase 2; Phase 1
-    # keeps the known fields. Call sites needing extras use a plain dict.
 
 
 @dataclass(frozen=True, slots=True)

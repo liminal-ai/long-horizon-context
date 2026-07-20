@@ -108,12 +108,18 @@ class DerivationSnapshot:
     reason: str | None = None
 
 
+# NOMINAL-TYPING BOUNDARY: same shape as turns.internal.chunk_recovery.CompactChunkReady, but a distinct class —
+# dataclass __eq__ requires identical type, so Phase 2 must convert
+# explicitly at this boundary (or tests comparing across it will fail).
 @dataclass(frozen=True, slots=True)
 class CompactChunkMaterialReady:
     content: str
     kind: Literal["ready"] = "ready"
 
 
+# NOMINAL-TYPING BOUNDARY: same shape as turns.internal.chunk_recovery.CompactChunkConcat, but a distinct class —
+# dataclass __eq__ requires identical type, so Phase 2 must convert
+# explicitly at this boundary (or tests comparing across it will fail).
 @dataclass(frozen=True, slots=True)
 class CompactChunkMaterialConcat:
     content: str

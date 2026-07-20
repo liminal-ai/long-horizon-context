@@ -35,6 +35,8 @@ from fixtures import (
     temp_store,
 )
 
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
 GRADIENT_PARAMS = ViewCompactParams(
     lower_bound=400,
     percentages=PartialViewProfilePercentages(full=25, smooth=16, detailed=10, brief=49),

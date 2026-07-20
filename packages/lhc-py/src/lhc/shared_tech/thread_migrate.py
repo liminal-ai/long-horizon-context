@@ -5,12 +5,12 @@ Thread-file schema migrations applied on open.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal
 
 from .storage import CURRENT_THREAD_SCHEMA_VERSION, Database, get_schema_version
 
 if TYPE_CHECKING:
-    from .work_queue import EnqueueDerivationTarget
+    from .work_queue import EnqueueDerivationTarget, _QueuedWorkItemPayload
 
 
 THREAD_SCHEMA_VERSION_1 = 1
@@ -51,19 +51,9 @@ def _migrate_detailed_turn_compression_rename(db: Database) -> None:
     raise NotImplementedError
 
 
-class _QueuedDerivationTarget(TypedDict):
-    """EnqueueDerivationTarget's stored-payload shape (camelCase JSON keys)."""
-
-    subjectKind: str
-    subjectId: str
-    derivationType: str
-
-
-class _QueuedWorkItemPayload(TypedDict, total=False):
-    sourceVersion: int
-    operation: str
-    derivations: list[_QueuedDerivationTarget]
-
+# Canonical stored payload TypedDicts (`_QueuedWorkItemPayload` etc.) live in
+# work_queue (TS owner). Imported under TYPE_CHECKING only — a runtime import
+# would cycle (work_queue → persist → threads → thread_migrate).
 
 _LEGACY_TURN_DERIVATION_COMPRESSION_TYPES: frozenset[str] = frozenset(
     {_OLD_DERIVATION_TYPE, _NEW_DERIVATION_TYPE}

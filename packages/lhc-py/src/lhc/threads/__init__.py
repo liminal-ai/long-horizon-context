@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict, Union
 
 from ..shared_tech.errors import OpErr, OpResult
+# LAYERING CONSTRAINT (load-bearing): import shared_tech SUBMODULES only,
+# never `from ..shared_tech import ...` — persist.py imports this domain,
+# and a package-level import here would deadlock that cycle. See persist.py.
 from .internal.create import open_thread_database
 from .internal.registry import RegistryRow
 

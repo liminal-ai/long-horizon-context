@@ -8,10 +8,10 @@ summarizes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .. import Block, RecordedEvent
+# Runtime import (not TYPE_CHECKING): Phase 2 bodies construct these records.
+# Safe because the parent __init__ defines them BEFORE importing this module
+# (see the IMPORT-ORDER CONSTRAINT note there).
+from .. import Block, RecordedEvent
 
 
 @dataclass(frozen=True, slots=True)

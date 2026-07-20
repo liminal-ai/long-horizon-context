@@ -379,7 +379,7 @@ async def test_repairing_the_smoothing_changes_nothing_re_queueing_the_rendering
         EnqueueInput(
             owner="messages",
             kind="prompt_smoothing",
-            source_ref=WorkSourceRefMessage(message_id="m1"),
+            source_ref=WorkSourceRefMessage(messageId="m1"),
             derivations=[
                 EnqueueDerivationTarget(
                     subject_kind="message", subject_id="m1", derivation_type="smoothed_prompt"
@@ -407,7 +407,7 @@ async def test_repairing_the_smoothing_changes_nothing_re_queueing_the_rendering
         EnqueueInput(
             owner="turns",
             kind="turn_derivation",
-            source_ref=WorkSourceRefTurn(turn_id="t1"),
+            source_ref=WorkSourceRefTurn(turnId="t1"),
             source_version=2,
             derivations=[
                 EnqueueDerivationTarget(
@@ -893,7 +893,7 @@ async def test_the_brief_item_fails_alone_detailed_ready_brief_failed_brief_re_d
         EnqueueInput(
             owner="turns",
             kind="chunk_summary_brief",
-            source_ref=WorkSourceRefChunk(chunk_id="c1"),
+            source_ref=WorkSourceRefChunk(chunkId="c1"),
             derivations=[
                 EnqueueDerivationTarget(
                     subject_kind="chunk",

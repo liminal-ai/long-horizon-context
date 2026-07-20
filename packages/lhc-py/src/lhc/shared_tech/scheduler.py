@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 from .derivation import ResolvedSdkConfig
 from .durable_work import DurableWorkDispatcher, DurableWorkOperation
 from .errors import ErrorResult, OpResult
-from .logging.derivation_log import DerivationLogEventKind, DerivationLogPayload
+from .logging.derivation_log import DerivationLogEventKind
 from .storage import Database
 from .work_queue import ClaimedWorkItem, EnqueueDerivationTarget, WorkKind, WorkSourceRef
 
@@ -88,7 +88,7 @@ def _log_derivation_execution(
     db: Database,
     derivations: Sequence[EnqueueDerivationTarget],
     event_kind: DerivationLogEventKind,
-    payload: DerivationLogPayload,
+    payload: dict[str, object],
 ) -> None:
     raise NotImplementedError
 
