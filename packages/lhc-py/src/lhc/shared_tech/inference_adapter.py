@@ -42,6 +42,13 @@ class TargetRatios(TypedDict, total=False):
     targetAimRatio: float
 
 
+class _CallInput(ModelCallInput):
+    """ModelCallInput with the dict-style reads accepted by Python hosts."""
+
+    def __getitem__(self, key: str) -> object:
+        return getattr(self, key)
+
+
 # A pathological tool result must not blow a small-context model. Content over
 # the bound keeps its head and tail around a marker, and the bounded whole
 # stays within maxInputChars; bounding happens before prompt rendering, so the
@@ -125,16 +132,20 @@ async def _call_kind(
             "invalid_request", f'prompt template "{assignment.prompt}" not in registry'
         )
     messages = template.render(_with_target_ratios(input, assignment))  # type: ignore[arg-type]
-    call_input = ModelCallInput(
+    call_input = _CallInput(
         provider=assignment.provider,
         model=assignment.model,
         messages=messages,
         thinking=assignment.thinking,
     )
     result = await safe_call(config.call, call_input, config.timeout_ms)
-    if not result.ok:
-        return _inference_failure(result.kind, result.message, messages)
-    text = result.text.strip()
+    ok = result["ok"] if isinstance(result, dict) else result.ok
+    if not ok:
+        kind = result["kind"] if isinstance(result, dict) else result.kind
+        message = result["message"] if isinstance(result, dict) else result.message
+        return _inference_failure(kind, message, messages)  # type: ignore[arg-type]
+    raw_text = result["text"] if isinstance(result, dict) else result.text
+    text = raw_text.strip()
     if text == "":
         return _inference_failure(
             "empty_output", "model returned empty or whitespace-only text", messages
@@ -147,7 +158,7 @@ async def _call_kind(
             prompt=assignment.prompt,
         ),
         request_messages=messages,
-        raw_response=result.text,
+        raw_response=raw_text,
     )
 
 

@@ -17,7 +17,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TypedDict, TypeVar
 
-from lhc.shared_tech.work_queue import WorkOwner
+from lhc import intake_stream, messages, thread_view
+from lhc.shared_tech.storage import open_database
+from lhc.shared_tech.work_queue import WorkOwner, list_items
+
+from .threads import read_derived_forms
 
 
 class ObservableState(TypedDict):
@@ -32,11 +36,26 @@ class ObservableState(TypedDict):
 
 
 def _queued_for(file_path: str, owner: WorkOwner) -> list[object]:
-    raise NotImplementedError
+    db = open_database(file_path)
+    try:
+        return list_items(db, owner)
+    finally:
+        db.close()
 
 
 async def observable_state(file_path: str) -> ObservableState:
-    raise NotImplementedError
+    ref = {"filePath": file_path}
+    context_read = await thread_view.get_llm_request_context(ref)
+    return {
+        "events": await intake_stream.list_events(ref),
+        "messages": await messages.list(ref, {"includeDeleted": True}),
+        "messageWork": _queued_for(file_path, "messages"),
+        "turnWork": _queued_for(file_path, "turns"),
+        "viewStatus": await thread_view.status(ref),
+        "modelContext": context_read,
+        "storedView": await thread_view.describe(ref),
+        "derivations": read_derived_forms(file_path),
+    }
 
 
 T = TypeVar("T")
@@ -46,7 +65,11 @@ T = TypeVar("T")
 # so call sites can keep asserting on it. Raises (deep-equality assertion)
 # when the operation moved anything observable.
 async def expect_read_only(file_path: str, operation: Callable[[], Awaitable[T]]) -> T:
-    raise NotImplementedError
+    before = await observable_state(file_path)
+    result = await operation()
+    after = await observable_state(file_path)
+    assert after == before, "read-only delta: operation changed observable state"
+    return result
 
 
 __all__ = [

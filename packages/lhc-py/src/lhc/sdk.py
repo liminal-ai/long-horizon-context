@@ -6,8 +6,10 @@ protocols, and the type/value re-exports mirrors of sdk.ts.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal, Protocol, TypeVar, TypedDict
 from weakref import WeakKeyDictionary
 
@@ -27,7 +29,10 @@ from .messages import (
     RecordedEvent,
     RemoveInput,
 )
-from .messages.internal.derive import dispatch_message_derive_work
+from .messages.internal.derive import (
+    DispatchMessageDeriveWorkItem,
+    dispatch_message_derive_work,
+)
 from .messages.internal.handlers import message_work_handlers
 from .shared_tech import logging
 from .shared_tech.context import (
@@ -40,6 +45,8 @@ from .shared_tech.derivation import (
     INFERENCE_CALLBACK_OPERATIONS,
     CompletionTx,
     CompressionTargets,
+    BriefTargets,
+    ChunkPolicyConfig,
     DependencyGap,
     Derivation,
     DerivationMetadata,
@@ -50,12 +57,14 @@ from .shared_tech.derivation import (
     HandlerRunContext,
     InferenceCallbacks,
     InferenceResult,
+    LeaseConfig,
     ProviderProvenance,
     RenderingPart,
     ResolvedSdkConfig,
     SdkConfig,
     SubjectKind,
     ToolOutcome,
+    ToolResultConfig,
     ToolResultClassification,
     ToolResultFacts,
     ToolResultOperationClass,
@@ -71,12 +80,13 @@ from .shared_tech.deterministic import (
 )
 from .shared_tech.durable_work import (
     DurableWorkDispatcher,
+    DurableWorkDispatcherItem,
     DurableWorkDispatcherMap,
     DurableWorkDispatchResult,
     DurableWorkOperation,
     apply_derivation_success,
 )
-from .shared_tech.errors import ErrorClass, ErrorCode, ErrorResult, OpErr, OpResult, storage_failure
+from .shared_tech.errors import ErrorClass, ErrorCode, ErrorResult, OpErr, OpOk, OpResult, storage_failure
 from .shared_tech.storage import Database
 from .shared_tech.inference_adapter import create_inference_callbacks
 from .shared_tech.inference_types import (
@@ -86,6 +96,7 @@ from .shared_tech.inference_types import (
     ModelCallFailureKind,
     ModelCallInput,
     ModelCallResult,
+    ResolvedInferenceConfig,
     ResolvedDerivationGuards,
     ThinkingLevel,
     resolve_guards,
@@ -98,6 +109,7 @@ from .shared_tech.logging import (
     LogQuery,
     StoredDerivationLogEntry,
     StoredLogEntry,
+    query_derivation_log,
     query_log,
     write_log,
 )
@@ -111,6 +123,7 @@ from .shared_tech.persist import (
 from .shared_tech.prompts import DEFAULT_PROMPT_NAMES, PROMPT_NAMES, PROMPT_REGISTRY
 from .shared_tech.scheduler import (
     DrainDeps,
+    DrainOpts,
     DrainReport,
     Scheduler,
     SchedulerMode,
@@ -197,7 +210,11 @@ from .turns import (
     TurnStateCorruptionError,
     TurnTransitionOutcome,
 )
-from .turns.internal.derive import dispatch_turn_owned_work, turn_work_handlers
+from .turns.internal.derive import (
+    DispatchTurnOwnedWorkItem,
+    dispatch_turn_owned_work,
+    turn_work_handlers,
+)
 
 # Closed over by Phase 2 init_lhc body; named for TS import fidelity.
 _ = (
@@ -506,11 +523,18 @@ _DEFAULT_INFERENCE_ASSIGNMENTS: dict[str, ModelAssignment] = {
 
 
 def _unknown_work_kind(kind: str) -> OpErr:
-    raise NotImplementedError
+    return OpErr(
+        error=ErrorResult(
+            error_class="state_corruption",
+            code="unknown_work_kind",
+            reason=f'no handler registered for work kind "{kind}"',
+        )
+    )
 
 
 def _require_positive(value: float, name: str) -> None:
-    raise NotImplementedError
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: {name} must be a positive number, got {value}")
 
 
 # Bind a domain surface to one SDK instance's delivery seam (epic-fix-001):
@@ -520,14 +544,104 @@ def _require_positive(value: float, name: str) -> None:
 # pass through unchanged. The wrapped object is the same shape as the
 # namespace, so the public surface type holds.
 def _scope_surface(surface: T, seam: InstanceSeam) -> T:
-    raise NotImplementedError
+    class _Scoped:
+        def __getattr__(self, key: str) -> object:
+            value = getattr(surface, key)
+            if not callable(value):
+                return value
+
+            def scoped(*args: object, **kwargs: object) -> object:
+                return run_with_instance_seam(seam, lambda: value(*args, **kwargs))
+
+            return scoped
+
+    return _Scoped()  # type: ignore[return-value]
 
 
 def _resolve_target_ratios(
     kind: Literal["detailed_turn_compression", "chunk_summary_brief"],
     assignment: ModelAssignment | None = None,
 ) -> CompressionTargets:
-    raise NotImplementedError
+    defaults = _DEFAULT_INFERENCE_ASSIGNMENTS[kind]
+    return CompressionTargets(
+        min_ratio=(
+            assignment.target_min_ratio
+            if assignment is not None and assignment.target_min_ratio is not None
+            else defaults.target_min_ratio  # type: ignore[arg-type]
+        ),
+        aim_ratio=(
+            assignment.target_aim_ratio
+            if assignment is not None and assignment.target_aim_ratio is not None
+            else defaults.target_aim_ratio  # type: ignore[arg-type]
+        ),
+        max_ratio=(
+            assignment.target_max_ratio
+            if assignment is not None and assignment.target_max_ratio is not None
+            else defaults.target_max_ratio  # type: ignore[arg-type]
+        ),
+    )
+
+
+def _assignment_from(value: object, kind: str) -> ModelAssignment:
+    if isinstance(value, ModelAssignment):
+        return value
+    if not isinstance(value, dict):
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: inference.assignments.{kind} must be an object")
+    return ModelAssignment(
+        provider=value.get("provider"),  # type: ignore[arg-type]
+        model=value.get("model"),  # type: ignore[arg-type]
+        prompt=value.get("prompt"),  # type: ignore[arg-type]
+        target_min_ratio=value.get("targetMinRatio", value.get("target_min_ratio")),  # type: ignore[arg-type]
+        target_aim_ratio=value.get("targetAimRatio", value.get("target_aim_ratio")),  # type: ignore[arg-type]
+        target_max_ratio=value.get("targetMaxRatio", value.get("target_max_ratio")),  # type: ignore[arg-type]
+        thinking=value.get("thinking"),  # type: ignore[arg-type]
+    )
+
+
+def _merge_assignment(default: ModelAssignment, override: ModelAssignment) -> ModelAssignment:
+    return ModelAssignment(
+        provider=override.provider,
+        model=override.model,
+        prompt=override.prompt,
+        target_min_ratio=(
+            override.target_min_ratio
+            if override.target_min_ratio is not None
+            else default.target_min_ratio
+        ),
+        target_aim_ratio=(
+            override.target_aim_ratio
+            if override.target_aim_ratio is not None
+            else default.target_aim_ratio
+        ),
+        target_max_ratio=(
+            override.target_max_ratio
+            if override.target_max_ratio is not None
+            else default.target_max_ratio
+        ),
+        thinking=override.thinking if override.thinking is not None else default.thinking,
+    )
+
+
+def _merge_assignment_value(
+    default: ModelAssignment, value: object, kind: str
+) -> ModelAssignment:
+    if not isinstance(value, dict):
+        return _merge_assignment(default, _assignment_from(value, kind))
+    return ModelAssignment(
+        provider=value.get("provider", default.provider),  # type: ignore[arg-type]
+        model=value.get("model", default.model),  # type: ignore[arg-type]
+        prompt=value.get("prompt", default.prompt),  # type: ignore[arg-type]
+        target_min_ratio=value.get(
+            "targetMinRatio", value.get("target_min_ratio", default.target_min_ratio)
+        ),  # type: ignore[arg-type]
+        target_aim_ratio=value.get(
+            "targetAimRatio", value.get("target_aim_ratio", default.target_aim_ratio)
+        ),  # type: ignore[arg-type]
+        target_max_ratio=value.get(
+            "targetMaxRatio", value.get("target_max_ratio", default.target_max_ratio)
+        ),  # type: ignore[arg-type]
+        thinking=value.get("thinking", default.thinking),  # type: ignore[arg-type]
+    )
 
 
 # Resolve the `inference` construction path: validate the host function and
@@ -541,13 +655,81 @@ def _resolve_inference_callbacks(
     inference: InferenceConfig,
     guards: ResolvedDerivationGuards,
 ) -> InferenceCallbacks:
-    raise NotImplementedError
+    if isinstance(inference, dict):
+        call = inference.get("call")
+        provided = inference.get("assignments", {})
+        timeout_ms = inference.get("timeoutMs", inference.get("timeout_ms", 60_000))
+        max_input_chars = inference.get("maxInputChars", inference.get("max_input_chars", 200_000))
+    else:
+        call = inference.call
+        provided = inference.assignments if inference.assignments is not None else {}
+        timeout_ms = inference.timeout_ms if inference.timeout_ms is not None else 60_000
+        max_input_chars = inference.max_input_chars if inference.max_input_chars is not None else 200_000
+    if not callable(call):
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: inference.call must be a function")
+    if not isinstance(provided, dict):
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: inference.assignments must be an object")
+
+    inference_keys = set(_DEFAULT_INFERENCE_ASSIGNMENTS)
+    for key in provided:
+        if key not in inference_keys:
+            raise TypeError(
+                f'{_INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type "{key}"'
+            )
+
+    merged: dict[str, ModelAssignment] = {}
+    for kind, default in _DEFAULT_INFERENCE_ASSIGNMENTS.items():
+        assignment = (
+            _merge_assignment_value(default, provided[kind], kind)
+            if kind in provided
+            else default
+        )
+        for field in ("provider", "model", "prompt"):
+            value = getattr(assignment, field)
+            if not isinstance(value, str) or value.strip() == "":
+                raise TypeError(
+                    f"{_INIT_CONFIG_PREFIX}: inference.assignments.{kind}.{field} must be a non-empty string"
+                )
+        for field in ("target_min_ratio", "target_aim_ratio", "target_max_ratio"):
+            value = getattr(assignment, field)
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                public = {
+                    "target_min_ratio": "targetMinRatio",
+                    "target_aim_ratio": "targetAimRatio",
+                    "target_max_ratio": "targetMaxRatio",
+                }[field]
+                raise TypeError(
+                    f"{_INIT_CONFIG_PREFIX}: inference.assignments.{kind}.{public} must be a positive number"
+                )
+        if assignment.prompt not in PROMPT_REGISTRY:
+            raise TypeError(
+                f'{_INIT_CONFIG_PREFIX}: inference.assignments.{kind}.prompt names unknown template "{assignment.prompt}"'
+            )
+        merged[kind] = assignment
+
+    _require_positive(timeout_ms, "inference.timeoutMs")  # type: ignore[arg-type]
+    _require_positive(max_input_chars, "inference.maxInputChars")  # type: ignore[arg-type]
+    return create_inference_callbacks(
+        ResolvedInferenceConfig(
+            call=call,  # type: ignore[arg-type]
+            assignments=merged,
+            guards=guards,
+            timeout_ms=timeout_ms,  # type: ignore[arg-type]
+            max_input_chars=max_input_chars,  # type: ignore[arg-type]
+        )
+    )
 
 
 # Dispatch-time lookup: an unregistered kind is reported explicitly — never
 # a throw, never a silent undefined.
 def lookup_work_handler(map: WorkHandlerMap, kind: str) -> OpResult[WorkHandler]:
-    raise NotImplementedError
+    handler = map.get(kind)  # type: ignore[arg-type]
+    return _unknown_work_kind(kind) if handler is None else OpOk(value=handler)
 
 
 def lookup_work_dispatcher(
@@ -555,18 +737,392 @@ def lookup_work_dispatcher(
     operation: DurableWorkOperation | None,
     kind: str,
 ) -> OpResult[DurableWorkDispatcher]:
-    raise NotImplementedError
+    if operation is None:
+        return _unknown_work_kind(kind)
+    dispatcher = map.get(operation.operation)
+    return _unknown_work_kind(kind) if dispatcher is None else OpOk(value=dispatcher)
 
 
 def register_testing_work(sdk: Lhc, registration: _TestingWorkRegistration) -> None:
-    raise NotImplementedError
+    target = _work_registration_by_sdk.get(sdk)
+    if target is None:
+        raise TypeError("registerTestingWork called with an SDK not created by initLhc")
+    target.work_handlers.update(registration.get("handlers", {}))
+    target.work_dispatchers.update(registration.get("dispatchers", {}))
+
+
+def _config_value(config: object, snake: str, camel: str | None = None) -> object:
+    if isinstance(config, dict):
+        return config.get(camel or snake, config.get(snake))
+    return getattr(config, snake)
+
+
+def _coerce_guards(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    from .shared_tech.inference_types import (
+        DerivationGuards,
+        DetailedTurnCompressionGuards,
+        SmoothedPromptGuards,
+        ToolResultSummaryGuards,
+    )
+
+    smoothed = value.get("smoothedPrompt", value.get("smoothed_prompt"))
+    tool = value.get("toolResultSummary", value.get("tool_result_summary"))
+    detailed = value.get("detailedTurnCompression", value.get("detailed_turn_compression"))
+    return DerivationGuards(
+        smoothed_prompt=(
+            SmoothedPromptGuards(
+                max_inference_tokens=smoothed.get(
+                    "maxInferenceTokens", smoothed.get("max_inference_tokens")
+                ),
+                suspicious_output_ratio=smoothed.get(
+                    "suspiciousOutputRatio", smoothed.get("suspicious_output_ratio")
+                ),
+            )
+            if isinstance(smoothed, dict)
+            else None
+        ),
+        tool_result_summary=(
+            ToolResultSummaryGuards(
+                timeout_ms=tool.get("timeoutMs", tool.get("timeout_ms"))
+            )
+            if isinstance(tool, dict)
+            else None
+        ),
+        detailed_turn_compression=(
+            DetailedTurnCompressionGuards(
+                tiny_turn_tokens=detailed.get(
+                    "tinyTurnTokens", detailed.get("tiny_turn_tokens")
+                )
+            )
+            if isinstance(detailed, dict)
+            else None
+        ),
+    )
+
+
+class _LhcImpl:
+    pass
+
+
+class _IntakeStreamSurface:
+    """TS: typeof intakeStreamDomain & { initLhc } — domain ops plus re-entry."""
+
+    message_events = staticmethod(intake_stream.message_events)
+    list_events = staticmethod(intake_stream.list_events)
+    # Bound after init_lhc is defined (see bottom of this module).
+    init_lhc: Callable[[SdkConfig], Lhc]
 
 
 # The only initialization path: inference callbacks, mode, clock, and policy enter here.
 # Config mistakes are programmer errors at construction and throw; operating
 # failures after construction return OpResults per the error contract.
 def init_lhc(config: SdkConfig) -> Lhc:
-    raise NotImplementedError
+    direct = _config_value(config, "inference_callbacks", "inferenceCallbacks")
+    inference = _config_value(config, "inference")
+    if (direct is None) == (inference is None):
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference")
+
+    mode = _config_value(config, "mode")
+    if mode not in ("background", "manual"):
+        raise TypeError(
+            f'{_INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got {mode!r}'
+        )
+
+    guards = resolve_guards(_coerce_guards(_config_value(config, "guards")))  # type: ignore[arg-type]
+    provided_assignments: object = None
+    if isinstance(inference, dict):
+        provided_assignments = inference.get("assignments")
+    elif inference is not None:
+        provided_assignments = inference.assignments
+    assignment_map = provided_assignments if isinstance(provided_assignments, dict) else {}
+    detailed_assignment = (
+        _assignment_from(assignment_map["detailed_turn_compression"], "detailed_turn_compression")
+        if "detailed_turn_compression" in assignment_map
+        else None
+    )
+    brief_assignment = (
+        _assignment_from(assignment_map["chunk_summary_brief"], "chunk_summary_brief")
+        if "chunk_summary_brief" in assignment_map
+        else None
+    )
+    compression_targets = _resolve_target_ratios(
+        "detailed_turn_compression", detailed_assignment
+    )
+    brief_values = _resolve_target_ratios("chunk_summary_brief", brief_assignment)
+
+    if inference is not None:
+        inference_callbacks = _resolve_inference_callbacks(inference, guards)  # type: ignore[arg-type]
+    else:
+        if direct is None or isinstance(direct, (str, bytes, int, float, bool)):
+            raise TypeError(
+                f"{_INIT_CONFIG_PREFIX}: inferenceCallbacks must implement InferenceCallbacks"
+            )
+        operation_names = {
+            "smoothPrompt": "smooth_prompt",
+            "summarizeToolResult": "summarize_tool_result",
+            "compressDetailedTurn": "compress_detailed_turn",
+            "summarizeChunkBrief": "summarize_chunk_brief",
+        }
+        for public, python_name in operation_names.items():
+            value = direct.get(python_name) if isinstance(direct, dict) else getattr(direct, python_name, None)
+            if not callable(value):
+                raise TypeError(
+                    f"{_INIT_CONFIG_PREFIX}: inferenceCallbacks is missing operation {public}"
+                )
+        inference_callbacks = direct  # type: ignore[assignment]
+
+    tool_value = _config_value(config, "tool_result", "toolResult")
+    if isinstance(tool_value, dict):
+        tool_config = ToolResultConfig(
+            small_tier_tokens=tool_value.get("smallTierTokens", tool_value.get("small_tier_tokens")),
+            small_target_ratio=tool_value.get("smallTargetRatio", tool_value.get("small_target_ratio")),
+            mid_target_ratio=tool_value.get("midTargetRatio", tool_value.get("mid_target_ratio")),
+        )
+    else:
+        tool_config = tool_value or ToolResultConfig(1000, 0.15, 0.04)
+    lease_value = _config_value(config, "lease")
+    if isinstance(lease_value, dict):
+        lease_config = LeaseConfig(
+            duration_ms=lease_value.get("durationMs", lease_value.get("duration_ms"))
+        )
+    else:
+        lease_config = lease_value or LeaseConfig(120_000)
+    chunk_value = _config_value(config, "chunk_policy", "chunkPolicy")
+    if isinstance(chunk_value, dict):
+        chunk_config = ChunkPolicyConfig(
+            target_projected_tokens=chunk_value.get(
+                "targetProjectedTokens", chunk_value.get("target_projected_tokens")
+            ),
+            max_projected_tokens=chunk_value.get(
+                "maxProjectedTokens", chunk_value.get("max_projected_tokens")
+            ),
+        )
+    else:
+        chunk_config = chunk_value or ChunkPolicyConfig(2200, 4400)
+
+    view_value = _config_value(config, "view")
+    if view_value is None:
+        view_config = ResolvedViewConfig(
+            profiles={profile.name: profile for profile in BUILT_IN_PROFILES},
+            visibility=DEFAULT_VISIBILITY,
+            compact_threshold=DEFAULT_COMPACT_THRESHOLD,
+        )
+    else:
+        view_config = resolve_view_config(view_value)  # type: ignore[arg-type]
+
+    clock = _config_value(config, "clock")
+    resolved = ResolvedSdkConfig(
+        inference_callbacks=inference_callbacks,
+        mode=mode,  # type: ignore[arg-type]
+        clock=clock if callable(clock) else lambda: datetime.now(timezone.utc),
+        guards=guards,
+        compression_targets=compression_targets,
+        brief_targets=BriefTargets(
+            min_ratio=brief_values.min_ratio,
+            aim_ratio=brief_values.aim_ratio,
+            max_ratio=brief_values.max_ratio,
+        ),
+        tool_result=tool_config,  # type: ignore[arg-type]
+        lease=lease_config,  # type: ignore[arg-type]
+        chunk_policy=chunk_config,  # type: ignore[arg-type]
+        view=view_config,
+    )
+
+    checks = (
+        (resolved.guards.smoothed_prompt.max_inference_tokens, "guards.smoothedPrompt.maxInferenceTokens"),
+        (resolved.guards.smoothed_prompt.suspicious_output_ratio, "guards.smoothedPrompt.suspiciousOutputRatio"),
+        (resolved.guards.tool_result_summary.timeout_ms, "guards.toolResultSummary.timeoutMs"),
+        (resolved.guards.detailed_turn_compression.tiny_turn_tokens, "guards.detailedTurnCompression.tinyTurnTokens"),
+        (resolved.compression_targets.min_ratio, "compressionTargets.minRatio"),
+        (resolved.compression_targets.aim_ratio, "compressionTargets.aimRatio"),
+        (resolved.compression_targets.max_ratio, "compressionTargets.maxRatio"),
+        (resolved.brief_targets.min_ratio, "briefTargets.minRatio"),
+        (resolved.brief_targets.aim_ratio, "briefTargets.aimRatio"),
+        (resolved.brief_targets.max_ratio, "briefTargets.maxRatio"),
+        (resolved.tool_result.small_tier_tokens, "toolResult.smallTierTokens"),
+        (resolved.tool_result.small_target_ratio, "toolResult.smallTargetRatio"),
+        (resolved.tool_result.mid_target_ratio, "toolResult.midTargetRatio"),
+        (resolved.lease.duration_ms, "lease.durationMs"),
+        (resolved.chunk_policy.target_projected_tokens, "chunkPolicy.targetProjectedTokens"),
+    )
+    for value, name in checks:
+        _require_positive(value, name)
+    for targets, name in (
+        (resolved.compression_targets, "compressionTargets"),
+        (resolved.brief_targets, "briefTargets"),
+    ):
+        if targets.max_ratio < targets.min_ratio:
+            raise TypeError(f"{_INIT_CONFIG_PREFIX}: {name}.maxRatio must be >= minRatio")
+        if not targets.min_ratio <= targets.aim_ratio <= targets.max_ratio:
+            raise TypeError(
+                f"{_INIT_CONFIG_PREFIX}: {name}.aimRatio must be between minRatio and maxRatio"
+            )
+    if resolved.chunk_policy.max_projected_tokens < resolved.chunk_policy.target_projected_tokens:
+        raise TypeError(
+            f"{_INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens"
+        )
+
+    # Handler maps merge from per-domain contributions at construction.
+    work_handlers = map_work_q_handlers([message_work_handlers, turn_work_handlers])
+
+    async def _dispatch_message_derive(
+        run: HandlerRunContext, item: DurableWorkDispatcherItem
+    ) -> DurableWorkDispatchResult:
+        return await dispatch_message_derive_work(
+            run,
+            DispatchMessageDeriveWorkItem(
+                work_item_id=item.work_item_id,
+                source_version=item.source_version,
+                derivations=item.derivations,
+            ),
+        )
+
+    def _dispatch_turn_owned(kind: WorkKind) -> DurableWorkDispatcher:
+        async def _dispatch(
+            run: HandlerRunContext, item: DurableWorkDispatcherItem
+        ) -> DurableWorkDispatchResult:
+            return await dispatch_turn_owned_work(
+                run,
+                DispatchTurnOwnedWorkItem(
+                    work_item_id=item.work_item_id,
+                    kind=kind,
+                    source_ref=item.source_ref,
+                    source_version=item.source_version,
+                    derivations=item.derivations,
+                ),
+            )
+
+        return _dispatch
+
+    work_dispatchers: DurableWorkDispatcherMap = {
+        "messages.derive": _dispatch_message_derive,
+        "turns.deriveTurn": _dispatch_turn_owned("turn_derivation"),
+        "turns.deriveDetailedTurnCompression": _dispatch_turn_owned("detailed_turn_compression"),
+        "turns.deriveDetailedChunk": _dispatch_turn_owned("chunk_summary_detailed"),
+        "turns.deriveBriefChunk": _dispatch_turn_owned("chunk_summary_brief"),
+    }
+
+    drain_deps = DrainDeps(
+        lookup_dispatcher=lambda operation, kind: lookup_work_dispatcher(
+            work_dispatchers, operation, kind
+        ),
+        has_any_handler=lambda: len(work_dispatchers) > 0,
+        config=resolved,
+        open_thread_database=threads.open_thread_database,
+    )
+    scheduler = create_scheduler(resolved.mode, drain_deps)
+
+    # Per-instance delivery seam. Background installs real poke/touch; manual
+    # installs no-ops so construction order never auto-drains a manual SDK.
+    if resolved.mode == "background":
+        seam = InstanceSeam(
+            poke=scheduler.poke,
+            touch=scheduler.touch,
+            view=resolved.view,
+            config=resolved,
+        )
+        set_scheduler_poke(scheduler.poke)
+        set_thread_touch(scheduler.touch)
+    else:
+        seam = InstanceSeam(
+            poke=lambda _thread_id: None,
+            touch=lambda _file_path, _db: None,
+            view=resolved.view,
+            config=resolved,
+        )
+
+    intake_surface = _IntakeStreamSurface()
+    intake_surface.init_lhc = init_lhc
+
+    class _Logging:
+        async def write(self, ref: ThreadRef, entry: LogEntry) -> OpResult[None]:
+            async def _op() -> OpResult[None]:
+                try:
+                    written = await create_db_write_transaction(
+                        ref,
+                        lambda transaction: write_log(transaction, entry),
+                        resolved.clock,
+                    )
+                    return OpOk(value=None) if written.ok else written
+                except Exception as cause:  # noqa: BLE001 — mirrors TS catch
+                    reason = str(cause)
+                    return storage_failure(f"log write failed: {reason}")
+
+            return await run_with_instance_seam(seam, _op)  # type: ignore[return-value]
+
+        async def query(
+            self, ref: ThreadRef, q: LogQuery
+        ) -> OpResult[list[StoredLogEntry]]:
+            async def _op() -> OpResult[list[StoredLogEntry]]:
+                try:
+                    return await create_db_read_transaction(
+                        ref, lambda transaction: query_log(transaction.db, q)
+                    )
+                except Exception as cause:  # noqa: BLE001 — mirrors TS catch
+                    reason = str(cause)
+                    return storage_failure(f"log query failed: {reason}")
+
+            return await run_with_instance_seam(seam, _op)  # type: ignore[return-value]
+
+        async def query_derivation_log(
+            self, ref: ThreadRef, q: DerivationLogQuery
+        ) -> OpResult[list[StoredDerivationLogEntry]]:
+            async def _op() -> OpResult[list[StoredDerivationLogEntry]]:
+                try:
+                    return await create_db_read_transaction(
+                        ref,
+                        lambda transaction: query_derivation_log(transaction.db, q),
+                    )
+                except Exception as cause:  # noqa: BLE001 — mirrors TS catch
+                    reason = str(cause)
+                    return storage_failure(f"derivation log query failed: {reason}")
+
+            return await run_with_instance_seam(seam, _op)  # type: ignore[return-value]
+
+    class _Work:
+        async def drain(
+            self, ref: ThreadRef, opts: _DrainOpts | None = None
+        ) -> OpResult[DrainReport]:
+            async def _op() -> OpResult[DrainReport]:
+                resolved_ref = await threads.resolve_thread_ref(ref)
+                if not resolved_ref.ok:
+                    return resolved_ref
+                drain_opts: DrainOpts | None = None
+                if opts is not None:
+                    max_items = opts.get("maxItems", opts.get("max_items"))  # type: ignore[arg-type]
+                    drain_opts = DrainOpts(max_items=max_items)  # type: ignore[arg-type]
+                return await run_drain(
+                    resolved_ref.value.file_path, drain_deps, drain_opts
+                )
+
+            return await run_with_instance_seam(seam, _op)  # type: ignore[return-value]
+
+    sdk = _LhcImpl()
+    sdk.threads = _scope_surface(threads, seam)
+    sdk.intake_stream = _scope_surface(intake_surface, seam)
+    sdk.messages = _scope_surface(messages, seam)
+    sdk.turns = _scope_surface(turns, seam)
+    sdk.thread_view = _scope_surface(thread_view, seam)
+    sdk.inspect = _scope_surface(inspect, seam)
+    sdk.logging = _Logging()
+    sdk.config = resolved
+    sdk.scheduler = scheduler
+    sdk.work = _Work()
+
+    async def drain_settled(ref: ThreadRef) -> None:
+        resolved_ref = await threads.resolve_thread_ref(ref)
+        if not resolved_ref.ok:
+            return
+        thread_id = peek_thread_id(resolved_ref.value.file_path)
+        if thread_id is None:
+            return
+        await scheduler.drain_settled(thread_id)
+
+    sdk.drain_settled = drain_settled
+    _work_registration_by_sdk[sdk] = _WorkRegistration(work_handlers, work_dispatchers)
+    return sdk  # type: ignore[return-value]
 
 
 __all__ = [
