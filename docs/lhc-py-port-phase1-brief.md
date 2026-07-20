@@ -259,3 +259,8 @@ exemplar file paths.
   where you notice a hazard.
 - Vitest `toEqual` is deep structural equality — dataclass `==` matches it if
   you kept everything as dataclasses; another reason for uniformity.
+- **TS evaluation oracle**: `node --experimental-strip-types` (Node ≥22, this
+  box has 24) imports `.ts` modules directly. Use it to render/evaluate TS
+  values and byte-compare against the Python port — this is how the Wave 1
+  prompt constants were certified. Regex-extracting TS string literals is NOT
+  a valid oracle (template interpolation and quote styles defeat it).
