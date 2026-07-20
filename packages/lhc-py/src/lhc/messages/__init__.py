@@ -198,7 +198,13 @@ def _queue_message_work(
 
 
 def _thread_not_found(file_path: str) -> OpErr:
-    raise NotImplementedError
+    return OpErr(
+        error=ErrorResult(
+            error_class="caller_error",
+            code="thread_not_found",
+            reason=f"no thread file exists at {file_path}",
+        )
+    )
 
 
 # Bounded-listing options: from/to are source-event-order bounds, limit caps
@@ -214,6 +220,24 @@ def _invalid_bounds(reason: str) -> ErrorResult:
     )
 
 
+def _js_repr(value: object) -> str:
+    """JS template-literal spelling for diagnostic interpolation."""
+    import math
+
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+    return str(value)
+
+
 # Bounds mistakes are operational caller errors returned as results, never a
 # silent empty list a caller could mistake for an empty window.
 def _validate_list_options(opts: MessageListOptions) -> ErrorResult | None:
@@ -226,7 +250,9 @@ def _validate_list_options(opts: MessageListOptions) -> ErrorResult | None:
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int)
         ):
-            return _invalid_bounds(f"{name} must be an integer, got {value}")
+            return _invalid_bounds(
+                f"{name} must be an integer, got {_js_repr(value)}"
+            )
     if (
         opts.get("from") is not None  # type: ignore[literal-required]
         and opts.get("to") is not None  # type: ignore[literal-required]
@@ -236,7 +262,9 @@ def _validate_list_options(opts: MessageListOptions) -> ErrorResult | None:
             f"from ({opts['from']}) must not exceed to ({opts['to']})"
         )
     if opts.get("limit") is not None and opts["limit"] < 1:
-        return _invalid_bounds(f"limit must be at least 1, got {opts['limit']}")
+        return _invalid_bounds(
+            f"limit must be at least 1, got {_js_repr(opts['limit'])}"
+        )
     return None
 
 
@@ -277,7 +305,7 @@ def _read_messages_with_derivations(
 # source order with their projected blocks, so thread-view asks the messages
 # owner for its records instead of reading the message tables itself.
 def read_live_messages(db: Database) -> list[MessageRecord]:
-    raise NotImplementedError
+    return read_messages(db, {})
 
 
 # The single-message view returns the canonical record: every block with
@@ -304,7 +332,47 @@ class MessageDetail:
 
 
 async def show(thread_ref: ThreadRef, message_id: str) -> OpResult[MessageDetail]:
-    raise NotImplementedError
+    from ..shared_tech.errors import OpOk, storage_failure
+    from .internal.derivations import MessageReportOptions, report_message_derivations
+    from .internal.store import read_message_by_id
+
+    try:
+        async def _op(transaction: object) -> OpResult[MessageDetail]:
+            record = read_message_by_id(transaction.db, message_id)  # type: ignore[attr-defined]
+            if record is None:
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="message_not_found",
+                        reason=f"no message {message_id} exists in this thread",
+                    )
+                )
+            derivations = report_message_derivations(
+                transaction.db,  # type: ignore[attr-defined]
+                MessageReportOptions(message_id=message_id),
+            )
+            return OpOk(
+                MessageDetail(
+                    message_id=record.message_id,
+                    source_event_order=record.source_event_order,
+                    kind=record.kind,
+                    blocks=record.blocks,
+                    token_estimate=record.token_estimate,
+                    actor=record.actor,
+                    harness=record.harness,
+                    recorded_at=record.recorded_at,
+                    turn_id=record.turn_id,
+                    deleted=record.deleted,
+                    derivations=derivations,
+                )
+            )
+
+        result = await create_db_read_transaction(thread_ref, _op)
+        if not result.ok:
+            return result
+        return result.value  # type: ignore[return-value]
+    except Exception as cause:
+        return storage_failure(f"message show failed: {cause}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +389,20 @@ async def report(
     thread_ref: ThreadRef,
     opts: MessageReportOpts | None = None,
 ) -> OpResult[list[DerivationReportEntry]]:
-    raise NotImplementedError
+    from ..shared_tech.errors import storage_failure
+    from .internal.derivations import MessageReportOptions, report_message_derivations
+
+    options = MessageReportOptions(
+        not_ready=None if opts is None else opts.not_ready,
+        message_id=None if opts is None else opts.message_id,
+    )
+    try:
+        return await create_db_read_transaction(
+            thread_ref,
+            lambda transaction: report_message_derivations(transaction.db, options),
+        )
+    except Exception as cause:
+        return storage_failure(f"report read failed: {cause}")
 
 
 # Synchronous message-owned derivation. For each message id, the domain
@@ -433,14 +514,150 @@ class RemoveInput:
 # supersede queued old work, and enqueue replacements at the next source
 # version in one transaction.
 async def edit(thread_ref: ThreadRef, edit: EditInput) -> OpResult[MutationResult]:
-    raise NotImplementedError
+    from ..shared_tech.errors import OpOk, storage_failure
+    from ..shared_tech.persist import create_db_write_transaction
+    from .internal.cascade import cascade_from_message
+    from .internal.store import apply_message_edit, read_mutable_message
+
+    try:
+        def _op(transaction: object) -> OpResult[MutationResult]:
+            target = read_mutable_message(transaction.db, edit.message_id)  # type: ignore[attr-defined]
+            if target is None:
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="message_not_found",
+                        reason=f"no message {edit.message_id} exists in this thread",
+                    )
+                )
+            if target.turn_status != "closed":
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="turn_open",
+                        reason=(
+                            f"message {edit.message_id} belongs to open turn {target.turn_id}; "
+                            "open-turn messages cannot be edited (v1 boundary)"
+                            if target.turn_status == "open"
+                            else (
+                                f"message {edit.message_id} references no readable turn; "
+                                "only closed-turn messages can be edited (v1 boundary)"
+                            )
+                        ),
+                    )
+                )
+            apply_message_edit(transaction.db, edit.message_id, edit.content)  # type: ignore[attr-defined]
+            cascade = cascade_from_message(transaction, edit.message_id)  # type: ignore[arg-type]
+            return OpOk(
+                MutationResult(
+                    changed=MutationChanged(
+                        message_ids=[edit.message_id], turn_ids=[]
+                    ),
+                    cleared=cascade.cleared,
+                    dropped=cascade.dropped,
+                    queued=[
+                        MutationQueuedWork(
+                            work_item_id=item.work_item_id, kind=item.kind
+                        )
+                        for item in cascade.queued
+                    ],
+                    superseded=cascade.superseded,
+                )
+            )
+
+        result = await create_db_write_transaction(thread_ref, _op)
+        if not result.ok:
+            return result
+        return result.value  # type: ignore[return-value]
+    except Exception as cause:
+        return storage_failure(f"edit failed: {cause}")
 
 
 # Delete is message-record level: the deleted_at stamp plus the delete cascade
 # (own derivations dropped, turn and chunk cleared and re-queued for minus-one
 # composition) land in one transaction.
 async def remove(thread_ref: ThreadRef, removal: RemoveInput) -> OpResult[MutationResult]:
-    raise NotImplementedError
+    from datetime import datetime, timezone
+
+    from ..shared_tech.errors import OpOk, storage_failure
+    from ..shared_tech.persist import create_db_write_transaction
+    from .internal.cascade import cascade_message_delete
+    from .internal.store import mark_message_deleted, read_mutable_message
+
+    def _iso_millis(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+    try:
+        def _op(transaction: object) -> OpResult[MutationResult]:
+            target = read_mutable_message(transaction.db, removal.message_id)  # type: ignore[attr-defined]
+            if target is None:
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="message_not_found",
+                        reason=f"no message {removal.message_id} exists in this thread",
+                    )
+                )
+            if target.turn_status != "closed":
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="turn_open",
+                        reason=(
+                            f"message {removal.message_id} belongs to open turn {target.turn_id}; "
+                            "open-turn messages cannot be deleted (v1 boundary)"
+                            if target.turn_status == "open"
+                            else (
+                                f"message {removal.message_id} references no readable turn; "
+                                "only closed-turn messages can be deleted (v1 boundary)"
+                            )
+                        ),
+                    )
+                )
+            if target.initiates_turn:
+                return OpErr(
+                    error=ErrorResult(
+                        error_class="caller_error",
+                        code="message_initiates_turn",
+                        reason=(
+                            f"message {removal.message_id} is the prompt that initiates turn "
+                            f"{target.turn_id}; deleting the initiating prompt or whole turn "
+                            "is not supported in this slice"
+                        ),
+                    )
+                )
+            mark_message_deleted(
+                transaction.db,  # type: ignore[attr-defined]
+                removal.message_id,
+                _iso_millis(transaction.clock()),  # type: ignore[attr-defined]
+            )
+            cascade = cascade_message_delete(transaction, removal.message_id)  # type: ignore[arg-type]
+            return OpOk(
+                MutationResult(
+                    changed=MutationChanged(
+                        message_ids=[removal.message_id], turn_ids=[]
+                    ),
+                    cleared=cascade.cleared,
+                    dropped=cascade.dropped,
+                    queued=[
+                        MutationQueuedWork(
+                            work_item_id=item.work_item_id, kind=item.kind
+                        )
+                        for item in cascade.queued
+                    ],
+                    superseded=cascade.superseded,
+                )
+            )
+
+        result = await create_db_write_transaction(thread_ref, _op)
+        if not result.ok:
+            return result
+        return result.value  # type: ignore[return-value]
+    except Exception as cause:
+        return storage_failure(f"delete failed: {cause}")
 
 
 __all__ = [

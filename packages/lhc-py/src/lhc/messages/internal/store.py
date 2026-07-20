@@ -133,14 +133,28 @@ class MutableMessageView:
 
 
 def read_mutable_message(db: Database, message_id: str) -> MutableMessageView | None:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_MUTABLE_MESSAGE).get(message_id)
+    if row is None:
+        return None
+    turn_status = row["turn_status"]
+    return MutableMessageView(
+        message_id=str(row["message_id"]),
+        kind=str(row["kind"]),
+        turn_id=str(row["turn_id"]),
+        turn_status=(
+            None
+            if turn_status is None
+            else str(turn_status)  # type: ignore[arg-type]
+        ),
+        initiates_turn=int(row["is_first_member"]) == 1,
+    )
 
 
 # Delete applies the message-record tombstone: the deleted_at stamp every
 # normal message read filters on. Source events are never touched; event
 # read-back keeps showing them.
 def mark_message_deleted(db: Database, message_id: str, deleted_at: str) -> None:
-    raise NotImplementedError
+    db.prepare(_SQL_MARK_MESSAGE_DELETED).run(deleted_at, message_id)
 
 
 # Edit applies new content to each block's content-bearing field — the same
@@ -148,7 +162,43 @@ def mark_message_deleted(db: Database, message_id: str, deleted_at: str) -> None
 # token estimate re-stamps from the same estimator, so placement arithmetic
 # stays current after edits. Events are untouched; the log keeps the original.
 def apply_message_edit(db: Database, message_id: str, content: str) -> None:
-    raise NotImplementedError
+    from ...shared_tech.token_counting import estimate_tokens
+
+    blocks = db.prepare(_SQL_SELECT_BLOCKS_FOR_EDIT).all(message_id)
+    update = db.prepare(_SQL_UPDATE_MESSAGE_BLOCK)
+    token_estimate = estimate_tokens(content)
+    for block in blocks:
+        parsed = json.loads(str(block["content"]))
+        # TS mutates properties on JSON.parse result; a scalar throws → rollback.
+        if not isinstance(parsed, dict):
+            raise TypeError(
+                f"message {message_id} block content is not a JSON object"
+            )
+        block_type = str(block["block_type"])
+        if block_type == "text":
+            parsed["text"] = content
+        elif block_type == "tool_result":
+            parsed["content"] = content
+        elif block_type == "tool_call":
+            parsed["arguments"] = content
+            # TS: estimateTokens(JSON.stringify(content)) — UTF-8, not \uXXXX.
+            token_estimate = estimate_tokens(
+                json.dumps(content, separators=(",", ":"), ensure_ascii=False)
+            )
+        elif block_type == "model_change":
+            parsed["newModel"] = content
+        elif block_type == "thinking_level_change":
+            parsed["newLevel"] = content
+        else:
+            raise RuntimeError(
+                f"message {message_id} carries unknown block type {block_type}"
+            )
+        update.run(
+            json.dumps(parsed, separators=(",", ":"), ensure_ascii=False),
+            message_id,
+            int(block["block_index"]),
+        )
+    db.prepare(_SQL_UPDATE_TOKEN_ESTIMATE).run(token_estimate, message_id)
 
 
 @dataclass(frozen=True, slots=True)

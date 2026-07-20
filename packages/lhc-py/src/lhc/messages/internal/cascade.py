@@ -10,12 +10,21 @@ transaction.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ...shared_tech.derivation import SubjectKind
 from ...shared_tech.persist import DbWriteTransaction
 from ...shared_tech.storage import Database
-from ...shared_tech.work_queue import EnqueueDerivationTarget, WorkKind, WorkSourceRef
+from ...shared_tech.work_queue import (
+    EnqueueDerivationTarget,
+    EnqueueInput,
+    WORK_KIND_REGISTRY,
+    WorkKind,
+    WorkSourceRef,
+    enqueue,
+    supersede_queued,
+    _SupersedeTarget,
+)
 
 # Replacement work for one subject may fan out across several kinds; enqueue
 # in dependency order so turn_derivation lands pre_detailed_assembly before
@@ -99,7 +108,11 @@ class _ChainSubject:
 
 
 def _source_ref_for(subject: _ChainSubject) -> WorkSourceRef:
-    raise NotImplementedError
+    if subject.subject_kind == "message":
+        return {"messageId": subject.subject_id}
+    if subject.subject_kind == "turn":
+        return {"turnId": subject.subject_id}
+    return {"chunkId": subject.subject_id}
 
 
 # The structural walk: the mutated message's turn from its membership stamp,
@@ -108,7 +121,20 @@ def _source_ref_for(subject: _ChainSubject) -> WorkSourceRef:
 # runs after a delete stamps its subject, and the chain above a just-deleted
 # record is exactly what must still cascade.
 def _chain_subjects(db: Database, message_id: str) -> list[_ChainSubject]:
-    raise NotImplementedError
+    subjects: list[_ChainSubject] = [
+        _ChainSubject(subject_kind="message", subject_id=message_id)
+    ]
+    turn_row = db.prepare(_SQL_CHAIN_TURN).get(message_id)
+    if turn_row is None:
+        return subjects
+    turn_id = str(turn_row["turn_id"])
+    subjects.append(_ChainSubject(subject_kind="turn", subject_id=turn_id))
+    chunk_row = db.prepare(_SQL_CHAIN_CHUNK).get(turn_id)
+    if chunk_row is not None:
+        subjects.append(
+            _ChainSubject(subject_kind="chunk", subject_id=str(chunk_row["chunk_id"]))
+        )
+    return subjects
 
 
 # A tool summary derives from its message and paired counterpart, so mutating
@@ -116,7 +142,16 @@ def _chain_subjects(db: Database, message_id: str) -> list[_ChainSubject]:
 # counterpart of a mutated tool message — the opposite block type sharing its
 # toolCallId — as a clear subject.
 def _paired_counterpart_subject(db: Database, message_id: str) -> _ChainSubject | None:
-    raise NotImplementedError
+    own = db.prepare(_SQL_PAIRED_OWN_BLOCK).get(message_id)
+    if own is None or own["tool_call_id"] is None:
+        return None
+    counterpart_type = "tool_result" if str(own["block_type"]) == "tool_call" else "tool_call"
+    row = db.prepare(_SQL_PAIRED_COUNTERPART).get(
+        counterpart_type, str(own["tool_call_id"]), message_id
+    )
+    if row is None:
+        return None
+    return _ChainSubject(subject_kind="message", subject_id=str(row["message_id"]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +163,10 @@ class _RebuildGroup:
 
 
 def _rebuild_kind_for(derivation_type: str) -> WorkKind:
-    raise NotImplementedError
+    kind = _DERIVATION_REBUILD_KINDS.get(derivation_type)
+    if kind is None:
+        raise RuntimeError(f"no rebuild work kind mapped for derivation {derivation_type}")
+    return kind
 
 
 # Shared cascade core: drop subjects lose their derivation rows outright; clear
@@ -141,7 +179,105 @@ def _run_cascade(
     drop_subjects: Sequence[_ChainSubject],
     clear_subjects: Sequence[_ChainSubject],
 ) -> CascadeOutcome:
-    raise NotImplementedError
+    read_derivations = transaction.db.prepare(_SQL_READ_DERIVATIONS)
+
+    dropped: list[CascadeClear] = []
+    supersede_targets: list[_SupersedeTarget] = []
+    drop_rows = transaction.db.prepare(_SQL_DROP_DERIVATIONS)
+    for subject in drop_subjects:
+        rows = read_derivations.all(subject.subject_kind, subject.subject_id)
+        # Insertion-ordered like TS Set (derivations ORDER BY type).
+        kinds: dict[WorkKind, None] = {}
+        for row in rows:
+            dropped.append(
+                CascadeClear(
+                    subject_kind=subject.subject_kind,
+                    subject_id=subject.subject_id,
+                    derivation_type=str(row["derivation_type"]),
+                )
+            )
+            kinds[_rebuild_kind_for(str(row["derivation_type"]))] = None
+        for kind in kinds:
+            supersede_targets.append(
+                _SupersedeTarget(kind=kind, source_ref=_source_ref_for(subject))
+            )
+        drop_rows.run(subject.subject_kind, subject.subject_id)
+
+    cleared: list[CascadeClear] = []
+    groups: dict[str, _RebuildGroup] = {}
+    for subject in clear_subjects:
+        rows = read_derivations.all(subject.subject_kind, subject.subject_id)
+        for row in rows:
+            derivation_type = str(row["derivation_type"])
+            cleared.append(
+                CascadeClear(
+                    subject_kind=subject.subject_kind,
+                    subject_id=subject.subject_id,
+                    derivation_type=derivation_type,
+                )
+            )
+            kind = _rebuild_kind_for(derivation_type)
+            key = f"{subject.subject_kind}:{subject.subject_id}:{kind}"
+            target = EnqueueDerivationTarget(
+                subject_kind=subject.subject_kind,
+                subject_id=subject.subject_id,
+                derivation_type=derivation_type,
+            )
+            group = groups.get(key)
+            if group is None:
+                groups[key] = _RebuildGroup(
+                    subject=subject,
+                    kind=kind,
+                    derivations=[target],
+                    max_source_version=int(row["source_version"]),
+                )
+            else:
+                groups[key] = replace(
+                    group,
+                    derivations=[*group.derivations, target],
+                    max_source_version=max(
+                        group.max_source_version, int(row["source_version"])
+                    ),
+                )
+
+    superseded = supersede_queued(
+        transaction.db,
+        [
+            *supersede_targets,
+            *[
+                _SupersedeTarget(
+                    kind=group.kind, source_ref=_source_ref_for(group.subject)
+                )
+                for group in groups.values()
+            ],
+        ],
+    )
+
+    queued = [
+        CascadeQueued(
+            work_item_id=enqueue(
+                transaction,
+                EnqueueInput(
+                    owner=WORK_KIND_REGISTRY[group.kind].owner,
+                    kind=group.kind,
+                    source_ref=_source_ref_for(group.subject),
+                    source_version=group.max_source_version + 1,
+                    derivations=group.derivations,
+                ),
+            ).work_item_id,
+            kind=group.kind,
+        )
+        for group in sorted(
+            groups.values(), key=lambda g: _REBUILD_KIND_ORDER[g.kind]
+        )
+    ]
+
+    return CascadeOutcome(
+        cleared=cleared,
+        dropped=dropped,
+        queued=queued,
+        superseded=superseded,
+    )
 
 
 # Edit's close path: clear-and-requeue for the full chain above (and
@@ -149,7 +285,11 @@ def _run_cascade(
 # A call/result pair counterpart joins the clear set: editing one half is a
 # source change for the other's summary.
 def cascade_from_message(transaction: DbWriteTransaction, message_id: str) -> CascadeOutcome:
-    raise NotImplementedError
+    clear = _chain_subjects(transaction.db, message_id)
+    counterpart = _paired_counterpart_subject(transaction.db, message_id)
+    if counterpart is not None:
+        clear.append(counterpart)
+    return _run_cascade(transaction, [], clear)
 
 
 # Message delete drops the deleted message's own derivations; its turn and
@@ -157,4 +297,10 @@ def cascade_from_message(transaction: DbWriteTransaction, message_id: str) -> Ca
 # refuses turn-initiating prompts, so the turn always keeps members and never
 # empties through this path.
 def cascade_message_delete(transaction: DbWriteTransaction, message_id: str) -> CascadeOutcome:
-    raise NotImplementedError
+    chain = _chain_subjects(transaction.db, message_id)
+    own = chain[0] if chain else None
+    upward = chain[1:] if len(chain) > 1 else []
+    counterpart = _paired_counterpart_subject(transaction.db, message_id)
+    if counterpart is not None:
+        upward.append(counterpart)
+    return _run_cascade(transaction, [] if own is None else [own], upward)

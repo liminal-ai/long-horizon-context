@@ -205,7 +205,51 @@ def report_message_derivations(
     db: Database,
     opts: MessageReportOptions | None = None,
 ) -> list[DerivationReportEntry]:
-    raise NotImplementedError
+    from ...shared_tech.report import RawReportRow, report_entry_from_row
+
+    options = opts if opts is not None else MessageReportOptions()
+    conditions = ["df.subject_kind = 'message'"]
+    params: list[str] = []
+    if options.message_id is not None:
+        conditions.append("df.subject_id = ?")
+        params.append(options.message_id)
+    if options.not_ready is True:
+        conditions.append("df.state <> 'ready'")
+    rows = db.prepare(
+        f"""SELECT df.subject_id, df.derivation_type, df.state, df.content, df.reason, df.metadata,
+                   df.source_version, df.gaps, df.derived_at,
+                   w.status AS queue_status
+            FROM derivation df
+            LEFT JOIN work_item w
+              ON w.status IN ('queued', 'claimed')
+             AND w.kind = CASE df.derivation_type WHEN 'smoothed_prompt' THEN 'prompt_smoothing' ELSE df.derivation_type END
+             AND json_extract(w.source_ref, '$.messageId') = df.subject_id
+             AND COALESCE(json_extract(w.payload, '$.sourceVersion'), 1) = df.source_version
+            WHERE {' AND '.join(conditions)}
+            ORDER BY df.subject_id, df.derivation_type"""
+    ).all(*params)
+    return [
+        report_entry_from_row(
+            "message",
+            RawReportRow(
+                subject_id=str(row["subject_id"]),
+                derivation_type=str(row["derivation_type"]),
+                state=str(row["state"]),
+                content=str(row["content"]) if row["content"] is not None else None,
+                reason=str(row["reason"]) if row["reason"] is not None else None,
+                metadata=str(row["metadata"]) if row["metadata"] is not None else None,
+                source_version=int(row["source_version"]),
+                gaps=str(row["gaps"]) if row["gaps"] is not None else None,
+                derived_at=(
+                    str(row["derived_at"]) if row["derived_at"] is not None else None
+                ),
+                queue_status=(
+                    str(row["queue_status"]) if row["queue_status"] is not None else None
+                ),
+            ),
+        )
+        for row in rows
+    ]
 
 
 # The call-id pairing reads. Earliest-recorded block wins if a call id were
