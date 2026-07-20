@@ -180,6 +180,8 @@ async def test_every_phase_operation_returns_ok_with_deterministic_inference_cal
     """every phase operation returns ok with deterministic inference callbacks"""
     phases = run.phases
     assert phases.create.ok is True
+    # Anti-vacuous guard: 12 turns intake in batches of 3.
+    assert len(phases.intake) == 4
     for batch in phases.intake:
         assert batch.ok is True
     assert phases.drain.settled is True
@@ -268,6 +270,8 @@ async def test_post_mutation_health_shows_exactly_the_cleared_set_pending_post_d
     assert health.failures == []
 
     after = _ok(run.phases.health2)
+    # Anti-vacuous guard: both owners (messages, turns) must report.
+    assert len(after.owners) == 2
     for row in after.owners:
         assert row.counts.pending == 0
         assert row.counts.failed == 0

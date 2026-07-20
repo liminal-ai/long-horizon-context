@@ -257,7 +257,10 @@ class StoredView:
     bands: list[StoredViewBand]
 
 
-@dataclass(frozen=True, slots=True)
+# Mutable accumulator: the TS counterpart is mutated in place by the
+# bucket helpers (thread_view._bucket_derivation / inspect overview
+# bucket_entries), so this dataclass is deliberately NOT frozen.
+@dataclass(slots=True)
 class ViewStatusDerivation:
     pending: int
     failed: int

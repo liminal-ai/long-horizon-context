@@ -34,7 +34,10 @@ def main() -> int:
     print(f"collect-only: clean ({collected.group(1) if collected else '?'} tests)")
 
     _, out = run(["uv", "run", "pytest", "-q"])
-    counts = {k: int(m) for k, m in re.findall(r"PORT-GATE (passed|notimpl|wrong)=(\d+)", out)}
+    counts = {
+        k: int(m)
+        for k, m in re.findall(r"PORT-GATE (passed|notimpl|skipped|wrong|classified)=(\d+)", out)
+    }
     if not counts:
         print(out)
         print("GATE FAIL: PORT-GATE summary not found (conftest plugin missing?).")
@@ -43,9 +46,18 @@ def main() -> int:
     for line in out.splitlines():
         if "PORT-GATE inspect-pass:" in line or "PORT-GATE WRONG:" in line:
             print(line.strip())
-    print(f"gate: passed={counts['passed']} notimpl={counts['notimpl']} wrong={counts['wrong']}")
+    print(
+        f"gate: passed={counts['passed']} notimpl={counts['notimpl']} "
+        f"skipped={counts.get('skipped', 0)} wrong={counts['wrong']}"
+    )
     if counts["wrong"] > 0:
         print("GATE FAIL: failures not rooted in NotImplementedError — fix shapes now.")
+        return 1
+    if collected is not None and counts.get("classified", -1) != int(collected.group(1)):
+        print(
+            f"GATE FAIL: classified {counts.get('classified')} != collected "
+            f"{collected.group(1)} — tests are escaping the gate (unexpected skip/xfail?)."
+        )
         return 1
     print("GATE PASS")
     return 0

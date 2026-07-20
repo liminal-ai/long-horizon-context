@@ -372,7 +372,11 @@ async def test_background_mode_intake_commits_over_max_tool_results_with_boundar
     assert listed.ok is True
     if not listed.ok:
         return
-    for m in [msg for msg in listed.value if msg.kind == "tool_result"]:
+    tool_results = [msg for msg in listed.value if msg.kind == "tool_result"]
+    # Anti-vacuous guard: an implementation that drops tool_result messages
+    # must not pass this block by emptying the loop.
+    assert len(tool_results) > 0
+    for m in tool_results:
         assert next(
             (f for f in (m.derivations or []) if f.derivation_type == "tool_result_summary"),
             None,

@@ -95,6 +95,11 @@ def assert_pi_session_conformance(materialized_text: str) -> None:
     if reference_text_block is None:
         raise ValueError("pi-session-structure fixture message has no text block")
 
+    if not file.entries:
+        raise ValueError(
+            "pi-session file has a header but zero entries — conformance "
+            "cannot be established against an empty session"
+        )
     seen_ids: set[str] = set()
     previous_id: str | None = None
     for i, entry in enumerate(file.entries):

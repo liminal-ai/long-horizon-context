@@ -240,7 +240,7 @@ async def test_fc_0_2_delay_kind_injects_latency_on_the_scripted_operation() -> 
 
     double = create_inference_callbacks_double()
     double.delay_kind("chunk_summary_brief", 40)
-    before = time.time()
+    before = time.monotonic()
     result = await double.summarize_chunk_brief(
         {
             "text": "p",
@@ -250,7 +250,7 @@ async def test_fc_0_2_delay_kind_injects_latency_on_the_scripted_operation() -> 
             "targetMaxTokens": 3,
         }
     )
-    elapsed = (time.time() - before) * 1000
+    elapsed = (time.monotonic() - before) * 1000
     assert result.ok is True
     assert elapsed >= 35
 

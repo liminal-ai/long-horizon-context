@@ -231,6 +231,8 @@ async def test_handler_equivalence_deterministic_inference_callbacks_land_the_sa
     def row_key(derivation: Derivation) -> str:
         return f"{derivation.subject_kind}|{derivation.subject_id}|{derivation.derivation_type}|{derivation.state}"
 
+    # Anti-vacuous guard: [] == [] would green a no-op implementation.
+    assert len(deterministic_forms) > 0
     assert sorted(row_key(f) for f in deterministic_forms) == sorted(row_key(f) for f in adapter_forms)
 
     for form in deterministic_forms:

@@ -166,12 +166,19 @@ async def test_bands_brief_detailed_smooth_with_labels_then_the_tail_repeated_co
         if text and text.startswith("turn ")
     ]
     assert prompts == ["turn 9", "turn 10", "turn 11", "turn 12"]
+    marker_lines = 0
     for m in tail:
         text = _message_text(m) or ""
         if text.startswith("[tool call") or text.startswith("[thinking]"):
             assert m.role == "assistant"
+            marker_lines += 1
         if text.startswith("[tool result"):
             assert m.role == "user"
+            marker_lines += 1
+    # Anti-vacuous guard: the fixture's tool-heavy turns must produce
+    # tool/thinking markers in the tail; zero matches means the render
+    # dropped them and the role asserts above never ran.
+    assert marker_lines > 0
 
     second = await fixture.sdk.thread_view.get_llm_request_context(ref)
     assert second.ok is True
