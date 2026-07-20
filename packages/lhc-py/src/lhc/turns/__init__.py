@@ -201,17 +201,61 @@ def create(
 
 
 def _thread_not_found(file_path: str) -> OpErr:
-    raise NotImplementedError
+    return OpErr(
+        error=ErrorResult(
+            error_class="caller_error",
+            code="thread_not_found",
+            reason=f"no thread file exists at {file_path}",
+        )
+    )
 
 
 async def list_turns(thread_ref: ThreadRef) -> OpResult[list[TurnRecord]]:
-    raise NotImplementedError
+    from dataclasses import replace
+
+    from ..shared_tech.errors import storage_failure
+    from ..shared_tech.persist import create_db_read_transaction
+    from .internal.derivations import read_owned_derivations
+    from .internal.store import read_turns
+
+    try:
+        def _op(transaction: object) -> list[TurnRecord]:
+            derivations_by_turn = read_owned_derivations(transaction.db, "turn")  # type: ignore[attr-defined]
+            return [
+                replace(record, derivations=derivations_by_turn.get(record.turn_id))
+                for record in read_turns(transaction.db)  # type: ignore[attr-defined]
+            ]
+
+        return await create_db_read_transaction(thread_ref, _op)
+    except Exception as cause:
+        return storage_failure(f"turn read-back failed: {cause}")
 
 
 # Returns stored chunk records whatever their derivation states. Derivations
 # attach only where rows exist; freshly opened chunks have none.
 async def list_chunks(thread_ref: ThreadRef) -> OpResult[list[ChunkRecord]]:
-    raise NotImplementedError
+    from ..shared_tech.errors import storage_failure
+    from ..shared_tech.persist import create_db_read_transaction
+    from .internal.derivations import read_chunk_rows, read_owned_derivations
+
+    try:
+        def _op(transaction: object) -> list[ChunkRecord]:
+            derivations_by_chunk = read_owned_derivations(transaction.db, "chunk")  # type: ignore[attr-defined]
+            return [
+                ChunkRecord(
+                    chunk_id=row.chunk_id,
+                    chunk_order=row.chunk_order,
+                    status=row.status,
+                    accumulated_projected_tokens=row.accumulated_projected_tokens,
+                    member_turn_ids=row.member_turn_ids,
+                    derivations=derivations_by_chunk.get(row.chunk_id),
+                )
+                for row in read_chunk_rows(transaction.db)  # type: ignore[attr-defined]
+            ]
+
+        return await create_db_read_transaction(thread_ref, _op)
+    except Exception as cause:
+        return storage_failure(f"chunk read-back failed: {cause}")
 
 
 def get_chunk_text(
@@ -219,7 +263,11 @@ def get_chunk_text(
     chunk_id: str,
     derivation_type: Literal["chunk_summary_detailed", "chunk_summary_brief"] = "chunk_summary_detailed",
 ) -> CompactChunkMaterial:
-    raise NotImplementedError
+    from .internal.chunk_recovery import compact_chunk_material_from_stored_members
+
+    return compact_chunk_material_from_stored_members(
+        transaction.db, chunk_id, derivation_type
+    )
 
 
 # In-transaction read for coordinators that already hold an open thread
@@ -236,7 +284,13 @@ class TurnChunkStructure:
 
 
 def read_turn_chunk_structure(db: Database) -> TurnChunkStructure:
-    raise NotImplementedError
+    from .internal.chunks import read_chunk_structure
+    from .internal.store import read_turn_structure
+
+    return TurnChunkStructure(
+        turns=read_turn_structure(db),
+        chunks=read_chunk_structure(db),
+    )
 
 
 # ── report and repair ─────────────────────────────────────────────
@@ -256,7 +310,24 @@ async def report(
     thread_ref: ThreadRef,
     opts: TurnReportOpts | None = None,
 ) -> OpResult[list[DerivationReportEntry]]:
-    raise NotImplementedError
+    from ..shared_tech.errors import storage_failure
+    from ..shared_tech.persist import create_db_read_transaction
+    from .internal.derivations import TurnReportOptions, report_turn_derivations
+
+    try:
+        options = TurnReportOptions()
+        if opts is not None:
+            options = TurnReportOptions(
+                not_ready=opts.not_ready,
+                turn_id=opts.turn_id,
+                chunk_id=opts.chunk_id,
+            )
+        return await create_db_read_transaction(
+            thread_ref,
+            lambda transaction: report_turn_derivations(transaction.db, options),
+        )
+    except Exception as cause:
+        return storage_failure(f"report read failed: {cause}")
 
 
 @dataclass(frozen=True, slots=True)

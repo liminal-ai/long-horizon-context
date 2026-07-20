@@ -207,7 +207,47 @@ class MemberProjection:
 
 
 def read_member_projections(db: Database, chunk_id: str) -> list[MemberProjection]:
-    raise NotImplementedError
+    rows = db.prepare(_SQL_READ_MEMBER_PROJECTIONS).all(chunk_id)
+    result: list[MemberProjection] = []
+    for row in rows:
+        if row["deleted_at"] is not None:
+            continue
+        turn_id = str(row["turn_id"])
+        source_corruption_reason = None
+        if row["existing_turn_id"] is None:
+            source_corruption_reason = (
+                f"canonical record corrupt: chunk {chunk_id} member {turn_id} "
+                "references missing turn"
+            )
+        result.append(
+            MemberProjection(
+                turn_id=turn_id,
+                state=None if row["state"] is None else str(row["state"]),
+                content=None if row["content"] is None else str(row["content"]),
+                assembly_state=(
+                    None
+                    if row["assembly_state"] is None
+                    else str(row["assembly_state"])
+                ),
+                assembly_content=(
+                    None
+                    if row["assembly_content"] is None
+                    else str(row["assembly_content"])
+                ),
+                rendering_state=(
+                    None
+                    if row["rendering_state"] is None
+                    else str(row["rendering_state"])
+                ),
+                rendering_content=(
+                    None
+                    if row["rendering_content"] is None
+                    else str(row["rendering_content"])
+                ),
+                source_corruption_reason=source_corruption_reason,
+            )
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,7 +270,44 @@ def read_owned_derivations(
     db: Database,
     subject_kind: Literal["turn", "chunk"],
 ) -> dict[str, list[Derivation]]:
-    raise NotImplementedError
+    from ...shared_tech.derivation import DependencyGap, decode_derivation_metadata
+
+    rows = db.prepare(_SQL_READ_OWNED_DERIVATIONS).all(subject_kind)
+    by_subject: dict[str, list[Derivation]] = {}
+    for row in rows:
+        subject_id = str(row["subject_id"])
+        metadata = None
+        if row["metadata"] is not None:
+            metadata = decode_derivation_metadata(json.loads(str(row["metadata"])))
+        gaps = None
+        if row["gaps"] is not None:
+            raw_gaps = json.loads(str(row["gaps"]))
+            gaps = [
+                DependencyGap(
+                    subject_kind=str(gap["subjectKind"]),  # type: ignore[arg-type]
+                    subject_id=str(gap["subjectId"]),
+                    derivation_type=str(gap["derivationType"]),
+                )
+                for gap in raw_gaps
+            ]
+        record = Derivation(
+            subject_kind=subject_kind,
+            subject_id=subject_id,
+            derivation_type=str(row["derivation_type"]),
+            state=str(row["state"]),  # type: ignore[arg-type]
+            source_version=int(row["source_version"]),
+            content=None if row["content"] is None else str(row["content"]),
+            reason=None if row["reason"] is None else str(row["reason"]),
+            gaps=gaps,
+            metadata=metadata,
+            derived_at=None if row["derived_at"] is None else str(row["derived_at"]),
+        )
+        bucket = by_subject.get(subject_id)
+        if bucket is None:
+            bucket = []
+            by_subject[subject_id] = bucket
+        bucket.append(record)
+    return by_subject
 
 
 # Chunk read-back rows for the list_chunks surface: stored chunk state plus
@@ -245,7 +322,20 @@ class ChunkReadRow:
 
 
 def read_chunk_rows(db: Database) -> list[ChunkReadRow]:
-    raise NotImplementedError
+    chunks = db.prepare(_SQL_READ_CHUNK_ROWS).all()
+    member_stmt = db.prepare(_SQL_READ_CHUNK_ROW_MEMBERS)
+    return [
+        ChunkReadRow(
+            chunk_id=str(row["chunk_id"]),
+            chunk_order=int(row["chunk_order"]),
+            status=str(row["status"]),  # type: ignore[arg-type]
+            accumulated_projected_tokens=int(row["accumulated_projected_tokens"]),
+            member_turn_ids=[
+                str(member["turn_id"]) for member in member_stmt.all(row["chunk_id"])
+            ],
+        )
+        for row in chunks
+    ]
 
 
 # One derivation row by exact key for this owner's subjects — the requeue
@@ -311,7 +401,46 @@ def report_turn_derivations(
     db: Database,
     opts: TurnReportOptions | None = None,
 ) -> list[DerivationReportEntry]:
-    raise NotImplementedError
+    from ...shared_tech.report import RawReportRow, report_entry_from_row
+
+    options = opts if opts is not None else TurnReportOptions()
+    conditions = ["df.subject_kind IN ('turn', 'chunk')"]
+    params: list[str] = []
+    subject_filters: list[str] = []
+    if options.turn_id is not None:
+        subject_filters.append("(df.subject_kind = 'turn' AND df.subject_id = ?)")
+        params.append(options.turn_id)
+    if options.chunk_id is not None:
+        subject_filters.append("(df.subject_kind = 'chunk' AND df.subject_id = ?)")
+        params.append(options.chunk_id)
+    if len(subject_filters) > 0:
+        conditions.append(f"({' OR '.join(subject_filters)})")
+    # notReady is exact set equality by construction: every state but ready.
+    if options.not_ready is True:
+        conditions.append("df.state <> 'ready'")
+    rows = db.prepare(
+        _SQL_REPORT_TURN_DERIVATIONS.format(conditions=" AND ".join(conditions))
+    ).all(*params)
+    return [
+        report_entry_from_row(
+            str(row["subject_kind"]),  # type: ignore[arg-type]
+            RawReportRow(
+                subject_id=str(row["subject_id"]),
+                derivation_type=str(row["derivation_type"]),
+                state=str(row["state"]),
+                content=None if row["content"] is None else str(row["content"]),
+                reason=None if row["reason"] is None else str(row["reason"]),
+                metadata=None if row["metadata"] is None else str(row["metadata"]),
+                source_version=int(row["source_version"]),
+                gaps=None if row["gaps"] is None else str(row["gaps"]),
+                derived_at=None if row["derived_at"] is None else str(row["derived_at"]),
+                queue_status=(
+                    None if row["queue_status"] is None else str(row["queue_status"])
+                ),
+            ),
+        )
+        for row in rows
+    ]
 
 
 def chunk_exists(db: Database, chunk_id: str) -> bool:

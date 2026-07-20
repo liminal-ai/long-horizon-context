@@ -6,6 +6,7 @@ deterministic concat floor over live members when the summary is not ready.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal, Union
 
@@ -57,11 +58,96 @@ CompactChunkMaterial = Union[CompactChunkReady, CompactChunkConcat, CompactChunk
 
 
 def _block_text(kind: str, content: dict[str, object]) -> str:
-    raise NotImplementedError
+    from ...shared_tech import truncate_for_fallback
+
+    if kind in (
+        "user_prompt",
+        "assistant_text",
+        "assistant_thinking",
+        "runtime_note",
+    ):
+        text = content.get("text")
+        return text if isinstance(text, str) else ""
+    if kind == "model_change":
+        previous = content["previousModel"] if "previousModel" in content else None
+        new = content["newModel"] if "newModel" in content else None
+        return f"[model change] {'' if previous is None else str(previous)} -> {'' if new is None else str(new)}"
+    if kind == "thinking_level_change":
+        previous = content["previousLevel"] if "previousLevel" in content else None
+        new = content["newLevel"] if "newLevel" in content else None
+        return (
+            f"[thinking level change] {'' if previous is None else str(previous)} -> "
+            f"{'' if new is None else str(new)}"
+        )
+    if kind == "tool_call":
+        name_val = content.get("toolName")
+        name = name_val if isinstance(name_val, str) else "unknown_tool"
+        args = content["arguments"] if "arguments" in content else {}
+        if args is None:
+            args = {}
+        return truncate_for_fallback(
+            f"[tool call · {name}] {json.dumps(args, separators=(',', ':'), ensure_ascii=False)}"
+        )
+    if kind == "tool_result":
+        text = content.get("content")
+        if isinstance(text, str):
+            return f"[tool result]\n{truncate_for_fallback(text)}"
+        return "[tool result]"
+    return ""
 
 
 def _stored_member_concat(db: Database, chunk_id: str) -> CompactChunkMaterial:
-    raise NotImplementedError
+    chunk = db.prepare(_SQL_CHUNK_EXISTS).get(chunk_id)
+    if chunk is None:
+        return CompactChunkBlocked(
+            reason=f"canonical record corrupt: chunk {chunk_id} not found"
+        )
+
+    members = db.prepare(_SQL_LIVE_CHUNK_MEMBERS).all(chunk_id)
+    if len(members) == 0:
+        return CompactChunkBlocked(
+            reason=f"canonical record corrupt: chunk {chunk_id} has no readable members"
+        )
+
+    message_stmt = db.prepare(_SQL_TURN_MESSAGES)
+    block_stmt = db.prepare(_SQL_MESSAGE_BLOCK_CONTENT)
+    sections: list[str] = []
+    for member in members:
+        turn_id = str(member["turn_id"])
+        turn = db.prepare(_SQL_TURN_STATUS).get(turn_id)
+        if (
+            turn is None
+            or str(turn["status"]) != "closed"
+            or turn["closed_at_event_order"] is None
+        ):
+            return CompactChunkBlocked(
+                reason=(
+                    f"canonical record corrupt: chunk {chunk_id} member "
+                    f"{turn_id} is unreadable"
+                )
+            )
+        messages = message_stmt.all(turn_id)
+        lines: list[str] = []
+        for message in messages:
+            blocks = block_stmt.all(str(message["message_id"]))
+            rendered = [
+                text
+                for text in (
+                    _block_text(
+                        str(message["kind"]),
+                        json.loads(str(block["content"])),
+                    )
+                    for block in blocks
+                )
+                if len(text) > 0
+            ]
+            lines.extend(rendered)
+        sections.append("\n".join(lines))
+
+    return CompactChunkConcat(
+        content="\n\n---\n\n".join(sections),
+        reason="not_ready",
+    )
 
 
 def compact_chunk_material_from_stored_members(
@@ -69,4 +155,25 @@ def compact_chunk_material_from_stored_members(
     chunk_id: str,
     derivation_type: Literal["chunk_summary_detailed", "chunk_summary_brief"],
 ) -> CompactChunkMaterial:
-    raise NotImplementedError
+    row = db.prepare(_SQL_CHUNK_DERIVATION).get(chunk_id, derivation_type)
+    if row is not None and str(row["state"]) == "ready" and row["content"] is not None:
+        return CompactChunkReady(content=str(row["content"]))
+    if row is not None and str(row["state"]) == "blocked":
+        reason = row["reason"]
+        return CompactChunkBlocked(
+            reason=(
+                str(reason)
+                if reason is not None
+                else f"{derivation_type} for chunk {chunk_id} is blocked"
+            )
+        )
+    fallback = _stored_member_concat(db, chunk_id)
+    if not isinstance(fallback, CompactChunkConcat):
+        return fallback
+    if row is None:
+        reason = "missing_derivation"
+    elif str(row["state"]) == "failed":
+        reason = "failed_floor"
+    else:
+        reason = "not_ready"
+    return CompactChunkConcat(content=fallback.content, reason=reason)

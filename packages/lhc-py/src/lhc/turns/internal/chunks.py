@@ -188,7 +188,25 @@ class ChunkStructureRow:
 
 
 def read_chunk_structure(db: Database) -> list[ChunkStructureRow]:
-    raise NotImplementedError
+    chunk_rows = db.prepare(_SQL_SELECT_CHUNK_STRUCTURE).all()
+    member_rows = db.prepare(_SQL_SELECT_CHUNK_STRUCTURE_MEMBERS).all()
+    members_by_chunk: dict[str, list[str]] = {}
+    for row in member_rows:
+        chunk_id = str(row["chunk_id"])
+        members = members_by_chunk.get(chunk_id)
+        if members is None:
+            members = []
+            members_by_chunk[chunk_id] = members
+        members.append(str(row["turn_id"]))
+    return [
+        ChunkStructureRow(
+            chunk_id=str(row["chunk_id"]),
+            chunk_order=int(row["chunk_order"]),
+            status=str(row["status"]),  # type: ignore[arg-type]
+            member_turn_ids=list(members_by_chunk.get(str(row["chunk_id"]), [])),
+        )
+        for row in chunk_rows
+    ]
 
 
 # Placement read-back for the turns surface: chunk_id + member_idx by turn, one
@@ -200,4 +218,11 @@ class TurnPlacement:
 
 
 def read_placements(db: Database) -> dict[str, TurnPlacement]:
-    raise NotImplementedError
+    rows = db.prepare(_SQL_SELECT_PLACEMENTS).all()
+    by_turn: dict[str, TurnPlacement] = {}
+    for row in rows:
+        by_turn[str(row["turn_id"])] = TurnPlacement(
+            chunk_id=str(row["chunk_id"]),
+            member_idx=int(row["member_idx"]),
+        )
+    return by_turn

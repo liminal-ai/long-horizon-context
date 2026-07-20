@@ -288,8 +288,6 @@ async def drain_open_db(
                     )
         except DerivationCompletionError:
             raise
-        except NotImplementedError:
-            raise
         except BaseException as cause:
             from .durable_work import DurableWorkDispatchFailed
 
@@ -380,8 +378,6 @@ async def run_drain(
                 reason=str(cause),
             )
         )
-    except NotImplementedError:
-        raise
     except BaseException as cause:
         return storage_failure(f"drain failed: {cause}")
     finally:

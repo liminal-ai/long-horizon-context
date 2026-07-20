@@ -91,7 +91,39 @@ class _RawTurnRow:
 # deleted message leaves its turn's membership — the membership shrinks in
 # place, the turn row and its boundaries untouched.
 def read_turns(db: Database) -> list[TurnRecord]:
-    raise NotImplementedError
+    from .chunks import read_placements
+
+    member_rows = db.prepare(_SQL_SELECT_TURN_MEMBERS).all()
+    members_by_turn: dict[str, list[str]] = {}
+    for row in member_rows:
+        turn_id = str(row["turn_id"])
+        members = members_by_turn.get(turn_id)
+        if members is None:
+            members = []
+            members_by_turn[turn_id] = members
+        members.append(str(row["message_id"]))
+
+    turn_rows = db.prepare(_SQL_SELECT_TURNS_LIVE).all()
+    # Chunk placement is stored in chunk_member once derivation places the turn.
+    placements = read_placements(db)
+    records: list[TurnRecord] = []
+    for row in turn_rows:
+        turn_id = str(row["turn_id"])
+        closed = row["closed_at_event_order"]
+        placement = placements.get(turn_id)
+        records.append(
+            TurnRecord(
+                turn_id=turn_id,
+                turn_order=int(row["turn_order"]),
+                status=str(row["status"]),  # type: ignore[arg-type]
+                member_message_ids=list(members_by_turn.get(turn_id, [])),
+                opened_at_event_order=int(row["opened_at_event_order"]),
+                closed_at_event_order=None if closed is None else int(closed),
+                chunk_id=None if placement is None else placement.chunk_id,
+                member_idx=None if placement is None else placement.member_idx,
+            )
+        )
+    return records
 
 
 # The turn structure for compact selection: every turn row in turn order,
@@ -110,4 +142,19 @@ class TurnStructureRow:
 
 
 def read_turn_structure(db: Database) -> list[TurnStructureRow]:
-    raise NotImplementedError
+    rows = db.prepare(_SQL_SELECT_TURN_STRUCTURE).all()
+    return [
+        TurnStructureRow(
+            turn_id=str(row["turn_id"]),
+            turn_order=int(row["turn_order"]),
+            status=str(row["status"]),  # type: ignore[arg-type]
+            opened_at_event_order=int(row["opened_at_event_order"]),
+            closed_at_event_order=(
+                None
+                if row["closed_at_event_order"] is None
+                else int(row["closed_at_event_order"])
+            ),
+            deleted=row["deleted_at"] is not None,
+        )
+        for row in rows
+    ]

@@ -75,6 +75,7 @@ from .derivations import (
     chunk_exists,
     read_chunk_summary_derivation,
     read_member_messages,
+    read_member_projections,
     read_message_derivation_rows,
     read_turn_derivation_row,
     read_turn_source,
@@ -515,7 +516,46 @@ _DetailedChunkComposition = Union[
 
 
 def _compose_detailed_chunk_from_members(db: Database, chunk_id: str) -> _DetailedChunkComposition:
-    raise NotImplementedError
+    members = read_member_projections(db, chunk_id)
+    member_projections: list[str] = []
+    fallback_logs: list[LogEntry] = []
+    for member in members:
+        if member.source_corruption_reason is not None:
+            return _source_damaged(member.source_corruption_reason)
+        if member.state == "ready" and member.content is not None:
+            member_projections.append(member.content)
+            continue
+        if member.state == "blocked":
+            return _source_damaged(
+                f"member {member.turn_id} detailed_turn_compression blocked "
+                "while deriving chunk_summary_detailed"
+            )
+        if (
+            member.state == "failed"
+            and member.assembly_state == "ready"
+            and member.assembly_content is not None
+        ):
+            member_projections.append(member.assembly_content)
+            fallback_logs.append(
+                LogEntry(
+                    level="warning",
+                    message="derivation fallback used",
+                    derivation_type="chunk_summary_detailed",
+                    subject_id=chunk_id,
+                    reason="failed_floor",
+                    floor_used=member.turn_id,
+                )
+            )
+            continue
+        return _dependency_not_ready(
+            "member_projection_not_ready: member "
+            f"{member.turn_id} detailed_turn_compression is "
+            f"{member.state if member.state is not None else 'missing'}"
+        )
+    return _DetailedChunkOk(
+        text=_compose_detailed_chunk_summary(member_projections),
+        fallback_logs=fallback_logs,
+    )
 
 
 # TS: function chunkDetailedHandler(): WorkHandler — zero-arg factory.
@@ -532,7 +572,49 @@ def _chunk_brief_handler() -> WorkHandler:
 # by calling the factories above; Phase 1 cannot call the factories at import
 # time (bodies raise), so these stubs stand in for the returned handlers.
 async def _chunk_summary_detailed_handler(run: HandlerRunContext, item: WorkItemRef) -> HandlerOutcome:
-    raise NotImplementedError
+    source_ref = item.source_ref
+    chunk_id = source_ref.get("chunkId")
+    if not isinstance(chunk_id, str):
+        return _source_damaged("work item carries no chunkId")
+    db = run.open_db()
+    if not chunk_exists(db, chunk_id):
+        return _source_damaged(f"chunk {chunk_id} not found")
+    composition = _compose_detailed_chunk_from_members(db, chunk_id)
+    if not composition.ok:
+        return composition
+
+    fallback_logs = composition.fallback_logs
+
+    def on_applied(transaction: object) -> None:
+        if len(fallback_logs) == 0:
+            return
+
+        class _PostCommit:
+            def add(self, operation: Callable[[], None]) -> None:
+                transaction.on_commit(operation)  # type: ignore[attr-defined]
+
+        log_transaction = DbWriteTransaction(
+            db=transaction.db,  # type: ignore[attr-defined]
+            clock=run.clock,
+            thread_id=run.thread_id,
+            file_path=run.file_path,
+            post_commit_hook=_PostCommit(),
+            poke=resolve_instance_poke(),
+        )
+        for entry in fallback_logs:
+            write_log(log_transaction, entry)
+
+    return HandlerOk(
+        derivations=[
+            HandlerDerivationWrite(
+                subject_kind="chunk",
+                subject_id=chunk_id,
+                derivation_type="chunk_summary_detailed",
+                content=composition.text,
+            )
+        ],
+        on_applied=on_applied if len(fallback_logs) > 0 else None,
+    )
 
 
 async def _chunk_summary_brief_handler(run: HandlerRunContext, item: WorkItemRef) -> HandlerOutcome:

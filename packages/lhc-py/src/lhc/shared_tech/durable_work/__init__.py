@@ -481,8 +481,6 @@ async def run_work_handler(
                 source_ref=dict(item.source_ref),
             ),
         )
-    except NotImplementedError:
-        raise
     except BaseException as cause:
         return HandlerFailed(reason=f"handler threw: {cause}")
 
