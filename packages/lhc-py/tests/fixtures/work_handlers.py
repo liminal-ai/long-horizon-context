@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypedDict, Union
+from typing import Literal, TypedDict, Union
 
 from lhc.sdk import Lhc
 from lhc.shared_tech.derivation import (
@@ -19,10 +19,11 @@ from lhc.shared_tech.derivation import (
     InferenceResult,
     WorkHandler,
 )
+from lhc.shared_tech.durable_work import DurableWorkDispatcherMap
 from lhc.shared_tech.work_queue import WorkKind
 from .model_call import DerivationType
 
-WORK_KINDS: tuple[WorkKind, ...] = (
+_WORK_KINDS: tuple[WorkKind, ...] = (
     "prompt_smoothing",
     "tool_result_summary",
     "turn_derivation",
@@ -42,15 +43,6 @@ class TestHandlerHooks(TypedDict, total=False):
     # claim committed and any earlier item's completion landed. The kill and
     # hold runners hang their marker/sleep protocol here.
     onHandlerStart: Callable[[HandlerStartItem], None | Awaitable[None]]
-
-
-# Mirrors DurableWorkDispatcher / DurableWorkDispatcherMap until Wave 2 ports
-# durable-work. Names and call shape match packages/lhc/src/shared-tech/durable-work.
-class DurableWorkDispatcher(Protocol):
-    def __call__(self, run: HandlerRunContext, item: object) -> Awaitable[object]: ...
-
-
-DurableWorkDispatcherMap = dict[str, DurableWorkDispatcher]
 
 
 # TS: onApplied receives { db, onCommit } — CompletionTx is the shared-tech name.

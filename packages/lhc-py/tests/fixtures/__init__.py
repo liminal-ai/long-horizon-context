@@ -17,12 +17,19 @@ from typing import Any, TypeVar, cast
 from lhc.intake_stream import EventKind, MessageEventInput
 from lhc.shared_tech.storage import Database, open_database
 
+from .corrupt import (
+    NOT_JSON,
+    corrupt_two_open_turns,
+    poison_message_block_json,
+    poison_message_form_json,
+)
 from .inference_callbacks_double import (
     CapturedInput,
     InferenceCallbackOpName,
     InferenceCallbacksDouble,
     create_inference_callbacks_double,
 )
+from .intake_seam import IntakeWalkHook, set_intake_clock, set_intake_walk_hook
 from .model_call import (
     DERIVATION_TYPES,
     FAKE_MODEL_PREFIX,
@@ -37,6 +44,13 @@ from .model_call import (
     throwing_call,
     valid_assignments,
 )
+from .read_only_delta import ObservableState, expect_read_only, observable_state
+from .seam_conformance import (
+    RoutingRunResult,
+    assert_model_call_contract,
+    assert_routing_through_sdk,
+    probe_input,
+)
 from .threads import (
     GAPPED_SMOOTHING_REASON,
     damaged_source_thread,
@@ -49,9 +63,7 @@ from .threads import (
     thread_with_tool_run,
 )
 from .work_handlers import (
-    WORK_KINDS,
     register_test_work_handlers,
-    test_work_dispatchers,
     test_work_handlers,
 )
 
@@ -143,30 +155,42 @@ __all__ = [
     "FAKE_PROVIDER_PREFIX",
     "GAPPED_SMOOTHING_REASON",
     "INFERENCE_DERIVATION_TYPES",
-    "WORK_KINDS",
+    "NOT_JSON",
     "CapturedInput",
     "DerivationType",
     "InferenceCallbackOpName",
     "InferenceCallbacksDouble",
     "InferenceDerivationType",
+    "IntakeWalkHook",
+    "ObservableState",
+    "RoutingRunResult",
     "TempStore",
+    "assert_model_call_contract",
+    "assert_routing_through_sdk",
     "canned_responses",
     "conversation_turn",
+    "corrupt_two_open_turns",
     "create_inference_callbacks_double",
     "damaged_source_thread",
     "event_batch",
+    "expect_read_only",
     "gapped_rendering_thread",
     "hanging_call",
     "multi_state_thread",
+    "observable_state",
     "open_raw",
+    "poison_message_block_json",
+    "poison_message_form_json",
+    "probe_input",
     "read_chunks",
     "read_derived_forms",
     "recording_call",
     "register_test_work_handlers",
     "scripted_call",
     "set_form_state",
+    "set_intake_clock",
+    "set_intake_walk_hook",
     "temp_store",
-    "test_work_dispatchers",
     "test_work_handlers",
     "thread_with_closed_turns",
     "thread_with_tool_run",

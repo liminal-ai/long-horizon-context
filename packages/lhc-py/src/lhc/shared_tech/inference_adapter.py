@@ -1,7 +1,8 @@
-"""Ported from packages/lhc/src/shared-tech/inference-adapter.ts. Phase 1 — PARTIAL (Wave 1 import seam).
+"""Ported from packages/lhc/src/shared-tech/inference-adapter.ts. Phase 1 skeleton.
 
-Wave 1 inference-prompts tests import create_inference_callbacks. Full adapter
-lands in Wave 2; extend this module — do not reshape the exports below.
+create_inference_callbacks returns the same InferenceCallbacks interface direct
+injection implements, so init_lhc and everything below it sees callback
+operations.
 """
 
 from __future__ import annotations
@@ -10,6 +11,12 @@ from typing import TypedDict
 
 from .derivation import InferenceCallbacks, InferenceRequestMessage, InferenceResult
 from .inference_types import ModelAssignment, ModelCallFailureKind, ResolvedInferenceConfig
+
+# Tool-result bounding marker template; content length is inserted at runtime.
+# TS-private (not exported from inference-adapter.ts).
+_TRUNCATION_MARKER_TEMPLATE = (
+    "\n\n[... truncated: tool result was {length} chars; head and tail retained ...]\n\n"
+)
 
 
 class TargetRatios(TypedDict, total=False):
@@ -48,7 +55,7 @@ def _inference_failure(
 # the extraction directly; the adapter uses it at the call-build site below,
 # making the ratios reachable by the rendering path. Token targets are computed
 # by the owning handler.
-def target_ratios_of(assignment: ModelAssignment | None = None) -> TargetRatios:
+def target_ratios_of(assignment: ModelAssignment | None) -> TargetRatios:
     raise NotImplementedError
 
 
@@ -56,6 +63,16 @@ def target_ratios_of(assignment: ModelAssignment | None = None) -> TargetRatios:
 # is unknown at this registry boundary; ratios attach only when the input is an
 # object, leaving non-object inputs untouched.
 def _with_target_ratios(input: object, assignment: ModelAssignment) -> object:
+    raise NotImplementedError
+
+
+# TS nests callKind inside createInferenceCallbacks; Phase 2 wires the four
+# InferenceCallbacks methods through this helper.
+async def _call_kind(
+    config: ResolvedInferenceConfig,
+    kind: str,
+    input: object,
+) -> InferenceResult:
     raise NotImplementedError
 
 

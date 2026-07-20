@@ -10,11 +10,15 @@ from __future__ import annotations
 from typing import Literal, Protocol, TypedDict
 
 from .intake_stream import BatchResult, MessageEventInput
-from .messages import MessageListOptions, MessageRecord
+from .messages import MessageDeriveResult, MessageListOptions, MessageRecord
 from .shared_tech.context import set_scheduler_poke, set_thread_touch
 from .shared_tech.derivation import InferenceCallbacks, ResolvedSdkConfig, SdkConfig, WorkHandler
 from .shared_tech.deterministic import create_deterministic_inference_callbacks
-from .shared_tech.durable_work import DurableWorkDispatcherMap
+from .shared_tech.durable_work import (
+    DurableWorkDispatcher,
+    DurableWorkDispatcherMap,
+    DurableWorkOperation,
+)
 from .shared_tech.errors import OpResult
 from .shared_tech.logging import (
     DerivationLogQuery,
@@ -26,8 +30,11 @@ from .shared_tech.logging import (
     write_log,
 )
 from .shared_tech.view import LlmRequestContext
-from .shared_tech.work_queue import DrainReport, WorkHandlerMap, WorkKind
+from .shared_tech.storage import Database
+from .shared_tech.scheduler import DrainReport
+from .shared_tech.work_queue import WorkHandlerMap, WorkKind
 from .threads import NewThreadInput, NewThreadResult, ThreadRef
+from .turns import ChunkDeriveResult, TurnDeriveResult
 
 
 class DrainOpts(TypedDict, total=False):
@@ -65,7 +72,13 @@ class Scheduler(Protocol):
 
     def poke(self, thread_id: str) -> None: ...
 
+    def touch(self, file_path: str, db: Database) -> None: ...
+
     async def drain_settled(self, thread_id: str) -> None: ...
+
+    # Test-only observability for coalescing exactness (TC-1.2): drain passes
+    # started for a thread. Named as a test hook on purpose — not API.
+    def test_pass_count(self, thread_id: str) -> int: ...
 
 
 class LhcThreads(Protocol):
@@ -87,6 +100,24 @@ class LhcMessages(Protocol):
         filter: MessageListOptions | None = None,
     ) -> OpResult[list[MessageRecord]]: ...
 
+    async def derive(
+        self,
+        ref: ThreadRef,
+        message_ids: list[str],
+    ) -> OpResult[list[MessageDeriveResult]]: ...
+
+
+class LhcTurns(Protocol):
+    """Wave 2 import seam: work-execution.test.ts's sync-derive collision suite
+    calls sdk.turns.deriveTurn / deriveBriefChunk / deriveDetailedChunk.
+    """
+
+    async def derive_turn(self, ref: ThreadRef, turn_id: str) -> OpResult[TurnDeriveResult]: ...
+
+    async def derive_brief_chunk(self, ref: ThreadRef, chunk_id: str) -> OpResult[ChunkDeriveResult]: ...
+
+    async def derive_detailed_chunk(self, ref: ThreadRef, chunk_id: str) -> OpResult[ChunkDeriveResult]: ...
+
 
 class LhcThreadView(Protocol):
     async def get_llm_request_context(self, ref: ThreadRef) -> OpResult[LlmRequestContext]: ...
@@ -96,6 +127,7 @@ class Lhc(Protocol):
     threads: LhcThreads
     intake_stream: LhcIntakeStream
     messages: LhcMessages
+    turns: LhcTurns
     thread_view: LhcThreadView
     logging: LoggingSurface
     config: ResolvedSdkConfig
@@ -118,6 +150,20 @@ def register_testing_work(sdk: Lhc, registration: TestingWorkRegistration) -> No
     raise NotImplementedError
 
 
+# Dispatch-time lookups: an unregistered kind is reported explicitly — never
+# a throw, never a silent undefined. Mirrors packages/lhc/src/sdk.ts.
+def lookup_work_handler(map: WorkHandlerMap, kind: str) -> OpResult[WorkHandler]:
+    raise NotImplementedError
+
+
+def lookup_work_dispatcher(
+    map: DurableWorkDispatcherMap,
+    operation: DurableWorkOperation | None,
+    kind: str,
+) -> OpResult[DurableWorkDispatcher]:
+    raise NotImplementedError
+
+
 __all__ = [
     "Lhc",
     "LogEntry",
@@ -129,6 +175,8 @@ __all__ = [
     "WorkSurface",
     "create_deterministic_inference_callbacks",
     "init_lhc",
+    "lookup_work_dispatcher",
+    "lookup_work_handler",
     "register_testing_work",
     "set_scheduler_poke",
     "set_thread_touch",
