@@ -22,9 +22,6 @@ from .internal.health import compose_health
 from .internal.overview import compose_overview
 from .internal.view_report import compose_view_report
 
-# Closed over by Phase 2 bodies; named for TS import fidelity.
-_ = (compose_health, compose_overview, compose_view_report)
-
 __all__ = [
     "HealthReport",
     "InspectOverview",
@@ -36,12 +33,12 @@ __all__ = [
 
 
 async def overview(ref: ThreadRef) -> OpResult[InspectOverview]:
-    raise NotImplementedError
+    return await compose_overview(ref)
 
 
 async def health(ref: ThreadRef) -> OpResult[HealthReport]:
-    raise NotImplementedError
+    return await compose_health(ref)
 
 
 async def view(ref: ThreadRef) -> OpResult[ViewContentsReport]:
-    raise NotImplementedError
+    return await compose_view_report(ref)

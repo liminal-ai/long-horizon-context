@@ -35,6 +35,7 @@ from .messages.internal.derive import (
 )
 from .messages.internal.handlers import message_work_handlers
 from .shared_tech import logging
+from .shared_tech._jsstr import js_json_dumps, js_repr
 from .shared_tech.context import (
     InstanceSeam,
     run_with_instance_seam,
@@ -534,7 +535,7 @@ def _unknown_work_kind(kind: str) -> OpErr:
 
 def _require_positive(value: float, name: str) -> None:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
-        raise TypeError(f"{_INIT_CONFIG_PREFIX}: {name} must be a positive number, got {value}")
+        raise TypeError(f"{_INIT_CONFIG_PREFIX}: {name} must be a positive number, got {js_repr(value)}")
 
 
 # Bind a domain surface to one SDK instance's delivery seam (epic-fix-001):
@@ -827,7 +828,7 @@ def init_lhc(config: SdkConfig) -> Lhc:
     mode = _config_value(config, "mode")
     if mode not in ("background", "manual"):
         raise TypeError(
-            f'{_INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got {mode!r}'
+            f'{_INIT_CONFIG_PREFIX}: mode must be "background" or "manual", got {js_json_dumps(mode)}'
         )
 
     guards = resolve_guards(_coerce_guards(_config_value(config, "guards")))  # type: ignore[arg-type]

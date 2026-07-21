@@ -98,8 +98,8 @@ class InspectOverview:
 
 @dataclass(frozen=True, slots=True)
 class ViewContentsMetaConfig:
-    lower_bound: int
-    percentages: dict[str, int]
+    lower_bound: int | float
+    percentages: dict[str, int | float]
 
 
 @dataclass(frozen=True, slots=True)

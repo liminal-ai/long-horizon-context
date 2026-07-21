@@ -1,16 +1,21 @@
 # lhc-py
 
-Python port of the LHC SDK (`packages/lhc`). **Phase 1 complete**: every
-source module and test file is ported as skeletons + assertions; function
-bodies raise `NotImplementedError`. Ledger: 72 sources, 53 tests, 18
-fixtures — all ☑ (2 network tests EXCLUDED). Latest gate:
-`collect-only: clean (468 tests)` · `passed=10 notimpl=546 wrong=0` ·
-`GATE PASS`.
+Python port of the LHC SDK (`packages/lhc`). **Phases 1 and 2 complete**:
+every source module is fully implemented and the entire ported test suite
+passes. Final gate: `collect-only: clean (470 tests)` ·
+`passed=455 notimpl=0 skipped=15 wrong=0` · `GATE PASS` (stable across
+`PYTHONHASHSEED` values). The 15 skips are exactly the vitest `it.skip`
+set from the TS suite; 2 live-network tests are EXCLUDED by design. Zero
+`raise NotImplementedError` remain in `src/lhc/`.
 
-**Phase 2 handoff:** implement bodies in dependency order and drive tests
-from `notimpl` → `passed`; that count is the progress meter. Conventions
-remain in `docs/lhc-py-port-phase1-brief.md`. Constants (prompts, profiles,
-SQL) stay byte-identical to the TS oracle — do not regenerate goldens.
+Behavioral parity is certified against the TS oracle
+(`node --experimental-strip-types` imports the `.ts` sources directly):
+FNV digests (incl. astral chars via UTF-16 code-unit iteration in
+`shared_tech/_jsstr.py`), tiktoken counts, prompt renders, stored-view
+JSON bytes (JS-number normalization via `js_json_dumps`), and rendered
+view output (goldens byte-identical, never regenerated). Port conventions
+live in `docs/lhc-py-port-phase1-brief.md` and
+`docs/lhc-py-port/phase2-brief.md`.
 
 ```sh
 uv sync                              # one-time env setup
