@@ -154,8 +154,13 @@ def _migrate_queued_turn_derivation_work_items(db: Database) -> None:
         if not isinstance(turn_id, str):
             continue
         payload = json.loads(str(row["payload"]))
+        # TS parity: property access on null throws (fail-closed -> rollback);
+        # on any other non-object it yields undefined, so migration treats the
+        # row as an empty payload rather than skipping it.
+        if payload is None:
+            raise TypeError("cannot read properties of null (reading 'sourceVersion')")
         if not isinstance(payload, dict):
-            continue
+            payload = {}
         source_version = payload.get("sourceVersion")
         if source_version is None:
             source_version = 1
