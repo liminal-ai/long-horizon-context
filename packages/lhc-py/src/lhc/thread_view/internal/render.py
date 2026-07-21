@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/render.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/render.ts.
 
 Tail and band formatting: the tail mapping table, short/full tool-result
 selection by boundary position, and the deterministic at-or-behind-boundary

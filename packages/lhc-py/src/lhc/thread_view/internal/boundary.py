@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/boundary.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/boundary.ts.
 
 Visibility boundary. The boundary is a source event order shared with the
 compact point's coordinate system; tool results at-or-behind it render short.

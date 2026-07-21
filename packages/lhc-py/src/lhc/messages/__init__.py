@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/index.ts.
 
 Full messages surface: create/list/show/report/derive/edit/remove plus the
 mutation result contract. Internal modules own store/project/cascade/handlers;

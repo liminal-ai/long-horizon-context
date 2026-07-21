@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v1.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v1.ts.
 
 Pre-dial-in template kept under its versioned name for provenance.
 """

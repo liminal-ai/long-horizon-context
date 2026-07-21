@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/snapshot.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/snapshot.ts.
 
 Stored view snapshot reads and the one atomic compact writer. This module
 reads the snapshot header and bands, the live tail messages after the compact

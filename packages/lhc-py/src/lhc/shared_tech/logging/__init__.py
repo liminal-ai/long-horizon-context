@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/logging/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/logging/index.ts.
 
 The logging surface: a domain-blind tech-util for recording fallback
 events and diagnostics. LHC internals and the host extension both write

@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/index.ts.
 
 thread-view surface: model context, status, compact, materialize, and
 describe. Hot-path reads use local deterministic assembly only: no inference,

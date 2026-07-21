@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/inspect/internal/overview.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/inspect/internal/overview.ts.
 
 Overview composition is one read-only call assembling thread identity, record
 counts, derivation states, view summary, and visibility from other public

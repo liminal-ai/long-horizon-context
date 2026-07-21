@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/persist.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/persist.ts.
 
 LAYERING NOTE: this module imports the threads domain — faithful to the TS,
 where persist.ts is the sanctioned exception to "shared-tech may not import

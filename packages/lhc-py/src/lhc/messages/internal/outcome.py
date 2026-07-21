@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/outcome.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/outcome.ts.
 
 Mechanical ToolOutcome stamping: the outcome on a tool-activity summary is a
 pure function of the record — paired-result presence and its isError flag —

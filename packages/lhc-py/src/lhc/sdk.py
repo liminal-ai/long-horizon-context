@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/sdk.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/sdk.ts.
 
 Public SDK surface: namespace modules, init_lhc, work/logging/thread-view
 protocols, and the type/value re-exports mirrors of sdk.ts.

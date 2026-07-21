@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/internal/chunk-recovery.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/internal/chunk-recovery.ts.
 
 Compact-selection material for a chunk: ready stored summary content, or a
 deterministic concat floor over live members when the summary is not ready.

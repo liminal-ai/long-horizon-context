@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/report.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/report.ts.
 
 The report row mapper shared by owner report queries. Each domain owns its
 one-query join and derivation_type→kind mapping; the raw-row →

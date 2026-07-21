@@ -1,8 +1,8 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/smoothing-v1.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/smoothing-v1.ts.
 
 Settled smoothing prompt from the smoothed_prompt dial-in runs. This prompt
 keeps smoothing as near-verbatim cleanup, not summarization or response.
-Instruction text is real and byte-identical; render is a skeleton.
+Instruction text is real and byte-identical; render is implemented.
 """
 
 from __future__ import annotations

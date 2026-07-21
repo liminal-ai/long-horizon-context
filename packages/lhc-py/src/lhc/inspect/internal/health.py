@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/inspect/internal/health.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/inspect/internal/health.ts.
 
 Health composition joins owners' report surfaces into state counts,
 actionable failure detail, a repair preview, and live queue visibility.

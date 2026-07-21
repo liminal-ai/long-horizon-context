@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v3.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v3.ts.
 
 Stated vs acceptance: assignment targetMinRatio/targetMaxRatio/targetAimRatio
 (0.08–0.2, aim 0.12) are the ACCEPTANCE window that sizeDisposition measures

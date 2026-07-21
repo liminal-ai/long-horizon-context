@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/context.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/context.ts.
 
 Per-SDK-instance delivery seam. Each SDK runs every one of its operations
 inside run_with_instance_seam, so code reached deep inside — enqueue's poke and

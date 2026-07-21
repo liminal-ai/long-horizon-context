@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/deterministic.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/deterministic.ts.
 
 EXEMPLAR MODULE — canonical pattern for a mixed constants-and-functions file.
 Constants are ported verbatim as real values; every function body is a

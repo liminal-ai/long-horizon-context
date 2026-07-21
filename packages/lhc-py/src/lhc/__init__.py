@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/index.ts.
 
 Re-exports mirror sdk.ts exactly (index.ts is `export * from "./sdk.js"`).
 """

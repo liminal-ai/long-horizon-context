@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/view.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/view.ts.
 
 Shared thread-view vocabulary. Shared so CLI, SDK, and tests import one
 home; the thread-view domain owns behavior, this module owns only shapes.

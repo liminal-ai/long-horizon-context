@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/inference-types.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/inference-types.ts.
 
 Inference boundary vocabulary: the one function a host supplies, its
 structured result shapes, and the config that arrives at init_lhc as the

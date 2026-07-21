@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/index.ts.
 
 Full turns surface: create/list/report/derive plus structure and compact
 material reads. Internal modules own store/compose/chunks/derivations/derive;

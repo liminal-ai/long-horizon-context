@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/handlers.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/handlers.ts.
 
 Message-level derivation handlers share one shape: read the source message,
 optionally join its call-id pair, and return derivation content through

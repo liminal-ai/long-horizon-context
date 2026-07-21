@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/thread-migrate.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/thread-migrate.ts.
 
 Thread-file schema migrations applied on open.
 """

@@ -1,6 +1,6 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v2.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v2.ts.
 
-Prompt strings are real and byte-identical to TS-evaluated constants; render is a skeleton.
+Prompt strings are real and byte-identical to TS-evaluated constants; render is implemented.
 """
 
 from __future__ import annotations

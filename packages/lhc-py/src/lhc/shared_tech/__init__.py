@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/index.ts.
 
 Public technical surface for mechanism-only capabilities consumed by LHC
 product domains. Sub-capabilities with their own public entrypoints

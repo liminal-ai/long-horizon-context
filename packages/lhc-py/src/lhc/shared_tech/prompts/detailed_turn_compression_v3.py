@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts.
 
 Stated vs acceptance: assignment targetMinRatio/targetMaxRatio/targetAimRatio
 (0.35–0.65, aim 0.5) are the ACCEPTANCE window that sizeDisposition measures

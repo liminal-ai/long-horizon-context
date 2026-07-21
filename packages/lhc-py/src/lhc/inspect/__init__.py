@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/inspect/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/inspect/index.ts.
 
 Inspect is a pure consumer of other public surfaces: it imports no internals,
 owns no tables, calls no inference, and writes nothing. It reports repair

@@ -45,7 +45,7 @@ def _fresh_store() -> TempStore:
 
 
 @pytest.mark.skip(
-    reason="TC-1.2 exercises per-kind routing through a full seeded drain; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-1.2 exercises per-kind routing through a full seeded drain; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_a_seeded_drain_exercises_all_seven_kinds_each_call_carrying_exactly_its_assigned_strings() -> None:
     """a seeded drain exercises all seven kinds, each call carrying exactly its assigned strings"""
@@ -73,7 +73,7 @@ async def test_a_seeded_drain_exercises_all_seven_kinds_each_call_carrying_exact
 
 
 @pytest.mark.skip(
-    reason="TC-1.2 exercises per-kind routing through a full seeded drain; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-1.2 exercises per-kind routing through a full seeded drain; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_every_logged_messages_value_is_single_turn_shape() -> None:
     """every logged messages value is single-turn shape: system and user roles, string content (AC-1.2)"""
@@ -91,7 +91,7 @@ async def test_every_logged_messages_value_is_single_turn_shape() -> None:
 
 
 @pytest.mark.skip(
-    reason="TC-1.2 exercises per-kind routing through a full seeded drain; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-1.2 exercises per-kind routing through a full seeded drain; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_a_three_lane_mixed_config_routes_each_call_by_item_kind_with_no_cross_kind_bleed() -> None:
     """a three-lane mixed config routes each call by item kind with no cross-kind bleed"""

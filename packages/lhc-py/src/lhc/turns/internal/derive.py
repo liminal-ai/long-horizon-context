@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/internal/derive.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/internal/derive.ts.
 
 The turns derivation handlers: turn_derivation (deterministic assembly),
 detailed_turn_compression (inference over pre_detailed_assembly), and the

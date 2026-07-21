@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/tool-result-v1.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/tool-result-v1.ts.
 
 Pre-dial-in template kept under its versioned name. Input bounding is applied
 by the adapter before this template renders.

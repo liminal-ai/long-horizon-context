@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/inspect.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/inspect.ts.
 
 Inspect report shapes. Inspect is a pure consumer: these shapes carry other
 domains' surface output composed into counts and summaries; nothing here is

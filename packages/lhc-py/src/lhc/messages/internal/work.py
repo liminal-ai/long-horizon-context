@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/work.ts. Phase 1 skeleton."""
+"""Ported from packages/lhc/src/messages/internal/work.ts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/durable-work/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/durable-work/index.ts.
 
 Durable work dispatch: operation intents, derivation completion transactions,
 and the handler runner used by domain dispatchers.

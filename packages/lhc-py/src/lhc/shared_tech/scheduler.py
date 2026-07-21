@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/scheduler.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/scheduler.ts.
 
 SDK-internal scheduler and drain: the one component holding cross-operation
 in-memory state. The drain loop lives here: claim under BEGIN IMMEDIATE,

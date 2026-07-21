@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/logging/derivation-log.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/logging/derivation-log.ts.
 
 Append-only execution history for inference-backed derivations. State stays
 compact (pending | ready | failed | blocked); this table carries the story.

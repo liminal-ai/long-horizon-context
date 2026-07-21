@@ -1,8 +1,7 @@
-"""Ported from packages/lhc/src/shared-tech/storage.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/storage.ts.
 
 `node:sqlite` DatabaseSync → stdlib sqlite3 behind this adapter seam.
-Phase 1: signatures only; WAL-on-open and prepare/get/all/run semantics land
-in Phase 2.
+WAL-on-open and prepare/get/all/run semantics mirror node:sqlite.
 """
 
 from __future__ import annotations

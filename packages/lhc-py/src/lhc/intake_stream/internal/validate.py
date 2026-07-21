@@ -1,8 +1,8 @@
-"""Ported from packages/lhc/src/intake-stream/internal/validate.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/intake-stream/internal/validate.ts.
 
 Pure, whole-batch, three-layer closed validation. Effect Schema bindings are
 represented as closed TypedDict declarations (decoded-JSON data shapes) per
-Wave 3 fix-round ruling; decode bodies stay NotImplementedError until Phase 2.
+Wave 3 fix-round ruling; decode bodies implement the closed three-layer validation.
 """
 
 from __future__ import annotations

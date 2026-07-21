@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/select.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/select.ts.
 
 Band selection: compact point, smooth/detailed/brief fills, unchunked turns,
 the coverage edge (covered_from), and

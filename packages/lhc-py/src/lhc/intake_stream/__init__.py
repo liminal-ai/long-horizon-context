@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/intake-stream/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/intake-stream/index.ts.
 
 Event type surface and public message_events / list_events entry points.
 Bodies remain NotImplementedError; pipeline owns the walk.

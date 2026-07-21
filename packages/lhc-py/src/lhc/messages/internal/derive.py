@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/derive.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/derive.ts.
 
 Synchronous message-owned derivation and durable-work dispatch for the
 messages domain.

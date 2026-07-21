@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/derivations.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/derivations.ts.
 
 Message-domain reads for derivation: a handler can read its source message
 and call-id pair, nothing more. Pair lookup is one indexed query by call id,

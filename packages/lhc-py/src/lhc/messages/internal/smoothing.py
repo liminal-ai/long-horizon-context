@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/smoothing.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/smoothing.ts.
 
 Deterministic prompt floor for smoothing recovery. Pure by construction:
 no DB, no clock, no inference.

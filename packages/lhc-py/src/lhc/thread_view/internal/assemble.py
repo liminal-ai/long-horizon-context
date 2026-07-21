@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/assemble.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/assemble.ts.
 """
 
 from __future__ import annotations

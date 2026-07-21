@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/internal/chunks.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/internal/chunks.ts.
 
 Chunk mechanics: open-chunk append, the accumulated close policy, and the
 close-to-summary enqueues. Placement is pure arithmetic over stored projected

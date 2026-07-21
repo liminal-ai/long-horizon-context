@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/cascade.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/cascade.ts.
 
 The mutation cascade walks the derivation chain upward from the mutated
 subject: the message's own derivations, its turn derivations, and the

@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/compact-compute.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/compact-compute.ts.
 
 Shared compact selection: readSelectionInputs, optional chunk-material
 resolution, selectArrangement, and first-kept message identity. Both

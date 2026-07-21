@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/seam.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/seam.ts.
 
 Test injection facility for compact's write path. Production code carries
 the point as a no-op unless a test installs a hook: "compact-write" fires

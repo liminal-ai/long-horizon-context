@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/work-queue/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/work-queue/index.ts.
 
 Durable work-item mechanics: recording, ordered listing, and the enqueue
 wrapper that makes scheduling structural. The util is domain-blind: it

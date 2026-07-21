@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/internal/store.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/internal/store.ts.
 
 Turn row operations. Writes run on the caller's handle inside the batch
 transaction; reads run on a fresh handle per operation. A closed turn has

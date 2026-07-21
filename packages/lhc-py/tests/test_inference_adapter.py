@@ -147,7 +147,7 @@ def _inference_sdk(call: ModelCall) -> tuple[Lhc, dict]:
 
 
 @pytest.mark.skip(
-    reason="TC-2.1 exercises the real adapter end to end; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-2.1 exercises the real adapter end to end; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_a_seeded_drain_lands_every_kind_ready_with_its_lanes_canned_content_and_assignment_provenance() -> None:
     """a seeded drain lands every kind ready with its lane's canned content and assignment provenance"""
@@ -174,7 +174,7 @@ async def test_a_seeded_drain_lands_every_kind_ready_with_its_lanes_canned_conte
 
 
 @pytest.mark.skip(
-    reason="TC-2.1 exercises the real adapter end to end; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-2.1 exercises the real adapter end to end; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_outcomes_are_stamped_from_the_record_disagreeing_with_the_adversarial_canned_text() -> None:
     """outcomes are stamped from the record, disagreeing with the adversarial canned text"""
@@ -207,7 +207,7 @@ async def test_outcomes_are_stamped_from_the_record_disagreeing_with_the_adversa
 
 
 @pytest.mark.skip(
-    reason="TC-2.1 exercises the real adapter end to end; Wave 5 lands the turn/chunk handlers this needs."
+    reason="TC-2.1 exercises the real adapter end to end; mirrors TS it.skip (upstream-deferred test)."
 )
 async def test_handler_equivalence_deterministic_inference_callbacks_land_the_same_rows() -> None:
     """handler equivalence: deterministic inference callbacks land the same rows with marker content and no provenance"""

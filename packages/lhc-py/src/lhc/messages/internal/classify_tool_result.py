@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/classify-tool-result.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/classify-tool-result.ts.
 
 EXEMPLAR MODULE — canonical pattern for a logic module. Public surface plus
 every private helper (TS non-exported functions become _underscore-prefixed),

@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/messages/internal/project.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/messages/internal/project.ts.
 
 Event to message + typed blocks. Verbatim means payload fields are copied
 into block content untouched: nothing here trims, normalizes, splits, or

@@ -1,7 +1,6 @@
-"""Ported from packages/lhc/src/intake-stream/internal/pipeline.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/intake-stream/internal/pipeline.ts.
 
-Batch transaction pipeline. Walk-hook / clock test seams keep their module
-state; pipeline bodies stay NotImplementedError.
+Batch transaction pipeline. Walk-hook / clock test seams keep module state.
 """
 
 from __future__ import annotations

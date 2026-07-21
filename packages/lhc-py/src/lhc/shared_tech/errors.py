@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/errors.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/errors.ts.
 
 EXEMPLAR MODULE — canonical pattern for porting a types-and-constants file.
 Union types become Literal aliases, interfaces become frozen dataclasses,

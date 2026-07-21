@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/turns/internal/derivations.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/turns/internal/derivations.ts.
 
 Turn-domain reads for derivation: the turn handler's source turn, its
 deleted-filtered member messages, the message-level derivation rows used for

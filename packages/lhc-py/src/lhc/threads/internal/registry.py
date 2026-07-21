@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/threads/internal/registry.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/threads/internal/registry.ts.
 
 Registry helpers: path resolution, open for read/write, row insert/select.
 """

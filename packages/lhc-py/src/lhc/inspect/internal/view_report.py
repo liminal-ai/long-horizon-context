@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/inspect/internal/view-report.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/inspect/internal/view-report.ts.
 
 View-contents report composition uses only describe + model context. The
 stored arrangement, gaps, config, per-band token counts, and source-state

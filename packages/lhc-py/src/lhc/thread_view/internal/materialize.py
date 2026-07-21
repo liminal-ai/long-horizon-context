@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/materialize.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/materialize.ts.
 
 PI session JSONL writer: the pure mapping from assembled entries to the
 pinned PI session file format, plus the file write. This module never sees a

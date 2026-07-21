@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/classify.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/classify.ts.
 
 `safe_call` contains the host function: a thrown exception becomes `other`
 and the adapter-owned timeout race becomes `timeout`, so host behavior cannot

@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/token-counting/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/token-counting/index.ts.
 
 NOTE (Phase 2): TS uses js-tiktoken/lite with o200k_base ranks. Python should
 use an equivalent tiktoken encoding that byte-matches token counts for parity

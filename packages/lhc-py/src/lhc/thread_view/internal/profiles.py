@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/thread-view/internal/profiles.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/thread-view/internal/profiles.ts.
 
 Profile config resolution and validation: built-in profiles, user profiles
 merged over them by name, and the budget rules. Band shares sum to 100, lower

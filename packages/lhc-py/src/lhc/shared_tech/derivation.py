@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/derivation.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/derivation.ts.
 
 Shared derivation vocabulary: state machine types, the inference callback
 boundary, and the handler contract. Both owning domains consume these;

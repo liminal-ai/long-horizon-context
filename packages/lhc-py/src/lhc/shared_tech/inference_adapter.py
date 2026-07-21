@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/inference-adapter.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/inference-adapter.ts.
 
 create_inference_callbacks returns the same InferenceCallbacks interface direct
 injection implements, so init_lhc and everything below it sees callback

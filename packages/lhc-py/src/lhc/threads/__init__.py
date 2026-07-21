@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/threads/index.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/threads/index.ts.
 
 Thread creation, registry resolution, list, info, and ThreadRef interpretation.
 """

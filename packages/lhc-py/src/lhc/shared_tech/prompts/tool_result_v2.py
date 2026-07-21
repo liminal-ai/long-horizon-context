@@ -1,4 +1,4 @@
-"""Ported from packages/lhc/src/shared-tech/prompts/tool-result-v2.ts. Phase 1 skeleton.
+"""Ported from packages/lhc/src/shared-tech/prompts/tool-result-v2.ts.
 
 MODE_GUIDANCE and static prompt fragments are real and byte-identical; functions are skeletons.
 """
