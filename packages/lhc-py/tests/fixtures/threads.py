@@ -255,7 +255,26 @@ def read_derived_forms(file_path: str) -> list[Derivation]:
             metadata = None
             if row["metadata"] is not None:
                 raw_metadata = json.loads(str(row["metadata"]))
+                # Drift guard (TS surfaces parsed JSON verbatim, so unknown
+                # keys fail deep-equality there; the dataclass rebuild here
+                # would silently drop them without this check).
+                _known = {
+                    "outcome", "lastError", "discardReason", "fallbackFloor",
+                    "fallbackUsed", "inferenceAttempted", "inferenceSucceeded",
+                    "sizeDisposition", "provenance",
+                }
+                _extra = set(raw_metadata) - _known
+                if _extra:
+                    raise AssertionError(
+                        f"derivation metadata carries undeclared keys: {sorted(_extra)}"
+                    )
                 provenance = raw_metadata.get("provenance")
+                if isinstance(provenance, dict):
+                    _pextra = set(provenance) - {"provider", "model", "prompt"}
+                    if _pextra:
+                        raise AssertionError(
+                            f"provenance carries undeclared keys: {sorted(_pextra)}"
+                        )
                 metadata = DerivationMetadata(
                     outcome=raw_metadata.get("outcome"),
                     last_error=raw_metadata.get("lastError"),

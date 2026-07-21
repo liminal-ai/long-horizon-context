@@ -42,9 +42,9 @@ async def _sleep(ms: int) -> None:
 
 
 async def main() -> None:
-    if len(sys.argv) <= 2:
+    if len(sys.argv) <= 1:
         raise RuntimeError("drain-runner: missing JSON config argument")
-    config: RunnerConfig = json.loads(sys.argv[2])
+    config: RunnerConfig = json.loads(sys.argv[1])
 
     double = create_inference_callbacks_double()
     sdk = init_lhc(
