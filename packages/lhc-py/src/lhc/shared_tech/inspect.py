@@ -156,8 +156,9 @@ class ViewContentsLoadCost:
 class ViewContentsSourceState:
     # Provenance verbatim; null on a never-compacted thread because no compact
     # ever recorded what it saw, and inventing zeros would fabricate provenance.
+    # Nested type → state → count (TS declared flat; runtime persists nested).
     max_event_order: int
-    derivation_counts: dict[str, int]
+    derivation_counts: dict[str, dict[str, int]]
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,8 +16,11 @@ the one block encoding.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from .render import AssembledContextMessage
 
@@ -55,8 +58,45 @@ class MaterializeResult:
 
 
 def render_pi_session_lines(input: MaterializeInput) -> list[str]:
-    raise NotImplementedError
+    lines: list[str] = [
+        json.dumps(
+            {
+                "type": "session",
+                "version": PI_SESSION_VERSION,
+                "id": f"{input.thread_id}:{input.header_timestamp}",
+                "timestamp": input.header_timestamp,
+                "cwd": input.cwd,
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    ]
+    parent_id: str | None = None
+    for entry in input.entries:
+        lines.append(
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": entry.entry_id,
+                    "parentId": parent_id,
+                    "timestamp": entry.timestamp,
+                    "message": {
+                        "role": entry.message.role,
+                        "content": [{"type": "text", "text": entry.message.content}],
+                    },
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
+        parent_id = entry.entry_id
+    return lines
 
 
 def write_pi_session_file(input: MaterializeInput, path: str) -> MaterializeResult:
-    raise NotImplementedError
+    # Lexical like node:path.resolve — do not dereference symlinks (Path.resolve does).
+    written_path = os.path.abspath(path)
+    Path(written_path).write_text(
+        "\n".join(render_pi_session_lines(input)) + "\n", encoding="utf-8"
+    )
+    return MaterializeResult(written_path=written_path)

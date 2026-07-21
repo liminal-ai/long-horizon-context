@@ -23,11 +23,13 @@ _hooks: dict[ViewInjectionPoint, ViewInjectionHook | None] = {
 
 
 def set_view_injection_hook(point: ViewInjectionPoint, hook: ViewInjectionHook | None) -> None:
-    raise NotImplementedError
+    _hooks[point] = hook
 
 
 # The production-side call: a no-op when nothing is installed. An installed
 # hook's throw propagates to the call site on purpose — that is the injected
 # failure the call site must survive.
 def fire_view_injection(point: ViewInjectionPoint) -> None:
-    raise NotImplementedError
+    hook = _hooks[point]
+    if hook is not None:
+        hook()

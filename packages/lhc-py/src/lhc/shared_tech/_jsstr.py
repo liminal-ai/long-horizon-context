@@ -2,9 +2,15 @@
 
 TS user-text `.length` / `.slice` / `charCodeAt` count UTF-16 code units, not
 Python code points. Astral characters (e.g. emoji) are two units each.
+
+Also: JSON.stringify number spelling (integral floats → bare ints; NaN/Infinity
+→ null inside JSON) and template-literal diagnostic spelling.
 """
 
 from __future__ import annotations
+
+import json
+import math
 
 
 def js_char_codes(s: str) -> list[int]:
@@ -72,3 +78,55 @@ def js_slice(s: str, start: int = 0, end: int | None = None) -> str:
     if end_i < start_i:
         return ""
     return _decode_utf16_units(units[start_i:end_i])
+
+
+def js_json_normalize(value: object) -> object:
+    """Normalize a value tree for JSON.stringify number/NaN semantics.
+
+    Integral floats become ints (`1.0` → `1`); NaN/±Infinity become null
+    (JSON.stringify in-object behavior). Recurses through dict/list/tuple.
+    """
+    if value is True or value is False or value is None:
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        if value.is_integer():
+            return int(value)
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return {key: js_json_normalize(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [js_json_normalize(item) for item in value]
+    return value
+
+
+def js_json_dumps(value: object) -> str:
+    """JSON.stringify-compatible compact dump (no spaces, ensure_ascii=False)."""
+    return json.dumps(
+        js_json_normalize(value),
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def js_repr(value: object) -> str:
+    """JS template-literal spelling for diagnostic interpolation."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    return str(value)

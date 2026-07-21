@@ -83,7 +83,11 @@ async def seed_turned_tool_results(
     file_path: str,
     turns: list[TurnedToolResultsSpec],
 ) -> None:
-    raise NotImplementedError
+    result = await sdk.intake_stream.message_events(
+        {"filePath": file_path}, turned_tool_result_events(turns)
+    )
+    if not result.ok:
+        raise RuntimeError(f"boundary seed intake failed: {result.error.reason}")
 
 
 __all__ = [

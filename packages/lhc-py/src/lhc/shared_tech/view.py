@@ -215,14 +215,16 @@ class StoredViewGap:
 
 @dataclass(frozen=True, slots=True)
 class StoredViewConfig:
-    lower_bound: int
-    percentages: dict[str, int]
+    # TS `number` — JSON may yield int or float; never truncate on read.
+    lower_bound: int | float
+    percentages: dict[str, int | float]
 
 
 @dataclass(frozen=True, slots=True)
 class StoredViewSourceState:
     max_event_order: int
-    derivation_counts: dict[str, int]
+    # Nested SelectionInputs map persisted verbatim (derivation type → state → count).
+    derivation_counts: dict[str, dict[str, int]]
 
 
 @dataclass(frozen=True, slots=True)

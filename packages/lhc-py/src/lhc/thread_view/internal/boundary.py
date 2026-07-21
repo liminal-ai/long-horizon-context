@@ -22,10 +22,17 @@ _SQL_VISIBILITY_ZONE_TOKENS = (
 
 
 def read_boundary_position(db: Database) -> int:
-    raise NotImplementedError
+    row = db.prepare(_SQL_READ_BOUNDARY_POSITION).get()
+    if row is None:
+        raise RuntimeError(
+            "view_boundary singleton row missing (thread creation seeds it)"
+        )
+    return int(row["position"])
 
 
 # The visibility zone's token sum: live (deleted-filtered) tool results ahead
 # of both the boundary position and the compact point, one indexed query.
 def visibility_zone_tokens(db: Database, position: int, compact_point: int) -> int:
-    raise NotImplementedError
+    row = db.prepare(_SQL_VISIBILITY_ZONE_TOKENS).get(position, compact_point)
+    # COALESCE always yields a row under node:sqlite / our adapter.
+    return int(row["zone"]) if row is not None else 0

@@ -40,6 +40,7 @@ from lhc.thread_view.internal.select import (
 )
 from fixtures import (
     DerivedThreadFixture,
+    DerivedThreadOptions,
     InferenceCallbacksDouble,
     TempStore,
     corrupt_two_open_turns,
@@ -976,7 +977,7 @@ async def test_control_a_thread_with_only_derived_material_damage_compacts_succe
 async def mutation_fixture(store: TempStore) -> DerivedThreadFixture:
     mut_store = temp_store()
     try:
-        mut = await derived_thread_fixture(mut_store, {"failures": False})
+        mut = await derived_thread_fixture(mut_store, DerivedThreadOptions(failures=False))
         receipt = await mut.sdk.thread_view.compact(
             {"filePath": mut.file_path}, CompactOpts(params=GRADIENT_PARAMS)
         )

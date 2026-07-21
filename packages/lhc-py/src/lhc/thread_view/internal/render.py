@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Union
 
+from ...shared_tech._jsstr import js_json_dumps
 from ...shared_tech.tool_result_rendering import FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback
 from ...shared_tech.view import Band
 from .snapshot import TailMessageRow
@@ -29,8 +30,6 @@ from .snapshot import TailMessageRow
 # Phase 2 bodies call it via deterministic_truncation.
 ABBREVIATION_LIMIT = FALLBACK_TRUNCATION_LIMIT
 
-_ = truncate_for_fallback
-
 
 @dataclass(frozen=True, slots=True)
 class AssembledContextMessage:
@@ -40,15 +39,18 @@ class AssembledContextMessage:
 
 
 def deterministic_truncation(text: str) -> str:
-    raise NotImplementedError
+    return truncate_for_fallback(text)
 
 
 def _block_content(message: TailMessageRow) -> dict[str, object]:
-    raise NotImplementedError
+    if not message.blocks:
+        return {}
+    return message.blocks[0].content
 
 
 def _text_of(message: TailMessageRow) -> str:
-    raise NotImplementedError
+    text = _block_content(message).get("text")
+    return text if isinstance(text, str) else ""
 
 
 # What the tail renderer needs beyond the message itself: the boundary
@@ -64,36 +66,123 @@ class TailRenderContext:
 # tail is structurally sufficient: the compact point snaps to a turn start,
 # so a tail result's call is never behind it.
 def tool_names_by_call_id(messages: Sequence[TailMessageRow]) -> dict[str, str]:
-    raise NotImplementedError
+    names: dict[str, str] = {}
+    for message in messages:
+        if message.kind != "tool_call":
+            continue
+        block = _block_content(message)
+        call_id = block.get("toolCallId")
+        tool_name = block.get("toolName")
+        if isinstance(call_id, str) and isinstance(tool_name, str):
+            names[call_id] = tool_name
+    return names
 
 
 def _render_tool_call(message: TailMessageRow) -> AssembledContextMessage:
-    raise NotImplementedError
+    block = _block_content(message)
+    name_val = block.get("toolName")
+    name = name_val if isinstance(name_val, str) else "unknown_tool"
+    args = block.get("arguments")
+    if args is None:
+        args = {}
+    serialized = js_json_dumps(args)
+    return AssembledContextMessage(
+        role="assistant",
+        content=f"[tool call · {name}] {serialized}",
+    )
 
 
 def _tool_result_raw_content(message: TailMessageRow) -> str:
-    raise NotImplementedError
+    content = _block_content(message).get("content")
+    return content if isinstance(content, str) else ""
 
 
 # Tool-result body for session loading: full ahead of the boundary, truncated at-or-behind.
 def tool_result_session_content(message: TailMessageRow, ctx: TailRenderContext) -> str:
-    raise NotImplementedError
+    content = _tool_result_raw_content(message)
+    if message.source_event_order > ctx.boundary_position:
+        return content
+    return deterministic_truncation(content)
 
 
 def _render_tool_result(message: TailMessageRow, ctx: TailRenderContext) -> AssembledContextMessage:
-    raise NotImplementedError
+    block = _block_content(message)
+    call_id = block.get("toolCallId")
+    if isinstance(call_id, str):
+        name = ctx.tool_name_by_call_id.get(call_id)
+    else:
+        name = None
+    if name is None:
+        name = "unknown_tool"
+    if message.source_event_order > ctx.boundary_position:
+        return AssembledContextMessage(
+            role="user",
+            content=f"[tool result · {name}]\n{_tool_result_raw_content(message)}",
+        )
+    short = deterministic_truncation(_tool_result_raw_content(message))
+    return AssembledContextMessage(
+        role="user",
+        content=f"[tool result · {name} · abridged]\n{short}",
+    )
 
 
 # One tail message → one assembled message per the mapping table. Each kind is its
 # own arm so a single kind's drift fails its own named test leg.
 def render_tail_message(message: TailMessageRow, ctx: TailRenderContext) -> AssembledContextMessage:
-    raise NotImplementedError
+    kind = message.kind
+    if kind == "user_prompt":
+        return AssembledContextMessage(role="user", content=_text_of(message))
+    if kind == "assistant_text":
+        return AssembledContextMessage(role="assistant", content=_text_of(message))
+    if kind == "assistant_thinking":
+        # Included: the tail is full fidelity (bands compress thinking away for
+        # older turns); harness-side conversion may re-block or drop.
+        return AssembledContextMessage(
+            role="assistant",
+            content=f"[thinking]\n{_text_of(message)}\n[/thinking]",
+        )
+    if kind == "tool_call":
+        return _render_tool_call(message)
+    if kind == "tool_result":
+        return _render_tool_result(message, ctx)
+    if kind == "runtime_note":
+        return AssembledContextMessage(
+            role="user",
+            content=f"[runtime note] {_text_of(message)}",
+        )
+    if kind == "model_change":
+        block = message.blocks[0].content if message.blocks else {}
+        previous = block.get("previousModel")
+        new = block.get("newModel")
+        return AssembledContextMessage(
+            role="user",
+            content=(
+                f"[model change] {'' if previous is None else str(previous)}"
+                f" -> {'' if new is None else str(new)}"
+            ),
+        )
+    if kind == "thinking_level_change":
+        block = message.blocks[0].content if message.blocks else {}
+        previous = block.get("previousLevel")
+        new = block.get("newLevel")
+        return AssembledContextMessage(
+            role="user",
+            content=(
+                f"[thinking level change] {'' if previous is None else str(previous)}"
+                f" -> {'' if new is None else str(new)}"
+            ),
+        )
+    raise AssertionError(f"unhandled message kind: {kind!r}")
 
 
 # One non-empty band to one labeled `user` message: band-marker header, then
 # the snapshot bytes verbatim. Inference APIs reject unknown roles.
 def render_band_message(band: Band, rendered_text: str) -> AssembledContextMessage:
-    raise NotImplementedError
+    return AssembledContextMessage(
+        role="user",
+        band=band,
+        content=f"[context · {band}]\n{rendered_text}",
+    )
 
 
 # ── band entries: degrade ladders, gaps, keys ────────────────────
@@ -146,11 +235,16 @@ class ResolvedRepresentation:
 
 
 def _usable(derivation: DerivationSnapshot | None) -> bool:
-    raise NotImplementedError
+    # "Usable" means state = ready.
+    return (
+        derivation is not None
+        and derivation.state == "ready"
+        and isinstance(derivation.content, str)
+    )
 
 
 def _ladder_state(derivation: DerivationSnapshot | None) -> str:
-    raise NotImplementedError
+    return "absent" if derivation is None else derivation.state
 
 
 # Smooth (turn) ladder: turn_rendering → detailed_turn_compression →
@@ -160,7 +254,43 @@ def resolve_smooth_representation(
     lookup: DerivationLookup,
     excerpt: str | None,
 ) -> ResolvedRepresentation:
-    raise NotImplementedError
+    rendering = lookup(turn_id, "turn_rendering")
+    if _usable(rendering):
+        assert rendering is not None and rendering.content is not None
+        return ResolvedRepresentation(
+            derivation_used="turn_rendering",
+            body=rendering.content,
+            degraded=False,
+            gap=False,
+        )
+    compression = lookup(turn_id, "detailed_turn_compression")
+    if _usable(compression):
+        assert compression is not None and compression.content is not None
+        return ResolvedRepresentation(
+            derivation_used="detailed_turn_compression",
+            body=compression.content,
+            degraded=True,
+            gap=False,
+            degraded_marker="smooth-from-compression",
+        )
+    if excerpt is not None:
+        return ResolvedRepresentation(
+            derivation_used="message_excerpt",
+            body=deterministic_truncation(excerpt),
+            degraded=True,
+            gap=False,
+            degraded_marker="smooth-from-excerpt",
+        )
+    return ResolvedRepresentation(
+        derivation_used="gap",
+        body="",
+        degraded=False,
+        gap=True,
+        reason=(
+            f"no usable derivation (turn_rendering: {_ladder_state(rendering)}, "
+            f"detailed_turn_compression: {_ladder_state(compression)}, no live messages)"
+        ),
+    )
 
 
 # Detailed (chunk) ladder: chunk_summary_detailed → chunk_summary_brief →
@@ -170,7 +300,41 @@ def resolve_detailed_representation(
     lookup: DerivationLookup,
     material: CompactChunkMaterialSnapshot | None = None,
 ) -> ResolvedRepresentation:
-    raise NotImplementedError
+    detailed = lookup(chunk_id, "chunk_summary_detailed")
+    if _usable(detailed):
+        assert detailed is not None and detailed.content is not None
+        return ResolvedRepresentation(
+            derivation_used="chunk_summary_detailed",
+            body=detailed.content,
+            degraded=False,
+            gap=False,
+        )
+    if material is not None and material.kind == "ready":
+        return ResolvedRepresentation(
+            derivation_used="chunk_summary_detailed",
+            body=material.content,
+            degraded=False,
+            gap=False,
+        )
+    if material is not None and material.kind == "concat":
+        return ResolvedRepresentation(
+            derivation_used="stored_member_concat",
+            body=material.content,
+            degraded=True,
+            gap=False,
+            degraded_marker="detailed-from-stored-members",
+            reason=material.reason,
+        )
+    return ResolvedRepresentation(
+        derivation_used="gap",
+        body="",
+        degraded=False,
+        gap=True,
+        reason=(
+            f"no usable derivation (chunk_summary_detailed: {_ladder_state(detailed)}, "
+            f"compact material absent)"
+        ),
+    )
 
 
 # Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
@@ -180,7 +344,41 @@ def resolve_brief_representation(
     lookup: DerivationLookup,
     material: CompactChunkMaterialSnapshot | None = None,
 ) -> ResolvedRepresentation:
-    raise NotImplementedError
+    brief = lookup(chunk_id, "chunk_summary_brief")
+    if _usable(brief):
+        assert brief is not None and brief.content is not None
+        return ResolvedRepresentation(
+            derivation_used="chunk_summary_brief",
+            body=brief.content,
+            degraded=False,
+            gap=False,
+        )
+    if material is not None and material.kind == "ready":
+        return ResolvedRepresentation(
+            derivation_used="chunk_summary_brief",
+            body=material.content,
+            degraded=False,
+            gap=False,
+        )
+    if material is not None and material.kind == "concat":
+        return ResolvedRepresentation(
+            derivation_used="stored_member_concat",
+            body=material.content,
+            degraded=True,
+            gap=False,
+            degraded_marker="brief-from-stored-members",
+            reason=material.reason,
+        )
+    return ResolvedRepresentation(
+        derivation_used="gap",
+        body="",
+        degraded=False,
+        gap=True,
+        reason=(
+            f"no usable derivation (chunk_summary_brief: {_ladder_state(brief)}, "
+            f"compact material absent)"
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +392,16 @@ class _ExcerptBlock:
 # The per-message line an excerpt or note renders — a compact, deterministic
 # excerpt of the raw record (last-rung fallback, not the tail mapping).
 def excerpt_line(kind: str, blocks: Sequence[_ExcerptBlock]) -> str:
-    raise NotImplementedError
+    content = blocks[0].content if blocks else {}
+    text_val = content.get("text")
+    text = text_val if isinstance(text_val, str) else ""
+    if kind == "tool_call":
+        name_val = content.get("toolName")
+        name = name_val if isinstance(name_val, str) else "unknown_tool"
+        return f"[tool call · {name}]"
+    if kind == "tool_result":
+        return "[tool result]"
+    return text
 
 
 # One selected subject → its band-entry text: any attached inter-turn notes
@@ -208,9 +415,22 @@ def render_arrangement_entry(
     rep: ResolvedRepresentation,
     note_texts: Sequence[str],
 ) -> str:
-    raise NotImplementedError
+    lines = [f"[inter-turn note] {text}" for text in note_texts]
+    if rep.gap:
+        reason = "unknown" if rep.reason is None else rep.reason
+        lines.append(f"[{subject_kind} unavailable: {reason}]")
+    else:
+        if rep.degraded:
+            marker_name = (
+                rep.derivation_used if rep.degraded_marker is None else rep.degraded_marker
+            )
+            marker = f"[degraded: {marker_name}]\n"
+        else:
+            marker = ""
+        lines.append(f"{marker}{rep.body}")
+    return "\n".join(lines)
 
 
 # A band's snapshot bytes: its entries oldest-first, blank-line separated.
 def assemble_band_text(entry_texts: Sequence[str]) -> str:
-    raise NotImplementedError
+    return "\n\n".join(entry_texts)

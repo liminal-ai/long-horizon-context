@@ -14,6 +14,9 @@ seed_view_boundary is a sanctioned below-SDK write — skeletal in Phase 1
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+from lhc.shared_tech.storage import open_database
 from lhc.thread_view.internal.seam import (
     ViewInjectionHook,
     ViewInjectionPoint,
@@ -30,7 +33,25 @@ from lhc.thread_view.internal.seam import (
 
 
 def seed_view_boundary(file_path: str, position: int) -> None:
-    raise NotImplementedError
+    def _iso_millis(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+    db = open_database(file_path)
+    try:
+        changed = db.prepare(
+            "UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1"
+        ).run(position, _iso_millis(datetime.now(timezone.utc)))
+        changes = int(getattr(changed, "changes", 0))
+        if changes != 1:
+            raise RuntimeError(
+                f"fixture seedViewBoundary hit {changes} rows; "
+                "expected the thread-creation singleton"
+            )
+    finally:
+        db.close()
 
 
 __all__ = [

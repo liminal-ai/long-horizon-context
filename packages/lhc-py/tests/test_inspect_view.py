@@ -135,8 +135,8 @@ def _read_raw_stored_view(file_path: str) -> StoredView | None:
 
         # DB JSON is camelCase (TS wire); map into Python snake_case dataclasses.
         config = StoredViewConfig(
-            lower_bound=int(config_raw["lowerBound"]),
-            percentages={str(k): int(v) for k, v in dict(config_raw["percentages"]).items()},
+            lower_bound=config_raw["lowerBound"],
+            percentages=dict(config_raw["percentages"]),
         )
         arrangement = [
             StoredViewArrangementEntry(
@@ -157,10 +157,8 @@ def _read_raw_stored_view(file_path: str) -> StoredView | None:
             for entry in gaps_raw
         ]
         source_state = StoredViewSourceState(
-            max_event_order=int(source_raw["maxEventOrder"]),
-            derivation_counts={
-                str(k): int(v) for k, v in dict(source_raw["derivationCounts"]).items()
-            },
+            max_event_order=source_raw["maxEventOrder"],
+            derivation_counts=dict(source_raw["derivationCounts"]),
         )
         bands: list[StoredViewBand] = []
         for band in ("brief", "detailed", "smooth"):

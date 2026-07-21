@@ -1,0 +1,14 @@
+You are the VERIFIER for PHASE 2 Wave 6 of the lhc-py port (thread-view bodies — the biggest wave). You audited P2 Waves 1–5. Contract: docs/lhc-py-port/phase2-brief.md. Audit UNCOMMITTED changes since commit 64f89ed (`git diff 64f89ed --name-only`). Adversarial. VERIFICATION ONLY — no edits.
+
+STATE: 323 → 429/455 green, wrong=0, goldens untouched (verified clean). Landed: all thread_view internals (select, compact_compute, assemble, render, snapshot, boundary, seam, session_view, materialize) + surface, fixture bodies (view_thread, view_seam, view_boundary, lifecycle).
+
+CHECKLIST:
+A. TESTS UNTOUCHED: `git diff 64f89ed -- packages/lhc-py/tests/` — fixture-only; test_*.py/conftest/goldens diffs = blocker. Double-check goldens: `git status tests/goldens/` clean AND content identical to HEAD.
+B. SHAPE FROZEN; sweep for banned compat family. SPECIFIC FLAG: implementor judgment "derived_thread_fixture accepts dict {\"failures\": ...} (tests pass dicts)" — check what the TS fixture accepts and what Phase 1 froze; if the Python tests pass dicts where the fixture declared a dataclass, this is the sanctioned-test-fix pattern (report the exact sites; orchestrator will rule), not a fixture widening.
+C. RULING REQUEST — derivationCounts flattening: TS runtime writes nested SelectionInputs maps into sourceState.derivationCounts while the declared StoredView type says flat Record<string, number>; Python flattens by summing on write. Investigate what TS ACTUALLY persists (run the TS test or oracle-probe the writer) and what its inspect path reads. Report: does Python's flattening produce byte/structure-identical stored views and identical describe/inspect outputs to TS runtime behavior? If not, what would?
+D. TS FIDELITY side-by-side (dense — walk the hardest fully): select.ts band selection (percent math via js_round, visibility budgets, ordering), render.ts/snapshot.ts byte-exact text (goldens cover the golden inputs; probe 2–3 NON-golden shapes against the node oracle — degraded bands, empty turns, astral text), compact-compute.ts (threshold, abort via getter re-read, preview vs actual), boundary.ts turn-end, seam.ts hook failure rollback, session-view/materialize pi-session bytes, prune validation (int|float boundary), status/describe counts.
+E. JS TRAPS in diff: ?? vs or; Math.max/min on empty arrays; js_round; slice/length UTF-16; ISO-ms; JSON bytes; sort stability.
+F. NO SHORTCUTS: no hardcoded golden text or test-shaped branches (grep for suspicious long literals matching golden content — rendering must COMPUTE its output).
+G. Gate: cd packages/lhc-py && uv run python scripts/check_gate.py → 429 green / wrong=0 / 470; no regression below 429.
+
+VERDICT: PASS/FAIL; FINDINGS numbered file:line [blocker]/[minor] + TS evidence + fix; RULING-REQUEST answer for C; GATE verbatim; COVERAGE NOTE honest.
