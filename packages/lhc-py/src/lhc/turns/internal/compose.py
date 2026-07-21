@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from ...shared_tech._jsstr import js_json_dumps
 from ...shared_tech.derivation import (
     DependencyGap,
     DerivationMetadata,
@@ -150,7 +151,7 @@ def _tool_call_fallback_text(message: ComposeMessage) -> str:
     arguments = block.get("arguments")
     if arguments is None:
         arguments = {}
-    serialized = json.dumps(arguments, separators=(",", ":"), ensure_ascii=False)
+    serialized = js_json_dumps(arguments)
     return truncate_for_fallback(f"{tool_name}({serialized})")
 
 

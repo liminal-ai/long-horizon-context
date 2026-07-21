@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, TypedDict, Union
 
+from .._jsstr import js_dataclass_json_value, js_json_dumps
 from ..derivation import CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler, WorkItemRef
 from ..persist import DbWriteTransaction
 from ..storage import Database
@@ -151,7 +152,11 @@ def _target_key(
 
 
 def _json(value: object) -> str:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    # TS serializes plain metadata objects with JSON.stringify; the Python
+    # twin is a dataclass, so encode via the shared camelCase/drop-None
+    # dataclass encoder (same as durable_work's apply path) for identical
+    # stored bytes — and JS number normalization on the way out.
+    return js_json_dumps(js_dataclass_json_value(value))
 
 
 def _operation_payload(operation: DurableWorkOperation | None) -> object | None:

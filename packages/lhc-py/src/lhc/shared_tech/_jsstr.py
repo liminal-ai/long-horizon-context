@@ -130,3 +130,30 @@ def js_repr(value: object) -> str:
             return str(int(value))
         return str(value)
     return str(value)
+
+
+def js_camel_key(value: str) -> str:
+    parts = value.split("_")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def js_dataclass_json_value(value: object) -> object:
+    """Dataclass -> JSON.stringify-shaped value: camelCase keys, None dropped.
+
+    Mirrors how TS serializes the plain metadata/payload objects that the
+    Python port models as dataclasses. Shared by durable_work and work_queue
+    so the two stored-bytes paths cannot drift.
+    """
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(value) and not isinstance(value, type):
+        value = asdict(value)
+    if isinstance(value, dict):
+        return {
+            js_camel_key(str(key)): js_dataclass_json_value(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, (list, tuple)):
+        return [js_dataclass_json_value(item) for item in value]
+    return value

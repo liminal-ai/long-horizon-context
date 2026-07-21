@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from typing import TYPE_CHECKING
 
+from ...shared_tech._jsstr import js_json_dumps
 from ...shared_tech.errors import OpErr, OpOk, OpResult, storage_failure
 from ...shared_tech.persist import (
     DbWriteTransaction,
@@ -154,11 +155,7 @@ async def run_message_events(
                     idempotency_key,
                     event["actor"],
                     event["harness"],
-                    json.dumps(
-                        event["payload"],
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    ),
+                    js_json_dumps(event["payload"]),
                     recorded_at,
                 )
                 skip_set.add(idempotency_key)

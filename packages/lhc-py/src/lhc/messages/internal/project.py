@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from ...shared_tech._jsstr import js_json_dumps
 from ...shared_tech.token_counting import estimate_tokens
 
 # Runtime import (not TYPE_CHECKING): Phase 2 bodies construct these records.
@@ -71,9 +72,7 @@ def project_event(event: RecordedEvent) -> ProjectedMessage | None:
         )
     if kind == "tool_call":
         arguments = payload["arguments"]
-        serialized_arguments = json.dumps(
-            arguments, separators=(",", ":"), ensure_ascii=False
-        )
+        serialized_arguments = js_json_dumps(arguments)
         return ProjectedMessage(
             blocks=[
                 Block(

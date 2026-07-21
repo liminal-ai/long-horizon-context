@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Literal, Union
 
+from .._jsstr import js_dataclass_json_value, js_json_dumps
 from ..derivation import (
     CompletionTx,
     HandlerDerivationWrite,
@@ -221,27 +222,8 @@ def write_pending_derivations(
         raise
 
 
-def _camel_key(value: str) -> str:
-    parts = value.split("_")
-    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
-
-
-def _json_value(value: object) -> object:
-    if is_dataclass(value) and not isinstance(value, type):
-        value = asdict(value)
-    if isinstance(value, dict):
-        return {
-            _camel_key(str(key)): _json_value(item)
-            for key, item in value.items()
-            if item is not None
-        }
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    return value
-
-
 def _json(value: object) -> str:
-    return json.dumps(_json_value(value), separators=(",", ":"), ensure_ascii=False)
+    return js_json_dumps(js_dataclass_json_value(value))
 
 
 def apply_derivation_success(

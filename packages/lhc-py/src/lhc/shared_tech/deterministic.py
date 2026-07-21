@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from ._jsstr import js_char_codes, js_slice
+from ._jsstr import js_char_codes, js_json_dumps, js_slice
 from .derivation import (
     CompressDetailedTurnInput,
     InferenceCallbacks,
@@ -49,7 +49,7 @@ DETERMINISTIC_MARKERS: dict[DeterministicOpName, str] = {
 # separators, key order (insertion order), and string escaping all matter.
 def deterministic_digest(input: object) -> str:
     # JS JSON.stringify does not escape non-ASCII; then charCodeAt walks UTF-16.
-    text = json.dumps(input, separators=(",", ":"), ensure_ascii=False)
+    text = js_json_dumps(input)
     hash_ = 0x811C9DC5
     for code in js_char_codes(text):
         hash_ ^= code
