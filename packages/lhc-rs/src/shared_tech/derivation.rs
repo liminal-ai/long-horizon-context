@@ -1,10 +1,8 @@
 //! Ported from packages/lhc/src/shared-tech/derivation.ts. Phase 1 skeleton.
 //!
-//! Wave 0 PARTIAL: only the vocabulary the exemplar modules need — the
-//! tool-result classification types, InferenceResult, and the
-//! InferenceCallbacks boundary. Wave 1 EXTENDS this file with the rest of
-//! derivation.ts (state machine, handler contract, metadata); do not reshape
-//! what is here.
+//! Wave 0 PARTIAL types (classification + inference-callback vocab) are kept
+//! unchanged. Wave 1 appends the rest of derivation.ts: state-machine read
+//! shapes, metadata, SDK config, and the handler contract.
 //!
 //! Conventions set here (court of record):
 //! - Closed TS string unions → Rust enums; serde rename matches the TS string
@@ -17,11 +15,18 @@
 //! - TS interfaces of function fields (InferenceCallbacks) → structs of boxed
 //!   async closures, matching the TS object-of-functions shape structurally.
 //! - Inline TS callback input shapes → named `<Op>Input` structs.
+//! - TS `() => Date` → [`Clock`] (`Box<dyn Fn() -> SystemTime + Send + Sync>`),
+//!   matching Python's `Callable[[], datetime]` (lhc-py derivation.py).
 
 use std::pin::Pin;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use super::inference_types::{DerivationGuards, InferenceConfig, ResolvedDerivationGuards};
+use super::storage::Db;
+use super::view::{ResolvedViewConfig, SdkViewConfig};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -40,6 +45,27 @@ pub enum DerivationState {
     Ready,
     Failed,
     Blocked,
+}
+
+impl DerivationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DerivationState::Pending => "pending",
+            DerivationState::Ready => "ready",
+            DerivationState::Failed => "failed",
+            DerivationState::Blocked => "blocked",
+        }
+    }
+}
+
+impl SubjectKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SubjectKind::Message => "message",
+            SubjectKind::Turn => "turn",
+            SubjectKind::Chunk => "chunk",
+        }
+    }
 }
 
 /// Outcome on tool-activity summaries — mechanically stamped from the record
@@ -75,6 +101,15 @@ pub struct ProviderProvenance {
 pub enum InferenceRequestRole {
     System,
     User,
+}
+
+impl InferenceRequestRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InferenceRequestRole::System => "system",
+            InferenceRequestRole::User => "user",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -270,3 +305,392 @@ pub const INFERENCE_CALLBACK_OPERATIONS: [&str; 4] = [
     "compressDetailedTurn",
     "summarizeChunkBrief",
 ];
+
+// ── types appended in Wave 1 (complete derivation.ts surface) ──────────────
+
+/// TS `() => Date` — SystemTime is the Rust counterpart of a Date instant
+/// (Python used `datetime`). ISO formatting is a Phase 2 concern at call sites.
+pub type Clock = Box<dyn Fn() -> SystemTime + Send + Sync>;
+
+/// A composed derivation's record of a dependency that fell back during composition:
+/// names the source record and the derivation type that was not ready.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyGap {
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
+    pub derivation_type: String,
+}
+
+/// Mechanically stamped size outcome relative to the configured target range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeDisposition {
+    InRange,
+    UnderMin,
+    OverMax,
+}
+
+impl SizeDisposition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SizeDisposition::InRange => "in_range",
+            SizeDisposition::UnderMin => "under_min",
+            SizeDisposition::OverMax => "over_max",
+        }
+    }
+}
+
+/// Mechanically stamped derivation metadata: tool outcomes, fallback detail,
+/// and inference provenance. The queue is not an audit table; durable outcome
+/// detail lives on the derivation and in derivation logs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivationMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ToolOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discard_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_floor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_attempted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_succeeded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_disposition: Option<SizeDisposition>,
+    /// Which provider/model/prompt produced the content, copied from the
+    /// InferenceResult's config-known strings, never authored from model output.
+    /// Deterministic domain assembly never sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ProviderProvenance>,
+}
+
+/// The read shape for one derivation's state row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Derivation {
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
+    pub derivation_type: String,
+    pub state: DerivationState,
+    /// ready only
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// failed | blocked
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// which version of the source this derivation derives from
+    pub source_version: i64,
+    /// composed derivations; landed-with-fallback record
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Vec<DependencyGap>>,
+    /// mechanically stamped fields; never model-authored
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<DerivationMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueStatus {
+    Queued,
+    Claimed,
+}
+
+impl QueueStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QueueStatus::Queued => "queued",
+            QueueStatus::Claimed => "claimed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivationReportQueue {
+    pub status: QueueStatus,
+}
+
+/// One row of an owner's repair report: the derivation's durable state joined
+/// with the queue's mechanical detail for the live item still working toward it,
+/// if any.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivationReportEntry {
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
+    pub derivation_type: String,
+    pub state: DerivationState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub source_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Vec<DependencyGap>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<DerivationMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<DerivationReportQueue>,
+}
+
+/// Message kinds a rendering part can carry — mirrors the intake event-kind
+/// vocabulary minus turn_end (turn_end never projects a message). Mirrored
+/// rather than imported: shared-tech/ may not import the domains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderingPartKind {
+    UserPrompt,
+    AssistantText,
+    AssistantThinking,
+    RuntimeNote,
+    ModelChange,
+    ThinkingLevelChange,
+    ToolCall,
+    ToolResult,
+}
+
+impl RenderingPartKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RenderingPartKind::UserPrompt => "user_prompt",
+            RenderingPartKind::AssistantText => "assistant_text",
+            RenderingPartKind::AssistantThinking => "assistant_thinking",
+            RenderingPartKind::RuntimeNote => "runtime_note",
+            RenderingPartKind::ModelChange => "model_change",
+            RenderingPartKind::ThinkingLevelChange => "thinking_level_change",
+            RenderingPartKind::ToolCall => "tool_call",
+            RenderingPartKind::ToolResult => "tool_result",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderingPartBlock {
+    pub block_type: String,
+    pub content: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderingPart {
+    pub message_id: String,
+    pub kind: RenderingPartKind,
+    /// ready derivation content, or raw/truncated fallback
+    pub text: String,
+    /// true ⇒ gap recorded
+    pub fallback: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<RenderingPartBlock>>,
+    /// tool activity only
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ToolOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InferenceCallbackName {
+    #[serde(rename = "smoothPrompt")]
+    SmoothPrompt,
+    #[serde(rename = "summarizeToolResult")]
+    SummarizeToolResult,
+    #[serde(rename = "compressDetailedTurn")]
+    CompressDetailedTurn,
+    #[serde(rename = "summarizeChunkBrief")]
+    SummarizeChunkBrief,
+}
+
+impl InferenceCallbackName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InferenceCallbackName::SmoothPrompt => "smoothPrompt",
+            InferenceCallbackName::SummarizeToolResult => "summarizeToolResult",
+            InferenceCallbackName::CompressDetailedTurn => "compressDetailedTurn",
+            InferenceCallbackName::SummarizeChunkBrief => "summarizeChunkBrief",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdkMode {
+    Background,
+    Manual,
+}
+
+impl SdkMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SdkMode::Background => "background",
+            SdkMode::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResultConfig {
+    pub small_tier_tokens: i64,
+    pub small_target_ratio: f64,
+    pub mid_target_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseConfig {
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkPolicyConfig {
+    pub target_projected_tokens: i64,
+    pub max_projected_tokens: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionTargets {
+    pub min_ratio: f64,
+    pub aim_ratio: f64,
+    pub max_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BriefTargets {
+    pub min_ratio: f64,
+    pub aim_ratio: f64,
+    pub max_ratio: f64,
+}
+
+/// LHC initialization config. Inference callbacks arrive exactly one way:
+/// direct callback injection (`inference_callbacks`) or `inference` (host
+/// model-call function + per-kind assignments).
+///
+/// No Debug/Clone/Serialize — holds boxed callbacks (same as InferenceCallbacks).
+pub struct SdkConfig {
+    pub inference_callbacks: Option<InferenceCallbacks>,
+    pub inference: Option<InferenceConfig>,
+    pub mode: SdkMode,
+    pub clock: Option<Clock>,
+    pub guards: Option<DerivationGuards>,
+    /// defaults: 1000 / 0.15 / 0.04
+    pub tool_result: Option<ToolResultConfig>,
+    /// default: 120000
+    pub lease: Option<LeaseConfig>,
+    /// defaults: 2200 / 4400
+    pub chunk_policy: Option<ChunkPolicyConfig>,
+    /// profiles, visibility budgets, compact threshold
+    pub view: Option<SdkViewConfig>,
+}
+
+/// Every optional filled by initLhc's central defaults.
+///
+/// No Debug/Clone/Serialize — holds boxed callbacks.
+pub struct ResolvedSdkConfig {
+    pub inference_callbacks: InferenceCallbacks,
+    pub mode: SdkMode,
+    pub clock: Clock,
+    pub guards: ResolvedDerivationGuards,
+    pub compression_targets: CompressionTargets,
+    pub brief_targets: BriefTargets,
+    pub tool_result: ToolResultConfig,
+    pub lease: LeaseConfig,
+    pub chunk_policy: ChunkPolicyConfig,
+    pub view: ResolvedViewConfig,
+}
+
+// ── handler contract ─────────────────────────────────────────────
+
+pub struct HandlerRunContext {
+    pub thread_id: String,
+    pub file_path: String,
+    /// short-txn access; NEVER held across inference calls
+    pub open_db: Box<dyn Fn() -> Db + Send + Sync>,
+    pub inference_callbacks: InferenceCallbacks,
+    pub clock: Clock,
+    pub config: ResolvedSdkConfig,
+}
+
+/// A successful handler hands its derivation content back as data; the
+/// drain's completion transaction performs the version-checked UPDATE and the
+/// item-row deletion atomically. The handler never opens that transaction
+/// itself, so the version check and the done/stale_discarded disposition stay in
+/// one place: the queue util.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandlerDerivationWrite {
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
+    pub derivation_type: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<DerivationMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Vec<DependencyGap>>,
+}
+
+/// TS `onCommit: (fn: () => void) => void` — registrar may be called multiple
+/// times; each registered hook is one-shot (flushed once after COMMIT).
+pub type OnCommitRegistration = Box<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+
+/// Completion-transaction hook for work that must land atomically with
+/// version-checked derivation writes: chunk placement and close→summary enqueues
+/// above all. The queue util invokes it inside completion's BEGIN IMMEDIATE,
+/// after derivation writes and only when they hit. A stale completion must not
+/// place a turn or enqueue summaries. onCommit registrations flush after that
+/// COMMIT succeeds and drop on rollback, so a crash leaves either a placed turn
+/// with its enqueues or nothing, never a derived-but-unplaced turn.
+///
+/// `db` is borrowed from the outer completion transaction controller — never
+/// moved out of that controller's ownership for COMMIT/ROLLBACK.
+pub struct CompletionTx<'a> {
+    pub db: &'a Db,
+    pub on_commit: OnCommitRegistration,
+}
+
+/// In-memory handler result — carries closures, so no serde.
+/// Shape matches the TS discriminated union on `ok` / `deferred` / `blocked`.
+/// `onApplied` / `onDeferred` are one-shot in TS → `FnOnce`.
+pub enum HandlerOutcome {
+    Ok {
+        derivations: Option<Vec<HandlerDerivationWrite>>,
+        on_applied: Option<Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>>,
+    },
+    Deferred {
+        reason: String,
+        on_deferred: Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>,
+    },
+    Failed {
+        reason: String,
+    },
+    /// source damage → derivation blocked, item terminal
+    Blocked {
+        reason: String,
+    },
+}
+
+/// item is the queue util's WorkItemRecord; typed structurally here so the
+/// shared layer does not depend on the util's module (and vice versa stays
+/// one-directional: tech-utils imports shared).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItemRef {
+    pub work_item_id: String,
+    pub kind: String,
+    /// `Record<string, string>` — insertion-ordered (JSON.stringify contract).
+    pub source_ref: indexmap::IndexMap<String, String>,
+}
+
+pub type WorkHandler =
+    Box<dyn Fn(HandlerRunContext, WorkItemRef) -> BoxFuture<HandlerOutcome> + Send + Sync>;

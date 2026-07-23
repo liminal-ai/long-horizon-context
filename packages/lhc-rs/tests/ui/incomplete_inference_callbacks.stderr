@@ -1,0 +1,5 @@
+error[E0063]: missing fields `compress_detailed_turn`, `smooth_prompt`, `summarize_chunk_brief` and 1 other field in initializer of `InferenceCallbacks`
+ --> tests/ui/incomplete_inference_callbacks.rs:7:16
+  |
+7 |     let _cbs = InferenceCallbacks {
+  |                ^^^^^^^^^^^^^^^^^^ missing `compress_detailed_turn`, `smooth_prompt`, `summarize_chunk_brief` and 1 other field

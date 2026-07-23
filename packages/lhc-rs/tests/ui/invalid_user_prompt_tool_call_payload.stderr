@@ -1,0 +1,28 @@
+error[E0308]: mismatched types
+  --> tests/ui/invalid_user_prompt_tool_call_payload.rs:14:27
+   |
+14 |               payload: Some(ToolCallPayload {
+   |  ______________________----_^
+   | |                      |
+   | |                      arguments to this enum variant are incorrect
+15 | |                 tool_call_id: "x".into(),
+16 | |                 tool_name: "y".into(),
+17 | |                 arguments: Default::default(),
+18 | |             }),
+   | |_____________^ expected `UserPromptPayload`, found `ToolCallPayload`
+   |
+help: the type constructed contains `ToolCallPayload` due to the type of the argument passed
+  --> tests/ui/invalid_user_prompt_tool_call_payload.rs:14:22
+   |
+14 |                payload: Some(ToolCallPayload {
+   |   ______________________^    -
+   |  |___________________________|
+15 | ||                 tool_call_id: "x".into(),
+16 | ||                 tool_name: "y".into(),
+17 | ||                 arguments: Default::default(),
+18 | ||             }),
+   | ||_____________-^
+   | |______________|
+   |                this argument influences the type of `Some`
+note: tuple variant defined here
+  --> $RUST/core/src/option.rs

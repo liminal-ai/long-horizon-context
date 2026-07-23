@@ -109,7 +109,6 @@ impl<T> OpResult<T> {
 
 // Infrastructure failures (SQLite, fs) are expected operational outcomes,
 // caught at the operation boundary and wrapped with the underlying detail.
-pub fn storage_failure<T>(reason: &str) -> OpResult<T> {
-    let _ = reason;
+pub fn storage_failure<T>(_reason: &str) -> OpResult<T> {
     todo!("phase 2")
 }

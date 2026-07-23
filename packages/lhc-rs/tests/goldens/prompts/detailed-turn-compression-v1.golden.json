@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "Below is one exchange from a coding conversation.\n\nIt is about 120 tokens long.\n\nShorten it to about 60 tokens. The final output must fall within 42-78 tokens.\n\nWrite the shortened version as compact prose.\n\nPreserve:\n- the user's request, correction, decision, or preference\n- the agent's answer, action, mistake, or commitment\n- the useful conclusion from thinking, if it affected the work\n- the useful outcome from tool calls/results, if it affected the work\n- concrete files, paths, commands, model names, numbers, errors, test results, and commit hashes\n- unresolved questions or blocked work\n\nRemove:\n- raw thinking text\n- raw tool output\n- repeated acknowledgements\n- apologies and status chatter\n- local filler\n- details that did not affect what happened next\n\nDo not say only that a tool ran or a file was read. Say what it showed, changed, proved, or failed to do.\n\nBefore returning, estimate whether the output is within 42-78 tokens.\nIf it is too short, expand it by restoring missing substance.\nIf it is too long, contract it by removing lower-value detail and repeated explanation.\n\nThe final answer must be within 42-78 tokens.\n\nRewrite only the text inside <turn_rendering_to_compress>.\nReturn only the shortened exchange, without XML tags."
+  },
+  {
+    "role": "user",
+    "content": "<turn_rendering_to_compress>\nUser prompt\nPlease inspect notes/plan.md\n\nAssistant response\nIt has 3 open items.\n</turn_rendering_to_compress>"
+  }
+]

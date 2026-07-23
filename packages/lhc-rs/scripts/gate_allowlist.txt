@@ -4,3 +4,23 @@
 
 # Wave 0 infrastructure — real implementation by design.
 js_json_conformance::*
+
+# Wave 1 fixture builders (valid_event / temp_store / open_raw) — REAL pure
+# data/fs helpers; these suites are expected green in Phase 1.
+# Suite file is fixtures_test.rs (Rust cannot have both tests/fixtures.rs and
+# tests/fixtures/ — helpers keep the directory; suite mirrors Python test_fixtures).
+fixtures_test::valid_event_produces_a_golden_shaped_event_for_every_kind
+fixtures_test::valid_event_applies_overrides_without_changing_the_kind
+fixtures_test::building_an_invalid_kind_payload_pairing_requires_an_explicit_cast
+fixtures_test::event_batch_yields_unique_idempotency_keys_in_order
+fixtures_test::conversation_turn_is_one_complete_turn
+fixtures_test::temp_store_creates_an_isolated_directory_and_cleans_it_up
+fixtures_test::open_raw_opens_a_real_sqlite_handle_for_below_sdk_assertions
+
+# Wave 1 prompt-registry / golden constants (no behavior bodies required).
+inference_prompts::every_registry_key_resolves_to_a_template_carrying_that_exact_name
+inference_prompts::default_names_cover_all_inference_kinds_and_each_resolves_in_the_registry
+inference_prompts::chunk_brief_v2_golden_contains_framing_examples_self_check_and_anti_pattern_guidance
+
+# Wave 1 trybuild compile-fail UI (type-level construction contracts).
+ui::ui

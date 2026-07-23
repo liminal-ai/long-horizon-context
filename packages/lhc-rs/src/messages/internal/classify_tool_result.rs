@@ -24,177 +24,148 @@ pub struct ToolResultClassificationInput {
     pub raw_output: String,
 }
 
-pub fn classify_tool_result(input: &ToolResultClassificationInput) -> ToolResultClassification {
-    let _ = input;
+pub fn classify_tool_result(_input: &ToolResultClassificationInput) -> ToolResultClassification {
     todo!("phase 2")
 }
 
-fn command_of(tool_input: Option<&serde_json::Map<String, Value>>) -> String {
-    let _ = tool_input;
+fn command_of(_tool_input: Option<&serde_json::Map<String, Value>>) -> String {
     todo!("phase 2")
 }
 
 fn classify_operation(
-    tool_name: &str,
-    tool_input: Option<&serde_json::Map<String, Value>>,
-    raw_output: &str,
+    _tool_name: &str,
+    _tool_input: Option<&serde_json::Map<String, Value>>,
+    _raw_output: &str,
 ) -> ToolResultOperationClass {
-    let _ = (tool_name, tool_input, raw_output);
     todo!("phase 2")
 }
 
 fn classify_shape(
-    tool_name: &str,
-    outcome: ToolOutcome,
-    raw_output: &str,
-    operation_class: ToolResultOperationClass,
+    _tool_name: &str,
+    _outcome: ToolOutcome,
+    _raw_output: &str,
+    _operation_class: ToolResultOperationClass,
 ) -> ToolResultResponseShape {
-    let _ = (tool_name, outcome, raw_output, operation_class);
     todo!("phase 2")
 }
 
 fn prompt_mode_for(
-    response_shape: ToolResultResponseShape,
-    outcome: ToolOutcome,
+    _response_shape: ToolResultResponseShape,
+    _outcome: ToolOutcome,
 ) -> ToolResultPromptMode {
-    let _ = (response_shape, outcome);
     todo!("phase 2")
 }
 
 fn parse_facts(
-    input: &ToolResultClassificationInput,
-    operation_class: ToolResultOperationClass,
-    response_shape: ToolResultResponseShape,
+    _input: &ToolResultClassificationInput,
+    _operation_class: ToolResultOperationClass,
+    _response_shape: ToolResultResponseShape,
 ) -> ToolResultFacts {
-    let _ = (input, operation_class, response_shape);
     todo!("phase 2")
 }
 
-fn looks_like_test_runner_output(output: &str) -> bool {
-    let _ = output;
+fn looks_like_test_runner_output(_output: &str) -> bool {
     todo!("phase 2")
 }
 
-fn is_structured_receipt_output(output: &str) -> bool {
-    let _ = output;
+fn is_structured_receipt_output(_output: &str) -> bool {
     todo!("phase 2")
 }
 
-fn is_search_no_match_output(output: &str) -> bool {
-    let _ = output;
+fn is_search_no_match_output(_output: &str) -> bool {
     todo!("phase 2")
 }
 
-fn search_content_lines(output: &str) -> Vec<String> {
-    let _ = output;
+fn search_content_lines(_output: &str) -> Vec<String> {
     todo!("phase 2")
 }
 
 fn parse_search_match_count(
-    operation_class: ToolResultOperationClass,
-    output: &str,
+    _operation_class: ToolResultOperationClass,
+    _output: &str,
 ) -> Option<i64> {
-    let _ = (operation_class, output);
     todo!("phase 2")
 }
 
 fn parse_search_matches(
-    operation_class: ToolResultOperationClass,
-    output: &str,
+    _operation_class: ToolResultOperationClass,
+    _output: &str,
 ) -> Vec<serde_json::Map<String, Value>> {
-    let _ = (operation_class, output);
     todo!("phase 2")
 }
 
 fn parse_test_summary(
-    operation_class: ToolResultOperationClass,
-    output: &str,
+    _operation_class: ToolResultOperationClass,
+    _output: &str,
 ) -> Option<serde_json::Map<String, Value>> {
-    let _ = (operation_class, output);
     todo!("phase 2")
 }
 
 fn parse_subtool_results(
-    operation_class: ToolResultOperationClass,
-    output: &str,
+    _operation_class: ToolResultOperationClass,
+    _output: &str,
 ) -> Option<Vec<serde_json::Map<String, Value>>> {
-    let _ = (operation_class, output);
     todo!("phase 2")
 }
 
-fn parse_exit_code(output: &str) -> Option<i64> {
-    let _ = output;
+fn parse_exit_code(_output: &str) -> Option<i64> {
     todo!("phase 2")
 }
 
-fn parse_byte_count(output: &str) -> Option<i64> {
-    let _ = output;
+fn parse_byte_count(_output: &str) -> Option<i64> {
     todo!("phase 2")
 }
 
-fn parse_block_count(output: &str) -> Option<i64> {
-    let _ = output;
+fn parse_block_count(_output: &str) -> Option<i64> {
     todo!("phase 2")
 }
 
-fn parse_match_count(output: &str) -> Option<i64> {
-    let _ = output;
+fn parse_match_count(_output: &str) -> Option<i64> {
     todo!("phase 2")
 }
 
-fn parse_mutation_details_available(tool_name: &str, output: &str) -> Option<bool> {
-    let _ = (tool_name, output);
+fn parse_mutation_details_available(_tool_name: &str, _output: &str) -> Option<bool> {
     todo!("phase 2")
 }
 
-fn parse_failed_field(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_failed_field(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_required_condition(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_required_condition(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_retry_guidance(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_retry_guidance(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_missing_command(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_missing_command(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_system_error(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_system_error(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_failure_type(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_failure_type(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_primary_path(output: &str) -> Option<String> {
-    let _ = output;
+fn parse_primary_path(_output: &str) -> Option<String> {
     todo!("phase 2")
 }
 
-fn parse_path_mentions(output: &str) -> Vec<String> {
-    let _ = output;
+fn parse_path_mentions(_output: &str) -> Vec<String> {
     todo!("phase 2")
 }
 
-fn trim_path(value: &str) -> String {
-    let _ = value;
+fn trim_path(_value: &str) -> String {
     todo!("phase 2")
 }
 
 /// TS `removeNullish`: drops null/undefined values and empty arrays from a
 /// facts bag before it is stored.
-fn remove_nullish(value: serde_json::Map<String, Value>) -> ToolResultFacts {
-    let _ = value;
+fn remove_nullish(_value: serde_json::Map<String, Value>) -> ToolResultFacts {
     todo!("phase 2")
 }

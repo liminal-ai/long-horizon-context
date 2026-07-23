@@ -1,0 +1,5 @@
+error[E0599]: no variant, associated function, or constant named `Later` found for enum `SdkMode` in the current scope
+ --> tests/ui/invalid_sdk_mode.rs:7:26
+  |
+7 |     let _mode = SdkMode::Later;
+  |                          ^^^^^ variant, associated function, or constant not found in `SdkMode`

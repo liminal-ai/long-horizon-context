@@ -94,7 +94,13 @@ def classify() -> int:
             continue
         m = re.match(r"test (\S+) \.\.\. (ok|FAILED|ignored)", line)
         if m:
-            results[f"{binary}::{m.group(1)}"] = m.group(2)
+            # trybuild prints nested `test tests/ui/foo.rs ... ok` lines that
+            # are not cargo test cases — ignore path-shaped names so totals
+            # reconcile with cargo's `test result:` line.
+            case = m.group(1)
+            if "/" in case or case.endswith(".rs"):
+                continue
+            results[f"{binary}::{case}"] = m.group(2)
             section = None
             continue
         m = re.match(r"---- (\S+) stdout ----", line)

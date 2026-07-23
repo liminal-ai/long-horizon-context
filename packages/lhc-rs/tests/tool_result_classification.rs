@@ -133,7 +133,10 @@ fn extracts_deterministic_failure_facts_for_command_not_found_output() {
     assert_eq!(first.response_shape, ToolResultResponseShape::SimpleFailure);
     assert_eq!(first.prompt_mode, ToolResultPromptMode::Failure);
     assert_eq!(fact(&first.facts, "exitCode"), &json!(127));
-    assert_eq!(fact(&first.facts, "failureType"), &json!("command_not_found"));
+    assert_eq!(
+        fact(&first.facts, "failureType"),
+        &json!("command_not_found")
+    );
     assert_eq!(fact(&first.facts, "missingCommand"), &json!("frobnicate"));
     assert_eq!(
         fact(&first.facts, "retryGuidance"),
@@ -149,11 +152,17 @@ fn routes_receipt_and_test_shaped_responses_to_prompt_modes() {
         ToolOutcome::Succeeded,
         "Successfully wrote 1234 bytes to path/file.ts",
     ));
-    assert_eq!(receipt.response_shape, ToolResultResponseShape::StructuredReceipt);
+    assert_eq!(
+        receipt.response_shape,
+        ToolResultResponseShape::StructuredReceipt
+    );
     assert_eq!(receipt.prompt_mode, ToolResultPromptMode::Receipt);
     assert_eq!(fact(&receipt.facts, "targetPath"), &json!("path/file.ts"));
     assert_eq!(fact(&receipt.facts, "byteCount"), &json!(1234));
-    assert_eq!(fact(&receipt.facts, "mutationDetailsAvailable"), &json!(false));
+    assert_eq!(
+        fact(&receipt.facts, "mutationDetailsAvailable"),
+        &json!(false)
+    );
 
     let tests = classify_tool_result(&input(
         "bash",
@@ -161,7 +170,10 @@ fn routes_receipt_and_test_shaped_responses_to_prompt_modes() {
         ToolOutcome::Failed,
         "Tests 1 failed, 2 passed\nx writes output\nAssertionError: expected true\nCommand exited with code 1",
     ));
-    assert_eq!(tests.operation_class, ToolResultOperationClass::Verification);
+    assert_eq!(
+        tests.operation_class,
+        ToolResultOperationClass::Verification
+    );
     assert_eq!(tests.response_shape, ToolResultResponseShape::TestResult);
     assert_eq!(tests.prompt_mode, ToolResultPromptMode::TestSummary);
     let summary = fact(&tests.facts, "testSummary");

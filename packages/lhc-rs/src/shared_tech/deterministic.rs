@@ -40,18 +40,15 @@ pub fn deterministic_marker(op: DeterministicOpName) -> &'static str {
 // NOTE (Phase 2): "canonical input JSON" must byte-match JS JSON.stringify —
 // use shared_tech::js_json; the hash walks UTF-16 code units (charCodeAt),
 // not bytes or chars.
-pub fn deterministic_digest(input: &Value) -> String {
-    let _ = input;
+pub fn deterministic_digest(_input: &Value) -> String {
     todo!("phase 2")
 }
 
-pub fn deterministic_text(op: DeterministicOpName, input: &Value, text: &str) -> String {
-    let _ = (op, input, text);
+pub fn deterministic_text(_op: DeterministicOpName, _input: &Value, _text: &str) -> String {
     todo!("phase 2")
 }
 
-pub fn deterministic_outcomes_suffix(member_outcomes: Option<&[Vec<ToolOutcome>]>) -> String {
-    let _ = member_outcomes;
+pub fn deterministic_outcomes_suffix(_member_outcomes: Option<&[Vec<ToolOutcome>]>) -> String {
     todo!("phase 2")
 }
 

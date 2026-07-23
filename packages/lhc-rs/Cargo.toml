@@ -11,6 +11,9 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order: JS object key order (insertion order) is part of the
 # persisted-bytes contract — see shared_tech/js_json.rs.
 serde_json = { version = "1", features = ["preserve_order"] }
+# Insertion-ordered maps for typed (non-Value) records where JSON.stringify
+# order is load-bearing — serde_json::Map only serde-implements for Value.
+indexmap = { version = "2", features = ["serde"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 futures = "0.3"
@@ -18,3 +21,4 @@ regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+trybuild = "1"
