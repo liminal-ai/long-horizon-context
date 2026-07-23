@@ -122,14 +122,14 @@ per-wave commits, ledger updated per file. Deltas:
 
 ## Orchestration
 
-Same trio and loop as the Python run, run from a cc-lhc session:
-grok-4.5-high implements per wave (no commit rights), gpt-5.6-sol verifies
-adversarially (findings-only, honesty note on coverage), orchestrator
-(Fable) spot-checks, runs the gate, reconciles disputes, ticks the ledger,
-and is sole committer. Known model behaviors from the Python run: grok cuts
-corners on tests/fixtures under time pressure (verify test-assertion
-fidelity specifically); sol over-scopes (rulings may override its demands;
-document overrides in the ledger).
+Governed by `docs/lhc-rs-port/ORCHESTRATION-ONBOARDING.md` — the fresh
+orchestrator's entry point (full-project framing, cast, dual-verifier
+protocol, loop, escalation rules). Cast: grok-4.5-high implements,
+Fable 5 medium + gpt-5.6-sol medium dual-verify independently,
+orchestrator reconciles/gates/commits. Known model behaviors from the
+Python run: grok cuts corners on tests/fixtures under time pressure
+(verify test-assertion fidelity specifically); sol over-scopes (rulings
+may override its demands; document overrides in the ledger).
 
 ## Out of scope for Phase 1
 
