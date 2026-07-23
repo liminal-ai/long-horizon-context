@@ -1,0 +1,33 @@
+{"name":"null","input":"null","expected":"null"}
+{"name":"bool_true","input":"true","expected":"true"}
+{"name":"bool_false","input":"false","expected":"false"}
+{"name":"int","input":"42","expected":"42"}
+{"name":"int_negative","input":"-7","expected":"-7"}
+{"name":"int_zero","input":"0","expected":"0"}
+{"name":"float_integral","input":"1.0","expected":"1"}
+{"name":"float_integral_negative","input":"-3.0","expected":"-3"}
+{"name":"float_negative_zero","input":"-0.0","expected":"0"}
+{"name":"float_fraction","input":"0.3","expected":"0.3"}
+{"name":"float_fraction_precise","input":"0.1","expected":"0.1"}
+{"name":"float_sum_artifact","input":"0.30000000000000004","expected":"0.30000000000000004"}
+{"name":"float_small","input":"0.000001","expected":"0.000001"}
+{"name":"int_large_safe","input":"9007199254740991","expected":"9007199254740991"}
+{"name":"exponent_normalized","input":"1e3","expected":"1000"}
+{"name":"exponent_fraction","input":"2.5e-3","expected":"0.0025"}
+{"name":"string_plain","input":"\"hello\"","expected":"\"hello\""}
+{"name":"string_empty","input":"\"\"","expected":"\"\""}
+{"name":"string_escapes","input":"\"line\\nbreak\\ttab\\\\slash\\\"quote\"","expected":"\"line\\nbreak\\ttab\\\\slash\\\"quote\""}
+{"name":"string_control","input":"\"\\u0000\\u0001\\u001f\"","expected":"\"\\u0000\\u0001\\u001f\""}
+{"name":"string_unicode_raw","input":"\"café 日本語\"","expected":"\"café 日本語\""}
+{"name":"string_emoji","input":"\"😀 ok\"","expected":"\"😀 ok\""}
+{"name":"string_line_separators","input":"\"a\\u2028b\\u2029c\"","expected":"\"a b c\""}
+{"name":"array_empty","input":"[]","expected":"[]"}
+{"name":"array_mixed","input":"[1,\"two\",null,true,2.5]","expected":"[1,\"two\",null,true,2.5]"}
+{"name":"array_nested","input":"[[1,2],[3,[4]]]","expected":"[[1,2],[3,[4]]]"}
+{"name":"object_empty","input":"{}","expected":"{}"}
+{"name":"object_key_order","input":"{\"zeta\":1,\"alpha\":2,\"mid\":3}","expected":"{\"zeta\":1,\"alpha\":2,\"mid\":3}"}
+{"name":"object_nested","input":"{\"outer\":{\"inner\":[1.0,{\"deep\":\"v\"}]},\"tail\":0.5}","expected":"{\"outer\":{\"inner\":[1,{\"deep\":\"v\"}]},\"tail\":0.5}"}
+{"name":"object_unicode_keys","input":"{\"café\":\"x\",\"日本\":\"y\"}","expected":"{\"café\":\"x\",\"日本\":\"y\"}"}
+{"name":"object_numeric_spellings","input":"{\"a\":1.0,\"b\":2,\"c\":0.25,\"d\":-0.0}","expected":"{\"a\":1,\"b\":2,\"c\":0.25,\"d\":0}"}
+{"name":"realistic_facts_bag","input":"{\"toolName\":\"bash\",\"outcome\":\"failed\",\"exitCode\":127,\"outputChars\":58,\"ratio\":0.3,\"pathMentions\":[\"src/a.ts\",\"b/c.js\"]}","expected":"{\"toolName\":\"bash\",\"outcome\":\"failed\",\"exitCode\":127,\"outputChars\":58,\"ratio\":0.3,\"pathMentions\":[\"src/a.ts\",\"b/c.js\"]}"}
+{"name":"realistic_digest_input","input":"{\"text\":\"SENTINEL\",\"inputTokens\":2000,\"targetMinTokens\":160,\"targetAimTokens\":240,\"targetMaxTokens\":400}","expected":"{\"text\":\"SENTINEL\",\"inputTokens\":2000,\"targetMinTokens\":160,\"targetAimTokens\":240,\"targetMaxTokens\":400}"}

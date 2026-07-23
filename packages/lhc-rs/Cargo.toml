@@ -1,0 +1,20 @@
+[package]
+name = "lhc"
+version = "0.1.0"
+edition = "2024"
+description = "Rust port of the LHC (long-horizon context) SDK — event-sourced capture, derivations, smart compaction"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order: JS object key order (insertion order) is part of the
+# persisted-bytes contract — see shared_tech/js_json.rs.
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+futures = "0.3"
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

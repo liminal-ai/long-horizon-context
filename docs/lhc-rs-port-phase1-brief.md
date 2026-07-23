@@ -42,7 +42,7 @@ no network calls, inference only via the host-supplied ModelCall seam.
 | `readonly X[]` | `Vec<X>` in fields; `&[X]` in params. No tuple/Vec mixing (Python finding #5) |
 | optional field | `Option<T>` + `#[serde(skip_serializing_if = "Option::is_none")]` where TS omits the key (check the oracle's actual bytes, not the type) |
 | async function | `async fn`, tokio runtime; tests `#[tokio::test]` |
-| `node:sqlite` | `rusqlite`, behind ONE adapter module `src/shared_tech/sqlite_adapter.rs` — the only file that imports rusqlite |
+| `node:sqlite` | `rusqlite`, behind ONE adapter module `src/shared_tech/storage.rs` (the TS file that imports node:sqlite) — the only file that imports rusqlite |
 | function body | exactly `todo!("phase 2")`. Exceptions: verbatim constants (incl. ALL prompt text) and pure type/serde definitions — those are ported fully in Phase 1 |
 | test suite `foo.test.ts` | `tests/foo.rs` (integration tests), assertions mirrored 1:1; loop/factory-generated `it()` blocks become macro- or loop-generated `#[test]`s with matching counts |
 
@@ -92,6 +92,16 @@ no network calls, inference only via the host-supplied ModelCall seam.
   the TS `deterministic.ts` pattern (already proven in both prior ports).
 
 ## Wave plan
+
+**WAVE 0 IS DONE** (orchestrator, 2026-07-23): crate scaffolds and compiles
+clean; js_json.rs REAL with node-fixture conformance green; sqlite seam,
+gate (`python3 scripts/check_gate.py`, not .sh), committed oracle fixtures
+for js-json and all nine prompts, PORT_STATUS.md ledger, and four exemplar
+files + the exemplar test suite. Gate state at handoff: passed=4 (allowlisted)
+notimpl=4 wrong=0, reconciled. A fresh agent resumes at Wave 1: work the
+ledger top to bottom within the wave, trust the Wave 0 rulings recorded in
+PORT_STATUS.md, and extend partial modules (derivation.rs, storage.rs)
+without reshaping them.
 
 Same dependency order and content as the Python brief (§waves) — 0 through 7,
 per-wave commits, ledger updated per file. Deltas:

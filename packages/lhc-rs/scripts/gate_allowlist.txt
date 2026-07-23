@@ -1,0 +1,6 @@
+# Tests allowed to PASS during Phase 1 (everything else passing is
+# suspicious — a skeleton should not satisfy a behavior test).
+# Format: fnmatch patterns over "binary::test_name".
+
+# Wave 0 infrastructure — real implementation by design.
+js_json_conformance::*
