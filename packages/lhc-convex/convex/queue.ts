@@ -34,18 +34,140 @@ import {
   type ThreadDoc,
 } from "./common.js";
 
+const REAP_AFTER_MS = 60_000;
+
+/**
+ * A live recorded drain has not yet passed its exit gate (drainExit clears or
+ * replaces the id there, in a mutation serialized before the action turns
+ * terminal), so skipping is safe: the gate re-checks the queue. A recorded
+ * drain observed terminal died before its gate — its "running" items are dead
+ * one-shot work (fail them, never re-run them) and a fresh drain starts. The
+ * reaper covers the same death without any later enqueue to observe it.
+ */
 export async function scheduleDrain(ctx: MutationCtx, thread: ThreadDoc): Promise<boolean> {
   if (thread.scheduledDrainId !== undefined) {
     const scheduled = await ctx.db.system.get("_scheduled_functions", thread.scheduledDrainId);
     const kind = scheduled?.state.kind;
     if (kind === "pending" || kind === "inProgress") return false;
+    await failAbandonedRunning(ctx, thread.instance, thread.thread);
   }
-  const scheduledDrainId = await ctx.scheduler.runAfter(0, internal.queue.drainLoop, {
-    instance: thread.instance,
-    thread: thread.thread,
-  });
-  await ctx.db.patch("threads", thread._id, { scheduledDrainId });
+  await startDrain(ctx, thread._id, thread.instance, thread.thread);
   return true;
+}
+
+async function startDrain(
+  ctx: MutationCtx,
+  threadDocId: ThreadDoc["_id"],
+  instance: string,
+  thread: string,
+): Promise<void> {
+  const scheduledDrainId = await ctx.scheduler.runAfter(0, internal.queue.drainLoop, {
+    instance,
+    thread,
+  });
+  await ctx.scheduler.runAfter(REAP_AFTER_MS, internal.queue.reapDrain, {
+    instance,
+    thread,
+    drain: scheduledDrainId,
+  });
+  await ctx.db.patch("threads", threadDocId, { scheduledDrainId });
+}
+
+/**
+ * Exactly-once watchdog over one drain (scheduled mutations retry; actions do
+ * not). A drain that reaches a terminal state while still recorded died before
+ * its exit gate: fail its abandoned running work, restart iff work remains
+ * queued, stand down otherwise. Terminal work becomes visibly failed and never
+ * gates, with no dependence on a future enqueue or touch.
+ */
+export const reapDrain = internalMutation({
+  args: { instance: v.string(), thread: v.string(), drain: v.id("_scheduled_functions") },
+  handler: async (ctx, args) => {
+    const thread = await ctx.db
+      .query("threads")
+      .withIndex("by_instance_and_thread", (q) =>
+        q.eq("instance", args.instance).eq("thread", args.thread),
+      )
+      .unique();
+    if (thread === null || thread.scheduledDrainId !== args.drain) {
+      return { outcome: "superseded" as const };
+    }
+    const scheduled = await ctx.db.system.get("_scheduled_functions", args.drain);
+    const kind = scheduled?.state.kind;
+    if (kind === "pending" || kind === "inProgress") {
+      await ctx.scheduler.runAfter(REAP_AFTER_MS, internal.queue.reapDrain, args);
+      return { outcome: "watching" as const };
+    }
+    await failAbandonedRunning(ctx, args.instance, args.thread);
+    const queued = await ctx.db
+      .query("workItems")
+      .withIndex("by_instance_and_thread_and_status_and_seq", (q) =>
+        q.eq("instance", args.instance).eq("thread", args.thread).eq("status", "queued"),
+      )
+      .first();
+    if (queued !== null) {
+      await startDrain(ctx, thread._id, args.instance, args.thread);
+      return { outcome: "restarted" as const };
+    }
+    await ctx.db.patch("threads", thread._id, { scheduledDrainId: undefined });
+    return { outcome: "swept" as const };
+  },
+});
+
+async function failAbandonedRunning(
+  ctx: MutationCtx,
+  instance: string,
+  thread: string,
+): Promise<void> {
+  const abandoned = await ctx.db
+    .query("workItems")
+    .withIndex("by_instance_and_thread_and_status_and_seq", (q) =>
+      q.eq("instance", instance).eq("thread", thread).eq("status", "running"),
+    )
+    .take(32_000);
+  if (abandoned.length === 0) return;
+  const timestamp = nowIso();
+  const lastLog = await ctx.db
+    .query("logs")
+    .withIndex("by_instance_and_thread_and_seq", (q) => q.eq("instance", instance).eq("thread", thread))
+    .order("desc")
+    .first();
+  let logSeq = (lastLog?.seq ?? 0) + 1;
+  for (const item of abandoned) {
+    for (const target of item.derivs) {
+      const row = await ctx.db
+        .query("derivations")
+        .withIndex("by_instance_and_thread_and_scope_and_subject_and_deriv", (q) =>
+          q
+            .eq("instance", instance)
+            .eq("thread", thread)
+            .eq("scope", target.scope)
+            .eq("subject", target.subject)
+            .eq("deriv", target.deriv),
+        )
+        .unique();
+      if (row !== null && row.sourceVersion === item.sourceVersion && row.state !== "ready") {
+        await ctx.db.patch("derivations", row._id, {
+          state: "failed",
+          reason: "drain died while the item was running",
+          content: undefined,
+          derivedAt: timestamp,
+        });
+      }
+      await ctx.db.insert("logs", {
+        instance,
+        thread,
+        seq: logSeq,
+        level: "warning",
+        message: "running work item abandoned by a dead drain; marked failed",
+        deriv: target.deriv,
+        subject: target.subject,
+        recordedAt: timestamp,
+      });
+      logSeq += 1;
+    }
+    await ctx.db.delete("workItems", item._id);
+  }
 }
 
 export const claim = internalMutation({
@@ -1262,7 +1384,43 @@ async function runLoop(ctx: ActionCtx, args: { instance: string; thread: string;
 
 export const drainLoop = internalAction({
   args: { instance: v.string(), thread: v.string() },
-  handler: async (ctx, args) => await runLoop(ctx, args),
+  handler: async (ctx, args) => {
+    const report = await runLoop(ctx, args);
+    await ctx.runMutation(internal.queue.drainExit, args);
+    return report;
+  },
+});
+
+/**
+ * The transactional exit gate for a scheduled drain: work enqueued before this
+ * mutation is visible here (reschedule); the empty case clears the recorded
+ * drain id, so a later enqueue schedules its own drain rather than trusting an
+ * action that may already be past its final claim. Manual drains do not pass
+ * through here — manual mode never self-schedules.
+ */
+export const drainExit = internalMutation({
+  args: { instance: v.string(), thread: v.string() },
+  handler: async (ctx, args) => {
+    const thread = await ctx.db
+      .query("threads")
+      .withIndex("by_instance_and_thread", (q) =>
+        q.eq("instance", args.instance).eq("thread", args.thread),
+      )
+      .unique();
+    if (thread === null) return { rescheduled: false };
+    const queued = await ctx.db
+      .query("workItems")
+      .withIndex("by_instance_and_thread_and_status_and_seq", (q) =>
+        q.eq("instance", args.instance).eq("thread", args.thread).eq("status", "queued"),
+      )
+      .first();
+    if (queued === null) {
+      await ctx.db.patch("threads", thread._id, { scheduledDrainId: undefined });
+      return { rescheduled: false };
+    }
+    await startDrain(ctx, thread._id, args.instance, args.thread);
+    return { rescheduled: true };
+  },
 });
 
 export async function drainWork(ctx: ActionCtx, args: { instance: string; thread: string; maxItems?: number }) {
