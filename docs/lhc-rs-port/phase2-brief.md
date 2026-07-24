@@ -13,11 +13,12 @@ Build. Phase 3 (approximately three integration chunks) wires the certified
 crate into `liminal-ai/grok-build-lhc`; only Phase 3 delivers the user-facing
 result.
 
-Final Phase 2 gate target:
+Final Phase 2 gate target, as amended by the approved Phase-gate addenda C
+and D in `PORT_STATUS.md`:
 
 ```text
-classified=493 cargo-reported=493
-passed=478 notimpl=0 ignored=15
+classified=496 cargo-reported=496
+passed=481 notimpl=0 ignored=15
 wrong=0 suspicious=0
 ```
 
@@ -103,7 +104,7 @@ Rust-specific verification on every wave.
 
 The wave owner must derive the exact source/test list and expected green-test
 delta from the Phase 1 ledger before implementation. A wave is not complete
-merely because its targeted tests pass; the full 493-test gate must remain
+merely because its targeted tests pass; the full 496-test gate must remain
 reconciled.
 
 ## Per-wave orchestration loop
@@ -118,7 +119,8 @@ reconciled.
    by vote.
 4. Grok repairs the reconciled findings; changed scope is reverified.
 5. The orchestrator records exact pass/notimpl/ignored counts, commits
-   `impl(lhc-rs): wave N — <scope> (<green>/478 green)`, and pushes.
+   `port(lhc-rs): wave N — <scope> (dual-verified)`, records the exact
+   `<green>/481` active-test state in the body, and pushes.
 
 Root orchestration does not perform deletion, cleanup, or organization.
 Implementors clean only their exact artifacts; any verifier scratch cleanup is
@@ -141,7 +143,7 @@ their consumers change.
 The report records:
 
 - full-project position (Phase 2 of 3; unit/wave denominator);
-- exact newly green tests and full 478-active denominator;
+- exact newly green tests and full 481-active denominator;
 - remaining `todo!("phase 2")` count and domains;
 - verifier findings, repairs, and adjudicated overrides;
 - TS parity evidence, dependency changes, and cleanup;
@@ -151,7 +153,7 @@ The report records:
 
 Completion is proven only when:
 
-- all 478 active tests pass and all 15 TS skips remain accounted for;
+- all 481 active tests pass and all 15 TS skips remain accounted for;
 - `notimpl=0`, `wrong=0`, `suspicious=0`, and cargo/gate totals reconcile;
 - no production `todo!("phase 2")` remains;
 - the Phase 1 pass allowlist has been retired or converted into the final

@@ -1,7 +1,7 @@
-//! Ported from packages/lhc/src/turns/index.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/turns/index.ts.
 //!
-//! Full turns surface: types/constants REAL; every behavior body
-//! `todo!("phase 2")`. `TurnStructureRow` / `ChunkStructureRow` /
+//! Wave 3: `create` and the intake helpers it needs. Remaining surface bodies
+//! stay Phase 2. `TurnStructureRow` / `ChunkStructureRow` /
 //! `CompactChunkMaterial` stay module-private to the domain (not crate-root
 //! exports). `TurnDeriveResult` / `ChunkDeriveResult` follow Wave 4
 //! `MessageDeriveResult` wire precedent (custom Serialize field order + tagged
@@ -9,15 +9,22 @@
 
 pub mod internal;
 
+use std::panic::panic_any;
+
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::intake_stream::EventKind;
-use crate::shared_tech::derivation::{Derivation, DerivationReportEntry, ResolvedSdkConfig};
+use crate::shared_tech::derivation::{
+    Derivation, DerivationReportEntry, ResolvedSdkConfig, SubjectKind,
+};
 use crate::shared_tech::errors::{ErrorResult, OpResult};
 use crate::shared_tech::persist::{DbReadTransaction, DbWriteTransaction};
 use crate::shared_tech::storage::Db;
-use crate::shared_tech::work_queue::WorkItemRecord;
+use crate::shared_tech::work_queue::{
+    EnqueueDerivationTarget, EnqueueInput, WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef,
+    enqueue,
+};
 use crate::threads::ThreadRef;
 
 use internal::chunk_recovery::{CompactChunkMaterial, compact_chunk_material_from_stored_members};
@@ -137,23 +144,64 @@ impl TurnStateCorruptionError {
 }
 
 impl std::fmt::Display for TurnStateCorruptionError {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("phase 2")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for TurnStateCorruptionError {}
 
-fn current_open_turn_id(_transaction: &DbWriteTransaction) -> String {
-    todo!("phase 2")
+fn current_open_turn_id(transaction: &DbWriteTransaction) -> String {
+    let open_turn_ids = select_open_turn_ids(transaction.db);
+    if open_turn_ids.len() != 1 {
+        panic_any(TurnStateCorruptionError {
+            message: format!(
+                "thread has {} open turns ({}); the invariant is exactly one",
+                open_turn_ids.len(),
+                open_turn_ids.join(", "),
+            ),
+        });
+    }
+    open_turn_ids
+        .into_iter()
+        .next()
+        .expect("exactly one open turn")
 }
 
+/// Closing a turn durably queues that turn's derivation work in the same
+/// transaction: the close update and the work item commit or roll back together.
 fn close_turn_and_queue_work(
-    _transaction: &DbWriteTransaction,
-    _turn_id: &str,
-    _event_order: i64,
+    transaction: &DbWriteTransaction,
+    turn_id: &str,
+    event_order: i64,
 ) -> WorkItemRecord {
-    todo!("phase 2")
+    close_turn(transaction.db, turn_id, event_order);
+    // One work item backs two deterministic turn-owned derivation rows; compression
+    // queues from the turn_derivation completion transaction.
+    enqueue(
+        transaction,
+        EnqueueInput {
+            owner: WorkOwner::Turns,
+            kind: WorkKind::TurnDerivation,
+            source_ref: WorkSourceRef::Turn {
+                turn_id: turn_id.to_string(),
+            },
+            derivations: vec![
+                EnqueueDerivationTarget {
+                    subject_kind: SubjectKind::Turn,
+                    subject_id: turn_id.to_string(),
+                    derivation_type: "turn_rendering".to_string(),
+                },
+                EnqueueDerivationTarget {
+                    subject_kind: SubjectKind::Turn,
+                    subject_id: turn_id.to_string(),
+                    derivation_type: "pre_detailed_assembly".to_string(),
+                },
+            ],
+            operation: None,
+            source_version: None,
+        },
+    )
 }
 
 /// TS `RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder">`.
@@ -164,11 +212,73 @@ pub struct RecordedTurnEvent {
     pub event_order: i64,
 }
 
+/// Cross-domain surface, called by intake-stream inside the batch transaction
+/// for every recorded event. Synchronous and throwing by design, like
+/// messages.create: a turn-storage failure rejects the whole batch.
 pub fn create(
-    _transaction: &DbWriteTransaction,
-    _recorded_event: &RecordedTurnEvent,
+    transaction: &DbWriteTransaction,
+    recorded_event: &RecordedTurnEvent,
 ) -> TurnTransitionOutcome {
-    todo!("phase 2")
+    let open_turn_id = current_open_turn_id(transaction);
+    let has_members = count_turn_members(transaction.db, &open_turn_id) > 0;
+    if recorded_event.event_kind == EventKind::TurnEnd {
+        if !has_members {
+            return TurnTransitionOutcome {
+                transitions: Vec::new(),
+                turn_id: open_turn_id,
+                queued_work: Vec::new(),
+            };
+        }
+        let item =
+            close_turn_and_queue_work(transaction, &open_turn_id, recorded_event.event_order);
+        let turn_id = insert_open_turn(
+            transaction.db,
+            next_turn_order(transaction.db),
+            recorded_event.event_order,
+        );
+        return TurnTransitionOutcome {
+            transitions: vec![
+                TurnTransition {
+                    action: TurnTransitionAction::Closed,
+                    turn_id: open_turn_id,
+                },
+                TurnTransition {
+                    action: TurnTransitionAction::Opened,
+                    turn_id: turn_id.clone(),
+                },
+            ],
+            turn_id,
+            queued_work: vec![item],
+        };
+    }
+    if recorded_event.event_kind == EventKind::UserPrompt && has_members {
+        let item =
+            close_turn_and_queue_work(transaction, &open_turn_id, recorded_event.event_order);
+        let turn_id = insert_open_turn(
+            transaction.db,
+            next_turn_order(transaction.db),
+            recorded_event.event_order,
+        );
+        return TurnTransitionOutcome {
+            transitions: vec![
+                TurnTransition {
+                    action: TurnTransitionAction::Closed,
+                    turn_id: open_turn_id,
+                },
+                TurnTransition {
+                    action: TurnTransitionAction::Opened,
+                    turn_id: turn_id.clone(),
+                },
+            ],
+            turn_id,
+            queued_work: vec![item],
+        };
+    }
+    TurnTransitionOutcome {
+        transitions: Vec::new(),
+        turn_id: open_turn_id,
+        queued_work: Vec::new(),
+    }
 }
 
 fn thread_not_found<T>(_file_path: &str) -> OpResult<T> {

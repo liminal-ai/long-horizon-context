@@ -135,6 +135,48 @@ fn temp_store_creates_an_isolated_directory_and_cleans_it_up() {
     let a = store.thread_path(None);
     let b = store.thread_path(None);
     assert_ne!(a, b);
+
+    // Amendment F owning proof (same test — inventory stays 496): exclusive
+    // create_dir never adopts a pre-existing candidate; distinct live stores
+    // never share a root.
+    let other = temp_store();
+    assert_ne!(
+        store.dir, other.dir,
+        "distinct live TempStores must not share a root"
+    );
+    let pid = std::process::id();
+    let name = store
+        .dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("utf-8 temp name");
+    let seq: u64 = name
+        .rsplit('-')
+        .next()
+        .expect("seq suffix")
+        .parse()
+        .expect("seq u64");
+    let parent = store.dir.parent().expect("temp parent");
+    let mut reserved_seq = seq + 1;
+    let reserved = loop {
+        let candidate = parent.join(format!("lhc-test-{pid}-{reserved_seq}"));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => break candidate,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                reserved_seq += 1;
+            }
+            Err(err) => panic!("reserve preexisting candidate: {err}"),
+        }
+    };
+    let third = temp_store();
+    assert_ne!(
+        third.dir, reserved,
+        "temp_store must not accept a pre-existing candidate directory"
+    );
+    let _ = std::fs::remove_dir_all(&reserved);
+    other.cleanup();
+    third.cleanup();
+
     store.cleanup();
     assert!(!store.dir.exists());
 }

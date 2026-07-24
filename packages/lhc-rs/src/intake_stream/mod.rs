@@ -507,13 +507,13 @@ impl EventRecord {
 
 /// TS `messageEvents(threadRef, events)`.
 pub async fn message_events(
-    _thread_ref: ThreadRef,
-    _events: &[MessageEventInput],
+    thread_ref: ThreadRef,
+    events: &[MessageEventInput],
 ) -> OpResult<BatchResult> {
-    todo!("phase 2")
+    internal::pipeline::run_message_events(thread_ref, events, None).await
 }
 
 /// TS `listEvents`.
-pub async fn list_events(_thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
-    todo!("phase 2")
+pub async fn list_events(thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
+    internal::pipeline::run_list_events(thread_ref).await
 }

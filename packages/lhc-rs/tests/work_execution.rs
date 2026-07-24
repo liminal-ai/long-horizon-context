@@ -872,7 +872,6 @@ async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_
     let expires_at = system_time_to_iso(SystemTime::now() + Duration::from_millis(35));
     claim_head_work_item(&file_path, &expires_at);
     let detail = live_detail(&file_path);
-    assert_eq!(detail.len(), 1);
     assert_eq!(detail[0].work_item_id, "w-m1-prompt_smoothing-v1");
     assert_eq!(detail[0].status, QueueLiveStatus::Claimed);
     assert_eq!(

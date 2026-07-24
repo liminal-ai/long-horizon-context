@@ -122,17 +122,14 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `lib::shared_tech::work_queue::tests::record_item_write_payload_rejects_unknown_subject_kind`;
   `lib::shared_tech::thread_migrate::tests::migrate_loose_queued_work_item_payload_preserves_unknown_keys`
   (Rust-only private payload unit tests).
-- Wave 3: threads full surface (ThreadInfo/ThreadFileInfo/resolve/list/info/
-  resolve_thread_ref + private helpers); create SQL statement templates REAL;
-  registry DEFAULT_REGISTRY_PATH + schema SQL constants REAL; bodies todo.
-  Preserved Wave 1 closed ThreadRef Deserialize (no second public envelope).
-- Wave 3: intake pipeline complete skeleton (recorded_keys/max_event_order/
-  run_message_events/run_list_events) with Wave 2 REAL clock/walk seams
-  preserved. validate.rs: EVENT_KINDS/SERVER_GENERATED_FIELDS/DECODE_OPTIONS
-  + closed schema type surfaces REAL; validate_* bodies todo. TS `unknown`
-  validate inputs → `&serde_json::Value` (not pre-narrowed ThreadRef /
-  MessageEventInput). `DecodeSchema` / `ParseError` are Phase 2 stand-ins for
-  Effect Schema decode targets / ParseResult.ParseError (no Effect runtime).
+- Wave 3: threads full surface REAL (new_thread/resolve/list/info/
+  resolve_thread_ref + create/registry internals). Preserved Wave 1 closed
+  ThreadRef Deserialize (no second public envelope). See Wave 3
+  implementation note below.
+- Wave 3: intake pipeline + three-layer validate REAL (validate-before-lock
+  walk, idempotency, materialize); clock/walk seams thread-local for cargo
+  parallel isolation. TS `unknown` validate inputs → `&serde_json::Value`.
+  See Wave 3 implementation note below.
 - Wave 3: `EventRecord` is a closed tagged enum on `eventKind` with kind-exact
   payloads (`deny_unknown_fields` on the enum and payload structs; no flatten
   extras). Wave 1 broad wire remains only on `MessageEventInput`.
@@ -440,9 +437,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 3 | `src/inspect/internal/health.ts` | `src/inspect/internal/health.rs` | ☑ | Wave 7: capture-gap constants + helpers; bodies exact todo |
 | 4 | `src/inspect/internal/overview.ts` | `src/inspect/internal/overview.rs` | ☑ | Wave 7: `bucket_entries` + compose; bodies exact todo |
 | 5 | `src/inspect/internal/view-report.ts` | `src/inspect/internal/view_report.rs` | ☑ | Wave 7: private `BAND_ORDER` + helpers; bodies exact todo |
-| 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 3: closed EventRecord tagged enum (`deny_unknown_fields`) + kind payloads; message_events/list_events exact todo; Wave 1 MessageEventInput broad wire kept |
-| 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 3: complete skeleton; clock/walk seams REAL; walk/record/list bodies exact todo |
-| 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☑ | Wave 3: EVENT_KINDS + DECODE_OPTIONS + DecodeSchema/ParseError stand-ins REAL; validate bodies exact todo; unknown→Value |
+| 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 3: message_events/list_events REAL (pipeline); closed EventRecord wire preserved |
+| 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 3: validate-before-lock walk, idempotency, materialize, TLS clock/walk seams REAL |
+| 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☑ | Wave 3: three-layer closed validation + firstIssue messages REAL |
 | 9 | `src/messages/index.ts` | `src/messages/mod.rs` | ☑ | Wave 4: full surface; RecordedEvent alias; CascadeClear not root-exported; EditInput/RemoveInput; bodies exact todo |
 | 10 | `src/messages/internal/cascade.ts` | `src/messages/internal/cascade.rs` | ☑ | Wave 4+r1: CascadeClear; `rebuild_kind_order` exhaustive fn; DERIVATION_REBUILD_KINDS map; private SQL; helpers exact todo |
 | 11 | `src/messages/internal/classify-tool-result.ts` | `src/messages/internal/classify_tool_result.rs` | ☑ | exemplar (logic module) — untouched in Wave 4 |
@@ -497,9 +494,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☑ | Wave 6+r1: PI_MAPPABLE_KIND_SET derived; nested helpers; select_arrangement Result |
 | 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☑ | Wave 6+r1: flushAssistant + session literals |
 | 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☑ | Wave 6+r1: RawViewRow + BEGIN/COMMIT/ROLLBACK literals |
-| 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: full surface (new_thread/resolve/list/info/resolve_thread_ref + helpers); ThreadRef closed wire preserved; bodies todo |
-| 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: SQL templates REAL; generate/create/delete/open/validate bodies todo |
-| 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: DEFAULT_REGISTRY_PATH + schema SQL REAL; open/select/insert bodies todo |
+| 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: new_thread/resolve/list/info/resolve_thread_ref REAL; ThreadRef closed wire preserved |
+| 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: generate/create/delete/open/validate + schema REAL |
+| 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: open/select/insert/prefix/list REAL |
 | 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 5: full surface; Turn/ChunkDeriveResult wire serde; structure types private; bodies exact todo |
 | 67 | `src/turns/internal/chunk-recovery.ts` | `src/turns/internal/chunk_recovery.rs` | ☑ | Wave 5 |
 | 68 | `src/turns/internal/chunks.ts` | `src/turns/internal/chunks.rs` | ☑ | Wave 5 |
@@ -710,6 +707,28 @@ representation (golden-tested; reshaping certified surface for style is net
 risk); `SchedulerPoke`/`ThreadTouch`/walk-hook slots stay `Box` (single-
 owner slots, no sharing requirement); `DurableWorkDispatcherMap` HashMap
 (lookup-only, doc-justified); `record_from_row` by-value `Vec<Block>`.
+
+**E. Remove one unfaithful work-execution length assert (Lee/Sol/Fable,
+2026-07-24).** Delete only `assert_eq!(detail.len(), 1)` from
+`tests/work_execution.rs`:
+`first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_behind_it`.
+Keep the `[0]` id/status/expiry asserts. Authority: TS checks
+`liveDetail(...)[0]` only; sibling expects two live items after
+`user_prompt`+`turn_end`; live Node/Rust agree; Sol
+`20260724-213354-cd01cd` and Copilot-Fable `20260724-213354-49f51b`
+independently forced the deletion. Does **not** move the 496 inventory or
+`481/0/15` final target. Must land in the Wave 3 commit-body notes.
+
+**F. Atomically exclusive `TempStore` root allocation (Lee/Sol/Fable,
+2026-07-24).** Replace timestamp+`create_dir_all` in
+`tests/fixtures/mod.rs::temp_store` with PID + process-local atomic sequence
+candidate names and exclusive `create_dir`, retrying only `AlreadyExists`.
+Authority: TS `mkdtempSync`; Fable `20260724-213354-49f51b` reproduced
+collision; focused Sol concurrence `20260724-220130-2a645c` (session
+`019f960c-9429-7900-91a8-fc17156df66e`) forced exclusive create+retry.
+Owning proof extends the existing
+`fixtures_test::temp_store_creates_an_isolated_directory_and_cleans_it_up`
+(inventory stays 496). Name in Wave 3 commit-body notes.
 
 Rolled to Phase 2 (tasks, not lost): storage error-channel variants (M2,
 Wave 1); panic-safe cleanup guards in work_execution/intake + un-fold the
@@ -1118,3 +1137,428 @@ style debt; the two warnings introduced by repair-r4 were removed in r5.
 Existing TypeScript tests and committed oracles/goldens were unchanged; the
 new date-parse generator, oracle, and two owning Rust tests are the exact
 Amendment D additions.
+
+### Phase 2 Wave 3 implementation (2026-07-24) — NOT certified
+
+**Full-project position:** Wave 3 of 7 in Phase 2 of 3 (unit 11 of
+approximately 18). Four Phase 2 behavior waves and all Phase 3 Grok Build
+integration remain. **Not certified** — pending independent Sol and
+Copilot-Fable review. Initial impl gate was FAIL on one frozen-test fidelity
+conflict (resolved by Amendment E in repair-r1 below).
+
+Baseline (certified Wave 2 `f1326d7`):
+
+```text
+passed=83 suspicious=0 notimpl=398 wrong=0 ignored=15
+classified=496 cargo-reported=496
+```
+
+Wave 3 gate after this implementation:
+
+```text
+exact-todo: tokens=295 bodies=295 covered=295
+classified=496 cargo-reported=496 (binaries: 58)
+passed=145 suspicious=0 notimpl=335 wrong=1 ignored=15
+GATE FAIL
+```
+
+Arithmetic from Wave 2 baseline: **+62 passed**, **−63 notimpl**, **+1 wrong**
+(145 + 335 + 1 + 15 = 496). No previously green allowlisted test regressed
+(`suspicious=0`).
+
+#### Exact files and behavior
+
+- `src/threads/mod.rs` — `new_thread` / `resolve` / `list_threads` / `info` /
+  `resolve_thread_ref`; blank-path and taxonomy helpers; ISO ms clock stamps.
+- `src/threads/internal/create.rs` — `generate_thread_id`, schema statements +
+  derivation-log splice, RO `validate_thread_file`, `open_thread_database`
+  (validate → open → migrate → `fire_thread_touch`), `create_thread_file` /
+  `delete_thread_file` compensation.
+- `src/threads/internal/registry.rs` — path resolve, lazy write schema,
+  read-without-create, insert/select/prefix (LIKE escape), cwd-scoped list.
+- `src/intake_stream/mod.rs` — `message_events` / `list_events` wired to pipeline.
+- `src/intake_stream/internal/validate.rs` — three closed layers + `firstIssue`
+  Effect-style messages (hand-rolled `_actual` spelling; no banned
+  `serde_json::to_string`).
+- `src/intake_stream/internal/pipeline.rs` — validate-before-lock; ordered walk;
+  idempotency skip; turns then messages create; `js_json_stringify` payloads;
+  walk-hook/clock **thread-local** seams (cargo-parallel isolation; vitest is
+  single-threaded per file).
+- Cross-slice (required by intake; full domains stay later-wave todos):
+  `messages::{create,queue_message_work,list,…}` create/list path;
+  `turns::create` + close/enqueue. Remaining messages/turns/SDK bodies stay
+  `todo!("phase 2")`.
+- `src/shared_tech/context.rs` — below-SDK `set_scheduler_poke` /
+  `set_thread_touch` storage moved to **thread-local** (same rationale as
+  intake seams); SDK `task_local` InstanceSeam unchanged.
+- `scripts/gate_allowlist.txt` — Wave 3 owning + unlocked passes allowlisted.
+
+#### Exact newly green test names (+62 from Wave 2)
+
+Direct Wave 3 owning (37):
+
+- `threads::*` (7), `threads_a8::*` (10), `intake::*` (7),
+  `intake_message_materialization::*` (6), `validation::*` (7)
+
+Unlocked / adjacent (25):
+
+- `idempotency::*` (5)
+- `epic_fix::{intake_stream_list_events_empty_path_caller_error_no_storage_open,
+  intake_stream_list_events_unknown_id_thread_not_found,
+  messages_list_empty_path_caller_error_no_storage_open,
+  messages_list_unknown_id_thread_not_found,
+  new_thread_empty_file_path_caller_error_nothing_created_no_registry_row,
+  new_thread_with_a_whitespace_only_path_is_refused_the_same_way,
+  resolve_thread_ref_empty_file_path_fails_closed_with_caller_error}` (7)
+- `thread_migrate::{opens_a_v1_thread_file_migrates_derivation_log_and_preserves_existing_data,
+  migrates_v2_derivation_rows_and_stored_view_json_from_smooth_turn_compression_to_detailed_turn_compression}` (2)
+- `turns::validation_corruption_and_storage_failures_carry_three_distinct_classes_with_stable_codes` (1)
+- `work_queue::{a_committed_intake_batch_durably_writes_work_rows_pending_forms_and_pokes_once_per_enqueue,
+  an_induced_rollback_after_enqueue_drops_the_work_row_form_row_and_poke,
+  enqueue_via_create_db_write_transaction_rollback_drops_effects_commit_lands_them,
+  re_enqueueing_at_a_later_source_version_resets_the_form_row_to_pending,
+  tc_2_6_a_mixed_batchs_result_is_complete,
+  tc_2_7_a_prompt_and_a_tool_result_each_durably_queue_their_kind_owner_messages,
+  tc_2_9_text_thinking_and_note_messages_queue_nothing_the_kind_gate_is_exact,
+  tc_3_3_work_half_explicit_close_durably_queues_turn_derivation_owner_turns,
+  tc_3_6_work_half_implicit_close_queues_the_same_work_item_contract,
+  tc_3_8_work_count_a_multi_turn_batch_queues_one_turn_derivation_item_per_closed_turn}` (10)
+  (Wave 2 already had registry/assembly/dispatcher — not recounted)
+
+#### STOP (resolved by Amendment E in repair-r1)
+
+Unfaithful `assert_eq!(detail.len(), 1)` removed under Amendment E; the test
+now honestly notimpls at Wave 7 `init_lhc`. See repair-r1 note below.
+
+#### Remaining notimpl — first owning later-wave boundary (summary)
+
+| Boundary | Suites / symptoms |
+|---|---|
+| Wave 5 `turns::list_turns` / turn read surfaces | `turns` (11), `epic_fix` turns list (2), `work_queue` rollback/restart/skip clauses that call `list_turns` (3) |
+| Wave 7 `init_lhc` / SDK | `runtime_change_typing` (3), `work_execution` (incl. first-touch after Amendment E), `thread_migrate` drain/normalize (3), `lifecycle` via `create_lifecycle_sdk` fixture todo, `logging_surface`, background scheduler drains |
+| Wave 4/5 message/turn derive/handlers/cascade | remaining messages/turns todos; inference routing drains |
+| Wave 2 residual adapter bodies | `inference_adapter` (2 active still todo) |
+| Later view/mutations/inspect | view_*, mutations_*, report_repair, epic_fix_02, etc. |
+
+`lifecycle` (7) and `runtime_change_typing` (3) honestly blocked on Wave 7 /
+lifecycle fixture SDK construction — Wave 7 not implemented to force them green.
+
+#### Node/Rust mutation evidence
+
+- Disposable Node `validateEvents` matrix (empty batch, excess property, server
+  `eventOrder`, turn_end non-empty payload, empty actor, null payload, ok /
+  turn_end ok) — reasons match Rust validation suite; probe removed after run.
+- Live Node intake probe: `user_prompt`+`turn_end` → two queued work ids (cited
+  in STOP).
+- Owning suites cover lock-before-validate, mid-walk whole-batch rollback,
+  idempotency within/across batches, RO/occupied path refusal, registry
+  compensation, poke-once-per-enqueue under parallel cargo after TLS seams.
+- No permanent Rust-only tests added; inventory remains 496.
+
+#### Fixture and immutable-test/oracle audit
+
+- **Did not** edit Rust test bodies, goldens, oracles, or inventory count.
+- `tests/fixtures/lifecycle.rs` — left later-wave (`create_lifecycle_sdk` /
+  `run_lifecycle` todo); Wave 3 suites do not require those bodies.
+- `tests/fixtures/threads.rs` — SDK-calling builders remain todo; Wave 3 suites
+  use `threads::new_thread` directly / already-REAL sqlite helpers.
+- `tests/fixtures/read_only_delta.rs` — snapshot/expect helpers remain todo
+  (need list_events + messages.list + thread_view); `queued_for` already REAL.
+- Four root `cc-lhc-*.txt` files preserved untouched.
+
+#### Clippy / fmt / cleanup / no commit
+
+- `cargo fmt --check` clean; `cargo check --tests` clean.
+- Clippy: ~109 warnings (carried style debt; no new Wave 3 blocker cleanup).
+- Disposable `/tmp` probes and gate/clippy logs removed by implementor after
+  ledger write.
+- **No commit. No push.** Wave 3 remains **not certified**.
+
+### Phase 2 Wave 3 repair-r1 (2026-07-24) — NOT certified
+
+Changed-scope repair after Sol `20260724-213354-cd01cd` and Copilot-Fable
+`20260724-213354-49f51b` full reviews, plus focused Sol TempStore concurrence
+`20260724-220130-2a645c`. **Not certified** — pending changed-scope
+independent confirmation.
+
+#### Gate (target met)
+
+```text
+exact-todo: tokens=295 bodies=295 covered=295
+classified=496 cargo-reported=496 (binaries: 58)
+passed=145 suspicious=0 notimpl=336 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic from certified Wave 2 `83/398/15`: **+62 passed**, **−62 notimpl**
+(Amendment E converts the prior wrong into notimpl; inventory unchanged).
+
+#### Amendments E / F (Phase-gate addendum; name in Wave 3 commit body)
+
+- **E** — deleted only `assert_eq!(detail.len(), 1)` in
+  `work_execution::first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_behind_it`;
+  test now panics at `src/sdk.rs:684` `todo!("phase 2")` (`init_lhc`).
+- **F** — `temp_store()` uses PID + process-local `AtomicU64` sequence with
+  exclusive `create_dir` and `AlreadyExists` retry; owning proof assertions
+  added inside existing
+  `fixtures_test::temp_store_creates_an_isolated_directory_and_cleans_it_up`.
+
+#### Production repairs
+
+1. **Reentrant walk hook** — store `Arc` callback; `call_walk_hook` clones out
+   of the `RefCell` before invoke. Disposable probe: clear/replace self +
+   nested intake on a second thread file — no borrow panic.
+2. **WAL-aware validation** — new
+   `storage::open_database_for_thread_validation` copies main+`-wal`/`-shm`/
+   `-journal` to a private temp dir and opens `mode=ro` **without**
+   `immutable=1`. `open_database_read_only` (`immutable=1`) left untouched for
+   `peek_thread_id`. Lib probe: live-WAL schema visible to validate,
+   invisible to immutable peek; RO-dir / closed-WAL / foreign / malformed
+   candidates non-mutating.
+3. **Deferred error mapping + close hygiene** — `validate_thread_file` catches
+   open/query/close panics; `"not a database"` at any stage →
+   `thread_not_found`; other failures → `storage_failure`; close never masks
+   the primary classification.
+4. **Exact allowlist** — six Wave 3 suite globs replaced with the exact 62
+   newly green names (invented `threads::invented_wave3_allowlist_probe` does
+   not match; only Wave 0 `js_json_conformance::*` glob remains).
+5. **Exhaustive `EventKind`** — `messages::create` MessageCreated match spells
+   every variant (no `_ =>`).
+
+#### Reconciled non-repairs / carry flag
+
+- **No Node errno-string emulator** — Rust/Node keep platform-native OS detail;
+  contract is error class/code/compensation behavior.
+- **Wave 7 carry flag:** re-audit the below-SDK **thread-local** scheduler
+  poke/touch seam against real SDK/`task_local` InstanceSeam and cross-thread
+  runtime behavior when `init_lhc` lands. Do not implement Wave 7 now.
+
+#### Exact newly green names (+62)
+
+Same 62 names listed in the Wave 3 implementation note and
+`scripts/gate_allowlist.txt` (exact lines under “Phase 2 Wave 3”).
+
+#### Evidence / audit / cleanup
+
+- Disposable probes removed (`tests/_probe_r1_wave3.rs`, lib `r1_wal_probes`).
+- `cargo fmt --check`, `cargo check --tests`, prompt-byte check, JS-JSON
+  conformance (4) green. Clippy ~106 carried warnings.
+- Direct Wave 3 suites 37/37; unlocked work_queue 13 pass / 3 notimpl
+  (`list_turns`); lifecycle 0/7 and runtime_change_typing 0/3 at Wave 7.
+- Fixture/oracle audit: Amendment E/F only sanctioned test/fixture edits;
+  goldens/oracles untouched; `cc-lhc-*.txt` preserved; inventory 496.
+- **No commit. No push.** Wave 3 remains **not certified**.
+
+### Phase 2 Wave 3 repair-r2 (2026-07-24) — NOT certified
+
+Changed-scope repair after repair-r1 confirmation **FAIL** on two races in
+`open_database_for_thread_validation`. Verifier evidence:
+
+- Copilot-Fable `20260724-221744-2866bc`, session
+  `0e18e4f5-d4cd-43c0-ab09-1eb7bc7f12c5`, model `claude-fable-5` medium —
+  temp-root `as_nanos` collision → false `storage_failure` ("File exists");
+- Sol `20260724-221837-e6fe2b`, session
+  `019f9635-8635-72e3-86f3-0da0157f1fc1` — torn main/WAL epoch under
+  checkpoint-during-copy → false `thread_not_found` / `no lhc schema version`.
+
+Does **not** move inventory `496`, Wave 3 gate `145/336/0/15`, or final
+`481/0/15`. Wave 3 remains **not certified** pending focused confirmation of
+the validation opener and its consumer.
+
+#### Gate
+
+```text
+classified=496 cargo-reported=496
+passed=145 suspicious=0 notimpl=336 wrong=0 ignored=15
+GATE PASS
+```
+
+#### Finding 1 — exclusive validation temp roots
+
+`create_validation_temp_dir` now mirrors Amendment F: PID + process-local
+`AtomicU64` sequence, exclusive `create_dir`, retry only `AlreadyExists`;
+other errors stay `storage_failure`. Cleanup remains scoped to the owned
+temp dir (success, copy failure, open failure, Drop).
+
+Disposable concurrency/preexisting-candidate probe: barrier of parallel
+validators — zero rejects, no shared temp root (probe removed). **Correction
+(repair-r3):** the 32-way barrier reserved exclusive empty roots
+`/tmp/lhc-thread-validate-2960379-0`…`-31` and left them; prior “zero leaks /
+cleaned” claim was false. Those exact disposable empty probe roots were
+removed in repair-r3 (pre=32, post=0).
+
+#### Finding 2 — epoch-stable main/WAL snapshot
+
+**Invariant:** a private copy is coherent iff
+`fingerprint(main, wal, journal)` immediately before the copy equals the
+fingerprint immediately after. Independent main-then-WAL copies are **not**
+atomic across a checkpoint; stability detection + bounded retry (128) is
+required. Exhaustion → `storage_failure` ("source database changed under
+copy"), never a false `thread_not_found`.
+
+**Fingerprint:** content hash + length (not mtime) — no-op checkpoints that
+only bump mtimes must not exhaust retries.
+
+**SHM:** never copied. Stale `-shm` with a mismatched main/WAL is worse than
+letting SQLite rebuild a private wal-index from the coherent pair.
+
+Mutation evidence (disposable lib probe + temporary between-copy seam,
+both removed after; seam deleted permanently in repair-r3):
+
+1. Repair-r1 independent main→seam-checkpoint→WAL copy under
+   `wal_autocheckpoint=0` large-main + WAL-only schema → `user_version == 0`
+   (torn);
+2. Restore epoch-stable path under the same one-shot checkpoint seam →
+   `user_version == 4` + metadata row visible;
+3. Quiet validate leaves source snap unchanged; concurrent WAL append with
+   quiet gaps → zero `thread_not_found` / `storage_failure`.
+
+`open_database_read_only` (`immutable=1` for `peek_thread_id`) unchanged.
+
+#### Exact files
+
+- `src/shared_tech/storage.rs` —
+  `create_validation_temp_dir`, `fingerprint_source`,
+  `copy_coherent_validation_snapshot`, `open_database_for_thread_validation`
+  rewrite; disposable `r2_probes` removed after evidence. (Orphaned
+  cfg(test) between-copy seam removed in repair-r3.)
+
+#### Audit / cleanup / no commit
+
+- fmt/check, prompt-byte, JS-JSON, owning thread/intake suites, fixture proof,
+  full gate green at `145/336/0/15`. Clippy carried warnings only.
+- Assertion/fixture/oracle inventory untouched this round; `cc-lhc-*.txt`
+  preserved. Disposable probes and `/tmp` logs removed (except the 32 empty
+  validate roots corrected in repair-r3).
+- **No commit. No push.**
+
+### Phase 2 Wave 3 repair-r3 (2026-07-24) — NOT certified
+
+Focused confirmation residue after Copilot-Fable `20260724-225434-38f854`
+(session `f87ae00c-0643-43c4-a130-de37646e5215`, `claude-fable-5` medium).
+Verifier **confirmed both repair-r2 races fixed** (exclusive temp roots +
+epoch-stable main/WAL copy). This round does **not** move inventory `496`,
+Wave 3 gate arithmetic, wave plan, scope, or deliverable. Wave 3 remains
+**not certified** pending final focused confirmation.
+
+#### Gate
+
+```text
+classified=496 cargo-reported=496
+passed=145 suspicious=0 notimpl=336 wrong=0 ignored=15
+GATE PASS
+```
+
+#### 1. Exact leaked probe-root cleanup
+
+Removed only `/tmp/lhc-thread-validate-2960379-0`…`-31` (pre=32 empty
+disposable roots, post=0). Recoverability: empty probe reservations; no
+thread data. Corrected repair-r2 ledger “zero leaks / cleaned” claim above.
+No other process’s `lhc-thread-validate-*` directories were touched.
+
+#### 2. Orphaned cfg(test) seam removed
+
+Deleted from `src/shared_tech/storage.rs`: call site in
+`copy_coherent_validation_snapshot`, `VALIDATION_BETWEEN_MAIN_AND_WAL`,
+`set_validation_between_main_and_wal_seam`, `validation_between_main_and_wal_seam`,
+and retain comments. Repo-wide search: no consumer or definition remains.
+Epoch-stable copy algorithm otherwise unchanged. No permanent test added;
+frozen 496 inventory untouched.
+
+#### 3. Writable-open panic → TS `storage_failure`
+
+`open_thread_database` wraps the entire `open_database(file_path)` call
+(including pragma init panics such as `PRAGMA journal_mode = WAL` on a
+read-only file/dir) in `catch_unwind` and maps to
+`storage_failure("could not open thread file: …")` with platform detail.
+Ordinary `OpResult::Err` from `open_database` keeps the same prefix.
+Partial connections drop/close on unwind; migrate-path close is also
+unwind-safe. No Node errno emulator; validation-copy taxonomy unchanged.
+
+Disposable probe evidence (`tests/_probe_r3_wave3.rs`, removed after):
+
+- valid thread chmod `0444` in `0555` dir → `SystemError` /
+  `storage_failure` / `could not open thread file:` + readonly detail; no
+  escaping unwind;
+- nonexistent/foreign/malformed retain prior classifications; writable
+  open/migrate/touch still succeeds;
+- mutation removing the new catch restores the panic and turns the probe
+  red; restore turns green.
+
+#### Exact files
+
+- `src/shared_tech/storage.rs` — orphaned seam deleted
+- `src/threads/internal/create.rs` — `open_thread_database` catch_unwind map
+- `PORT_STATUS.md` — this note + repair-r2 leak correction
+
+#### Audit / cleanup / no commit
+
+- fmt/check/clippy, direct Wave 3 suites, thread_migrate, fixture proof,
+  JS-JSON/prompt checks, full gate at `145/336/0/15`.
+- Assertion/fixture/oracle inventory untouched; `cc-lhc-*.txt` preserved.
+- Disposable probe deleted; exact PID/prefix temp roots removed.
+- **No commit. No push.** Wave 3 remains **not certified**.
+
+### Phase 2 Wave 3 certification (2026-07-24) — CERTIFIED
+
+**Full-project position:** Wave 3 of 7 in Phase 2 of 3 is certified (unit 11
+of approximately 18). Four Phase 2 behavior waves and all Phase 3 Grok Build
+integration remain; the larger part of the usable deliverable is still ahead.
+
+Certification reconciles the union of the complete Sol/Fable reviews and all
+focused repair evidence against TypeScript and approved Amendments E/F:
+
+- full-scope Sol `20260724-213354-cd01cd` **FAIL** and Copilot-Fable
+  `20260724-213354-49f51b` **FAIL**;
+- focused Sol TempStore concurrence `20260724-220130-2a645c`;
+- repair-r1 Cursor implementor `20260724-220600-48d83a`, verified
+  `Cursor Grok 4.5 High Fast`;
+- repair-r1 confirmation: Sol `20260724-221837-e6fe2b` reproduced the torn
+  main/WAL checkpoint epoch; Copilot-Fable `20260724-221744-2866bc`
+  reproduced validation temp-root collisions and otherwise confirmed r1;
+- repair-r2 Cursor implementor `20260724-224323-68090f`, verified fast;
+- repair-r2 focused Copilot-Fable `20260724-225434-38f854` confirmed both
+  race repairs but found exact cleanup residue, an orphaned probe seam, and
+  writable-open panic taxonomy;
+- repair-r3 Cursor implementor `20260724-232121-3ae87b`, verified fast;
+- final focused Copilot-Fable `20260724-232554-e6135b` **PASS**, resumed
+  session `f87ae00c-0643-43c4-a130-de37646e5215`, resolved model
+  `claude-fable-5` at medium effort.
+
+Two later focused Sol launches failed in the local CLI/harness before verdict
+(`bwrap` loopback namespace failure, then stdin/process-id failures); they are
+recorded as verifier-infrastructure failures, not PASS/FAIL evidence. The
+original full Sol review and its deterministic epoch-race reproduction remain
+part of the governing union.
+
+Final repaired behavior:
+
+- Amendment E removes only the extra length-one assertion; the test honestly
+  reaches Wave 7 `init_lhc`.
+- Amendment F gives `TempStore` atomic exclusive allocation and retry.
+- Walk hooks clone out of `RefCell` before user callback reentrancy.
+- Validation uses exclusively owned temp roots and an epoch-stable
+  content-fingerprinted main/WAL/journal copy; stale SHM is never copied;
+  immutable Wave 2 peek remains unchanged.
+- Writable open/pragma panics become TS-faithful `storage_failure`.
+- All 62 Wave 3 greens are exact allowlist names and `EventKind` dispatch is
+  exhaustive.
+- All implementor/verifier scratch is cleaned; validation temp-root count is
+  zero. The four unrelated root `cc-lhc-*.txt` files remain untouched.
+
+Final orchestrator evidence:
+
+```text
+exact-todo: tokens=295 bodies=295 covered=295
+classified=496 cargo-reported=496 (binaries: 58)
+passed=145 suspicious=0 notimpl=336 wrong=0 ignored=15
+GATE PASS
+```
+
+`cargo fmt --check`, `cargo check --tests`, all 37 direct Wave 3 tests,
+`threads_a8` 10/10, the Amendment F fixture proof, JS-JSON conformance 4/4,
+and prompt-byte reconstruction are green. Raw later-wave failures stop only
+at recorded `todo!("phase 2")` boundaries. Test/fixture changes are limited to
+approved Amendments E/F; committed goldens/oracles and inventory remain
+unchanged. Wave 7 must still re-audit the below-SDK thread-local
+scheduler-touch/poke seam against real SDK/task-local cross-thread behavior.

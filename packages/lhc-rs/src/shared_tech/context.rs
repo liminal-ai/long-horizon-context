@@ -7,7 +7,8 @@
 //!
 //! TS uses `AsyncLocalStorage`; Rust counterpart is `tokio::task_local`.
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use super::derivation::ResolvedSdkConfig;
 use super::storage::Db;
@@ -49,11 +50,16 @@ tokio::task_local! {
     static TOUCH_SUPPRESSED: bool;
 }
 
-// The below-SDK default seam (the former module-global poke/touch slots).
+// Below-SDK default seam (former module-global poke/touch slots).
 // Public setters still take `Box`; storage is `Arc` so resolve/fire can clone
-// under the lock, drop the guard, then invoke (no callback-under-lock deadlock).
-static SCHEDULER_POKE: Mutex<Option<SchedulerPokeFn>> = Mutex::new(None);
-static THREAD_TOUCH: Mutex<Option<ThreadTouchFn>> = Mutex::new(None);
+// then invoke. Thread-local (not process-global Mutex): vitest keeps a file's
+// tests on one JS thread; cargo runs Rust tests on parallel OS threads. TLS
+// preserves TS per-test isolation for `set_scheduler_poke` / `set_thread_touch`
+// the same way intake walk/clock seams do.
+thread_local! {
+    static SCHEDULER_POKE: RefCell<Option<SchedulerPokeFn>> = const { RefCell::new(None) };
+    static THREAD_TOUCH: RefCell<Option<ThreadTouchFn>> = const { RefCell::new(None) };
+}
 
 fn seam_store_get() -> Option<Arc<InstanceSeam>> {
     SEAM_STORE.try_with(|s| s.clone()).ok().flatten()
@@ -64,19 +70,11 @@ fn touch_suppressed() -> bool {
 }
 
 fn clone_scheduler_poke() -> Option<SchedulerPokeFn> {
-    SCHEDULER_POKE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .cloned()
+    SCHEDULER_POKE.with(|slot| slot.borrow().clone())
 }
 
 fn clone_thread_touch() -> Option<ThreadTouchFn> {
-    THREAD_TOUCH
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .cloned()
+    THREAD_TOUCH.with(|slot| slot.borrow().clone())
 }
 
 /// Async (phase-review H3): a `tokio::task_local` scope from a sync closure
@@ -96,15 +94,15 @@ pub async fn run_with_instance_seam<T>(
 }
 
 pub fn set_scheduler_poke(poke: Option<SchedulerPoke>) {
-    *SCHEDULER_POKE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = poke.map(Arc::from);
+    SCHEDULER_POKE.with(|slot| {
+        *slot.borrow_mut() = poke.map(Arc::from);
+    });
 }
 
 pub fn set_thread_touch(touch: Option<ThreadTouch>) {
-    *THREAD_TOUCH
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = touch.map(Arc::from);
+    THREAD_TOUCH.with(|slot| {
+        *slot.borrow_mut() = touch.map(Arc::from);
+    });
 }
 
 /// The poke target for a context built now: the running SDK's seam if one is

@@ -1,13 +1,16 @@
-//! Ported from packages/lhc/src/messages/internal/derivations.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/messages/internal/derivations.ts.
 //!
-//! Message-domain derivation reads. SQL literals REAL; behavior bodies
-//! `todo!("phase 2")`.
+//! Message-domain derivation reads. `read_message_derivations` is live for list
+//! attachment; remaining helpers stay Phase 2.
 
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
-use crate::shared_tech::derivation::{Derivation, DerivationReportEntry, DerivationState};
-use crate::shared_tech::storage::Db;
+use crate::shared_tech::derivation::{
+    DependencyGap, Derivation, DerivationMetadata, DerivationReportEntry, DerivationState,
+    SubjectKind,
+};
+use crate::shared_tech::storage::{Db, SqlParam};
 
 // Private SQL literals (TS module-local). Fragment composition documented for Phase 2.
 #[allow(dead_code)]
@@ -18,20 +21,16 @@ const SQL_SELECT_MESSAGE_BLOCKS: &str = r#"SELECT block_type, content FROM messa
        WHERE message_id = ? ORDER BY block_index"#;
 
 /// Base SELECT for `readMessageDerivations` (TS). When `messageIds` is provided,
-/// Phase 2 appends [`SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX`] + `?, ?, …`
+/// appends [`SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX`] + `?, ?, …`
 /// + `)` then [`SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY`].
-#[allow(dead_code)]
 const SQL_READ_MESSAGE_DERIVATIONS_BASE: &str = r#"SELECT subject_id, derivation_type, state, content, reason, metadata,
               source_version, gaps, derived_at
        FROM derivation WHERE subject_kind = 'message'"#;
 
 /// TS `idFilter` when messageIds is defined: ` AND subject_id IN (${placeholders})`.
-/// Phase 2 joins this with N `?` placeholders and a closing `)`.
-#[allow(dead_code)]
 const SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX: &str = r#" AND subject_id IN ("#;
 
 /// TS trailing clause on readMessageDerivations.
-#[allow(dead_code)]
 const SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY: &str = r#" ORDER BY subject_id, derivation_type"#;
 
 #[allow(dead_code)]
@@ -92,24 +91,105 @@ pub fn read_message_source(_db: &Db, _message_id: &str) -> Option<MessageSource>
     todo!("phase 2")
 }
 
-struct RawDerivationRow {
-    subject_id: String,
-    derivation_type: String,
-    state: String,
-    content: Option<String>,
-    reason: Option<String>,
-    metadata: Option<String>,
-    source_version: i64,
-    gaps: Option<String>,
-    derived_at: Option<String>,
+fn parse_derivation_state(state: &str) -> DerivationState {
+    match state {
+        "pending" => DerivationState::Pending,
+        "ready" => DerivationState::Ready,
+        "failed" => DerivationState::Failed,
+        "blocked" => DerivationState::Blocked,
+        other => panic!("unknown derivation state from row: {other}"),
+    }
+}
+
+fn map_required_str(row: &Map<String, Value>, key: &str) -> String {
+    row.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("missing column {key}"))
+        .to_string()
+}
+
+fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
+    match row.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => panic!("column {key} not text: {other}"),
+    }
+}
+
+fn map_required_i64(row: &Map<String, Value>, key: &str) -> i64 {
+    match row.get(key) {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or_else(|| panic!("column {key} not integer")),
+        Some(Value::String(s)) => s
+            .parse()
+            .unwrap_or_else(|_| panic!("column {key} not integer")),
+        _ => panic!("missing column {key}"),
+    }
 }
 
 /// TS returns `Map<string, Derivation[]>` — insertion-ordered [`IndexMap`].
 pub fn read_message_derivations(
-    _db: &Db,
-    _message_ids: Option<&[String]>,
+    db: &Db,
+    message_ids: Option<&[String]>,
 ) -> IndexMap<String, Vec<Derivation>> {
-    todo!("phase 2")
+    let mut by_message = IndexMap::new();
+    if let Some(ids) = message_ids {
+        if ids.is_empty() {
+            return by_message;
+        }
+    }
+
+    let mut sql = String::from(SQL_READ_MESSAGE_DERIVATIONS_BASE);
+    let mut params: Vec<SqlParam> = Vec::new();
+    if let Some(ids) = message_ids {
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX);
+        sql.push_str(&placeholders);
+        sql.push(')');
+        params.extend(ids.iter().map(|id| SqlParam::from(id.as_str())));
+    }
+    sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY);
+
+    for row in db.prepare(&sql).all(&params) {
+        let subject_id = map_required_str(&row, "subject_id");
+        let mut record = Derivation {
+            subject_kind: SubjectKind::Message,
+            subject_id: subject_id.clone(),
+            derivation_type: map_required_str(&row, "derivation_type"),
+            state: parse_derivation_state(&map_required_str(&row, "state")),
+            content: None,
+            reason: None,
+            source_version: map_required_i64(&row, "source_version"),
+            gaps: None,
+            metadata: None,
+            derived_at: None,
+        };
+        if let Some(content) = map_optional_str(&row, "content") {
+            record.content = Some(content);
+        }
+        if let Some(reason) = map_optional_str(&row, "reason") {
+            record.reason = Some(reason);
+        }
+        if let Some(metadata) = map_optional_str(&row, "metadata") {
+            record.metadata = Some(
+                serde_json::from_str::<DerivationMetadata>(&metadata)
+                    .unwrap_or_else(|err| panic!("derivation metadata JSON: {err}")),
+            );
+        }
+        if let Some(gaps) = map_optional_str(&row, "gaps") {
+            record.gaps = Some(
+                serde_json::from_str::<Vec<DependencyGap>>(&gaps)
+                    .unwrap_or_else(|err| panic!("dependency gaps JSON: {err}")),
+            );
+        }
+        if let Some(derived_at) = map_optional_str(&row, "derived_at") {
+            record.derived_at = Some(derived_at);
+        }
+        by_message.entry(subject_id).or_default().push(record);
+    }
+    by_message
 }
 
 #[derive(Debug, Clone, PartialEq)]

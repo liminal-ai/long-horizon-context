@@ -132,20 +132,31 @@ impl Drop for TempStore {
     }
 }
 
+/// Process-local sequence for [`temp_store`] candidate names (Amendment F).
+static TEMP_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// TS `mkdtempSync` analogue: atomically exclusive directory creation.
+///
+/// Amendment F — correctness comes from `create_dir` failing on
+/// `AlreadyExists` and retrying, not from assuming the candidate name is
+/// unique. PID + process-local sequence only reduce collision frequency.
 pub fn temp_store() -> TempStore {
-    let dir = std::env::temp_dir().join(format!(
-        "lhc-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).expect("create temp store dir");
-    let registry_path = dir.join("registry.sqlite");
-    TempStore {
-        dir,
-        registry_path,
-        thread_counter: AtomicU64::new(0),
+    let pid = std::process::id();
+    loop {
+        let seq = TEMP_STORE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("lhc-test-{pid}-{seq}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                let registry_path = dir.join("registry.sqlite");
+                return TempStore {
+                    dir,
+                    registry_path,
+                    thread_counter: AtomicU64::new(0),
+                };
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => panic!("create temp store dir: {err}"),
+        }
     }
 }
 
