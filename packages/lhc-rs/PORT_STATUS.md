@@ -155,6 +155,75 @@ Wave 0 rulings (court of record — extend, don't reshape):
 - Verifier override (fix-r1): Fable suggested narrowing Wave 0
   `js_json_conformance::*` allowlist — rejected; Wave 0 court-of-record,
   “extend, don't reshape”.
+- Wave 4: messages full faithful surface (mod + all internals). Bodies exact
+  `todo!("phase 2")`. `classify_tool_result.rs` untouched (Wave 0 exemplar).
+- Wave 4: `RecordedEvent = EventRecord` type alias (TS L66); preserves closed
+  EventRecord kind→payload coupling (Wave 3).
+- Wave 4: `CascadeClear` lives in `cascade.rs` and is embedded in
+  `MutationResult` but is NOT re-exported from `messages/mod.rs` (TS imports
+  the type for the interface only — L22/L340–343; no root export).
+- Wave 4: `MessageDeriveDerivationType` owned in `work.rs` (closed vocab of
+  `MESSAGE_WORK_DERIVATIONS` values — TS L9); `derive.rs` re-exports it for
+  `MessageDeriveResult` (cycle-safe ownership; TS inlines the string union).
+- Wave 4: `MESSAGE_WORK_KINDS` / `MESSAGE_WORK_DERIVATIONS` /
+  `DERIVATION_REBUILD_KINDS` ordered maps REAL (Partial/open-string Record —
+  Wave 0 closed-Record rule does not apply). TS
+  `REBUILD_KIND_ORDER: Record<WorkKind, number>` → private exhaustive
+  `rebuild_kind_order(WorkKind) -> i32` (no wildcard; deleting an arm → E0004).
+  Cascade/store/derivations SQL + FORCE_*/MARKER_PROMPT_PATTERN + smoothing
+  `CLEAN_PROSE_*_PATTERN` private (TS module-local). Handler map
+  `MESSAGE_WORK_HANDLERS` REAL: private `LazyLock<WorkHandler>` seams per
+  exact wrapper (`SMOOTH_PROMPT_WORK_HANDLER` /
+  `TOOL_RESULT_SUMMARY_WORK_HANDLER`), cloned into the map; allowlisted test
+  uses `Arc::ptr_eq` so swapping values turns red. Bodies exact todo.
+- Wave 4: `MessageCreated` is the non-null arm; `MessageCreateResult.message`
+  is `Option<MessageCreated>` (TS `MessageCreated | null` union — L68–74).
+- Wave 4: `EditInput` / `RemoveInput` named structs for TS inline
+  `{ messageId, content }` / `{ messageId }` edit/remove args — messages-domain
+  public; NOT crate-root/sdk re-exports (trybuild). `ChunkRecord` re-exported
+  beside `TurnRecord` (TS sdk.ts L210). `LhcMessages::clean_prompt` exact todo.
+- Wave 4: `MessageDeriveResult` — Deserialize stays serde-tagged (`outcome`,
+  `not_derivable`); Serialize is a closed custom impl emitting exact TS field
+  order (`messageId` before `outcome`). Wire tests assert whole shape,
+  `js_json_stringify_of` exact bytes, and round-trip (allowlisted).
+  Repair-r2 mutation-confirmed by Fable; Wave 4 dual-certified.
+- Wave 4: `read_message_derivations` returns `IndexMap` (TS `Map`).
+  `load_source` takes private `{ source_ref: HashMap<String,String> }` glue
+  (TS `{ sourceRef: Record<string,string> }`), not whole `WorkItemRef`.
+- Wave 4: dynamic SQL fragments hoisted (idFilter / report conditions /
+  readMessages preds + LIMIT + IN prefix/suffix); derive also hoists private
+  `BEGIN IMMEDIATE;` / `COMMIT;` / `ROLLBACK;` exec literals (four TS `db.exec`
+  calls, three distinct strings). No fake `WHERE {conditions}` placeholder.
+- Wave 4: DD-6 `ObservableSnapshot` stores full `OpResult` wrappers for
+  `list_events` and `threadView.status` (TS stores full results, not unwrapped
+  values).
+- Wave 4: mutation suites use panic-safe HookGuard + static mutex. Acquire only
+  serializes; Drop dispatches `set_scheduler_poke(None)` /
+  `set_thread_touch(None)` each inside `catch_unwind` so Phase 1 exact-todo
+  panics cannot abort during unwind. Context setter bodies remain Wave 1
+  `todo!("phase 2")` — no Wave 4 diff to `shared_tech/context.rs`.
+- Wave 4 later-wave PARTIALs (compile-only for suites; remain PARTIAL):
+  `thread_view::status`; `turns::{ChunkRecord, list_chunks}` bodies;
+  `sdk::{LhcMessages::show/report/edit/remove/clean_prompt, LhcTurns::list_chunks}`.
+- Wave 4: eight suites assertion-for-assertion after repair-r1 (marker bytes,
+  optional content compares, 3 representable bad-bounds cases — TS `{ from: 1.5 }`
+  statically unrepresentable at i64 `MessageListOptions`; TC-5.4 15s timeout).
+  derivation-messages keeps three TS `it.skip` bodies under `#[ignore]`.
+- Wave 4 repair-r1 verifier override: Fable suggested removing messages-domain
+  re-exports of `MessageDeriveResult` / `MessageDeriveDerivationType` — rejected;
+  Wave 2 repair-r1 ruled canonical ownership in `derive.rs`/`work.rs` with
+  domain re-export for `work_execution.rs`; only crate-root/sdk re-exports of
+  those types are forbidden.
+- Wave 4 allowlisted passes (exact names only):
+  `lib::messages::internal::work::tests::message_work_kinds_keys_values_and_insertion_order`;
+  `lib::messages::internal::work::tests::message_work_derivations_keys_values_and_insertion_order`;
+  `lib::messages::internal::cascade::tests::derivation_rebuild_kinds_keys_values_and_insertion_order`;
+  `lib::messages::internal::handlers::tests::message_work_handlers_kinds_and_insertion_order`;
+  `lib::messages::internal::derive::tests::message_derive_result_derived_wire_shape_round_trips`;
+  `lib::messages::internal::derive::tests::message_derive_result_not_derivable_wire_shape_round_trips`;
+  `lib::messages::internal::derive::tests::message_derive_result_failed_wire_shape_round_trips`;
+  `sdk_surface_wave4::crate_root_exports_chunk_record_beside_turn_record`;
+  `sdk_surface_wave4::lhc_messages_clean_prompt_method_exists`.
 
 ## Source files
 
@@ -168,18 +237,18 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 3: closed EventRecord tagged enum (`deny_unknown_fields`) + kind payloads; message_events/list_events exact todo; Wave 1 MessageEventInput broad wire kept |
 | 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 3: complete skeleton; clock/walk seams REAL; walk/record/list bodies exact todo |
 | 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☑ | Wave 3: EVENT_KINDS + DECODE_OPTIONS + DecodeSchema/ParseError stand-ins REAL; validate bodies exact todo; unknown→Value |
-| 9 | `src/messages/index.ts` | `src/messages/mod.rs` | ☑ | Wave 2–3 PARTIAL: MessageDeriveResult + MutationResult/edit/remove stubs for lifecycle; full Wave 4 |
-| 10 | `src/messages/internal/cascade.ts` | `src/messages/internal/cascade.rs` | ☑ | Wave 3 PARTIAL: CascadeClear type only; cascade bodies Wave 4 |
-| 11 | `src/messages/internal/classify-tool-result.ts` | `src/messages/internal/classify_tool_result.rs` | ☑ | exemplar (logic module) |
-| 12 | `src/messages/internal/derivations.ts` | `src/messages/internal/derivations.rs` | ☐ |  |
-| 13 | `src/messages/internal/derive.ts` | `src/messages/internal/derive.rs` | ☑ | Wave 2 PARTIAL: MessageDeriveResult lives here; derive bodies later |
-| 14 | `src/messages/internal/handlers.ts` | `src/messages/internal/handlers.rs` | ☐ |  |
-| 15 | `src/messages/internal/outcome.ts` | `src/messages/internal/outcome.rs` | ☐ |  |
-| 16 | `src/messages/internal/project.ts` | `src/messages/internal/project.rs` | ☐ |  |
-| 17 | `src/messages/internal/smoothing.ts` | `src/messages/internal/smoothing.rs` | ☐ |  |
-| 18 | `src/messages/internal/store.ts` | `src/messages/internal/store.rs` | ☐ |  |
-| 19 | `src/messages/internal/work.ts` | `src/messages/internal/work.rs` | ☐ |  |
-| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 2–3 PARTIAL: init_lhc/Lhc + sdk.ts-faithful re-exports (EventRecord, ThreadFileInfo, token exports, MutationResult); lookup_work_handler/dispatcher + unknown_work_kind REAL; registerTestingWork stub; sync derive bindings; full Wave 7 |
+| 9 | `src/messages/index.ts` | `src/messages/mod.rs` | ☑ | Wave 4: full surface; RecordedEvent alias; CascadeClear not root-exported; EditInput/RemoveInput; bodies exact todo |
+| 10 | `src/messages/internal/cascade.ts` | `src/messages/internal/cascade.rs` | ☑ | Wave 4+r1: CascadeClear; `rebuild_kind_order` exhaustive fn; DERIVATION_REBUILD_KINDS map; private SQL; helpers exact todo |
+| 11 | `src/messages/internal/classify-tool-result.ts` | `src/messages/internal/classify_tool_result.rs` | ☑ | exemplar (logic module) — untouched in Wave 4 |
+| 12 | `src/messages/internal/derivations.ts` | `src/messages/internal/derivations.rs` | ☑ | Wave 4 |
+| 13 | `src/messages/internal/derive.ts` | `src/messages/internal/derive.rs` | ☑ | Wave 4+r2: MessageDeriveResult custom Serialize field order + tagged Deserialize; txn exec SQL; bodies exact todo |
+| 14 | `src/messages/internal/handlers.ts` | `src/messages/internal/handlers.rs` | ☑ | Wave 4+r2: MESSAGE_WORK_HANDLERS Arc-identity seams; private FORCE_*/MARKER_*; load_source narrow item |
+| 15 | `src/messages/internal/outcome.ts` | `src/messages/internal/outcome.rs` | ☑ | Wave 4 |
+| 16 | `src/messages/internal/project.ts` | `src/messages/internal/project.rs` | ☑ | Wave 4 |
+| 17 | `src/messages/internal/smoothing.ts` | `src/messages/internal/smoothing.rs` | ☑ | Wave 4+r2: CLEAN_PROSE_* private (TS cleanProse-local); clean_prompt exact todo |
+| 18 | `src/messages/internal/store.ts` | `src/messages/internal/store.rs` | ☑ | Wave 4: SQL hoisted; bodies exact todo |
+| 19 | `src/messages/internal/work.ts` | `src/messages/internal/work.rs` | ☑ | Wave 4: MESSAGE_WORK_* maps + MessageDeriveDerivationType REAL |
+| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 4+r1 PARTIAL: ChunkRecord re-export; LhcMessages clean_prompt; EditInput/RemoveInput private imports only; full Wave 7 |
 | 21 | `src/shared-tech/classify.ts` | `src/shared_tech/classify.rs` | ☑ | Wave 1 |
 | 22 | `src/shared-tech/context.ts` | `src/shared_tech/context.rs` | ☑ | Wave 1 |
 | 23 | `src/shared-tech/derivation.ts` | `src/shared_tech/derivation.rs` | ☑ | Wave 1 complete (Wave 0 vocab unchanged; state machine + handler contract appended) |
@@ -211,7 +280,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/shared_tech/tool_result_rendering.rs` | ☑ | Wave 1 |
 | 50 | `src/shared-tech/view.ts` | `src/shared_tech/view.rs` | ☑ | Wave 1 |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/shared_tech/work_queue/mod.rs` | ☑ | Wave 2: full surface; work_kind_registry + map_work_q_handlers + from_wire REAL; other bodies todo |
-| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 1 PARTIAL: get_llm_request_context stub (collection) |
+| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 1+4 PARTIAL: get_llm_request_context + status stubs (messages-read); full thread-view wave later |
 | 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☐ |  |
 | 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☐ |  |
 | 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☐ |  |
@@ -225,7 +294,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: full surface (new_thread/resolve/list/info/resolve_thread_ref + helpers); ThreadRef closed wire preserved; bodies todo |
 | 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: SQL templates REAL; generate/create/delete/open/validate bodies todo |
 | 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: DEFAULT_REGISTRY_PATH + schema SQL REAL; open/select/insert bodies todo |
-| 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 2 PARTIAL: + Turn/ChunkDeriveResult + derive_* stubs for work-execution; full turns wave later |
+| 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 2+4 PARTIAL: Turn/ChunkDeriveResult + derive_* + ChunkRecord/list_chunks stubs; full turns wave later |
 | 67 | `src/turns/internal/chunk-recovery.ts` | `src/turns/internal/chunk_recovery.rs` | ☐ |  |
 | 68 | `src/turns/internal/chunks.ts` | `src/turns/internal/chunks.rs` | ☐ |  |
 | 69 | `src/turns/internal/compose.ts` | `src/turns/internal/compose.rs` | ☐ |  |
@@ -241,7 +310,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/chunk_brief_from_detailed.rs` | ☐ | ☐ |  |
 | 3 | `test/chunk-compact-recovery.test.ts` | `tests/chunk_compact_recovery.rs` | ☐ | ☐ |  |
 | 4 | `test/chunk-detailed-format.test.ts` | `tests/chunk_detailed_format.rs` | ☐ | ☐ |  |
-| 5 | `test/derivation-messages.test.ts` | `tests/derivation_messages.rs` | ☐ | ☐ |  |
+| 5 | `test/derivation-messages.test.ts` | `tests/derivation_messages.rs` | ☑ | ☑ | Wave 4: 9 tests (3 #[ignore] preserve it.skip bodies) |
 | 6 | `test/derivation-turns.test.ts` | `tests/derivation_turns.rs` | ☐ | ☐ |  |
 | 7 | `test/detailed-turn-compression.test.ts` | `tests/detailed_turn_compression.rs` | ☐ | ☐ |  |
 | 8 | `test/epic-fix-02.test.ts` | `tests/epic_fix_02.rs` | ☐ | ☐ |  |
@@ -261,20 +330,20 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 22 | `test/intake.test.ts` | `tests/intake.rs` | ☑ | ☑ | Wave 3: 7 tests; COUNT n requires integer; DROP TABLE walk-hook ruling |
 | 23 | `test/lifecycle.test.ts` | `tests/lifecycle.rs` | ☑ | ☑ | Wave 3: 7 tests; per-test baseline; 60s timeout on replay/teardown |
 | 24 | `test/logging-surface.test.ts` | `tests/logging_surface.rs` | ☑ | ☑ |  |
-| 25 | `test/messages-read.test.ts` | `tests/messages_read.rs` | ☐ | ☐ |  |
-| 26 | `test/mutations-delete.test.ts` | `tests/mutations_delete.rs` | ☐ | ☐ |  |
-| 27 | `test/mutations.test.ts` | `tests/mutations.rs` | ☐ | ☐ |  |
+| 25 | `test/messages-read.test.ts` | `tests/messages_read.rs` | ☑ | ☑ | Wave 4+r2: 10 tests; DD-6 OpResult snapshot; raw SQL ORDER BY 11-space indent |
+| 26 | `test/mutations-delete.test.ts` | `tests/mutations_delete.rs` | ☑ | ☑ | Wave 4: 5 tests |
+| 27 | `test/mutations.test.ts` | `tests/mutations.rs` | ☑ | ☑ | Wave 4: 8 tests |
 | 28 | `test/report-repair.test.ts` | `tests/report_repair.rs` | ☐ | ☐ |  |
 | 29 | `test/runtime-change-typing.test.ts` | `tests/runtime_change_typing.rs` | ☑ | ☑ |  |
-| 30 | `test/smoothed-prompt-guards.test.ts` | `tests/smoothed_prompt_guards.rs` | ☐ | ☐ |  |
-| 31 | `test/smoothing-recovery.test.ts` | `tests/smoothing_recovery.rs` | ☐ | ☐ |  |
+| 30 | `test/smoothed-prompt-guards.test.ts` | `tests/smoothed_prompt_guards.rs` | ☑ | ☑ | Wave 4: 11 tests |
+| 31 | `test/smoothing-recovery.test.ts` | `tests/smoothing_recovery.rs` | ☑ | ☑ | Wave 4: 9 tests |
 | 32 | `test/thread-migrate.test.ts` | `tests/thread_migrate.rs` | ☑ | ☑ | Wave 2: 5 tests |
 | 33 | `test/threads-a8.test.ts` | `tests/threads_a8.rs` | ☑ | ☑ | Wave 3: 10 tests |
 | 34 | `test/threads.test.ts` | `tests/threads.rs` | ☑ | ☑ | Wave 3: 7 tests; ISO created_at calendar round-trip (test-only) |
 | 35 | `test/tool-result-classification.test.ts` | `tests/tool_result_classification.rs` | ☑ | ☐ | exemplar test |
 | 36 | `test/tool-result-rendering.test.ts` | `tests/tool_result_rendering.rs` | ☑ | ☑ |  |
-| 37 | `test/tool-result-summary-inference.test.ts` | `tests/tool_result_summary_inference.rs` | ☐ | ☐ |  |
-| 38 | `test/turn-cascade.test.ts` | `tests/turn_cascade.rs` | ☐ | ☐ |  |
+| 37 | `test/tool-result-summary-inference.test.ts` | `tests/tool_result_summary_inference.rs` | ☑ | ☑ | Wave 4: 3 tests |
+| 38 | `test/turn-cascade.test.ts` | `tests/turn_cascade.rs` | ☑ | ☑ | Wave 4: 14 tests |
 | 39 | `test/turns.test.ts` | `tests/turns.rs` | ☐ | ☐ |  |
 | 40 | `test/validation.test.ts` | `tests/validation.rs` | ☑ | ☑ |  |
 | 41 | `test/view-boundary-turn-end.test.ts` | `tests/view_boundary_turn_end.rs` | ☐ | ☐ |  |

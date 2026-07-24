@@ -1,6 +1,8 @@
 //! Ported from packages/lhc/src/turns/index.ts.
 //! Phase 1 PARTIAL stub — TurnRecord / list_turns / sync derive surfaces
 //! Wave 1–2 tests call. Full turns surface lands in a later wave.
+//! Wave 4 messages suites import `list_chunks` + [`ChunkRecord`] ahead of the
+//! turns wave — minimal PARTIAL surface only.
 
 use serde::{Deserialize, Serialize};
 
@@ -85,8 +87,26 @@ pub enum ChunkDeriveResult {
     },
 }
 
+/// TS `ChunkRecord` — PARTIAL (Wave 4 mutations-delete snapshot).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkRecord {
+    pub chunk_id: String,
+    pub chunk_order: i64,
+    pub status: TurnStatus,
+    pub accumulated_projected_tokens: i64,
+    pub member_turn_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivations: Option<Vec<Derivation>>,
+}
+
 /// TS `listTurns` — PARTIAL stub.
 pub async fn list_turns(_thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+    todo!("phase 2")
+}
+
+/// TS `listChunks` — PARTIAL (Wave 4 mutations-delete; full turns wave later).
+pub async fn list_chunks(_thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
     todo!("phase 2")
 }
 

@@ -41,3 +41,18 @@ lib::shared_tech::work_queue::tests::record_item_write_payload_requires_source_v
 lib::shared_tech::work_queue::tests::record_item_write_payload_serializes_camel_case_bytes
 lib::shared_tech::work_queue::tests::record_item_write_payload_rejects_unknown_subject_kind
 lib::shared_tech::thread_migrate::tests::migrate_loose_queued_work_item_payload_preserves_unknown_keys
+
+# Wave 4 — REAL ordered-map / handler wiring constants (Partial/open Record).
+lib::messages::internal::work::tests::message_work_kinds_keys_values_and_insertion_order
+lib::messages::internal::work::tests::message_work_derivations_keys_values_and_insertion_order
+lib::messages::internal::cascade::tests::derivation_rebuild_kinds_keys_values_and_insertion_order
+lib::messages::internal::handlers::tests::message_work_handlers_kinds_and_insertion_order
+
+# Wave 4 — REAL MessageDeriveResult wire-union serde (tag/fields/omissions).
+lib::messages::internal::derive::tests::message_derive_result_derived_wire_shape_round_trips
+lib::messages::internal::derive::tests::message_derive_result_not_derivable_wire_shape_round_trips
+lib::messages::internal::derive::tests::message_derive_result_failed_wire_shape_round_trips
+
+# Wave 4 — compile-shape: ChunkRecord + LhcMessages::clean_prompt at SDK surface.
+sdk_surface_wave4::crate_root_exports_chunk_record_beside_turn_record
+sdk_surface_wave4::lhc_messages_clean_prompt_method_exists

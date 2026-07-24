@@ -1,0 +1,5 @@
+error[E0422]: cannot find struct, variant or union type `EditInput` in crate `lhc`
+ --> tests/ui/edit_input_not_crate_root.rs:5:18
+  |
+5 |     let _ = lhc::EditInput {
+  |                  ^^^^^^^^^ not found in `lhc`

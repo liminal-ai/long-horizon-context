@@ -1,21 +1,26 @@
 //! Ported from packages/lhc/src/messages/index.ts. Phase 1 skeleton.
 //!
-//! Wave 0 partial: internal exemplar. Wave 1 PARTIAL: Block / MessageRecord /
-//! list surface that Wave 1 tests call. Wave 3 PARTIAL: MutationResult
-//! contract types for lifecycle fixture collection. Full messages surface
-//! lands in Wave 4.
+//! Full messages surface: types/constants REAL; every behavior body
+//! `todo!("phase 2")`. CascadeClear stays private (Wave 3 ruling — no root
+//! re-export); MutationResult embeds it.
 
 pub mod internal;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::shared_tech::derivation::Derivation;
-use crate::shared_tech::errors::OpResult;
-use crate::shared_tech::work_queue::WorkKind;
+use crate::intake_stream::EventRecord;
+use crate::shared_tech::derivation::{Derivation, DerivationReportEntry};
+use crate::shared_tech::errors::{ErrorResult, OpResult};
+use crate::shared_tech::persist::DbWriteTransaction;
+use crate::shared_tech::storage::Db;
+use crate::shared_tech::work_queue::{WorkItemRecord, WorkKind};
 use crate::threads::ThreadRef;
 
 use internal::cascade::CascadeClear;
+
+pub use internal::derive::{MessageDeriveDerivationType, MessageDeriveResult};
+pub use internal::smoothing::clean_prompt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,7 +100,49 @@ pub struct MessageRecord {
     pub deleted: Option<bool>,
 }
 
+/// TS `RecordedEvent = EventRecord` — preserves kind→payload coupling.
+pub type RecordedEvent = EventRecord;
+
+/// TS non-null `MessageCreated` arm (`toolCallId` only for tool activity).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCreated {
+    pub message_id: String,
+    pub kind: MessageKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCreateResult {
+    pub message: Option<MessageCreated>,
+    pub queued_work: Vec<WorkItemRecord>,
+}
+
+const SQL_SELECT_THREAD_ID: &str = r#"SELECT thread_id FROM thread_metadata WHERE id = 1"#;
+
+/// Cross-domain surface, called by intake-stream inside the batch transaction.
+pub fn create(
+    _transaction: &DbWriteTransaction,
+    _recorded_event: &RecordedEvent,
+    _turn_id: &str,
+) -> MessageCreateResult {
+    todo!("phase 2")
+}
+
+fn queue_message_work(
+    _transaction: &DbWriteTransaction,
+    _message: Option<&MessageCreated>,
+) -> Vec<WorkItemRecord> {
+    todo!("phase 2")
+}
+
+fn thread_not_found<T>(_file_path: &str) -> OpResult<T> {
+    todo!("phase 2")
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageListOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,7 +155,66 @@ pub struct MessageListOptions {
     pub include_deleted: Option<bool>,
 }
 
-pub use internal::derive::{MessageDeriveDerivationType, MessageDeriveResult};
+fn invalid_bounds(_reason: &str) -> ErrorResult {
+    todo!("phase 2")
+}
+
+fn validate_list_options(_opts: &MessageListOptions) -> Option<ErrorResult> {
+    todo!("phase 2")
+}
+
+pub async fn list(
+    _thread_ref: ThreadRef,
+    _filter: Option<MessageListOptions>,
+) -> OpResult<Vec<MessageRecord>> {
+    todo!("phase 2")
+}
+
+/// In-transaction read for coordinators that already hold an open thread handle.
+pub fn read_live_messages(_db: &Db) -> Vec<MessageRecord> {
+    todo!("phase 2")
+}
+
+/// TS `MessageDetail` — canonical record + honest deleted + report derivations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDetail {
+    pub message_id: String,
+    pub source_event_order: i64,
+    pub kind: MessageKind,
+    pub blocks: Vec<Block>,
+    pub token_estimate: i64,
+    pub actor: String,
+    pub harness: String,
+    pub recorded_at: String,
+    pub turn_id: String,
+    pub deleted: bool,
+    pub derivations: Vec<DerivationReportEntry>,
+}
+
+pub async fn show(_thread_ref: ThreadRef, _message_id: &str) -> OpResult<MessageDetail> {
+    todo!("phase 2")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MessageReportOpts {
+    pub not_ready: Option<bool>,
+    pub message_id: Option<String>,
+}
+
+pub async fn report(
+    _thread_ref: ThreadRef,
+    _opts: Option<MessageReportOpts>,
+) -> OpResult<Vec<DerivationReportEntry>> {
+    todo!("phase 2")
+}
+
+pub async fn derive(
+    _thread_ref: ThreadRef,
+    _message_ids: &[String],
+) -> OpResult<Vec<MessageDeriveResult>> {
+    todo!("phase 2")
+}
 
 /// TS `MutationResult.changed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,28 +258,10 @@ pub struct RemoveInput {
     pub message_id: String,
 }
 
-/// TS `messages.list` — PARTIAL stub (Wave 1 runtime-change / tool-result tests).
-pub async fn list(
-    _thread_ref: ThreadRef,
-    _filter: Option<MessageListOptions>,
-) -> OpResult<Vec<MessageRecord>> {
-    todo!("phase 2")
-}
-
-/// TS `messages.derive` — PARTIAL stub (Wave 2 work-execution).
-pub async fn derive(
-    _thread_ref: ThreadRef,
-    _message_ids: &[String],
-) -> OpResult<Vec<MessageDeriveResult>> {
-    todo!("phase 2")
-}
-
-/// TS `messages.edit` — PARTIAL stub (Wave 3 lifecycle types; body Wave 4).
 pub async fn edit(_thread_ref: ThreadRef, _edit: EditInput) -> OpResult<MutationResult> {
     todo!("phase 2")
 }
 
-/// TS `messages.remove` — PARTIAL stub (Wave 3 lifecycle types; body Wave 4).
 pub async fn remove(_thread_ref: ThreadRef, _removal: RemoveInput) -> OpResult<MutationResult> {
     todo!("phase 2")
 }

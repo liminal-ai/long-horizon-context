@@ -8,7 +8,9 @@
 // Intentionally omitted (no sdk.ts counterpart / not Wave 1–2 surface):
 // `Db`, `LeaseConfig`, `SdkMode`, `NewThreadInput`, `NewThreadResult`, `MessageKind`.
 pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEventInput};
-pub use crate::messages::{Block, BlockType, MessageListOptions, MessageRecord, MutationResult};
+pub use crate::messages::{
+    Block, BlockType, MessageDetail, MessageListOptions, MessageRecord, MutationResult,
+};
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{
     Derivation, DerivationMetadata, InferenceCallbacks, InferenceResult, SdkConfig, ToolOutcome,
@@ -33,11 +35,11 @@ pub use crate::shared_tech::work_queue::{
     map_work_q_handlers, queue_detail, supersede_queued, work_kind_registry,
 };
 pub use crate::threads::{ThreadFileInfo, ThreadRef};
-pub use crate::turns::TurnRecord;
+pub use crate::turns::{ChunkRecord, TurnRecord};
 
 use std::sync::Arc;
 
-use crate::messages::MessageDeriveResult;
+use crate::messages::{EditInput, MessageDeriveResult, RemoveInput};
 use crate::shared_tech::derivation::ResolvedSdkConfig;
 use crate::shared_tech::durable_work::DurableWorkOperationName;
 use crate::threads::{NewThreadInput, NewThreadResult};
@@ -157,7 +159,7 @@ impl ThreadViewSurface {
     }
 }
 
-/// TS messages namespace binding — PARTIAL.
+/// TS messages namespace binding — PARTIAL (Wave 4 suites need show/edit/remove/report).
 pub struct LhcMessages;
 
 impl LhcMessages {
@@ -169,11 +171,40 @@ impl LhcMessages {
         todo!("phase 2")
     }
 
+    pub async fn show(&self, _thread_ref: ThreadRef, _message_id: &str) -> OpResult<MessageDetail> {
+        todo!("phase 2")
+    }
+
+    pub async fn report(
+        &self,
+        _thread_ref: ThreadRef,
+        _opts: Option<crate::messages::MessageReportOpts>,
+    ) -> OpResult<Vec<crate::shared_tech::derivation::DerivationReportEntry>> {
+        todo!("phase 2")
+    }
+
     pub async fn derive(
         &self,
         _thread_ref: ThreadRef,
         _message_ids: &[String],
     ) -> OpResult<Vec<MessageDeriveResult>> {
+        todo!("phase 2")
+    }
+
+    pub async fn edit(&self, _thread_ref: ThreadRef, _edit: EditInput) -> OpResult<MutationResult> {
+        todo!("phase 2")
+    }
+
+    pub async fn remove(
+        &self,
+        _thread_ref: ThreadRef,
+        _removal: RemoveInput,
+    ) -> OpResult<MutationResult> {
+        todo!("phase 2")
+    }
+
+    /// TS `sdk.messages.cleanPrompt` — namespace surface; Phase 2 binds to module export.
+    pub fn clean_prompt(&self, _text: &str) -> String {
         todo!("phase 2")
     }
 }
@@ -214,6 +245,10 @@ pub struct LhcTurns;
 
 impl LhcTurns {
     pub async fn list_turns(&self, _thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+        todo!("phase 2")
+    }
+
+    pub async fn list_chunks(&self, _thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
         todo!("phase 2")
     }
 
