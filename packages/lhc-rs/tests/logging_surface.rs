@@ -183,7 +183,7 @@ async fn tc_5_2a_writes_internal_and_external_callers_through_the_same_store() {
     let file_path = new_thread(&store, &sdk).await;
     let db = open_raw(&file_path);
     let txn = DbReadTransaction {
-        db,
+        db: &db,
         thread_id: "logging-test".into(),
         file_path: file_path.clone(),
     };
@@ -432,7 +432,7 @@ async fn tc_5_5a_contains_logging_write_failures() {
     let fail_path = store.dir.join("empty-fail.sqlite");
     let fail_db = open_raw(&fail_path); // creates empty db, no schema/log table
     let fail_txn = DbReadTransaction {
-        db: fail_db,
+        db: &fail_db,
         thread_id: "logging-test".into(),
         file_path: fail_path.to_string_lossy().into_owned(),
     };

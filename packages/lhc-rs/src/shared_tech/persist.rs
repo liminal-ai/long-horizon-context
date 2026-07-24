@@ -43,14 +43,14 @@ pub struct PostCommitHookSet {
     pub flush: Box<dyn Fn() + Send + Sync>,
 }
 
-pub struct DbReadTransaction {
-    pub db: Db,
+pub struct DbReadTransaction<'db> {
+    pub db: &'db Db,
     pub thread_id: String,
     pub file_path: String,
 }
 
-pub struct DbWriteTransaction {
-    pub db: Db,
+pub struct DbWriteTransaction<'db> {
+    pub db: &'db Db,
     pub thread_id: String,
     pub file_path: String,
     pub clock: Clock,
@@ -65,8 +65,8 @@ pub struct DbWriteTransaction {
 /// Used by logging's `writeLog` / `appendDerivationLog` which discriminate via
 /// `"postCommitHook" in transaction`.
 pub enum DbTransaction<'a> {
-    Read(&'a DbReadTransaction),
-    Write(&'a DbWriteTransaction),
+    Read(&'a DbReadTransaction<'a>),
+    Write(&'a DbWriteTransaction<'a>),
 }
 
 fn post_commit_pair() -> (PostCommitHookSet, PostCommitHook) {
@@ -285,10 +285,11 @@ fn try_close(db: Db) {
 /// TS `createDbReadTransaction`.
 ///
 /// Callback may borrow the transaction across `.await` via a lifetime-coupled
-/// boxed future (no unconstrained separate `Fut` parameter).
+/// boxed future (no unconstrained separate `Fut` parameter). The controller
+/// owns `Db` for BEGIN/COMMIT/ROLLBACK/close and lends `&Db` into the bag.
 pub async fn create_db_read_transaction<T, F>(thread_ref: ThreadRef, operation: F) -> OpResult<T>
 where
-    F: for<'a> FnOnce(&'a DbReadTransaction) -> Pin<Box<dyn Future<Output = T> + 'a>>,
+    F: for<'a> FnOnce(&'a DbReadTransaction<'a>) -> Pin<Box<dyn Future<Output = T> + 'a>>,
 {
     run_with_thread_touch_suppressed(async move {
         let resolved = resolve_thread_file(thread_ref).await;
@@ -343,36 +344,37 @@ where
             }
         };
 
-        let txn = DbReadTransaction {
-            db,
-            thread_id,
-            file_path,
-        };
-
-        let body = async {
-            let fut = match catch_unwind(AssertUnwindSafe(|| operation(&txn))) {
-                Ok(fut) => fut,
-                Err(payload) => return Err(payload),
+        // Bag borrows controller-owned `db`; drop bag before close.
+        let body = {
+            let txn = DbReadTransaction {
+                db: &db,
+                thread_id,
+                file_path,
             };
-            match AssertUnwindSafe(fut).catch_unwind().await {
-                Ok(value) => match catch_unwind(AssertUnwindSafe(|| txn.db.exec("COMMIT;"))) {
-                    Ok(()) => Ok(value),
+
+            async {
+                let fut = match catch_unwind(AssertUnwindSafe(|| operation(&txn))) {
+                    Ok(fut) => fut,
+                    Err(payload) => return Err(payload),
+                };
+                match AssertUnwindSafe(fut).catch_unwind().await {
+                    Ok(value) => match catch_unwind(AssertUnwindSafe(|| db.exec("COMMIT;"))) {
+                        Ok(()) => Ok(value),
+                        Err(payload) => Err(payload),
+                    },
                     Err(payload) => Err(payload),
-                },
-                Err(payload) => Err(payload),
+                }
             }
-        }
-        .await;
+            .await
+        };
 
         match body {
             Ok(value) => {
-                let DbReadTransaction { db, .. } = txn;
                 try_close(db);
                 OpResult::Ok { value }
             }
             Err(payload) => {
-                try_exec(&txn.db, "ROLLBACK;");
-                let DbReadTransaction { db, .. } = txn;
+                try_exec(&db, "ROLLBACK;");
                 try_close(db);
                 std::panic::resume_unwind(payload);
             }
@@ -384,14 +386,15 @@ where
 /// TS `createDbWriteTransaction`.
 ///
 /// Callback may borrow the transaction across `.await` via a lifetime-coupled
-/// boxed future (no unconstrained separate `Fut` parameter).
+/// boxed future (no unconstrained separate `Fut` parameter). The controller
+/// owns `Db` for BEGIN/COMMIT/ROLLBACK/close and lends `&Db` into the bag.
 pub async fn create_db_write_transaction<T, F>(
     thread_ref: ThreadRef,
     operation: F,
     clock: Option<Clock>,
 ) -> OpResult<T>
 where
-    F: for<'a> FnOnce(&'a DbWriteTransaction) -> Pin<Box<dyn Future<Output = T> + 'a>>,
+    F: for<'a> FnOnce(&'a DbWriteTransaction<'a>) -> Pin<Box<dyn Future<Output = T> + 'a>>,
 {
     let resolved = resolve_thread_file(thread_ref).await;
     let OpResult::Ok {
@@ -433,35 +436,37 @@ where
         std::panic::resume_unwind(payload);
     }
 
-    let txn = DbWriteTransaction {
-        db,
-        thread_id,
-        file_path,
-        clock,
-        post_commit_hook,
-        poke,
-    };
-
-    let body = async {
-        let fut = match catch_unwind(AssertUnwindSafe(|| operation(&txn))) {
-            Ok(fut) => fut,
-            Err(payload) => return Err(payload),
+    // Bag borrows controller-owned `db`; drop bag before close / flush.
+    let body = {
+        let txn = DbWriteTransaction {
+            db: &db,
+            thread_id,
+            file_path,
+            clock,
+            post_commit_hook,
+            poke,
         };
-        match AssertUnwindSafe(fut).catch_unwind().await {
-            Ok(value) => match catch_unwind(AssertUnwindSafe(|| txn.db.exec("COMMIT;"))) {
-                Ok(()) => Ok(value),
+
+        async {
+            let fut = match catch_unwind(AssertUnwindSafe(|| operation(&txn))) {
+                Ok(fut) => fut,
+                Err(payload) => return Err(payload),
+            };
+            match AssertUnwindSafe(fut).catch_unwind().await {
+                Ok(value) => match catch_unwind(AssertUnwindSafe(|| db.exec("COMMIT;"))) {
+                    Ok(()) => Ok(value),
+                    Err(payload) => Err(payload),
+                },
                 Err(payload) => Err(payload),
-            },
-            Err(payload) => Err(payload),
+            }
         }
-    }
-    .await;
+        .await
+    };
 
     match body {
         Ok(value) => {
             // Flush only after successful COMMIT; hook panic still closes first.
             let flush_result = catch_unwind(AssertUnwindSafe(|| (hook_set.flush)()));
-            let DbWriteTransaction { db, .. } = txn;
             try_close(db);
             match flush_result {
                 Ok(()) => OpResult::Ok { value },
@@ -469,8 +474,7 @@ where
             }
         }
         Err(payload) => {
-            try_exec(&txn.db, "ROLLBACK;");
-            let DbWriteTransaction { db, .. } = txn;
+            try_exec(&db, "ROLLBACK;");
             try_close(db);
             std::panic::resume_unwind(payload);
         }

@@ -4,6 +4,7 @@
 
 mod fixtures;
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -15,6 +16,24 @@ use lhc::intake_stream::{BatchEventOutcome, EventKind, EventRecord};
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
 use lhc::threads::{NewThreadInput, ThreadRef, ThreadRefId};
 use lhc::{intake_stream, threads};
+
+/// Panic-safe cleanup for intake clock/walk seams (Phase-gate Wave 2 hygiene).
+struct IntakeSeamGuard;
+
+impl IntakeSeamGuard {
+    fn acquire() -> Self {
+        Self
+    }
+}
+
+impl Drop for IntakeSeamGuard {
+    fn drop(&mut self) {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            set_intake_walk_hook(None);
+            set_intake_clock(None);
+        }));
+    }
+}
 
 fn path_str(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()
@@ -44,6 +63,7 @@ async fn read_back(file_path: &str) -> Vec<EventRecord> {
 
 #[tokio::test]
 async fn tc_2_1_two_batches_record_in_array_order_with_a_dense_continuing_event_order() {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     let batch_one = event_batch(&[
@@ -108,13 +128,12 @@ async fn tc_2_1_two_batches_record_in_array_order_with_a_dense_continuing_event_
             .collect::<Vec<_>>(),
         expected_keys
     );
-    set_intake_walk_hook(None);
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn tc_2_8_an_empty_batch_is_a_caller_error_and_records_nothing() {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     let result = intake_stream::message_events(ThreadRef::file_path(&file_path), &[]).await;
@@ -126,14 +145,13 @@ async fn tc_2_8_an_empty_batch_is_a_caller_error_and_records_nothing() {
     }
 
     assert!(read_back(&file_path).await.is_empty());
-    set_intake_walk_hook(None);
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn tc_1_4_the_same_batch_by_thread_id_and_by_file_path_produces_identical_results_and_read_back()
  {
+    let _seam_guard = IntakeSeamGuard::acquire();
     // recordedAt is sourced from the injected clock (test-plan: fixed per
     // test), so the two independent recordings stamp the same instant and the
     // read-back can be compared field-for-field — recordedAt included, nothing
@@ -198,13 +216,12 @@ async fn tc_1_4_the_same_batch_by_thread_id_and_by_file_path_produces_identical_
             .collect::<Vec<_>>(),
         vec!["2026-01-01T00:00:00.000Z"; read_by_path.len()]
     );
-    set_intake_walk_hook(None);
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn architecture_risk_mid_walk_failure_rolls_the_whole_batch_back_to_baseline() {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     let baseline_batch = event_batch(&[EventKind::UserPrompt, EventKind::AssistantText]);
@@ -234,22 +251,25 @@ async fn architecture_risk_mid_walk_failure_rolls_the_whole_batch_back_to_baseli
         ]),
     )
     .await;
-    set_intake_walk_hook(None);
     assert!(!result.is_ok());
     if let OpResult::Err { error } = &result {
         assert_eq!(error.error_class, ErrorClass::SystemError);
         assert_eq!(error.code, ErrorCode::StorageFailure);
     }
 
+    // TS clears the walk hook before post-failure read-back (observable
+    // sequencing). IntakeSeamGuard Drop remains final cleanup.
+    set_intake_walk_hook(None);
+
     // Post-reopen read-back: not the operation's own claim about itself.
     assert_eq!(read_back(&file_path).await, baseline);
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn architecture_risk_system_error_rollback_parity_storage_failure_mid_batch_leaves_no_partial_events()
  {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     set_intake_walk_hook(Some(Box::new(|db, event_index| {
@@ -260,12 +280,15 @@ async fn architecture_risk_system_error_rollback_parity_storage_failure_mid_batc
     })));
     let result =
         intake_stream::message_events(ThreadRef::file_path(&file_path), &conversation_turn()).await;
-    set_intake_walk_hook(None);
     assert!(!result.is_ok());
     if let OpResult::Err { error } = &result {
         assert_eq!(error.error_class, ErrorClass::SystemError);
         assert_eq!(error.code, ErrorCode::StorageFailure);
     }
+
+    // TS clears the walk hook before post-failure read-back (observable
+    // sequencing). IntakeSeamGuard Drop remains final cleanup.
+    set_intake_walk_hook(None);
 
     // AC-4.6 is class-independent: the first two walked events are gone too.
     assert!(read_back(&file_path).await.is_empty());
@@ -280,12 +303,12 @@ async fn architecture_risk_system_error_rollback_parity_storage_failure_mid_batc
         .expect("COUNT(*) AS n must be present as an integer");
     assert_eq!(n, 0);
     db.close();
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn architecture_risk_restart_survival_reopen_sees_the_identical_record() {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     let batch = conversation_turn();
@@ -310,14 +333,13 @@ async fn architecture_risk_restart_survival_reopen_sees_the_identical_record() {
         .expect("COUNT(*) AS n must be present as an integer");
     assert_eq!(n, 5);
     db.close();
-    set_intake_walk_hook(None);
-    set_intake_clock(None);
     store.cleanup();
 }
 
 #[tokio::test]
 async fn architecture_risk_a_rejected_batch_takes_no_lock_rejection_succeeds_while_another_connection_holds_the_write_lock()
  {
+    let _seam_guard = IntakeSeamGuard::acquire();
     let store = temp_store();
     let file_path = create_thread(&store).await;
     let locker = open_raw(&file_path);
@@ -336,7 +358,5 @@ async fn architecture_risk_a_rejected_batch_takes_no_lock_rejection_succeeds_whi
     locker.exec("ROLLBACK;");
     locker.close();
     assert!(read_back(&file_path).await.is_empty());
-    set_intake_walk_hook(None);
-    set_intake_clock(None);
     store.cleanup();
 }

@@ -642,29 +642,36 @@ async fn drops_a_deleted_zone_result_from_the_live_sum() {
     assert_eq!(status.visibility.zone_tokens, 40);
 }
 
-/// TS `it.each(["manual", "background"])` — one `it()` source call; both modes
-/// asserted in a single Rust test so the binary lists 7 tests matching the
-/// source `it()` count.
+/// TS `it.each(["manual", "background"])` unfolded for independent cleanup
+/// (Phase-gate Wave 2 hygiene). Assertions and cases unchanged.
 #[tokio::test]
-async fn host_mode_sdk_intake_does_not_auto_advance_the_boundary() {
+async fn manual_mode_sdk_intake_does_not_auto_advance_the_boundary() {
     let _hooks = HookGuard::acquire();
-    for mode in [SdkMode::Manual, SdkMode::Background] {
-        let sdk = vis_sdk(
-            Some(SdkViewConfig {
-                profiles: None,
-                visibility: Some(BUDGETS),
-                compact_threshold: None,
-            }),
-            mode,
-        );
-        let (_store, file_path) = new_thread(&sdk).await;
-        let mut batch = tool_turn(&[40], None);
-        batch.extend(tool_turn(&[40], None));
-        batch.extend(tool_turn(&[40], None));
-        intake(&sdk, &file_path, &batch).await;
-        assert_eq!(boundary_of(&file_path), 0);
-        if mode == SdkMode::Background {
-            sdk.drain_settled(ThreadRef::file_path(&file_path)).await;
-        }
+    host_mode_sdk_intake_does_not_auto_advance_the_boundary_case(SdkMode::Manual).await;
+}
+
+#[tokio::test]
+async fn background_mode_sdk_intake_does_not_auto_advance_the_boundary() {
+    let _hooks = HookGuard::acquire();
+    host_mode_sdk_intake_does_not_auto_advance_the_boundary_case(SdkMode::Background).await;
+}
+
+async fn host_mode_sdk_intake_does_not_auto_advance_the_boundary_case(mode: SdkMode) {
+    let sdk = vis_sdk(
+        Some(SdkViewConfig {
+            profiles: None,
+            visibility: Some(BUDGETS),
+            compact_threshold: None,
+        }),
+        mode,
+    );
+    let (_store, file_path) = new_thread(&sdk).await;
+    let mut batch = tool_turn(&[40], None);
+    batch.extend(tool_turn(&[40], None));
+    batch.extend(tool_turn(&[40], None));
+    intake(&sdk, &file_path, &batch).await;
+    assert_eq!(boundary_of(&file_path), 0);
+    if mode == SdkMode::Background {
+        sdk.drain_settled(ThreadRef::file_path(&file_path)).await;
     }
 }

@@ -311,6 +311,43 @@ pub fn open_database(path: &str) -> OpResult<Db> {
     }
 }
 
+/// Percent-encode a filesystem path for a SQLite URI (keeps `/`, `.`, `_`, `-`).
+fn sqlite_uri_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len() + 8);
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'-' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// INTERNAL — side-effect-free open for `peekThreadId`.
+///
+/// Uses a SQLite URI with `mode=ro` + `immutable=1` so WAL coordination cannot
+/// create `-wal`/`-shm` sidecars or write locking state (plain
+/// `SQLITE_OPEN_READ_ONLY` is insufficient for WAL files). No pragma/schema
+/// mutations. Preserves underlying open-error detail via [`storage_failure`].
+/// Not a crate-root or SDK API — `rusqlite` stays here.
+pub(crate) fn open_database_read_only(path: &str) -> OpResult<Db> {
+    let uri = format!("file:{}?mode=ro&immutable=1", sqlite_uri_encode_path(path));
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    match Connection::open_with_flags(&uri, flags) {
+        Ok(conn) => OpResult::Ok {
+            value: Db {
+                conn: std::sync::Mutex::new(conn),
+                path: path.to_string(),
+            },
+        },
+        Err(err) => storage_failure(&err.to_string()),
+    }
+}
+
 /// TS `getSchemaVersion(db)` returns a number (throws on sqlite failure).
 /// Frozen Phase 1 shape is [`OpResult<i64>`]: success is `Ok { value }`;
 /// sqlite failures on the prepare/get path panic inside [`PreparedStatement`]

@@ -634,6 +634,77 @@ Amended shapes (now the frozen Phase 2 contract):
   3. `messages/internal/derive.ts:93,117` idempotent-write hit/miss —
      Phase 2 Wave 4.
 
+### Phase 2 Wave 2 shape amendments (Lee/Fable, 2026-07-24) — APPROVED
+
+Lee relayed the Fable phase-reviewer ruling approving all three amendments
+(2026-07-24). These are binding Phase-gate repairs, not discretionary
+cleanup. The escalation that produced them was correct.
+
+**A. Transaction bags borrow the controller-owned database.**
+`DbReadTransaction<'db>` / `DbWriteTransaction<'db>` hold `&'db Db`. The
+completion controller owns `Db` and lends `&Db` through `CompletionTx` and
+transaction constructors. HRTB callback signatures unchanged so async ops may
+borrow across `.await`. Removed every `ptr::read` / `mem::forget` /
+duplicated-`Db` ownership workaround (notably the UB formerly at
+`tests/fixtures/work_handlers.rs` `with_completion_write_txn`). Wave 1
+persistence ordering, close behavior, post-commit hooks, and
+`persist_borrow` HRTB tests preserved. Final Wave 2 commit body must name
+this `ptr::read` removal.
+
+**B. Migration payload is ordered, unvalidated JSON with typed accessors.**
+Private migrate payload is `serde_json::Map` under `preserve_order` (TS
+`JSON.parse` → object spread → `JSON.stringify`). Typed helpers for
+`sourceVersion` / `derivations`; `operation` and unknowns are arbitrary JSON
+(string legacy or object-shaped current `DurableWorkOperation`). Replacing
+`derivations` retains key position. Numeric/default and null/non-object
+malformed behavior match the TS runtime.
+
+**C. Correct final Phase 2 gate target (historical pre-Amendment D).** At
+Wave 2 r1–r3 the binding target was:
+
+```text
+classified=494 cargo-reported=494
+passed=479 notimpl=0 ignored=15
+wrong=0 suspicious=0
+```
+
+with Wave 2 expected `81 passed / 398 notimpl / 15 ignored = 494`. Prior
+`493/478/15` was a Phase 1 source-call miscount of the unfolded
+`view-boundary` `it.each(["manual","background"])` second runtime case — not
+an invented test. Keep both unfolded Rust tests. **Superseded for final
+Phase 2 / post–Amendment D Wave 2 arithmetic by Amendment D below**
+(`496` / `481` final; Wave 2 `83/398/15`).
+
+**D. Node 24 `Date.parse` calendar normalization (Lee/Fable, 2026-07-24).**
+Lee relayed the Fable phase-reviewer ruling; independently reproduced on
+this box's Node v24.18.0. Package engine floor is Node `>=24.17.0`; TS
+lease/wake paths pass timestamp strings to `Date.parse`. Both private Rust
+parsers (`work_queue::date_parse_ms`, `scheduler::parse_iso_to_millis`)
+follow the approved Node 24 contract: ASCII digits only; two fixed UTC
+shapes with strict separators; month `01..12`; day `01..31` with Node
+calendar overflow (non-leap Feb 29→Mar 1, Feb 30→Mar 2, Feb 31→Mar 3,
+Apr 31→May 1, …); exact `24:00:00` / `24:00:00.000` → next midnight; hour
+24 with nonzero remainder invalid; day 00/32, month 00/13, hour 25,
+minute/second 60, signed/non-ASCII/malformed separators remain invalid.
+**Supersedes** the repair-r1 calendar-rejection premise that February
+30 / non-leap February 29 / April 31 are invalid.
+
+Committed oracle: `scripts/gen-date-parse-fixtures.mjs` →
+`fixtures/date-parse-cases.jsonl`. Two allowlisted Rust-only oracle tests
+amend the frozen inventory:
+
+```text
+Wave 2 after Amendment D:
+classified=496 cargo-reported=496
+passed=83 notimpl=398 ignored=15
+wrong=0 suspicious=0
+
+Final Phase 2 target:
+classified=496 cargo-reported=496
+passed=481 notimpl=0 ignored=15
+wrong=0 suspicious=0
+```
+
 Recorded, deliberately NOT changed: `DEFAULT_PROMPT_NAMES` tuple-slice
 representation (golden-tested; reshaping certified surface for style is net
 risk); `SchedulerPoke`/`ThreadTouch`/walk-hook slots stay `Box` (single-
@@ -744,3 +815,306 @@ abort finding, fixed above); work-execution 27/27 clean.
 
 Rust-only test files (ledger addition): `tests/persist_borrow.rs` (2 tests
 — HRTB transaction-borrow ruling probes; see Wave 1 ruling above).
+
+### Phase 2 Wave 2 implementation (2026-07-24) — NOT certified
+
+Wave 2 of 7 (Phase 2 of 3; unit 10 of ~18). Infrastructure behavior:
+work_queue, durable_work, scheduler, inference_adapter, thread_migrate, plus
+direct Wave 2 fixtures (`work_handlers` full; `drain_runner::sleep` REAL /
+`main` still Wave 7-blocked; `read_only_delta::queued_for` REAL /
+`observable_state`+`expect_read_only` Wave 3/6-blocked). `corrupt` /
+`intake_seam` / `model_call` already REAL — unchanged.
+
+Independent gate after allowlisting the four adapter greens:
+
+```text
+exact-todo: tokens=356 bodies=356 covered=356
+classified=494 cargo-reported=494 (binaries: 58)
+passed=81 suspicious=0 notimpl=398 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic vs Wave 1 certified baseline (493/77/401):
+- +4 exact new greens (adapter max-input / brief routing via
+  `inference_prompts`);
+- +1 classified from sanctioned `view_boundary` `it.each` unfold (7→8
+  active tests; new case is still Wave 6 notimpl) → classified 494,
+  notimpl 398 (= 401 − 4 + 1).
+
+Exact new pass names:
+- `inference_prompts::brief_rendering_receives_detailed_text_and_target_tokens_through_the_adapter`
+- `inference_prompts::max_input_chars_below_truncation_marker_still_bounds_the_whole`
+- `inference_prompts::oversized_summarize_tool_result_input_renders_head_tail_marker_under_max_input_chars`
+- `inference_prompts::under_limit_input_renders_whole_no_marker`
+
+Blocked owning-suite first exact dependency (do not implement later waves
+to force green):
+| Suite | pass/notimpl/ignored | First blocker |
+| --- | --- | --- |
+| assignment_config | 2 / 10 / 0 | `sdk::init_lhc` (Wave 7) |
+| idempotency | 0 / 5 / 0 | `sdk::init_lhc` / intake open (Wave 3/7) |
+| inference_adapter | 0 / 2 / 3 | `sdk::init_lhc` (Wave 7) |
+| inference_classification | 5 / 3 / 0 | `sdk::init_lhc` (Wave 7) for remaining |
+| inference_construction | 0 / 7 / 0 | `sdk::init_lhc` (Wave 7) |
+| inference_routing | 1 / 0 / 3 | (active green unchanged) |
+| thread_migrate | 0 / 5 / 0 | `threads::…` open/migrate wiring (Wave 3) |
+| work_execution | 0 / 27 / 0 | `sdk::init_lhc` + `register_testing_work` (Wave 7) |
+| work_queue | 3 / 13 / 0 | intake/create write path (Wave 3) |
+| inference_prompts | 25 / 0 / 0 | (fully green; +4 this wave) |
+
+`StatementRunResult` consumers 1–2 (`work_queue::complete`,
+`durable_work::apply_derivation_success` / terminal) now read `.changes`
+directly — no `SELECT changes()`. Consumer 3 remains Wave 4 (`derive.ts`).
+
+Test-hygiene edits (assertions/cases unchanged; cleanup only):
+- `tests/work_execution.rs`: `WorkSeamGuard` Drop clears poke/touch seams;
+  acquired at each `#[tokio::test]` entry; trailing manual `cleanup_seams()`
+  removed (Drop owns cleanup).
+- `tests/intake.rs`: `IntakeSeamGuard` Drop clears intake clock/walk seams;
+  acquired at each test entry; trailing manual clears removed.
+- `tests/view_boundary.rs`: unfolded TS `it.each(["manual","background"])`
+  into two independent tests
+  (`manual_mode_sdk_intake_does_not_auto_advance_the_boundary`,
+  `background_mode_sdk_intake_does_not_auto_advance_the_boundary`) sharing
+  one helper body — same asserts, independent HookGuard cleanup. Suite
+  active count 7→8 (still Wave 6 notimpl).
+
+Clippy warnings scoped to Wave 2 production files after cleanup: **6**
+(style: complex `FnOnce` types ×3, collapsible `if` ×3). No Wave 2
+correctness warnings.
+
+Mutation/adversarial probes (disposable; deleted before report): stale
+zero-hit complete; assert_exact mismatch → `DerivationCompletionError`;
+lost lease; expired + invalid lease timestamps; terminal failure;
+`operation_intent` js_json bytes; `has_live_item` version fence; schema
+version bounds. Proved without claiming suite parity.
+
+Wave 2 remains **not certified** pending dual verification.
+
+### Phase 2 Wave 2 repair-r1 (2026-07-24) — NOT certified
+
+Sol `20260724-143508-59bf5f` FAIL and Cursor-Fable `20260724-143512-61a0db`
+FAIL. Reconciled union repairs + three Lee/Fable-approved Phase-gate
+amendments (recorded above; not discretionary cleanup):
+
+1. **Lost-wake epilogue:** `finish_or_continue` observes/clears `pending` →
+   another pass vs `running=false` + arm/waiters atomically under the
+   scheduler mutex. Never leaves `running=false, pending=true` without a
+   scheduled replacement.
+2. **No callbacks under mutex:** clock for wake arming sampled outside the
+   lock; drain/dispatcher/SQLite/await already outside. Poison recovery
+   retained.
+3. **Timer cancel + generation:** `wake_generation` bumps on clear/replace;
+   stale fired/cancelled tasks cannot clear a newer timer; `JoinHandle::abort`
+   matches Node `clearTimeout`; min delay 5 ms retained.
+4. **`run_work_handler` panic containment:** `catch_unwind` around sync
+   construction (metadata lookup + handler future build) and poll; exact
+   `handler threw: …`; `DerivationCompletionError` still `resume_unwind` for
+   scheduler propagation.
+5. **`peek_thread_id` read-only helper:** `storage::open_database_read_only`
+   (`pub(crate)`). Repair-r1 used plain `SQLITE_OPEN_READ_ONLY` (insufficient
+   for WAL sidecars — corrected in repair-r2).
+6. **JS date validation (historical — superseded by Amendment D):** r1
+   rejected overflow calendar days (Feb 30 / non-leap Feb 29 / Apr 31).
+   Amendment D replaces that with Node 24 normalization; see Phase-gate
+   addendum D and repair-r4.
+7. **Intake hygiene fidelity:** restored inline `set_intake_walk_hook(None)`
+   before post-failure read-backs in the two rollback tests; Drop guard
+   remains final cleanup. Assertions/case count unchanged.
+8. **Fixture finally:** `read_only_delta::queued_for` and `corrupt::*` close
+   on success and panic (`catch_unwind` + close + resume). Repair-r1 did
+   **not** cover `work_handlers.rs` (`let _ = db`) — corrected in repair-r2.
+9. **Closed vocab:** `inference_failure` matches all `ModelCallFailureKind`
+   variants explicitly (no `_ =>`).
+
+Amendments A–C applied (borrowed txn bags / ordered migrate Map / gate
+target 494→479 final). Wave 2 expected gate arithmetic unchanged after
+deleting disposable probes:
+
+```text
+classified=494 cargo-reported=494
+passed=81 suspicious=0 notimpl=398 wrong=0 ignored=15
+GATE PASS
+```
+
+**Probe-evidence correction:** an earlier draft of this note falsely named
+`scheduler::repair_r1_probes` as persistent unit tests. No such module was
+checked in. Repair-r1 evidence was disposable barrier/calendar/peek probes
+that were deleted before the report; repair-r2 records the actual disposable
+probe names and outcomes below.
+
+Genuinely remaining after r1 (later addressed or carried): fired-callback
+clear→schedule publication race; WAL sidecar writes on read-only open;
+unvalidated migrate `.some` semantics; ISO separator validation;
+`work_handlers` explicit close. Owning suites still blocked on Wave 3/7.
+
+Wave 2 remains **not certified** pending re-verification.
+
+### Phase 2 Wave 2 repair-r2 (2026-07-24) — NOT certified
+
+Re-verification: Sol `20260724-164353-8d1ba9` **FAIL**; Cursor-Fable
+`20260724-164322-6183ee` **PASS**. Orchestrator took the Sol∪binding-brief
+union (not a vote). Fable green evidence retained for uncontradicted paths;
+Fable's WAL/sidecar and migrate-degenerate dismissals overruled.
+
+Repairs:
+
+1. **Atomic fired-timer handoff:** `fired_timer_handoff` validates generation,
+   clears the outstanding wake, and applies the `schedule` running/pending
+   decision under one mutex; spawn outside. `schedule_timer_gated` +
+   `publish_timer` publish the handle before sleep may begin (closes
+   fire-before-publication). No clock/SQLite/await/dispatcher under the lock.
+2. **Sidecar-free read-only peek:** `open_database_read_only` uses URI
+   `file:<path>?mode=ro&immutable=1` with `SQLITE_OPEN_URI|READ_ONLY|NO_MUTEX`,
+   path percent-encoded. Still `pub(crate)` in `storage.rs` only.
+3. **Unvalidated migrate accessors:** raw-JSON `derivations_some` /
+   `derivation_type_of` (null element throws; non-array throws; incomplete
+   objects compare false; no silent filter_map drop). `sourceVersion ?? 1`
+   binds via `SqlParam` (missing/null → i64 1; fractional → F64 REAL; string
+   → Text; bool/object/array panic). Replacement migration output only is
+   typed; unknown keys/order preserved through `js_json_stringify_of`.
+4. **ISO separators:** `parse_iso_to_millis` accepts only
+   `YYYY-MM-DDTHH:mm:ssZ` and `YYYY-MM-DDTHH:mm:ss.sssZ` with every fixed
+   separator validated; `2024x02x29…` → None.
+5. **`work_handlers` finally close:** completion path
+   `catch_unwind(apply)` → explicit `db.close()` → resume/return. No
+   assertion/case/data changes.
+
+Wave 2 fixture opener audit (exact):
+| Fixture | Opener | Finally/close |
+| --- | --- | --- |
+| `work_handlers.rs` | `open_db` in `wrap` completion | **fixed r2** — explicit close on success/panic |
+| `read_only_delta.rs` | `queued_for` | catch_unwind + close (r1) |
+| `corrupt.rs` | `with_db` | catch_unwind + close (r1) |
+| `drain_runner.rs` | none (no DB) | n/a |
+| `intake_seam.rs` | re-exports only | n/a |
+| `model_call.rs` | none (no DB) | n/a |
+
+Disposable mutation probes (deleted; not in the then-current 494 inventory) — outcomes:
+- `r2_disposable_probes::fired_handoff_sets_running_before_unlock_observable` — **ok** (no clear→schedule settled gap)
+- `r2_disposable_probes::stale_generation_does_not_cancel_newer_via_handoff` — **ok**
+- `r2_disposable_probes::gated_timer_cannot_fire_before_handle_publication` — **ok** (incl. cancel-before-publish)
+- `r2_disposable_probes::poke_versus_epilogue_never_strands_pending` — **ok**
+- `r2_disposable_probes::iso_rejects_malformed_separators_every_position` — **ok**
+- `_probe_r2::peek_wal_db_in_readonly_dir_no_sidecar_mutation` — **ok**
+- `_probe_r2_rw::peek_writable_wal_dir_creates_no_sidecars` — **ok**
+- `_probe_r2::peek_absent_and_malformed_fail_closed` — **ok**
+- `_probe_r2` migrate/sourceVersion matrix + Node pin (`obj`/`nullEl` THROW; `1.75` preserved; null/undefined → 1; string `"2"` kept) — **ok**
+
+Historical Wave 2 gate (pre–Amendment D): `81/398/15 = 494`. Wave 2 remains
+**not certified**.
+
+### Phase 2 Wave 2 repair-r3 (2026-07-24) — NOT certified
+
+Cursor-Fable repair-r2 confirmation `20260724-171653-fdb880` found one
+adjacent residual after proving all five r2 findings green: Rust fixed-width
+date fields accepted a leading `+` because `str::parse::<i64>()` is more
+permissive than the pinned Node ISO path. The divergence affected both
+`work_queue::date_parse_ms` and `scheduler::parse_iso_to_millis` at month,
+day, hour, minute, second, and millisecond positions (for example,
+`2026-+6-15T10:20:30.400Z`).
+
+The orchestrator applied the onboarding's trivial-residue rule: both private
+parsers now require ASCII digits for every numeric slice before conversion.
+No public shape, test, fixture, oracle, allowlist, or then-current 494-test
+inventory changed. Independent post-fix fmt/check and full gate
+(historical pre–Amendment D):
+
+```text
+classified=494 cargo-reported=494
+passed=81 suspicious=0 notimpl=398 wrong=0 ignored=15
+GATE PASS
+```
+
+Focused Cursor-Fable mutation confirmation `20260724-173651-7df005` later
+passed. Wave 2 remained **not certified** pending Amendment D / repair-r4.
+
+### Phase 2 Wave 2 repair-r4 (2026-07-24) — NOT certified
+
+Amendment D (Node 24 calendar normalization) applied to both private
+parsers; committed Node oracle (`fixtures/date-parse-cases.jsonl`, **139**
+cases from Node v24.18.0 via `scripts/gen-date-parse-fixtures.mjs`; repair-r5
+deduped the prior 135-row matrix that had only 129 unique names) + two
+allowlisted conformance tests (`work_queue::tests::date_parse_matches_node_oracle`,
+`scheduler::tests::parse_iso_to_millis_matches_node_oracle`). Double regen
+byte-identical. Mutation probes (restored): strict month-day bounds → each
+oracle fails; no hour-24 → each fails; no ASCII-digit gate → each fails.
+Gate arithmetic becomes `83/398/15 = 496` (final Phase 2 `481/0/15 = 496`).
+See Phase-gate addendum **D**. Wave 2 remains **not certified** pending
+focused confirmation.
+
+### Phase 2 Wave 2 repair-r5 (2026-07-24) — NOT certified
+
+Oracle matrix / fixture strictness residuals after repair-r4:
+
+1. Generator fails on duplicate name or duplicate input; removed redundant
+   overlapping definitions (prior `apr_31` / `leap_feb_30` / `leap_feb_31`
+   name collisions with the day matrix).
+2. Fixed-width invalid isolates for `+`, `-`, ASCII letter, and a non-ASCII
+   digit in every numeric field (year…millisecond), plus retained all-fullwidth
+   case; still restricted to the two fixed UTC shapes (no fallback grammar).
+3. Both oracle tests deserialize a private `#[serde(deny_unknown_fields)]` row,
+   enforce unique names/inputs, and accept `expected` only as `"invalid"` or a
+   canonical millisecond UTC ISO string. Allowlist names unchanged → inventory
+   stays **496**.
+4. Cleared the two new `empty_line_after_doc_comments` Clippy warnings at the
+   Amendment D parser docs (no broader Clippy cleanup).
+
+Fixture count after regen: **139** rows = 139 unique names = 139 unique inputs
+(Node v24.18.0). Gate target unchanged (`83/398/15 = 496`). Wave 2 remains
+**not certified** pending focused confirmation.
+
+### Phase 2 Wave 2 certification (2026-07-24) — CERTIFIED
+
+**Full-project position:** Wave 2 of 7 in Phase 2 of 3 is certified (unit 10
+of approximately 18). Five Phase 2 behavior waves and all Phase 3 Grok Build
+integration remain; the larger part of Lee's usable deliverable is still
+ahead.
+
+Certification reconciles the full-scope Sol/Fable audits and every changed-
+scope repair round by union against the TypeScript authority and approved
+Amendments A–D:
+
+- initial full-scope Wave 2: Sol `20260724-143508-59bf5f` **FAIL** and
+  Cursor-Fable `20260724-143512-61a0db` **FAIL**;
+- repair-r1 re-verification: Sol `20260724-164353-8d1ba9` **FAIL** and
+  Cursor-Fable `20260724-164322-6183ee` **PASS**; the Sol findings governed
+  the contradicted paths;
+- repair-r2/r3 focused Cursor-Fable confirmations
+  `20260724-171653-fdb880` (one residual) and
+  `20260724-173651-7df005` (**PASS**);
+- Amendment D repair-r4/r5 implementation:
+  `20260724-204700-2f5991` and `20260724-205527-ff67ef`, both on verified
+  `cursor-grok-4.5-high-fast`;
+- final Amendment D changed-scope confirmation:
+  Copilot-Fable `20260724-210151-8959e0` **PASS**, resolved model
+  `claude-fable-5` at medium effort, Copilot session
+  `a0214bc2-4ba8-4a86-9ef4-efec845c3f7e`.
+
+Final Fable evidence: Node v24.18.0 regenerated all 139 oracle rows
+byte-identically (SHA-256
+`7971e1760c627e3a3c60ca7334bae51a722c9cafd6527d34462e5c20d9f367e6`);
+139 unique names and inputs; zero independently recomputed oracle mismatches;
+strict fixture decoding; and natural-month rejection, exact-hour-24
+rejection, and weakened ASCII-digit validation each turned **both** owning
+parser tests red independently before byte-exact restoration. Amendments A–C
+also remained intact: borrowed transaction bags with no `ptr::read` /
+`mem::forget`, ordered unvalidated migration JSON, and direct
+`StatementRunResult.changes` consumers with no `SELECT changes()` substitute.
+
+Final orchestrator gate:
+
+```text
+exact-todo: tokens=356 bodies=356 covered=356
+classified=496 cargo-reported=496 (binaries: 58)
+passed=83 suspicious=0 notimpl=398 wrong=0 ignored=15
+GATE PASS
+```
+
+`cargo fmt --check`, `cargo check --tests`, both Amendment D parser tests,
+`persist_borrow`, all 25 inference-prompt tests, all four JS-JSON conformance
+tests, and prompt-byte reconstruction are green. Clippy reports only carried
+style debt; the two warnings introduced by repair-r4 were removed in r5.
+Existing TypeScript tests and committed oracles/goldens were unchanged; the
+new date-parse generator, oracle, and two owning Rust tests are the exact
+Amendment D additions.

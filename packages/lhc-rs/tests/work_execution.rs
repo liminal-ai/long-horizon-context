@@ -122,6 +122,23 @@ fn cleanup_seams() {
     set_thread_touch(None);
 }
 
+/// Panic-safe cleanup for scheduler poke/touch seams (Phase-gate Wave 2 hygiene).
+struct WorkSeamGuard;
+
+impl WorkSeamGuard {
+    fn acquire() -> Self {
+        Self
+    }
+}
+
+impl Drop for WorkSeamGuard {
+    fn drop(&mut self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cleanup_seams();
+        }));
+    }
+}
+
 async fn new_thread(store: &TempStore) -> (String, String) {
     let created = threads::new_thread(NewThreadInput {
         file_path: store.thread_path(None).to_string_lossy().into_owned(),
@@ -382,6 +399,7 @@ fn map_success_disposition(d: ApplyDerivationSuccessDisposition) -> DurableWorkS
 #[tokio::test]
 async fn tc_1_1_three_items_across_both_owners_run_in_order_rows_deleted_at_terminal_transition_derived_at_monotone()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let tick = Arc::new(AtomicI64::new(0));
@@ -479,7 +497,6 @@ async fn tc_1_1_three_items_across_both_owners_run_in_order_rows_deleted_at_term
         at("t1", "turn_rendering")
     );
     assert!(at("t1", "turn_rendering") < at("t1", "detailed_turn_compression"));
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -488,6 +505,7 @@ async fn tc_1_1_three_items_across_both_owners_run_in_order_rows_deleted_at_term
 #[tokio::test]
 async fn tc_1_2_a_burst_of_two_more_batches_during_a_slow_in_flight_drain_yields_exactly_two_passes_and_all_artifacts()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     double.delay_kind("prompt_smoothing", 100);
@@ -571,7 +589,6 @@ async fn tc_1_2_a_burst_of_two_more_batches_during_a_slow_in_flight_drain_yields
     // …and the burst coalesced: one initial pass plus exactly one follow-up,
     // not one pass per poke (the cost model is the assertion).
     assert_eq!(sdk.scheduler.test_pass_count(&thread_id), 2);
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -580,6 +597,7 @@ async fn tc_1_2_a_burst_of_two_more_batches_during_a_slow_in_flight_drain_yields
 #[tokio::test]
 async fn tc_1_5_an_intake_batch_is_processed_with_no_drain_call_drain_settled_is_the_completion_signal()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let callbacks = double.to_callbacks();
@@ -631,12 +649,12 @@ async fn tc_1_5_an_intake_batch_is_processed_with_no_drain_call_drain_settled_is
         ]
     );
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn sync_derive_queued_behind_an_older_head_wakes_the_background_scheduler() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let callbacks = double.to_callbacks();
@@ -762,13 +780,13 @@ async fn sync_derive_queued_behind_an_older_head_wakes_the_background_scheduler(
             ("turn_rendering".into(), "ready".into()),
         ]
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn reopening_a_thread_with_leftover_queued_rows_recovers_them_when_the_process_engages_message_reads_stay_pure()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     // Build the leftover state with no background scheduler installed: rows
     // accumulate exactly as a dead process would have left them.
@@ -833,12 +851,12 @@ async fn reopening_a_thread_with_leftover_queued_rows_recovers_them_when_the_pro
             DerivationState::Ready,
         ]
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_behind_it() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let (_thread_id, file_path) = new_thread(&store).await;
     let seeded = intake_stream::message_events(
@@ -923,21 +941,23 @@ async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_
     );
     assert_eq!(live_count(&file_path), 0);
     let _ = CapturedLog::len(&captured); // keep type in scope for unused lint quiet
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn a_claimed_head_with_null_claim_expires_at_is_failed_immediately() {
+    let _seam_guard = WorkSeamGuard::acquire();
     claimed_head_with_claim_expires_at_is_failed_immediately(None).await;
 }
 
 #[tokio::test]
 async fn a_claimed_head_with_invalid_claim_expires_at_is_failed_immediately() {
+    let _seam_guard = WorkSeamGuard::acquire();
     claimed_head_with_claim_expires_at_is_failed_immediately(Some("not-a-date")).await;
 }
 
 async fn claimed_head_with_claim_expires_at_is_failed_immediately(claim_expires_at: Option<&str>) {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -964,7 +984,6 @@ async fn claimed_head_with_claim_expires_at_is_failed_immediately(claim_expires_
     assert_eq!(forms.len(), 1);
     assert_eq!(forms[0].state, DerivationState::Failed);
     assert_eq!(forms[0].reason.as_deref(), Some("claim_expired"));
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -972,6 +991,7 @@ async fn claimed_head_with_claim_expires_at_is_failed_immediately(claim_expires_
 
 #[tokio::test]
 async fn tc_1_6_queued_work_sits_until_work_drain_artifacts_land_after() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1005,7 +1025,6 @@ async fn tc_1_6_queued_work_sits_until_work_drain_artifacts_land_after() {
         vec![DerivationState::Ready]
     );
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -1014,6 +1033,7 @@ async fn tc_1_6_queued_work_sits_until_work_drain_artifacts_land_after() {
 #[tokio::test]
 async fn tc_1_7_a_bogus_kind_row_ahead_of_a_valid_item_fails_with_unknown_work_kind_the_valid_item_still_runs()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1048,7 +1068,6 @@ async fn tc_1_7_a_bogus_kind_row_ahead_of_a_valid_item_fails_with_unknown_work_k
         .into_iter()
         .find(|f| f.subject_id == "m1");
     assert_eq!(smoothed.map(|f| f.state), Some(DerivationState::Ready));
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -1057,6 +1076,7 @@ async fn tc_1_7_a_bogus_kind_row_ahead_of_a_valid_item_fails_with_unknown_work_k
 #[tokio::test]
 async fn tc_1_8_the_first_failure_marks_failed_deletes_the_row_and_runs_the_next_item_immediately()
 {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1110,12 +1130,12 @@ async fn tc_1_8_the_first_failure_marks_failed_deletes_the_row_and_runs_the_next
         Some(DerivationState::Ready)
     );
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn tc_1_8_max_items_stops_the_drain_with_max_items_and_reports_the_remainder() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1137,7 +1157,6 @@ async fn tc_1_8_max_items_stops_the_drain_with_max_items_and_reports_the_remaind
     assert_eq!(report.stopped_because, DrainStoppedBecause::MaxItems);
     assert_eq!(report.remaining, 2);
     assert_eq!(live_count(&file_path), 2);
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -1237,6 +1256,7 @@ fn resolve_deferred(pending: DeferredRun, scripted: Scripted) {
 
 #[tokio::test]
 async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion_cannot_write() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let now_ms = Arc::new(Mutex::new(FIXED_INSTANT_MS));
     let (sdk, runs) = deferred_message_sdk(Arc::clone(&now_ms));
@@ -1293,7 +1313,6 @@ async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion
     assert_eq!(form.state, DerivationState::Failed);
     assert_eq!(form.reason.as_deref(), Some("claim_expired"));
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -1335,6 +1354,7 @@ fn turn_derive_partial_dispatcher() -> DurableWorkDispatcher {
 #[tokio::test]
 async fn a_queued_turn_derivation_success_missing_one_expected_write_rolls_back_and_leaves_the_item_live()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1410,13 +1430,13 @@ async fn a_queued_turn_derivation_success_missing_one_expected_write_rolls_back_
         Some(serde_json::json!(0))
     );
     db.close();
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn a_stale_queued_terminal_failure_deletes_owned_work_without_stamping_the_newer_derivation()
 {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1453,13 +1473,13 @@ async fn a_stale_queued_terminal_failure_deletes_owned_work_without_stamping_the
     assert_eq!(forms[0].state, DerivationState::Pending);
     assert_eq!(forms[0].source_version, 2);
     assert_eq!(forms[0].reason, None);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn a_queued_terminal_failure_that_hits_only_part_of_its_targets_rolls_back_and_leaves_the_item_live()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1533,12 +1553,12 @@ async fn a_queued_terminal_failure_that_hits_only_part_of_its_targets_rolls_back
     assert_eq!(detail.len(), 1);
     assert_eq!(detail[0].work_item_id, "w-t1-turn_derivation-v1");
     assert_eq!(detail[0].status, QueueLiveStatus::Claimed);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_lands() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1615,7 +1635,6 @@ async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_
     assert_eq!(detail.len(), 1);
     assert_eq!(detail[0].work_item_id, "w-m1-prompt_smoothing-v1");
     assert_eq!(detail[0].status, QueueLiveStatus::Claimed);
-    cleanup_seams();
     store.cleanup();
 }
 
@@ -1623,6 +1642,7 @@ async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_
 
 #[tokio::test]
 async fn messages_derive_is_a_bounded_inline_attempt_and_does_not_consume_queued_work() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1660,12 +1680,12 @@ async fn messages_derive_is_a_bounded_inline_attempt_and_does_not_consume_queued
     assert_eq!(forms.len(), 1);
     assert_eq!(forms[0].state, DerivationState::Pending);
     assert_eq!(forms[0].source_version, 1);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn messages_derive_attempts_once_and_leaves_no_queued_work_on_failure() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     double.fail_kind("prompt_smoothing", 1, Some("timeout: inline attempt"));
@@ -1703,12 +1723,12 @@ async fn messages_derive_attempts_once_and_leaves_no_queued_work_on_failure() {
     assert_eq!(forms.len(), 1);
     assert_eq!(forms[0].state, DerivationState::Pending);
     assert_eq!(forms[0].source_version, 1);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn messages_derive_writes_ready_when_no_live_work_owns_the_derivation() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -1751,12 +1771,12 @@ async fn messages_derive_writes_ready_when_no_live_work_owns_the_derivation() {
         DerivationState::Ready
     );
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn messages_derive_accepts_same_version_ready_races_without_overwriting_them() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let file_path_box: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let base = create_inference_callbacks_double();
@@ -1839,12 +1859,12 @@ async fn messages_derive_accepts_same_version_ready_races_without_overwriting_th
     let form = &read_derived_forms(&file_path)[0];
     assert_eq!(form.state, DerivationState::Ready);
     assert_eq!(form.content.as_deref(), Some("competing ready value"));
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn messages_derive_refuses_when_the_derivation_advances_after_its_initial_read() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let file_path_box: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let base = create_inference_callbacks_double();
@@ -1931,13 +1951,13 @@ async fn messages_derive_refuses_when_the_derivation_advances_after_its_initial_
             .collect::<Vec<_>>()
             .is_empty()
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn turns_derive_turn_refuses_an_abandoned_later_turn_while_older_turn_derivation_work_is_queued()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let sdk = manual_sdk(&double, None);
@@ -2035,13 +2055,13 @@ async fn turns_derive_turn_refuses_an_abandoned_later_turn_while_older_turn_deri
             ("turn_rendering".into(), "pending".into(), 1),
         ]
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn turns_derive_turn_refuses_an_exact_head_when_one_of_its_two_derivations_advances_before_claim()
  {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let advance_on_clock = Arc::new(AtomicBool::new(false));
     let file_path_box: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2143,12 +2163,12 @@ async fn turns_derive_turn_refuses_an_exact_head_when_one_of_its_two_derivations
             ("turn_rendering".into(), "pending".into(), None, 1),
         ]
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn two_concurrent_messages_derive_calls_are_inline_attempts_fenced_by_the_derivation_row() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let base = create_inference_callbacks_double();
     let smooth_txs: Arc<Mutex<Vec<oneshot::Sender<InferenceResult>>>> =
@@ -2288,12 +2308,12 @@ async fn two_concurrent_messages_derive_calls_are_inline_attempts_fenced_by_the_
     assert_eq!(forms[0].state, DerivationState::Ready);
     assert_eq!(forms[0].content.as_deref(), Some("first inline completion"));
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn two_concurrent_turns_derive_turn_calls_share_the_durable_claim() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let base = create_inference_callbacks_double();
     let compression_txs: Arc<Mutex<Vec<oneshot::Sender<InferenceResult>>>> =
@@ -2426,12 +2446,12 @@ async fn two_concurrent_turns_derive_turn_calls_share_the_durable_claim() {
             .collect::<Vec<_>>()
             .is_empty()
     );
-    cleanup_seams();
     store.cleanup();
 }
 
 #[tokio::test]
 async fn two_concurrent_turns_derive_brief_chunk_calls_share_the_durable_claim() {
+    let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let base = create_inference_callbacks_double();
     let brief_txs: Arc<Mutex<Vec<oneshot::Sender<InferenceResult>>>> =
@@ -2539,6 +2559,5 @@ async fn two_concurrent_turns_derive_brief_chunk_calls_share_the_durable_claim()
     assert_eq!(briefs[0].state, DerivationState::Ready);
     assert_eq!(briefs[0].content.as_deref(), Some("owned chunk brief"));
     assert_eq!(live_count(&file_path), 0);
-    cleanup_seams();
     store.cleanup();
 }

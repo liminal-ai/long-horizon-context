@@ -85,6 +85,8 @@ inference_routing::assert_model_call_contract_holds_against_recording_call
 lib::shared_tech::work_queue::tests::record_item_write_payload_requires_source_version_operation_derivations_keys
 lib::shared_tech::work_queue::tests::record_item_write_payload_serializes_camel_case_bytes
 lib::shared_tech::work_queue::tests::record_item_write_payload_rejects_unknown_subject_kind
+lib::shared_tech::work_queue::tests::date_parse_matches_node_oracle
+lib::shared_tech::scheduler::tests::parse_iso_to_millis_matches_node_oracle
 lib::shared_tech::thread_migrate::tests::migrate_loose_queued_work_item_payload_preserves_unknown_keys
 
 # Wave 4 — REAL ordered-map / handler wiring constants (Partial/open Record).
@@ -112,3 +114,10 @@ lib::turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_orde
 # Wave 6 — REAL view-injection seam (hook table fires/clears without Phase 2 bodies).
 view_fixture::an_installed_hook_fires_its_throw_propagates_and_uninstalling_restores_the_no_op
 view_fixture::uninstalled_the_point_is_a_no_op
+
+# Phase 2 Wave 2 — inference adapter max-input / brief-routing greens
+# (cross-wave consumer inference_prompts; Wave 2 owns the adapter bodies).
+inference_prompts::brief_rendering_receives_detailed_text_and_target_tokens_through_the_adapter
+inference_prompts::max_input_chars_below_truncation_marker_still_bounds_the_whole
+inference_prompts::oversized_summarize_tool_result_input_renders_head_tail_marker_under_max_input_chars
+inference_prompts::under_limit_input_renders_whole_no_marker

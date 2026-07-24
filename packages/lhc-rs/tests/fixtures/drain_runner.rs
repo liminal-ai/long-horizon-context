@@ -4,11 +4,10 @@
 //! Argument: one JSON config — `{ threadPath, leaseMs, holdMs, holdFrom }`.
 //!
 //! File-private (TS module-local): `RunnerConfig`, `sleep`, `main`.
-//! `RunnerConfig` is pure data — REAL. `sleep` / `main` are `todo!("phase 2")`.
-//!
-//! Phase 2 `main` needs from src (not yet): init_lhc, Lhc::work.drain, lease
-//! config wiring; from fixtures: create_inference_callbacks_double,
-//! register_test_work_handlers with on_handler_start hold protocol.
+//! `RunnerConfig` is pure data — REAL. `sleep` is REAL. `main` stays
+//! `todo!("phase 2")` until `init_lhc` is callable (still Phase 2 todo in src).
+
+#![allow(dead_code)] // file-private runner; suite invokes via process spawn later
 
 use serde::{Deserialize, Serialize};
 
@@ -24,12 +23,14 @@ struct RunnerConfig {
 }
 
 /// TS `function sleep(ms): Promise<void>`.
-async fn sleep(_ms: i64) {
-    todo!("phase 2")
+async fn sleep(ms: i64) {
+    let ms = u64::try_from(ms).unwrap_or(0);
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }
 
 /// TS `main` — PARTIAL: process-boundary protocol (stdout markers, exit codes)
-/// lands when `init_lhc` / `register_test_work_handlers` / `work.drain` are real.
+/// lands when `init_lhc` is callable. `register_testing_work` / `work.drain`
+/// are also still Phase 2 todos; leave main as the clear notimpl gate.
 async fn main() {
     todo!("phase 2")
 }
