@@ -1,6 +1,6 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v1.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v1.ts.
 
-use crate::shared_tech::derivation::InferenceRequestMessage;
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole};
 use serde_json::Value;
 
 pub const NAME: &str = "detailed-turn-compression-v1";
@@ -98,12 +98,74 @@ pub struct DetailedTurnCompressionV1;
 impl DetailedTurnCompressionV1 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &DetailedTurnCompressionV1Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &DetailedTurnCompressionV1Input) -> Vec<InferenceRequestMessage> {
+        let tmpl_02 = SYSTEM_TMPL_02.replace("${i.inputTokens}", &input.input_tokens.to_string());
+        let tmpl_04 = SYSTEM_TMPL_04
+            .replace("${i.targetAimTokens}", &input.target_aim_tokens.to_string())
+            .replace("${i.targetMinTokens}", &input.target_min_tokens.to_string())
+            .replace("${i.targetMaxTokens}", &input.target_max_tokens.to_string());
+        let tmpl_26 = SYSTEM_TMPL_26
+            .replace("${i.targetMinTokens}", &input.target_min_tokens.to_string())
+            .replace("${i.targetMaxTokens}", &input.target_max_tokens.to_string());
+        let tmpl_30 = SYSTEM_TMPL_30
+            .replace("${i.targetMinTokens}", &input.target_min_tokens.to_string())
+            .replace("${i.targetMaxTokens}", &input.target_max_tokens.to_string());
+        let system_content = [
+            SYSTEM_PART_00,
+            SYSTEM_PART_01,
+            tmpl_02.as_str(),
+            SYSTEM_PART_03,
+            tmpl_04.as_str(),
+            SYSTEM_PART_05,
+            SYSTEM_PART_06,
+            SYSTEM_PART_07,
+            SYSTEM_PART_08,
+            SYSTEM_PART_09,
+            SYSTEM_PART_10,
+            SYSTEM_PART_11,
+            SYSTEM_PART_12,
+            SYSTEM_PART_13,
+            SYSTEM_PART_14,
+            SYSTEM_PART_15,
+            SYSTEM_PART_16,
+            SYSTEM_PART_17,
+            SYSTEM_PART_18,
+            SYSTEM_PART_19,
+            SYSTEM_PART_20,
+            SYSTEM_PART_21,
+            SYSTEM_PART_22,
+            SYSTEM_PART_23,
+            SYSTEM_PART_24,
+            SYSTEM_PART_25,
+            tmpl_26.as_str(),
+            SYSTEM_PART_27,
+            SYSTEM_PART_28,
+            SYSTEM_PART_29,
+            tmpl_30.as_str(),
+            SYSTEM_PART_31,
+            SYSTEM_PART_32,
+            SYSTEM_PART_33,
+        ]
+        .join("\n");
+        vec![
+            InferenceRequestMessage {
+                role: InferenceRequestRole::System,
+                content: system_content,
+            },
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: format!(
+                    "{USER_WRAPPER_PREFIX}{}{USER_WRAPPER_SUFFIX}",
+                    input.dialogue_text
+                ),
+            },
+        ]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: DetailedTurnCompressionV1Input =
+        serde_json::from_value(input.clone()).expect("detailed-turn-compression-v1 input");
+    DetailedTurnCompressionV1::render(&input)
 }

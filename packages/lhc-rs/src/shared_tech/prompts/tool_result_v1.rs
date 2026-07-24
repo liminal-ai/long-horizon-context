@@ -1,6 +1,6 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/tool-result-v1.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/tool-result-v1.ts.
 
-use crate::shared_tech::derivation::{InferenceRequestMessage, ToolOutcome};
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole, ToolOutcome};
 use serde_json::Value;
 
 pub const NAME: &str = "tool-result-v1";
@@ -35,12 +35,35 @@ pub struct ToolResultV1;
 impl ToolResultV1 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &ToolResultV1Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &ToolResultV1Input) -> Vec<InferenceRequestMessage> {
+        let system = format!(
+            "{SYSTEM_STATIC_PREFIX}{}{SYSTEM_STATIC_MID}{} tokens. {}{SYSTEM_STATIC_SUFFIX}",
+            input.outcome.as_str(),
+            input.target_tokens,
+            input.guidance,
+        );
+        let user = format!(
+            "{USER_STATIC_TOOL_PREFIX}{}{USER_STATIC_OUTCOME_MID}{}{USER_STATIC_OUTPUT_MID}{}",
+            input.tool_name,
+            input.outcome.as_str(),
+            input.content,
+        );
+        vec![
+            InferenceRequestMessage {
+                role: InferenceRequestRole::System,
+                content: system,
+            },
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: user,
+            },
+        ]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: ToolResultV1Input =
+        serde_json::from_value(input.clone()).expect("tool-result-v1 input");
+    ToolResultV1::render(&input)
 }

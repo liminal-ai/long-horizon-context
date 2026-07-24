@@ -33,6 +33,31 @@ pub fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// JS `String.prototype.trim` — WhiteSpace + LineTerminator + BOM (U+FEFF).
+///
+/// Covers TAB/VT/FF/SP/NBSP, Unicode Space_Separator (Zs), LF/CR/LS/PS, and
+/// BOM. Use wherever a Wave 1 body translates JS `.trim()`.
+pub fn js_trim(s: &str) -> &str {
+    fn is_js_trim_char(c: char) -> bool {
+        matches!(
+            c,
+            '\u{0009}' // TAB
+            | '\u{000B}' // VT
+            | '\u{000C}' // FF
+            | '\u{0020}' // SP
+            | '\u{00A0}' // NBSP
+            | '\u{FEFF}' // BOM / ZWNBSP
+            | '\u{000A}' // LF
+            | '\u{000D}' // CR
+            | '\u{2028}' // LS
+            | '\u{2029}' // PS
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+        )
+    }
+    s.trim_matches(is_js_trim_char)
+}
+
 /// JS `s.slice(start, end)` over UTF-16 code units (negative indices count
 /// from the end). A slice boundary that splits a surrogate pair drops the
 /// lone half — see module divergence notes.
@@ -70,6 +95,14 @@ pub fn js_slice(s: &str, start: i64, end: Option<i64>) -> String {
 pub fn js_json_stringify(value: &Value) -> String {
     let mut out = String::new();
     write_value(&mut out, value);
+    out
+}
+
+/// `JSON.stringify(value, null, 2)` — same leaf spelling as
+/// [`js_json_stringify`], with two-space indentation.
+pub fn js_json_stringify_pretty(value: &Value) -> String {
+    let mut out = String::new();
+    write_value_pretty(&mut out, value, 0);
     out
 }
 
@@ -112,6 +145,62 @@ fn write_value(out: &mut String, value: &Value) {
                 out.push(':');
                 write_value(out, item);
             }
+            out.push('}');
+        }
+    }
+}
+
+fn write_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+}
+
+fn write_value_pretty(out: &mut String, value: &Value, depth: usize) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => write_number(out, n),
+        Value::String(s) => {
+            out.push_str(&serde_json::to_string(s).expect("string serialization is infallible"))
+        }
+        Value::Array(items) => {
+            if items.is_empty() {
+                out.push_str("[]");
+                return;
+            }
+            out.push_str("[\n");
+            for (i, item) in items.iter().enumerate() {
+                write_indent(out, depth + 1);
+                write_value_pretty(out, item, depth + 1);
+                if i + 1 < items.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, depth);
+            out.push(']');
+        }
+        Value::Object(map) => {
+            if map.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push_str("{\n");
+            let mut iter = map.iter().peekable();
+            while let Some((key, item)) = iter.next() {
+                write_indent(out, depth + 1);
+                out.push_str(
+                    &serde_json::to_string(key).expect("string serialization is infallible"),
+                );
+                out.push_str(": ");
+                write_value_pretty(out, item, depth + 1);
+                if iter.peek().is_some() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            write_indent(out, depth);
             out.push('}');
         }
     }

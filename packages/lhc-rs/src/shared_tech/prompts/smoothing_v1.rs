@@ -1,8 +1,8 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/smoothing-v1.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/smoothing-v1.ts.
 //!
 //! Settled smoothing prompt from the smoothed_prompt dial-in runs.
 
-use crate::shared_tech::derivation::InferenceRequestMessage;
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole};
 use serde_json::Value;
 
 pub const NAME: &str = "smoothing-v1";
@@ -149,12 +149,26 @@ pub struct SmoothingV1;
 impl SmoothingV1 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &SmoothPromptV1Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &SmoothPromptV1Input) -> Vec<InferenceRequestMessage> {
+        vec![
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: SMOOTHING_V1_SYSTEM_INSTRUCTIONS.to_string(),
+            },
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: format!(
+                    "{SMOOTHING_V1_USER_WRAPPER_PREFIX}{}{SMOOTHING_V1_USER_WRAPPER_SUFFIX}",
+                    input.text
+                ),
+            },
+        ]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: SmoothPromptV1Input =
+        serde_json::from_value(input.clone()).expect("smoothing-v1 input");
+    SmoothingV1::render(&input)
 }

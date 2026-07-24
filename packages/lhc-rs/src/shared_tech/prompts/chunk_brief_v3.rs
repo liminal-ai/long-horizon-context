@@ -1,6 +1,6 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v3.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v3.ts.
 
-use crate::shared_tech::derivation::InferenceRequestMessage;
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole};
 use serde_json::Value;
 
 pub const NAME: &str = "chunk-brief-v3";
@@ -32,16 +32,43 @@ pub struct ChunkBriefV3;
 impl ChunkBriefV3 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &ChunkBriefV3Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &ChunkBriefV3Input) -> Vec<InferenceRequestMessage> {
+        let stated_aim = stated_target(input.input_tokens, 0.075);
+        let stated_lo = stated_target(input.input_tokens, 0.05);
+        let stated_hi = stated_target(input.input_tokens, 0.1);
+        let job = JOB_TEMPLATE
+            .replace("${statedAim}", &stated_aim.to_string())
+            .replace("${statedLo}", &stated_lo.to_string())
+            .replace("${statedHi}", &stated_hi.to_string());
+        let content = [
+            INSTRUCTIONS_OPEN,
+            INSTRUCTIONS_INTRO,
+            "",
+            job.as_str(),
+            INSTRUCTIONS_CLOSE,
+            "",
+            CONTENT_OPEN,
+            input.text.as_str(),
+            CONTENT_CLOSE,
+        ]
+        .join("\n");
+        vec![InferenceRequestMessage {
+            role: InferenceRequestRole::User,
+            content,
+        }]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: ChunkBriefV3Input =
+        serde_json::from_value(input.clone()).expect("chunk-brief-v3 input");
+    ChunkBriefV3::render(&input)
 }
 
-fn stated_target(_input_tokens: i64, _ratio: f64) -> i64 {
-    todo!("phase 2")
+fn stated_target(input_tokens: i64, ratio: f64) -> i64 {
+    let raw = input_tokens as f64 * ratio;
+    let step = if raw >= 1000.0 { 100.0 } else { 10.0 };
+    // JS Math.round(raw / step) * step
+    ((raw / step) + 0.5).floor() as i64 * step as i64
 }

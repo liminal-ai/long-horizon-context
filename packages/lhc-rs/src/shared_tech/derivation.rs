@@ -675,17 +675,20 @@ pub struct CompletionTx<'a> {
     pub on_commit: OnCommitRegistration,
 }
 
+/// One-shot completion callback (TS `onApplied` / `onDeferred`).
+pub type CompletionCallback = Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>;
+
 /// In-memory handler result — carries closures, so no serde.
 /// Shape matches the TS discriminated union on `ok` / `deferred` / `blocked`.
 /// `onApplied` / `onDeferred` are one-shot in TS → `FnOnce`.
 pub enum HandlerOutcome {
     Ok {
         derivations: Option<Vec<HandlerDerivationWrite>>,
-        on_applied: Option<Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>>,
+        on_applied: Option<CompletionCallback>,
     },
     Deferred {
         reason: String,
-        on_deferred: Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>,
+        on_deferred: CompletionCallback,
     },
     Failed {
         reason: String,

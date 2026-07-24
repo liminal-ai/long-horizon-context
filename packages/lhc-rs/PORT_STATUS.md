@@ -619,6 +619,20 @@ Amended shapes (now the frozen Phase 2 contract):
   ChunkEntryBand/TargetRatioKind; EventRecord payload accessors exhaustive
   (wildcards removed); `rename_all` on InferenceRequestMessage/
   ModelCallMessage; W7 `const _` keepalive removed.
+- `PreparedStatement::run(&[SqlParam]) -> StatementRunResult { changes: i64,
+  last_insert_rowid: i64 }` (Phase 2 Wave 1 repair-r1 — Lee relayed Fable
+  phase-reviewer ruling, 2026-07-24). Basis: the Wave 0 storage seam mirrors
+  `node:sqlite`; this is the documented `StatementSync.run` result shape, not
+  an invented LHC surface. **Rejected substitute:** `SELECT changes()` after
+  `run` — adds SQL operations absent from TypeScript and loses the direct
+  result channel. Known TypeScript consumers (later behavior waves own the
+  hit/miss logic; do not implement them in Wave 1):
+  1. `shared-tech/work-queue/index.ts` completion hit/miss/multi-row —
+     Phase 2 Wave 2.
+  2. `shared-tech/durable-work/index.ts` completion hit/miss/multi-row —
+     Phase 2 Wave 2.
+  3. `messages/internal/derive.ts:93,117` idempotent-write hit/miss —
+     Phase 2 Wave 4.
 
 Recorded, deliberately NOT changed: `DEFAULT_PROMPT_NAMES` tuple-slice
 representation (golden-tested; reshaping certified surface for style is net
@@ -631,6 +645,96 @@ Wave 1); panic-safe cleanup guards in work_execution/intake + un-fold the
 view-boundary it.each (Wave 2 test hygiene, sanctioned test edits);
 clippy style debt (~40 pre-existing + fmt-surfaced; per-wave cleanup);
 `persist_borrow.rs` ledger row below.
+
+### Phase 2 Wave 1 repair-r1 (2026-07-24) — NOT certified
+
+Sol (`20260724-113552-d6c0b9`) and Fable (`20260724-113918-9eadde`) both
+rejected Wave 1 certification. Reconciled implementor repairs (this round):
+
+1. Context fallback callbacks: clone `Arc` under lock, release, then invoke;
+   nested `run_with_instance_seam` clears touch suppression.
+2. Persist try/catch/finally ordering: sync construction panics, COMMIT in
+   rollback-aware path, post-commit flush only after COMMIT, close always.
+3. `resolve_thread_file` registry containment → `storage_failure("registry
+   read failed: …")`; registry close failure propagates.
+4. Storage: `prepare` fails at prepare; panic detail is underlying sqlite
+   message (no adapter label leak); `StatementRunResult` as above.
+5. `js_trim` + classifier JS `\d`/`\s`/multiline/`Number` dialect.
+6. `detailed_turn_compression_v3` `floor(x+0.5)` rounding.
+7. `estimate_tokens` rejects disallowed specials like js-tiktoken `encode`.
+8. Empty `""` db path is a known path for logging (no early return).
+
+Deliberately carried: closed-vocabulary enums stay exhaustive (Fable
+forward-compat notes overridden); no public report/metadata reshape;
+`SystemTime::now` default clock retained; `CompletionCallback` alias accepted;
+`check_prompt_bytes.py` Phase 1 `assert_todo_body` removal stands.
+
+Wave 1 remains **not certified** pending re-verification.
+
+### Phase 2 Wave 1 repair-r2 (2026-07-24) — NOT certified
+
+Re-verification: Sol `20260724-133908-5e4741` FAIL; Cursor Fable
+`20260724-133910-e0b24c` PASS-with-findings. Reconciliation by union + TS
+evidence (not vote). Sol's three blockers confirmed; Fable independently
+observed persist micro-ordering and two classifier regex edges. Fixes:
+
+1. `js_number` uses JS `f64` (`Number.MAX_SAFE_INTEGER` for integer JSON form);
+   i64-max digit strings keep JS rounding (`…6000`); non-finite captures remain
+   in the facts bag and `js_json_stringify` as `null` (not omitted).
+2. Classifier translates JS `\s`/`\S`/`.` via an explicit ECMAScript whitespace
+   class (incl. BOM/NBSP/LS/PS) and a JS-dot class excluding LF/CR/LS/PS;
+   ASCII `[0-9]` and ASCII `\b` rulings retained.
+3. Read-txn controller: BEGIN failure → catch fail-soft ROLLBACK → close →
+   rethrow; metadata-error ROLLBACK is hard (failure enters catch, then
+   fail-soft rollback + close, first rollback error propagates).
+4. `insertLog` / `insertDerivationLog`: insert fail-soft; `close` in finally
+   propagates.
+
+`StatementRunResult` amendment and rejected `SELECT changes()` substitute
+unchanged; Wave 2/Wave 4 consumers unchanged. Wave 1 remains **not certified**
+pending another changed-scope re-verification.
+
+### Phase 2 Wave 1 repair-r3 (2026-07-24) — NOT certified
+
+Changed-scope re-verification FAIL: Cursor-Fable `20260724-140014-1494ac`,
+Sol `20260724-140025-7536d2`. Both agreed repair-r2 over-broadened the line
+splitter and that null-fact reinsertion moved key order; Sol also proved
+non-multiline `$` divergence. Narrow fixes:
+
+1. `split_nonempty_trimmed_lines` restored to exact TS `/\r?\n/` (lone CR/LS/PS
+   stay inside the line; they may still satisfy ES `\s`).
+2. Non-multiline translated `$` → Rust `\z`; multiline path unchanged.
+3. `removeNullish` retains marked non-finite null placeholders in original
+   insertion order (no strip+reappend).
+
+Recorded, unchanged: `js_json` full-decimal spelling at `|x| ≥ 1e21` remains the
+existing Wave 0 accepted divergence — not rewritten this round.
+`StatementRunResult` amendment and its three Wave 2/Wave 4 consumers unchanged.
+
+Wave 1 remains **not certified** pending re-verification.
+
+### Phase 2 Wave 1 certification (2026-07-24) — CERTIFIED
+
+Repair-r3 changed-scope verification passed on Cursor Fable 5 Medium
+(`20260724-141309-e06872`): 10/10 Node-pinned adversarial probes green,
+including exact `/\r?\n/` splitting, strict non-multiline `\z` anchoring,
+ordered non-finite null facts through tool-result-v2 prompt JSON, and cleanup.
+This final single-verifier pass follows the onboarding rule for a narrowly
+changed repair scope. Earlier full-scope and severe-finding rounds included
+independent Sol and Fable review; their findings were reconciled by union
+against TypeScript and repaired through r1–r3.
+
+Independent certification gate:
+
+```text
+exact-todo: tokens=425 bodies=425 covered=425
+classified=493 cargo-reported=493 (binaries: 58)
+passed=77 suspicious=0 notimpl=401 wrong=0 ignored=15
+GATE PASS
+```
+
+Wave 1 is **certified** at 77/478 Phase 2 target tests green. Six Phase 2
+behavior waves and Phase 3 Grok Build integration remain.
 
 Review coverage notes: view-select-golden fixtures are per-test (TS ran one
 sequential beforeAll fixture) — a Phase 2 divergence would surface as a

@@ -1,6 +1,6 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/detailed-turn-compression-v3.ts.
 
-use crate::shared_tech::derivation::InferenceRequestMessage;
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole};
 use serde_json::Value;
 
 pub const NAME: &str = "detailed-turn-compression-v3";
@@ -34,16 +34,45 @@ pub struct DetailedTurnCompressionV3;
 impl DetailedTurnCompressionV3 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &DetailedTurnCompressionV3Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(dialogue: &DetailedTurnCompressionV3Input) -> Vec<InferenceRequestMessage> {
+        let stated_aim = stated_target(dialogue.input_tokens, 0.25);
+        let stated_lo = stated_target(dialogue.input_tokens, 0.2);
+        let stated_hi = stated_target(dialogue.input_tokens, 0.3);
+        let job = JOB_TEMPLATE
+            .replace("${statedAim}", &stated_aim.to_string())
+            .replace("${statedLo}", &stated_lo.to_string())
+            .replace("${statedHi}", &stated_hi.to_string());
+        let content = [
+            INSTRUCTIONS_OPEN,
+            INSTRUCTIONS_INTRO,
+            "",
+            job.as_str(),
+            "",
+            INSTRUCTIONS_PROSE,
+            INSTRUCTIONS_CLOSE,
+            "",
+            CONTENT_OPEN,
+            dialogue.dialogue_text.as_str(),
+            CONTENT_CLOSE,
+        ]
+        .join("\n");
+        vec![InferenceRequestMessage {
+            role: InferenceRequestRole::User,
+            content,
+        }]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: DetailedTurnCompressionV3Input =
+        serde_json::from_value(input.clone()).expect("detailed-turn-compression-v3 input");
+    DetailedTurnCompressionV3::render(&input)
 }
 
-fn stated_target(_input_tokens: i64, _ratio: f64) -> i64 {
-    todo!("phase 2")
+fn stated_target(input_tokens: i64, ratio: f64) -> i64 {
+    let raw = input_tokens as f64 * ratio;
+    let step = if raw >= 1000.0 { 100.0 } else { 10.0 };
+    // JS Math.round(raw / step) * step — floor(x + 0.5), not Rust .round()
+    ((raw / step) + 0.5).floor() as i64 * step as i64
 }

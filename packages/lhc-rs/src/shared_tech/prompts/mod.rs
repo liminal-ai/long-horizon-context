@@ -1,4 +1,4 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/index.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/index.ts.
 //!
 //! Name-keyed prompt registry: one module per template exporting
 //! `{ name, render(input) → messages }`. Config selects by name, and dial-in

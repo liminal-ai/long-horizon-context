@@ -732,18 +732,6 @@ def parse_default_names(mod_src: str) -> list[tuple[str, str]]:
     )
 
 
-def assert_todo_body(src: str, fn_name: str, failures: list[str], label: str) -> None:
-    """Require `fn_name(...) { todo!("phase 2") }` with no preceding statements."""
-    # Match associated or free fn; body must be only todo!("phase 2")
-    pattern = re.compile(
-        rf"(?:pub\s+)?fn\s+{re.escape(fn_name)}\s*\([^)]*\)[^{{]*\{{"
-        rf"\s*todo!\(\"phase 2\"\)\s*;?\s*\}}",
-        re.DOTALL,
-    )
-    if not pattern.search(src):
-        failures.append(f"{label}: {fn_name} body is not exactly todo!(\"phase 2\")")
-
-
 def main() -> int:
     assert stated_target(2000, 0.075) == 150
     assert stated_target(2000, 0.05) == 100
@@ -811,9 +799,6 @@ def main() -> int:
             failures.append(
                 f"{prompt_key}/NAME: got {consts.get('NAME')!r} expected {prompt_key!r}"
             )
-
-        assert_todo_body(src, "render", failures, prompt_key)
-        assert_todo_body(src, "render_value", failures, prompt_key)
 
         try:
             reconstructed = RECONSTRUCTORS[prompt_key](consts, SENTINELS[prompt_key])

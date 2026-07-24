@@ -240,6 +240,39 @@ pub const DEFAULT_GUARDS: ResolvedDerivationGuards = ResolvedDerivationGuards {
 
 /// Fill a DerivationGuards with defaults for every omitted value. A pure
 /// function: no defaults drift between construction and the values tests pin.
-pub fn resolve_guards(_guards: Option<&DerivationGuards>) -> ResolvedDerivationGuards {
-    todo!("phase 2")
+pub fn resolve_guards(guards: Option<&DerivationGuards>) -> ResolvedDerivationGuards {
+    let empty = DerivationGuards {
+        smoothed_prompt: None,
+        tool_result_summary: None,
+        detailed_turn_compression: None,
+    };
+    let g = guards.unwrap_or(&empty);
+    ResolvedDerivationGuards {
+        smoothed_prompt: ResolvedSmoothedPromptGuards {
+            max_inference_tokens: g
+                .smoothed_prompt
+                .as_ref()
+                .and_then(|sp| sp.max_inference_tokens)
+                .unwrap_or(DEFAULT_GUARDS.smoothed_prompt.max_inference_tokens),
+            suspicious_output_ratio: g
+                .smoothed_prompt
+                .as_ref()
+                .and_then(|sp| sp.suspicious_output_ratio)
+                .unwrap_or(DEFAULT_GUARDS.smoothed_prompt.suspicious_output_ratio),
+        },
+        tool_result_summary: ResolvedToolResultSummaryGuards {
+            timeout_ms: g
+                .tool_result_summary
+                .as_ref()
+                .and_then(|tr| tr.timeout_ms)
+                .unwrap_or(DEFAULT_GUARDS.tool_result_summary.timeout_ms),
+        },
+        detailed_turn_compression: ResolvedDetailedTurnCompressionGuards {
+            tiny_turn_tokens: g
+                .detailed_turn_compression
+                .as_ref()
+                .and_then(|dt| dt.tiny_turn_tokens)
+                .unwrap_or(DEFAULT_GUARDS.detailed_turn_compression.tiny_turn_tokens),
+        },
+    }
 }

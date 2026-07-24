@@ -1,11 +1,12 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/tool-result-v2.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/tool-result-v2.ts.
 //!
-//! MODE_GUIDANCE and static prompt fragments are real and byte-identical; functions are skeletons.
+//! MODE_GUIDANCE and static prompt fragments are real and byte-identical.
 
 use crate::shared_tech::derivation::{
-    InferenceRequestMessage, ToolOutcome, ToolResultFacts, ToolResultPromptMode,
-    ToolResultResponseShape,
+    InferenceRequestMessage, InferenceRequestRole, ToolOutcome, ToolResultFacts,
+    ToolResultPromptMode, ToolResultResponseShape,
 };
+use crate::shared_tech::js_json::{js_json_stringify_pretty, js_len, js_slice};
 use serde_json::{Map, Value};
 
 pub const NAME: &str = "tool-result-v2";
@@ -110,20 +111,116 @@ pub struct ToolResultV2;
 impl ToolResultV2 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &ToolResultV2Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &ToolResultV2Input) -> Vec<InferenceRequestMessage> {
+        let facts = facts_for_prompt(&input.facts);
+        // TS: MODE_GUIDANCE[i.promptMode] ?? MODE_GUIDANCE.generic_summary
+        let guidance = mode_guidance(input.prompt_mode);
+        let target_line = format!(
+            "{TOOL_RESULT_V2_TARGET_LENGTH_PREFIX}{}{TOOL_RESULT_V2_TARGET_LENGTH_SUFFIX}",
+            input.target_tokens
+        );
+        let mode_line = format!(
+            "{TOOL_RESULT_V2_PROMPT_MODE_PREFIX}{}",
+            input.prompt_mode.as_str()
+        );
+        let facts_json = js_json_stringify_pretty(&Value::Object(facts));
+        let system_content = [
+            TOOL_RESULT_V2_INTRO,
+            "",
+            TOOL_RESULT_V2_FACTS_RULE,
+            "",
+            TOOL_RESULT_V2_FIELD_RULE,
+            "",
+            target_line.as_str(),
+            mode_line.as_str(),
+            "",
+            TOOL_RESULT_V2_MODE_GUIDANCE_HEADER,
+            guidance,
+            "",
+            TOOL_RESULT_V2_PARSED_FIELDS_HEADER,
+            facts_json.as_str(),
+        ]
+        .join("\n");
+        let user_content = format!(
+            "{TOOL_RESULT_V2_USER_TOOL_PREFIX}{}{TOOL_RESULT_V2_USER_OUTCOME_PREFIX}{}{TOOL_RESULT_V2_USER_EXCERPT_OPEN}{}{TOOL_RESULT_V2_USER_EXCERPT_CLOSE}",
+            input.tool_name,
+            input.outcome.as_str(),
+            raw_output_for_prompt(&input.content, input.response_shape),
+        );
+        vec![
+            InferenceRequestMessage {
+                role: InferenceRequestRole::System,
+                content: system_content,
+            },
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: user_content,
+            },
+        ]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: ToolResultV2Input =
+        serde_json::from_value(input.clone()).expect("tool-result-v2 input");
+    ToolResultV2::render(&input)
 }
 
-fn facts_for_prompt(_facts: &ToolResultFacts) -> Map<String, Value> {
-    todo!("phase 2")
+fn facts_for_prompt(facts: &ToolResultFacts) -> Map<String, Value> {
+    let excluded = [
+        "operationClass",
+        "responseShape",
+        "outputChars",
+        "outputWords",
+    ];
+    facts
+        .iter()
+        .filter(|(key, _)| !excluded.contains(&key.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
-fn raw_output_for_prompt(_raw_output: &str, _response_shape: ToolResultResponseShape) -> String {
-    todo!("phase 2")
+fn raw_output_for_prompt(raw_output: &str, response_shape: ToolResultResponseShape) -> String {
+    let lines: Vec<&str> = split_js_lines(raw_output);
+    if response_shape == ToolResultResponseShape::SearchResult && lines.len() > 60 {
+        return format!(
+            "{}{TOOL_RESULT_V2_SEARCH_OMIT_PREFIX}{}{TOOL_RESULT_V2_SEARCH_OMIT_SUFFIX}",
+            lines[..60].join("\n"),
+            lines.len() - 60,
+        );
+    }
+    // TS: rawOutput.length / slice — UTF-16 code units.
+    if js_len(raw_output) > 20_000 {
+        let head = js_slice(raw_output, 0, Some(12_000));
+        let tail = js_slice(raw_output, -4_000, None);
+        return format!(
+            "{head}{TOOL_RESULT_V2_MIDDLE_OMIT_PREFIX}{}{TOOL_RESULT_V2_MIDDLE_OMIT_SUFFIX}{tail}",
+            js_len(raw_output) - js_len(&head) - js_len(&tail),
+        );
+    }
+    raw_output.to_string()
+}
+
+/// JS `String.prototype.split(/\r?\n/)`.
+fn split_js_lines(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            lines.push(&s[start..i]);
+            i += 2;
+            start = i;
+        } else if bytes[i] == b'\n' {
+            lines.push(&s[start..i]);
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    lines.push(&s[start..]);
+    lines
 }

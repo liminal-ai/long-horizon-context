@@ -1,8 +1,8 @@
-//! Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v2.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/shared-tech/prompts/chunk-brief-v2.ts.
 //!
-//! Prompt strings are real and byte-identical; render is a skeleton.
+//! Prompt strings are real and byte-identical.
 
-use crate::shared_tech::derivation::InferenceRequestMessage;
+use crate::shared_tech::derivation::{InferenceRequestMessage, InferenceRequestRole};
 use serde_json::Value;
 
 pub const NAME: &str = "chunk-brief-v2";
@@ -247,12 +247,29 @@ pub struct ChunkBriefV2;
 impl ChunkBriefV2 {
     pub const NAME: &'static str = NAME;
 
-    pub fn render(_input: &ChunkBriefV2Input) -> Vec<InferenceRequestMessage> {
-        todo!("phase 2")
+    pub fn render(input: &ChunkBriefV2Input) -> Vec<InferenceRequestMessage> {
+        let user_content = USER_PROMPT
+            .replace("{{inputTokens}}", &input.input_tokens.to_string())
+            .replace("{{targetMinTokens}}", &input.target_min_tokens.to_string())
+            .replace("{{targetMaxTokens}}", &input.target_max_tokens.to_string())
+            .replace("{{targetMidTokens}}", &input.target_aim_tokens.to_string())
+            + &format!("\n\n<actual-input>\n{}\n</actual-input>", input.text);
+        vec![
+            InferenceRequestMessage {
+                role: InferenceRequestRole::System,
+                content: SYSTEM_PROMPT.to_string(),
+            },
+            InferenceRequestMessage {
+                role: InferenceRequestRole::User,
+                content: user_content,
+            },
+        ]
     }
 }
 
 /// Type-erased registry dispatch (TS `PromptTemplate.render`).
-pub fn render_value(_input: &Value) -> Vec<InferenceRequestMessage> {
-    todo!("phase 2")
+pub fn render_value(input: &Value) -> Vec<InferenceRequestMessage> {
+    let input: ChunkBriefV2Input =
+        serde_json::from_value(input.clone()).expect("chunk-brief-v2 input");
+    ChunkBriefV2::render(&input)
 }
