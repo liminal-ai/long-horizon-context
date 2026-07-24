@@ -58,7 +58,12 @@ inside a smaller frame than Lee's deliverable.
 ## The cast
 
 - **Implementor: grok-4.5-high via `cursor-subagent`**
-  (`--model cursor-grok-4.5-high`). Same failure modes as the Python run
+  (`--model cursor-grok-4.5-high-fast`). **Always launch with the `-fast`
+  model variant** — Lee's standing instruction; it is a first-class model id
+  (`cursor-agent --list-models`), not an interactive-only toggle, and
+  Phase 1 ran on it. If a run ever comes back on non-fast (check the
+  `model` field in `cursor-subagent list` output), relaunch rather than
+  wait. Same failure modes as the Python run
   (see the handoff §cast): weakened assertions, invented surfaces, prompt
   text left unhoisted, literal `\n` in constants. Rust adds new ones to
   check every wave: wildcard `_ =>` arms on closed-vocabulary matches
@@ -105,6 +110,27 @@ Python handoff §"The loop" applies with these deltas:
      keep it in scripts/).
 5. Commit per wave: `port(lhc-rs): wave N — <scope> (dual-verified)`,
    body noting rounds and both verdicts. Tick the ledger first. Push.
+
+## Monitoring cadence (context discipline — Lee's standing instruction)
+
+Polling a detached run every 30–60 s burns your own context on no-op
+status checks and was the previous orchestrator's biggest waste. The rule:
+
+- **Launch phase:** check once ~30–60 s after starting a run, only to
+  confirm it actually started (status running, first tool events landing).
+- **Cruise phase:** once confirmed running, stretch the interval to
+  **3–5 minutes**, scaled to the run's typical length (implementor waves
+  run 10–40 min; verifier audits 10–30 min). A 20-minute run deserves
+  ~5 checks, not 30.
+- Each check is one cheap `list`/status call — do not tail full transcripts
+  mid-run; read output only when the run finishes or genuinely stalls.
+- **Stall test before acting:** a run is only "possibly hung" after 2–3
+  consecutive checks at cruise interval with zero new tool events AND no
+  disk progress (`git status --short`, file mtimes). Then use the handoff
+  §mechanics recovery procedure. Never conclude a hang from a single
+  quiet interval.
+- While waiting, do useful orchestrator work (draft the next brief, prep
+  the verify prompts) instead of polling.
 
 ## Escalation (stop, don't improvise)
 
