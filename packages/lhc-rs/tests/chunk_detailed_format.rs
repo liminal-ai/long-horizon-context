@@ -10,6 +10,7 @@ use fixtures::{
     UserPromptOverrides, UserPromptPayload, create_inference_callbacks_double, kind, open_raw,
     read_derived_forms, set_form_state, temp_store, valid_event,
 };
+use lhc::sdk::DrainOpts;
 use lhc::shared_tech::derivation::{
     BoxFuture, ChunkPolicyConfig, Derivation, DerivationState, InferenceCallbacks, InferenceResult,
     LeaseConfig, SdkConfig, SdkMode, SubjectKind,
@@ -24,7 +25,7 @@ use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::token_counting::estimate_tokens;
 use lhc::shared_tech::work_queue::queue_detail;
 use lhc::threads::{NewThreadInput, ThreadRef};
-use lhc::{DrainOpts, Lhc, init_lhc, threads};
+use lhc::{Lhc, init_lhc, threads};
 use serde_json::{Map, Value, json};
 
 const SELF_CHUNK: ChunkPolicyConfig = ChunkPolicyConfig {

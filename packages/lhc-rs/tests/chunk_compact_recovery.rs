@@ -7,6 +7,7 @@ use fixtures::{
     UserPromptPayload, create_inference_callbacks_double, kind, open_raw, read_derived_forms,
     temp_store, valid_event,
 };
+use lhc::sdk::DrainOpts;
 use lhc::shared_tech::derivation::{
     ChunkPolicyConfig, Derivation, DerivationState, InferenceCallbacks, LeaseConfig, SdkConfig,
     SdkMode,
@@ -22,7 +23,7 @@ use lhc::shared_tech::view::{
 use lhc::shared_tech::work_queue::queue_detail;
 use lhc::thread_view::{CompactAbortSignal, CompactOpts};
 use lhc::threads::{NewThreadInput, ThreadRef};
-use lhc::{DrainOpts, Lhc, init_lhc, threads};
+use lhc::{Lhc, init_lhc, threads};
 use serde_json::json;
 
 async fn new_thread(store: &TempStore) -> String {

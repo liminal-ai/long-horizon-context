@@ -8,6 +8,7 @@ use fixtures::{
     create_inference_callbacks_double, kind, open_raw, read_derived_forms, set_form_state,
     temp_store, valid_event,
 };
+use lhc::sdk::DrainOpts;
 use lhc::shared_tech::derivation::{
     ChunkPolicyConfig, Derivation, DerivationState, InferenceCallbacks, LeaseConfig, SdkConfig,
     SdkMode, SubjectKind, SummarizeChunkBriefInput,
@@ -21,7 +22,7 @@ use lhc::shared_tech::token_counting::estimate_tokens;
 use lhc::shared_tech::work_queue::{QueueLiveStatus, queue_detail};
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::turns::{ChunkDeriveDerivationType, ChunkDeriveResult};
-use lhc::{DrainOpts, Lhc, init_lhc, threads};
+use lhc::{Lhc, init_lhc, threads};
 
 const SELF_CHUNK: ChunkPolicyConfig = ChunkPolicyConfig {
     target_projected_tokens: 1,

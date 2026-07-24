@@ -3,6 +3,7 @@
 //! [`read_derived_forms`] / [`read_chunks`] / [`set_form_state`] are below-SDK
 //! sqlite helpers — REAL. SDK-calling thread builders remain `todo!("phase 2")`.
 
+use lhc::intake_stream::MessageEventInput;
 use lhc::shared_tech::derivation::SizeDisposition;
 use lhc::shared_tech::derivation::{
     DependencyGap, Derivation, DerivationMetadata, DerivationState, ProviderProvenance,
@@ -340,6 +341,42 @@ fn parse_gaps(raw: &str) -> Vec<DependencyGap> {
             }
         })
         .collect()
+}
+
+/// TS private `newThreadFile` — SDK-driving; Phase 1 exact todo.
+#[allow(dead_code)]
+async fn new_thread_file(_store: &TempStore) -> String {
+    todo!("phase 2")
+}
+
+/// TS private `send` — SDK-driving; Phase 1 exact todo.
+#[allow(dead_code)]
+async fn send(_file_path: &str, _batch: &[MessageEventInput]) {
+    todo!("phase 2")
+}
+
+/// TC-3.2's fallback-rendering state as one shared builder (coverage.md
+/// cross-story debt: TC-4.4 consumes this exact scenario). Expects a
+/// manual-mode SDK: scripts the prompt's smoothing to fail, then drains.
+pub const GAPPED_SMOOTHING_REASON: &str = "provider_failure: scripted smoothing failure";
+
+/// TS `GappedRenderingThread` return shape.
+#[derive(Debug, Clone)]
+pub struct GappedRenderingThreadResult {
+    pub file_path: String,
+    pub message_id: String,
+    pub turn_id: String,
+}
+
+/// TS `gappedRenderingThread` — PARTIAL (SDK-driving).
+/// Needs: threads::new_thread, intake_stream::message_events, sdk.work.drain,
+/// plus REAL [`set_form_state`] / [`read_derived_forms`].
+pub async fn gapped_rendering_thread(
+    _store: &TempStore,
+    _sdk: &lhc::Lhc,
+    _double: &super::inference_callbacks_double::InferenceCallbacksDouble,
+) -> GappedRenderingThreadResult {
+    todo!("phase 2")
 }
 
 /// TS `damagedSourceThread` — PARTIAL (SDK + [`super::corrupt::corrupt_two_open_turns`]).

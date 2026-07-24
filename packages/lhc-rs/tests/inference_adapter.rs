@@ -8,13 +8,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use indexmap::IndexMap;
 use lhc::shared_tech::derivation::{
     ChunkPolicyConfig, Derivation, SdkConfig, SdkMode, ToolOutcome,
 };
 use lhc::shared_tech::inference_types::{
-    DerivationGuards, DetailedTurnCompressionGuards, InferenceConfig, ModelAssignment, ModelCall,
-    ModelCallInput, ModelCallResult,
+    DerivationGuards, DetailedTurnCompressionGuards, InferenceConfig, ModelCall, ModelCallInput,
+    ModelCallResult,
 };
 use lhc::shared_tech::logging::{DerivationLogEventKind, DerivationLogQuery};
 use lhc::shared_tech::scheduler::DrainStoppedBecause;
@@ -24,9 +23,10 @@ use regex::Regex;
 
 use fixtures::{
     AssistantTextOverrides, AssistantTextPayload, DERIVATION_TYPES, INFERENCE_DERIVATION_TYPES,
-    TempStore, ToolCallOverrides, ToolCallPayload, ToolResultOverrides, ToolResultPayload,
-    TurnEndOverrides, UserPromptOverrides, UserPromptPayload, canned_responses, kind,
-    read_derived_forms, recording_call, scripted_call, temp_store, valid_assignments, valid_event,
+    InferenceAssignments, InferenceDerivationType, TempStore, ToolCallOverrides, ToolCallPayload,
+    ToolResultOverrides, ToolResultPayload, TurnEndOverrides, UserPromptOverrides,
+    UserPromptPayload, canned_responses, kind, read_derived_forms, recording_call, scripted_call,
+    temp_store, valid_assignments, valid_event,
 };
 
 /// Tiny target: each placed turn crosses it, so turn 1's chunk closes during
@@ -183,13 +183,13 @@ async fn seed_smoothing_only(sdk: &Lhc, store: &TempStore) -> String {
     file_path_str
 }
 
-fn inference_sdk(call: ModelCall) -> (Lhc, IndexMap<String, ModelAssignment>) {
+fn inference_sdk(call: ModelCall) -> (Lhc, InferenceAssignments) {
     let assignments = valid_assignments(None);
     let sdk = init_lhc(SdkConfig {
         inference_callbacks: None,
         inference: Some(InferenceConfig {
             call,
-            assignments: Some(assignments.clone()),
+            assignments: Some(assignments.to_string_keyed()),
             timeout_ms: None,
             max_input_chars: None,
         }),
@@ -227,17 +227,15 @@ async fn a_seeded_drain_lands_every_kind_ready_with_its_lanes_canned_content_and
             .collect();
         assert!(!ready.is_empty());
     }
-    for kind_name in INFERENCE_DERIVATION_TYPES {
+    for kind in InferenceDerivationType::ALL {
+        let kind_name = kind.as_str();
         let ready: Vec<_> = forms
             .iter()
-            .filter(|form| form.derivation_type == *kind_name && form.state.as_str() == "ready")
+            .filter(|form| form.derivation_type == kind_name && form.state.as_str() == "ready")
             .collect();
         for form in ready {
-            assert_eq!(
-                form.content.as_deref(),
-                Some(responses[*kind_name].as_str())
-            );
-            let assignment = assignments.get(*kind_name).expect("assignment");
+            assert_eq!(form.content.as_deref(), Some(responses[kind_name].as_str()));
+            let assignment = assignments.get(*kind);
             let provenance = form
                 .metadata
                 .as_ref()

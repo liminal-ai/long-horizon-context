@@ -8,6 +8,8 @@
 //! TS uses `AsyncLocalStorage`; Rust counterpart is `tokio::task_local` (declared
 //! below). Function bodies land in Phase 2.
 
+use std::sync::Arc;
+
 use super::derivation::ResolvedSdkConfig;
 use super::storage::Db;
 use super::view::ResolvedViewConfig;
@@ -29,10 +31,12 @@ pub struct InstanceSeam {
 
 tokio::task_local! {
     /// TS `AsyncLocalStorage<InstanceSeam>` — Phase 2 reads/writes this store.
-    static SEAM_STORE: Option<InstanceSeam>;
+    /// Shared via `Arc` so namespace carriers can clone the same instance seam
+    /// without consuming the only `InstanceSeam`.
+    static SEAM_STORE: Option<Arc<InstanceSeam>>;
 }
 
-pub fn run_with_instance_seam<T>(_seam: InstanceSeam, _operation: impl FnOnce() -> T) -> T {
+pub fn run_with_instance_seam<T>(_seam: Arc<InstanceSeam>, _operation: impl FnOnce() -> T) -> T {
     todo!("phase 2")
 }
 

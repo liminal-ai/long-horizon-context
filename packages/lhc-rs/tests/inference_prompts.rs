@@ -242,7 +242,7 @@ fn assert_prompt_embeds(name: &str) {
 fn resolved_config(call: ModelCall, max_input_chars: Option<i64>) -> ResolvedInferenceConfig {
     ResolvedInferenceConfig {
         call,
-        assignments: valid_assignments(None),
+        assignments: valid_assignments(None).to_string_keyed(),
         guards: resolve_guards(None),
         timeout_ms: 60_000,
         max_input_chars: max_input_chars.unwrap_or(200_000),

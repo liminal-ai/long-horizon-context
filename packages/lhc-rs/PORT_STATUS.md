@@ -6,6 +6,16 @@ mirror the lhc-py run; use ../lhc-py/PORT_STATUS.md notes for judgment
 calls already settled once). Tick `skel` when the Rust counterpart is
 written; tick `gate` only after a clean `python3 scripts/check_gate.py` run.
 
+**Phase 1 dual-certified on 2026-07-24:** unit 8 of approximately 18 across
+the full three-phase deliverable. Final gate: exact-todo **513**,
+classified/cargo-reported **493**, passed **40**, notimpl **438**, ignored
+**15**, wrong/suspicious **0/0**. All **72** source / **53** suite / **18**
+fixture rows are reconciled; only the two recorded live-network artifacts are
+excluded. Phase 2 behavior (seven waves, the larger remaining part) and Phase
+3 Grok Build integration (approximately three chunks) remain; nothing runs
+yet, and only Phase 3 delivers LHC inside Grok Build. Phase 2 is governed by
+`docs/lhc-rs-port/phase2-brief.md`.
+
 Rust-only additions (no TS counterpart):
 - `src/shared_tech/js_json.rs` — REAL in Wave 0 (JS string/JSON parity; the
   lhc-py `_jsstr.py` counterpart). Gate-enforced as the only serializer for
@@ -78,7 +88,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 - Wave 2: `work_kind_registry` is a REAL exhaustive-match fn (Wave 0 Record
   ruling). Intake pipeline test seams `set_intake_clock` /
   `set_intake_walk_hook` are REAL module-state setters
-  (`intake_stream/internal/pipeline.rs` PARTIAL — walk bodies later).
+  (`intake_stream/internal/pipeline.rs` — walk bodies Phase 2).
 - Wave 2: `WorkHandler` / `DurableWorkDispatcher` are `Arc<dyn Fn... + Send + Sync>`;
   `WorkHandlerMap` is `IndexMap` (TS `Object.entries` insertion order); lookups
   return cloned Arcs; identity via `Arc::ptr_eq`.
@@ -202,10 +212,10 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `set_thread_touch(None)` each inside `catch_unwind` so Phase 1 exact-todo
   panics cannot abort during unwind. Context setter bodies remain Wave 1
   `todo!("phase 2")` — no Wave 4 diff to `shared_tech/context.rs`.
-- Wave 4 later-wave PARTIALs (compile-only for suites; remain PARTIAL):
-  `thread_view::status`;
+- Wave 4 later-wave stubs (compile-only for suites at the time; completed in
+  Waves 5–7): `thread_view::status`;
   `sdk::{LhcMessages::show/report/edit/remove/clean_prompt}` (turns list/derive
-  completed in Wave 5).
+  completed in Wave 5; full SDK namespace method sets closed in Wave 7).
 - Wave 4: eight suites assertion-for-assertion after repair-r1 (marker bytes,
   optional content compares, 3 representable bad-bounds cases — TS `{ from: 1.5 }`
   statically unrepresentable at i64 `MessageListOptions`; TC-5.4 15s timeout).
@@ -252,8 +262,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
   one private `compression_target_tokens(CompressionRatioTargets)`;
   `getChunkText` third arg `Option<ChunkDeriveDerivationType>` (`None` =
   Phase 2 default `chunk_summary_detailed`).
-- Wave 5 later-wave PARTIALs: `thread_view::{CompactAbortSignal, CompactOpts,
-  compact}` + sdk `ThreadViewSurface::compact` only (no invented
+- Wave 5 later-wave stubs (completed in Wave 6–7): at the time only
+  `thread_view::{CompactAbortSignal, CompactOpts, compact}` + sdk
+  `ThreadViewSurface::compact` were deferred (no invented
   `ThreadViewSurface::status`; Wave 4 free `thread_view::status` untouched).
   `CompactAbortSignal` closed by-value Phase 1 snapshot — mapped use is
   pre-aborted; Phase 2 must audit live cancellation semantics before
@@ -359,16 +370,76 @@ Wave 0 rulings (court of record — extend, don't reshape):
   exact-todo **472**, classified **448**, passed **40**, notimpl **394**,
   ignored **14**, wrong/suspicious **0/0**; eleven suites **101** tests
   including two preserved ignores; seven immutable assets byte-identical.
+- Wave 7 (Phase 1 completion wave): inspect domain (`mod` + health/overview/
+  view_report) with helpers/`BAND_ORDER`/capture-gap constants; `shared_tech`
+  index `export *` closure (15 modules); full `sdk.rs` / crate-root surface
+  (namespaces inspect/intake/messages/logging/thread_view/threads/turns/work,
+  `Lhc`/`init_lhc`); `DrainOpts` without `Default` (optionality is outer
+  `Option`); opaque namespace carriers hold private `Arc<InstanceSeam>` (no
+  public unit/struct-literal constructors; `WorkSurface` is `Clone` via Arc,
+  not `Copy` — Promise-race drain spawns use `.clone()`); seam conformance
+  complete (`ThinkingLevel`, `RoutingRunResult.file_path`, private
+  `FAILURE_KINDS`); pi-session `js_array_key_set` lexical `.sort()` closes the
+  Wave 6 11+ malformed-array note; six suites / **45** tests (+1 `#[ignore]`).
+- Wave 7 representation judgments: (1) `DrainOpts` + `TestingWorkRegistration`
+  are public Rust construction bags for TS inline opts under `lhc::sdk` only
+  (not named sdk.ts exports; not crate-root re-exports; required for
+  integration-test construction — import as `lhc::sdk::DrainOpts` /
+  `lhc::sdk::TestingWorkRegistration`); (2) `LhcMessages` / `LhcTurns` /
+  `LhcThreads` / `LhcIntakeStream` / `InspectSurface` / `WorkSurface` /
+  `LoggingSurface` / `ThreadViewSurface` are opaque Rust namespace carriers
+  for `typeof *Domain` / TS interfaces, each privately holding
+  `Arc<InstanceSeam>` with private `fn new(seam: Arc<InstanceSeam>)`;
+  (3) `IntakeStreamSurface` type-alias = `LhcIntakeStream`; (4) crate-root uses
+  an explicit `pub use sdk::{...}` list mirroring sdk.ts named exports rather
+  than `pub use sdk::*`, so the two construction bags stay sdk-only;
+  (5) `run_with_instance_seam` takes `Arc<InstanceSeam>` (task-local stores
+  the same shared Arc) so carriers can clone without consuming the only seam;
+  (6) SDK surfaces that were Wave 4/5 compile stubs are now full method sets —
+  prior “remain PARTIAL” wording is historical only.
+- Wave 7 gate after initial handoff (Sol+Fable both **FAIL**): exact-todo
+  **495**, classified **493** (+45), passed **40**, notimpl **438**, ignored
+  **15**, wrong/suspicious **0/0**. Not dual-certified.
+- Wave 7 repair-r1 (orchestrator union of Sol+Fable FAIL findings):
+  (1) restore Phase 1 exact-todo on SDK forwarding/validation helpers
+  (`InspectSurface::{overview,health,view}`, `clean_prompt`,
+  `open_thread_database`, `intake.init_lhc`, `register_testing_work`,
+  `require_positive*`, `resolve_target_ratios`, …); remove invented
+  `merge_assignment`; keep Wave 2 REAL wiring
+  (`unknown_work_kind`/`durable_operation_key`/`lookup_*`) and REAL
+  `default_inference_assignments` constant data;
+  (2) stable per-instance `Lhc.work_registration: Arc<Mutex<WorkRegistration>>`
+  (no address-keyed WeakMap stand-in); registration body exact todo;
+  (3) crate-root export exactness — drop `WORK_KIND_REGISTRY` alias (keep
+  `work_kind_registry` only); drop carrier types from root
+  (`InspectSurface`/`LhcMessages`/`LhcTurns`/`LhcThreads`/`LhcIntakeStream`
+  stay under `lhc::sdk`); keep named TS surfaces
+  `WorkSurface`/`LoggingSurface`/`ThreadViewSurface`/`IntakeStreamSurface`;
+  (4) complete `work_handlers` fixture (`test_work_handlers`/
+  `test_work_dispatchers`/private helpers); re-export `test_work_handlers` +
+  `MultiStateClaim`; private `new_thread_file`/`send` todos; seam
+  `FAILURE_KINDS` const + closed `InferenceAssignments`;
+  (5) hoist view-report cross-check diagnostic fragments;
+  (6) `report_repair` helpers: optional clock + `send`→`BatchResult`.
+  Gate after r1: exact-todo **513**, classified **493**, passed **40**,
+  notimpl **438**, ignored **15**, wrong/suspicious **0/0**. No new
+  allowlist.
+- Wave 7 repair-r1 targeted verification: Sol **PASS**, Fable **PASS**.
+  Orchestrator independently reran fmt/check/gate, prompt-byte reconstruction,
+  JS-JSON conformance, export/inventory checks, and scope/cleanup checks.
+  **Wave 7 and Phase 1 dual-certified.** This completes only Phase 1 (unit 8
+  of ~18); the larger Phase 2 behavior implementation and Phase 3 Grok Build
+  integration remain, and nothing runs yet.
 
 ## Source files
 
 | # | source | rust | skel | notes |
 |---|---|---|---|---|
-| 1 | `src/index.ts` | `src/lib.rs` | ☑ | Wave 0 PARTIAL: module tree only; full re-export surface Wave 7 |
-| 2 | `src/inspect/index.ts` | `src/inspect/mod.rs` | ☐ |  |
-| 3 | `src/inspect/internal/health.ts` | `src/inspect/internal/health.rs` | ☐ |  |
-| 4 | `src/inspect/internal/overview.ts` | `src/inspect/internal/overview.rs` | ☐ |  |
-| 5 | `src/inspect/internal/view-report.ts` | `src/inspect/internal/view_report.rs` | ☐ |  |
+| 1 | `src/index.ts` | `src/lib.rs` | ☑ | Wave 7: explicit `pub use sdk::{...}` mirrors `export * from "./sdk.js"` (excludes sdk-only `DrainOpts`/`TestingWorkRegistration`) |
+| 2 | `src/inspect/index.ts` | `src/inspect/mod.rs` | ☑ | Wave 7: overview/health/view; read-only consumer; bodies exact todo |
+| 3 | `src/inspect/internal/health.ts` | `src/inspect/internal/health.rs` | ☑ | Wave 7: capture-gap constants + helpers; bodies exact todo |
+| 4 | `src/inspect/internal/overview.ts` | `src/inspect/internal/overview.rs` | ☑ | Wave 7: `bucket_entries` + compose; bodies exact todo |
+| 5 | `src/inspect/internal/view-report.ts` | `src/inspect/internal/view_report.rs` | ☑ | Wave 7: private `BAND_ORDER` + helpers; bodies exact todo |
 | 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 3: closed EventRecord tagged enum (`deny_unknown_fields`) + kind payloads; message_events/list_events exact todo; Wave 1 MessageEventInput broad wire kept |
 | 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 3: complete skeleton; clock/walk seams REAL; walk/record/list bodies exact todo |
 | 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☑ | Wave 3: EVENT_KINDS + DECODE_OPTIONS + DecodeSchema/ParseError stand-ins REAL; validate bodies exact todo; unknown→Value |
@@ -383,14 +454,14 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 17 | `src/messages/internal/smoothing.ts` | `src/messages/internal/smoothing.rs` | ☑ | Wave 4+r2: CLEAN_PROSE_* private (TS cleanProse-local); clean_prompt exact todo |
 | 18 | `src/messages/internal/store.ts` | `src/messages/internal/store.rs` | ☑ | Wave 4: SQL hoisted; bodies exact todo |
 | 19 | `src/messages/internal/work.ts` | `src/messages/internal/work.rs` | ☑ | Wave 4: MESSAGE_WORK_* maps + MessageDeriveDerivationType REAL |
-| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 6 PARTIAL: ThreadViewSurface full method set; ChunkRecord/LhcMessages; full re-export Wave 7 |
+| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 7: full sdk.ts surface — opaque Arc seam carriers, init_lhc, DrainOpts/TestingWorkRegistration sdk-only (no Default) |
 | 21 | `src/shared-tech/classify.ts` | `src/shared_tech/classify.rs` | ☑ | Wave 1 |
-| 22 | `src/shared-tech/context.ts` | `src/shared_tech/context.rs` | ☑ | Wave 1 |
+| 22 | `src/shared-tech/context.ts` | `src/shared_tech/context.rs` | ☑ | Wave 1+7: `run_with_instance_seam` / task-local take `Arc<InstanceSeam>` |
 | 23 | `src/shared-tech/derivation.ts` | `src/shared_tech/derivation.rs` | ☑ | Wave 1 complete (Wave 0 vocab unchanged; state machine + handler contract appended) |
 | 24 | `src/shared-tech/deterministic.ts` | `src/shared_tech/deterministic.rs` | ☑ | exemplar (constants+functions) |
 | 25 | `src/shared-tech/durable-work/index.ts` | `src/shared_tech/durable_work/mod.rs` | ☑ | Wave 2: types/serde/as_str/constants REAL; private `DerivationTargetKeyParts` field projection kept as type-glue; no public `operation_name` (sdk.rs private `durable_operation_key`); `DerivationCompletionError::{new,Display}` + behavior bodies `todo!("phase 2")` |
 | 26 | `src/shared-tech/errors.ts` | `src/shared_tech/errors.rs` | ☑ | exemplar (types-and-constants) |
-| 27 | `src/shared-tech/index.ts` | `src/shared_tech/mod.rs` | ☑ | Wave 0–1 module tree; full re-export surface Wave 7 |
+| 27 | `src/shared-tech/index.ts` | `src/shared_tech/mod.rs` | ☑ | Wave 7: exact 15-module `export *` closure (logging/prompts/token_counting/work_queue/js_json/thread_migrate stay direct-only) |
 | 28 | `src/shared-tech/inference-adapter.ts` | `src/shared_tech/inference_adapter.rs` | ☑ | Wave 2: TargetRatios + target_ratios_of surface; bodies todo |
 | 29 | `src/shared-tech/inference-types.ts` | `src/shared_tech/inference_types.rs` | ☑ | Wave 1 |
 | 30 | `src/shared-tech/inspect.ts` | `src/shared_tech/inspect.rs` | ☑ | Wave 1 |
@@ -448,8 +519,8 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 5 | `test/derivation-messages.test.ts` | `tests/derivation_messages.rs` | ☑ | ☑ | Wave 4: 9 tests (3 #[ignore] preserve it.skip bodies) |
 | 6 | `test/derivation-turns.test.ts` | `tests/derivation_turns.rs` | ☑ | ☑ | Wave 5: 14 tests |
 | 7 | `test/detailed-turn-compression.test.ts` | `tests/detailed_turn_compression.rs` | ☑ | ☑ | Wave 5: 8 tests |
-| 8 | `test/epic-fix-02.test.ts` | `tests/epic_fix_02.rs` | ☐ | ☐ |  |
-| 9 | `test/epic-fix.test.ts` | `tests/epic_fix.rs` | ☐ | ☐ |  |
+| 8 | `test/epic-fix-02.test.ts` | `tests/epic_fix_02.rs` | ☑ | ☑ | Wave 7: 6 tests (1 #[ignore] preserves it.skip) |
+| 9 | `test/epic-fix.test.ts` | `tests/epic_fix.rs` | ☑ | ☑ | Wave 7: 9 semantic tests |
 | 10 | `test/fixtures.test.ts` | `tests/fixtures_test.rs` | ☑ | ☑ | Rust: fixtures_test.rs (cannot coexist with tests/fixtures/); FC-0.4 builders + TempStore Drop panic-unwind proof allowlisted |
 | 11 | `test/idempotency.test.ts` | `tests/idempotency.rs` | ☑ | ☑ | Wave 2: 5 tests |
 | 12 | `test/inference-adapter.test.ts` | `tests/inference_adapter.rs` | ☑ | ☑ | Wave 2: 2 active + 3 #[ignore] |
@@ -458,9 +529,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 15 | `test/inference-prompts.test.ts` | `tests/inference_prompts.rs` | ☑ | ☑ | 25 tests (8 golden + 8 embed + 9 fixed); registry render dispatch; 3 constant tests allowlisted |
 | 16 | `test/inference-real.test.ts` | — | — | — | EXCLUDED (live network) — open item carried from lhc-py: decide whether to port its unkeyed accounting legs |
 | 17 | `test/inference-routing.test.ts` | `tests/inference_routing.rs` | ☑ | ☑ | Wave 2: 1 active + 3 #[ignore]; contract pass allowlisted |
-| 18 | `test/inspect-health.test.ts` | `tests/inspect_health.rs` | ☐ | ☐ |  |
-| 19 | `test/inspect-overview.test.ts` | `tests/inspect_overview.rs` | ☐ | ☐ |  |
-| 20 | `test/inspect-view.test.ts` | `tests/inspect_view.rs` | ☐ | ☐ |  |
+| 18 | `test/inspect-health.test.ts` | `tests/inspect_health.rs` | ☑ | ☑ | Wave 7: 5 tests |
+| 19 | `test/inspect-overview.test.ts` | `tests/inspect_overview.rs` | ☑ | ☑ | Wave 7: 9 tests |
+| 20 | `test/inspect-view.test.ts` | `tests/inspect_view.rs` | ☑ | ☑ | Wave 7: 6 tests |
 | 21 | `test/intake-message-materialization.test.ts` | `tests/intake_message_materialization.rs` | ☑ | ☑ | Wave 3: 6 tests |
 | 22 | `test/intake.test.ts` | `tests/intake.rs` | ☑ | ☑ | Wave 3: 7 tests; COUNT n requires integer; DROP TABLE walk-hook ruling |
 | 23 | `test/lifecycle.test.ts` | `tests/lifecycle.rs` | ☑ | ☑ | Wave 3: 7 tests; per-test baseline; 60s timeout on replay/teardown |
@@ -468,14 +539,14 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 25 | `test/messages-read.test.ts` | `tests/messages_read.rs` | ☑ | ☑ | Wave 4+r2: 10 tests; DD-6 OpResult snapshot; raw SQL ORDER BY 11-space indent |
 | 26 | `test/mutations-delete.test.ts` | `tests/mutations_delete.rs` | ☑ | ☑ | Wave 4: 5 tests |
 | 27 | `test/mutations.test.ts` | `tests/mutations.rs` | ☑ | ☑ | Wave 4: 8 tests |
-| 28 | `test/report-repair.test.ts` | `tests/report_repair.rs` | ☐ | ☐ |  |
+| 28 | `test/report-repair.test.ts` | `tests/report_repair.rs` | ☑ | ☑ | Wave 7: 10 tests |
 | 29 | `test/runtime-change-typing.test.ts` | `tests/runtime_change_typing.rs` | ☑ | ☑ |  |
 | 30 | `test/smoothed-prompt-guards.test.ts` | `tests/smoothed_prompt_guards.rs` | ☑ | ☑ | Wave 4: 11 tests |
 | 31 | `test/smoothing-recovery.test.ts` | `tests/smoothing_recovery.rs` | ☑ | ☑ | Wave 4: 9 tests |
 | 32 | `test/thread-migrate.test.ts` | `tests/thread_migrate.rs` | ☑ | ☑ | Wave 2: 5 tests |
 | 33 | `test/threads-a8.test.ts` | `tests/threads_a8.rs` | ☑ | ☑ | Wave 3: 10 tests |
 | 34 | `test/threads.test.ts` | `tests/threads.rs` | ☑ | ☑ | Wave 3: 7 tests; ISO created_at calendar round-trip (test-only) |
-| 35 | `test/tool-result-classification.test.ts` | `tests/tool_result_classification.rs` | ☑ | ☐ | exemplar test |
+| 35 | `test/tool-result-classification.test.ts` | `tests/tool_result_classification.rs` | ☑ | ☑ | exemplar test; Wave 7 gate: 4 notimpl (bodies still Phase 2) |
 | 36 | `test/tool-result-rendering.test.ts` | `tests/tool_result_rendering.rs` | ☑ | ☑ |  |
 | 37 | `test/tool-result-summary-inference.test.ts` | `tests/tool_result_summary_inference.rs` | ☑ | ☑ | Wave 4: 3 tests |
 | 38 | `test/turn-cascade.test.ts` | `tests/turn_cascade.rs` | ☑ | ☑ | Wave 4: 14 tests |
@@ -511,9 +582,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | `test/fixtures/pi-session-structure.jsonl` | `tests/fixtures/pi-session-structure.jsonl` | ☑ | Wave 6 — byte-identical copy |
 | `test/fixtures/pi-session-structure.provenance.md` | `tests/fixtures/pi-session-structure.provenance.md` | ☑ | Wave 6 — byte-identical copy |
 | `test/fixtures/read-only-delta.ts` | `tests/fixtures/read_only_delta.rs` | ☑ | Wave 2: ObservableState REAL; private queued_for + snapshot helpers `todo!("phase 2")` |
-| `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.rs` | ☑ | Wave 2: probe_input/assert_model_call_contract REAL; routing helper todo |
-| `test/fixtures/threads.ts` | `tests/fixtures/threads.rs` | ☑ | Wave 2+5 PARTIAL: `read_derived_forms` + `read_chunks`/`set_form_state` REAL; SDK builders todo |
+| `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.rs` | ☑ | Wave 7+r1: probe/contract REAL; `FAILURE_KINDS` const; closed `InferenceAssignments`; routing/seed todo |
+| `test/fixtures/threads.ts` | `tests/fixtures/threads.rs` | ☑ | Wave 7+r1: `MultiStateClaim` re-export; private `new_thread_file`/`send` todos; SDK builders exact todo |
 | `test/fixtures/view-boundary.ts` | `tests/fixtures/view_boundary.rs` | ☑ | Wave 6: TurnedToolResultsSpec; seed_turned_tool_results todo |
 | `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.rs` | ☑ | Wave 6: seam re-exports; seed_view_boundary REAL |
 | `test/fixtures/view-thread.ts` | `tests/fixtures/view_thread.rs` | ☑ | Wave 6: full private surface; SDK builders exact todo |
-| `test/fixtures/work-handlers.ts` | `tests/fixtures/work_handlers.rs` | ☑ | Wave 1 PARTIAL: register_test_work_handlers stub |
+| `test/fixtures/work-handlers.ts` | `tests/fixtures/work_handlers.rs` | ☑ | Wave 7+r1: full surface (`test_work_handlers`/`test_work_dispatchers`/private helpers); bodies exact todo |

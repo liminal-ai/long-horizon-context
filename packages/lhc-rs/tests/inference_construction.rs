@@ -15,9 +15,10 @@ use lhc::threads::NewThreadInput;
 use lhc::{OpResult, ThreadRef, init_lhc};
 
 use fixtures::{
-    AssistantTextOverrides, AssistantTextPayload, ModelAssignmentOverride, TurnEndOverrides,
-    UserPromptOverrides, UserPromptPayload, canned_responses, create_inference_callbacks_double,
-    kind, read_derived_forms, recording_call, temp_store, valid_assignments, valid_event,
+    AssistantTextOverrides, AssistantTextPayload, InferenceDerivationType, ModelAssignmentOverride,
+    TurnEndOverrides, UserPromptOverrides, UserPromptPayload, canned_responses,
+    create_inference_callbacks_double, kind, read_derived_forms, recording_call, temp_store,
+    valid_assignments, valid_event,
 };
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -75,7 +76,7 @@ fn both_inference_callbacks_and_inference_is_a_typeerror_naming_the_xor_rule() {
                 inference_callbacks: Some(double.to_callbacks()),
                 inference: Some(InferenceConfig {
                     call: bundle.call,
-                    assignments: Some(valid_assignments(None)),
+                    assignments: Some(valid_assignments(None).to_string_keyed()),
                     timeout_ms: None,
                     max_input_chars: None,
                 }),
@@ -114,7 +115,7 @@ fn neither_inference_callbacks_nor_inference_is_a_typeerror_naming_the_xor_rule(
 
 #[test]
 fn an_unknown_kind_key_in_assignments_is_a_typeerror_naming_it() {
-    let mut assignments = valid_assignments(None);
+    let mut assignments = valid_assignments(None).to_string_keyed();
     assignments.insert(
         "smoothed_promptz".into(),
         ModelAssignment {
@@ -138,13 +139,13 @@ fn an_unknown_kind_key_in_assignments_is_a_typeerror_naming_it() {
 fn an_unknown_prompt_name_on_an_inference_assignment_is_a_typeerror_naming_kind_and_prompt() {
     let mut overrides = HashMap::new();
     overrides.insert(
-        "tool_result_summary".into(),
+        InferenceDerivationType::ToolResultSummary,
         ModelAssignmentOverride {
             prompt: Some("tool-result-v99".into()),
             ..Default::default()
         },
     );
-    let assignments = valid_assignments(Some(&overrides));
+    let assignments = valid_assignments(Some(&overrides)).to_string_keyed();
     let bundle = recording_call(&canned_responses());
     expect_type_error_naming(
         move || init_with_assignments(bundle.call, assignments),
@@ -159,13 +160,13 @@ fn an_unknown_prompt_name_on_an_inference_assignment_is_a_typeerror_naming_kind_
 fn an_empty_provider_string_on_an_inference_assignment_is_a_typeerror_naming_field_and_kind() {
     let mut overrides = HashMap::new();
     overrides.insert(
-        "smoothed_prompt".into(),
+        InferenceDerivationType::SmoothedPrompt,
         ModelAssignmentOverride {
             provider: Some("".into()),
             ..Default::default()
         },
     );
-    let assignments = valid_assignments(Some(&overrides));
+    let assignments = valid_assignments(Some(&overrides)).to_string_keyed();
     let bundle = recording_call(&canned_responses());
     expect_type_error_naming(
         move || init_with_assignments(bundle.call, assignments),
@@ -177,13 +178,13 @@ fn an_empty_provider_string_on_an_inference_assignment_is_a_typeerror_naming_fie
 fn an_empty_model_string_on_an_inference_assignment_is_a_typeerror_naming_field_and_kind() {
     let mut overrides = HashMap::new();
     overrides.insert(
-        "chunk_summary_brief".into(),
+        InferenceDerivationType::ChunkSummaryBrief,
         ModelAssignmentOverride {
             model: Some("  ".into()),
             ..Default::default()
         },
     );
-    let assignments = valid_assignments(Some(&overrides));
+    let assignments = valid_assignments(Some(&overrides)).to_string_keyed();
     let bundle = recording_call(&canned_responses());
     expect_type_error_naming(
         move || init_with_assignments(bundle.call, assignments),
@@ -201,7 +202,7 @@ async fn constructs_and_a_seeded_drain_lands_a_form_ready_with_the_hosts_text() 
         inference_callbacks: None,
         inference: Some(InferenceConfig {
             call: bundle.call,
-            assignments: Some(valid_assignments(None)),
+            assignments: Some(valid_assignments(None).to_string_keyed()),
             timeout_ms: None,
             max_input_chars: None,
         }),

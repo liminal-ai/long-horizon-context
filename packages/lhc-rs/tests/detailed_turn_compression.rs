@@ -12,6 +12,7 @@ use fixtures::{
     read_derived_forms, temp_store, valid_event,
 };
 use lhc::intake_stream::BatchResult;
+use lhc::sdk::DrainOpts;
 use lhc::shared_tech::derivation::{
     BoxFuture, CompressDetailedTurnInput, Derivation, DerivationState, InferenceCallbacks,
     InferenceResult, LeaseConfig, SdkConfig, SdkMode, SizeDisposition,
@@ -25,7 +26,7 @@ use lhc::shared_tech::logging::{DerivationLogEventKind, DerivationLogQuery, LogL
 use lhc::shared_tech::scheduler::{DrainDisposition, DrainReport};
 use lhc::shared_tech::token_counting::estimate_tokens;
 use lhc::threads::{NewThreadInput, ThreadRef};
-use lhc::{DrainOpts, Lhc, init_lhc, threads};
+use lhc::{Lhc, init_lhc, threads};
 use serde_json::{Map, Value, json};
 
 /// JS `Math.round` for non-negative values: `floor(x + 0.5)`.

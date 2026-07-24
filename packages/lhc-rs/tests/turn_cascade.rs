@@ -9,6 +9,7 @@ use fixtures::{
     UserPromptOverrides, UserPromptPayload, create_inference_callbacks_double, kind, open_raw,
     read_derived_forms, temp_store, valid_event,
 };
+use lhc::sdk::DrainOpts;
 use lhc::shared_tech::derivation::{
     Derivation, DerivationState, InferenceCallbacks, LeaseConfig, SdkConfig, SdkMode,
 };
@@ -22,7 +23,7 @@ use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::tool_result_rendering::truncate_for_fallback;
 use lhc::shared_tech::work_queue::{count_live_items, queue_detail};
 use lhc::threads::{NewThreadInput, ThreadRef};
-use lhc::{DrainOpts, Lhc, init_lhc, threads};
+use lhc::{Lhc, init_lhc, threads};
 use serde_json::{Map, Value, json};
 
 async fn new_thread(store: &TempStore) -> String {

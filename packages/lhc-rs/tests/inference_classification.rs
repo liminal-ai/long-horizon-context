@@ -47,7 +47,7 @@ fn inference_sdk(call: ModelCall, timeout_ms: Option<i64>) -> Lhc {
         inference_callbacks: None,
         inference: Some(InferenceConfig {
             call,
-            assignments: Some(valid_assignments(None)),
+            assignments: Some(valid_assignments(None).to_string_keyed()),
             timeout_ms,
             max_input_chars: None,
         }),

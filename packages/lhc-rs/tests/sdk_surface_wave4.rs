@@ -1,7 +1,9 @@
-//! Wave 4 compile-shape: crate-root exposes ChunkRecord + LhcMessages::clean_prompt.
+//! Wave 4 compile-shape: crate-root exposes ChunkRecord; LhcMessages::clean_prompt
+//! lives under `lhc::sdk` (carrier impl type — not a TS named root export).
 //! EditInput/RemoveInput absence at crate root is covered by trybuild UI cases.
 
-use lhc::{ChunkRecord, LhcMessages, TurnRecord};
+use lhc::sdk::LhcMessages;
+use lhc::{ChunkRecord, TurnRecord};
 
 #[test]
 fn crate_root_exports_chunk_record_beside_turn_record() {

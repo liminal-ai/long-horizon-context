@@ -23,6 +23,7 @@ use fixtures::{
 }; // AssistantText* used by concurrent turn derive tests
 use lhc::intake_stream::EventKind;
 use lhc::messages::{MessageDeriveDerivationType, MessageDeriveResult};
+use lhc::sdk::{DrainOpts, TestingWorkRegistration};
 use lhc::shared_tech::derivation::{
     BoxFuture, CompressDetailedTurnInput, DerivationState, HandlerDerivationWrite,
     HandlerRunContext, InferenceCallbacks, InferenceResult, LeaseConfig, SdkConfig, SdkMode,
@@ -41,8 +42,8 @@ use lhc::shared_tech::work_queue::{QueueLiveStatus, count_live_items, queue_deta
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::turns::{ChunkDeriveDerivationType, ChunkDeriveResult, TurnDeriveResult};
 use lhc::{
-    DrainOpts, Lhc, TestingWorkRegistration, init_lhc, intake_stream, register_testing_work,
-    set_scheduler_poke, set_thread_touch, threads,
+    Lhc, init_lhc, intake_stream, register_testing_work, set_scheduler_poke, set_thread_touch,
+    threads,
 };
 use tokio::sync::oneshot;
 

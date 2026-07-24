@@ -46,8 +46,9 @@ pub use lifecycle::{
 };
 pub use model_call::{
     DERIVATION_TYPES, DerivationType, FAKE_MODEL_PREFIX, FAKE_PROVIDER_PREFIX,
-    INFERENCE_DERIVATION_TYPES, ModelAssignmentOverride, canned_responses, hanging_call,
-    recording_call, scripted_call, throwing_call, valid_assignments,
+    INFERENCE_DERIVATION_TYPES, InferenceAssignments, InferenceDerivationType,
+    ModelAssignmentOverride, canned_responses, hanging_call, recording_call, scripted_call,
+    throwing_call, valid_assignments,
 };
 pub use pi_session_format::{assert_pi_session_conformance, load_pi_session_fixture};
 pub use read_only_delta::{ObservableState, expect_read_only, observable_state};
@@ -57,8 +58,9 @@ pub use seam_conformance::{
 };
 pub use threads::{
     ChunkSnapshot, ChunkSnapshotChunk, ChunkSnapshotMember, FormStateTarget, FormStateUpdate,
-    ToolRunOpts, damaged_source_thread, multi_state_thread, read_chunks, read_derived_forms,
-    set_form_state, thread_with_closed_turns, thread_with_tool_run,
+    GAPPED_SMOOTHING_REASON, GappedRenderingThreadResult, MultiStateClaim, ToolRunOpts,
+    damaged_source_thread, gapped_rendering_thread, multi_state_thread, read_chunks,
+    read_derived_forms, set_form_state, thread_with_closed_turns, thread_with_tool_run,
 };
 pub use valid_event::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
@@ -85,7 +87,7 @@ pub use view_thread::{
     corrupted_variant_thread, derived_thread_fixture, mixed_state_variant_thread,
     mutation_in_flight_variant,
 };
-pub use work_handlers::{TestHandlerHooks, TestHandlerStartItem, register_test_work_handlers};
+pub use work_handlers::{TestHandlerHooks, register_test_work_handlers, test_work_handlers};
 
 pub fn event_batch(kinds: &[EventKind]) -> Vec<MessageEventInput> {
     kinds.iter().map(|k| valid_event_for_kind(*k)).collect()

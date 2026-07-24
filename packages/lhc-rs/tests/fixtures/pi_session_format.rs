@@ -69,13 +69,12 @@ fn key_set(value: &Map<String, Value>) -> String {
     keys.join(",")
 }
 
-/// TS `Object.keys(array).sort().join(",")` — non-empty arrays yield index
-/// keys `"0,1,…"`, empty arrays yield `""`.
+/// TS `Object.keys(array).sort().join(",")` — index keys sorted lexicographically
+/// (e.g. length 11 → `"0,1,10,2,…"`), empty arrays yield `""`.
 fn js_array_key_set(len: usize) -> String {
-    (0..len)
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
+    let mut keys: Vec<String> = (0..len).map(|i| i.to_string()).collect();
+    keys.sort();
+    keys.join(",")
 }
 
 fn js_typeof(value: &Value) -> &'static str {

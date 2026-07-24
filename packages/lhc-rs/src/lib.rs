@@ -1,12 +1,21 @@
 //! Ported from packages/lhc/src/index.ts. Phase 1 skeleton.
 //!
-//! Wave 0–1 module tree. Full re-export surface lands progressively; Wave 1
-//! exposes what Wave 1 tests import (via sdk.rs re-exports + domain modules).
+//! Crate-root surface mirrors `export * from "./sdk.js"` — the TS SDK's named
+//! export closure (reference count 139), with seven namespace values mapped to
+//! ratified Rust root modules (`inspect`, `intake_stream`, `messages`,
+//! `shared_tech::logging` / existing root module ruling, `thread_view`,
+//! `threads`, `turns`). Explicit list (not `pub use sdk::*`) so:
+//! - Rust carrier impl types (`InspectSurface`, `LhcMessages`, …) stay under
+//!   `lhc::sdk` only;
+//! - `DrainOpts` / `TestingWorkRegistration` stay sdk-module-only;
+//! - TS `WORK_KIND_REGISTRY` maps to the one canonical fn `work_kind_registry`
+//!   (no SCREAMING alias).
 
 // Phase 1 only: skeleton private helpers are uncalled by design. Remove at the
 // Phase 2 done-gate.
 #![allow(dead_code)]
 
+pub mod inspect;
 pub mod intake_stream;
 pub mod messages;
 pub mod sdk;
@@ -15,5 +24,33 @@ pub mod thread_view;
 pub mod threads;
 pub mod turns;
 
-// Crate-root surface mirrors `export * from "./sdk.js"`.
-pub use sdk::*;
+pub use sdk::{
+    BUILT_IN_PROFILES, Band, BatchResult, Block, BlockType, ChunkRecord, ClaimedWorkItem,
+    CompactReceipt, CompletionTx, DEFAULT_COMPACT_THRESHOLD, DEFAULT_PROMPT_NAMES,
+    DEFAULT_VISIBILITY, DbReadTransaction, DbWriteTransaction, DependencyGap, Derivation,
+    DerivationMetadata, DerivationReportEntry, DerivationState, DeterministicOpName, DrainReport,
+    DurableWorkDispatchResult, DurableWorkDispatcher, DurableWorkDispatcherMap,
+    DurableWorkOperation, EnqueueDerivationTarget, EnqueueInput, ErrorClass, ErrorCode,
+    ErrorResult, EventKind, EventRecord, HandlerDerivationWrite, HandlerOutcome, HandlerRunContext,
+    HealthReport, InferenceCallbacks, InferenceConfig, InferenceResult, InspectOverview,
+    IntakeStreamSurface, Lhc, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
+    LogEntry, LogLevel, LogQuery, LoggingSurface, MessageDetail, MessageEventInput,
+    MessageListOptions, MessageRecord, ModelAssignment, ModelCall, ModelCallFailureKind,
+    ModelCallInput, ModelCallResult, MutationResult, OpResult, PROMPT_NAMES, PostCommitHook,
+    PreviewCompactOutcome, PreviewCompactResult, ProviderProvenance, PruneReceipt, QueueDetailRow,
+    RenderingPart, ResolvedSdkConfig, ResolvedViewConfig, Scheduler, SchedulerMode, SdkConfig,
+    SdkViewConfig, SessionAssistantMessage, SessionAssistantPart, SessionModelChangeEntry,
+    SessionThinkingLevelChangeEntry, SessionThreadView, SessionThreadViewEntry,
+    SessionThreadViewEntrySource, SessionThreadViewMessage, SessionToolResultMessage,
+    SessionUserMessage, StoredLogEntry, StoredView, SubjectKind, TOKEN_ESTIMATOR_ID,
+    ThreadFileInfo, ThreadRef, ThreadViewSurface, ToolOutcome, ToolResultClassification,
+    ToolResultFacts, ToolResultOperationClass, ToolResultPromptMode, ToolResultResponseShape,
+    TurnRecord, ViewCompactParams, ViewContentsReport, ViewProfile, ViewProfileOverride,
+    ViewStatus, VisibilityBudgets, WorkHandler, WorkHandlerMap, WorkItemRecord, WorkKind,
+    WorkOwner, WorkSourceRef, WorkSurface, apply_derivation_success, count_live_items,
+    create_db_read_transaction, create_db_write_transaction,
+    create_deterministic_inference_callbacks, deterministic_outcomes_suffix, deterministic_text,
+    enqueue, estimate_tokens, init_lhc, lookup_work_dispatcher, lookup_work_handler,
+    map_work_q_handlers, query_log, queue_detail, register_testing_work, set_scheduler_poke,
+    set_thread_touch, supersede_queued, work_kind_registry, write_log,
+};

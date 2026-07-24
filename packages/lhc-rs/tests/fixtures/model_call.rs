@@ -4,6 +4,7 @@
 //! boundary doubles (host ModelCall functions) — REAL, matching lhc-py.
 
 use std::collections::HashMap;
+use std::ops::{Index, IndexMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -60,19 +61,59 @@ pub const DERIVATION_TYPES: &[&str] = &[
     DerivationType::ChunkSummaryBrief.as_str(),
 ];
 
+/// Closed fixture vocabulary for inference derivation types that cross the
+/// host ModelCall boundary (TS `InferenceDerivationType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InferenceDerivationType {
+    SmoothedPrompt,
+    ToolResultSummary,
+    DetailedTurnCompression,
+    ChunkSummaryBrief,
+}
+
+impl InferenceDerivationType {
+    pub const ALL: &[InferenceDerivationType] = &[
+        Self::SmoothedPrompt,
+        Self::ToolResultSummary,
+        Self::DetailedTurnCompression,
+        Self::ChunkSummaryBrief,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SmoothedPrompt => "smoothed_prompt",
+            Self::ToolResultSummary => "tool_result_summary",
+            Self::DetailedTurnCompression => "detailed_turn_compression",
+            Self::ChunkSummaryBrief => "chunk_summary_brief",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "smoothed_prompt" => Some(Self::SmoothedPrompt),
+            "tool_result_summary" => Some(Self::ToolResultSummary),
+            "detailed_turn_compression" => Some(Self::DetailedTurnCompression),
+            "chunk_summary_brief" => Some(Self::ChunkSummaryBrief),
+            _ => None,
+        }
+    }
+}
+
+/// String vocabulary derived from [`InferenceDerivationType`].
 pub const INFERENCE_DERIVATION_TYPES: &[&str] = &[
-    DerivationType::SmoothedPrompt.as_str(),
-    DerivationType::ToolResultSummary.as_str(),
-    DerivationType::DetailedTurnCompression.as_str(),
-    DerivationType::ChunkSummaryBrief.as_str(),
+    InferenceDerivationType::SmoothedPrompt.as_str(),
+    InferenceDerivationType::ToolResultSummary.as_str(),
+    InferenceDerivationType::DetailedTurnCompression.as_str(),
+    InferenceDerivationType::ChunkSummaryBrief.as_str(),
 ];
 
 pub const FAKE_PROVIDER_PREFIX: &str = "prov-";
 pub const FAKE_MODEL_PREFIX: &str = "model-";
 
-fn fixture_prompt(kind: &str) -> String {
+fn fixture_prompt(kind: InferenceDerivationType) -> String {
+    let kind_str = kind.as_str();
     for (k, name) in DEFAULT_PROMPT_NAMES {
-        if *k == kind {
+        if *k == kind_str {
             return (*name).to_string();
         }
     }
@@ -91,35 +132,106 @@ pub struct ModelAssignmentOverride {
     pub thinking: Option<ThinkingLevel>,
 }
 
+/// Total closed assignment container for the four inference derivation kinds
+/// (TS `Record<InferenceDerivationType, ModelAssignment>`).
+#[derive(Debug, Clone)]
+pub struct InferenceAssignments {
+    pub smoothed_prompt: ModelAssignment,
+    pub tool_result_summary: ModelAssignment,
+    pub detailed_turn_compression: ModelAssignment,
+    pub chunk_summary_brief: ModelAssignment,
+}
+
+impl InferenceAssignments {
+    pub fn get(&self, kind: InferenceDerivationType) -> &ModelAssignment {
+        match kind {
+            InferenceDerivationType::SmoothedPrompt => &self.smoothed_prompt,
+            InferenceDerivationType::ToolResultSummary => &self.tool_result_summary,
+            InferenceDerivationType::DetailedTurnCompression => &self.detailed_turn_compression,
+            InferenceDerivationType::ChunkSummaryBrief => &self.chunk_summary_brief,
+        }
+    }
+
+    pub fn get_mut(&mut self, kind: InferenceDerivationType) -> &mut ModelAssignment {
+        match kind {
+            InferenceDerivationType::SmoothedPrompt => &mut self.smoothed_prompt,
+            InferenceDerivationType::ToolResultSummary => &mut self.tool_result_summary,
+            InferenceDerivationType::DetailedTurnCompression => &mut self.detailed_turn_compression,
+            InferenceDerivationType::ChunkSummaryBrief => &mut self.chunk_summary_brief,
+        }
+    }
+
+    /// Explicit conversion for the production [`InferenceConfig`] string-key path.
+    pub fn to_string_keyed(&self) -> IndexMap<String, ModelAssignment> {
+        let mut map = IndexMap::new();
+        for kind in InferenceDerivationType::ALL {
+            map.insert(kind.as_str().to_string(), self.get(*kind).clone());
+        }
+        map
+    }
+}
+
+impl Index<InferenceDerivationType> for InferenceAssignments {
+    type Output = ModelAssignment;
+
+    fn index(&self, kind: InferenceDerivationType) -> &ModelAssignment {
+        self.get(kind)
+    }
+}
+
+impl IndexMut<InferenceDerivationType> for InferenceAssignments {
+    fn index_mut(&mut self, kind: InferenceDerivationType) -> &mut ModelAssignment {
+        self.get_mut(kind)
+    }
+}
+
+fn assignment_for(
+    kind: InferenceDerivationType,
+    ov: Option<&ModelAssignmentOverride>,
+) -> ModelAssignment {
+    let kind_str = kind.as_str();
+    ModelAssignment {
+        provider: ov
+            .and_then(|o| o.provider.clone())
+            .unwrap_or_else(|| format!("{FAKE_PROVIDER_PREFIX}{kind_str}")),
+        model: ov
+            .and_then(|o| o.model.clone())
+            .unwrap_or_else(|| format!("{FAKE_MODEL_PREFIX}{kind_str}")),
+        prompt: ov
+            .and_then(|o| o.prompt.clone())
+            .unwrap_or_else(|| fixture_prompt(kind)),
+        target_min_ratio: ov.and_then(|o| o.target_min_ratio),
+        target_max_ratio: ov.and_then(|o| o.target_max_ratio),
+        target_aim_ratio: ov.and_then(|o| o.target_aim_ratio),
+        thinking: ov.and_then(|o| o.thinking),
+    }
+}
+
 /// Every kind gets a distinct fake provider/model lane — pure data. REAL.
+/// Returns a total closed [`InferenceAssignments`] covering all four inference kinds.
 pub fn valid_assignments(
-    overrides: Option<&HashMap<String, ModelAssignmentOverride>>,
-) -> IndexMap<String, ModelAssignment> {
+    overrides: Option<&HashMap<InferenceDerivationType, ModelAssignmentOverride>>,
+) -> InferenceAssignments {
     let empty = HashMap::new();
     let overrides = overrides.unwrap_or(&empty);
-    let mut map = IndexMap::new();
-    for kind in INFERENCE_DERIVATION_TYPES {
-        let ov = overrides.get(*kind);
-        map.insert(
-            (*kind).to_string(),
-            ModelAssignment {
-                provider: ov
-                    .and_then(|o| o.provider.clone())
-                    .unwrap_or_else(|| format!("{FAKE_PROVIDER_PREFIX}{kind}")),
-                model: ov
-                    .and_then(|o| o.model.clone())
-                    .unwrap_or_else(|| format!("{FAKE_MODEL_PREFIX}{kind}")),
-                prompt: ov
-                    .and_then(|o| o.prompt.clone())
-                    .unwrap_or_else(|| fixture_prompt(kind)),
-                target_min_ratio: ov.and_then(|o| o.target_min_ratio),
-                target_max_ratio: ov.and_then(|o| o.target_max_ratio),
-                target_aim_ratio: ov.and_then(|o| o.target_aim_ratio),
-                thinking: ov.and_then(|o| o.thinking),
-            },
-        );
+    InferenceAssignments {
+        smoothed_prompt: assignment_for(
+            InferenceDerivationType::SmoothedPrompt,
+            overrides.get(&InferenceDerivationType::SmoothedPrompt),
+        ),
+        tool_result_summary: assignment_for(
+            InferenceDerivationType::ToolResultSummary,
+            overrides.get(&InferenceDerivationType::ToolResultSummary),
+        ),
+        detailed_turn_compression: assignment_for(
+            InferenceDerivationType::DetailedTurnCompression,
+            overrides.get(&InferenceDerivationType::DetailedTurnCompression),
+        ),
+        chunk_summary_brief: assignment_for(
+            InferenceDerivationType::ChunkSummaryBrief,
+            overrides.get(&InferenceDerivationType::ChunkSummaryBrief),
+        ),
     }
-    map
 }
 
 /// One distinct canned sentence per kind. REAL.
