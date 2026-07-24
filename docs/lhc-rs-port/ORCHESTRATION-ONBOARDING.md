@@ -137,13 +137,85 @@ status checks and was the previous orchestrator's biggest waste. The rule:
 - While waiting, do useful orchestrator work (draft the next brief, prep
   the verify prompts) instead of polling.
 
-## Escalation (stop, don't improvise)
+## Escalation — REWRITTEN 2026-07-24, supersedes the prior rule
 
-- Conventions conflict, TS-source ambiguity the brief doesn't settle, or
-  any temptation to reshape a Wave 0 ruling → stop, write up the question,
-  surface to Lee. A wrong unilateral convention costs a wave of rework.
-- Hung implementor run → handoff §mechanics recovery procedure.
-- Gate WRONG that survives one fix round → escalate with the failing
-  test's panic text, don't loop blindly.
-- Anything that smells like scope reduction ("we could skip X") → that is
-  Lee's call, never yours. See the status-report rule.
+**Why this changed.** The prior rule said frozen shapes were never yours to
+amend, so every forced amendment became a human stop. Across the first four
+escalations of Phase 2, the phase reviewer approved 4 of 4 — in three of
+them the evidence you already held uniquely determined the answer, so the
+stop bought confirmation, not judgment. Meanwhile each stop blocks a run
+designed to go unattended for 10+ hours, and Lee may not see it for hours.
+The corrected balance: **a wrong self-authorized amendment costs one wave of
+rework, caught by two verifiers, the gate, and the phase review, on a
+revertible commit on a branch. A stop costs however long until Lee looks.**
+Optimize accordingly — you have more authority than before, and a
+correspondingly harder duty to document.
+
+### Decide and proceed (do NOT stop) when ALL of these hold
+
+1. The TS source, or a reproducible runtime probe you can cite, **uniquely
+   determines** the answer — there is one faithful option, not a preference
+   between defensible ones.
+2. The change stays **inside `packages/lhc-rs/`** and does not touch the
+   certification target, wave plan, scope, or deliverable.
+3. **Both verifiers agree** the change is forced (not merely acceptable).
+4. You record it, in the same round: an entry in `PORT_STATUS.md`'s
+   phase-gate addendum (what changed, the TS citation or probe output, why
+   it was forced, which prior ruling if any it supersedes), and a line in
+   the wave commit body naming the amendment.
+
+This explicitly covers: frozen Phase 1 public shapes, private type
+representations, adapter-seam signatures, and superseding a prior ruling
+whose **factual premise** turned out wrong (e.g. a runtime behavior claim
+disproved by probing). Undefined behavior or a memory-safety hazard is
+never an acceptable way to satisfy a frozen shape — the shape is the
+defect; amend it and say so loudly.
+
+### Stop and surface to Lee when ANY of these hold
+
+1. **The certification arithmetic or done-definition moves** — total test
+   count, active/ignored split, pass target, or what "certified" means.
+   This is the denominator Lee measures the project by; an orchestrator
+   that adjusts its own finish line cannot be trusted to report against it.
+   Rare, cheap, non-negotiable.
+2. **Scope, deliverable, or plan moves** — anything resembling "we could
+   skip X", "this needs another wave", "X should be deferred to Phase 3".
+   See the status-report rule.
+3. **Genuine ambiguity with divergent consequences** — TS is unclear or
+   silent AND two defensible options would behave differently. If you find
+   yourself weighing tradeoffs rather than reading a spec, that is Lee's
+   call. (If you can cite the answer, it is not this case.)
+4. **Superseding a ruling that was a judgment call**, not a factual error.
+5. **A gate WRONG that survives one fix round** → escalate with the failing
+   test's panic text; do not loop blindly.
+
+### Persisted-bytes rule (the one class worth real ceremony)
+
+Any amendment that can change **what gets written to SQLite or serialized
+to JSON** — payload shapes, key order, number spelling, serde renames,
+digest inputs — carries a mandatory extra step, because tests routinely
+pass while bytes diverge, and this is the class that is expensive to
+discover after the port is done (the Python run shipped a JSON-number
+divergence this way):
+
+- Commit a node-generated oracle fixture covering the changed shape
+  (pattern: `scripts/gen-js-json-fixtures.mjs` → `fixtures/*.jsonl`).
+- Add a conformance test against that fixture, and run it **at that wave's
+  gate** — not deferred to phase end.
+- Note the fixture by name in the wave commit body.
+
+Proceed under the decide-and-proceed rule above; the oracle is what makes
+proceeding safe.
+
+### Other stops
+
+- Hung implementor run → handoff §mechanics recovery procedure (this is a
+  recovery procedure, not an escalation; do not wait on Lee for it).
+
+### How to stop, if you must
+
+Batch it. If two or three rulings are pending, deliver them in one
+interrupt with recommendations, not one turn each. State the position
+against the full project, what is blocked, what is NOT blocked (keep
+working on anything independent while waiting), and your recommendation
+per item.
