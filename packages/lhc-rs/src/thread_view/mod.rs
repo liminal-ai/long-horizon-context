@@ -92,13 +92,48 @@ const DIAG_COMPACT_STOPPED_BEFORE_SNAPSHOT_WRITE: &str = "compact stopped before
 
 /// TS compact opts.signal — closed by-value Phase 1 snapshot `{ aborted: bool }`.
 /// Mapped Wave 5 use is pre-aborted only. Compact-compute uses this same type
-/// (no duplicate AbortSignal). Phase 2 must audit live cancellation / getter
-/// semantics (re-read `.aborted` each call) before behavior certification —
-/// see PORT_STATUS abort-signal ledger note.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// (no duplicate AbortSignal). LIVE (phase-review): TS reads a getter that
+/// re-evaluates mid-compact; the Rust spelling is a shared atomic flag —
+/// `aborted()` re-reads on every call. Constructed non-aborted; the holder
+/// (or a clone) flips it via `abort()`.
+#[derive(Debug, Clone)]
 pub struct CompactAbortSignal {
-    pub aborted: bool,
+    aborted: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+
+impl CompactAbortSignal {
+    pub fn new() -> Self {
+        Self {
+            aborted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// TS `signal.aborted` — a live read, never a snapshot.
+    pub fn aborted(&self) -> bool {
+        self.aborted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn abort(&self) {
+        self.aborted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Default for CompactAbortSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Value equality = current aborted state (opts bags derive PartialEq for
+/// test snapshot comparisons; two signals compare by what a live read sees).
+impl PartialEq for CompactAbortSignal {
+    fn eq(&self, other: &Self) -> bool {
+        self.aborted() == other.aborted()
+    }
+}
+
+impl Eq for CompactAbortSignal {}
 
 /// Opts bag for compact / previewCompact — mirrors the TS inline object.
 /// No `Default` derive (callers construct the closed shape directly).

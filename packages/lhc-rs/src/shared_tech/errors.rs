@@ -76,6 +76,49 @@ pub enum ErrorCode {
     InvalidTargetTokens,
 }
 
+impl ErrorClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorClass::CallerError => "caller_error",
+            ErrorClass::StateCorruption => "state_corruption",
+            ErrorClass::SystemError => "system_error",
+        }
+    }
+}
+
+impl ErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::PathExists => "path_exists",
+            ErrorCode::ThreadNotFound => "thread_not_found",
+            ErrorCode::AmbiguousThreadId => "ambiguous_thread_id",
+            ErrorCode::ConflictingLhcLaunchFlags => "conflicting_lhc_launch_flags",
+            ErrorCode::InvalidThreadRef => "invalid_thread_ref",
+            ErrorCode::InvalidEvent => "invalid_event",
+            ErrorCode::EmptyBatch => "empty_batch",
+            ErrorCode::TurnStateCorrupt => "turn_state_corrupt",
+            ErrorCode::StorageFailure => "storage_failure",
+            ErrorCode::TurnOpen => "turn_open",
+            ErrorCode::MessageInitiatesTurn => "message_initiates_turn",
+            ErrorCode::MessageNotFound => "message_not_found",
+            ErrorCode::TurnNotFound => "turn_not_found",
+            ErrorCode::UnknownWorkKind => "unknown_work_kind",
+            ErrorCode::ProviderFailure => "provider_failure",
+            ErrorCode::SourceDamaged => "source_damaged",
+            ErrorCode::InferenceUnavailable => "inference_unavailable",
+            ErrorCode::DerivationWorkInFlight => "derivation_work_in_flight",
+            ErrorCode::DerivationCompletionMismatch => "derivation_completion_mismatch",
+            ErrorCode::NotImplemented => "not_implemented",
+            ErrorCode::UnknownProfile => "unknown_profile",
+            ErrorCode::InvalidViewConfig => "invalid_view_config",
+            ErrorCode::CompactStopped => "compact_stopped",
+            ErrorCode::UnknownFormat => "unknown_format",
+            ErrorCode::InvalidBounds => "invalid_bounds",
+            ErrorCode::InvalidTargetTokens => "invalid_target_tokens",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResult {

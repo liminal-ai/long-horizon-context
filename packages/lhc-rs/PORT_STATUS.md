@@ -588,3 +588,55 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.rs` | ☑ | Wave 6: seam re-exports; seed_view_boundary REAL |
 | `test/fixtures/view-thread.ts` | `tests/fixtures/view_thread.rs` | ☑ | Wave 6: full private surface; SDK builders exact todo |
 | `test/fixtures/work-handlers.ts` | `tests/fixtures/work_handlers.rs` | ☑ | Wave 7+r1: full surface (`test_work_handlers`/`test_work_dispatchers`/private helpers); bodies exact todo |
+
+## Phase-gate review (Fable, 2026-07-24) — shape amendments
+
+Independent phase review (3 reviewers: cross-wave consistency, latent
+hazards, test fidelity; plus orchestrator censuses). Verdict: ACCEPTED with
+the shape repairs below, applied and re-certified at the same gate
+arithmetic (493 classified / 40 passed / 438 notimpl / 15 ignored / 0
+wrong / 0 suspicious; prompt bytes OK; fmt clean).
+
+Amended shapes (now the frozen Phase 2 contract):
+- `Clock`, `ModelCall`, `DbWriteTransaction.poke`: `Box` → `Arc` (H1/H4/H2 —
+  shared into transactions/contexts/config like TS reference sharing).
+- `ResolvedSdkConfig`: now `Clone` (H1 — owned copies in Lhc, seam, drain
+  deps, every HandlerRunContext).
+- `HandlerRunContext.open_db`: `Arc<dyn Fn() -> OpResult<Db>>` (H1/M3 —
+  clonable contexts; open failure is a structured result, aligned with
+  `ThreadDbOpener`).
+- `run_with_instance_seam` / `run_with_thread_touch_suppressed`: async,
+  operation is a future (H3 — task_local scope must cover polling, not just
+  future construction).
+- `Db`: connection behind `Mutex` so `Db: Sync` (H5 — `&Db`-holding drain/
+  handler futures must be `Send` for `tokio::spawn`; rusqlite stays confined
+  to storage.rs; zero signature churn).
+- `CompactAbortSignal`: live shared flag (`aborted()` re-reads; `abort()`)
+  replacing the bool snapshot (view-compact deep-diff HIGH — TS getter
+  parity; test 11 rewired to abort the held signal; value-equality impl for
+  opts-bag comparisons).
+- Consistency: `as_str()` added to ErrorClass/ErrorCode/DeterministicOpName/
+  ChunkEntryBand/TargetRatioKind; EventRecord payload accessors exhaustive
+  (wildcards removed); `rename_all` on InferenceRequestMessage/
+  ModelCallMessage; W7 `const _` keepalive removed.
+
+Recorded, deliberately NOT changed: `DEFAULT_PROMPT_NAMES` tuple-slice
+representation (golden-tested; reshaping certified surface for style is net
+risk); `SchedulerPoke`/`ThreadTouch`/walk-hook slots stay `Box` (single-
+owner slots, no sharing requirement); `DurableWorkDispatcherMap` HashMap
+(lookup-only, doc-justified); `record_from_row` by-value `Vec<Block>`.
+
+Rolled to Phase 2 (tasks, not lost): storage error-channel variants (M2,
+Wave 1); panic-safe cleanup guards in work_execution/intake + un-fold the
+view-boundary it.each (Wave 2 test hygiene, sanctioned test edits);
+clippy style debt (~40 pre-existing + fmt-surfaced; per-wave cleanup);
+`persist_borrow.rs` ledger row below.
+
+Review coverage notes: view-select-golden fixtures are per-test (TS ran one
+sequential beforeAll fixture) — a Phase 2 divergence would surface as a
+false FAILURE, never a vacuous pass. Test-fidelity census 53/53; goldens
+15/15 byte-identical; view-compact deep-diff 16/17 clean (17th was the
+abort finding, fixed above); work-execution 27/27 clean.
+
+Rust-only test files (ledger addition): `tests/persist_borrow.rs` (2 tests
+— HRTB transaction-borrow ruling probes; see Wave 1 ruling above).

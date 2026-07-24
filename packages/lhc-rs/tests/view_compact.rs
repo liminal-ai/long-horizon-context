@@ -1347,14 +1347,14 @@ async fn abort_immediately_before_snapshot_write_leaves_the_prior_view_unchanged
     };
     let prior_compact_point = boundary_position(&local.file_path);
 
-    // Phase 1 CompactAbortSignal is a by-value snapshot; TS uses a live getter.
-    // Hook still flips a flag (live intent); signal starts non-aborted.
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_hook = Arc::clone(&stop);
+    // Live signal (TS getter parity): the hook aborts the same signal the
+    // compact call holds, mid-flight, between sweep and write.
+    let signal = CompactAbortSignal::new();
+    let signal_hook = signal.clone();
     set_view_injection_hook(
         ViewInjectionPoint::CompactWrite,
         Some(std::sync::Arc::new(move || {
-            stop_hook.store(true, Ordering::SeqCst);
+            signal_hook.abort();
         })),
     );
     let stopped = local
@@ -1365,7 +1365,7 @@ async fn abort_immediately_before_snapshot_write_leaves_the_prior_view_unchanged
             CompactOpts {
                 profile: None,
                 params: Some(edge_params()),
-                signal: Some(CompactAbortSignal { aborted: false }),
+                signal: Some(signal.clone()),
             },
         )
         .await;
@@ -1375,7 +1375,7 @@ async fn abort_immediately_before_snapshot_write_leaves_the_prior_view_unchanged
         assert_eq!(error.error_class, ErrorClass::CallerError);
         assert_eq!(error.code, ErrorCode::CompactStopped);
     }
-    let _ = stop.load(Ordering::SeqCst);
+    assert!(signal.aborted(), "hook must have aborted the live signal");
 
     let after_stop = local
         .sdk

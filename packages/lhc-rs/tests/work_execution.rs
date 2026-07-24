@@ -157,7 +157,7 @@ fn manual_sdk(
         inference_callbacks: Some(callbacks.clone()),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(clock.unwrap_or_else(|| Box::new(SystemTime::now))),
+        clock: Some(clock.unwrap_or_else(|| Arc::new(SystemTime::now))),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,
@@ -389,7 +389,7 @@ async fn tc_1_1_three_items_across_both_owners_run_in_order_rows_deleted_at_term
     let base = UNIX_EPOCH + Duration::from_millis(FIXED_INSTANT_MS);
     let sdk = manual_sdk(
         &double,
-        Some(Box::new(move || {
+        Some(Arc::new(move || {
             let t = tick_c.fetch_add(1, Ordering::SeqCst);
             base + Duration::from_secs(t as u64)
         })),
@@ -1161,7 +1161,7 @@ fn deferred_message_sdk(now_ms: Arc<Mutex<u64>>) -> (Lhc, Arc<Mutex<Vec<Deferred
         mode: SdkMode::Manual,
         clock: {
             let now_ms = Arc::clone(&now_ms);
-            Some(Box::new(move || {
+            Some(Arc::new(move || {
                 let ms = *now_ms.lock().expect("now");
                 UNIX_EPOCH + Duration::from_millis(ms)
             }))
@@ -1214,7 +1214,10 @@ fn resolve_deferred(pending: DeferredRun, scripted: Scripted) {
             gaps: None,
         }]
     };
-    let db = (pending.run.open_db)();
+    let db = match (pending.run.open_db)() {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => panic!("open_db failed: {}", error.reason),
+    };
     let derived_at = system_time_to_iso((pending.run.clock)());
     let disposition = apply_derivation_success(
         &db,
@@ -1299,7 +1302,10 @@ async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion
 fn turn_derive_partial_dispatcher() -> DurableWorkDispatcher {
     Arc::new(|run, item| {
         Box::pin(async move {
-            let db = (run.open_db)();
+            let db = match (run.open_db)() {
+                OpResult::Ok { value } => value,
+                OpResult::Err { error } => panic!("open_db failed: {}", error.reason),
+            };
             let derived_at = system_time_to_iso((run.clock)());
             let disposition = apply_derivation_success(
                 &db,
@@ -1538,7 +1544,10 @@ async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_
     let sdk = manual_sdk(&double, None);
     let dispatcher: DurableWorkDispatcher = Arc::new(|run, item| {
         Box::pin(async move {
-            let db = (run.open_db)();
+            let db = match (run.open_db)() {
+                OpResult::Ok { value } => value,
+                OpResult::Err { error } => panic!("open_db failed: {}", error.reason),
+            };
             let derived_at = system_time_to_iso((run.clock)());
             let disposition = apply_derivation_success(
                 &db,
@@ -1778,7 +1787,7 @@ async fn messages_derive_accepts_same_version_ready_races_without_overwriting_th
         inference_callbacks: Some(callbacks),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(Box::new(SystemTime::now)),
+        clock: Some(Arc::new(SystemTime::now)),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,
@@ -1866,7 +1875,7 @@ async fn messages_derive_refuses_when_the_derivation_advances_after_its_initial_
         inference_callbacks: Some(callbacks),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(Box::new(SystemTime::now)),
+        clock: Some(Arc::new(SystemTime::now)),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,
@@ -2042,7 +2051,7 @@ async fn turns_derive_turn_refuses_an_exact_head_when_one_of_its_two_derivations
     let path_for_clock = Arc::clone(&file_path_box);
     let sdk = manual_sdk(
         &double,
-        Some(Box::new(move || {
+        Some(Arc::new(move || {
             if advance.swap(false, Ordering::SeqCst) {
                 let path = path_for_clock.lock().expect("path").clone();
                 set_ready_derivation(
@@ -2157,7 +2166,7 @@ async fn two_concurrent_messages_derive_calls_are_inline_attempts_fenced_by_the_
         inference_callbacks: Some(callbacks),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(Box::new(SystemTime::now)),
+        clock: Some(Arc::new(SystemTime::now)),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,
@@ -2302,7 +2311,7 @@ async fn two_concurrent_turns_derive_turn_calls_share_the_durable_claim() {
         inference_callbacks: Some(callbacks),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(Box::new(SystemTime::now)),
+        clock: Some(Arc::new(SystemTime::now)),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,
@@ -2440,7 +2449,7 @@ async fn two_concurrent_turns_derive_brief_chunk_calls_share_the_durable_claim()
         inference_callbacks: Some(callbacks),
         inference: None,
         mode: SdkMode::Manual,
-        clock: Some(Box::new(SystemTime::now)),
+        clock: Some(Arc::new(SystemTime::now)),
         guards: Some(DerivationGuards {
             smoothed_prompt: None,
             tool_result_summary: None,

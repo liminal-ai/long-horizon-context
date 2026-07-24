@@ -169,7 +169,7 @@ fn raw_form_rows(file_path: &str) -> Vec<(String, String)> {
 #[tokio::test]
 async fn tc_2_7_a_prompt_and_a_tool_result_each_durably_queue_their_kind_owner_messages() {
     let store = temp_store();
-    set_intake_clock(Some(Box::new(fixed_system_time)));
+    set_intake_clock(Some(Arc::new(fixed_system_time)));
     let file_path = create_thread(&store).await;
     let result = send(
         &file_path,
@@ -325,7 +325,7 @@ async fn tc_2_6_a_mixed_batchs_result_is_complete() {
 #[tokio::test]
 async fn tc_3_3_work_half_explicit_close_durably_queues_turn_derivation_owner_turns() {
     let store = temp_store();
-    set_intake_clock(Some(Box::new(fixed_system_time)));
+    set_intake_clock(Some(Arc::new(fixed_system_time)));
     let file_path = create_thread(&store).await;
     let result = send(
         &file_path,
@@ -867,7 +867,7 @@ async fn enqueue_via_create_db_write_transaction_rollback_drops_effects_commit_l
                 panic!("induced rollback");
             })
         },
-        Some(Box::new(clock)),
+        Some(Arc::new(clock)),
     ))
     .catch_unwind()
     .await;
@@ -917,7 +917,7 @@ async fn enqueue_via_create_db_write_transaction_rollback_drops_effects_commit_l
                 record
             })
         },
-        Some(Box::new(clock)),
+        Some(Arc::new(clock)),
     )
     .await;
     assert!(committed.is_ok());
@@ -964,7 +964,7 @@ async fn re_enqueueing_at_a_later_source_version_resets_the_form_row_to_pending(
                 );
             })
         },
-        Some(Box::new(clock)),
+        Some(Arc::new(clock)),
     )
     .await;
     assert!(queued.is_ok());
@@ -994,7 +994,7 @@ async fn re_enqueueing_at_a_later_source_version_resets_the_form_row_to_pending(
                 )
             })
         },
-        Some(Box::new(clock)),
+        Some(Arc::new(clock)),
     )
     .await;
     assert!(replacement.is_ok());

@@ -651,6 +651,15 @@ enum TargetRatioKind {
     ChunkSummaryBrief,
 }
 
+impl TargetRatioKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            TargetRatioKind::DetailedTurnCompression => "detailed_turn_compression",
+            TargetRatioKind::ChunkSummaryBrief => "chunk_summary_brief",
+        }
+    }
+}
+
 fn resolve_target_ratios(
     _kind: TargetRatioKind,
     _assignment: Option<&ModelAssignment>,

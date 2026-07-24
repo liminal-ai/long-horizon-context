@@ -37,7 +37,7 @@ fn recording_model_call(text: &str) -> (ModelCall, Arc<Mutex<Vec<ModelCallInput>
     let log = Arc::new(Mutex::new(Vec::new()));
     let log2 = Arc::clone(&log);
     let text = text.to_string();
-    let call: ModelCall = Box::new(move |input: ModelCallInput| {
+    let call: ModelCall = Arc::new(move |input: ModelCallInput| {
         let log2 = Arc::clone(&log2);
         let text = text.clone();
         Box::pin(async move {

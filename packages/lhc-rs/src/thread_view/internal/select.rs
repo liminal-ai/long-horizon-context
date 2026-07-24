@@ -228,6 +228,15 @@ enum ChunkEntryBand {
     Brief,
 }
 
+impl ChunkEntryBand {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChunkEntryBand::Detailed => "detailed",
+            ChunkEntryBand::Brief => "brief",
+        }
+    }
+}
+
 /// TS `chunkMaterial` derivationType: `"chunk_summary_detailed" | "chunk_summary_brief"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkMaterialDerivation {

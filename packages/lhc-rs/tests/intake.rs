@@ -4,6 +4,7 @@
 
 mod fixtures;
 
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use fixtures::{
@@ -138,7 +139,7 @@ async fn tc_1_4_the_same_batch_by_thread_id_and_by_file_path_produces_identical_
     // read-back can be compared field-for-field — recordedAt included, nothing
     // stripped.
     let recorded_at = UNIX_EPOCH + Duration::from_secs(1_767_225_600); // 2026-01-01T00:00:00.000Z
-    set_intake_clock(Some(Box::new(move || recorded_at)));
+    set_intake_clock(Some(Arc::new(move || recorded_at)));
 
     let store = temp_store();
     let path_a = path_str(&store.thread_path(None));

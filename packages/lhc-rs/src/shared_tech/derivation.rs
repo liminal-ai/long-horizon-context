@@ -27,6 +27,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::errors::OpResult;
 use super::inference_types::{DerivationGuards, InferenceConfig, ResolvedDerivationGuards};
 use super::storage::Db;
 use super::view::{ResolvedViewConfig, SdkViewConfig};
@@ -116,6 +117,7 @@ impl InferenceRequestRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InferenceRequestMessage {
     pub role: InferenceRequestRole,
     pub content: String,
@@ -315,7 +317,10 @@ pub const INFERENCE_CALLBACK_OPERATIONS: [&str; 4] = [
 
 /// TS `() => Date` — SystemTime is the Rust counterpart of a Date instant
 /// (Python used `datetime`). ISO formatting is a Phase 2 concern at call sites.
-pub type Clock = Box<dyn Fn() -> SystemTime + Send + Sync>;
+/// `Arc` (not `Box`): shared into transactions, handler contexts, and the
+/// resolved config simultaneously, mirroring TS reference sharing
+/// (phase-review H1).
+pub type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
 /// A composed derivation's record of a dependency that fell back during composition:
 /// names the source record and the derivation type that was not ready.
@@ -601,7 +606,10 @@ pub struct SdkConfig {
 
 /// Every optional filled by initLhc's central defaults.
 ///
-/// No Debug/Clone/Serialize — holds boxed callbacks.
+/// Clone (all callback fields are `Arc`-backed); no Debug/Serialize.
+/// Cloneability is load-bearing: `Lhc`, the instance seam, drain deps, and
+/// every `HandlerRunContext` carry owned copies (phase-review H1).
+#[derive(Clone)]
 pub struct ResolvedSdkConfig {
     pub inference_callbacks: InferenceCallbacks,
     pub mode: SdkMode,
@@ -620,8 +628,11 @@ pub struct ResolvedSdkConfig {
 pub struct HandlerRunContext {
     pub thread_id: String,
     pub file_path: String,
-    /// short-txn access; NEVER held across inference calls
-    pub open_db: Box<dyn Fn() -> Db + Send + Sync>,
+    /// short-txn access; NEVER held across inference calls.
+    /// `Arc` + `OpResult`: contexts are stored/cloned across dispatches, and
+    /// open failure surfaces as a structured result, aligned with the
+    /// scheduler's `ThreadDbOpener` (phase-review H1/M3).
+    pub open_db: Arc<dyn Fn() -> OpResult<Db> + Send + Sync>,
     pub inference_callbacks: InferenceCallbacks,
     pub clock: Clock,
     pub config: ResolvedSdkConfig,

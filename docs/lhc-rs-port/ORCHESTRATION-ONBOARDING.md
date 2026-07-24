@@ -10,15 +10,14 @@ Lee's deliverable is **LHC running inside Grok Build** — his fork
 (`liminal-ai/grok-build-lhc`) with LHC-based context management he can use
 in real sessions. The path there is **3 phases, ~18 units of work**:
 
-1. **Phase 1 — port shape** (8 waves): full API surface, types, verbatim
-   prompt text, all ~53 test suites ported; every function body
-   `todo!("phase 2")`. Wave 0 is DONE (scaffold, conventions exemplars,
-   gate, oracle fixtures). **You are orchestrating waves 1–7 of this phase.**
-   At Phase 1's end nothing runs — it compiles and the tests collect.
-2. **Phase 2 — port behavior** (7 waves): implement until all tests pass,
-   certified against the TS reference. Separate brief, written at the
-   Phase 1 gate. At Phase 2's end there is a certified library — still
-   nothing Lee can use.
+1. **Phase 1 — port shape** (8 waves): **DONE and dual-certified**
+   (commits `0314283`…`483bf19`; gate 493 classified, wrong=0; independent
+   phase review by Fable). Nothing runs — it compiles and the tests collect.
+2. **Phase 2 — port behavior** (7 waves): implement until all 478 active
+   tests pass, certified against the TS reference. **This is the current
+   phase — its governing brief is `phase2-brief.md` in this directory; read
+   it after this document.** At Phase 2's end there is a certified library —
+   still nothing Lee can use.
 3. **Phase 3 — Grok Build integration** (~3 chunks): capture/compact/
    inference hooks in the fork + live certification. Only this delivers
    the deliverable.

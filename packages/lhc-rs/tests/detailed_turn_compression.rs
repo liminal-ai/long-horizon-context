@@ -161,7 +161,7 @@ impl RecordingHost {
     fn call(&self) -> ModelCall {
         let log = Arc::clone(&self.log);
         let text = self.text.clone();
-        Box::new(move |input: ModelCallInput| {
+        Arc::new(move |input: ModelCallInput| {
             let log = Arc::clone(&log);
             let text = text.clone();
             Box::pin(async move {
@@ -672,7 +672,7 @@ async fn compression_failure_logs_request_messages_on_inference_failed() {
     let store = temp_store();
     let log: Arc<Mutex<Vec<ModelCallInput>>> = Arc::new(Mutex::new(Vec::new()));
     let log_for_call = Arc::clone(&log);
-    let call: ModelCall = Box::new(move |input: ModelCallInput| {
+    let call: ModelCall = Arc::new(move |input: ModelCallInput| {
         let log = Arc::clone(&log_for_call);
         Box::pin(async move {
             log.lock().unwrap().push(input);

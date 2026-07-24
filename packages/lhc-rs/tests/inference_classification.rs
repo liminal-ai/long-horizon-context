@@ -114,7 +114,7 @@ fn counting_call(inner: ModelCall) -> (ModelCall, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let inner = Arc::new(inner);
     let calls_c = Arc::clone(&calls);
-    let call: ModelCall = Box::new(move |input| {
+    let call: ModelCall = Arc::new(move |input| {
         let inner = Arc::clone(&inner);
         let calls_c = Arc::clone(&calls_c);
         Box::pin(async move {
@@ -178,7 +178,7 @@ async fn a_hanging_host_classifies_timeout_under_the_adapter_owned_race_and_the_
     let bundle = recording_call(&canned_responses());
     let canned = Arc::new(bundle.call);
     let hang = Arc::new(hanging_call());
-    let call: ModelCall = Box::new(move |input| {
+    let call: ModelCall = Arc::new(move |input| {
         let canned = Arc::clone(&canned);
         let hang = Arc::clone(&hang);
         let hanging_lane = hanging_lane.clone();
@@ -302,7 +302,7 @@ async fn classifies_a_thrown_exception_as_other_carrying_the_message() {
 
 #[tokio::test]
 async fn classifies_a_synchronously_throwing_host_as_other_the_promise_contract_is_not_trusted() {
-    let sync: ModelCall = Box::new(|_input| {
+    let sync: ModelCall = Arc::new(|_input| {
         panic!("sync kaboom");
     });
     let result = safe_call(&sync, probe_input(), 1000).await;

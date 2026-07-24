@@ -18,6 +18,7 @@ use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::{intake_stream, messages, threads};
 use serde_json::{Map, Value, json};
+use std::sync::Arc;
 
 fn path_str(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()

@@ -374,7 +374,7 @@ async fn a_whitespace_only_success_fails_on_the_first_attempt_as_empty_output() 
     let script = Arc::new(script);
     let calls_c = Arc::clone(&calls);
     let log_c = Arc::clone(&log);
-    let call: ModelCall = Box::new(move |input| {
+    let call: ModelCall = Arc::new(move |input| {
         let script = Arc::clone(&script);
         let calls_c = Arc::clone(&calls_c);
         let log_c = Arc::clone(&log_c);

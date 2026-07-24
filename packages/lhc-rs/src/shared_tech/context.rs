@@ -36,7 +36,14 @@ tokio::task_local! {
     static SEAM_STORE: Option<Arc<InstanceSeam>>;
 }
 
-pub fn run_with_instance_seam<T>(_seam: Arc<InstanceSeam>, _operation: impl FnOnce() -> T) -> T {
+/// Async (phase-review H3): a `tokio::task_local` scope from a sync closure
+/// would cover only future *construction*, not polling — TS
+/// `AsyncLocalStorage.run(store, asyncFn)` covers the whole async execution,
+/// so the operation is a future and the scope wraps its polls.
+pub async fn run_with_instance_seam<T>(
+    _seam: Arc<InstanceSeam>,
+    _operation: impl Future<Output = T>,
+) -> T {
     todo!("phase 2")
 }
 
@@ -73,7 +80,8 @@ pub fn resolve_instance_config() -> Option<ResolvedSdkConfig> {
 /// calls. Everything else on the seam carries through unchanged; direct domain
 /// calls with no seam in scope delegate to below-SDK defaults, minus the touch.
 /// Write paths never use this.
-pub fn run_with_thread_touch_suppressed<T>(_operation: impl FnOnce() -> T) -> T {
+/// Async for the same reason as [`run_with_instance_seam`] (phase-review H3).
+pub async fn run_with_thread_touch_suppressed<T>(_operation: impl Future<Output = T>) -> T {
     todo!("phase 2")
 }
 

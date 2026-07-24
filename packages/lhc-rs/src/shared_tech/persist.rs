@@ -19,6 +19,8 @@ use crate::threads::internal::registry::{
     open_registry_for_read, resolve_registry_path, select_thread_row, select_thread_rows_by_prefix,
 };
 
+use std::sync::Arc;
+
 #[allow(unused_imports)]
 use super::context::{resolve_instance_poke, run_with_thread_touch_suppressed};
 use super::derivation::Clock;
@@ -47,7 +49,9 @@ pub struct DbWriteTransaction {
     pub file_path: String,
     pub clock: Clock,
     pub post_commit_hook: PostCommitHook,
-    pub poke: Box<dyn Fn(&str) + Send + Sync>,
+    /// `Arc`: enqueue clones this into `'static` post-commit ops
+    /// (phase-review H2).
+    pub poke: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 /// TS `DbReadTransaction | DbWriteTransaction` — borrowed so the outer

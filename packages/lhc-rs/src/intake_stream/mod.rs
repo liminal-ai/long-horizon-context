@@ -418,48 +418,89 @@ impl EventRecord {
         }
     }
 
+    // Accessor arms are exhaustive on purpose (no `_`): a tenth event kind
+    // must fail compilation here and force a mapping decision (brief rule 6).
     pub fn text_payload(&self) -> Option<&TextPayload> {
         match self {
             EventRecord::UserPrompt { payload, .. }
             | EventRecord::AssistantText { payload, .. }
             | EventRecord::AssistantThinking { payload, .. }
             | EventRecord::RuntimeNote { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
         }
     }
 
     pub fn model_change_payload(&self) -> Option<&ModelChangePayload> {
         match self {
             EventRecord::ModelChange { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
         }
     }
 
     pub fn thinking_level_change_payload(&self) -> Option<&ThinkingLevelChangePayload> {
         match self {
             EventRecord::ThinkingLevelChange { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
         }
     }
 
     pub fn tool_call_payload(&self) -> Option<&ToolCallPayload> {
         match self {
             EventRecord::ToolCall { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
         }
     }
 
     pub fn tool_result_payload(&self) -> Option<&ToolResultPayload> {
         match self {
             EventRecord::ToolResult { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::TurnEnd { .. } => None,
         }
     }
 
     pub fn turn_end_payload(&self) -> Option<&TurnEndPayload> {
         match self {
             EventRecord::TurnEnd { payload, .. } => Some(payload),
-            _ => None,
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. } => None,
         }
     }
 }

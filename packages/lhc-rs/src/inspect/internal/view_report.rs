@@ -20,7 +20,6 @@ use crate::threads::ThreadRef;
 #[allow(dead_code)]
 const BAND_ORDER: &[Band] = &[Band::Brief, Band::Detailed, Band::Smooth];
 // Inventory keepalive (const item, not a behavior body).
-const _: &[Band] = BAND_ORDER;
 
 /// TS view-report cross-check diagnostic fragments — byte-exact.
 ///

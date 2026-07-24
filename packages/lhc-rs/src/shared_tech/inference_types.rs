@@ -7,6 +7,8 @@
 //! code that interprets them.
 
 use indexmap::IndexMap;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::derivation::BoxFuture;
@@ -76,6 +78,7 @@ impl ModelCallMessageRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelCallMessage {
     pub role: ModelCallMessageRole,
     pub content: String,
@@ -105,7 +108,9 @@ pub enum ModelCallResult {
 
 /// The one function a host supplies. Single-turn completion; provider/model
 /// are host routing keys the host's implementation interprets.
-pub type ModelCall = Box<dyn Fn(ModelCallInput) -> BoxFuture<ModelCallResult> + Send + Sync>;
+/// `Arc` (not `Box`): one host call fans out into four per-kind callbacks
+/// (phase-review H4).
+pub type ModelCall = Arc<dyn Fn(ModelCallInput) -> BoxFuture<ModelCallResult> + Send + Sync>;
 
 /// ModelAssignment includes target ranges for compression types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

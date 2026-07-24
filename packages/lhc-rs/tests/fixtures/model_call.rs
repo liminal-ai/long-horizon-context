@@ -262,7 +262,7 @@ pub fn recording_call(responses: &HashMap<String, String>) -> RecordingCallBundl
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-    let call: ModelCall = Box::new(move |input| {
+    let call: ModelCall = Arc::new(move |input| {
         let responses = responses.clone();
         let log = Arc::clone(&log_for_call);
         let known = known.clone();
@@ -296,7 +296,7 @@ pub fn recording_call(responses: &HashMap<String, String>) -> RecordingCallBundl
 pub fn scripted_call(script: Vec<ModelCallResult>) -> ModelCall {
     let next = Arc::new(AtomicUsize::new(0));
     let script = Arc::new(script);
-    Box::new(move |input| {
+    Arc::new(move |input| {
         let next = Arc::clone(&next);
         let script = Arc::clone(&script);
         Box::pin(async move {
@@ -317,7 +317,7 @@ pub fn scripted_call(script: Vec<ModelCallResult>) -> ModelCall {
 /// REAL. `safe_call` will catch panics once implemented.
 pub fn throwing_call(error: Box<dyn std::error::Error + Send + Sync>) -> ModelCall {
     let msg = error.to_string();
-    Box::new(move |_input| {
+    Arc::new(move |_input| {
         let msg = msg.clone();
         Box::pin(async move {
             panic!("{msg}");
@@ -327,5 +327,5 @@ pub fn throwing_call(error: Box<dyn std::error::Error + Send + Sync>) -> ModelCa
 
 /// A host that never settles — the DD-6 timeout leg. REAL.
 pub fn hanging_call() -> ModelCall {
-    Box::new(|_input| Box::pin(futures::future::pending::<ModelCallResult>()))
+    Arc::new(|_input| Box::pin(futures::future::pending::<ModelCallResult>()))
 }

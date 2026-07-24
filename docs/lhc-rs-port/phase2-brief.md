@@ -29,7 +29,13 @@ the TS authority changes. The live-network `inference-real` suite and
 
 - Repo `/srv/work/long-horizon-context`, branch `lhc-rs-port`.
 - Rust crate `packages/lhc-rs`; TypeScript authority `packages/lhc`.
-- Phase 1 court of record: `packages/lhc-rs/PORT_STATUS.md`.
+- Phase 1 court of record: `packages/lhc-rs/PORT_STATUS.md` — INCLUDING the
+  "Phase-gate review" addendum: the phase review amended several shapes
+  (`Arc` callback types, `Clone` on ResolvedSdkConfig, `OpResult` open_db,
+  async seam scoping, `Mutex`-backed `Db: Sync`, live `CompactAbortSignal`).
+  Those amended shapes are the frozen contract; the addendum also lists
+  Phase 2 tasks rolled from review findings (storage error channel Wave 1,
+  test-hygiene guards Wave 2, per-wave clippy cleanup).
 - Phase 1 conventions, types, public signatures, serde shapes, constants,
   prompt bytes, SQL, diagnostics, module mapping, and test assertions are
   frozen. Implement bodies; do not redesign shape to make implementation

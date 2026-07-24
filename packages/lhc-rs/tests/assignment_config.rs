@@ -30,7 +30,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 fn recording_call_ok() -> (ModelCall, Arc<Mutex<Vec<ModelCallInput>>>) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log_c = Arc::clone(&log);
-    let call: ModelCall = Box::new(move |input| {
+    let call: ModelCall = Arc::new(move |input| {
         let log_c = Arc::clone(&log_c);
         Box::pin(async move {
             log_c.lock().expect("log").push(input);

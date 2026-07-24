@@ -29,10 +29,10 @@ fn make_run(inference_callbacks: InferenceCallbacks) -> HandlerRunContext {
     HandlerRunContext {
         thread_id: "th_test".into(),
         file_path: "/tmp/tool-result-summary-test.sqlite".into(),
-        open_db: Box::new(|| panic!("deriveToolResultSummary tests do not read the database")),
+        open_db: Arc::new(|| panic!("deriveToolResultSummary tests do not read the database")),
         inference_callbacks,
         // Phase 1: init_lhc never returns; Phase 2 shares sdk.config.clock identity.
-        clock: Box::new(SystemTime::now),
+        clock: Arc::new(SystemTime::now),
         config: sdk.config,
     }
 }

@@ -353,7 +353,11 @@ async fn halts_compact_before_fallback_assembly_when_stop_is_requested() {
             CompactOpts {
                 profile: None,
                 params: Some(compact_params()),
-                signal: Some(CompactAbortSignal { aborted: true }),
+                signal: Some({
+                    let s = CompactAbortSignal::new();
+                    s.abort();
+                    s
+                }),
             },
         )
         .await;

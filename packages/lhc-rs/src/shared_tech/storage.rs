@@ -104,15 +104,28 @@ impl ToSql for SqlParam {
 }
 
 /// The one database handle the rest of the crate sees.
+///
+/// The connection sits behind a `Mutex` so `Db: Sync` — drain/handler futures
+/// hold `&Db` across await points and must stay `Send` for `tokio::spawn`
+/// (phase-review H5). Uncontended per-statement locking; rusqlite stays
+/// confined to this module.
 pub struct Db {
-    pub(crate) conn: Connection,
+    pub(crate) conn: std::sync::Mutex<Connection>,
     path: String,
+}
+
+impl Db {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// Minimal node:sqlite `StatementSync` stand-in for fixture probes.
 /// REAL methods: [`Self::get`], [`Self::get_params`], [`Self::all`], [`Self::run`].
 pub struct PreparedStatement<'a> {
-    conn: &'a Connection,
+    db: &'a Db,
     sql: String,
 }
 
@@ -141,7 +154,8 @@ impl PreparedStatement<'_> {
         &self,
         params: &[SqlParam],
     ) -> Option<serde_json::Map<String, serde_json::Value>> {
-        let mut stmt = self.conn.prepare(&self.sql).ok()?;
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(&self.sql).ok()?;
         let mut rows = stmt.query(params_from_iter(params.iter())).ok()?;
         let row = rows.next().ok()??;
         Self::row_to_map(row)
@@ -149,7 +163,8 @@ impl PreparedStatement<'_> {
 
     /// TS `StatementSync.all(...params)`.
     pub fn all(&self, params: &[SqlParam]) -> Vec<serde_json::Map<String, serde_json::Value>> {
-        let Ok(mut stmt) = self.conn.prepare(&self.sql) else {
+        let conn = self.db.lock();
+        let Ok(mut stmt) = conn.prepare(&self.sql) else {
             return Vec::new();
         };
         let Ok(mut rows) = stmt.query(params_from_iter(params.iter())) else {
@@ -166,7 +181,8 @@ impl PreparedStatement<'_> {
 
     /// TS `StatementSync.run(...params)`.
     pub fn run(&self, params: &[SqlParam]) {
-        self.conn
+        self.db
+            .lock()
             .execute(&self.sql, params_from_iter(params.iter()))
             .expect("sqlite run failed");
     }
@@ -179,12 +195,12 @@ impl Db {
     }
 
     pub fn exec(&self, sql: &str) {
-        self.conn.execute_batch(sql).expect("sqlite exec failed");
+        self.lock().execute_batch(sql).expect("sqlite exec failed");
     }
 
     pub fn prepare(&self, sql: &str) -> PreparedStatement<'_> {
         PreparedStatement {
-            conn: &self.conn,
+            db: self,
             sql: sql.to_string(),
         }
     }
@@ -213,7 +229,7 @@ pub fn open_database(path: &str) -> OpResult<Db> {
     match Connection::open(path) {
         Ok(conn) => {
             let db = Db {
-                conn,
+                conn: std::sync::Mutex::new(conn),
                 path: path.to_string(),
             };
             db.exec("PRAGMA journal_mode = WAL;");

@@ -25,6 +25,17 @@ pub enum DeterministicOpName {
     SummarizeChunkBrief,
 }
 
+impl DeterministicOpName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeterministicOpName::SmoothPrompt => "smoothPrompt",
+            DeterministicOpName::SummarizeToolResult => "summarizeToolResult",
+            DeterministicOpName::CompressDetailedTurn => "compressDetailedTurn",
+            DeterministicOpName::SummarizeChunkBrief => "summarizeChunkBrief",
+        }
+    }
+}
+
 /// TS `DETERMINISTIC_MARKERS: Record<DeterministicOpName, string>`.
 pub fn deterministic_marker(op: DeterministicOpName) -> &'static str {
     match op {
