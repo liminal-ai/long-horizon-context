@@ -18,6 +18,7 @@ pub mod corrupt;
 pub mod drain_runner;
 pub mod inference_callbacks_double;
 pub mod intake_seam;
+pub mod lifecycle;
 pub mod model_call;
 pub mod read_only_delta;
 pub mod seam_conformance;
@@ -33,6 +34,11 @@ pub use inference_callbacks_double::{
     create_inference_callbacks_double,
 };
 pub use intake_seam::{IntakeWalkHook, set_intake_clock, set_intake_walk_hook};
+pub use lifecycle::{
+    DELETE_TARGET, DELETED_MESSAGE_TEXT, EDIT_TARGET, EDITED_MESSAGE_TEXT, LIFECYCLE_PROFILE,
+    LifecycleCheckpoint, LifecycleOptions, LifecyclePhases, LifecycleRun, create_lifecycle_sdk,
+    run_lifecycle,
+};
 pub use model_call::{
     DERIVATION_TYPES, FAKE_MODEL_PREFIX, FAKE_PROVIDER_PREFIX, INFERENCE_DERIVATION_TYPES,
     ModelAssignmentOverride, canned_responses, hanging_call, recording_call, scripted_call,
@@ -90,7 +96,15 @@ impl TempStore {
         self.dir.join(format!("{label}.sqlite"))
     }
 
+    /// Idempotent: safe if [`Drop`] also runs (or if called twice).
     pub fn cleanup(&self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl Drop for TempStore {
+    fn drop(&mut self) {
+        // Panic-safe: todo! / assert unwind must not leak the temp dir.
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

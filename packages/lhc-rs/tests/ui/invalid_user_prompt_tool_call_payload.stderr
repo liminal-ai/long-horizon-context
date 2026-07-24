@@ -11,7 +11,7 @@ error[E0308]: mismatched types
 18 | |             }),
    | |_____________^ expected `UserPromptPayload`, found `ToolCallPayload`
    |
-help: the type constructed contains `ToolCallPayload` due to the type of the argument passed
+help: the type constructed contains `valid_event::ToolCallPayload` due to the type of the argument passed
   --> tests/ui/invalid_user_prompt_tool_call_payload.rs:14:22
    |
 14 |                payload: Some(ToolCallPayload {

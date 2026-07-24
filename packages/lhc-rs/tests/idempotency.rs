@@ -17,7 +17,7 @@ use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::js_json::js_json_stringify;
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::{intake_stream, threads};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 async fn create_thread(store: &TempStore) -> String {
     let file_path = store.thread_path(None);
@@ -144,12 +144,18 @@ async fn tc_5_2_partial_resend_skips_the_old_records_the_new_and_keeps_the_order
     assert_eq!(
         events
             .iter()
-            .map(|event| event.event_order)
+            .map(|event| event.event_order())
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4, 5]
     );
-    assert_eq!(events[3].idempotency_key, fresh[0].idempotency_key);
-    assert_eq!(events[4].idempotency_key, fresh[1].idempotency_key);
+    assert_eq!(
+        events[3].idempotency_key(),
+        fresh[0].idempotency_key.as_deref().unwrap()
+    );
+    assert_eq!(
+        events[4].idempotency_key(),
+        fresh[1].idempotency_key.as_deref().unwrap()
+    );
     store.cleanup();
 }
 
@@ -180,17 +186,17 @@ async fn tc_5_3_idempotency_keys_are_scoped_to_the_thread_same_key_records_in_bo
         read_back(&thread_a)
             .await
             .iter()
-            .map(|e| e.idempotency_key.clone())
+            .map(|e| e.idempotency_key())
             .collect::<Vec<_>>(),
-        vec![Some("shared-key-1".into())]
+        vec!["shared-key-1"]
     );
     assert_eq!(
         read_back(&thread_b)
             .await
             .iter()
-            .map(|e| e.idempotency_key.clone())
+            .map(|e| e.idempotency_key())
             .collect::<Vec<_>>(),
-        vec![Some("shared-key-1".into())]
+        vec!["shared-key-1"]
     );
     store.cleanup();
 }
@@ -242,7 +248,7 @@ async fn tc_5_4_skips_are_inert_no_duplicate_rows_no_order_numbers_consumed_no_t
         read_back(&file_path)
             .await
             .iter()
-            .map(|e| e.event_order)
+            .map(|e| e.event_order())
             .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
@@ -293,11 +299,11 @@ async fn tc_5_5_key_wins_over_content_original_payload_intact_resent_payload_sto
     let events = read_back(&file_path).await;
     assert_eq!(events.len(), 1);
     // Full payload structural equality — rejects extras (TS `.toEqual({ text })`).
-    let expected_payload: Map<String, Value> = Map::from_iter([(
-        "text".to_string(),
-        Value::String("PAYLOAD-A-ORIGINAL".into()),
-    )]);
-    assert_eq!(events[0].payload, expected_payload);
+    assert_eq!(
+        events[0].text_payload().map(|p| p.text.as_str()),
+        Some("PAYLOAD-A-ORIGINAL")
+    );
+    assert_eq!(events[0].event_kind(), EventKind::UserPrompt);
 
     // openRaw scan: payload B appears in no table at all.
     let dump = raw_dump(&file_path);

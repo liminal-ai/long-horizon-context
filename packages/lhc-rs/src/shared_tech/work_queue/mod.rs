@@ -391,12 +391,12 @@ fn parse_work_payload(_row: &RawClaimRow) -> WorkPayload {
     todo!("phase 2")
 }
 
+// IMPORT-CYCLE SEAM (Python): durable_work imports work_queue at load time;
+// Phase 2 body lazily calls durable_work::operation_intent.
 fn operation_intent_for_row(
     _kind: &str,
     _source_ref: &WorkSourceRef,
 ) -> Option<DurableWorkOperation> {
-    // IMPORT-CYCLE SEAM (Python): durable_work imports work_queue at load time;
-    // Phase 2 body lazily calls durable_work::operation_intent.
     todo!("phase 2")
 }
 

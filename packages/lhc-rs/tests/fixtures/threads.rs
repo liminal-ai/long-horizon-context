@@ -205,9 +205,9 @@ fn parse_gaps(raw: &str) -> Vec<DependencyGap> {
 }
 
 /// TS `damagedSourceThread` — PARTIAL (SDK + [`super::corrupt::corrupt_two_open_turns`]).
+/// Needs: threads::new_thread, intake_stream::message_events, then
+/// corrupt_two_open_turns (REAL in corrupt.rs).
 pub async fn damaged_source_thread(_store: &TempStore) -> DamagedSourceThreadResult {
-    // Needs: threads::new_thread, intake_stream::message_events, then
-    // corrupt_two_open_turns (REAL in corrupt.rs).
     todo!("phase 2")
 }
 

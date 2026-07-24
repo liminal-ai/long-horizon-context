@@ -5,8 +5,10 @@
 //!
 //! File-private (TS module-local): `RunnerConfig`, `sleep`, `main`.
 //! `RunnerConfig` is pure data — REAL. `sleep` / `main` are `todo!("phase 2")`.
-
-use std::future::Future;
+//!
+//! Phase 2 `main` needs from src (not yet): init_lhc, Lhc::work.drain, lease
+//! config wiring; from fixtures: create_inference_callbacks_double,
+//! register_test_work_handlers with on_handler_start hold protocol.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,15 +24,12 @@ struct RunnerConfig {
 }
 
 /// TS `function sleep(ms): Promise<void>`.
-fn sleep(_ms: i64) -> impl Future<Output = ()> {
-    async move { todo!("phase 2") }
+async fn sleep(_ms: i64) {
+    todo!("phase 2")
 }
 
 /// TS `main` — PARTIAL: process-boundary protocol (stdout markers, exit codes)
 /// lands when `init_lhc` / `register_test_work_handlers` / `work.drain` are real.
 async fn main() {
-    // Needed from src (not yet): init_lhc, Lhc::work.drain, lease config wiring.
-    // Needed from fixtures: create_inference_callbacks_double,
-    // register_test_work_handlers with on_handler_start hold protocol.
     todo!("phase 2")
 }

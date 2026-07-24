@@ -139,6 +139,30 @@ fn temp_store_creates_an_isolated_directory_and_cleans_it_up() {
     assert!(!store.dir.exists());
 }
 
+/// Rust-only: TempStore Drop removes the dir after a caught panic (todo! unwind).
+#[test]
+fn temp_store_drop_removes_dir_on_panic_unwind() {
+    use std::sync::Mutex;
+    let dir_slot = Mutex::new(None);
+    let result = std::panic::catch_unwind(|| {
+        let store = temp_store();
+        *dir_slot.lock().expect("dir slot") = Some(store.dir.clone());
+        assert!(store.dir.exists());
+        panic!("simulated todo!");
+    });
+    assert!(result.is_err());
+    let dir = dir_slot
+        .lock()
+        .expect("dir slot")
+        .clone()
+        .expect("dir recorded before panic");
+    assert!(
+        !dir.exists(),
+        "TempStore Drop must remove dir on panic unwind: {}",
+        dir.display()
+    );
+}
+
 #[test]
 fn open_raw_opens_a_real_sqlite_handle_for_below_sdk_assertions() {
     let store = temp_store();

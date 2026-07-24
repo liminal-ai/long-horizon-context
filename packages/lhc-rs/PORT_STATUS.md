@@ -112,6 +112,46 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `lib::shared_tech::work_queue::tests::record_item_write_payload_rejects_unknown_subject_kind`;
   `lib::shared_tech::thread_migrate::tests::migrate_loose_queued_work_item_payload_preserves_unknown_keys`
   (Rust-only private payload unit tests).
+- Wave 3: threads full surface (ThreadInfo/ThreadFileInfo/resolve/list/info/
+  resolve_thread_ref + private helpers); create SQL statement templates REAL;
+  registry DEFAULT_REGISTRY_PATH + schema SQL constants REAL; bodies todo.
+  Preserved Wave 1 closed ThreadRef Deserialize (no second public envelope).
+- Wave 3: intake pipeline complete skeleton (recorded_keys/max_event_order/
+  run_message_events/run_list_events) with Wave 2 REAL clock/walk seams
+  preserved. validate.rs: EVENT_KINDS/SERVER_GENERATED_FIELDS/DECODE_OPTIONS
+  + closed schema type surfaces REAL; validate_* bodies todo. TS `unknown`
+  validate inputs → `&serde_json::Value` (not pre-narrowed ThreadRef /
+  MessageEventInput). `DecodeSchema` / `ParseError` are Phase 2 stand-ins for
+  Effect Schema decode targets / ParseResult.ParseError (no Effect runtime).
+- Wave 3: `EventRecord` is a closed tagged enum on `eventKind` with kind-exact
+  payloads (`deny_unknown_fields` on the enum and payload structs; no flatten
+  extras). Wave 1 broad wire remains only on `MessageEventInput`.
+- Wave 3: lifecycle fixture — constants + pure `turn_events`/`intake_batches`
+  REAL (module-private helpers; not fixtures re-exports); `on_checkpoint` is
+  lifetime-coupled `Arc<dyn for<'a> Fn(...) -> Pin<Box<Future… + 'a>>>`;
+  `fresh_sdk_between_groups: Option<bool>`; `LifecycleCheckpoint::as_str`
+  exhaustive (inspect1/health2/materialize, no wildcard); inference/guards
+  retained; `create_lifecycle_sdk`/`run_lifecycle` exact `todo!("phase 2")`.
+  Fixed clock const `2026-06-12T00:00:00.000Z` documented for Phase 2
+  `SdkConfig.clock` injection. Harness ruling: Rust recomputes baseline per
+  test (no async beforeAll); replay/teardown wrapped in 60s
+  `tokio::time::timeout` matching TS.
+- Wave 3: failure-injection ruling — `IntakeWalkHook` is `Fn(&Db, …)` so
+  TS `db.close()` cannot consume the borrowed handle; transactional
+  `DROP TABLE event` induces the same in-transaction `storage_failure`;
+  `Db::close` unchanged. Assertions prove error class + rollback.
+- Wave 3: `TempStore` implements panic-safe `Drop` (removes dir); `cleanup()`
+  idempotent. Allowlisted proof:
+  `fixtures_test::temp_store_drop_removes_dir_on_panic_unwind`.
+- Wave 3: sdk.rs / crate-root re-exports include EventRecord, ThreadFileInfo,
+  `TOKEN_ESTIMATOR_ID`/`estimate_tokens`, and `MutationResult` (sdk.ts-faithful).
+- Wave 3: gate `check_gate.py` exact-todo tripwire is crate-wide (`**/*.rs`
+  excl. `target/`); real `todo!("phase 2")` tokens are lexical (outside
+  strings/nested block comments); bodies must be whitespace + that expr only
+  (comments in-body fail); every token reconciles to a recognized fn body
+  (scanner self-test always runs).
+- Wave 3 allowlisted passes (exact names only):
+  `fixtures_test::temp_store_drop_removes_dir_on_panic_unwind`.
 - Verifier override (fix-r1): Fable suggested narrowing Wave 0
   `js_json_conformance::*` allowlist — rejected; Wave 0 court-of-record,
   “extend, don't reshape”.
@@ -125,11 +165,11 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 3 | `src/inspect/internal/health.ts` | `src/inspect/internal/health.rs` | ☐ |  |
 | 4 | `src/inspect/internal/overview.ts` | `src/inspect/internal/overview.rs` | ☐ |  |
 | 5 | `src/inspect/internal/view-report.ts` | `src/inspect/internal/view_report.rs` | ☐ |  |
-| 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 1 PARTIAL: EventKind/MessageEventInput/BatchResult + message_events/list_events stubs (collection) |
-| 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 2 PARTIAL: set_intake_clock/set_intake_walk_hook REAL seams only; walk bodies later |
-| 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☐ |  |
-| 9 | `src/messages/index.ts` | `src/messages/mod.rs` | ☑ | Wave 2 PARTIAL: + MessageDeriveResult/derive stubs for work-execution; full Wave 4 |
-| 10 | `src/messages/internal/cascade.ts` | `src/messages/internal/cascade.rs` | ☐ |  |
+| 6 | `src/intake-stream/index.ts` | `src/intake_stream/mod.rs` | ☑ | Wave 3: closed EventRecord tagged enum (`deny_unknown_fields`) + kind payloads; message_events/list_events exact todo; Wave 1 MessageEventInput broad wire kept |
+| 7 | `src/intake-stream/internal/pipeline.ts` | `src/intake_stream/internal/pipeline.rs` | ☑ | Wave 3: complete skeleton; clock/walk seams REAL; walk/record/list bodies exact todo |
+| 8 | `src/intake-stream/internal/validate.ts` | `src/intake_stream/internal/validate.rs` | ☑ | Wave 3: EVENT_KINDS + DECODE_OPTIONS + DecodeSchema/ParseError stand-ins REAL; validate bodies exact todo; unknown→Value |
+| 9 | `src/messages/index.ts` | `src/messages/mod.rs` | ☑ | Wave 2–3 PARTIAL: MessageDeriveResult + MutationResult/edit/remove stubs for lifecycle; full Wave 4 |
+| 10 | `src/messages/internal/cascade.ts` | `src/messages/internal/cascade.rs` | ☑ | Wave 3 PARTIAL: CascadeClear type only; cascade bodies Wave 4 |
 | 11 | `src/messages/internal/classify-tool-result.ts` | `src/messages/internal/classify_tool_result.rs` | ☑ | exemplar (logic module) |
 | 12 | `src/messages/internal/derivations.ts` | `src/messages/internal/derivations.rs` | ☐ |  |
 | 13 | `src/messages/internal/derive.ts` | `src/messages/internal/derive.rs` | ☑ | Wave 2 PARTIAL: MessageDeriveResult lives here; derive bodies later |
@@ -139,7 +179,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 17 | `src/messages/internal/smoothing.ts` | `src/messages/internal/smoothing.rs` | ☐ |  |
 | 18 | `src/messages/internal/store.ts` | `src/messages/internal/store.rs` | ☐ |  |
 | 19 | `src/messages/internal/work.ts` | `src/messages/internal/work.rs` | ☐ |  |
-| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 2 PARTIAL: init_lhc/Lhc + sdk.ts-faithful re-exports; lookup_work_handler/dispatcher + unknown_work_kind REAL; registerTestingWork stub; sync derive bindings; full Wave 7 |
+| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 2–3 PARTIAL: init_lhc/Lhc + sdk.ts-faithful re-exports (EventRecord, ThreadFileInfo, token exports, MutationResult); lookup_work_handler/dispatcher + unknown_work_kind REAL; registerTestingWork stub; sync derive bindings; full Wave 7 |
 | 21 | `src/shared-tech/classify.ts` | `src/shared_tech/classify.rs` | ☑ | Wave 1 |
 | 22 | `src/shared-tech/context.ts` | `src/shared_tech/context.rs` | ☑ | Wave 1 |
 | 23 | `src/shared-tech/derivation.ts` | `src/shared_tech/derivation.rs` | ☑ | Wave 1 complete (Wave 0 vocab unchanged; state machine + handler contract appended) |
@@ -182,9 +222,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☐ |  |
 | 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☐ |  |
 | 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☐ |  |
-| 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 1 PARTIAL: ThreadRef + new_thread stub (collection) |
-| 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 1 PARTIAL: open_thread_database only (persist import) |
-| 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 1 PARTIAL: 4 persist-imported fns only |
+| 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: full surface (new_thread/resolve/list/info/resolve_thread_ref + helpers); ThreadRef closed wire preserved; bodies todo |
+| 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: SQL templates REAL; generate/create/delete/open/validate bodies todo |
+| 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: DEFAULT_REGISTRY_PATH + schema SQL REAL; open/select/insert bodies todo |
 | 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 2 PARTIAL: + Turn/ChunkDeriveResult + derive_* stubs for work-execution; full turns wave later |
 | 67 | `src/turns/internal/chunk-recovery.ts` | `src/turns/internal/chunk_recovery.rs` | ☐ |  |
 | 68 | `src/turns/internal/chunks.ts` | `src/turns/internal/chunks.rs` | ☐ |  |
@@ -206,7 +246,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 7 | `test/detailed-turn-compression.test.ts` | `tests/detailed_turn_compression.rs` | ☐ | ☐ |  |
 | 8 | `test/epic-fix-02.test.ts` | `tests/epic_fix_02.rs` | ☐ | ☐ |  |
 | 9 | `test/epic-fix.test.ts` | `tests/epic_fix.rs` | ☐ | ☐ |  |
-| 10 | `test/fixtures.test.ts` | `tests/fixtures_test.rs` | ☑ | ☑ | Rust: fixtures_test.rs (cannot coexist with tests/fixtures/); FC-0.4 builders allowlisted |
+| 10 | `test/fixtures.test.ts` | `tests/fixtures_test.rs` | ☑ | ☑ | Rust: fixtures_test.rs (cannot coexist with tests/fixtures/); FC-0.4 builders + TempStore Drop panic-unwind proof allowlisted |
 | 11 | `test/idempotency.test.ts` | `tests/idempotency.rs` | ☑ | ☑ | Wave 2: 5 tests |
 | 12 | `test/inference-adapter.test.ts` | `tests/inference_adapter.rs` | ☑ | ☑ | Wave 2: 2 active + 3 #[ignore] |
 | 13 | `test/inference-classification.test.ts` | `tests/inference_classification.rs` | ☑ | ☑ | Wave 2: 8 tests |
@@ -217,9 +257,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 18 | `test/inspect-health.test.ts` | `tests/inspect_health.rs` | ☐ | ☐ |  |
 | 19 | `test/inspect-overview.test.ts` | `tests/inspect_overview.rs` | ☐ | ☐ |  |
 | 20 | `test/inspect-view.test.ts` | `tests/inspect_view.rs` | ☐ | ☐ |  |
-| 21 | `test/intake-message-materialization.test.ts` | `tests/intake_message_materialization.rs` | ☐ | ☐ |  |
-| 22 | `test/intake.test.ts` | `tests/intake.rs` | ☐ | ☐ |  |
-| 23 | `test/lifecycle.test.ts` | `tests/lifecycle.rs` | ☐ | ☐ |  |
+| 21 | `test/intake-message-materialization.test.ts` | `tests/intake_message_materialization.rs` | ☑ | ☑ | Wave 3: 6 tests |
+| 22 | `test/intake.test.ts` | `tests/intake.rs` | ☑ | ☑ | Wave 3: 7 tests; COUNT n requires integer; DROP TABLE walk-hook ruling |
+| 23 | `test/lifecycle.test.ts` | `tests/lifecycle.rs` | ☑ | ☑ | Wave 3: 7 tests; per-test baseline; 60s timeout on replay/teardown |
 | 24 | `test/logging-surface.test.ts` | `tests/logging_surface.rs` | ☑ | ☑ |  |
 | 25 | `test/messages-read.test.ts` | `tests/messages_read.rs` | ☐ | ☐ |  |
 | 26 | `test/mutations-delete.test.ts` | `tests/mutations_delete.rs` | ☐ | ☐ |  |
@@ -229,8 +269,8 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 30 | `test/smoothed-prompt-guards.test.ts` | `tests/smoothed_prompt_guards.rs` | ☐ | ☐ |  |
 | 31 | `test/smoothing-recovery.test.ts` | `tests/smoothing_recovery.rs` | ☐ | ☐ |  |
 | 32 | `test/thread-migrate.test.ts` | `tests/thread_migrate.rs` | ☑ | ☑ | Wave 2: 5 tests |
-| 33 | `test/threads-a8.test.ts` | `tests/threads_a8.rs` | ☐ | ☐ |  |
-| 34 | `test/threads.test.ts` | `tests/threads.rs` | ☐ | ☐ |  |
+| 33 | `test/threads-a8.test.ts` | `tests/threads_a8.rs` | ☑ | ☑ | Wave 3: 10 tests |
+| 34 | `test/threads.test.ts` | `tests/threads.rs` | ☑ | ☑ | Wave 3: 7 tests; ISO created_at calendar round-trip (test-only) |
 | 35 | `test/tool-result-classification.test.ts` | `tests/tool_result_classification.rs` | ☑ | ☐ | exemplar test |
 | 36 | `test/tool-result-rendering.test.ts` | `tests/tool_result_rendering.rs` | ☑ | ☑ |  |
 | 37 | `test/tool-result-summary-inference.test.ts` | `tests/tool_result_summary_inference.rs` | ☐ | ☐ |  |
@@ -257,10 +297,10 @@ Wave 0 rulings (court of record — extend, don't reshape):
 |---|---|---|---|
 | `test/fixtures/corrupt.ts` | `tests/fixtures/corrupt.rs` | ☑ | Wave 2: REAL raw sqlite writers |
 | `test/fixtures/drain-runner.ts` | `tests/fixtures/drain_runner.rs` | ☑ | Wave 2: file-private RunnerConfig REAL; private sleep + main `todo!("phase 2")` (no pub re-export) |
-| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–2: valid_event/temp_store/open_raw REAL; Wave 2 fixture re-exports (no RunnerConfig — file-private in drain_runner) |
+| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–3: valid_event/temp_store/open_raw REAL; TempStore Drop + idempotent cleanup; Wave 2 fixture re-exports (no RunnerConfig — file-private in drain_runner) |
 | `test/fixtures/inference-callbacks-double.ts` | `tests/fixtures/inference_callbacks_double.rs` | ☑ | REAL double (calls deterministic_text which is still todo) |
 | `test/fixtures/intake-seam.ts` | `tests/fixtures/intake_seam.rs` | ☑ | Wave 2: re-exports REAL pipeline test seams |
-| `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.rs` | ☐ |  |
+| `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.rs` | ☑ | Wave 3: constants + turn_events/intake_batches REAL; on_checkpoint/Option fresh_sdk/as_str/clock const; create/run exact todo |
 | `test/fixtures/model-call.ts` | `tests/fixtures/model_call.rs` | ☑ | Wave 2: constants + valid_assignments/canned_responses + call builders REAL |
 | `test/fixtures/openrouter-call.ts` | — | — | EXCLUDED (live network) |
 | `test/fixtures/pi-session-format.ts` | `tests/fixtures/pi_session_format.rs` | ☐ |  |

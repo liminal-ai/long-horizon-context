@@ -1,7 +1,9 @@
 //! Ported from packages/lhc/src/messages/index.ts. Phase 1 skeleton.
 //!
 //! Wave 0 partial: internal exemplar. Wave 1 PARTIAL: Block / MessageRecord /
-//! list surface that Wave 1 tests call. Full messages surface lands in Wave 4.
+//! list surface that Wave 1 tests call. Wave 3 PARTIAL: MutationResult
+//! contract types for lifecycle fixture collection. Full messages surface
+//! lands in Wave 4.
 
 pub mod internal;
 
@@ -10,7 +12,10 @@ use serde_json::{Map, Value};
 
 use crate::shared_tech::derivation::Derivation;
 use crate::shared_tech::errors::OpResult;
+use crate::shared_tech::work_queue::WorkKind;
 use crate::threads::ThreadRef;
+
+use internal::cascade::CascadeClear;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +110,48 @@ pub struct MessageListOptions {
 
 pub use internal::derive::{MessageDeriveDerivationType, MessageDeriveResult};
 
+/// TS `MutationResult.changed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationChanged {
+    pub message_ids: Vec<String>,
+    pub turn_ids: Vec<String>,
+}
+
+/// TS `MutationResult.queued` entry — distinct from cascade's internal queued shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationQueuedWork {
+    pub work_item_id: String,
+    pub kind: WorkKind,
+}
+
+/// TS `MutationResult` — shared edit/delete contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationResult {
+    pub changed: MutationChanged,
+    pub cleared: Vec<CascadeClear>,
+    pub dropped: Vec<CascadeClear>,
+    pub queued: Vec<MutationQueuedWork>,
+    pub superseded: Vec<String>,
+}
+
+/// TS `edit({ messageId, content })`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditInput {
+    pub message_id: String,
+    pub content: String,
+}
+
+/// TS `remove({ messageId })`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveInput {
+    pub message_id: String,
+}
+
 /// TS `messages.list` — PARTIAL stub (Wave 1 runtime-change / tool-result tests).
 pub async fn list(
     _thread_ref: ThreadRef,
@@ -118,5 +165,15 @@ pub async fn derive(
     _thread_ref: ThreadRef,
     _message_ids: &[String],
 ) -> OpResult<Vec<MessageDeriveResult>> {
+    todo!("phase 2")
+}
+
+/// TS `messages.edit` — PARTIAL stub (Wave 3 lifecycle types; body Wave 4).
+pub async fn edit(_thread_ref: ThreadRef, _edit: EditInput) -> OpResult<MutationResult> {
+    todo!("phase 2")
+}
+
+/// TS `messages.remove` — PARTIAL stub (Wave 3 lifecycle types; body Wave 4).
+pub async fn remove(_thread_ref: ThreadRef, _removal: RemoveInput) -> OpResult<MutationResult> {
     todo!("phase 2")
 }

@@ -24,6 +24,10 @@ Also enforces tripwires:
     macro args) is banned crate-wide — same persisted-bytes rule.
   - `rusqlite` may appear only in src/shared_tech/storage.rs (bind via
     SqlParam everywhere else).
+  - Every crate-wide `**/*.rs` fn/method body (excluding target/) that contains
+    a real `todo!("phase 2")` token must be exactly that expression
+    (optional whitespace / optional trailing `;` only — comments inside the
+    body are NOT exact). Every real token must fall inside a recognized body.
 """
 
 from __future__ import annotations
@@ -37,6 +41,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 NOTIMPL_MARKERS = ("not yet implemented", "phase 2")
 JSON_MACRO = "serde_json::json!"
+PHASE2_TODO = 'todo!("phase 2")'
+# Original body between `{` / `}` must match: optional ws, todo, optional `;`, optional ws.
+_EXACT_PHASE2_BODY_RE = re.compile(r'^\s*todo!\("phase 2"\)\s*;?\s*$')
 
 
 def run(cmd: list[str]) -> tuple[int, str]:
@@ -244,6 +251,457 @@ def _test_json_macro_to_string_detector() -> None:
         assert not hits, f"detector false-positive on:\n{sample}\nhits={hits}"
 
 
+def _is_ident_start(ch: str) -> bool:
+    return ch.isalpha() or ch == "_"
+
+
+def _is_ident_continue(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _skip_block_comment(source: str, i: int) -> int:
+    """Advance past a nested `/* ... */` block comment starting at `/*`."""
+    n = len(source)
+    if i + 1 >= n or source[i : i + 2] != "/*":
+        return i
+    i += 2
+    depth = 1
+    while i < n and depth > 0:
+        if source[i : i + 2] == "/*":
+            depth += 1
+            i += 2
+            continue
+        if source[i : i + 2] == "*/":
+            depth -= 1
+            i += 2
+            continue
+        i += 1
+    return i
+
+
+def _skip_rust_whitespace_and_comments(source: str, i: int) -> int:
+    """Advance past whitespace, // line comments, and nested /* block comments */."""
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch in " \t\r\n":
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and source[i + 1] == "/":
+            i += 2
+            while i < n and source[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and source[i + 1] == "*":
+            i = _skip_block_comment(source, i)
+            continue
+        break
+    return i
+
+
+def _is_angle_close(source: str, i: int) -> bool:
+    """True if source[i] is a real `>` close for generics (not ->, =>, >=)."""
+    if i >= len(source) or source[i] != ">":
+        return False
+    prev = source[i - 1] if i > 0 else ""
+    nxt = source[i + 1] if i + 1 < len(source) else ""
+    # `->` / `=>`: `>` is part of the digraph, not a generic closer.
+    if prev in "-=":
+        return False
+    # `>=`: `>` opens the comparison operator.
+    if nxt == "=":
+        return False
+    return True
+
+
+def _skip_balanced(
+    source: str, i: int, open_ch: str, close_ch: str
+) -> int:
+    """Skip a balanced open...close starting at open_ch; return index after close.
+
+    For `<>`, `>` inside `->`, `=>`, `>=` does not decrement depth (so
+    `F: Fn() -> T` bounds stay inside the generic list). `>>` still closes
+    two nested levels one `>` at a time.
+    """
+    n = len(source)
+    if i >= n or source[i] != open_ch:
+        return i
+    depth = 0
+    angle = open_ch == "<" and close_ch == ">"
+    while i < n:
+        ch = source[i]
+        if ch in "\"'":
+            i = _skip_rust_string(source, i)
+            continue
+        if ch == "r" or (ch in "bc" and i + 1 < n and source[i + 1] in "\"r"):
+            peeked = _skip_rust_string(source, i)
+            if peeked != i:
+                i = peeked
+                continue
+        if ch == "/" and i + 1 < n and source[i + 1] in "/*":
+            i = _skip_rust_whitespace_and_comments(source, i)
+            continue
+        if ch == open_ch:
+            depth += 1
+            i += 1
+            continue
+        if ch == close_ch:
+            if angle and not _is_angle_close(source, i):
+                i += 1
+                continue
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return i
+
+
+def _advance_past_lexical_noise(source: str, i: int) -> int | None:
+    """If source[i] starts a string/char/comment, return index after it; else None."""
+    n = len(source)
+    if i >= n:
+        return None
+    ch = source[i]
+    if ch in "\"'":
+        return _skip_rust_string(source, i)
+    if ch == "r" or (ch in "bc" and i + 1 < n and source[i + 1] in "\"r"):
+        peeked = _skip_rust_string(source, i)
+        if peeked != i:
+            return peeked
+    if ch == "/" and i + 1 < n and source[i + 1] == "/":
+        j = i + 2
+        while j < n and source[j] != "\n":
+            j += 1
+        return j
+    if ch == "/" and i + 1 < n and source[i + 1] == "*":
+        return _skip_block_comment(source, i)
+    return None
+
+
+def find_real_phase2_todo_tokens(source: str) -> list[int]:
+    """Start indices of real `todo!(\"phase 2\")` tokens (outside strings/comments)."""
+    hits: list[int] = []
+    n = len(source)
+    i = 0
+    while i < n:
+        skipped = _advance_past_lexical_noise(source, i)
+        if skipped is not None:
+            i = skipped
+            continue
+        if source.startswith(PHASE2_TODO, i) and (
+            i == 0 or not _is_ident_continue(source[i - 1])
+        ):
+            hits.append(i)
+            i += len(PHASE2_TODO)
+            continue
+        i += 1
+    return hits
+
+
+def body_is_exact_phase2_todo(body_inner: str) -> bool:
+    """True iff the original body is only todo!(\"phase 2\")[+ optional ;] + ws."""
+    return _EXACT_PHASE2_BODY_RE.match(body_inner) is not None
+
+
+def iter_fn_bodies(source: str) -> list[tuple[int, int, str]]:
+    """Return (body_start_line, open_brace_index, body_inner) for each fn/method.
+
+    Brace/string/comment-aware. Skips fn-pointer types (`fn(...)`) and
+    semicolon-terminated signatures (trait/extern stubs). Angle-bracket
+    balancing ignores `>` in `->` / `=>` / `>=`.
+    """
+    bodies: list[tuple[int, int, str]] = []
+    n = len(source)
+    i = 0
+    while i < n:
+        skipped = _advance_past_lexical_noise(source, i)
+        if skipped is not None:
+            i = skipped
+            continue
+        if (
+            source.startswith("fn", i)
+            and (i == 0 or not _is_ident_continue(source[i - 1]))
+            and (i + 2 >= n or not _is_ident_continue(source[i + 2]))
+        ):
+            j = _skip_rust_whitespace_and_comments(source, i + 2)
+            # fn-pointer / bare fn type: `fn (` with no name
+            if j < n and source[j] == "(":
+                i = j
+                continue
+            if j >= n or not _is_ident_start(source[j]):
+                i += 2
+                continue
+            # skip name
+            j += 1
+            while j < n and _is_ident_continue(source[j]):
+                j += 1
+            j = _skip_rust_whitespace_and_comments(source, j)
+            # generics
+            if j < n and source[j] == "<":
+                j = _skip_balanced(source, j, "<", ">")
+                j = _skip_rust_whitespace_and_comments(source, j)
+            if j >= n or source[j] != "(":
+                i += 2
+                continue
+            j = _skip_balanced(source, j, "(", ")")
+            # skip return type / where until `{` or `;`
+            while j < n:
+                j = _skip_rust_whitespace_and_comments(source, j)
+                if j >= n:
+                    break
+                if source[j] == "{":
+                    open_brace = j
+                    after = _skip_balanced(source, j, "{", "}")
+                    body_inner = source[open_brace + 1 : after - 1]
+                    line_no = source.count("\n", 0, open_brace) + 1
+                    bodies.append((line_no, open_brace, body_inner))
+                    i = after
+                    break
+                if source[j] == ";":
+                    i = j + 1
+                    break
+                # advance one token-ish char / skip strings / balanced groups
+                skipped_inner = _advance_past_lexical_noise(source, j)
+                if skipped_inner is not None:
+                    j = skipped_inner
+                    continue
+                if source[j] == "(":
+                    j = _skip_balanced(source, j, "(", ")")
+                    continue
+                if source[j] == "<":
+                    j = _skip_balanced(source, j, "<", ">")
+                    continue
+                if source[j] == "[":
+                    j = _skip_balanced(source, j, "[", "]")
+                    continue
+                j += 1
+            else:
+                i += 2
+            continue
+        i += 1
+    return bodies
+
+
+def find_inexact_phase2_todo_bodies(source: str) -> list[tuple[int, str]]:
+    """Bodies with a real todo!(\"phase 2\") token that are not exactly that expr."""
+    hits: list[tuple[int, str]] = []
+    for line_no, _brace, body in iter_fn_bodies(source):
+        if not find_real_phase2_todo_tokens(body):
+            continue
+        if body_is_exact_phase2_todo(body):
+            continue
+        snippet = re.sub(r"\s+", " ", body.strip())
+        if len(snippet) > 80:
+            snippet = snippet[:77] + "..."
+        hits.append((line_no, snippet))
+    return hits
+
+
+def iter_rs_files(root: Path) -> list[Path]:
+    """Crate-wide `**/*.rs`, excluding only `target/`."""
+    files: list[Path] = []
+    for path in sorted(root.rglob("*.rs")):
+        if "target" in path.parts:
+            continue
+        files.append(path)
+    return files
+
+
+def exact_phase2_todo_tripwire(
+    root: Path | None = None,
+) -> tuple[list[str], str]:
+    """Crate-wide: real Phase-2 todo bodies must be exact; every token covered.
+
+    Returns (violations, summary) where summary is
+    `exact-todo: tokens=N bodies=M covered=N`.
+    """
+    root = root if root is not None else ROOT
+    violations: list[str] = []
+    total_tokens = 0
+    bodies_with_todo = 0
+    covered_tokens = 0
+
+    for path in iter_rs_files(root):
+        text = path.read_text()
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            rel = path
+        tokens = find_real_phase2_todo_tokens(text)
+        total_tokens += len(tokens)
+        bodies = iter_fn_bodies(text)
+        covered: set[int] = set()
+        for line_no, open_brace, body in bodies:
+            body_start = open_brace + 1
+            body_end = body_start + len(body)
+            in_body = [t for t in tokens if body_start <= t < body_end]
+            if not in_body:
+                continue
+            bodies_with_todo += 1
+            covered.update(in_body)
+            if not body_is_exact_phase2_todo(body):
+                snippet = re.sub(r"\s+", " ", body.strip())
+                if len(snippet) > 80:
+                    snippet = snippet[:77] + "..."
+                violations.append(f"{rel}:{line_no}: {snippet}")
+        for t in tokens:
+            if t in covered:
+                covered_tokens += 1
+            else:
+                line_no = text.count("\n", 0, t) + 1
+                violations.append(
+                    f"{rel}:{line_no}: orphan todo!(\"phase 2\") "
+                    "(not inside a scanner-recognized fn/method body)"
+                )
+
+    summary = (
+        f"exact-todo: tokens={total_tokens} bodies={bodies_with_todo} "
+        f"covered={covered_tokens}"
+    )
+    return violations, summary
+
+
+def _test_exact_phase2_todo_bodies() -> str:
+    """Mutation-test the exact-todo scanner (always-run). Returns printable summary."""
+    import tempfile
+
+    # (name, sample, expect_exact_ok) — sample must contain exactly one fn body
+    # unless noted in specialized cases below.
+    cases: list[tuple[str, str, bool]] = [
+        (
+            "prelude_before_todo",
+            'fn f() {\n    let _ = 1;\n    todo!("phase 2")\n}',
+            False,
+        ),
+        (
+            "trailing_after_todo",
+            'fn f() {\n    todo!("phase 2");\n    let _ = 1;\n}',
+            False,
+        ),
+        (
+            "nested_wrapper",
+            'fn f() {\n    if true {\n        todo!("phase 2")\n    }\n}',
+            False,
+        ),
+        (
+            "comments_line_around_todo",
+            'fn f() {\n    // note\n    todo!("phase 2")\n}',
+            False,
+        ),
+        (
+            "comments_block_around_todo",
+            'fn f() {\n    /* note */ todo!("phase 2")\n}',
+            False,
+        ),
+        (
+            "exact_todo",
+            'fn f() {\n    todo!("phase 2")\n}',
+            True,
+        ),
+        (
+            "exact_todo_semi_ws",
+            'pub async fn f(_x: i32) -> i32 {\n\n  todo!("phase 2");\n\n}',
+            True,
+        ),
+        (
+            "generic_fn_arrow_bound",
+            'fn call<F: Fn() -> i32>(f: F) {\n    todo!("phase 2")\n}',
+            True,
+        ),
+    ]
+    passed = 0
+    lines: list[str] = []
+    for name, sample, expect_ok in cases:
+        hits = find_inexact_phase2_todo_bodies(sample)
+        ok = (not hits) if expect_ok else bool(hits)
+        bodies = iter_fn_bodies(sample)
+        assert len(bodies) == 1, f"{name}: expected 1 fn body, got {len(bodies)}"
+        helper_ok = body_is_exact_phase2_todo(bodies[0][2])
+        assert helper_ok == expect_ok, (
+            f"{name}: body_is_exact_phase2_todo={helper_ok} want {expect_ok}"
+        )
+        tokens = find_real_phase2_todo_tokens(sample)
+        assert tokens, f"{name}: expected real todo token(s)"
+        assert ok, (
+            f"{name}: scanner verdict mismatch expect_ok={expect_ok} hits={hits}"
+        )
+        passed += 1
+        lines.append(f"  PASS {name} (expect_exact={expect_ok})")
+
+    # Decoys: string / nested-block-comment text must not count as a real token.
+    decoy_cases: list[tuple[str, str]] = [
+        (
+            "raw_string_decoy",
+            'fn f() {\n    r#"todo!("phase 2")"#\n}',
+        ),
+        (
+            "normal_string_decoy",
+            'fn f() {\n    "todo!(\\"phase 2\\")"\n}',
+        ),
+        (
+            "nested_block_comment_decoy",
+            'fn before() { todo!("phase 2") }\n'
+            '/* todo!("phase 2") /* inner */ */\n'
+            'fn after() { todo!("phase 2") }\n',
+        ),
+    ]
+    for name, sample in decoy_cases:
+        if name == "nested_block_comment_decoy":
+            tokens = find_real_phase2_todo_tokens(sample)
+            assert len(tokens) == 2, (
+                f"{name}: expected 2 real tokens (decoy ignored), got {tokens!r}"
+            )
+            hits = find_inexact_phase2_todo_bodies(sample)
+            assert not hits, f"{name}: unexpected inexact hits {hits}"
+            bodies = iter_fn_bodies(sample)
+            assert len(bodies) == 2, f"{name}: expected 2 fn bodies, got {len(bodies)}"
+        else:
+            tokens = find_real_phase2_todo_tokens(sample)
+            assert not tokens, f"{name}: decoy counted as real token: {tokens}"
+            hits = find_inexact_phase2_todo_bodies(sample)
+            assert not hits, f"{name}: decoy-only body flagged inexact: {hits}"
+            bodies = iter_fn_bodies(sample)
+            assert len(bodies) == 1, f"{name}: expected 1 fn body, got {len(bodies)}"
+        passed += 1
+        lines.append(f"  PASS {name}")
+
+    # Fixture-path tripwire: crate-wide scan must catch tests/fixtures/*.rs.
+    # Also: directory names like __pycache__/ must NOT weaken Rust .rs scanning
+    # (only target/ is excluded). Python -B keeps bytecode out of the tree.
+    with tempfile.TemporaryDirectory() as td:
+        fake_root = Path(td)
+        fixture = fake_root / "tests" / "fixtures" / "foo.rs"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text(
+            'fn bad() {\n    let _ = 1;\n    todo!("phase 2")\n}\n',
+            encoding="utf-8",
+        )
+        pycache_rs = fake_root / "__pycache__" / "hidden.rs"
+        pycache_rs.parent.mkdir(parents=True)
+        pycache_rs.write_text(
+            'fn hidden_bad() {\n    let _ = 1;\n    todo!("phase 2")\n}\n',
+            encoding="utf-8",
+        )
+        (fake_root / "src").mkdir(exist_ok=True)
+        violations, _summary = exact_phase2_todo_tripwire(fake_root)
+        assert any(
+            "tests/fixtures/foo.rs" in v for v in violations
+        ), f"fixture-path tripwire missed tests/fixtures: {violations}"
+        passed += 1
+        lines.append("  PASS fixture_path_tripwire")
+        assert any(
+            "__pycache__/hidden.rs" in v for v in violations
+        ), f"__pycache__ path must still be scanned: {violations}"
+        passed += 1
+        lines.append("  PASS pycache_dir_still_scanned")
+
+    total = len(cases) + len(decoy_cases) + 2
+    summary = f"exact-todo scanner self-test: PASS ({passed}/{total})"
+    return summary + "\n" + "\n".join(lines)
+
+
 def classify() -> int:
     code, out = run(["cargo", "check", "--tests", "--quiet"])
     if code != 0:
@@ -359,4 +817,16 @@ def classify() -> int:
 
 if __name__ == "__main__":
     _test_json_macro_to_string_detector()
+    print(_test_exact_phase2_todo_bodies())
+    todo_hits, todo_summary = exact_phase2_todo_tripwire()
+    print(todo_summary)
+    if todo_hits:
+        print(
+            "GATE BLOCKER: crate-wide **/*.rs fn/method body contains "
+            "todo!(\"phase 2\") but is not exactly that expression "
+            "(or orphan todo outside a recognized body):"
+        )
+        for v in todo_hits:
+            print(f"  {v}")
+        sys.exit(2)
     sys.exit(classify())

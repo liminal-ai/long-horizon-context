@@ -8,7 +8,7 @@
 // Intentionally omitted (no sdk.ts counterpart / not Wave 1–2 surface):
 // `Db`, `LeaseConfig`, `SdkMode`, `NewThreadInput`, `NewThreadResult`, `MessageKind`.
 pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEventInput};
-pub use crate::messages::{Block, BlockType, MessageListOptions, MessageRecord};
+pub use crate::messages::{Block, BlockType, MessageListOptions, MessageRecord, MutationResult};
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{
     Derivation, DerivationMetadata, InferenceCallbacks, InferenceResult, SdkConfig, ToolOutcome,
@@ -25,13 +25,14 @@ pub use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResul
 pub use crate::shared_tech::logging::{LogEntry, LogLevel, LogQuery, StoredLogEntry, write_log};
 pub use crate::shared_tech::persist::{DbReadTransaction, DbWriteTransaction};
 pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
+pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, estimate_tokens};
 pub use crate::shared_tech::view::LlmRequestContext;
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
     WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef, count_live_items, enqueue,
     map_work_q_handlers, queue_detail, supersede_queued, work_kind_registry,
 };
-pub use crate::threads::ThreadRef;
+pub use crate::threads::{ThreadFileInfo, ThreadRef};
 pub use crate::turns::TurnRecord;
 
 use std::sync::Arc;

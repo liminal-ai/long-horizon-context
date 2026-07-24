@@ -15,6 +15,7 @@ fixtures_test::building_an_invalid_kind_payload_pairing_requires_an_explicit_cas
 fixtures_test::event_batch_yields_unique_idempotency_keys_in_order
 fixtures_test::conversation_turn_is_one_complete_turn
 fixtures_test::temp_store_creates_an_isolated_directory_and_cleans_it_up
+fixtures_test::temp_store_drop_removes_dir_on_panic_unwind
 fixtures_test::open_raw_opens_a_real_sqlite_handle_for_below_sdk_assertions
 
 # Wave 1 prompt-registry / golden constants (no behavior bodies required).

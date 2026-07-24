@@ -1,11 +1,12 @@
 //! Ported from packages/lhc/src/intake-stream/index.ts.
-//! Phase 1 PARTIAL stub — EventKind / MessageEventInput / BatchResult / EventRecord
-//! and message_events / list_events surfaces Wave 1 tests call.
 //!
-//! Judgment (validation.test.ts:36–52): TS builds invalid events via
-//! `as unknown as MessageEventInput`. Python uses TypedDict dicts. Rust keeps
-//! a camelCase wire struct with `event_kind: String` + `#[serde(flatten)] extra`
-//! so the same invalid constructions compile without inventing APIs.
+//! Wave 3 Phase 1: EventKind / MessageEventInput / BatchResult / EventRecord
+//! and message_events / list_events surfaces (`todo!("phase 2")` bodies).
+//!
+//! Wave 1 broad write wire applies **only** to [`MessageEventInput`]
+//! (validation.test.ts:36–52 — TS cast-through-unknown / stringly kind +
+//! flatten extras). [`EventRecord`] is the closed read-back union: tagged on
+//! `eventKind`, kind-exact payloads, no flatten extras.
 //!
 //! `message_events` takes typed [`crate::threads::ThreadRef`] (faithful to TS).
 //! Unknown-envelope probes exercise `ThreadRef`'s closed serde boundary
@@ -175,23 +176,295 @@ pub struct BatchResult {
     pub thread_position: ThreadPosition,
 }
 
-/// TS `EventRecord = MessageEventInput & { eventOrder; recordedAt }`.
+// ── EventRecord payloads (kind-exact, closed) ──────────────────────
+
+/// TS `{ text: string }` — user_prompt / assistant_text / assistant_thinking / runtime_note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EventRecord {
-    pub event_kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idempotency_key: Option<String>,
-    pub actor: String,
-    pub harness: String,
-    pub payload: Map<String, Value>,
-    pub event_order: i64,
-    pub recorded_at: String,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextPayload {
+    pub text: String,
 }
 
-/// TS `messageEvents(threadRef, events)` — PARTIAL stub.
+/// TS `{ previousModel; newModel }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelChangePayload {
+    pub previous_model: String,
+    pub new_model: String,
+}
+
+/// TS `{ previousLevel; newLevel }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThinkingLevelChangePayload {
+    pub previous_level: String,
+    pub new_level: String,
+}
+
+/// TS `{ toolCallId; toolName; arguments }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolCallPayload {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub arguments: Map<String, Value>,
+}
+
+/// TS `{ toolCallId; content; isError? }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolResultPayload {
+    pub tool_call_id: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
+/// TS `Record<string, never>` — closed empty object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnEndPayload {}
+
+/// TS `EventRecord = MessageEventInput & { eventOrder; recordedAt }`.
+///
+/// Closed tagged union on `eventKind` (snake_case values matching [`EventKind`]).
+/// Not a Wave 1 broad wire — no flatten extras, kind-exact payloads only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "eventKind", deny_unknown_fields)]
+pub enum EventRecord {
+    #[serde(rename = "user_prompt", rename_all = "camelCase")]
+    UserPrompt {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: TextPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "assistant_text", rename_all = "camelCase")]
+    AssistantText {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: TextPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "assistant_thinking", rename_all = "camelCase")]
+    AssistantThinking {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: TextPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "runtime_note", rename_all = "camelCase")]
+    RuntimeNote {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: TextPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "model_change", rename_all = "camelCase")]
+    ModelChange {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: ModelChangePayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "thinking_level_change", rename_all = "camelCase")]
+    ThinkingLevelChange {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: ThinkingLevelChangePayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "tool_call", rename_all = "camelCase")]
+    ToolCall {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: ToolCallPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "tool_result", rename_all = "camelCase")]
+    ToolResult {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: ToolResultPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+    #[serde(rename = "turn_end", rename_all = "camelCase")]
+    TurnEnd {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: TurnEndPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
+}
+
+impl EventRecord {
+    pub fn event_kind(&self) -> EventKind {
+        match self {
+            EventRecord::UserPrompt { .. } => EventKind::UserPrompt,
+            EventRecord::AssistantText { .. } => EventKind::AssistantText,
+            EventRecord::AssistantThinking { .. } => EventKind::AssistantThinking,
+            EventRecord::RuntimeNote { .. } => EventKind::RuntimeNote,
+            EventRecord::ModelChange { .. } => EventKind::ModelChange,
+            EventRecord::ThinkingLevelChange { .. } => EventKind::ThinkingLevelChange,
+            EventRecord::ToolCall { .. } => EventKind::ToolCall,
+            EventRecord::ToolResult { .. } => EventKind::ToolResult,
+            EventRecord::TurnEnd { .. } => EventKind::TurnEnd,
+        }
+    }
+
+    pub fn event_order(&self) -> i64 {
+        match self {
+            EventRecord::UserPrompt { event_order, .. }
+            | EventRecord::AssistantText { event_order, .. }
+            | EventRecord::AssistantThinking { event_order, .. }
+            | EventRecord::RuntimeNote { event_order, .. }
+            | EventRecord::ModelChange { event_order, .. }
+            | EventRecord::ThinkingLevelChange { event_order, .. }
+            | EventRecord::ToolCall { event_order, .. }
+            | EventRecord::ToolResult { event_order, .. }
+            | EventRecord::TurnEnd { event_order, .. } => *event_order,
+        }
+    }
+
+    pub fn recorded_at(&self) -> &str {
+        match self {
+            EventRecord::UserPrompt { recorded_at, .. }
+            | EventRecord::AssistantText { recorded_at, .. }
+            | EventRecord::AssistantThinking { recorded_at, .. }
+            | EventRecord::RuntimeNote { recorded_at, .. }
+            | EventRecord::ModelChange { recorded_at, .. }
+            | EventRecord::ThinkingLevelChange { recorded_at, .. }
+            | EventRecord::ToolCall { recorded_at, .. }
+            | EventRecord::ToolResult { recorded_at, .. }
+            | EventRecord::TurnEnd { recorded_at, .. } => recorded_at.as_str(),
+        }
+    }
+
+    pub fn actor(&self) -> &str {
+        match self {
+            EventRecord::UserPrompt { actor, .. }
+            | EventRecord::AssistantText { actor, .. }
+            | EventRecord::AssistantThinking { actor, .. }
+            | EventRecord::RuntimeNote { actor, .. }
+            | EventRecord::ModelChange { actor, .. }
+            | EventRecord::ThinkingLevelChange { actor, .. }
+            | EventRecord::ToolCall { actor, .. }
+            | EventRecord::ToolResult { actor, .. }
+            | EventRecord::TurnEnd { actor, .. } => actor.as_str(),
+        }
+    }
+
+    pub fn harness(&self) -> &str {
+        match self {
+            EventRecord::UserPrompt { harness, .. }
+            | EventRecord::AssistantText { harness, .. }
+            | EventRecord::AssistantThinking { harness, .. }
+            | EventRecord::RuntimeNote { harness, .. }
+            | EventRecord::ModelChange { harness, .. }
+            | EventRecord::ThinkingLevelChange { harness, .. }
+            | EventRecord::ToolCall { harness, .. }
+            | EventRecord::ToolResult { harness, .. }
+            | EventRecord::TurnEnd { harness, .. } => harness.as_str(),
+        }
+    }
+
+    pub fn idempotency_key(&self) -> &str {
+        match self {
+            EventRecord::UserPrompt {
+                idempotency_key, ..
+            }
+            | EventRecord::AssistantText {
+                idempotency_key, ..
+            }
+            | EventRecord::AssistantThinking {
+                idempotency_key, ..
+            }
+            | EventRecord::RuntimeNote {
+                idempotency_key, ..
+            }
+            | EventRecord::ModelChange {
+                idempotency_key, ..
+            }
+            | EventRecord::ThinkingLevelChange {
+                idempotency_key, ..
+            }
+            | EventRecord::ToolCall {
+                idempotency_key, ..
+            }
+            | EventRecord::ToolResult {
+                idempotency_key, ..
+            }
+            | EventRecord::TurnEnd {
+                idempotency_key, ..
+            } => idempotency_key.as_str(),
+        }
+    }
+
+    pub fn text_payload(&self) -> Option<&TextPayload> {
+        match self {
+            EventRecord::UserPrompt { payload, .. }
+            | EventRecord::AssistantText { payload, .. }
+            | EventRecord::AssistantThinking { payload, .. }
+            | EventRecord::RuntimeNote { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn model_change_payload(&self) -> Option<&ModelChangePayload> {
+        match self {
+            EventRecord::ModelChange { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn thinking_level_change_payload(&self) -> Option<&ThinkingLevelChangePayload> {
+        match self {
+            EventRecord::ThinkingLevelChange { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn tool_call_payload(&self) -> Option<&ToolCallPayload> {
+        match self {
+            EventRecord::ToolCall { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn tool_result_payload(&self) -> Option<&ToolResultPayload> {
+        match self {
+            EventRecord::ToolResult { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn turn_end_payload(&self) -> Option<&TurnEndPayload> {
+        match self {
+            EventRecord::TurnEnd { payload, .. } => Some(payload),
+            _ => None,
+        }
+    }
+}
+
+/// TS `messageEvents(threadRef, events)`.
 pub async fn message_events(
     _thread_ref: ThreadRef,
     _events: &[MessageEventInput],
@@ -199,7 +472,7 @@ pub async fn message_events(
     todo!("phase 2")
 }
 
-/// TS `listEvents` — PARTIAL stub.
+/// TS `listEvents`.
 pub async fn list_events(_thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
     todo!("phase 2")
 }
