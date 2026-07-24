@@ -1,12 +1,11 @@
 //! Ported from packages/lhc/src/sdk.ts. Phase 1 PARTIAL stub.
 //!
-//! Wave 1 needs `init_lhc`, `Lhc` (fields/methods tests call), and crate-root
-//! re-exports that have an `sdk.ts` counterpart. Full SDK surface lands in
-//! Wave 7. `registerTestingWork` / `DurableWorkDispatcherMap` land with the
-//! durable-work wave (no Wave 1 consumer).
+//! Wave 1–2: `init_lhc`, `Lhc`, and sdk.ts-faithful re-exports Wave tests need.
+//! Full SDK surface lands in Wave 7. Durable-work types live in
+//! `shared_tech::durable_work` (canonical); re-exported here where sdk.ts does.
 
 // Crate-root re-exports mirroring sdk.ts (index.ts is `export * from "./sdk.js"`).
-// Intentionally omitted (no sdk.ts counterpart / not Wave 1 surface):
+// Intentionally omitted (no sdk.ts counterpart / not Wave 1–2 surface):
 // `Db`, `LeaseConfig`, `SdkMode`, `NewThreadInput`, `NewThreadResult`, `MessageKind`.
 pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEventInput};
 pub use crate::messages::{Block, BlockType, MessageListOptions, MessageRecord};
@@ -18,17 +17,100 @@ pub use crate::shared_tech::derivation::{
 pub use crate::shared_tech::deterministic::{
     create_deterministic_inference_callbacks, deterministic_text,
 };
+pub use crate::shared_tech::durable_work::{
+    DurableWorkDispatchResult, DurableWorkDispatcher, DurableWorkDispatcherMap,
+    DurableWorkOperation,
+};
 pub use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
 pub use crate::shared_tech::logging::{LogEntry, LogLevel, LogQuery, StoredLogEntry, write_log};
 pub use crate::shared_tech::persist::{DbReadTransaction, DbWriteTransaction};
-pub use crate::shared_tech::scheduler::{DrainReport, Scheduler};
+pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
 pub use crate::shared_tech::view::LlmRequestContext;
-pub use crate::shared_tech::work_queue::{WorkHandlerMap, WorkKind, count_live_items};
+pub use crate::shared_tech::work_queue::{
+    ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
+    WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef, count_live_items, enqueue,
+    map_work_q_handlers, queue_detail, supersede_queued, work_kind_registry,
+};
 pub use crate::threads::ThreadRef;
 pub use crate::turns::TurnRecord;
 
+use std::sync::Arc;
+
+use crate::messages::MessageDeriveResult;
 use crate::shared_tech::derivation::ResolvedSdkConfig;
+use crate::shared_tech::durable_work::DurableWorkOperationName;
 use crate::threads::{NewThreadInput, NewThreadResult};
+use crate::turns::{ChunkDeriveResult, TurnDeriveResult};
+
+/// TS `{ handlers?; dispatchers? }` for [`register_testing_work`].
+pub struct TestingWorkRegistration {
+    pub handlers: Option<WorkHandlerMap>,
+    pub dispatchers: Option<DurableWorkDispatcherMap>,
+}
+
+/// TS `registerTestingWork` — defined in sdk.ts (not durable-work).
+pub fn register_testing_work(_sdk: &Lhc, _registration: TestingWorkRegistration) {
+    todo!("phase 2")
+}
+
+fn unknown_work_kind<T>(kind: &str) -> OpResult<T> {
+    OpResult::Err {
+        error: ErrorResult {
+            error_class: ErrorClass::StateCorruption,
+            code: ErrorCode::UnknownWorkKind,
+            reason: format!("no handler registered for work kind \"{kind}\""),
+            event_index: None,
+        },
+    }
+}
+
+/// TS `lookupWorkHandler` — structured miss, never throw / silent undefined.
+pub fn lookup_work_handler(map: &WorkHandlerMap, kind: &str) -> OpResult<WorkHandler> {
+    let Some(work_kind) = WorkKind::from_wire(kind) else {
+        return unknown_work_kind(kind);
+    };
+    match map.get(&work_kind) {
+        Some(handler) => OpResult::Ok {
+            value: Arc::clone(handler),
+        },
+        None => unknown_work_kind(kind),
+    }
+}
+
+/// Exhaustive operation-key extraction for dispatcher map lookup (sdk.ts wiring).
+/// Private — not a durable_work public API.
+fn durable_operation_key(op: &DurableWorkOperation) -> DurableWorkOperationName {
+    match op {
+        DurableWorkOperation::MessagesDerive { .. } => DurableWorkOperationName::MessagesDerive,
+        DurableWorkOperation::TurnsDeriveTurn { .. } => DurableWorkOperationName::TurnsDeriveTurn,
+        DurableWorkOperation::TurnsDeriveDetailedTurnCompression { .. } => {
+            DurableWorkOperationName::TurnsDeriveDetailedTurnCompression
+        }
+        DurableWorkOperation::TurnsDeriveDetailedChunk { .. } => {
+            DurableWorkOperationName::TurnsDeriveDetailedChunk
+        }
+        DurableWorkOperation::TurnsDeriveBriefChunk { .. } => {
+            DurableWorkOperationName::TurnsDeriveBriefChunk
+        }
+    }
+}
+
+/// TS `lookupWorkDispatcher` — structured miss when operation/kind unregistered.
+pub fn lookup_work_dispatcher(
+    map: &DurableWorkDispatcherMap,
+    operation: Option<&DurableWorkOperation>,
+    kind: &str,
+) -> OpResult<DurableWorkDispatcher> {
+    let Some(operation) = operation else {
+        return unknown_work_kind(kind);
+    };
+    match map.get(&durable_operation_key(operation)) {
+        Some(dispatcher) => OpResult::Ok {
+            value: Arc::clone(dispatcher),
+        },
+        None => unknown_work_kind(kind),
+    }
+}
 
 /// TS `WorkSurface`.
 pub struct WorkSurface;
@@ -55,6 +137,14 @@ impl LoggingSurface {
     pub async fn query(&self, _ref: ThreadRef, _q: LogQuery) -> OpResult<Vec<StoredLogEntry>> {
         todo!("phase 2")
     }
+
+    pub async fn query_derivation_log(
+        &self,
+        _ref: ThreadRef,
+        _q: crate::shared_tech::logging::DerivationLogQuery,
+    ) -> OpResult<Vec<crate::shared_tech::logging::StoredDerivationLogEntry>> {
+        todo!("phase 2")
+    }
 }
 
 /// TS `ThreadViewSurface` — PARTIAL: get_llm_request_context for Wave 1.
@@ -75,6 +165,14 @@ impl LhcMessages {
         _thread_ref: ThreadRef,
         _filter: Option<MessageListOptions>,
     ) -> OpResult<Vec<MessageRecord>> {
+        todo!("phase 2")
+    }
+
+    pub async fn derive(
+        &self,
+        _thread_ref: ThreadRef,
+        _message_ids: &[String],
+    ) -> OpResult<Vec<MessageDeriveResult>> {
         todo!("phase 2")
     }
 }
@@ -115,6 +213,30 @@ pub struct LhcTurns;
 
 impl LhcTurns {
     pub async fn list_turns(&self, _thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+        todo!("phase 2")
+    }
+
+    pub async fn derive_turn(
+        &self,
+        _thread_ref: ThreadRef,
+        _turn_id: &str,
+    ) -> OpResult<TurnDeriveResult> {
+        todo!("phase 2")
+    }
+
+    pub async fn derive_detailed_chunk(
+        &self,
+        _thread_ref: ThreadRef,
+        _chunk_id: &str,
+    ) -> OpResult<ChunkDeriveResult> {
+        todo!("phase 2")
+    }
+
+    pub async fn derive_brief_chunk(
+        &self,
+        _thread_ref: ThreadRef,
+        _chunk_id: &str,
+    ) -> OpResult<ChunkDeriveResult> {
         todo!("phase 2")
     }
 }

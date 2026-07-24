@@ -12,13 +12,16 @@
 //! - `Record<string, unknown>` data bags → `serde_json::Map<String, Value>`
 //!   (insertion-ordered via the preserve_order feature); keys stay verbatim
 //!   camelCase — persisted data keys are bytes, not identifiers.
-//! - TS interfaces of function fields (InferenceCallbacks) → structs of boxed
-//!   async closures, matching the TS object-of-functions shape structurally.
+//! - TS interfaces of function fields (InferenceCallbacks) → structs of
+//!   `Arc<dyn Fn... + Send + Sync>` async closures (clone shares Arc identity
+//!   for SDK init + handler registration), matching the TS object-of-functions
+//!   shape structurally.
 //! - Inline TS callback input shapes → named `<Op>Input` structs.
 //! - TS `() => Date` → [`Clock`] (`Box<dyn Fn() -> SystemTime + Send + Sync>`),
 //!   matching Python's `Callable[[], datetime]` (lhc-py derivation.py).
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -288,15 +291,17 @@ pub struct SummarizeChunkBriefInput {
 }
 
 /// TS `InferenceCallbacks` — an object of four async functions. Structs of
-/// boxed async closures mirror that shape; hosts construct with any capture.
+/// `Arc`-owned async closures mirror that shape; hosts construct with any
+/// capture. `Clone` clones the Arcs (shared identity for init + handlers).
+#[derive(Clone)]
 pub struct InferenceCallbacks {
-    pub smooth_prompt: Box<dyn Fn(SmoothPromptInput) -> BoxFuture<InferenceResult> + Send + Sync>,
+    pub smooth_prompt: Arc<dyn Fn(SmoothPromptInput) -> BoxFuture<InferenceResult> + Send + Sync>,
     pub summarize_tool_result:
-        Box<dyn Fn(SummarizeToolResultInput) -> BoxFuture<InferenceResult> + Send + Sync>,
+        Arc<dyn Fn(SummarizeToolResultInput) -> BoxFuture<InferenceResult> + Send + Sync>,
     pub compress_detailed_turn:
-        Box<dyn Fn(CompressDetailedTurnInput) -> BoxFuture<InferenceResult> + Send + Sync>,
+        Arc<dyn Fn(CompressDetailedTurnInput) -> BoxFuture<InferenceResult> + Send + Sync>,
     pub summarize_chunk_brief:
-        Box<dyn Fn(SummarizeChunkBriefInput) -> BoxFuture<InferenceResult> + Send + Sync>,
+        Arc<dyn Fn(SummarizeChunkBriefInput) -> BoxFuture<InferenceResult> + Send + Sync>,
 }
 
 pub const INFERENCE_CALLBACK_OPERATIONS: [&str; 4] = [
@@ -577,7 +582,7 @@ pub struct BriefTargets {
 /// direct callback injection (`inference_callbacks`) or `inference` (host
 /// model-call function + per-kind assignments).
 ///
-/// No Debug/Clone/Serialize — holds boxed callbacks (same as InferenceCallbacks).
+/// No Debug/Clone/Serialize — holds Arc callbacks (same as InferenceCallbacks).
 pub struct SdkConfig {
     pub inference_callbacks: Option<InferenceCallbacks>,
     pub inference: Option<InferenceConfig>,
@@ -692,5 +697,6 @@ pub struct WorkItemRef {
     pub source_ref: indexmap::IndexMap<String, String>,
 }
 
+/// Cloneable handler registration (TS function reference identity via [`Arc::ptr_eq`]).
 pub type WorkHandler =
-    Box<dyn Fn(HandlerRunContext, WorkItemRef) -> BoxFuture<HandlerOutcome> + Send + Sync>;
+    Arc<dyn Fn(HandlerRunContext, WorkItemRef) -> BoxFuture<HandlerOutcome> + Send + Sync>;

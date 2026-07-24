@@ -1,13 +1,11 @@
-//! Ported from packages/lhc/test/fixtures/index.ts (+ sibling helpers). Phase 1.
+//! Ported from packages/lhc/test/fixtures/index.ts (+ sibling helpers).
 //!
-//! Pure data-construction helpers (valid_event, temp_store, …) are REAL.
-//! Helpers that call the SDK or open real DB seams beyond open_raw are
-//! skeletons (or thin wrappers that reach a skeleton).
-//!
-//! Wave 1: REAL builders + re-exports Wave 1 tests need. Later-wave helpers
-//! are PARTIAL stubs in sibling modules.
+//! Pure data-construction / below-SDK helpers (valid_event, temp_store,
+//! open_raw, corrupt, read_derived_forms, model_call doubles) are REAL.
+//! Helpers that call the SDK are `todo!("phase 2")`.
 
 #![allow(unused_imports)] // re-exports are selective per test binary
+#![allow(dead_code)] // helpers land ahead of the suites that call them
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,20 +14,34 @@ use lhc::intake_stream::{EventKind, MessageEventInput};
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::{Db, open_database};
 
+pub mod corrupt;
+pub mod drain_runner;
 pub mod inference_callbacks_double;
+pub mod intake_seam;
 pub mod model_call;
+pub mod read_only_delta;
+pub mod seam_conformance;
 pub mod threads;
 pub mod valid_event;
 pub mod work_handlers;
 
+pub use corrupt::{
+    NOT_JSON, corrupt_two_open_turns, poison_message_block_json, poison_message_form_json,
+};
 pub use inference_callbacks_double::{
-    CapturedInput, InferenceCallbackOpName, InferenceCallbacksDouble,
+    CapturedInput, CapturedLog, InferenceCallbackOpName, InferenceCallbacksDouble,
     create_inference_callbacks_double,
 };
+pub use intake_seam::{IntakeWalkHook, set_intake_clock, set_intake_walk_hook};
 pub use model_call::{
     DERIVATION_TYPES, FAKE_MODEL_PREFIX, FAKE_PROVIDER_PREFIX, INFERENCE_DERIVATION_TYPES,
-    canned_responses, hanging_call, recording_call, scripted_call, throwing_call,
-    valid_assignments,
+    ModelAssignmentOverride, canned_responses, hanging_call, recording_call, scripted_call,
+    throwing_call, valid_assignments,
+};
+pub use read_only_delta::{ObservableState, expect_read_only, observable_state};
+pub use seam_conformance::{
+    ProbeInputOverrides, RoutingRunResult, assert_model_call_contract, assert_routing_through_sdk,
+    probe_input,
 };
 pub use threads::{
     ToolRunOpts, damaged_source_thread, multi_state_thread, read_derived_forms,
@@ -46,7 +58,7 @@ pub use valid_event::{
     valid_thinking_level_change, valid_tool_call, valid_tool_result, valid_turn_end,
     valid_user_prompt,
 };
-pub use work_handlers::register_test_work_handlers;
+pub use work_handlers::{TestHandlerHooks, TestHandlerStartItem, register_test_work_handlers};
 
 pub fn event_batch(kinds: &[EventKind]) -> Vec<MessageEventInput> {
     kinds.iter().map(|k| valid_event_for_kind(*k)).collect()

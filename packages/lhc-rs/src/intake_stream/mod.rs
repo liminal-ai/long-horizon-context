@@ -11,6 +11,8 @@
 //! Unknown-envelope probes exercise `ThreadRef`'s closed serde boundary
 //! (`unknown_field`) — not a second public wire API.
 
+pub mod internal;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 

@@ -5,16 +5,103 @@
 //! - `open_database` — open + pragma setup
 //! - `Db::{path, exec, prepare, close}`
 //! - `PreparedStatement::{get, get_params, all, run}`
+//! - [`SqlParam`] — crate-owned bind values so tests never name rusqlite
 //!
 //! These mirror the node:sqlite `DatabaseSync` / `StatementSync` surface that
 //! `openRaw` and logging-surface fixtures exercise. All other storage helpers
 //! remain Phase 2 stubs.
+//!
+//! BOUNDARY: `rusqlite` may appear only in this file.
 
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{Connection, ToSql, params_from_iter};
 
 use super::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
 
 pub const CURRENT_THREAD_SCHEMA_VERSION: i64 = 4;
+
+/// Crate-owned SQL bind value. Tests and non-storage modules bind through this
+/// type — they must not name `rusqlite`.
+#[derive(Debug, Clone)]
+pub enum SqlParam {
+    Null,
+    I64(i64),
+    F64(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+impl From<i64> for SqlParam {
+    fn from(v: i64) -> Self {
+        SqlParam::I64(v)
+    }
+}
+
+impl From<f64> for SqlParam {
+    fn from(v: f64) -> Self {
+        SqlParam::F64(v)
+    }
+}
+
+impl From<String> for SqlParam {
+    fn from(v: String) -> Self {
+        SqlParam::Text(v)
+    }
+}
+
+impl From<&str> for SqlParam {
+    fn from(v: &str) -> Self {
+        SqlParam::Text(v.to_string())
+    }
+}
+
+impl From<Option<i64>> for SqlParam {
+    fn from(v: Option<i64>) -> Self {
+        match v {
+            Some(n) => SqlParam::I64(n),
+            None => SqlParam::Null,
+        }
+    }
+}
+
+impl From<Option<&str>> for SqlParam {
+    fn from(v: Option<&str>) -> Self {
+        match v {
+            Some(s) => SqlParam::Text(s.to_string()),
+            None => SqlParam::Null,
+        }
+    }
+}
+
+impl From<Option<String>> for SqlParam {
+    fn from(v: Option<String>) -> Self {
+        match v {
+            Some(s) => SqlParam::Text(s),
+            None => SqlParam::Null,
+        }
+    }
+}
+
+impl ToSql for SqlParam {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        match self {
+            SqlParam::Null => Ok(rusqlite::types::ToSqlOutput::Owned(
+                rusqlite::types::Value::Null,
+            )),
+            SqlParam::I64(n) => Ok(rusqlite::types::ToSqlOutput::Owned(
+                rusqlite::types::Value::Integer(*n),
+            )),
+            SqlParam::F64(n) => Ok(rusqlite::types::ToSqlOutput::Owned(
+                rusqlite::types::Value::Real(*n),
+            )),
+            SqlParam::Text(s) => Ok(rusqlite::types::ToSqlOutput::Borrowed(
+                rusqlite::types::ValueRef::Text(s.as_bytes()),
+            )),
+            SqlParam::Blob(b) => Ok(rusqlite::types::ToSqlOutput::Borrowed(
+                rusqlite::types::ValueRef::Blob(b),
+            )),
+        }
+    }
+}
 
 /// The one database handle the rest of the crate sees.
 pub struct Db {
@@ -52,23 +139,20 @@ impl PreparedStatement<'_> {
     /// TS `StatementSync.get(...params)`.
     pub fn get_params(
         &self,
-        params: &[&dyn rusqlite::types::ToSql],
+        params: &[SqlParam],
     ) -> Option<serde_json::Map<String, serde_json::Value>> {
         let mut stmt = self.conn.prepare(&self.sql).ok()?;
-        let mut rows = stmt.query(params_from_iter(params.iter().copied())).ok()?;
+        let mut rows = stmt.query(params_from_iter(params.iter())).ok()?;
         let row = rows.next().ok()??;
         Self::row_to_map(row)
     }
 
     /// TS `StatementSync.all(...params)`.
-    pub fn all(
-        &self,
-        params: &[&dyn rusqlite::types::ToSql],
-    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    pub fn all(&self, params: &[SqlParam]) -> Vec<serde_json::Map<String, serde_json::Value>> {
         let Ok(mut stmt) = self.conn.prepare(&self.sql) else {
             return Vec::new();
         };
-        let Ok(mut rows) = stmt.query(params_from_iter(params.iter().copied())) else {
+        let Ok(mut rows) = stmt.query(params_from_iter(params.iter())) else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -81,9 +165,9 @@ impl PreparedStatement<'_> {
     }
 
     /// TS `StatementSync.run(...params)`.
-    pub fn run(&self, params: &[&dyn rusqlite::types::ToSql]) {
+    pub fn run(&self, params: &[SqlParam]) {
         self.conn
-            .execute(&self.sql, params_from_iter(params.iter().copied()))
+            .execute(&self.sql, params_from_iter(params.iter()))
             .expect("sqlite run failed");
     }
 }

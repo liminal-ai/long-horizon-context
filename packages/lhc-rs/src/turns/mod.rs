@@ -1,13 +1,11 @@
 //! Ported from packages/lhc/src/turns/index.ts.
-//! Phase 1 PARTIAL stub — TurnRecord / list_turns that Wave 1 fixtures.test calls.
-//!
-//! Deleted Wave 1 invents: `ChunkRecord` / `list_chunks` — not required by
-//! Wave 1 suites (chunks surface is a later wave).
+//! Phase 1 PARTIAL stub — TurnRecord / list_turns / sync derive surfaces
+//! Wave 1–2 tests call. Full turns surface lands in a later wave.
 
 use serde::{Deserialize, Serialize};
 
 use crate::shared_tech::derivation::Derivation;
-use crate::shared_tech::errors::OpResult;
+use crate::shared_tech::errors::{ErrorResult, OpResult};
 use crate::threads::ThreadRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +42,71 @@ pub struct TurnRecord {
     pub derivations: Option<Vec<Derivation>>,
 }
 
+/// TS `TurnDeriveResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnDeriveResult {
+    Derived {
+        turn_id: String,
+        source_version: i64,
+    },
+    Failed {
+        turn_id: String,
+        error: ErrorResult,
+    },
+}
+
+/// Closed chunk derivation vocabulary on a successful `ChunkDeriveResult`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkDeriveDerivationType {
+    ChunkSummaryDetailed,
+    ChunkSummaryBrief,
+}
+
+impl ChunkDeriveDerivationType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChunkDeriveDerivationType::ChunkSummaryDetailed => "chunk_summary_detailed",
+            ChunkDeriveDerivationType::ChunkSummaryBrief => "chunk_summary_brief",
+        }
+    }
+}
+
+/// TS `ChunkDeriveResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChunkDeriveResult {
+    Derived {
+        chunk_id: String,
+        derivation_type: ChunkDeriveDerivationType,
+        source_version: i64,
+    },
+    Failed {
+        chunk_id: String,
+        error: ErrorResult,
+    },
+}
+
 /// TS `listTurns` — PARTIAL stub.
 pub async fn list_turns(_thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+    todo!("phase 2")
+}
+
+/// TS `turns.deriveTurn` — PARTIAL stub (Wave 2 work-execution).
+pub async fn derive_turn(_thread_ref: ThreadRef, _turn_id: &str) -> OpResult<TurnDeriveResult> {
+    todo!("phase 2")
+}
+
+/// TS `turns.deriveDetailedChunk` — PARTIAL stub (Wave 2 work-execution).
+pub async fn derive_detailed_chunk(
+    _thread_ref: ThreadRef,
+    _chunk_id: &str,
+) -> OpResult<ChunkDeriveResult> {
+    todo!("phase 2")
+}
+
+/// TS `turns.deriveBriefChunk` — PARTIAL stub (Wave 2 work-execution).
+pub async fn derive_brief_chunk(
+    _thread_ref: ThreadRef,
+    _chunk_id: &str,
+) -> OpResult<ChunkDeriveResult> {
     todo!("phase 2")
 }

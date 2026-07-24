@@ -1,5 +1,12 @@
-//! PARTIAL stub — faithful signature from packages/lhc/test/fixtures/work-handlers.ts.
-//! Body lands with the work-handlers fixture wave.
+//! Ported from packages/lhc/test/fixtures/work-handlers.ts.
+//!
+//! Hook / item types are REAL. Handler bodies and [`register_test_work_handlers`]
+//! call `register_testing_work` / durable-work seams — `todo!("phase 2")`.
+//!
+//! Needed from src (not yet exported): `register_testing_work`,
+//! `apply_derivation_success`, `enqueue`, durable dispatcher map types,
+//! `deterministic_text` (exists but still todo), full `WorkHandler` outcome
+//! wiring.
 
 use lhc::sdk::Lhc;
 use lhc::shared_tech::derivation::{BoxFuture, InferenceCallbacks};
@@ -26,7 +33,7 @@ impl Default for TestHandlerHooks {
     }
 }
 
-/// TS `registerTestWorkHandlers` — PARTIAL.
+/// TS `registerTestWorkHandlers` — PARTIAL (Wave 2 import surface).
 pub fn register_test_work_handlers(
     _sdk: &Lhc,
     _inference_callbacks: InferenceCallbacks,

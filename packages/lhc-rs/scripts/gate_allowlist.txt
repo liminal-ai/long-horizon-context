@@ -24,3 +24,19 @@ inference_prompts::chunk_brief_v2_golden_contains_framing_examples_self_check_an
 
 # Wave 1 trybuild compile-fail UI (type-level construction contracts).
 ui::ui
+
+# Wave 2 — REAL closed-vocab registry (exhaustive match over WorkKind).
+work_queue::the_registry_covers_all_six_kinds_with_owner_and_sourceref_semantics
+
+# Wave 2 — REAL SDK work-lookup wiring (map + handler/dispatcher lookup).
+work_queue::assembly_merges_per_domain_tables_dispatch_finds_a_handler_and_a_doubly_claimed_kind_is_refused
+work_queue::dispatcher_lookup_reports_an_unregistered_kind_as_a_structured_miss
+
+# Wave 2 — REAL fixture ModelCall boundary contract (recording_call double).
+inference_routing::assert_model_call_contract_holds_against_recording_call
+
+# Wave 2 — Rust-only mutation-sensitive payload serde (private types; lib unittests).
+lib::shared_tech::work_queue::tests::record_item_write_payload_requires_source_version_operation_derivations_keys
+lib::shared_tech::work_queue::tests::record_item_write_payload_serializes_camel_case_bytes
+lib::shared_tech::work_queue::tests::record_item_write_payload_rejects_unknown_subject_kind
+lib::shared_tech::thread_migrate::tests::migrate_loose_queued_work_item_payload_preserves_unknown_keys

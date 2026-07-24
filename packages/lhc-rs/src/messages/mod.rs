@@ -103,10 +103,20 @@ pub struct MessageListOptions {
     pub include_deleted: Option<bool>,
 }
 
+pub use internal::derive::{MessageDeriveDerivationType, MessageDeriveResult};
+
 /// TS `messages.list` — PARTIAL stub (Wave 1 runtime-change / tool-result tests).
 pub async fn list(
     _thread_ref: ThreadRef,
     _filter: Option<MessageListOptions>,
 ) -> OpResult<Vec<MessageRecord>> {
+    todo!("phase 2")
+}
+
+/// TS `messages.derive` — PARTIAL stub (Wave 2 work-execution).
+pub async fn derive(
+    _thread_ref: ThreadRef,
+    _message_ids: &[String],
+) -> OpResult<Vec<MessageDeriveResult>> {
     todo!("phase 2")
 }

@@ -10,6 +10,7 @@ use fixtures::{
 use lhc::OpResult;
 use lhc::shared_tech::derivation::{LeaseConfig, SdkConfig, SdkMode};
 use lhc::shared_tech::persist::DbTransaction;
+use lhc::shared_tech::storage::SqlParam;
 use lhc::threads::NewThreadInput;
 use lhc::{
     DbReadTransaction, DrainReport, Lhc, LogEntry, LogLevel, LogQuery, MessageEventInput,
@@ -259,7 +260,7 @@ async fn tc_5_3a_keeps_fallback_events_in_the_log_not_on_ready_derivations() {
         .prepare(
             "SELECT state, content, reason, gaps, metadata FROM derivation WHERE subject_id = ?",
         )
-        .get_params(&[&"t1"]);
+        .get_params(&[SqlParam::from("t1")]);
     assert!(row.is_some());
     let row = row.unwrap();
     assert_eq!(row.get("state").and_then(|v| v.as_str()), Some("ready"));
@@ -306,11 +307,11 @@ async fn tc_5_3b_keeps_failed_state_and_reason_on_the_derivation_record() {
         "INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, reason) VALUES (?, ?, ?, ?, ?)",
     )
     .run(&[
-        &"message",
-        &"m2",
-        &"tool_result_summary",
-        &"failed",
-        &"provider_unavailable",
+        SqlParam::from("message"),
+        SqlParam::from("m2"),
+        SqlParam::from("tool_result_summary"),
+        SqlParam::from("failed"),
+        SqlParam::from("provider_unavailable"),
     ]);
     db.close();
     write(
@@ -329,7 +330,7 @@ async fn tc_5_3b_keeps_failed_state_and_reason_on_the_derivation_record() {
     let read = open_raw(&file_path);
     let row = read
         .prepare("SELECT state, reason FROM derivation WHERE subject_id = ?")
-        .get_params(&[&"m2"]);
+        .get_params(&[SqlParam::from("m2")]);
     assert_eq!(
         row.as_ref().map(|m| (
             m.get("state").and_then(|v| v.as_str()),
@@ -419,7 +420,13 @@ async fn tc_5_5a_contains_logging_write_failures() {
     db.prepare(
         "INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content) VALUES (?, ?, ?, ?, ?)",
     )
-    .run(&[&"turn", &"t1", &"turn_rendering", &"ready", &"turn content"]);
+    .run(&[
+        SqlParam::from("turn"),
+        SqlParam::from("t1"),
+        SqlParam::from("turn_rendering"),
+        SqlParam::from("ready"),
+        SqlParam::from("turn content"),
+    ]);
     // TS injects throwing prepare via `as never`. Induce prepare/store failure
     // with an empty sqlite file (no log table) — Phase 2 write_log fail-softs.
     let fail_path = store.dir.join("empty-fail.sqlite");
@@ -462,18 +469,18 @@ async fn tc_5_5a_contains_logging_write_failures() {
         "INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content) VALUES (?, ?, ?, ?, ?)",
     )
     .run(&[
-        &"turn",
-        &"t1",
-        &"detailed_turn_compression",
-        &"ready",
-        &"projection content",
+        SqlParam::from("turn"),
+        SqlParam::from("t1"),
+        SqlParam::from("detailed_turn_compression"),
+        SqlParam::from("ready"),
+        SqlParam::from("projection content"),
     ]);
     db.exec("COMMIT;");
     let rows = db
         .prepare(
             "SELECT derivation_type FROM derivation WHERE subject_id = ? ORDER BY derivation_type",
         )
-        .all(&[&"t1"]);
+        .all(&[SqlParam::from("t1")]);
     assert_eq!(
         rows.iter()
             .map(|r| r
@@ -512,16 +519,16 @@ async fn tc_5_5b_keeps_log_writes_outside_caller_rollbacks_in_a_real_store() {
         "INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, content) VALUES (?, ?, ?, ?, ?)",
     )
     .run(&[
-        &"turn",
-        &"t-rollback",
-        &"turn_rendering",
-        &"ready",
-        &"rolled back content",
+        SqlParam::from("turn"),
+        SqlParam::from("t-rollback"),
+        SqlParam::from("turn_rendering"),
+        SqlParam::from("ready"),
+        SqlParam::from("rolled back content"),
     ]);
     db.exec("ROLLBACK;");
     let derivation_rows = db
         .prepare("SELECT COUNT(*) AS n FROM derivation WHERE subject_id = ?")
-        .get_params(&[&"t-rollback"]);
+        .get_params(&[SqlParam::from("t-rollback")]);
     assert_eq!(
         derivation_rows
             .as_ref()

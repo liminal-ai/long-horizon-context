@@ -1,9 +1,11 @@
-//! Ported from packages/lhc/test/fixtures/model-call.ts. Phase 1.
+//! Ported from packages/lhc/test/fixtures/model-call.ts.
 //!
-//! Constants and pure assignment/response maps are REAL. Call builders that
-//! return ModelCall functions are skeletons (Python Phase 1 PORT_STATUS).
+//! Constants and pure assignment/response maps are REAL. Call builders are
+//! boundary doubles (host ModelCall functions) — REAL, matching lhc-py.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 use lhc::shared_tech::inference_types::{
@@ -98,25 +100,83 @@ pub fn canned_responses() -> HashMap<String, String> {
 
 pub struct RecordingCallBundle {
     pub call: ModelCall,
-    pub log: std::sync::Arc<std::sync::Mutex<Vec<ModelCallInput>>>,
+    pub log: Arc<Mutex<Vec<ModelCallInput>>>,
 }
 
-/// PARTIAL — Phase 1 skeleton (Python Phase 1: call builders skeleton).
-pub fn recording_call(_responses: &HashMap<String, String>) -> RecordingCallBundle {
-    todo!("phase 2")
+/// Resolves each call with its kind's canned text — kind inferred from the
+/// model routing key [`valid_assignments`] made unique per kind. REAL.
+pub fn recording_call(responses: &HashMap<String, String>) -> RecordingCallBundle {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let responses = responses.clone();
+    let log_for_call = Arc::clone(&log);
+    let known: Vec<String> = INFERENCE_DERIVATION_TYPES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let call: ModelCall = Box::new(move |input| {
+        let responses = responses.clone();
+        let log = Arc::clone(&log_for_call);
+        let known = known.clone();
+        Box::pin(async move {
+            log.lock().expect("recordingCall log").push(input.clone());
+            let kind = if input.model.starts_with(FAKE_MODEL_PREFIX) {
+                input.model[FAKE_MODEL_PREFIX.len()..].to_string()
+            } else {
+                input.model.clone()
+            };
+            if !known.iter().any(|k| k == &kind) {
+                panic!(
+                    "recordingCall: no canned response for model \"{}\"",
+                    input.model
+                );
+            }
+            let text = responses.get(&kind).cloned().unwrap_or_else(|| {
+                panic!(
+                    "recordingCall: no canned response for model \"{}\"",
+                    input.model
+                );
+            });
+            ModelCallResult::Ok { text }
+        })
+    });
+    RecordingCallBundle { call, log }
 }
 
-/// PARTIAL — Phase 1 skeleton.
-pub fn scripted_call(_script: Vec<ModelCallResult>) -> ModelCall {
-    todo!("phase 2")
+/// Returns script entries in order; a call past the end of the script is a
+/// test bug and panics loudly. REAL.
+pub fn scripted_call(script: Vec<ModelCallResult>) -> ModelCall {
+    let next = Arc::new(AtomicUsize::new(0));
+    let script = Arc::new(script);
+    Box::new(move |input| {
+        let next = Arc::clone(&next);
+        let script = Arc::clone(&script);
+        Box::pin(async move {
+            let i = next.fetch_add(1, Ordering::SeqCst);
+            match script.get(i) {
+                Some(entry) => entry.clone(),
+                None => panic!(
+                    "scriptedCall: script exhausted after {} calls (model \"{}\")",
+                    script.len(),
+                    input.model
+                ),
+            }
+        })
+    })
 }
 
-/// PARTIAL — Phase 1 skeleton.
-pub fn throwing_call(_error: Box<dyn std::error::Error + Send + Sync>) -> ModelCall {
-    todo!("phase 2")
+/// A host whose function panics — the AC-3.3 containment leg (JS Promise.reject).
+/// REAL. `safe_call` will catch panics once implemented.
+pub fn throwing_call(error: Box<dyn std::error::Error + Send + Sync>) -> ModelCall {
+    let msg = error.to_string();
+    Box::new(move |_input| {
+        let msg = msg.clone();
+        Box::pin(async move {
+            panic!("{msg}");
+        })
+    })
 }
 
-/// PARTIAL — Phase 1 skeleton.
+/// A host that never settles — the DD-6 timeout leg. REAL.
 pub fn hanging_call() -> ModelCall {
-    todo!("phase 2")
+    Box::new(|_input| Box::pin(futures::future::pending::<ModelCallResult>()))
 }

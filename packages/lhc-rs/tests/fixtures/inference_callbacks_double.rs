@@ -272,19 +272,19 @@ impl InferenceCallbacksDouble {
         let compress = this.clone();
         let brief = this.clone();
         InferenceCallbacks {
-            smooth_prompt: Box::new(move |i| {
+            smooth_prompt: Arc::new(move |i| {
                 let smooth = smooth.clone();
                 Box::pin(async move { smooth.smooth_prompt(i).await }) as BoxFuture<_>
             }),
-            summarize_tool_result: Box::new(move |i| {
+            summarize_tool_result: Arc::new(move |i| {
                 let tool = tool.clone();
                 Box::pin(async move { tool.summarize_tool_result(i).await }) as BoxFuture<_>
             }),
-            compress_detailed_turn: Box::new(move |i| {
+            compress_detailed_turn: Arc::new(move |i| {
                 let compress = compress.clone();
                 Box::pin(async move { compress.compress_detailed_turn(i).await }) as BoxFuture<_>
             }),
-            summarize_chunk_brief: Box::new(move |i| {
+            summarize_chunk_brief: Arc::new(move |i| {
                 let brief = brief.clone();
                 Box::pin(async move { brief.summarize_chunk_brief(i).await }) as BoxFuture<_>
             }),
