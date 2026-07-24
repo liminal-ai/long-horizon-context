@@ -203,8 +203,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
   panics cannot abort during unwind. Context setter bodies remain Wave 1
   `todo!("phase 2")` — no Wave 4 diff to `shared_tech/context.rs`.
 - Wave 4 later-wave PARTIALs (compile-only for suites; remain PARTIAL):
-  `thread_view::status`; `turns::{ChunkRecord, list_chunks}` bodies;
-  `sdk::{LhcMessages::show/report/edit/remove/clean_prompt, LhcTurns::list_chunks}`.
+  `thread_view::status`;
+  `sdk::{LhcMessages::show/report/edit/remove/clean_prompt}` (turns list/derive
+  completed in Wave 5).
 - Wave 4: eight suites assertion-for-assertion after repair-r1 (marker bytes,
   optional content compares, 3 representable bad-bounds cases — TS `{ from: 1.5 }`
   statically unrepresentable at i64 `MessageListOptions`; TC-5.4 15s timeout).
@@ -224,6 +225,57 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `lib::messages::internal::derive::tests::message_derive_result_failed_wire_shape_round_trips`;
   `sdk_surface_wave4::crate_root_exports_chunk_record_beside_turn_record`;
   `sdk_surface_wave4::lhc_messages_clean_prompt_method_exists`.
+- Wave 5: turns full faithful surface (mod + store/compose/chunks/
+  chunk_recovery/derive/derivations). Bodies exact `todo!("phase 2")`.
+- Wave 5: `chunkDetailedHandler`/`chunkBriefHandler` are sync zero-arg
+  factories; `TURN_WORK_HANDLERS` binds separate private handler Arc seams
+  (TS derive.ts L467–638). `inferenceFailed` narrow `{ reason }` only;
+  `sourceDamaged`/`inferenceFailed`/`dependencyNotReady` → private
+  `NonOkHandlerOutcome` (Deferred/Failed/Blocked; never Ok);
+  `DetailedChunkComposition` exhaustive over the same non-ok arms.
+- Wave 5: `TurnDeriveResult` custom Serialize (`turnId` before `outcome`);
+  `ChunkDeriveResult::Derived` Serialize order is
+  `chunkId,derivationType,outcome,sourceVersion` (TS `{ chunkId,
+  derivationType, ...result }`); Failed arms keep `id,outcome,error`.
+  Tagged Deserialize; wire tests via `js_json_stringify_of` (allowlisted).
+  Structure/compact-material rows stay under `internal::*`.
+- Wave 5: closed `PART_PLANS` → exhaustive `part_plan` fn. Report SQL exact
+  fragment inventory (private): SELECT_JOIN; `"\n       WHERE "`; `" AND "`;
+  subject-kind/turn/chunk/notReady conditions; subject-filter group
+  `"("` / `" OR "` / `")"`; `"\n       ORDER BY df.subject_kind DESC,
+  df.subject_id, df.derivation_type"`. No fake `{conditions}` SQL. Fixture
+  helpers `read_chunks` / `set_form_state` REAL. Suites use JS `Math.round`
+  = `floor(x + 0.5)`.
+- Wave 5 type fidelity: `recordOutcomes` → `IndexMap`; `RecoveryReceipt.subjectKind`
+  → closed `RecoverySubjectKind::Message` (`"message"`); fixture
+  `FormStateTarget.derivationType` → closed 7-arm fixture `DerivationType`;
+  one private `compression_target_tokens(CompressionRatioTargets)`;
+  `getChunkText` third arg `Option<ChunkDeriveDerivationType>` (`None` =
+  Phase 2 default `chunk_summary_detailed`).
+- Wave 5 later-wave PARTIALs: `thread_view::{CompactAbortSignal, CompactOpts,
+  compact}` + sdk `ThreadViewSurface::compact` only (no invented
+  `ThreadViewSurface::status`; Wave 4 free `thread_view::status` untouched).
+  `CompactAbortSignal` closed by-value Phase 1 snapshot — mapped use is
+  pre-aborted; Phase 2 must audit live cancellation semantics before
+  behavior certification. No `CompactOpts: Default` / `FormStateUpdate::state()`.
+- Wave 5 repair-r1: handler-map `Arc::ptr_eq` for all four
+  `TURN_WORK_HANDLERS` values (mutation-proved in isolated copies); exact
+  nested payload/provenance key sets in detailed_turn_compression;
+  derivation_turns/`chunk_compact_recovery` presence asserts + regex
+  `\b3 succeeded\b`; Wave 5 suite/fixture SQL interior indent + trailing
+  spaces reconciled to TS; closed `SdkForOverrides` for exercised Partial
+  fields only. exact-todo baseline after r1: **367** (−2 vs pre-r1 369 from
+  removing invented `ThreadViewSurface::status` todo + collapsing the dual
+  `compression_target_tokens_*` helpers into one). **Dual-certified** —
+  targeted Sol re-verification passed with independent mutation and exact
+  SQL-byte audits after the initial Sol/Fable findings were repaired.
+- Wave 5: six suites assertion-for-assertion (53 tests).
+- Wave 5 allowlisted passes (exact names only):
+  `lib::turns::tests::turn_derive_result_derived_wire_shape_round_trips`;
+  `lib::turns::tests::turn_derive_result_failed_wire_shape_round_trips`;
+  `lib::turns::tests::chunk_derive_result_derived_wire_shape_round_trips`;
+  `lib::turns::tests::chunk_derive_result_failed_wire_shape_round_trips`;
+  `lib::turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_order`.
 
 ## Source files
 
@@ -280,7 +332,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/shared_tech/tool_result_rendering.rs` | ☑ | Wave 1 |
 | 50 | `src/shared-tech/view.ts` | `src/shared_tech/view.rs` | ☑ | Wave 1 |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/shared_tech/work_queue/mod.rs` | ☑ | Wave 2: full surface; work_kind_registry + map_work_q_handlers + from_wire REAL; other bodies todo |
-| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 1+4 PARTIAL: get_llm_request_context + status stubs (messages-read); full thread-view wave later |
+| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 1+4+5 PARTIAL: get_llm_request_context/status + CompactAbortSignal/CompactOpts/compact stubs; full thread-view wave later |
 | 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☐ |  |
 | 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☐ |  |
 | 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☐ |  |
@@ -294,25 +346,25 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: full surface (new_thread/resolve/list/info/resolve_thread_ref + helpers); ThreadRef closed wire preserved; bodies todo |
 | 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: SQL templates REAL; generate/create/delete/open/validate bodies todo |
 | 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: DEFAULT_REGISTRY_PATH + schema SQL REAL; open/select/insert bodies todo |
-| 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 2+4 PARTIAL: Turn/ChunkDeriveResult + derive_* + ChunkRecord/list_chunks stubs; full turns wave later |
-| 67 | `src/turns/internal/chunk-recovery.ts` | `src/turns/internal/chunk_recovery.rs` | ☐ |  |
-| 68 | `src/turns/internal/chunks.ts` | `src/turns/internal/chunks.rs` | ☐ |  |
-| 69 | `src/turns/internal/compose.ts` | `src/turns/internal/compose.rs` | ☐ |  |
-| 70 | `src/turns/internal/derivations.ts` | `src/turns/internal/derivations.rs` | ☐ |  |
-| 71 | `src/turns/internal/derive.ts` | `src/turns/internal/derive.rs` | ☐ |  |
-| 72 | `src/turns/internal/store.ts` | `src/turns/internal/store.rs` | ☐ |  |
+| 66 | `src/turns/index.ts` | `src/turns/mod.rs` | ☑ | Wave 5: full surface; Turn/ChunkDeriveResult wire serde; structure types private; bodies exact todo |
+| 67 | `src/turns/internal/chunk-recovery.ts` | `src/turns/internal/chunk_recovery.rs` | ☑ | Wave 5 |
+| 68 | `src/turns/internal/chunks.ts` | `src/turns/internal/chunks.rs` | ☑ | Wave 5 |
+| 69 | `src/turns/internal/compose.ts` | `src/turns/internal/compose.rs` | ☑ | Wave 5: PART_PLANS → exhaustive part_plan |
+| 70 | `src/turns/internal/derivations.ts` | `src/turns/internal/derivations.rs` | ☑ | Wave 5 |
+| 71 | `src/turns/internal/derive.ts` | `src/turns/internal/derive.rs` | ☑ | Wave 5: factory handlers + TURN_WORK_HANDLERS Arc seams |
+| 72 | `src/turns/internal/store.ts` | `src/turns/internal/store.rs` | ☑ | Wave 5 |
 
 ## Test files
 
 | # | source | rust | skel | gate | notes |
 |---|---|---|---|---|---|
 | 1 | `test/assignment-config.test.ts` | `tests/assignment_config.rs` | ☑ | ☑ | Wave 2: 12 tests |
-| 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/chunk_brief_from_detailed.rs` | ☐ | ☐ |  |
-| 3 | `test/chunk-compact-recovery.test.ts` | `tests/chunk_compact_recovery.rs` | ☐ | ☐ |  |
-| 4 | `test/chunk-detailed-format.test.ts` | `tests/chunk_detailed_format.rs` | ☐ | ☐ |  |
+| 2 | `test/chunk-brief-from-detailed.test.ts` | `tests/chunk_brief_from_detailed.rs` | ☑ | ☑ | Wave 5: 6 tests |
+| 3 | `test/chunk-compact-recovery.test.ts` | `tests/chunk_compact_recovery.rs` | ☑ | ☑ | Wave 5: 6 tests |
+| 4 | `test/chunk-detailed-format.test.ts` | `tests/chunk_detailed_format.rs` | ☑ | ☑ | Wave 5: 7 tests |
 | 5 | `test/derivation-messages.test.ts` | `tests/derivation_messages.rs` | ☑ | ☑ | Wave 4: 9 tests (3 #[ignore] preserve it.skip bodies) |
-| 6 | `test/derivation-turns.test.ts` | `tests/derivation_turns.rs` | ☐ | ☐ |  |
-| 7 | `test/detailed-turn-compression.test.ts` | `tests/detailed_turn_compression.rs` | ☐ | ☐ |  |
+| 6 | `test/derivation-turns.test.ts` | `tests/derivation_turns.rs` | ☑ | ☑ | Wave 5: 14 tests |
+| 7 | `test/detailed-turn-compression.test.ts` | `tests/detailed_turn_compression.rs` | ☑ | ☑ | Wave 5: 8 tests |
 | 8 | `test/epic-fix-02.test.ts` | `tests/epic_fix_02.rs` | ☐ | ☐ |  |
 | 9 | `test/epic-fix.test.ts` | `tests/epic_fix.rs` | ☐ | ☐ |  |
 | 10 | `test/fixtures.test.ts` | `tests/fixtures_test.rs` | ☑ | ☑ | Rust: fixtures_test.rs (cannot coexist with tests/fixtures/); FC-0.4 builders + TempStore Drop panic-unwind proof allowlisted |
@@ -344,7 +396,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 36 | `test/tool-result-rendering.test.ts` | `tests/tool_result_rendering.rs` | ☑ | ☑ |  |
 | 37 | `test/tool-result-summary-inference.test.ts` | `tests/tool_result_summary_inference.rs` | ☑ | ☑ | Wave 4: 3 tests |
 | 38 | `test/turn-cascade.test.ts` | `tests/turn_cascade.rs` | ☑ | ☑ | Wave 4: 14 tests |
-| 39 | `test/turns.test.ts` | `tests/turns.rs` | ☐ | ☐ |  |
+| 39 | `test/turns.test.ts` | `tests/turns.rs` | ☑ | ☑ | Wave 5: 12 tests |
 | 40 | `test/validation.test.ts` | `tests/validation.rs` | ☑ | ☑ |  |
 | 41 | `test/view-boundary-turn-end.test.ts` | `tests/view_boundary_turn_end.rs` | ☐ | ☐ |  |
 | 42 | `test/view-boundary.test.ts` | `tests/view_boundary.rs` | ☐ | ☐ |  |
@@ -366,7 +418,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 |---|---|---|---|
 | `test/fixtures/corrupt.ts` | `tests/fixtures/corrupt.rs` | ☑ | Wave 2: REAL raw sqlite writers |
 | `test/fixtures/drain-runner.ts` | `tests/fixtures/drain_runner.rs` | ☑ | Wave 2: file-private RunnerConfig REAL; private sleep + main `todo!("phase 2")` (no pub re-export) |
-| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–3: valid_event/temp_store/open_raw REAL; TempStore Drop + idempotent cleanup; Wave 2 fixture re-exports (no RunnerConfig — file-private in drain_runner) |
+| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–5: valid_event/temp_store/open_raw REAL; TempStore Drop; Wave 2+5 fixture re-exports (read_chunks/set_form_state) |
 | `test/fixtures/inference-callbacks-double.ts` | `tests/fixtures/inference_callbacks_double.rs` | ☑ | REAL double (calls deterministic_text which is still todo) |
 | `test/fixtures/intake-seam.ts` | `tests/fixtures/intake_seam.rs` | ☑ | Wave 2: re-exports REAL pipeline test seams |
 | `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.rs` | ☑ | Wave 3: constants + turn_events/intake_batches REAL; on_checkpoint/Option fresh_sdk/as_str/clock const; create/run exact todo |
@@ -377,7 +429,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | `test/fixtures/pi-session-structure.provenance.md` | `tests/fixtures/pi-session-structure.provenance.md` | ☐ |  |
 | `test/fixtures/read-only-delta.ts` | `tests/fixtures/read_only_delta.rs` | ☑ | Wave 2: ObservableState REAL; private queued_for + snapshot helpers `todo!("phase 2")` |
 | `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.rs` | ☑ | Wave 2: probe_input/assert_model_call_contract REAL; routing helper todo |
-| `test/fixtures/threads.ts` | `tests/fixtures/threads.rs` | ☑ | Wave 2 PARTIAL: `read_derived_forms` REAL (unknown metadata/provenance keys ignored); SDK builders todo |
+| `test/fixtures/threads.ts` | `tests/fixtures/threads.rs` | ☑ | Wave 2+5 PARTIAL: `read_derived_forms` + `read_chunks`/`set_form_state` REAL; SDK builders todo |
 | `test/fixtures/view-boundary.ts` | `tests/fixtures/view_boundary.rs` | ☐ |  |
 | `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.rs` | ☐ |  |
 | `test/fixtures/view-thread.ts` | `tests/fixtures/view_thread.rs` | ☐ |  |

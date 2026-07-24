@@ -13,21 +13,58 @@ use lhc::shared_tech::inference_types::{
 };
 use lhc::shared_tech::prompts::DEFAULT_PROMPT_NAMES;
 
+/// Closed fixture vocabulary for derivation types (TS `DerivationType` /
+/// `DERIVATION_TYPES` in model-call.ts). Production keeps plain strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DerivationType {
+    SmoothedPrompt,
+    ToolResultSummary,
+    TurnRendering,
+    PreDetailedAssembly,
+    DetailedTurnCompression,
+    ChunkSummaryDetailed,
+    ChunkSummaryBrief,
+}
+
+impl DerivationType {
+    pub const ALL: &[DerivationType] = &[
+        Self::SmoothedPrompt,
+        Self::ToolResultSummary,
+        Self::TurnRendering,
+        Self::PreDetailedAssembly,
+        Self::DetailedTurnCompression,
+        Self::ChunkSummaryDetailed,
+        Self::ChunkSummaryBrief,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SmoothedPrompt => "smoothed_prompt",
+            Self::ToolResultSummary => "tool_result_summary",
+            Self::TurnRendering => "turn_rendering",
+            Self::PreDetailedAssembly => "pre_detailed_assembly",
+            Self::DetailedTurnCompression => "detailed_turn_compression",
+            Self::ChunkSummaryDetailed => "chunk_summary_detailed",
+            Self::ChunkSummaryBrief => "chunk_summary_brief",
+        }
+    }
+}
+
 pub const DERIVATION_TYPES: &[&str] = &[
-    "smoothed_prompt",
-    "tool_result_summary",
-    "turn_rendering",
-    "pre_detailed_assembly",
-    "detailed_turn_compression",
-    "chunk_summary_detailed",
-    "chunk_summary_brief",
+    DerivationType::SmoothedPrompt.as_str(),
+    DerivationType::ToolResultSummary.as_str(),
+    DerivationType::TurnRendering.as_str(),
+    DerivationType::PreDetailedAssembly.as_str(),
+    DerivationType::DetailedTurnCompression.as_str(),
+    DerivationType::ChunkSummaryDetailed.as_str(),
+    DerivationType::ChunkSummaryBrief.as_str(),
 ];
 
 pub const INFERENCE_DERIVATION_TYPES: &[&str] = &[
-    "smoothed_prompt",
-    "tool_result_summary",
-    "detailed_turn_compression",
-    "chunk_summary_brief",
+    DerivationType::SmoothedPrompt.as_str(),
+    DerivationType::ToolResultSummary.as_str(),
+    DerivationType::DetailedTurnCompression.as_str(),
+    DerivationType::ChunkSummaryBrief.as_str(),
 ];
 
 pub const FAKE_PROVIDER_PREFIX: &str = "prov-";

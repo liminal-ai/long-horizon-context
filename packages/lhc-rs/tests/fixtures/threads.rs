@@ -1,7 +1,7 @@
 //! Ported from packages/lhc/test/fixtures/threads.ts.
 //!
-//! [`read_derived_forms`] is a below-SDK sqlite read — REAL (Wave 2).
-//! SDK-calling thread builders remain `todo!("phase 2")`.
+//! [`read_derived_forms`] / [`read_chunks`] / [`set_form_state`] are below-SDK
+//! sqlite helpers — REAL. SDK-calling thread builders remain `todo!("phase 2")`.
 
 use lhc::shared_tech::derivation::SizeDisposition;
 use lhc::shared_tech::derivation::{
@@ -9,9 +9,147 @@ use lhc::shared_tech::derivation::{
     SubjectKind, ToolOutcome,
 };
 use lhc::shared_tech::errors::OpResult;
-use lhc::shared_tech::storage::open_database;
+use lhc::shared_tech::js_json::js_json_stringify_of;
+use lhc::shared_tech::storage::{SqlParam, open_database};
+use lhc::turns::TurnStatus;
 
 use super::TempStore;
+use super::model_call::DerivationType;
+
+// ── chunk read-back (Story 3): raw rows for boundary assertions ──
+
+/// One `chunk` table row projected for boundary assertions (TS inline map).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSnapshotChunk {
+    pub chunk_id: String,
+    pub chunk_order: i64,
+    pub status: TurnStatus,
+    pub accumulated_projected_tokens: i64,
+}
+
+/// One `chunk_member` row joined for boundary assertions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSnapshotMember {
+    pub chunk_id: String,
+    pub turn_id: String,
+    pub member_idx: i64,
+}
+
+/// TS `ChunkSnapshot`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSnapshot {
+    pub chunks: Vec<ChunkSnapshotChunk>,
+    pub members: Vec<ChunkSnapshotMember>,
+}
+
+/// TS `readChunks` — REAL below-SDK chunk boundary read-back.
+pub fn read_chunks(file_path: &str) -> ChunkSnapshot {
+    let db = match open_database(file_path) {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => panic!("read_chunks open failed: {}", error.reason),
+    };
+    let chunk_rows = db
+        .prepare(
+            "SELECT chunk_id, chunk_order, status, accumulated_projected_tokens
+           FROM chunk ORDER BY chunk_order",
+        )
+        .all(&[]);
+    let chunks = chunk_rows
+        .iter()
+        .map(|row| ChunkSnapshotChunk {
+            chunk_id: req_str(row, "chunk_id").to_string(),
+            chunk_order: req_i64(row, "chunk_order"),
+            status: parse_turn_status(req_str(row, "status")),
+            accumulated_projected_tokens: req_i64(row, "accumulated_projected_tokens"),
+        })
+        .collect();
+    let member_rows = db
+        .prepare(
+            "SELECT cm.chunk_id, cm.turn_id, cm.member_idx FROM chunk_member cm
+           JOIN chunk c ON c.chunk_id = cm.chunk_id
+           ORDER BY c.chunk_order, cm.member_idx",
+        )
+        .all(&[]);
+    let members = member_rows
+        .iter()
+        .map(|row| ChunkSnapshotMember {
+            chunk_id: req_str(row, "chunk_id").to_string(),
+            turn_id: req_str(row, "turn_id").to_string(),
+            member_idx: req_i64(row, "member_idx"),
+        })
+        .collect();
+    db.close();
+    ChunkSnapshot { chunks, members }
+}
+
+fn parse_turn_status(s: &str) -> TurnStatus {
+    match s {
+        "open" => TurnStatus::Open,
+        "closed" => TurnStatus::Closed,
+        other => panic!("read_chunks: unknown status {other}"),
+    }
+}
+
+/// Closed target for [`set_form_state`] (TS inline object).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormStateTarget {
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
+    pub derivation_type: DerivationType,
+}
+
+/// Closed update bag for [`set_form_state`] — narrow Partial of derivation write fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormStateUpdate {
+    pub state: DerivationState,
+    pub content: Option<String>,
+    pub reason: Option<String>,
+    pub metadata: Option<DerivationMetadata>,
+    pub derived_at: Option<String>,
+}
+
+/// TS `setFormState` — REAL below-SDK sanctioned state writer (UPDATE-only).
+pub fn set_form_state(file_path: &str, target: &FormStateTarget, update: &FormStateUpdate) {
+    let db = match open_database(file_path) {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => panic!("set_form_state open failed: {}", error.reason),
+    };
+    let metadata = match &update.metadata {
+        None => SqlParam::Null,
+        Some(meta) => {
+            SqlParam::Text(js_json_stringify_of(meta).expect("set_form_state: metadata stringify"))
+        }
+    };
+    db.prepare(
+        "UPDATE derivation
+         SET state = ?, content = ?, reason = ?, metadata = ?, derived_at = ?
+         WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?",
+    )
+    .run(&[
+        SqlParam::from(update.state.as_str()),
+        SqlParam::from(update.content.as_deref()),
+        SqlParam::from(update.reason.as_deref()),
+        metadata,
+        SqlParam::from(update.derived_at.as_deref()),
+        SqlParam::from(target.subject_kind.as_str()),
+        SqlParam::from(target.subject_id.as_str()),
+        SqlParam::from(target.derivation_type.as_str()),
+    ]);
+    let changed = db
+        .prepare("SELECT changes() AS n")
+        .get()
+        .and_then(|row| row.get("n").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    if changed != 1 {
+        panic!(
+            "fixture setFormState hit {changed} rows for {}/{}/{}; expected the pending row from enqueue",
+            target.subject_kind.as_str(),
+            target.subject_id,
+            target.derivation_type.as_str()
+        );
+    }
+    db.close();
+}
 
 /// TS `readDerivedForms` — REAL below-SDK derivation read-back.
 pub fn read_derived_forms(file_path: &str) -> Vec<Derivation> {
@@ -22,8 +160,8 @@ pub fn read_derived_forms(file_path: &str) -> Vec<Derivation> {
     let rows = db
         .prepare(
             "SELECT subject_kind, subject_id, derivation_type, state, content, reason, metadata,
-                    source_version, gaps, derived_at
-             FROM derivation ORDER BY subject_kind, subject_id, derivation_type",
+                source_version, gaps, derived_at
+         FROM derivation ORDER BY subject_kind, subject_id, derivation_type",
         )
         .all(&[]);
     let mut out = Vec::with_capacity(rows.len());
@@ -242,7 +380,7 @@ pub struct DamagedSourceThreadResult {
 pub struct MultiStateClaim {
     pub subject_kind: SubjectKind,
     pub subject_id: String,
-    pub derivation_type: String,
+    pub derivation_type: DerivationType,
     pub state: DerivationState,
 }
 

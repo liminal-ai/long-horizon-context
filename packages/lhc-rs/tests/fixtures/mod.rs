@@ -40,9 +40,9 @@ pub use lifecycle::{
     run_lifecycle,
 };
 pub use model_call::{
-    DERIVATION_TYPES, FAKE_MODEL_PREFIX, FAKE_PROVIDER_PREFIX, INFERENCE_DERIVATION_TYPES,
-    ModelAssignmentOverride, canned_responses, hanging_call, recording_call, scripted_call,
-    throwing_call, valid_assignments,
+    DERIVATION_TYPES, DerivationType, FAKE_MODEL_PREFIX, FAKE_PROVIDER_PREFIX,
+    INFERENCE_DERIVATION_TYPES, ModelAssignmentOverride, canned_responses, hanging_call,
+    recording_call, scripted_call, throwing_call, valid_assignments,
 };
 pub use read_only_delta::{ObservableState, expect_read_only, observable_state};
 pub use seam_conformance::{
@@ -50,8 +50,9 @@ pub use seam_conformance::{
     probe_input,
 };
 pub use threads::{
-    ToolRunOpts, damaged_source_thread, multi_state_thread, read_derived_forms,
-    thread_with_closed_turns, thread_with_tool_run,
+    ChunkSnapshot, ChunkSnapshotChunk, ChunkSnapshotMember, FormStateTarget, FormStateUpdate,
+    ToolRunOpts, damaged_source_thread, multi_state_thread, read_chunks, read_derived_forms,
+    set_form_state, thread_with_closed_turns, thread_with_tool_run,
 };
 pub use valid_event::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,

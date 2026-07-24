@@ -56,3 +56,10 @@ lib::messages::internal::derive::tests::message_derive_result_failed_wire_shape_
 # Wave 4 — compile-shape: ChunkRecord + LhcMessages::clean_prompt at SDK surface.
 sdk_surface_wave4::crate_root_exports_chunk_record_beside_turn_record
 sdk_surface_wave4::lhc_messages_clean_prompt_method_exists
+
+# Wave 5 — REAL TurnDeriveResult / ChunkDeriveResult wire bytes + handler map identity.
+lib::turns::tests::turn_derive_result_derived_wire_shape_round_trips
+lib::turns::tests::turn_derive_result_failed_wire_shape_round_trips
+lib::turns::tests::chunk_derive_result_derived_wire_shape_round_trips
+lib::turns::tests::chunk_derive_result_failed_wire_shape_round_trips
+lib::turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_order

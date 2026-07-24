@@ -150,11 +150,21 @@ impl LoggingSurface {
     }
 }
 
-/// TS `ThreadViewSurface` — PARTIAL: get_llm_request_context for Wave 1.
+/// TS `ThreadViewSurface` — PARTIAL: get_llm_request_context for Wave 1;
+/// `compact` for Wave 5 chunk-compact-recovery.
+/// Wave 4 free `thread_view::status` remains; no Wave 5 `status` method here.
 pub struct ThreadViewSurface;
 
 impl ThreadViewSurface {
     pub async fn get_llm_request_context(&self, _ref: ThreadRef) -> OpResult<LlmRequestContext> {
+        todo!("phase 2")
+    }
+
+    pub async fn compact(
+        &self,
+        _ref: ThreadRef,
+        _opts: crate::thread_view::CompactOpts,
+    ) -> OpResult<crate::shared_tech::view::CompactReceipt> {
         todo!("phase 2")
     }
 }

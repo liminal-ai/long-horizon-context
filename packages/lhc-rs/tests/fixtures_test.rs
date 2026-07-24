@@ -577,14 +577,14 @@ async fn fc_0_6_multi_state_thread_reads_back_every_claimed_state() {
         let match_ = forms.iter().find(|f| {
             f.subject_kind == claim.subject_kind
                 && f.subject_id == claim.subject_id
-                && f.derivation_type == claim.derivation_type
+                && f.derivation_type == claim.derivation_type.as_str()
         });
         assert!(
             match_.is_some(),
             "{:?}/{}/{}",
             claim.subject_kind,
             claim.subject_id,
-            claim.derivation_type
+            claim.derivation_type.as_str()
         );
         assert_eq!(match_.unwrap().state, claim.state);
     }
