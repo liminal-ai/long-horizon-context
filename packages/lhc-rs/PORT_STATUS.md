@@ -276,6 +276,89 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `lib::turns::tests::chunk_derive_result_derived_wire_shape_round_trips`;
   `lib::turns::tests::chunk_derive_result_failed_wire_shape_round_trips`;
   `lib::turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_order`.
+- Wave 6: thread-view full faithful surface (`mod.rs` + 10 internals).
+  Bodies exact `todo!("phase 2")` except REAL constant data (profiles tables /
+  `BUDGET_KEYS`/`BAND_KEYS`/`DEFAULT_*`, SQL/regex/render labels,
+  `PI_SESSION_VERSION=3`, `PI_MAPPABLE_MESSAGE_KINDS` + derived
+  `PI_MAPPABLE_KIND_SET`, band orders) and the REAL view-injection seam
+  (`set_view_injection_hook` / `fire_view_injection`).
+- Wave 6: `PruneParams.target_tokens: Option<f64>` (TS `number`; tests pass
+  `10.5`). Visibility `max_tokens`/`target_tokens`/`compact_threshold` and
+  derived ViewStatus/PruneReceipt fields are `f64`; `lowerBound` and profile
+  percentages stay `i64` (Wave 1 court of record). Canonical
+  `MaterializeResult` owned in `materialize.rs` and re-exported from
+  `thread_view`. `ExcerptBlock` required `block_type`+`content`.
+  `MaterializeOpts.format: Option<String>` (no invented `MaterializeFormat`
+  enum). One abort shape: public `CompactAbortSignal` `{ aborted: bool }`
+  by-value Phase 1 snapshot (no duplicate internal AbortSignal) — Phase 2
+  must audit live getter / re-read cancellation semantics before behavior
+  certification.
+- Wave 6: `DEFAULT_VIEW_CONFIG` built from real defaults via
+  `default_resolved_view_config()` (no todo at module init). Seam hooks use
+  `Arc` + call-outside-lock + poison recovery so intentional hook panics
+  cannot poison the table for later tests/Drop cleanup.
+- Wave 6: `select_arrangement` → `Result<SelectionResult, CanonicalCorruptionError>`;
+  `compute_arrangement` maps into public `OpResult` (bodies still Phase 2).
+  Generic error constructors `thread_not_found<T>` / `caller_error<T>` /
+  `prune_caller_error<T>`; prune code narrowed to closed
+  `invalid_target_tokens`. Nested helpers hoisted (`lookup`/`chunkMaterial`/
+  `budget`/`previousClose`/`byRecordOrder`/`flushAssistant`/`entriesByBand`
+  + select walk helpers). Render/diagnostic/SQL/txn literals hoisted.
+  `DerivationLookup` alias used in render signatures; private `RawViewRow` +
+  BEGIN/COMMIT/ROLLBACK txn literals in snapshot; `build_chunk_entry` narrowed
+  to detailed|brief. Invented surface removed: aggregate
+  `thread_view/internal` `pub use`, `MaterializeFormat`,
+  `DerivedThreadOptions: Default`, public `assert_fixture_chunk_shape`.
+- Wave 6 fixtures: `pi_session_format`, `view_boundary`, `view_seam`,
+  `view_thread` (complete surface incl. `FIXTURE_CHUNK_POLICY` /
+  `TURN_COUNT` / `TOOL_HEAVY_TURNS` + private helpers); goldens `g*.json` +
+  README and `pi-session-structure.{jsonl,provenance.md}` byte-identical to
+  TS. Eleven suites, 101 tests (2 ignored preserve `it.skip`).
+- Wave 6 allowlisted passes (exact names only):
+  `view_fixture::an_installed_hook_fires_its_throw_propagates_and_uninstalling_restores_the_no_op`;
+  `view_fixture::uninstalled_the_point_is_a_no_op`.
+- Wave 6 repair-r1: Sol and Fable both returned FAIL on the initial Wave 6
+  handoff. Orchestrator union applied (source + test/fixture repairs).
+  Binding overrides retained: (1) `CompactAbortSignal` closed by-value Phase 1
+  snapshot — Phase 2 live cancellation audit required; (2) `lowerBound`/profile
+  percentages stay `i64`; visibility budgets/`compact_threshold`/derived
+  status/prune fields are `f64`. Exact reconciliation after Wave 6
+  skeleton vs Wave 5 r1 baseline: todos **367→465** (+98), classified
+  **347→448** (+101), passes **38→40**, notimpl **297→394**, ignored
+  **12→14**, wrong/suspicious **0/0**. Repair-r1 justified exact-todo delta:
+  **465→472** (+7) from completing nested helper inventory (`lookup`,
+  `chunk_material`, `budget`, `previous_close`, `by_record_order`,
+  `flush_assistant`, `entries_by_band`, …) with `todo!("phase 2")` bodies;
+  classified/passes/notimpl/ignored unchanged at 448/40/394/14.
+- Wave 6 repair-r1 re-verification: both Sol and Fable returned **FAIL**.
+- Wave 6 repair-r2 (accepted residuals): complete diagnostic literal inventory
+  (profiles/render/select/mod/compact_compute/boundary/snapshot);
+  `PI_MAPPABLE_KIND_SET` → insertion-ordered `IndexSet`; private closed
+  `ChunkMaterialDerivation` for `chunk_material`; remove `MaterializeResult`
+  from `sdk.rs` aggregate exports (keep `thread_view` owner); remove fixture
+  aggregate exports `ParsedSession`/`BlockedSiblingResult`/`CorruptedVariantResult`;
+  remove Wave 6 dead `const _` / `_default_*` keepalives; re-export canonical
+  `ViewContentsReport` from `sdk.rs`; test/fixture fidelity (render-targets
+  `expect`, boundary suite-local `tokens`, drop anti-vacuous `marker_lines`,
+  pi-session array/`undefined` paths). `DrainOpts: Default` deferred to Wave 7
+  full SDK audit (pre-baseline; not reshaped here). Broader non-view SDK/root
+  completion remains Wave 7. Exact-todo history **367→465→472**; repair-r2
+  delta **+0** (literals/enums/IndexSet are data/signature, not new todo
+  bodies). Classified/passes/notimpl/ignored unchanged at 448/40/394/14.
+- Wave 6 repair-r2 re-verification: Sol **PASS**; Fable **FAIL** on three
+  narrow literal/diagnostic residuals.
+- Wave 6 repair-r3: hoist render delimiters `"] "`, `"["`, `"\n"`, `"\n\n"`;
+  pi-session array content-block keys mirror `Object.keys(array)` (`"0,1,…"`);
+  bare filesystem error on fixture read (no invented wrapper). Exact-todo
+  unchanged at **472**. Targeted Fable confirmation **PASS**; Sol's repair-r2
+  **PASS** remains the independent source/literal confirmation. Fable noted
+  only an out-of-scope malformed-array diagnostic ordering edge at 11+ elements
+  (numeric index order vs TS `keySet().sort()` lexical order); carry it into
+  Wave 7's final fidelity audit, with shipped/required inputs unaffected.
+- Wave 6 **dual-certified** after three repair rounds. Final gate:
+  exact-todo **472**, classified **448**, passed **40**, notimpl **394**,
+  ignored **14**, wrong/suspicious **0/0**; eleven suites **101** tests
+  including two preserved ignores; seven immutable assets byte-identical.
 
 ## Source files
 
@@ -300,7 +383,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 17 | `src/messages/internal/smoothing.ts` | `src/messages/internal/smoothing.rs` | ☑ | Wave 4+r2: CLEAN_PROSE_* private (TS cleanProse-local); clean_prompt exact todo |
 | 18 | `src/messages/internal/store.ts` | `src/messages/internal/store.rs` | ☑ | Wave 4: SQL hoisted; bodies exact todo |
 | 19 | `src/messages/internal/work.ts` | `src/messages/internal/work.rs` | ☑ | Wave 4: MESSAGE_WORK_* maps + MessageDeriveDerivationType REAL |
-| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 4+r1 PARTIAL: ChunkRecord re-export; LhcMessages clean_prompt; EditInput/RemoveInput private imports only; full Wave 7 |
+| 20 | `src/sdk.ts` | `src/sdk.rs` | ☑ | Wave 6 PARTIAL: ThreadViewSurface full method set; ChunkRecord/LhcMessages; full re-export Wave 7 |
 | 21 | `src/shared-tech/classify.ts` | `src/shared_tech/classify.rs` | ☑ | Wave 1 |
 | 22 | `src/shared-tech/context.ts` | `src/shared_tech/context.rs` | ☑ | Wave 1 |
 | 23 | `src/shared-tech/derivation.ts` | `src/shared_tech/derivation.rs` | ☑ | Wave 1 complete (Wave 0 vocab unchanged; state machine + handler contract appended) |
@@ -332,17 +415,17 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/shared_tech/tool_result_rendering.rs` | ☑ | Wave 1 |
 | 50 | `src/shared-tech/view.ts` | `src/shared_tech/view.rs` | ☑ | Wave 1 |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/shared_tech/work_queue/mod.rs` | ☑ | Wave 2: full surface; work_kind_registry + map_work_q_handlers + from_wire REAL; other bodies todo |
-| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 1+4+5 PARTIAL: get_llm_request_context/status + CompactAbortSignal/CompactOpts/compact stubs; full thread-view wave later |
-| 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☐ |  |
-| 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☐ |  |
-| 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☐ |  |
-| 56 | `src/thread-view/internal/materialize.ts` | `src/thread_view/internal/materialize.rs` | ☐ |  |
-| 57 | `src/thread-view/internal/profiles.ts` | `src/thread_view/internal/profiles.rs` | ☐ |  |
-| 58 | `src/thread-view/internal/render.ts` | `src/thread_view/internal/render.rs` | ☐ |  |
-| 59 | `src/thread-view/internal/seam.ts` | `src/thread_view/internal/seam.rs` | ☐ |  |
-| 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☐ |  |
-| 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☐ |  |
-| 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☐ |  |
+| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 6+r1: full surface; f64 prune/visibility; MaterializeOpts.format Option String; generic errors; entriesByBand; CompactAbortSignal only — bodies Phase 2 |
+| 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☑ | Wave 6 — bodies Phase 2 |
+| 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☑ | Wave 6 — bodies Phase 2 |
+| 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☑ | Wave 6+r1: CompactAbortSignal only (no duplicate AbortSignal); maps CanonicalCorruptionError |
+| 56 | `src/thread-view/internal/materialize.ts` | `src/thread_view/internal/materialize.rs` | ☑ | Wave 6: canonical MaterializeResult + PI_SESSION_VERSION=3 |
+| 57 | `src/thread-view/internal/profiles.ts` | `src/thread_view/internal/profiles.rs` | ☑ | Wave 6: CONSTANT DATA real; BUDGET_KEYS maxTokens/targetTokens; DEFAULT_* f64 |
+| 58 | `src/thread-view/internal/render.ts` | `src/thread_view/internal/render.rs` | ☑ | Wave 6+r1: ExcerptBlock; DerivationLookup alias; render/diagnostic literals hoisted |
+| 59 | `src/thread-view/internal/seam.ts` | `src/thread_view/internal/seam.rs` | ☑ | Wave 6: REAL hook table (Arc + outside-lock fire) |
+| 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☑ | Wave 6+r1: PI_MAPPABLE_KIND_SET derived; nested helpers; select_arrangement Result |
+| 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☑ | Wave 6+r1: flushAssistant + session literals |
+| 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☑ | Wave 6+r1: RawViewRow + BEGIN/COMMIT/ROLLBACK literals |
 | 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: full surface (new_thread/resolve/list/info/resolve_thread_ref + helpers); ThreadRef closed wire preserved; bodies todo |
 | 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: SQL templates REAL; generate/create/delete/open/validate bodies todo |
 | 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: DEFAULT_REGISTRY_PATH + schema SQL REAL; open/select/insert bodies todo |
@@ -398,17 +481,17 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 38 | `test/turn-cascade.test.ts` | `tests/turn_cascade.rs` | ☑ | ☑ | Wave 4: 14 tests |
 | 39 | `test/turns.test.ts` | `tests/turns.rs` | ☑ | ☑ | Wave 5: 12 tests |
 | 40 | `test/validation.test.ts` | `tests/validation.rs` | ☑ | ☑ |  |
-| 41 | `test/view-boundary-turn-end.test.ts` | `tests/view_boundary_turn_end.rs` | ☐ | ☐ |  |
-| 42 | `test/view-boundary.test.ts` | `tests/view_boundary.rs` | ☐ | ☐ |  |
-| 43 | `test/view-compact-full-boundary.test.ts` | `tests/view_compact_full_boundary.rs` | ☐ | ☐ |  |
-| 44 | `test/view-compact-preview.test.ts` | `tests/view_compact_preview.rs` | ☐ | ☐ |  |
-| 45 | `test/view-compact.test.ts` | `tests/view_compact.rs` | ☐ | ☐ |  |
-| 46 | `test/view-fixture.test.ts` | `tests/view_fixture.rs` | ☐ | ☐ |  |
-| 47 | `test/view-llm-request-context.test.ts` | `tests/view_llm_request_context.rs` | ☐ | ☐ |  |
-| 48 | `test/view-prune.test.ts` | `tests/view_prune.rs` | ☐ | ☐ |  |
-| 49 | `test/view-render-targets.test.ts` | `tests/view_render_targets.rs` | ☐ | ☐ |  |
-| 50 | `test/view-select-golden.test.ts` | `tests/view_select_golden.rs` | ☐ | ☐ |  |
-| 51 | `test/view-session-thread-view.test.ts` | `tests/view_session_thread_view.rs` | ☐ | ☐ |  |
+| 41 | `test/view-boundary-turn-end.test.ts` | `tests/view_boundary_turn_end.rs` | ☑ | ☑ | Wave 6: 2 tests |
+| 42 | `test/view-boundary.test.ts` | `tests/view_boundary.rs` | ☑ | ☑ | Wave 6: 7 tests (1 #[ignore] it.skip) |
+| 43 | `test/view-compact-full-boundary.test.ts` | `tests/view_compact_full_boundary.rs` | ☑ | ☑ | Wave 6: 9 tests |
+| 44 | `test/view-compact-preview.test.ts` | `tests/view_compact_preview.rs` | ☑ | ☑ | Wave 6: 13 tests |
+| 45 | `test/view-compact.test.ts` | `tests/view_compact.rs` | ☑ | ☑ | Wave 6: 17 tests; sdk.work.drain; TC-1.3 strictness |
+| 46 | `test/view-fixture.test.ts` | `tests/view_fixture.rs` | ☑ | ☑ | Wave 6: 13 tests; Drop hook teardown; 2 seam passes allowlisted |
+| 47 | `test/view-llm-request-context.test.ts` | `tests/view_llm_request_context.rs` | ☑ | ☑ | Wave 6: 15 tests (1 #[ignore] it.skip) |
+| 48 | `test/view-prune.test.ts` | `tests/view_prune.rs` | ☑ | ☑ | Wave 6: 8 tests; target_tokens=10.5 |
+| 49 | `test/view-render-targets.test.ts` | `tests/view_render_targets.rs` | ☑ | ☑ | Wave 6: 5 tests |
+| 50 | `test/view-select-golden.test.ts` | `tests/view_select_golden.rs` | ☑ | ☑ | Wave 6: 4 tests — goldens read-only |
+| 51 | `test/view-session-thread-view.test.ts` | `tests/view_session_thread_view.rs` | ☑ | ☑ | Wave 6: 8 tests |
 | 52 | `test/work-execution.test.ts` | `tests/work_execution.rs` | ☑ | ☑ | Wave 2: 27 tests (it.each → 2) |
 | 53 | `test/work-queue.test.ts` | `tests/work_queue.rs` | ☑ | ☑ | Wave 2: 16 tests; registry + assembly + dispatcher-lookup passes allowlisted |
 
@@ -418,19 +501,19 @@ Wave 0 rulings (court of record — extend, don't reshape):
 |---|---|---|---|
 | `test/fixtures/corrupt.ts` | `tests/fixtures/corrupt.rs` | ☑ | Wave 2: REAL raw sqlite writers |
 | `test/fixtures/drain-runner.ts` | `tests/fixtures/drain_runner.rs` | ☑ | Wave 2: file-private RunnerConfig REAL; private sleep + main `todo!("phase 2")` (no pub re-export) |
-| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–5: valid_event/temp_store/open_raw REAL; TempStore Drop; Wave 2+5 fixture re-exports (read_chunks/set_form_state) |
+| `test/fixtures/index.ts` | `tests/fixtures/mod.rs` | ☑ | Wave 1–6: valid_event/temp_store/open_raw REAL; TempStore Drop; Wave 6 view_* / pi_session re-exports |
 | `test/fixtures/inference-callbacks-double.ts` | `tests/fixtures/inference_callbacks_double.rs` | ☑ | REAL double (calls deterministic_text which is still todo) |
 | `test/fixtures/intake-seam.ts` | `tests/fixtures/intake_seam.rs` | ☑ | Wave 2: re-exports REAL pipeline test seams |
 | `test/fixtures/lifecycle.ts` | `tests/fixtures/lifecycle.rs` | ☑ | Wave 3: constants + turn_events/intake_batches REAL; on_checkpoint/Option fresh_sdk/as_str/clock const; create/run exact todo |
 | `test/fixtures/model-call.ts` | `tests/fixtures/model_call.rs` | ☑ | Wave 2: constants + valid_assignments/canned_responses + call builders REAL |
 | `test/fixtures/openrouter-call.ts` | — | — | EXCLUDED (live network) |
-| `test/fixtures/pi-session-format.ts` | `tests/fixtures/pi_session_format.rs` | ☐ |  |
-| `test/fixtures/pi-session-structure.jsonl` | `tests/fixtures/pi-session-structure.jsonl` | ☐ |  |
-| `test/fixtures/pi-session-structure.provenance.md` | `tests/fixtures/pi-session-structure.provenance.md` | ☐ |  |
+| `test/fixtures/pi-session-format.ts` | `tests/fixtures/pi_session_format.rs` | ☑ | Wave 6 — REAL parse/conformance; js_json bytes |
+| `test/fixtures/pi-session-structure.jsonl` | `tests/fixtures/pi-session-structure.jsonl` | ☑ | Wave 6 — byte-identical copy |
+| `test/fixtures/pi-session-structure.provenance.md` | `tests/fixtures/pi-session-structure.provenance.md` | ☑ | Wave 6 — byte-identical copy |
 | `test/fixtures/read-only-delta.ts` | `tests/fixtures/read_only_delta.rs` | ☑ | Wave 2: ObservableState REAL; private queued_for + snapshot helpers `todo!("phase 2")` |
 | `test/fixtures/seam-conformance.ts` | `tests/fixtures/seam_conformance.rs` | ☑ | Wave 2: probe_input/assert_model_call_contract REAL; routing helper todo |
 | `test/fixtures/threads.ts` | `tests/fixtures/threads.rs` | ☑ | Wave 2+5 PARTIAL: `read_derived_forms` + `read_chunks`/`set_form_state` REAL; SDK builders todo |
-| `test/fixtures/view-boundary.ts` | `tests/fixtures/view_boundary.rs` | ☐ |  |
-| `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.rs` | ☐ |  |
-| `test/fixtures/view-thread.ts` | `tests/fixtures/view_thread.rs` | ☐ |  |
+| `test/fixtures/view-boundary.ts` | `tests/fixtures/view_boundary.rs` | ☑ | Wave 6: TurnedToolResultsSpec; seed_turned_tool_results todo |
+| `test/fixtures/view-seam.ts` | `tests/fixtures/view_seam.rs` | ☑ | Wave 6: seam re-exports; seed_view_boundary REAL |
+| `test/fixtures/view-thread.ts` | `tests/fixtures/view_thread.rs` | ☑ | Wave 6: full private surface; SDK builders exact todo |
 | `test/fixtures/work-handlers.ts` | `tests/fixtures/work_handlers.rs` | ☑ | Wave 1 PARTIAL: register_test_work_handlers stub |

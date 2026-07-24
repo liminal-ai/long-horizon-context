@@ -7,6 +7,7 @@
 #![allow(unused_imports)] // re-exports are selective per test binary
 #![allow(dead_code)] // helpers land ahead of the suites that call them
 
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,10 +21,14 @@ pub mod inference_callbacks_double;
 pub mod intake_seam;
 pub mod lifecycle;
 pub mod model_call;
+pub mod pi_session_format;
 pub mod read_only_delta;
 pub mod seam_conformance;
 pub mod threads;
 pub mod valid_event;
+pub mod view_boundary;
+pub mod view_seam;
+pub mod view_thread;
 pub mod work_handlers;
 
 pub use corrupt::{
@@ -44,6 +49,7 @@ pub use model_call::{
     INFERENCE_DERIVATION_TYPES, ModelAssignmentOverride, canned_responses, hanging_call,
     recording_call, scripted_call, throwing_call, valid_assignments,
 };
+pub use pi_session_format::{assert_pi_session_conformance, load_pi_session_fixture};
 pub use read_only_delta::{ObservableState, expect_read_only, observable_state};
 pub use seam_conformance::{
     ProbeInputOverrides, RoutingRunResult, assert_model_call_contract, assert_routing_through_sdk,
@@ -64,6 +70,20 @@ pub use valid_event::{
     valid_event_forced, valid_event_untyped, valid_model_change, valid_runtime_note,
     valid_thinking_level_change, valid_tool_call, valid_tool_result, valid_turn_end,
     valid_user_prompt,
+};
+pub use view_boundary::{
+    TurnedToolResultsSpec, boundary_tokens, boundary_tool_run, seed_turned_tool_results,
+    turned_tool_result_events,
+};
+pub use view_seam::{
+    ViewInjectionHook, ViewInjectionPoint, fire_view_injection, seed_view_boundary,
+    set_view_injection_hook,
+};
+pub use view_thread::{
+    DerivedThreadFixture, DerivedThreadOptions, MixedStateFixture, MutationInFlightFixture,
+    PERMANENT_FAILURE_REASON, RATE_LIMIT_FAILURE_REASON, blocked_sibling_thread,
+    corrupted_variant_thread, derived_thread_fixture, mixed_state_variant_thread,
+    mutation_in_flight_variant,
 };
 pub use work_handlers::{TestHandlerHooks, TestHandlerStartItem, register_test_work_handlers};
 
@@ -132,5 +152,35 @@ pub fn open_raw(path: impl AsRef<Path>) -> Db {
     match open_database(path.as_ref().to_str().expect("utf-8 path")) {
         OpResult::Ok { value } => value,
         OpResult::Err { error } => panic!("open_raw failed: {}", error.reason),
+    }
+}
+
+/// Panic-safe DB close (TS `try`/`finally` around `db.close()`).
+///
+/// Prefer this when asserts between `open_raw` and `close` can fail — Drop
+/// still closes even if the test panics.
+pub struct ClosingDb {
+    inner: Option<Db>,
+}
+
+impl ClosingDb {
+    pub fn open(path: impl AsRef<Path>) -> Self {
+        Self {
+            inner: Some(open_raw(path)),
+        }
+    }
+
+    pub fn db(&self) -> &Db {
+        self.inner.as_ref().expect("ClosingDb already closed")
+    }
+}
+
+impl Drop for ClosingDb {
+    fn drop(&mut self) {
+        if let Some(db) = self.inner.take() {
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+                db.close();
+            }));
+        }
     }
 }

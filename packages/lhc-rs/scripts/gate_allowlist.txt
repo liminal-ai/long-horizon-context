@@ -63,3 +63,7 @@ lib::turns::tests::turn_derive_result_failed_wire_shape_round_trips
 lib::turns::tests::chunk_derive_result_derived_wire_shape_round_trips
 lib::turns::tests::chunk_derive_result_failed_wire_shape_round_trips
 lib::turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_order
+
+# Wave 6 — REAL view-injection seam (hook table fires/clears without Phase 2 bodies).
+view_fixture::an_installed_hook_fires_its_throw_propagates_and_uninstalling_restores_the_no_op
+view_fixture::uninstalled_the_point_is_a_no_op

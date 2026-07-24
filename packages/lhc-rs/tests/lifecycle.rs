@@ -247,8 +247,8 @@ async fn status_recommends_the_compact_the_sequence_performs_next_with_derivatio
     )
     .await;
     let status = ok(&run.phases.status);
-    assert_eq!(status.threshold, 300);
-    assert!(status.tail_tokens > status.threshold);
+    assert_eq!(status.threshold, 300.0);
+    assert!((status.tail_tokens as f64) > status.threshold);
     assert!(status.compact_recommended);
     assert_eq!(
         status.derivation,

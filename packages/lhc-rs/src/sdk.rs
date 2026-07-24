@@ -24,16 +24,33 @@ pub use crate::shared_tech::durable_work::{
     DurableWorkOperation,
 };
 pub use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
+/// Wave 6: canonical view vocabulary re-exported where `sdk.ts` does
+/// (`export type { … } from "./shared-tech"` + thread-view config constants).
+/// Wave 6: canonical inspect view-contents shape exported by `sdk.ts`
+/// (`ViewContentsReport` from shared-tech). Broader non-view SDK/root export
+/// completion remains Wave 7.
+pub use crate::shared_tech::inspect::ViewContentsReport;
 pub use crate::shared_tech::logging::{LogEntry, LogLevel, LogQuery, StoredLogEntry, write_log};
 pub use crate::shared_tech::persist::{DbReadTransaction, DbWriteTransaction};
 pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
 pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, estimate_tokens};
-pub use crate::shared_tech::view::LlmRequestContext;
+pub use crate::shared_tech::view::{
+    Band, CompactReceipt, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
+    PreviewCompactOutcome, PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SdkViewConfig,
+    SessionAssistantMessage, SessionAssistantPart, SessionModelChangeEntry,
+    SessionThinkingLevelChangeEntry, SessionThreadView, SessionThreadViewEntry,
+    SessionThreadViewEntrySource, SessionThreadViewMessage, SessionToolResultMessage,
+    SessionUserMessage, StoredView, ViewCompactParams, ViewProfile, ViewProfileOverride,
+    ViewStatus, VisibilityBudgets,
+};
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
     WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef, count_live_items, enqueue,
     map_work_q_handlers, queue_detail, supersede_queued, work_kind_registry,
 };
+/// Thread-view config constants only — `MaterializeResult` stays on `thread_view`
+/// (sdk.ts materialize uses an anonymous return shape; no named type export).
+pub use crate::thread_view::{BUILT_IN_PROFILES, DEFAULT_COMPACT_THRESHOLD, DEFAULT_VISIBILITY};
 pub use crate::threads::{ThreadFileInfo, ThreadRef};
 pub use crate::turns::{ChunkRecord, TurnRecord};
 
@@ -150,13 +167,46 @@ impl LoggingSurface {
     }
 }
 
-/// TS `ThreadViewSurface` — PARTIAL: get_llm_request_context for Wave 1;
-/// `compact` for Wave 5 chunk-compact-recovery.
-/// Wave 4 free `thread_view::status` remains; no Wave 5 `status` method here.
+/// TS `ThreadViewSurface` — Wave 6 full surface (bodies Phase 2).
+/// Mirrors sdk.ts ThreadViewSurface method set.
 pub struct ThreadViewSurface;
 
 impl ThreadViewSurface {
     pub async fn get_llm_request_context(&self, _ref: ThreadRef) -> OpResult<LlmRequestContext> {
+        todo!("phase 2")
+    }
+
+    pub async fn get_session_thread_view(
+        &self,
+        _ref: ThreadRef,
+    ) -> OpResult<crate::shared_tech::view::SessionThreadView> {
+        todo!("phase 2")
+    }
+
+    pub async fn status(&self, _ref: ThreadRef) -> OpResult<crate::shared_tech::view::ViewStatus> {
+        todo!("phase 2")
+    }
+
+    pub async fn prune(
+        &self,
+        _ref: ThreadRef,
+        _params: Option<crate::thread_view::PruneParams>,
+    ) -> OpResult<crate::shared_tech::view::PruneReceipt> {
+        todo!("phase 2")
+    }
+
+    pub async fn describe(
+        &self,
+        _ref: ThreadRef,
+    ) -> OpResult<Option<crate::shared_tech::view::StoredView>> {
+        todo!("phase 2")
+    }
+
+    pub async fn preview_compact(
+        &self,
+        _ref: ThreadRef,
+        _opts: crate::thread_view::CompactOpts,
+    ) -> OpResult<crate::shared_tech::view::PreviewCompactOutcome> {
         todo!("phase 2")
     }
 
@@ -165,6 +215,14 @@ impl ThreadViewSurface {
         _ref: ThreadRef,
         _opts: crate::thread_view::CompactOpts,
     ) -> OpResult<crate::shared_tech::view::CompactReceipt> {
+        todo!("phase 2")
+    }
+
+    pub async fn materialize(
+        &self,
+        _ref: ThreadRef,
+        _opts: crate::thread_view::MaterializeOpts,
+    ) -> OpResult<crate::thread_view::MaterializeResult> {
         todo!("phase 2")
     }
 }
@@ -224,6 +282,11 @@ pub struct LhcThreads;
 
 impl LhcThreads {
     pub async fn new_thread(&self, _input: NewThreadInput) -> OpResult<NewThreadResult> {
+        todo!("phase 2")
+    }
+
+    /// TS `sdk.threads.info` — Wave 6 view-llm-request-context needs the nesting.
+    pub async fn info(&self, _ref: ThreadRef) -> OpResult<ThreadFileInfo> {
         todo!("phase 2")
     }
 }

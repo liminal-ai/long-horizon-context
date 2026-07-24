@@ -108,8 +108,10 @@ pub struct ViewCompactParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisibilityBudgets {
-    pub max_tokens: i64,
-    pub target_tokens: i64,
+    /// TS `number` — positive finite; may be fractional.
+    pub max_tokens: f64,
+    /// TS `number` — positive finite; may be fractional.
+    pub target_tokens: f64,
 }
 
 /// Partial\<VisibilityBudgets\> — every field optional at SdkViewConfig.
@@ -117,9 +119,9 @@ pub struct VisibilityBudgets {
 #[serde(rename_all = "camelCase")]
 pub struct PartialVisibilityBudgets {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<i64>,
+    pub max_tokens: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_tokens: Option<i64>,
+    pub target_tokens: Option<f64>,
 }
 
 // ── SDK assembly config ──────────────────────────────────────────
@@ -133,9 +135,9 @@ pub struct SdkViewConfig {
     /// defaults: 64000 / 32000
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<PartialVisibilityBudgets>,
-    /// status trigger; default 160000
+    /// status trigger; default 160000 — TS `number` (positive finite).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub compact_threshold: Option<i64>,
+    pub compact_threshold: Option<f64>,
 }
 
 /// Every optional filled by initLhc's central defaults; profiles resolved
@@ -146,7 +148,7 @@ pub struct ResolvedViewConfig {
     /// Insertion-ordered — profile merge/iteration order matches host config order.
     pub profiles: IndexMap<String, ViewProfile>,
     pub visibility: VisibilityBudgets,
-    pub compact_threshold: i64,
+    pub compact_threshold: f64,
 }
 
 // ── model-context / status shapes (the product crossing to the harness) ────
@@ -250,50 +252,77 @@ pub struct SessionThreadViewEntrySource {
     pub idempotency_key: Option<String>,
 }
 
+/// TS `SessionUserMessage`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUserMessage {
+    pub content: String,
+    pub source_messages: Vec<SessionThreadViewEntrySource>,
+}
+
+/// TS `SessionAssistantMessage`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAssistantMessage {
+    pub content: Vec<SessionAssistantPart>,
+    /// One row per grouped LHC message, in part order.
+    pub source_messages: Vec<SessionThreadViewEntrySource>,
+}
+
+/// TS `SessionToolResultMessage`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionToolResultMessage {
+    pub tool_call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    pub source_messages: Vec<SessionThreadViewEntrySource>,
+}
+
 /// Message arms of SessionThreadViewEntry — discriminated by `role`
 /// (`"user"` | `"assistant"` | `"toolResult"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role")]
 pub enum SessionThreadViewMessage {
-    #[serde(rename = "user", rename_all = "camelCase")]
-    User {
-        content: String,
-        source_messages: Vec<SessionThreadViewEntrySource>,
-    },
-    #[serde(rename = "assistant", rename_all = "camelCase")]
-    Assistant {
-        content: Vec<SessionAssistantPart>,
-        /// One row per grouped LHC message, in part order.
-        source_messages: Vec<SessionThreadViewEntrySource>,
-    },
-    #[serde(rename = "toolResult", rename_all = "camelCase")]
-    ToolResult {
-        tool_call_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tool_name: Option<String>,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-        source_messages: Vec<SessionThreadViewEntrySource>,
-    },
+    #[serde(rename = "user")]
+    User(SessionUserMessage),
+    #[serde(rename = "assistant")]
+    Assistant(SessionAssistantMessage),
+    #[serde(rename = "toolResult")]
+    ToolResult(SessionToolResultMessage),
+}
+
+/// TS `SessionModelChangeEntry` — `kind: "model_change"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelChangeEntry {
+    pub provider: String,
+    pub model_id: String,
+    pub source_messages: Vec<SessionThreadViewEntrySource>,
+}
+
+/// TS `SessionThinkingLevelChangeEntry` — `kind: "thinking_level_change"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionThinkingLevelChangeEntry {
+    pub level: String,
+    pub source_messages: Vec<SessionThreadViewEntrySource>,
 }
 
 /// Runtime-change arms — serde-tagged on `kind` with byte-exact discriminants
 /// matching TS (`"model_change"`, `"thinking_level_change"`).
+///
+/// Thin tagged wrapper over the TS-named entry structs (not a separate invention).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum SessionThreadViewRuntimeEntry {
-    #[serde(rename = "model_change", rename_all = "camelCase")]
-    ModelChange {
-        provider: String,
-        model_id: String,
-        source_messages: Vec<SessionThreadViewEntrySource>,
-    },
-    #[serde(rename = "thinking_level_change", rename_all = "camelCase")]
-    ThinkingLevelChange {
-        level: String,
-        source_messages: Vec<SessionThreadViewEntrySource>,
-    },
+    #[serde(rename = "model_change")]
+    ModelChange(SessionModelChangeEntry),
+    #[serde(rename = "thinking_level_change")]
+    ThinkingLevelChange(SessionThinkingLevelChangeEntry),
 }
 
 /// TS SessionThreadViewEntry — mixed tag fields (`role` vs `kind`).
@@ -403,14 +432,16 @@ pub struct ViewStatusView {
 pub struct ViewStatusVisibility {
     pub boundary_position: i64,
     pub zone_tokens: i64,
-    pub max_tokens: i64,
+    /// From configured visibility.maxTokens (TS `number`, may be fractional).
+    pub max_tokens: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewStatus {
     pub tail_tokens: i64,
-    pub threshold: i64,
+    /// From configured compactThreshold (TS `number`, may be fractional).
+    pub threshold: f64,
     pub compact_recommended: bool,
     pub derivation: ViewStatusDerivation,
     pub view: Option<ViewStatusView>,
@@ -423,7 +454,9 @@ pub struct PruneReceipt {
     pub previous_boundary: i64,
     pub new_boundary: i64,
     pub compact_point: i64,
-    pub target_tokens: i64,
+    /// Validated integer prune target, or configured visibility.targetTokens
+    /// (which may be fractional) on the default path — TS `number`.
+    pub target_tokens: f64,
     pub tool_results_pruned: i64,
     pub tokens_behind_boundary: i64,
     pub zone_tokens_before: i64,

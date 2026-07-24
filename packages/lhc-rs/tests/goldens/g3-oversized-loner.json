@@ -1,0 +1,14 @@
+{
+  "case": "G3 oversized loner: smooth share (28) is smaller than the single newest banded turn t8 (29) - included alone on the otherwise-empty band; c2 (267) likewise represents detailed alone over its share (32)",
+  "fixture": "derived-thread",
+  "params": { "lowerBound": 400, "percentages": { "full": 25, "smooth": 7, "detailed": 8, "brief": 60 } },
+  "compactPoint": 48,
+  "coveredFrom": 1,
+  "arrangement": [
+    { "band": "brief", "subjectKind": "chunk", "subjectId": "c1", "derivationUsed": "chunk_summary_brief", "degraded": false },
+    { "band": "detailed", "subjectKind": "chunk", "subjectId": "c2", "derivationUsed": "chunk_summary_detailed", "degraded": false },
+    { "band": "detailed", "subjectKind": "turn", "subjectId": "t7", "derivationUsed": "detailed_turn_compression", "degraded": false },
+    { "band": "smooth", "subjectKind": "turn", "subjectId": "t8", "derivationUsed": "turn_rendering", "degraded": false }
+  ],
+  "gaps": []
+}
