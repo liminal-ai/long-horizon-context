@@ -156,6 +156,15 @@ body becomes native host state via the host's own replacement API.
 
 ## Chunk 0 — fork discipline (mirror grok-build-lhc, merge-based flavor)
 
+**STATUS: DONE 2026-07-25** (Fable, direct). Fork `liminal-ai/codex-lhc`,
+branch `lhc` (default) from upstream tip `322d5b96cf`, commits
+`8e85a2c606` + `be96ada3de`. Submodule pinned at `5399c41`; adapter crate
+compiles and its js_json linkage test passes under the repo's 1.95.0
+toolchain; tripwires all green; FORK.md carries the eight Phase 3 laws,
+the scheduled-verification table, and the host obligations.
+**Orchestrators: start at Chunk 1; read FORK.md first.** The items below
+record what Chunk 0 required.
+
 Replicate the grok-build-lhc Chunk 0 exactly, adapted:
 
 1. Branch `lhc` from upstream tip; `main` tracks upstream; default branch
