@@ -14,7 +14,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Insertion-ordered maps for typed (non-Value) records where JSON.stringify
 # order is load-bearing — serde_json::Map only serde-implements for Value.
 indexmap = { version = "2", features = ["serde"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+# Host packaging note (codex-lhc Chunk 1): bumped 0.37 → 0.39 so libsqlite3-sys
+# aligns with codex-rs workspace (0.37). Pure packaging; no LHC semantics change.
+rusqlite = { version = "0.39", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 futures = "0.3"
 regex = "1"
