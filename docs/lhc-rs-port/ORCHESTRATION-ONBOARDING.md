@@ -88,14 +88,12 @@ inside a smaller frame than Lee's deliverable.
 - **Dual verifiers, run in parallel, independent:**
   - **GPT-5.6 Sol via `codex-subagent`** (`-m gpt-5.6-sol -c
     model_reasoning_effort=medium -s danger-full-access`).
-  - **Fable 5 via `copilot-subagent`**
-    (`--model claude-fable-5 --effort medium`). **Use this lane for Fable,
-    not `claude-subagent`** — Lee's standing instruction while Copilot
-    credits are being spent down. Verified working headless (exec, detached
-    start/status/result; envelope records `model: claude-fable-5`). Same
-    session/envelope conventions as the other subagent CLIs. If Copilot
-    credits run out or the lane errors, fall back to `claude-subagent` at
-    medium effort and note the switch in the wave commit body.
+  - **Opus 5 via `claude-subagent`**
+    (`--model claude-opus-5 --effort high`) — Lee's ruling 2026-07-25,
+    REPLACING the prior Fable-via-copilot lane. Verified working headless
+    (exec + effort flag; envelope records `model: claude-opus-5`). Same
+    session/envelope conventions as the other subagent CLIs. The prior
+    copilot-subagent/claude-fable-5 lane is retired; do not use it.
   Both get the same adversarial verify brief: full diff-vs-TS of every
   file changed since the last wave commit, rule compliance, assertion
   fidelity, ledger honesty, gate rerun, findings-only report with
