@@ -8,7 +8,10 @@
  *   node scripts/gen-js-json-fixtures.mjs
  *
  * Deliberately excluded (documented divergences, unreachable in LHC data):
- * integers beyond 2^53, magnitudes ≥ 1e21 or < 1e-6, lone surrogates.
+ * integers beyond 2^53, magnitudes ≥ 1e21, lone surrogates.
+ *
+ * Amendment H: magnitudes in (0, 1e-6) are included — Node small-exponent
+ * spelling is oracle-covered (lowercase e, bare negative exponent).
  */
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -28,6 +31,19 @@ const cases = [
   ["float_fraction_precise", "0.1"],
   ["float_sum_artifact", "0.30000000000000004"],
   ["float_small", "0.000001"],
+  ["float_at_1e_minus_6", "1e-6"],
+  ["float_decimal_just_above_1e_minus_6", "0.0000012"],
+  ["float_just_below_1e_minus_6", "9.999999e-7"],
+  ["float_just_below_1e_minus_6_negative", "-9.999999e-7"],
+  ["float_1e_minus_7", "1e-7"],
+  ["float_1e_minus_7_negative", "-1e-7"],
+  ["float_1_5e_minus_7", "1.5e-7"],
+  ["float_2_5e_minus_7", "2.5e-7"],
+  ["float_1_23456e_minus_8", "1.23456e-8"],
+  ["float_1e_minus_100", "1e-100"],
+  ["float_min_subnormal_5e_minus_324", "5e-324"],
+  ["object_nested_small_exponents", '{"n":1e-7,"m":-1.5e-7,"boundary":1e-6}'],
+  ["array_nested_small_exponents", "[1e-7,1e-6,5e-324,[-9.999999e-7,2.5e-7]]"],
   ["int_large_safe", "9007199254740991"],
   ["exponent_normalized", "1e3"],
   ["exponent_fraction", "2.5e-3"],
@@ -51,6 +67,12 @@ const cases = [
   ["realistic_digest_input",
     '{"text":"SENTINEL","inputTokens":2000,"targetMinTokens":160,"targetAimTokens":240,"targetMaxTokens":400}'],
 ];
+
+const seen = new Set();
+for (const [name] of cases) {
+  if (seen.has(name)) throw new Error(`duplicate fixture name: ${name}`);
+  seen.add(name);
+}
 
 const lines = cases.map(([name, input]) => {
   const expected = JSON.stringify(JSON.parse(input));

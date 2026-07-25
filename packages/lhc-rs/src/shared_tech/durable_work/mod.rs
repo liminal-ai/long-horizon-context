@@ -15,7 +15,7 @@ use super::derivation::{
     ResolvedSdkConfig, SubjectKind, WorkHandler, WorkItemRef,
 };
 use super::errors::OpResult;
-use super::js_json::js_json_stringify_of;
+use super::js_json::{js_json_stringify, js_json_stringify_of};
 use super::persist::create_post_commit_hook_set;
 use super::storage::{Db, SqlParam, open_database};
 use super::work_queue::{EnqueueDerivationTarget, WorkKind, WorkSourceRef};
@@ -381,9 +381,12 @@ pub fn apply_derivation_success(
         for write in writes {
             let metadata = match &write.metadata {
                 None => SqlParam::Null,
-                Some(metadata) => SqlParam::from(
-                    js_json_stringify_of(metadata).expect("metadata js_json_stringify_of"),
-                ),
+                Some(metadata) => SqlParam::from(js_json_stringify(
+                    &crate::shared_tech::derivation::derivation_metadata_to_ordered_value(
+                        write.derivation_type.as_str(),
+                        metadata,
+                    ),
+                )),
             };
             let gaps = match &write.gaps {
                 None => SqlParam::Null,

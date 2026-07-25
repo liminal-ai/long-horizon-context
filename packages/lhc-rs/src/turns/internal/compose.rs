@@ -1,19 +1,22 @@
-//! Ported from packages/lhc/src/turns/internal/compose.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/turns/internal/compose.ts.
 //!
 //! Rendering composition. Closed `PART_PLANS` Record → exhaustive-match fn
-//! (no wildcard). Bodies exact `todo!("phase 2")`.
+//! (no wildcard).
+
+use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use indexmap::IndexMap;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[allow(unused_imports)] // Phase 2 bodies; mirror TS dependency graph
 use crate::messages::clean_prompt;
 use crate::shared_tech::derivation::{
-    DependencyGap, DerivationMetadata, DerivationState, RenderingPart, RenderingPartKind,
-    ToolOutcome,
+    DependencyGap, DerivationMetadata, DerivationState, RenderingPart, RenderingPartBlock,
+    RenderingPartKind, SubjectKind, ToolOutcome,
 };
-#[allow(unused_imports)]
+use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::tool_result_rendering::truncate_for_fallback;
 
 /// TS `ComposeMessage` block element.
@@ -47,8 +50,8 @@ pub struct ComposeDerivationRow {
     pub source_version: i64,
 }
 
-pub fn compose_derivation_key(_message_id: &str, _derivation: &str) -> String {
-    todo!("phase 2")
+pub fn compose_derivation_key(message_id: &str, derivation: &str) -> String {
+    format!("{message_id}/{derivation}")
 }
 
 /// TS `RecoveryReceipt.reason`.
@@ -103,32 +106,83 @@ pub struct CompositionInput {
     pub recoveries: Vec<RecoveryReceipt>,
 }
 
-fn text_of(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn first_block_content(message: &ComposeMessage) -> Map<String, Value> {
+    message
+        .blocks
+        .first()
+        .map(|b| b.content.clone())
+        .unwrap_or_default()
 }
 
-fn model_change_text(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn text_of(message: &ComposeMessage) -> String {
+    let text = first_block_content(message).get("text").cloned();
+    match text {
+        Some(Value::String(s)) => s,
+        _ => String::new(),
+    }
 }
 
-fn thinking_level_change_text(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn model_change_text(message: &ComposeMessage) -> String {
+    let block = first_block_content(message);
+    let previous = block.get("previousModel");
+    let next = block.get("newModel");
+    match (previous, next) {
+        (Some(Value::String(previous)), Some(Value::String(next))) => {
+            format!("model_change {previous} -> {next}")
+        }
+        _ => "model_change".to_string(),
+    }
 }
 
-fn prompt_fallback_text(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn thinking_level_change_text(message: &ComposeMessage) -> String {
+    let block = first_block_content(message);
+    let previous = block.get("previousLevel");
+    let next = block.get("newLevel");
+    match (previous, next) {
+        (Some(Value::String(previous)), Some(Value::String(next))) => {
+            format!("thinking_level_change {previous} -> {next}")
+        }
+        _ => "thinking_level_change".to_string(),
+    }
+}
+
+fn prompt_fallback_text(message: &ComposeMessage) -> String {
+    let original = text_of(message);
+    let floor = clean_prompt(&original);
+    if floor.is_empty() && !original.is_empty() {
+        original
+    } else {
+        floor
+    }
 }
 
 /// TS `recordOutcomes` → `Map<string, boolean>` (insertion-ordered) → [`IndexMap`].
-fn record_outcomes(_messages: &[ComposeMessage]) -> IndexMap<String, bool> {
-    todo!("phase 2")
+fn record_outcomes(messages: &[ComposeMessage]) -> IndexMap<String, bool> {
+    let mut by_call_id = IndexMap::new();
+    for message in messages {
+        if message.kind != RenderingPartKind::ToolResult {
+            continue;
+        }
+        let block = first_block_content(message);
+        if let Some(Value::String(call_id)) = block.get("toolCallId") {
+            by_call_id.insert(
+                call_id.clone(),
+                block.get("isError") == Some(&Value::Bool(true)),
+            );
+        }
+    }
+    by_call_id
 }
 
-fn outcome_from_record(
-    _result_by_call_id: &IndexMap<String, bool>,
-    _call_id: &Value,
-) -> ToolOutcome {
-    todo!("phase 2")
+fn outcome_from_record(result_by_call_id: &IndexMap<String, bool>, call_id: &Value) -> ToolOutcome {
+    let Some(call_id) = call_id.as_str() else {
+        return ToolOutcome::Unknown;
+    };
+    match result_by_call_id.get(call_id) {
+        None => ToolOutcome::Unknown,
+        Some(true) => ToolOutcome::Failed,
+        Some(false) => ToolOutcome::Succeeded,
+    }
 }
 
 /// TS `PartPlan`.
@@ -137,12 +191,32 @@ struct PartPlan {
     fallback_text: fn(&ComposeMessage) -> String,
 }
 
-fn tool_call_fallback_text(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn tool_call_fallback_text(message: &ComposeMessage) -> String {
+    let block = first_block_content(message);
+    let tool_name = match block.get("toolName") {
+        Some(Value::String(name)) => name.as_str(),
+        _ => "unknown_tool",
+    };
+    let arguments = block
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    // Nullish arguments → `{}` (TS `??`, Python `is None`).
+    let arguments = if arguments.is_null() {
+        Value::Object(Map::new())
+    } else {
+        arguments
+    };
+    truncate_for_fallback(&format!("{tool_name}({})", js_json_stringify(&arguments)))
 }
 
-fn tool_result_fallback_text(_message: &ComposeMessage) -> String {
-    todo!("phase 2")
+fn tool_result_fallback_text(message: &ComposeMessage) -> String {
+    let block = first_block_content(message);
+    let content = match block.get("content") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    truncate_for_fallback(content)
 }
 
 /// TS `const PART_PLANS: Record<RenderingPartKind, PartPlan>` — closed Record →
@@ -224,11 +298,134 @@ struct BuiltAtom {
 }
 
 fn build_atom(
-    _message: &ComposeMessage,
-    _derivations: &IndexMap<String, ComposeDerivationRow>,
-    _result_by_call_id: &IndexMap<String, bool>,
+    message: &ComposeMessage,
+    derivations: &IndexMap<String, ComposeDerivationRow>,
+    result_by_call_id: &IndexMap<String, bool>,
 ) -> BuiltAtom {
-    todo!("phase 2")
+    let plan = part_plan(message.kind);
+    let derivation = plan.derivation.and_then(|derivation| {
+        derivations.get(&compose_derivation_key(&message.message_id, derivation))
+    });
+    let ready = matches!(
+        derivation,
+        Some(ComposeDerivationRow {
+            state: DerivationState::Ready,
+            content: Some(_),
+            ..
+        })
+    );
+    let block = first_block_content(message);
+    let text = if ready {
+        derivation
+            .and_then(|d| d.content.clone())
+            .expect("ready implies content")
+    } else {
+        (plan.fallback_text)(message)
+    };
+    let fallback = plan.derivation.is_some() && !ready;
+    let mut part = RenderingPart {
+        message_id: message.message_id.clone(),
+        kind: message.kind,
+        text,
+        fallback,
+        blocks: None,
+        outcome: None,
+    };
+    if matches!(
+        message.kind,
+        RenderingPartKind::ModelChange | RenderingPartKind::ThinkingLevelChange
+    ) {
+        part.blocks = Some(
+            message
+                .blocks
+                .iter()
+                .map(|b| RenderingPartBlock {
+                    block_type: b.block_type.clone(),
+                    content: b.content.clone(),
+                })
+                .collect(),
+        );
+    }
+    if message.kind == RenderingPartKind::ToolCall {
+        let meta_outcome = if ready {
+            derivation
+                .and_then(|d| d.metadata.as_ref())
+                .and_then(|m| m.outcome)
+        } else {
+            None
+        };
+        part.outcome = Some(meta_outcome.unwrap_or_else(|| {
+            outcome_from_record(
+                result_by_call_id,
+                block.get("toolCallId").unwrap_or(&Value::Null),
+            )
+        }));
+    } else if message.kind == RenderingPartKind::ToolResult {
+        let meta_outcome = if ready {
+            derivation
+                .and_then(|d| d.metadata.as_ref())
+                .and_then(|m| m.outcome)
+        } else {
+            None
+        };
+        part.outcome = Some(meta_outcome.unwrap_or_else(|| {
+            if block.get("isError") == Some(&Value::Bool(true)) {
+                ToolOutcome::Failed
+            } else {
+                ToolOutcome::Succeeded
+            }
+        }));
+    }
+    let mut atom = ComposeAtom {
+        part,
+        is_tool: is_tool_kind(message.kind),
+        is_break: is_run_break_kind(message.kind),
+        tool_name: None,
+        tool_call_id: None,
+    };
+    if message.kind == RenderingPartKind::ToolCall {
+        if let Some(Value::String(name)) = block.get("toolName") {
+            atom.tool_name = Some(name.clone());
+        }
+    }
+    if atom.is_tool {
+        if let Some(Value::String(call_id)) = block.get("toolCallId") {
+            atom.tool_call_id = Some(call_id.clone());
+        }
+    }
+    let (gap, recovery) = if atom.part.fallback {
+        if let Some(derivation_type) = plan.derivation {
+            let gap = DependencyGap {
+                subject_kind: SubjectKind::Message,
+                subject_id: message.message_id.clone(),
+                derivation_type: derivation_type.to_string(),
+            };
+            let reason = if matches!(derivation.map(|d| d.state), Some(DerivationState::Failed)) {
+                RecoveryReason::FailedFloor
+            } else {
+                RecoveryReason::NotReady
+            };
+            let recovery = RecoveryReceipt {
+                subject_kind: RecoverySubjectKind::Message,
+                subject_id: message.message_id.clone(),
+                derivation_type: derivation_type.to_string(),
+                content: atom.part.text.clone(),
+                source_version: derivation.map(|d| d.source_version).unwrap_or(1),
+                reason,
+                floor_used: atom.part.text.clone(),
+            };
+            (Some(gap), Some(recovery))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+    BuiltAtom {
+        atom,
+        gap,
+        recovery,
+    }
 }
 
 /// TS `RUN_OUTCOME_ORDER` — closed vocabulary order REAL.
@@ -245,31 +442,207 @@ struct RunTally {
     tool_names: Vec<String>,
 }
 
-fn tally_run(_members: &[ComposeAtom]) -> RunTally {
-    todo!("phase 2")
+fn tally_run(members: &[ComposeAtom]) -> RunTally {
+    let calls: Vec<&ComposeAtom> = members
+        .iter()
+        .filter(|m| m.part.kind == RenderingPartKind::ToolCall)
+        .collect();
+    let call_ids: HashSet<&str> = calls
+        .iter()
+        .filter_map(|m| m.tool_call_id.as_deref())
+        .collect();
+    let orphan_results: Vec<&ComposeAtom> = members
+        .iter()
+        .filter(|m| {
+            m.part.kind == RenderingPartKind::ToolResult
+                && m.tool_call_id
+                    .as_deref()
+                    .is_none_or(|id| !call_ids.contains(id))
+        })
+        .collect();
+    let mut counts = IndexMap::new();
+    counts.insert(ToolOutcome::Succeeded, 0);
+    counts.insert(ToolOutcome::Failed, 0);
+    counts.insert(ToolOutcome::Unknown, 0);
+    for m in calls.iter().chain(orphan_results.iter()) {
+        let outcome = m.part.outcome.unwrap_or(ToolOutcome::Unknown);
+        *counts.get_mut(&outcome).expect("outcome key pre-inserted") += 1;
+    }
+    let outcome = if counts[&ToolOutcome::Failed] > 0 {
+        ToolOutcome::Failed
+    } else if counts[&ToolOutcome::Unknown] > 0 {
+        ToolOutcome::Unknown
+    } else {
+        ToolOutcome::Succeeded
+    };
+    let mut tool_names: Vec<String> = Vec::new();
+    for call in &calls {
+        if let Some(name) = &call.tool_name {
+            if !tool_names.iter().any(|n| n == name) {
+                tool_names.push(name.clone());
+            }
+        }
+    }
+    RunTally {
+        counts,
+        outcome,
+        call_count: calls.len() as i64,
+        tool_names,
+    }
 }
 
-fn run_tally_text(_counts: &IndexMap<ToolOutcome, i64>) -> String {
-    todo!("phase 2")
+fn run_tally_text(counts: &IndexMap<ToolOutcome, i64>) -> String {
+    let segs: Vec<String> = RUN_OUTCOME_ORDER
+        .iter()
+        .filter(|o| counts.get(*o).copied().unwrap_or(0) > 0)
+        .map(|o| format!("{} {}", counts[o], o.as_str()))
+        .collect();
+    if segs.is_empty() {
+        "no outcomes".to_string()
+    } else {
+        segs.join(", ")
+    }
 }
 
-fn compose_run(_members: &[ComposeAtom]) -> RenderingPart {
-    todo!("phase 2")
+fn compose_run(members: &[ComposeAtom]) -> RenderingPart {
+    let RunTally {
+        counts,
+        outcome,
+        call_count,
+        tool_names,
+    } = tally_run(members);
+    let tools = if tool_names.is_empty() {
+        "tools".to_string()
+    } else {
+        tool_names.join(", ")
+    };
+    let plural = if call_count == 1 { "" } else { "s" };
+    let header = format!(
+        "tool run · {tools} · {call_count} call{plural} · {}",
+        run_tally_text(&counts)
+    );
+    let detail = members
+        .iter()
+        .map(|m| {
+            if m.is_tool {
+                format!(
+                    "{} ⇒ {}",
+                    m.part.text,
+                    m.part.outcome.map(|o| o.as_str()).unwrap_or("unknown")
+                )
+            } else {
+                m.part.text.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = format!("[{header}]\n{detail}");
+    let lead = members
+        .first()
+        .expect("composeRun: a tool run has no members");
+    RenderingPart {
+        message_id: lead.part.message_id.clone(),
+        kind: lead.part.kind,
+        text,
+        fallback: members.iter().any(|m| m.is_tool && m.part.fallback),
+        blocks: None,
+        outcome: Some(outcome),
+    }
 }
 
 pub fn compose_rendering_input(
-    _messages: &[ComposeMessage],
-    _derivations: &IndexMap<String, ComposeDerivationRow>,
+    messages: &[ComposeMessage],
+    derivations: &IndexMap<String, ComposeDerivationRow>,
 ) -> CompositionInput {
-    todo!("phase 2")
+    let result_by_call_id = record_outcomes(messages);
+    let mut atoms: Vec<ComposeAtom> = Vec::new();
+    let mut gaps: Vec<DependencyGap> = Vec::new();
+    let mut recoveries: Vec<RecoveryReceipt> = Vec::new();
+    for message in messages {
+        let built = build_atom(message, derivations, &result_by_call_id);
+        atoms.push(built.atom);
+        if let Some(gap) = built.gap {
+            gaps.push(gap);
+        }
+        if let Some(recovery) = built.recovery {
+            recoveries.push(recovery);
+        }
+    }
+
+    let mut parts: Vec<RenderingPart> = Vec::new();
+    let mut i = 0usize;
+    while i < atoms.len() {
+        let atom = &atoms[i];
+        if !atom.is_tool {
+            parts.push(atom.part.clone());
+            i += 1;
+            continue;
+        }
+        // Maximal run starting at this tool atom: extend over following tool
+        // atoms and interior transparent atoms (thinking/notes), stopping at the
+        // next break (prompt/assistant text) or the turn's end. Transparent atoms
+        // trailing the last tool atom stand alone, not folded into the run.
+        let mut j = i;
+        let mut last_tool_idx = i;
+        while j + 1 < atoms.len() && !atoms[j + 1].is_break {
+            j += 1;
+            if atoms[j].is_tool {
+                last_tool_idx = j;
+            }
+        }
+        parts.push(compose_run(&atoms[i..=last_tool_idx]));
+        if last_tool_idx < j {
+            for trailing in &atoms[last_tool_idx + 1..=j] {
+                parts.push(trailing.part.clone());
+            }
+        }
+        i = j + 1;
+    }
+
+    CompositionInput {
+        parts,
+        gaps,
+        recoveries,
+    }
 }
 
-fn format_dialogue_section(_part: &RenderingPart) -> String {
-    todo!("phase 2")
+fn format_dialogue_section(part: &RenderingPart) -> String {
+    if part.kind == RenderingPartKind::UserPrompt {
+        format!("User:\n{}", part.text)
+    } else {
+        format!("⏺ {}", part.text)
+    }
 }
 
-fn compose_dialogue_text(_parts: &[RenderingPart]) -> String {
-    todo!("phase 2")
+static DIALOGUE_MULTI_NEWLINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n{3,}").expect("DIALOGUE_MULTI_NEWLINE"));
+
+fn compose_dialogue_text(parts: &[RenderingPart]) -> String {
+    let dialogue_parts: Vec<&RenderingPart> = parts
+        .iter()
+        .filter(|part| is_dialog_kind(part.kind))
+        .collect();
+    if dialogue_parts.is_empty() {
+        return String::new();
+    }
+
+    let mut text = format_dialogue_section(dialogue_parts[0]);
+    for index in 1..dialogue_parts.len() {
+        let previous = dialogue_parts[index - 1];
+        let current = dialogue_parts[index];
+        let separator = if previous.kind == RenderingPartKind::AssistantText
+            && current.kind == RenderingPartKind::AssistantText
+        {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        text.push_str(separator);
+        text.push_str(&format_dialogue_section(current));
+    }
+    DIALOGUE_MULTI_NEWLINE
+        .replace_all(&text, "\n\n")
+        .into_owned()
 }
 
 /// TS `composePreDetailedAssembly` return: `{ text, gaps, recoveries }`.
@@ -282,16 +655,29 @@ pub struct PreDetailedAssembly {
 }
 
 pub fn compose_pre_detailed_assembly(
-    _messages: &[ComposeMessage],
-    _derivations: &IndexMap<String, ComposeDerivationRow>,
+    messages: &[ComposeMessage],
+    derivations: &IndexMap<String, ComposeDerivationRow>,
 ) -> PreDetailedAssembly {
-    todo!("phase 2")
+    let result_by_call_id = record_outcomes(messages);
+    let mut parts: Vec<RenderingPart> = Vec::new();
+    let mut gaps: Vec<DependencyGap> = Vec::new();
+    let mut recoveries: Vec<RecoveryReceipt> = Vec::new();
+    for message in messages {
+        if !is_dialog_kind(message.kind) {
+            continue;
+        }
+        let built = build_atom(message, derivations, &result_by_call_id);
+        parts.push(built.atom.part);
+        if let Some(gap) = built.gap {
+            gaps.push(gap);
+        }
+        if let Some(recovery) = built.recovery {
+            recoveries.push(recovery);
+        }
+    }
+    PreDetailedAssembly {
+        text: compose_dialogue_text(&parts),
+        gaps,
+        recoveries,
+    }
 }
-
-// Keep closed-table helpers referenced so the REAL match/const surfaces are
-// not stripped as unused before Phase 2 call sites land.
-const _: fn(RenderingPartKind) -> PartPlan = part_plan;
-const _: fn(RenderingPartKind) -> bool = is_run_break_kind;
-const _: fn(RenderingPartKind) -> bool = is_tool_kind;
-const _: fn(RenderingPartKind) -> bool = is_dialog_kind;
-const _: [ToolOutcome; 3] = RUN_OUTCOME_ORDER;

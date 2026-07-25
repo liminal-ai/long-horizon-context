@@ -24,8 +24,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 use super::errors::OpResult;
 use super::inference_types::{DerivationGuards, InferenceConfig, ResolvedDerivationGuards};
@@ -74,7 +75,7 @@ impl SubjectKind {
 
 /// Outcome on tool-activity summaries — mechanically stamped from the record
 /// (isError/presence), never authored by model text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
     Succeeded,
@@ -354,6 +355,11 @@ impl SizeDisposition {
 /// Mechanically stamped derivation metadata: tool outcomes, fallback detail,
 /// and inference provenance. The queue is not an audit table; durable outcome
 /// detail lives on the derivation and in derivation logs.
+///
+/// **Amendment G:** derived `Serialize` field order is *not* the persisted-byte
+/// contract. Writers and parent row serializers must use
+/// [`derivation_metadata_to_ordered_value`] so each producer's TS insertion
+/// order is reproduced. Reads stay typed via this struct + `Deserialize`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DerivationMetadata {
@@ -380,8 +386,116 @@ pub struct DerivationMetadata {
     pub provenance: Option<ProviderProvenance>,
 }
 
+fn provenance_to_ordered_value(p: &ProviderProvenance) -> Value {
+    let mut map = Map::new();
+    map.insert("provider".to_string(), Value::String(p.provider.clone()));
+    map.insert("model".to_string(), Value::String(p.model.clone()));
+    map.insert("prompt".to_string(), Value::String(p.prompt.clone()));
+    Value::Object(map)
+}
+
+fn insert_opt_bool(map: &mut Map<String, Value>, key: &str, value: Option<bool>) {
+    if let Some(b) = value {
+        map.insert(key.to_string(), Value::Bool(b));
+    }
+}
+
+/// Amendment G — producer-aware metadata JSON for persisted writes and nested
+/// list/report serialization. Public field/type surface of
+/// [`DerivationMetadata`] is unchanged; only insertion order is reconstructed
+/// from `derivation_type` + which optional fields are present.
+pub(crate) fn derivation_metadata_to_ordered_value(
+    derivation_type: &str,
+    metadata: &DerivationMetadata,
+) -> Value {
+    let mut map = Map::new();
+    match derivation_type {
+        "detailed_turn_compression" => {
+            if metadata.fallback_used == Some(true) {
+                // TS: inferenceAttempted, inferenceSucceeded, fallbackUsed,
+                // lastError?, fallbackFloor
+                insert_opt_bool(&mut map, "inferenceAttempted", metadata.inference_attempted);
+                insert_opt_bool(&mut map, "inferenceSucceeded", metadata.inference_succeeded);
+                insert_opt_bool(&mut map, "fallbackUsed", metadata.fallback_used);
+                if let Some(err) = &metadata.last_error {
+                    map.insert("lastError".to_string(), Value::String(err.clone()));
+                }
+                if let Some(floor) = &metadata.fallback_floor {
+                    map.insert("fallbackFloor".to_string(), Value::String(floor.clone()));
+                }
+            } else {
+                // TS: provenance? then inferenceAttempted, inferenceSucceeded,
+                // sizeDisposition
+                if let Some(p) = &metadata.provenance {
+                    map.insert("provenance".to_string(), provenance_to_ordered_value(p));
+                }
+                insert_opt_bool(&mut map, "inferenceAttempted", metadata.inference_attempted);
+                insert_opt_bool(&mut map, "inferenceSucceeded", metadata.inference_succeeded);
+                if let Some(d) = metadata.size_disposition {
+                    map.insert(
+                        "sizeDisposition".to_string(),
+                        Value::String(d.as_str().to_string()),
+                    );
+                }
+            }
+        }
+        "smoothed_prompt" => {
+            if let Some(reason) = &metadata.discard_reason {
+                map.insert("discardReason".to_string(), Value::String(reason.clone()));
+            } else {
+                // TS: inferenceAttempted, inferenceSucceeded, provenance?
+                insert_opt_bool(&mut map, "inferenceAttempted", metadata.inference_attempted);
+                insert_opt_bool(&mut map, "inferenceSucceeded", metadata.inference_succeeded);
+                if let Some(p) = &metadata.provenance {
+                    map.insert("provenance".to_string(), provenance_to_ordered_value(p));
+                }
+            }
+        }
+        "tool_result_summary" => {
+            // TS forced/small: { outcome }; success adds inference* then provenance?
+            if let Some(outcome) = metadata.outcome {
+                map.insert(
+                    "outcome".to_string(),
+                    Value::String(outcome.as_str().to_string()),
+                );
+            }
+            if metadata.inference_attempted.is_some() || metadata.inference_succeeded.is_some() {
+                insert_opt_bool(&mut map, "inferenceAttempted", metadata.inference_attempted);
+                insert_opt_bool(&mut map, "inferenceSucceeded", metadata.inference_succeeded);
+                if let Some(p) = &metadata.provenance {
+                    map.insert("provenance".to_string(), provenance_to_ordered_value(p));
+                }
+            }
+        }
+        "chunk_summary_brief" => {
+            // TS: inferenceAttempted, inferenceSucceeded, sizeDisposition, provenance?
+            insert_opt_bool(&mut map, "inferenceAttempted", metadata.inference_attempted);
+            insert_opt_bool(&mut map, "inferenceSucceeded", metadata.inference_succeeded);
+            if let Some(d) = metadata.size_disposition {
+                map.insert(
+                    "sizeDisposition".to_string(),
+                    Value::String(d.as_str().to_string()),
+                );
+            }
+            if let Some(p) = &metadata.provenance {
+                map.insert("provenance".to_string(), provenance_to_ordered_value(p));
+            }
+        }
+        _ => {
+            // Unforeseen writers: keep prior derived-struct field order.
+            return serde_json::to_value(metadata).expect("DerivationMetadata to_value");
+        }
+    }
+    Value::Object(map)
+}
+
 /// The read shape for one derivation's state row.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// **Amendment G:** custom [`Serialize`] matches TS read construction order
+/// (`state`, `sourceVersion`, then conditional `content`/`reason`/`metadata`/
+/// `gaps`/`derivedAt`). Nested `metadata` uses
+/// [`derivation_metadata_to_ordered_value`]. `Deserialize` stays derived.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Derivation {
     pub subject_kind: SubjectKind,
@@ -389,21 +503,68 @@ pub struct Derivation {
     pub derivation_type: String,
     pub state: DerivationState,
     /// ready only
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// failed | blocked
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// which version of the source this derivation derives from
     pub source_version: i64,
     /// composed derivations; landed-with-fallback record
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gaps: Option<Vec<DependencyGap>>,
     /// mechanically stamped fields; never model-authored
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<DerivationMetadata>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_at: Option<String>,
+}
+
+impl Serialize for Derivation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = 5; // subjectKind, subjectId, derivationType, state, sourceVersion
+        if self.content.is_some() {
+            len += 1;
+        }
+        if self.reason.is_some() {
+            len += 1;
+        }
+        if self.metadata.is_some() {
+            len += 1;
+        }
+        if self.gaps.is_some() {
+            len += 1;
+        }
+        if self.derived_at.is_some() {
+            len += 1;
+        }
+        let mut state = serializer.serialize_struct("Derivation", len)?;
+        state.serialize_field("subjectKind", &self.subject_kind)?;
+        state.serialize_field("subjectId", &self.subject_id)?;
+        state.serialize_field("derivationType", &self.derivation_type)?;
+        state.serialize_field("state", &self.state)?;
+        state.serialize_field("sourceVersion", &self.source_version)?;
+        if let Some(content) = &self.content {
+            state.serialize_field("content", content)?;
+        }
+        if let Some(reason) = &self.reason {
+            state.serialize_field("reason", reason)?;
+        }
+        if let Some(metadata) = &self.metadata {
+            let ordered = derivation_metadata_to_ordered_value(&self.derivation_type, metadata);
+            state.serialize_field("metadata", &ordered)?;
+        }
+        if let Some(gaps) = &self.gaps {
+            state.serialize_field("gaps", gaps)?;
+        }
+        if let Some(derived_at) = &self.derived_at {
+            state.serialize_field("derivedAt", derived_at)?;
+        }
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,26 +592,83 @@ pub struct DerivationReportQueue {
 /// One row of an owner's repair report: the derivation's durable state joined
 /// with the queue's mechanical detail for the live item still working toward it,
 /// if any.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// **Amendment G:** custom [`Serialize`] matches TS `reportEntryFromRow` order
+/// (same as [`Derivation`], plus optional `queue` last). Nested `metadata` uses
+/// [`derivation_metadata_to_ordered_value`]. `Deserialize` stays derived.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DerivationReportEntry {
     pub subject_kind: SubjectKind,
     pub subject_id: String,
     pub derivation_type: String,
     pub state: DerivationState,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub source_version: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gaps: Option<Vec<DependencyGap>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<DerivationMetadata>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<DerivationReportQueue>,
+}
+
+impl Serialize for DerivationReportEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = 5;
+        if self.content.is_some() {
+            len += 1;
+        }
+        if self.reason.is_some() {
+            len += 1;
+        }
+        if self.metadata.is_some() {
+            len += 1;
+        }
+        if self.gaps.is_some() {
+            len += 1;
+        }
+        if self.derived_at.is_some() {
+            len += 1;
+        }
+        if self.queue.is_some() {
+            len += 1;
+        }
+        let mut state = serializer.serialize_struct("DerivationReportEntry", len)?;
+        state.serialize_field("subjectKind", &self.subject_kind)?;
+        state.serialize_field("subjectId", &self.subject_id)?;
+        state.serialize_field("derivationType", &self.derivation_type)?;
+        state.serialize_field("state", &self.state)?;
+        state.serialize_field("sourceVersion", &self.source_version)?;
+        if let Some(content) = &self.content {
+            state.serialize_field("content", content)?;
+        }
+        if let Some(reason) = &self.reason {
+            state.serialize_field("reason", reason)?;
+        }
+        if let Some(metadata) = &self.metadata {
+            let ordered = derivation_metadata_to_ordered_value(&self.derivation_type, metadata);
+            state.serialize_field("metadata", &ordered)?;
+        }
+        if let Some(gaps) = &self.gaps {
+            state.serialize_field("gaps", gaps)?;
+        }
+        if let Some(derived_at) = &self.derived_at {
+            state.serialize_field("derivedAt", derived_at)?;
+        }
+        if let Some(queue) = &self.queue {
+            state.serialize_field("queue", queue)?;
+        }
+        state.end()
+    }
 }
 
 /// Message kinds a rendering part can carry — mirrors the intake event-kind

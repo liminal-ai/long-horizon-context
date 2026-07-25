@@ -1303,6 +1303,54 @@ Arithmetic from certified Wave 2 `83/398/15`: **+62 passed**, **−62 notimpl**
   added inside existing
   `fixtures_test::temp_store_creates_an_isolated_directory_and_cleans_it_up`.
 
+#### Amendment G (Phase-gate addendum; name in Wave 5 commit body)
+
+Forced persisted/wire byte-order correction (Sol FAIL
+`20260725-004420-0487da` / `019f96ba-ec74-71a1-990f-77242eb8ce46`; Fable PASS
+with findings `20260725-004424-e16b24` /
+`b6f8597b-842f-44c3-b3b9-8653f92bc5e4`; focused Sol AMEND
+`20260725-011841-0e2578` / `019f96da-5e9a-7112-8e83-a5ed459bd620`). Does **not**
+change inventory `496`, Wave 5 gate `162/319/0/15`, wave plan, scope, or
+public `DerivationMetadata` / `Derivation` / `DerivationReportEntry` field
+types.
+
+- Producer-aware ordered metadata serialization via
+  `derivation_metadata_to_ordered_value(derivation_type, &metadata)` — all
+  three write families (`durable_work`, `work_queue`, recovered message write
+  in `messages/internal/derive.rs`).
+- Custom `Serialize` for `Derivation` and `DerivationReportEntry`:
+  `subjectKind,subjectId,derivationType,state,sourceVersion,content?,reason?,
+  metadata?,gaps?,derivedAt?` (+ report `queue?` last); nested metadata reuses
+  the ordering helper. `Deserialize` stays derived.
+- Durable evidence: `scripts/gen-derivation-json-order-fixtures.mjs` →
+  `fixtures/derivation-json-order-cases.jsonl` (19 cases). Sanctioned
+  extension of existing
+  `turns::internal::derive::tests::turn_work_handlers_kinds_and_insertion_order`
+  loads the fixture through the production helper — **no** new `#[test]`,
+  inventory unchanged.
+
+#### Amendment H (Phase-gate addendum; name in Wave 5 commit body)
+
+Forced **shared** `js_json::write_number` repair for Node's small-exponent
+boundary (Sol confirmation FAIL `20260725-014009-86552a`; Fable confirmation
+`20260725-013455-56ed66`; focused Fable SHARED AMENDMENT H
+`20260725-015434-13d2aa`). A local compact-recovery formatter is rejected:
+`shared_tech::js_json` also serves persisted, hashed, token-counted, and
+unknown JSON paths, and the prior module prose falsely claimed oracle
+coverage through this threshold.
+
+- `0 < |x| < 1e-6` → `serde_json::Number` finite shortest spelling (Node
+  lowercase `e`, bare `e-N`, signed significand); `|x| == 1e-6` /
+  `0.0000012` stay decimal via `Display`; `-0` → `0`; integral/safe-integer
+  unchanged; `|x| >= 1e21` full-decimal accepted divergence retained.
+- `chunk_recovery::js_string_nullish` stays on the shared
+  `js_json_stringify(Value::Number)` lane — no second formatter.
+- Oracle: extend `scripts/gen-js-json-fixtures.mjs` /
+  `fixtures/js-json-cases.jsonl` (remove `< 1e-6` exclusion). Existing
+  `js_json_conformance::stringify_matches_node_oracle_fixtures` consumes all
+  rows — **no** new test / ignore / allowlist / denominator.
+- Preserves inventory `496` and Wave 5 gate `162/319/0/15`.
+
 #### Production repairs
 
 1. **Reentrant walk hook** — store `Arc` callback; `call_walk_hook` clones out
@@ -1790,3 +1838,273 @@ GATE PASS
   `threads_a8` 10/10, `persist_borrow` 2/2, `inference_prompts` 25/25,
   `js_json_conformance` 4/4, `check_prompt_bytes.py` OK
 - **No commit. No push.** Wave 4 **not certified**.
+
+### Phase 2 Wave 5 implementation (2026-07-25) — NOT certified
+
+Turns + chunks behavior from certified Wave 4 `2cd671f`. Phase 2 of 3,
+unit 13 of ~18. Does **not** implement SDK/`init_lhc` (Wave 7) or thread-view
+(Wave 6). Wave 5 remains **not certified** pending Sol and Copilot-Fable.
+No commit. No push.
+
+#### Gate
+
+```text
+exact-todo: tokens=177 bodies=177 covered=177
+classified=496 cargo-reported=496 (binaries: 58)
+passed=162 suspicious=0 notimpl=319 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic from certified Wave 4 `146/335/15`: **+16 passed**, **−16 notimpl**,
+exact-todo **250→177** (−73 turn/chunk bodies). Inventory unchanged at `496`.
+Final target remains `481/0/15`.
+
+#### Exact newly green (+16)
+
+Eleven newly green `turns` tests (the Wave-3-green
+`turns::validation_corruption_and_storage_failures_carry_three_distinct_classes_with_stable_codes`
+is **not** re-listed), plus 2 `epic_fix` + 3 `work_queue`:
+
+- `turns::new_thread_creation_initializes_exactly_one_empty_open_turn`
+- `turns::tc_3_1_a_prompt_attaches_to_the_empty_open_turn_and_the_whole_activity_stamps_to_it_ac_3_1_ac_3_2`
+- `turns::tc_3_2_a_second_prompt_closes_the_open_turn_and_opens_a_new_one_holding_only_the_prompt_ac_3_3`
+- `turns::tc_3_3_transition_membership_half_turn_end_closes_a_non_empty_turn_and_opens_the_next_empty_turn_ac_3_4`
+- `turns::tc_3_4_turn_end_on_an_empty_open_turn_is_recorded_but_inert_the_next_prompt_uses_that_turn_ac_3_5`
+- `turns::tc_3_5_post_close_messages_attach_to_the_current_empty_turn_ac_3_7_ac_3_8`
+- `turns::tc_3_6_transition_half_implicit_close_behaves_exactly_like_explicit_close_work_parity_is_story_5s`
+- `turns::tc_3_7_two_open_turns_fail_any_batch_with_turn_state_corrupt_and_the_batch_records_nothing_ac_3_9`
+- `turns::tc_3_8_one_batch_with_two_prompts_and_a_turn_end_yields_two_closed_turns_with_correct_membership_ac_3_3`
+- `turns::tc_5_4_no_transition_clause_resending_recorded_events_causes_no_transition_and_leaves_turn_state_unchanged_ac_5_4`
+- `turns::zero_open_turns_fail_any_batch_with_turn_state_corrupt_and_the_batch_records_nothing_ac_3_9`
+- `epic_fix::turns_list_turns_empty_path_caller_error_no_storage_open`
+- `epic_fix::turns_list_turns_unknown_id_thread_not_found`
+- `work_queue::restart_survival_a_reopened_thread_file_holds_its_work_items_intact`
+- `work_queue::complete_surface_rollback_a_rejected_batch_leaves_records_at_baseline`
+- `work_queue::tc_5_4_no_work_item_clause_a_skipped_event_queues_nothing`
+
+Allowlisted under “Phase 2 Wave 5” in `scripts/gate_allowlist.txt` (**16**
+exact names; validation case remains under Wave 3 only). Gate delta **+16**
+vs Wave 4 `146` → `162`. Suite `turns` is **12/12** because the twelfth case
+was already Wave-3 green.
+
+#### Production files implemented
+
+- `src/turns/mod.rs` — `list_turns` / `list_chunks` / `get_chunk_text` /
+  `read_turn_chunk_structure` / `report` / `derive_turn` /
+  `derive_detailed_chunk` / `derive_brief_chunk` (+ Wave 3 `create`)
+- `src/turns/internal/store.rs` — `read_turns` / `read_turn_structure`
+- `src/turns/internal/chunks.rs` — place/enqueue/structure/placements
+- `src/turns/internal/compose.rs` — detailed assemblies / rendering /
+  pre_detailed_assembly (byte-faithful)
+- `src/turns/internal/chunk_recovery.rs` — compact material + floors
+- `src/turns/internal/derivations.rs` — source/members/owned/report/chunk rows
+- `src/turns/internal/derive.rs` — turn_derivation, detailed_turn_compression,
+  chunk detailed/brief handlers, dispatch, durable-claim derive path;
+  zero-arg `chunkDetailedHandler`/`chunkBriefHandler` factories + Arc seams
+- Supporting: `ToolOutcome: Hash` in `shared_tech/derivation.rs` (compose
+  `HashSet` keying)
+
+#### Owning-suite status (first later-wave blocker)
+
+| Suite | Result | First blocker |
+| --- | --- | --- |
+| `turns` | **12/12 green** | — |
+| `derivation_turns` | 0/14 | `init_lhc` (Wave 7) `sdk.rs:684` |
+| `detailed_turn_compression` | 0/8 | `init_lhc` (Wave 7) |
+| `chunk_detailed_format` | 0/7 | `init_lhc` (Wave 7) |
+| `chunk_brief_from_detailed` | 0/6 | `init_lhc` (Wave 7) |
+| `chunk_compact_recovery` | 0/6 | `init_lhc` (Wave 7) |
+
+Re-run unlocked: `mutations` / `messages_read` / `work_execution` still stop
+at Wave 7 `init_lhc`. No kind/test-shaped rerouting.
+
+#### Carve-out removal status
+
+No temporary `NotImplemented`/`todo!("phase 2")` re-raise carve-out existed in
+`durable_work` / `scheduler` on this tree — catch-all already normalizes to
+`handler threw: …` (TS-faithful). Nothing to remove. Remaining production
+todos sit at Wave 6 thread-view and Wave 7 SDK/`init_lhc` boundaries.
+
+#### Mutation / adversarial evidence (disposable, removed)
+
+- `place_turn` inclusive `>= target` — mutate to `>` turns
+  `probe_place_turn_mutation_gt_would_miss_exact_threshold` red; restore green
+- Idempotent re-place (`already_placed`) + chunk structure membership order
+- UTF-16 `js_len("😀")==2` sanity
+
+#### Clippy warning precision (Wave 5 changed lines)
+
+Mechanical fixes applied: compose `last_tool_idx < j`; derive
+`if let Some(content)` instead of `is_some`+`unwrap`. Remaining Wave 5
+messages-domain-style carried warnings (collapse-if, complex types, large
+enum on `ChunkDeriveResult`) not broadened into project-wide cleanup.
+
+#### Audit
+
+- Tests/goldens/oracles/fixtures **untouched** (fixture helpers
+  `read_chunks` / `set_form_state` already REAL)
+- Four root `cc-lhc-*.txt` preserved
+- Disposable `_probe_wave5.rs` deleted
+- fmt/check/clippy, owning suites, `threads_a8` 10/10, `persist_borrow` 2/2,
+  `inference_prompts` 25/25, `js_json_conformance` 4/4, `check_prompt_bytes.py`
+  OK
+- **No commit. No push.** Wave 5 **not certified**.
+
+### Phase 2 Wave 5 repair-r1 (2026-07-25) — NOT certified
+
+Union of Sol FAIL `20260725-004420-0487da`
+(`019f96ba-ec74-71a1-990f-77242eb8ce46`), Fable PASS-with-findings
+`20260725-004424-e16b24` (`b6f8597b-842f-44c3-b3b9-8653f92bc5e4`,
+`claude-fable-5` medium), and focused Sol AMEND `20260725-011841-0e2578`
+(`019f96da-5e9a-7112-8e83-a5ed459bd620`). Inventory / arithmetic /
+wave-plan unchanged. **No commit. No push.** Wave 5 remains **not certified**.
+
+#### Exact fixes
+
+1. **Compact recovery `String(value ?? "")`** —
+   `chunk_recovery.rs::js_string_nullish` matches Node ToString (arrays join,
+   objects `[object Object]`, nullish → `""`); `block_text` accepts any
+   non-null JSON box; null property access panics like Node. **Correction
+   (repair-r2 / Amendment H):** number leaves were already routed through
+   shared `js_json_stringify`, but `write_number` still spelled
+   `String(1e-7)` as Rust Display `"0.0000001"` — that was **not** Node-
+   faithful until Amendment H; do not treat r1 as having closed the
+   small-exponent lane.
+2. **Amendment G** — producer-ordered metadata bytes + `Derivation` /
+   `DerivationReportEntry` wire order (see Phase-gate addendum G); generator +
+   fixture + existing-test extension; three write families routed.
+3. **Corrupt turn numerics** — `store.rs` rejects REAL truncate on
+   `turn_order` / opened / closed event-order (`as_i64` only; integer strings
+   retained).
+4. **`defer_claimed_turn_work`** — TS catch order: `ROLLBACK` without
+   swallowing; post-COMMIT flush failure → ROLLBACK error replaces callback.
+5. **Allowlist exactness** — Wave 5 lists **16** names (duplicate validation
+   entry removed); `check_gate.py::parse_allowlist_lines` rejects duplicates
+   with `duplicate allowlist entry: {name}`.
+
+#### Producer-by-producer mutation / byte evidence (disposable, removed)
+
+| Path | Mutation | Result |
+| --- | --- | --- |
+| detailed success metadata order | provenance last | Amendment G fixture red; restore green |
+| object `String()` | JSON.stringify object | compact probe red (`{"x":1}`); restore |
+| scalar block accept | panic non-object | compact probe red on `"just-a-string"`; restore |
+| turn_order REAL | restore `f as i64` | corrupt probe red; restore |
+| defer flush/ROLLBACK | swallow ROLLBACK | flush boom escapes; restore → rollback error wins |
+| allowlist duplicate | inject dup name | `ValueError: duplicate allowlist entry: …`; unique list restored |
+
+Node probe: every JSON kind + nested array/object + model-change object→array
++ scalar boxes; null throws. Fable's paired seam/concurrency evidence not
+rebuilt; repair probes cover only changed producers.
+
+#### Corruption doctrine / immutable audit / cleanup
+
+- Wave 4 integer-closed doctrine applied to turn store numerics; public fields
+  stay `i64`.
+- Frozen tests/goldens/oracles untouched except sanctioned Amendment G
+  existing-test extension + new generator/fixture oracle.
+- Four root `cc-lhc-*.txt` preserved; disposable `_probe_wave5_r1.rs` and
+  temporary defer `#[test]`s deleted.
+- Expected gate after repair-r1 (unchanged arithmetic):
+
+```text
+exact-todo: tokens=177 bodies=177 covered=177
+classified=496 cargo-reported=496
+passed=162 suspicious=0 notimpl=319 wrong=0 ignored=15
+GATE PASS
+```
+
+### Phase 2 Wave 5 repair-r2 (2026-07-25) — NOT certified
+
+Amendment H shared small-exponent repair. Citations: Sol
+`20260725-014009-86552a`, Fable `20260725-013455-56ed66`, focused Fable
+`20260725-015434-13d2aa`. Inventory / `162/319/0/15` unchanged. **No commit.
+No push.** Wave 5 remains **not certified**.
+
+#### Exact fixes
+
+1. `js_json::write_number` — for non-integral floats with `0 < |x| < 1e-6`,
+   emit `serde_json::Number::to_string()` (Node exponent form); otherwise keep
+   `format!("{f}")` decimal band (covers `1e-6`, `0.0000012`).
+2. Module prose corrected: small exponents are Node-oracle-covered; remaining
+   accepted divergences are integer-over-2^53, `|x| >= 1e21`, and surrogate
+   slice drops.
+3. Generator/fixture extended (46 cases); double regen byte-identical.
+4. Prior r1 false closure of `1e-7` number spelling corrected in the r1 note
+   above.
+
+#### Mutation / probe evidence (disposable, removed)
+
+| Case | Mutation / probe | Result |
+| --- | --- | --- |
+| `1e-6` boundary | threshold `<= 1e-6` | fixture red (`1e-6` vs `0.000001`); restore |
+| below threshold | `format!("{f}")` for `< 1e-6` | fixture red (`0.0000009999999` vs `9.999999e-7`); restore |
+| compact path | production `js_string_nullish` via model_change | `-0`→`0`, `1e-6`, `1e-7`, `1.5e-7`, `5e-324` green |
+| nested | object/array fixture rows | green under existing conformance test |
+
+Cleanup: deleted `tests/_probe_wave5_r2.rs`. Four root `cc-lhc-*.txt`
+preserved. Expected gate unchanged (`177` / `162/319/0/15`).
+
+### Phase 2 Wave 5 certification (2026-07-25) — CERTIFIED
+
+**Full-project position:** Wave 5 of 7 in Phase 2 of 3 is certified (unit 13
+of approximately 18). Waves 6–7 and all Phase 3 Grok Build integration
+remain; this commit certifies turns/chunks behavior in the host-agnostic
+library but does not yet expose it through `init_lhc`.
+
+Certification reconciles the complete implementation, full dual review, two
+repairs, two focused amendment rulings, and final dual confirmation:
+
+- Cursor implementation `20260725-003317-580b00`, repair-r1
+  `20260725-012404-2b7ce9`, and repair-r2 `20260725-015834-7cfebc`, session
+  `0080ea30-39bd-48b7-a3e4-99738b18037e`, each verified
+  `cursor-grok-4.5-high-fast`;
+- full Sol `20260725-004420-0487da` **FAIL** and full Copilot-Fable
+  `20260725-004424-e16b24` **PASS with findings**;
+- focused Sol `20260725-011841-0e2578`: **Amendment G**, producer-aware
+  persisted metadata order plus custom `Derivation`/report wire order;
+- repair-r1 confirmations: Copilot-Fable `20260725-013455-56ed66` exposed
+  the small-exponent divergence and Sol `20260725-014009-86552a` **FAIL**
+  independently reproduced it;
+- focused Copilot-Fable `20260725-015434-13d2aa`: **Amendment H**, repair the
+  shared JS-JSON number lane rather than a compact-local formatter;
+- final focused Sol `20260725-020310-ded0d1` **PASS** and Copilot-Fable
+  `20260725-020310-2acb6d` **PASS**.
+
+Persisted-byte amendments are backed by committed Node oracles:
+
+- `scripts/gen-derivation-json-order-fixtures.mjs` →
+  `fixtures/derivation-json-order-cases.jsonl` (19 rows; SHA-256
+  `315e11c7acad16e64d7dd02d2727441306094aac04bd282e3f298cf2038778fd`);
+- `scripts/gen-js-json-fixtures.mjs` →
+  `fixtures/js-json-cases.jsonl` (46 rows; SHA-256
+  `b3c8eacd9a5babff518dc23022547e89c3c68fd7d7b58de416ab16566b559384`).
+
+Both existing counted conformance paths consume the fixtures. Final mutation
+evidence kills metadata-order changes, the `< 1e-6` / `<= 1e-6` boundary,
+decimal spelling below the boundary, compact-local divergence, strict turn
+INTEGER truncation, swallowed ROLLBACK, and duplicate allowlist entries.
+Orchestrator residue was limited to keeping the Amendment G helper
+crate-private and retaining the one shared numeric lane/comment.
+
+Final orchestrator gate:
+
+```text
+exact-todo: tokens=177 bodies=177 covered=177
+classified=496 cargo-reported=496 (binaries: 58)
+passed=162 suspicious=0 notimpl=319 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic from certified Wave 4 is **+16 passed / −16 notimpl**; active
+progress is **162/481**. `turns` is 12/12, `epic_fix` 9/9, `work_queue`
+16/16, `threads_a8` 10/10, `persist_borrow` 2/2, inference prompts 25/25,
+JS-JSON 4/4, prompt bytes 9/164/9, and both amendment conformance paths are
+green. The remaining 41 Wave 5 owning cases stop honestly at Wave 7
+`sdk.rs::init_lhc`; no test-shaped rerouting was added.
+
+`cargo fmt --check`, `cargo check --tests`, and clippy (carried warnings only)
+pass. Tests, assertions, goldens, TypeScript, manifests, and dependencies are
+unchanged; only the two sanctioned generated oracle fixtures changed/landed.
+No repository probe remains, and the four unrelated root `cc-lhc-*.txt`
+files remain untouched.

@@ -55,15 +55,36 @@ def run(cmd: list[str]) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+def parse_allowlist_lines(text: str) -> list[str]:
+    """Parse allowlist text; reject duplicate non-comment entries by exact name."""
+    entries: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        if name in seen:
+            raise ValueError(f"duplicate allowlist entry: {name}")
+        seen.add(name)
+        entries.append(name)
+    return entries
+
+
 def load_allowlist() -> list[str]:
     path = ROOT / "scripts" / "gate_allowlist.txt"
     if not path.exists():
         return []
-    return [
-        line.strip()
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    return parse_allowlist_lines(path.read_text())
+
+
+def _test_allowlist_duplicate_detector() -> None:
+    """Mutation-test duplicate allowlist rejection (always-run)."""
+    assert parse_allowlist_lines("a\n# c\nb\n") == ["a", "b"]
+    try:
+        parse_allowlist_lines("foo\nbar\nfoo\n")
+        raise AssertionError("duplicate allowlist entry must raise")
+    except ValueError as err:
+        assert str(err) == "duplicate allowlist entry: foo", err
 
 
 def serialization_tripwire() -> list[str]:
@@ -817,6 +838,7 @@ def classify() -> int:
 
 if __name__ == "__main__":
     _test_json_macro_to_string_detector()
+    _test_allowlist_duplicate_detector()
     print(_test_exact_phase2_todo_bodies())
     todo_hits, todo_summary = exact_phase2_todo_tripwire()
     print(todo_summary)

@@ -14,11 +14,14 @@
 //! Documented, accepted divergences from JS (all unreachable with LHC data;
 //! carried over from the lhc-py audit):
 //! - Integers beyond 2^53 print exactly (JS rounds through f64).
-//! - |x| ≥ 1e21 prints as full decimal digits (JS switches to exponent form);
-//!   below 1e-6 both sides' behavior is fixture-verified down to JS's 1e-7
-//!   exponent threshold.
+//! - |x| ≥ 1e21 prints as full decimal digits (JS switches to exponent form).
 //! - `js_slice` cannot keep a lone surrogate from a mid-pair slice (Rust
 //!   strings are valid UTF-8); the split pair is dropped instead.
+//!
+//! Small-exponent floats (`0 < |x| < 1e-6`) are Node-oracle-covered
+//! (Amendment H): lowercase `e` spelling with shortest round-trip significand
+//! and bare negative exponent (`1e-7`, never `1e-07`). `|x| == 1e-6` and larger
+//! magnitudes in the decimal band stay on `Display`.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -226,10 +229,20 @@ fn write_number(out: &mut String, n: &serde_json::Number) {
             return;
         }
         if !n.is_i64() && !n.is_u64() {
-            // Non-integral float: std Display (decimal, shortest round-trip)
-            // matches JS spelling in JS's decimal range; serde_json's ryu
-            // would spell 0.000001 as "1e-6" (caught by the node fixtures).
-            out.push_str(&format!("{f}"));
+            let abs = f.abs();
+            if abs > 0.0 && abs < 1e-6 {
+                // Amendment H — Node's small-exponent boundary: 0 < |x| < 1e-6
+                // uses lowercase exponent form. serde_json::Number's finite
+                // shortest spelling matches Node here (significand + bare
+                // `e-N`, signed). Do not use `format!("{f}")` (decimal).
+                // Do not use Number spelling for |x| >= 1e-6 — serde_json's
+                // finite formatter emits `1e-6` / `1.2e-6` while Node keeps
+                // decimal.
+                out.push_str(&n.to_string());
+            } else {
+                // Decimal band including |x| == 1e-6 and 0.0000012.
+                out.push_str(&format!("{f}"));
+            }
             return;
         }
     }

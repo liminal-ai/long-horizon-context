@@ -18,7 +18,7 @@ use super::durable_work::{
     DerivationCompletionError, DurableWorkOperation, assert_exact_derivation_writes,
     operation_intent,
 };
-use super::js_json::js_json_stringify_of;
+use super::js_json::{js_json_stringify, js_json_stringify_of};
 use super::persist::{DbWriteTransaction, create_post_commit_hook_set};
 use super::storage::{Db, SqlParam};
 
@@ -1053,9 +1053,12 @@ pub fn complete(
         for write in writes {
             let metadata = match &write.metadata {
                 None => SqlParam::Null,
-                Some(metadata) => SqlParam::from(
-                    js_json_stringify_of(metadata).expect("metadata js_json_stringify_of"),
-                ),
+                Some(metadata) => SqlParam::from(js_json_stringify(
+                    &crate::shared_tech::derivation::derivation_metadata_to_ordered_value(
+                        write.derivation_type.as_str(),
+                        metadata,
+                    ),
+                )),
             };
             let changed = update.run(&[
                 SqlParam::from(write.content.as_str()),

@@ -1,19 +1,21 @@
-//! Ported from packages/lhc/src/turns/internal/derivations.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/turns/internal/derivations.ts.
 //!
-//! Turn-domain derivation reads. SQL literals REAL (private — TS module-local);
-//! bodies exact `todo!("phase 2")`.
+//! Turn-domain derivation reads. SQL literals REAL (private — TS module-local).
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::shared_tech::derivation::{
-    Derivation, DerivationReportEntry, DerivationState, SubjectKind,
+    DependencyGap, Derivation, DerivationMetadata, DerivationReportEntry, DerivationState,
+    RenderingPartKind, SubjectKind,
 };
-use crate::shared_tech::storage::Db;
+use crate::shared_tech::report::{RawReportRow, report_entry_from_row};
+use crate::shared_tech::storage::{Db, SqlParam};
 use crate::turns::ChunkDeriveDerivationType;
 use crate::turns::TurnStatus;
 
-use super::compose::{ComposeDerivationRow, ComposeMessage};
+use super::compose::{ComposeBlock, ComposeDerivationRow, ComposeMessage, compose_derivation_key};
 
 #[allow(dead_code)]
 const SQL_READ_TURN_SOURCE: &str = r#"SELECT status, deleted_at FROM turns WHERE turn_id = ?"#;
@@ -145,20 +147,173 @@ pub struct TurnSource {
     pub deleted: bool,
 }
 
-pub fn read_turn_source(_db: &Db, _turn_id: &str) -> Option<TurnSource> {
-    todo!("phase 2")
+fn map_required_str(row: &Map<String, Value>, key: &str) -> String {
+    row.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("missing column {key}"))
+        .to_string()
 }
 
-pub fn read_member_messages(_db: &Db, _turn_id: &str) -> Vec<ComposeMessage> {
-    todo!("phase 2")
+fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
+    match row.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => panic!("column {key} not text: {other}"),
+    }
+}
+
+fn map_required_i64(row: &Map<String, Value>, key: &str) -> i64 {
+    match row.get(key) {
+        // Reject non-integer REAL/string (no `f as i64` truncate). Integer
+        // SQLite INTEGER and valid integer strings keep as_i64 / parse.
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .unwrap_or_else(|| panic!("column {key} not integer")),
+        Some(Value::String(s)) => s
+            .parse()
+            .unwrap_or_else(|_| panic!("column {key} not integer")),
+        _ => panic!("missing column {key}"),
+    }
+}
+
+fn map_is_non_null(row: &Map<String, Value>, key: &str) -> bool {
+    !matches!(row.get(key), None | Some(Value::Null))
+}
+
+fn parse_derivation_state(state: &str) -> DerivationState {
+    match state {
+        "pending" => DerivationState::Pending,
+        "ready" => DerivationState::Ready,
+        "failed" => DerivationState::Failed,
+        "blocked" => DerivationState::Blocked,
+        other => panic!("unknown derivation state from row: {other}"),
+    }
+}
+
+fn parse_turn_status(status: &str) -> TurnStatus {
+    match status {
+        "open" => TurnStatus::Open,
+        "closed" => TurnStatus::Closed,
+        other => panic!("unknown turn status from row: {other}"),
+    }
+}
+
+fn parse_rendering_part_kind(kind: &str) -> RenderingPartKind {
+    match kind {
+        "user_prompt" => RenderingPartKind::UserPrompt,
+        "assistant_text" => RenderingPartKind::AssistantText,
+        "assistant_thinking" => RenderingPartKind::AssistantThinking,
+        "runtime_note" => RenderingPartKind::RuntimeNote,
+        "model_change" => RenderingPartKind::ModelChange,
+        "thinking_level_change" => RenderingPartKind::ThinkingLevelChange,
+        "tool_call" => RenderingPartKind::ToolCall,
+        "tool_result" => RenderingPartKind::ToolResult,
+        other => panic!("unknown rendering part kind from row: {other}"),
+    }
+}
+
+fn parse_subject_kind(kind: &str) -> SubjectKind {
+    match kind {
+        "message" => SubjectKind::Message,
+        "turn" => SubjectKind::Turn,
+        "chunk" => SubjectKind::Chunk,
+        other => panic!("unknown subject kind from row: {other}"),
+    }
+}
+
+pub fn read_turn_source(db: &Db, turn_id: &str) -> Option<TurnSource> {
+    let row = db
+        .prepare(SQL_READ_TURN_SOURCE)
+        .get_params(&[SqlParam::from(turn_id)])?;
+    Some(TurnSource {
+        turn_id: turn_id.to_string(),
+        status: parse_turn_status(&map_required_str(&row, "status")),
+        deleted: map_is_non_null(&row, "deleted_at"),
+    })
+}
+
+pub fn read_member_messages(db: &Db, turn_id: &str) -> Vec<ComposeMessage> {
+    let messages = db
+        .prepare(SQL_READ_MEMBER_MESSAGES)
+        .all(&[SqlParam::from(turn_id)]);
+    let block_stmt = db.prepare(SQL_READ_MESSAGE_BLOCKS);
+    messages
+        .into_iter()
+        .map(|message| {
+            let message_id = map_required_str(&message, "message_id");
+            let kind = parse_rendering_part_kind(&map_required_str(&message, "kind"));
+            let blocks = block_stmt
+                .all(&[SqlParam::from(message_id.as_str())])
+                .into_iter()
+                .map(|block| {
+                    let content_raw = map_required_str(&block, "content");
+                    let content_value: Value = serde_json::from_str(&content_raw)
+                        .unwrap_or_else(|err| panic!("message block content JSON: {err}"));
+                    let content = match content_value {
+                        Value::Object(map) => map,
+                        other => panic!("message block content not object: {other}"),
+                    };
+                    ComposeBlock {
+                        block_type: map_required_str(&block, "block_type"),
+                        content,
+                    }
+                })
+                .collect();
+            ComposeMessage {
+                message_id,
+                kind,
+                blocks,
+            }
+        })
+        .collect()
 }
 
 /// TS `readMessageDerivationRows` — `Map` → [`IndexMap`].
 pub fn read_message_derivation_rows(
-    _db: &Db,
-    _message_ids: &[String],
+    db: &Db,
+    message_ids: &[String],
 ) -> IndexMap<String, ComposeDerivationRow> {
-    todo!("phase 2")
+    let mut rows = IndexMap::new();
+    if message_ids.is_empty() {
+        return rows;
+    }
+    let placeholders = message_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "{SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX}{placeholders}{SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX}"
+    );
+    let params: Vec<SqlParam> = message_ids
+        .iter()
+        .map(|id| SqlParam::from(id.as_str()))
+        .collect();
+    for row in db.prepare(&sql).all(&params) {
+        let subject_id = map_required_str(&row, "subject_id");
+        let derivation_type = map_required_str(&row, "derivation_type");
+        let mut view = ComposeDerivationRow {
+            state: parse_derivation_state(&map_required_str(&row, "state")),
+            content: None,
+            metadata: None,
+            reason: None,
+            source_version: map_required_i64(&row, "source_version"),
+        };
+        if let Some(content) = map_optional_str(&row, "content") {
+            view.content = Some(content);
+        }
+        if let Some(reason) = map_optional_str(&row, "reason") {
+            view.reason = Some(reason);
+        }
+        if let Some(metadata) = map_optional_str(&row, "metadata") {
+            view.metadata = Some(
+                serde_json::from_str::<DerivationMetadata>(&metadata)
+                    .unwrap_or_else(|err| panic!("derivation metadata JSON: {err}")),
+            );
+        }
+        rows.insert(compose_derivation_key(&subject_id, &derivation_type), view);
+    }
+    rows
 }
 
 /// TS `MemberProjection`.
@@ -182,8 +337,34 @@ pub struct MemberProjection {
     pub source_corruption_reason: Option<String>,
 }
 
-pub fn read_member_projections(_db: &Db, _chunk_id: &str) -> Vec<MemberProjection> {
-    todo!("phase 2")
+pub fn read_member_projections(db: &Db, chunk_id: &str) -> Vec<MemberProjection> {
+    db.prepare(SQL_READ_MEMBER_PROJECTIONS)
+        .all(&[SqlParam::from(chunk_id)])
+        .into_iter()
+        .filter_map(|row| {
+            if map_is_non_null(&row, "deleted_at") {
+                return None;
+            }
+            let turn_id = map_required_str(&row, "turn_id");
+            let source_corruption_reason = if !map_is_non_null(&row, "existing_turn_id") {
+                Some(format!(
+                    "canonical record corrupt: chunk {chunk_id} member {turn_id} references missing turn"
+                ))
+            } else {
+                None
+            };
+            Some(MemberProjection {
+                turn_id,
+                state: map_optional_str(&row, "state"),
+                content: map_optional_str(&row, "content"),
+                assembly_state: map_optional_str(&row, "assembly_state"),
+                assembly_content: map_optional_str(&row, "assembly_content"),
+                rendering_state: map_optional_str(&row, "rendering_state"),
+                rendering_content: map_optional_str(&row, "rendering_content"),
+                source_corruption_reason,
+            })
+        })
+        .collect()
 }
 
 /// TS private `RawOwnedDerivationRow`.
@@ -226,10 +407,51 @@ impl TurnOwnedSubjectKind {
 
 /// TS `readOwnedDerivations` — `Map` → [`IndexMap`].
 pub fn read_owned_derivations(
-    _db: &Db,
-    _subject_kind: TurnOwnedSubjectKind,
+    db: &Db,
+    subject_kind: TurnOwnedSubjectKind,
 ) -> IndexMap<String, Vec<Derivation>> {
-    todo!("phase 2")
+    let mut by_subject: IndexMap<String, Vec<Derivation>> = IndexMap::new();
+    for row in db
+        .prepare(SQL_READ_OWNED_DERIVATIONS)
+        .all(&[SqlParam::from(subject_kind.as_str())])
+    {
+        let subject_id = map_required_str(&row, "subject_id");
+        let mut record = Derivation {
+            subject_kind: subject_kind.to_subject_kind(),
+            subject_id: subject_id.clone(),
+            derivation_type: map_required_str(&row, "derivation_type"),
+            state: parse_derivation_state(&map_required_str(&row, "state")),
+            content: None,
+            reason: None,
+            source_version: map_required_i64(&row, "source_version"),
+            gaps: None,
+            metadata: None,
+            derived_at: None,
+        };
+        if let Some(content) = map_optional_str(&row, "content") {
+            record.content = Some(content);
+        }
+        if let Some(reason) = map_optional_str(&row, "reason") {
+            record.reason = Some(reason);
+        }
+        if let Some(metadata) = map_optional_str(&row, "metadata") {
+            record.metadata = Some(
+                serde_json::from_str::<DerivationMetadata>(&metadata)
+                    .unwrap_or_else(|err| panic!("derivation metadata JSON: {err}")),
+            );
+        }
+        if let Some(gaps) = map_optional_str(&row, "gaps") {
+            record.gaps = Some(
+                serde_json::from_str::<Vec<DependencyGap>>(&gaps)
+                    .unwrap_or_else(|err| panic!("dependency gaps JSON: {err}")),
+            );
+        }
+        if let Some(derived_at) = map_optional_str(&row, "derived_at") {
+            record.derived_at = Some(derived_at);
+        }
+        by_subject.entry(subject_id).or_default().push(record);
+    }
+    by_subject
 }
 
 /// TS `ChunkReadRow`.
@@ -243,8 +465,30 @@ pub struct ChunkReadRow {
     pub member_turn_ids: Vec<String>,
 }
 
-pub fn read_chunk_rows(_db: &Db) -> Vec<ChunkReadRow> {
-    todo!("phase 2")
+pub fn read_chunk_rows(db: &Db) -> Vec<ChunkReadRow> {
+    let chunks = db.prepare(SQL_READ_CHUNK_ROWS).all(&[]);
+    let member_stmt = db.prepare(SQL_READ_CHUNK_ROW_MEMBERS);
+    chunks
+        .into_iter()
+        .map(|row| {
+            let chunk_id = map_required_str(&row, "chunk_id");
+            let member_turn_ids = member_stmt
+                .all(&[SqlParam::from(chunk_id.as_str())])
+                .into_iter()
+                .map(|member| map_required_str(&member, "turn_id"))
+                .collect();
+            ChunkReadRow {
+                chunk_id,
+                chunk_order: map_required_i64(&row, "chunk_order"),
+                status: parse_turn_status(&map_required_str(&row, "status")),
+                accumulated_projected_tokens: map_required_i64(
+                    &row,
+                    "accumulated_projected_tokens",
+                ),
+                member_turn_ids,
+            }
+        })
+        .collect()
 }
 
 /// TS `readTurnDerivationRow` view.
@@ -260,20 +504,53 @@ pub struct TurnDerivationRowView {
 }
 
 pub fn read_turn_derivation_row(
-    _db: &Db,
-    _subject_kind: TurnOwnedSubjectKind,
-    _subject_id: &str,
-    _derivation: &str,
+    db: &Db,
+    subject_kind: TurnOwnedSubjectKind,
+    subject_id: &str,
+    derivation: &str,
 ) -> Option<TurnDerivationRowView> {
-    todo!("phase 2")
+    let row = db.prepare(SQL_READ_TURN_DERIVATION_ROW).get_params(&[
+        SqlParam::from(subject_kind.as_str()),
+        SqlParam::from(subject_id),
+        SqlParam::from(derivation),
+    ])?;
+    let mut view = TurnDerivationRowView {
+        state: parse_derivation_state(&map_required_str(&row, "state")),
+        content: None,
+        reason: None,
+        source_version: map_required_i64(&row, "source_version"),
+    };
+    if let Some(content) = map_optional_str(&row, "content") {
+        view.content = Some(content);
+    }
+    if let Some(reason) = map_optional_str(&row, "reason") {
+        view.reason = Some(reason);
+    }
+    Some(view)
 }
 
 pub fn read_chunk_summary_derivation(
-    _db: &Db,
-    _chunk_id: &str,
-    _derivation_type: ChunkDeriveDerivationType,
+    db: &Db,
+    chunk_id: &str,
+    derivation_type: ChunkDeriveDerivationType,
 ) -> Option<TurnDerivationRowView> {
-    todo!("phase 2")
+    let row = db.prepare(SQL_READ_CHUNK_SUMMARY_DERIVATION).get_params(&[
+        SqlParam::from(chunk_id),
+        SqlParam::from(derivation_type.as_str()),
+    ])?;
+    let mut view = TurnDerivationRowView {
+        state: parse_derivation_state(&map_required_str(&row, "state")),
+        content: None,
+        reason: None,
+        source_version: map_required_i64(&row, "source_version"),
+    };
+    if let Some(content) = map_optional_str(&row, "content") {
+        view.content = Some(content);
+    }
+    if let Some(reason) = map_optional_str(&row, "reason") {
+        view.reason = Some(reason);
+    }
+    Some(view)
 }
 
 /// TS `reportTurnDerivations` opts.
@@ -284,12 +561,61 @@ pub struct TurnReportOptions {
     pub chunk_id: Option<String>,
 }
 
-pub fn report_turn_derivations(_db: &Db, _opts: &TurnReportOptions) -> Vec<DerivationReportEntry> {
-    todo!("phase 2")
+pub fn report_turn_derivations(db: &Db, opts: &TurnReportOptions) -> Vec<DerivationReportEntry> {
+    let mut conditions = vec![SQL_REPORT_COND_SUBJECT_KIND_TURN_CHUNK.to_string()];
+    let mut params: Vec<SqlParam> = Vec::new();
+    let mut subject_filters: Vec<String> = Vec::new();
+    if let Some(turn_id) = &opts.turn_id {
+        subject_filters.push(SQL_REPORT_COND_TURN_SUBJECT.to_string());
+        params.push(SqlParam::from(turn_id.as_str()));
+    }
+    if let Some(chunk_id) = &opts.chunk_id {
+        subject_filters.push(SQL_REPORT_COND_CHUNK_SUBJECT.to_string());
+        params.push(SqlParam::from(chunk_id.as_str()));
+    }
+    if !subject_filters.is_empty() {
+        conditions.push(format!(
+            "{}{}{}",
+            SQL_REPORT_SUBJECT_FILTER_GROUP_PREFIX,
+            subject_filters.join(SQL_REPORT_SUBJECT_FILTER_JOIN),
+            SQL_REPORT_SUBJECT_FILTER_GROUP_SUFFIX
+        ));
+    }
+    // notReady is exact set equality by construction: every state but ready.
+    if opts.not_ready == Some(true) {
+        conditions.push(SQL_REPORT_COND_NOT_READY.to_string());
+    }
+    let mut sql = String::from(SQL_REPORT_TURN_DERIVATIONS_SELECT_JOIN);
+    sql.push_str(SQL_REPORT_WHERE_PREFIX);
+    sql.push_str(&conditions.join(SQL_REPORT_COND_JOIN));
+    sql.push_str(SQL_REPORT_TURN_DERIVATIONS_ORDER_BY);
+
+    db.prepare(&sql)
+        .all(&params)
+        .into_iter()
+        .map(|row| {
+            let subject_kind = parse_subject_kind(&map_required_str(&row, "subject_kind"));
+            let raw = RawReportRow {
+                subject_id: map_required_str(&row, "subject_id"),
+                derivation_type: map_required_str(&row, "derivation_type"),
+                state: map_required_str(&row, "state"),
+                content: map_optional_str(&row, "content"),
+                reason: map_optional_str(&row, "reason"),
+                metadata: map_optional_str(&row, "metadata"),
+                source_version: map_required_i64(&row, "source_version"),
+                gaps: map_optional_str(&row, "gaps"),
+                derived_at: map_optional_str(&row, "derived_at"),
+                queue_status: map_optional_str(&row, "queue_status"),
+            };
+            report_entry_from_row(subject_kind, &raw)
+        })
+        .collect()
 }
 
-pub fn chunk_exists(_db: &Db, _chunk_id: &str) -> bool {
-    todo!("phase 2")
+pub fn chunk_exists(db: &Db, chunk_id: &str) -> bool {
+    db.prepare(SQL_CHUNK_EXISTS)
+        .get_params(&[SqlParam::from(chunk_id)])
+        .is_some()
 }
 
 const _: usize = std::mem::size_of::<RawOwnedDerivationRow>();

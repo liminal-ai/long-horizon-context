@@ -12,14 +12,14 @@ use crate::intake_stream::EventKind;
 use crate::messages::MessageKind;
 use crate::shared_tech::derivation::{
     CompletionTx, DerivationState, HandlerDerivationWrite, HandlerOutcome, HandlerRunContext,
-    SubjectKind,
+    SubjectKind, derivation_metadata_to_ordered_value,
 };
 use crate::shared_tech::durable_work::{
     DerivationAttempt, DurableWorkDispatchResult, DurableWorkSettledDisposition,
     HandlerRunIdentity, RunWorkHandlerItem, apply_derivation_success, run_work_handler,
 };
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
-use crate::shared_tech::js_json::js_json_stringify_of;
+use crate::shared_tech::js_json::{js_json_stringify, js_json_stringify_of};
 use crate::shared_tech::persist::create_post_commit_hook_set;
 use crate::shared_tech::storage::SqlParam;
 use crate::shared_tech::work_queue::{
@@ -248,10 +248,12 @@ fn apply_recovered_message_write(
             };
         }
 
-        let metadata = write
-            .metadata
-            .as_ref()
-            .map(|m| js_json_stringify_of(m).expect("metadata js_json"));
+        let metadata = write.metadata.as_ref().map(|m| {
+            js_json_stringify(&derivation_metadata_to_ordered_value(
+                write.derivation_type.as_str(),
+                m,
+            ))
+        });
         let gaps = write
             .gaps
             .as_ref()

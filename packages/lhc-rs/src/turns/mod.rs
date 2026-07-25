@@ -9,48 +9,40 @@
 
 pub mod internal;
 
-use std::panic::panic_any;
+use std::panic::{AssertUnwindSafe, panic_any};
+use std::path::Path;
 
+use futures::FutureExt;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::intake_stream::EventKind;
+use crate::shared_tech::context::resolve_instance_config;
 use crate::shared_tech::derivation::{
     Derivation, DerivationReportEntry, ResolvedSdkConfig, SubjectKind,
 };
-use crate::shared_tech::errors::{ErrorResult, OpResult};
-use crate::shared_tech::persist::{DbReadTransaction, DbWriteTransaction};
+use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
+use crate::shared_tech::persist::{
+    DbReadTransaction, DbWriteTransaction, create_db_read_transaction,
+};
 use crate::shared_tech::storage::Db;
 use crate::shared_tech::work_queue::{
     EnqueueDerivationTarget, EnqueueInput, WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef,
     enqueue,
 };
-use crate::threads::ThreadRef;
+use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 
 use internal::chunk_recovery::{CompactChunkMaterial, compact_chunk_material_from_stored_members};
 use internal::chunks::{ChunkStructureRow, read_chunk_structure};
-use internal::store::{
-    TurnStructureRow, close_turn, count_turn_members, insert_open_turn, next_turn_order,
-    read_turn_structure, select_open_turn_ids,
-};
-
-#[allow(unused_imports)]
-use crate::shared_tech::context::resolve_instance_config;
-#[allow(unused_imports)]
-use crate::shared_tech::errors::storage_failure;
-#[allow(unused_imports)]
-use crate::shared_tech::persist::create_db_read_transaction;
-#[allow(unused_imports)]
-use crate::threads::{open_thread_database, resolve_thread_ref};
-#[allow(unused_imports)] // Phase 2 bodies; mirror TS dependency graph
 use internal::derivations::{
     TurnOwnedSubjectKind, TurnReportOptions, read_chunk_rows, read_owned_derivations,
     report_turn_derivations,
 };
-#[allow(unused_imports)]
-use internal::derive::derive_turn_owned_in_open_db;
-#[allow(unused_imports)]
-use internal::store::read_turns;
+use internal::derive::{TurnOwnedDeriveResult, derive_turn_owned_in_open_db};
+use internal::store::{
+    TurnStructureRow, close_turn, count_turn_members, insert_open_turn, next_turn_order,
+    read_turn_structure, read_turns, select_open_turn_ids,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -281,18 +273,92 @@ pub fn create(
     }
 }
 
-fn thread_not_found<T>(_file_path: &str) -> OpResult<T> {
-    todo!("phase 2")
+fn thread_not_found<T>(file_path: &str) -> OpResult<T> {
+    OpResult::Err {
+        error: ErrorResult {
+            error_class: ErrorClass::CallerError,
+            code: ErrorCode::ThreadNotFound,
+            reason: format!("no thread file exists at {file_path}"),
+            event_index: None,
+        },
+    }
+}
+
+fn panic_detail(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// TS `listTurns`.
-pub async fn list_turns(_thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
-    todo!("phase 2")
+pub async fn list_turns(thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+    let result = AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+        Box::pin(async move {
+            let derivations_by_turn =
+                read_owned_derivations(transaction.db, TurnOwnedSubjectKind::Turn);
+            read_turns(transaction.db)
+                .into_iter()
+                .map(|mut record| {
+                    if let Some(derivations) = derivations_by_turn.get(&record.turn_id) {
+                        record.derivations = Some(derivations.clone());
+                    }
+                    record
+                })
+                .collect::<Vec<_>>()
+        })
+    }))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => {
+            storage_failure(&format!("turn read-back failed: {}", panic_detail(payload)))
+        }
+    }
 }
 
 /// TS `listChunks`.
-pub async fn list_chunks(_thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
-    todo!("phase 2")
+pub async fn list_chunks(thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
+    let result = AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+        Box::pin(async move {
+            let derivations_by_chunk =
+                read_owned_derivations(transaction.db, TurnOwnedSubjectKind::Chunk);
+            read_chunk_rows(transaction.db)
+                .into_iter()
+                .map(|row| {
+                    let mut record = ChunkRecord {
+                        chunk_id: row.chunk_id.clone(),
+                        chunk_order: row.chunk_order,
+                        status: row.status,
+                        accumulated_projected_tokens: row.accumulated_projected_tokens,
+                        member_turn_ids: row.member_turn_ids,
+                        derivations: None,
+                    };
+                    if let Some(derivations) = derivations_by_chunk.get(&row.chunk_id) {
+                        record.derivations = Some(derivations.clone());
+                    }
+                    record
+                })
+                .collect::<Vec<_>>()
+        })
+    }))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!(
+            "chunk read-back failed: {}",
+            panic_detail(payload)
+        )),
+    }
 }
 
 /// Closed chunk derivation vocabulary on a successful `ChunkDeriveResult`
@@ -320,11 +386,13 @@ impl ChunkDeriveDerivationType {
 /// `chunk_summary_detailed`). Phase 2 must apply that default before read.
 /// Returns compact material (domain type, not crate-root).
 pub fn get_chunk_text(
-    _transaction: &DbReadTransaction,
-    _chunk_id: &str,
-    _derivation_type: Option<ChunkDeriveDerivationType>,
+    transaction: &DbReadTransaction,
+    chunk_id: &str,
+    derivation_type: Option<ChunkDeriveDerivationType>,
 ) -> CompactChunkMaterial {
-    todo!("phase 2")
+    let derivation_type =
+        derivation_type.unwrap_or(ChunkDeriveDerivationType::ChunkSummaryDetailed);
+    compact_chunk_material_from_stored_members(transaction.db, chunk_id, derivation_type)
 }
 
 /// TS `TurnChunkStructure`.
@@ -335,8 +403,11 @@ pub struct TurnChunkStructure {
     pub chunks: Vec<ChunkStructureRow>,
 }
 
-pub fn read_turn_chunk_structure(_db: &Db) -> TurnChunkStructure {
-    todo!("phase 2")
+pub fn read_turn_chunk_structure(db: &Db) -> TurnChunkStructure {
+    TurnChunkStructure {
+        turns: read_turn_structure(db),
+        chunks: read_chunk_structure(db),
+    }
 }
 
 /// TS `report` opts: `{ notReady?; turnId?; chunkId? }`.
@@ -349,10 +420,28 @@ pub struct TurnReportOpts {
 
 /// TS `report`.
 pub async fn report(
-    _thread_ref: ThreadRef,
-    _opts: Option<&TurnReportOpts>,
+    thread_ref: ThreadRef,
+    opts: Option<&TurnReportOpts>,
 ) -> OpResult<Vec<DerivationReportEntry>> {
-    todo!("phase 2")
+    let report_opts = match opts {
+        Some(o) => TurnReportOptions {
+            not_ready: o.not_ready,
+            turn_id: o.turn_id.clone(),
+            chunk_id: o.chunk_id.clone(),
+        },
+        None => TurnReportOptions::default(),
+    };
+    let result = AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+        Box::pin(async move { report_turn_derivations(transaction.db, &report_opts) })
+    }))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!("report read failed: {}", panic_detail(payload))),
+    }
 }
 
 /// TS `TurnDeriveResult` — Deserialize stays serde-tagged (`outcome`);
@@ -450,37 +539,202 @@ enum ConfigRequiredResult {
     Err { error: ErrorResult },
 }
 
-fn config_required(_operation: &str) -> ConfigRequiredResult {
-    todo!("phase 2")
+fn config_required(operation: &str) -> ConfigRequiredResult {
+    match resolve_instance_config() {
+        Some(config) => ConfigRequiredResult::Ok(config),
+        None => ConfigRequiredResult::Err {
+            error: ErrorResult {
+                error_class: ErrorClass::CallerError,
+                code: ErrorCode::InferenceUnavailable,
+                reason: format!(
+                    "{operation} requires an initialized LHC SDK inference configuration"
+                ),
+                event_index: None,
+            },
+        },
+    }
 }
 
 /// TS `deriveTurn`.
-pub async fn derive_turn(_thread_ref: ThreadRef, _turn_id: &str) -> OpResult<TurnDeriveResult> {
-    todo!("phase 2")
+pub async fn derive_turn(thread_ref: ThreadRef, turn_id: &str) -> OpResult<TurnDeriveResult> {
+    let config = match config_required("turns.deriveTurn") {
+        ConfigRequiredResult::Ok(config) => config,
+        ConfigRequiredResult::Err { error } => return OpResult::Err { error },
+    };
+    let resolved = match resolve_thread_ref(thread_ref).await {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let file_path = resolved.file_path;
+    if !Path::new(&file_path).exists() {
+        return thread_not_found(&file_path);
+    }
+    let db = match open_thread_database(&file_path) {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let turn_id = turn_id.to_string();
+    let result = AssertUnwindSafe(async {
+        let source_ref = WorkSourceRef::Turn {
+            turn_id: turn_id.clone(),
+        };
+        let assembly_result = derive_turn_owned_in_open_db(
+            &db,
+            &config,
+            WorkKind::TurnDerivation,
+            &source_ref,
+            &[
+                EnqueueDerivationTarget {
+                    subject_kind: SubjectKind::Turn,
+                    subject_id: turn_id.clone(),
+                    derivation_type: "turn_rendering".into(),
+                },
+                EnqueueDerivationTarget {
+                    subject_kind: SubjectKind::Turn,
+                    subject_id: turn_id.clone(),
+                    derivation_type: "pre_detailed_assembly".into(),
+                },
+            ],
+            None,
+        )
+        .await;
+        if let TurnOwnedDeriveResult::Failed { error } = assembly_result {
+            return OpResult::Ok {
+                value: TurnDeriveResult::Failed {
+                    turn_id: turn_id.clone(),
+                    error,
+                },
+            };
+        }
+        let result = derive_turn_owned_in_open_db(
+            &db,
+            &config,
+            WorkKind::DetailedTurnCompression,
+            &source_ref,
+            &[EnqueueDerivationTarget {
+                subject_kind: SubjectKind::Turn,
+                subject_id: turn_id.clone(),
+                derivation_type: "detailed_turn_compression".into(),
+            }],
+            None,
+        )
+        .await;
+        OpResult::Ok {
+            value: match result {
+                TurnOwnedDeriveResult::Derived { source_version } => TurnDeriveResult::Derived {
+                    turn_id: turn_id.clone(),
+                    source_version,
+                },
+                TurnOwnedDeriveResult::Failed { error } => TurnDeriveResult::Failed {
+                    turn_id: turn_id.clone(),
+                    error,
+                },
+            },
+        }
+    })
+    .catch_unwind()
+    .await;
+    db.close();
+    match result {
+        Ok(value) => value,
+        Err(payload) => storage_failure(&format!("derive failed: {}", panic_detail(payload))),
+    }
 }
 
 async fn derive_chunk(
-    _thread_ref: ThreadRef,
-    _chunk_id: &str,
-    _derivation_type: ChunkDeriveDerivationType,
+    thread_ref: ThreadRef,
+    chunk_id: &str,
+    derivation_type: ChunkDeriveDerivationType,
 ) -> OpResult<ChunkDeriveResult> {
-    todo!("phase 2")
+    let operation = match derivation_type {
+        ChunkDeriveDerivationType::ChunkSummaryDetailed => "turns.deriveDetailedChunk",
+        ChunkDeriveDerivationType::ChunkSummaryBrief => "turns.deriveBriefChunk",
+    };
+    let config = match config_required(operation) {
+        ConfigRequiredResult::Ok(config) => config,
+        ConfigRequiredResult::Err { error } => return OpResult::Err { error },
+    };
+    let resolved = match resolve_thread_ref(thread_ref).await {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let file_path = resolved.file_path;
+    if !Path::new(&file_path).exists() {
+        return thread_not_found(&file_path);
+    }
+    let db = match open_thread_database(&file_path) {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let chunk_id = chunk_id.to_string();
+    let kind = match derivation_type {
+        ChunkDeriveDerivationType::ChunkSummaryDetailed => WorkKind::ChunkSummaryDetailed,
+        ChunkDeriveDerivationType::ChunkSummaryBrief => WorkKind::ChunkSummaryBrief,
+    };
+    let result = AssertUnwindSafe(async {
+        let source_ref = WorkSourceRef::Chunk {
+            chunk_id: chunk_id.clone(),
+        };
+        let owned = derive_turn_owned_in_open_db(
+            &db,
+            &config,
+            kind,
+            &source_ref,
+            &[EnqueueDerivationTarget {
+                subject_kind: SubjectKind::Chunk,
+                subject_id: chunk_id.clone(),
+                derivation_type: derivation_type.as_str().to_string(),
+            }],
+            None,
+        )
+        .await;
+        OpResult::Ok {
+            value: match owned {
+                TurnOwnedDeriveResult::Derived { source_version } => ChunkDeriveResult::Derived {
+                    chunk_id: chunk_id.clone(),
+                    derivation_type,
+                    source_version,
+                },
+                TurnOwnedDeriveResult::Failed { error } => ChunkDeriveResult::Failed {
+                    chunk_id: chunk_id.clone(),
+                    error,
+                },
+            },
+        }
+    })
+    .catch_unwind()
+    .await;
+    db.close();
+    match result {
+        Ok(value) => value,
+        Err(payload) => storage_failure(&format!("derive failed: {}", panic_detail(payload))),
+    }
 }
 
 /// TS `deriveDetailedChunk`.
 pub async fn derive_detailed_chunk(
-    _thread_ref: ThreadRef,
-    _chunk_id: &str,
+    thread_ref: ThreadRef,
+    chunk_id: &str,
 ) -> OpResult<ChunkDeriveResult> {
-    todo!("phase 2")
+    derive_chunk(
+        thread_ref,
+        chunk_id,
+        ChunkDeriveDerivationType::ChunkSummaryDetailed,
+    )
+    .await
 }
 
 /// TS `deriveBriefChunk`.
 pub async fn derive_brief_chunk(
-    _thread_ref: ThreadRef,
-    _chunk_id: &str,
+    thread_ref: ThreadRef,
+    chunk_id: &str,
 ) -> OpResult<ChunkDeriveResult> {
-    todo!("phase 2")
+    derive_chunk(
+        thread_ref,
+        chunk_id,
+        ChunkDeriveDerivationType::ChunkSummaryBrief,
+    )
+    .await
 }
 
 // Keep Phase-2 import graph + private helpers type-referenced without
