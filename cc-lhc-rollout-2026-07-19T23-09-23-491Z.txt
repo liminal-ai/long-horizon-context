@@ -1,0 +1,1321 @@
+[user]
+[context · smooth]
+User prompt
+Please do an in-depth review of this repository. Start with onboarding docs, then review all the packages in packages, then do a deep dive on the git history. Then give me a comprehensive report of this repository, its packages, and its full git history.
+
+Assistant response
+I'll start by getting the lay of the land, then dive into each area systematically. Let me begin with parallel exploration of the structure.
+
+Tool call [outcome: succeeded]
+[tool run · Bash · 4 calls · 4 succeeded]
+Bash({"command":"echo \"=== ROOT LISTING ===\" && ls -la && echo \"\" && echo \"=== TOP-LEVEL STRUCTURE (2 levels) ===\" && find . -maxdepth 2 -type d -not -path '*/node_modules/*' -not -path '*/.git/*' | sort","description":"List repo root and directory structure"}) ⇒ succeeded
+=== ROOT LISTING ===
+total 180
+drwxrwxr-x 12 leemoore leemoore  4096 Jul 19 18:11 .
+drwxr-xr-x 16 leemoore leemoore  4096 Jul 15 21:46 ..
+-rw-rw-r--  1 leemoore leemoore  1778 Jul 15 23:42 AGENTS.md
+-rw-rw-r--  1 leemoore leemoore  1301 Jul  6 23:53 biome.json
+drwxr-xr-x  3 leemoore leemoore  4096 Jul 15 23:43 .claude
+-rw-rw-r--  1 leemoore leemoore     0 Jul 15 23:42 CLAUDE.md
+drwxrwxr-x  3 leemoore leemoore  4096 Jul 19 18:03 docs
+drwxrwxr-x  9 leemoore leemoore  4096 Jul 19 18:14 .git
+-rw-rw-… [truncated 1123 chars] ⇒ succeeded
+Bash({"command":"echo \"=== ONBOARD DOCS ===\" && ls -la docs/onboard/ 2>/dev/null && echo \"\" && echo \"=== ALL DOCS ===\" && find docs -type f 2>/dev/null | sort","description":"List onboarding and all docs"}) ⇒ succeeded
+=== ONBOARD DOCS ===
+total 164
+drwxrwxr-x 2 leemoore leemoore  4096 Jul 19 18:13 .
+drwxrwxr-x 3 leemoore leemoore  4096 Jul 19 18:03 ..
+-rw-r--r-- 1 leemoore leemoore 14901 Jul 19 18:03 01-core-concepts.md
+-rw-rw-r-- 1 leemoore leemoore 36843 Jul  6 23:53 02-domain-design.md
+-rw-rw-r-- 1 leemoore leemoore 12826 Jul  6 23:53 03-decisions-brief.md
+-rw-rw-r-- 1 leemoore leemoore 21272 Jul 12 14:29 04-host-pi-lhc.md
+-rw-rw-r-- 1 leemoore leemoore 27490 Jul 19 18:13 05-host-cc-lhc.md
+-rw-rw-r-- 1 lee… [truncated 446 chars] ⇒ succeeded
+Bash({"command":"echo \"=== PACKAGES ===\" && ls -la packages/ && echo \"\" && echo \"=== PACKAGE.JSON FILES ===\" && find packages -maxdepth 2 -name package.json -not -path '*/node_modules/*' | sort","description":"List packages directory"}) ⇒ succeeded
+=== PACKAGES ===
+total 32
+drwxrwxr-x  8 leemoore leemoore 4096 Jul 16 00:09 .
+drwxrwxr-x 12 leemoore leemoore 4096 Jul 19 18:11 ..
+drwxrwxr-x  6 leemoore leemoore 4096 Jul 19 20:59 cc-lhc
+drwxrwxr-x  6 leemoore leemoore 4096 Jul 12 17:12 codex-lhc
+drwxrwxr-x  7 leemoore leemoore 4096 Jul 19 18:12 lhc
+drwxr-xr-x  6 leemoore leemoore 4096 Jul 19 18:03 lhc-convex
+drwxrwxr-x  7 leemoore leemoore 4096 Jul 12 17:12 pi-lhc
+drwxrwxr-x  2 leemoore leemoore 4096 Jul 12 17:12 t3code-lhc
+
+=== PACKAGE.JSON F… [truncated 124 chars] ⇒ succeeded
+Bash({"command":"echo \"=== GIT LOG COUNT ===\" && git log --oneline | wc -l && echo \"\" && echo \"=== FIRST COMMIT ===\" && git log --oneline | tail -5 && echo \"\" && echo \"=== RECENT 40 ===\" && git log --oneline -40 && echo \"\" && echo \"=== BRANCHES ===\" && git branch -a && echo \"\" && echo \"=== CONTRIBUTORS ===\" && git shortlog -sn --all | head -20","description":"Git history overview"}) ⇒ succeeded
+=== GIT LOG COUNT ===
+221
+
+=== FIRST COMMIT ===
+64e0b0f Materialize appended events into messages
+74c4b63 Validate append envelope boundaries
+843fbb2 Implement SQLite append event persistence
+c719ba9 Implement SQLite thread creation persistence
+c9a7ada Scaffold lhc thread events core
+
+=== RECENT 40 ===
+1b2ee58 cc-lhc: classify housekeeping record types as meta; namespace flags under --lhc-*
+3c4c9f4 node: drop <25 engines cap — floor stays >=24.17.0 (stable node:sqlite)
+be5a9a2 docs(t3code-lhc): … [truncated 3917 chars] ⇒ succeeded
+
+Assistant response
+This is a substantial pnpm monorepo — 6 packages, 221 commits, a "Long Horizon Context" (LHC) system with multiple host integrations. Let me read the framing docs myself while sizing the packages for delegation.
+
+Tool call [outcome: succeeded]
+[tool run · Read · 3 calls · 3 succeeded]
+Read({"file_path":"/srv/work/long-horizon-context/README.md"}) ⇒ succeeded
+1	# Liminal Context (LHC)
+2	
+3	Long Horizon Context is a durable context-management system for AI coding agents. It solves the problem that long-running agent sessions produce conversation threads exceeding LLM context windows. LHC records every event in a session to SQLite, derives compressed and summarized forms through an inference pipeline, and serves **smart compact** views — intelligently compressed conversation histories that fit within token budgets while preserving what the agent needs … [truncated 22669 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/AGENTS.md"}) ⇒ succeeded
+1	# Agent instructions
+2	
+3	## Persistent memory
+4	
+5	You have a persistent file-based memory at `memory/` in this repo. It works exactly like the Claude Code memory system you are trained on, relocated here because this harness does not provide one.
+6	
+7	**At the start of every session, before other work: read `memory/MEMORY.md`** (if present — the directory is local-only and untracked, so fresh clones won't have it; skip this section until it exists). It is the index — one pointer line per mem… [truncated 1332 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/01-core-concepts.md"}) ⇒ succeeded
+1	# Long Horizon Context: Core Concepts
+2	
+3	Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+4	
+5	Long Horizon Context (LHC) is an SDK for managing an agentic harness's context and history. It keeps the full message history of a conversation as a durable record, and from that record builds shorter, summarized views that a harness c… [truncated 14565 chars] ⇒ succeeded
+
+Assistant response
+Understood — no subagents. I'll do all the reading and analysis directly myself. Continuing with the onboarding docs.
+
+Tool call [outcome: succeeded]
+[tool run · Read · 2 calls · 2 succeeded]
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/02-domain-design.md"}) ⇒ succeeded
+1	# Long Horizon Context: Domain Design
+2	
+3	Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+4	
+5	This document describes each domain in more depth: what it stores, the operations it provides, and the other domains it calls. It builds on the vocabulary in 01-core-concepts.md.
+6	
+7	## Domain surfaces
+8	
+9	A domain is both a vocabula… [truncated 37827 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/03-decisions-brief.md"}) ⇒ succeeded
+1	# Decisions brief
+2	
+3	The high-leverage rulings that shape how to approach this system. The full registry is
+4	`docs/decision-registry.md` (evidence-cited entries with statuses and graveyards) — this is
+5	the orientation cut. Entry IDs point there. If this brief and the registry disagree, the
+6	registry wins; if code and the registry disagree, that's a finding, not a license.
+7	
+8	## The record (RECORD)
+9	
+10	- **The append-only event stream is the source of truth; everything else is rebuilda… [truncated 12475 chars] ⇒ succeeded
+
+Assistant response
+Excellent — this is a remarkably well-designed and documented system. Let me read the three host onboarding docs.
+
+Tool call [outcome: succeeded]
+[tool run · Read · 3 calls · 3 succeeded]
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/04-host-pi-lhc.md"}) ⇒ succeeded
+1	# Host: pi-lhc
+2	
+3	Last verified against code: 2026-07-11. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+4	
+5	This document describes the `pi-lhc` host as it is, including its known debt. Host code is less shaped than the core SDK, and a cleanup rework is expected — the pi-lhc pass is tracked as item 18 in [docs/fixes-feature-log.md](../fixes-feature-log.md) (named … [truncated 21362 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/05-host-cc-lhc.md"}) ⇒ succeeded
+1	# Host: cc-lhc
+2	
+3	Last verified against code: 2026-07-07. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+4	
+5	This document describes the `cc-lhc` host as it is, including its known warts. It is still POC-grade — less shaped than the core SDK, with a list of cosmetic and edge-case issues carried openly in [packages/cc-lhc/README.md](../../packages/cc-lhc/README.md) … [truncated 27329 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/06-host-codex-lhc.md"}) ⇒ succeeded
+1	# Host: codex-lhc
+2	
+3	Last verified against code: 2026-07-07. Precedence when facts disagree: code, then [packages/codex-lhc/README.md](../../packages/codex-lhc/README.md), then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+4	
+5	This document describes the `codex-lhc` host as it is, including known warts. It is POC-grade — less shaped than the core SDK, with cosmetic and edge-case issues carried openly in the package REA… [truncated 15968 chars] ⇒ succeeded
+
+Assistant response
+I now have a deep understanding of the three hosts. Let me read the remaining supporting docs — the bad-code-log, decision registry, backlog, and handoff.
+
+Tool call [outcome: succeeded]
+[tool run · Read, Bash · 3 calls · 3 succeeded]
+Read({"file_path":"/srv/work/long-horizon-context/docs/onboard/bad-code-log.md"}) ⇒ succeeded
+1	# Bad Code Log
+2	
+3	Append-only working log of poor code habits and design choices encountered while cleaning up the LHC architecture, domain surfaces, naming, and documentation.
+4	
+5	## Log
+6	
+7	- Generic parameter names like `input` hide domain meaning. In `messages.edit(thread, input)`, the second argument is not just arbitrary input; it is a message edit carrying `messageId` and `content`. In `messages.deleteMessage(thread, input)`, the second argument is a deletion target carrying `messag… [truncated 19059 chars] ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/docs/backlog.md"}) ⇒ succeeded
+1	# Backlog
+2	
+3	Fixes, tighten-ups, and feature work on the road to v1.
+4	
+5	
+6	
+7	
+8	## Architecture
+9	
+10	### 35. SDK hygiene slice from the July code review
+11	
+12	**Problem:** A code-review pass over the SDK core found the version-fenced work-completion logic — the most correctness-critical code in the system — existing in two copies: one live, one dead with zero call sites, and the copies have already drifted. Three smaller findings ride along: the write-transaction helper leaves error-wra… [truncated 9502 chars] ⇒ succeeded
+Bash({"command":"echo \"=== decision-registry.md size ===\" && wc -l /srv/work/long-horizon-context/docs/decision-registry.md && echo \"\" && echo \"=== handoff size ===\" && wc -l /srv/work/long-horizon-context/docs/handoff-pi-lhc-home-unification.md","description":"Size decision registry and handoff docs"}) ⇒ succeeded
+=== decision-registry.md size ===
+1451 /srv/work/long-horizon-context/docs/decision-registry.md
+
+=== handoff size ===
+227 /srv/work/long-horizon-context/docs/handoff-pi-lhc-home-unification.md ⇒ succeeded
+
+Assistant response
+I've now absorbed all the onboarding documentation. The design discipline here is exceptional. Let me set up task tracking and move into the actual code, starting with structure and the core SDK surface.
+
+Tool call [outcome: succeeded]
+[tool run · Bash, Read · 3 calls · 3 succeeded]
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== LINE COUNTS PER PACKAGE (src) ===\"\nfor p in lhc pi-lhc cc-lhc codex-lhc lhc-convex t3code-lhc; do\n  if [ -d \"packages/$p/src\" ]; then\n    n=$(find packages/$p/src -name '*.ts' | wc -l)\n    l=$(find packages/$p/src -name '*.ts' -exec cat {} + 2>/dev/null | wc -l)\n    echo \"packages/$p/src: $n files, $l lines\"\n  fi\ndone\necho \"\"\necho \"=== LINE COUNTS PER PACKAGE (test) ===\"\nfor p in lhc pi-lhc cc-lhc codex-lhc lhc-con… [truncated 497 chars] ⇒ succeeded
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== lhc-convex (UNDOCUMENTED / untracked) ===\"\nfind packages/lhc-convex -type f -not -path '*/node_modules/*' | sort\necho \"\"\necho \"=== lhc-convex README or docs (first look) ===\"\nls -la packages/lhc-convex/ 2>/dev/null\necho \"\"\necho \"=== t3code-lhc (docs-only package) ===\"\nfind packages/t3code-lhc -type f | sort","description":"Inspect undocumented lhc-convex and t3code-lhc packages"}) ⇒ succeeded
+Read({"file_path":"/srv/work/long-horizon-context/packages/lhc/src/sdk.ts"}) ⇒ succeeded
+=== LINE COUNTS PER PACKAGE (src) ===
+packages/lhc/src: 72 files, 13705 lines
+packages/pi-lhc/src: 50 files, 5888 lines
+packages/cc-lhc/src: 30 files, 4857 lines
+packages/codex-lhc/src: 34 files, 5451 lines
+
+=== LINE COUNTS PER PACKAGE (test) ===
+packages/lhc/test: 69 files, 21221 lines
+packages/pi-lhc/test: 53 files, 9622 lines
+packages/cc-lhc/test: 24 files, 5161 lines
+packages/codex-lhc/test: 29 files, 6204 lines
+
+=== TOTAL TS LINES (all packages, excl node_modules/dist) ===
+74802 ⇒ succeeded
+=== lhc-convex (UNDOCUMENTED / untracked) ===
+packages/lhc-convex/.convex/.gitignore
+packages/lhc-convex/.convex/local/default/config.json
+packages/lhc-convex/.convex/local/default/convex_local_backend.sqlite3
+packages/lhc-convex/.convex/local/default/convex_local_storage/modules/09ad7f51-69c6-44b2-887c-d5ca95030fe3.blob
+packages/lhc-convex/.convex/local/default/convex_local_storage/modules/1a307b07-46a0-40c0-bbea-054fcba84572.blob
+packages/lhc-convex/.convex/local/default/convex_local_storage/m… [truncated 16811 chars] ⇒ succeeded
+1	export * as inspect from "./inspect/index.js";
+2	export * as intakeStream from "./intake-stream/index.js";
+3	export * as messages from "./messages/index.js";
+4	export * as logging from "./shared-tech/logging/index.js";
+5	export * as threadView from "./thread-view/index.js";
+6	export * as threads from "./threads/index.js";
+7	export * as turns from "./turns/index.js";
+8	
+9	import * as inspectDomain from "./inspect/index.js";
+10	import * as intakeStreamDomain from "./intake-stream/index.js";
+11	i… [truncated 31644 chars] ⇒ succeeded
+
+Assistant response
+Two notable findings already: `lhc-convex` (untracked, undocumented — a Convex backend port, likely the `lhc-convex` branch's work leaking build artifacts into this tree) and `t3code-lhc` (docs-only, implementation in a separate fork). The `sdk.ts` is exceptionally disciplined. Now let me do the git history deep dive the user asked for, and check the current in-flight work.
+
+Tool call [outcome: succeeded]
+[tool run · Bash · 3 calls · 3 succeeded]
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== COMMIT TIMELINE (by day, count) ===\"\ngit log --date=short --pretty=format:'%ad' | sort | uniq -c | awk '{print $2\": \"$1\" commits\"}'\necho \"\"\necho \"=== FIRST & LAST COMMIT DATES ===\"\ngit log --reverse --date=iso --pretty=format:'%ad %h %s' | head -1\ngit log --date=iso --pretty=format:'%ad %h %s' | head -1\necho \"\"\necho \"\"\necho \"=== AUTHOR BREAKDOWN BY DATE ===\"\ngit log --date=short --pretty=format:'%ad|%an' | sor… [truncated 86 chars] ⇒ succeeded
+=== COMMIT TIMELINE (by day, count) ===
+2026-06-03: 8 commits
+2026-06-04: 2 commits
+2026-06-10: 10 commits
+2026-06-11: 18 commits
+2026-06-12: 12 commits
+2026-06-14: 4 commits
+2026-06-15: 2 commits
+2026-06-18: 16 commits
+2026-06-19: 2 commits
+2026-06-20: 6 commits
+2026-06-21: 2 commits
+2026-06-22: 29 commits
+2026-06-23: 8 commits
+2026-06-24: 1 commits
+2026-06-25: 3 commits
+2026-06-26: 7 commits
+2026-06-27: 5 commits
+2026-07-01: 3 commits
+2026-07-02: 1 commits
+2026-07-03: 5 commits
+2026-07-04: 11 … [truncated 1210 chars] ⇒ succeeded
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== lhc-convex BRANCH (undocumented Convex port) ===\"\ngit log origin/lhc-convex --oneline -20 2>/dev/null || git log lhc-convex --oneline -20 2>/dev/null\necho \"\"\necho \"=== lhc-convex branch: what files does it add? (vs main) ===\"\ngit diff --stat main...origin/lhc-convex 2>/dev/null | tail -30 || echo \"no origin/lhc-convex\"\necho \"\"\necho \"=== remove-queue-retries BRANCH ===\"\ngit log main..remove-queue-retries --oneline 2>… [truncated 83 chars] ⇒ succeeded
+=== lhc-convex BRANCH (undocumented Convex port) ===
+b5b29cd lhc-convex: read chunk-scope summaries from the example host
+d257c04 lhc-convex: real OpenAI provider for the example host
+8eea0d7 lhc-convex: exercise the example host against a live local backend
+1680a65 lhc-convex: finalize ledger — 51 ported / 1 n/a / 0 open
+3af0819 lhc-convex: fix typecheck + lint on ported tests
+e0421d1 lhc-convex: port final cluster (10 suites) + cover crash-never-gates
+7de30ae lhc-convex: port chunk/turns clust… [truncated 3110 chars] ⇒ succeeded
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== CURRENT BRANCH: cc-lhc-modal-tightening vs main ===\"\ngit log main..HEAD --oneline 2>/dev/null | head\necho \"\"\necho \"=== UNCOMMITTED WORKING CHANGES (stat) ===\"\ngit diff --stat\necho \"\"\necho \"=== The untracked freeze-repro test (why?) ===\"\nwc -l packages/cc-lhc/test/wrapper/freeze-repro.test.ts 2>/dev/null\nhead -60 packages/cc-lhc/test/wrapper/freeze-repro.test.ts 2>/dev/null","description":"Current branch and working-t… [truncated 12 chars] ⇒ succeeded
+=== CURRENT BRANCH: cc-lhc-modal-tightening vs main ===
+
+=== UNCOMMITTED WORKING CHANGES (stat) ===
+ docs/onboard/05-host-cc-lhc.md                     |   4 +-
+ packages/cc-lhc/README.md                          |   4 +-
+ packages/cc-lhc/src/wrapper/command-guard.ts       |  31 ++++-
+ packages/cc-lhc/src/wrapper/modal.ts               |  90 +++++++++++----
+ packages/cc-lhc/src/wrapper/panel.ts               |  41 +++----
+ packages/cc-lhc/src/wrapper/run.ts                 |  97 ++++++++++++----… [truncated 3333 chars] ⇒ succeeded
+
+Assistant response
+Now I have the branch picture: `lhc-convex` is a major parallel effort (13 commits, +25K lines) porting LHC to a Convex backend component, built on `remove-queue-retries` (a one-shot queue design pivot). The current branch has the modal-freeze fixes uncommitted. Let me pull the full commit history to segment the development arc, and verify a couple of the code-quality claims directly.
+
+Tool call [outcome: succeeded]
+[tool run · Bash · 1 call · 1 succeeded]
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== FULL COMMIT LOG (oldest → newest, with dates) ===\"\ngit log --reverse --date=short --pretty=format:'%ad %h %s'","description":"Full commit log oldest to newest"}) ⇒ succeeded
+=== FULL COMMIT LOG (oldest → newest, with dates) ===
+2026-06-03 c9a7ada Scaffold lhc thread events core
+2026-06-03 c719ba9 Implement SQLite thread creation persistence
+2026-06-03 843fbb2 Implement SQLite append event persistence
+2026-06-03 74c4b63 Validate append envelope boundaries
+2026-06-03 64e0b0f Materialize appended events into messages
+2026-06-03 c654be1 Fix object-form append validation
+2026-06-03 ecb1e7f Persist turn end triggers during append
+2026-06-03 4c572ec Report skipped append e… [truncated 20780 chars] ⇒ succeeded
+
+Assistant response
+The full history reveals a strikingly disciplined epic/story methodology. Let me round out the repository picture (root config, scripts, setup, tooling) and verify the one concrete correctness claim from the backlog — the alleged dead-duplicate of the version-fencing logic.
+
+Tool call [outcome: succeeded]
+[tool run · Bash · 3 calls · 3 succeeded]
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== ROOT CONFIG FILES ===\"\necho \"--- package.json ---\"; cat package.json\necho \"\"; echo \"--- pnpm-workspace.yaml ---\"; cat pnpm-workspace.yaml\necho \"\"; echo \"--- .gitmodules ---\"; cat .gitmodules\necho \"\"; echo \"--- .setup ---\"; find .setup -type f | sort\necho \"\"; echo \"--- scripts ---\"; ls scripts/\necho \"\"; echo \"--- pi-extensions ---\"; ls -la pi-extensions/\necho \"\"; echo \"--- .claude/skills ---\"; find .c… [truncated 76 chars] ⇒ succeeded
+=== ROOT CONFIG FILES ===
+--- package.json ---
+{
+  "name": "liminal-context",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.8.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm --filter lhc run build && pnpm -r --if-present typecheck",
+    "test": "pnpm --filter lhc run build && pnpm -r --if-present test",
+    "format": "biome format --write .",
+    "lint": "biome check .",
+    "test:all": "pnpm --f… [truncated 1692 chars] ⇒ succeeded
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== VERIFY BACKLOG ITEM 35: dead-duplicate version-fencing ===\"\necho \"--- functions defined in durable-work / work-queue ---\"\ngrep -rn \"export function\\|^function\\|const applyDerivation\\|Completion\\|completeWork\\|failWork\" packages/lhc/src/shared-tech/durable-work/ packages/lhc/src/shared-tech/work-queue/ 2>/dev/null | grep -i \"complet\\|fail\\|apply\\|claim_epoch\\|source_version\" | head -40\necho \"\"\necho \"--- where is… [truncated 194 chars] ⇒ succeeded
+=== VERIFY BACKLOG ITEM 35: dead-duplicate version-fencing ===
+--- functions defined in durable-work / work-queue ---
+packages/lhc/src/shared-tech/durable-work/index.ts:3:  CompletionTx,
+packages/lhc/src/shared-tech/durable-work/index.ts:49:export class DerivationCompletionError extends Error {
+packages/lhc/src/shared-tech/durable-work/index.ts:78:    throw new DerivationCompletionError(`derivation completion target duplicated: ${duplicateExpected}`);
+packages/lhc/src/shared-tech/durable-work/in… [truncated 2380 chars] ⇒ succeeded
+Bash({"command":"cd /srv/work/long-horizon-context\necho \"=== lhc-convex branch: schema + example (characterize the port) ===\"\necho \"--- convex source files on branch ---\"\ngit ls-tree -r --name-only origin/lhc-convex -- packages/lhc-convex 2>/dev/null | grep -vE 'node_modules|dist/|\\.convex/' | head -60\necho \"\"\necho \"--- ledger (ported test tally) head ---\"\ngit show origin/lhc-convex:packages/lhc-convex/PORT-LEDGER.md 2>/dev/null | head -40 || git show origin/lhc-convex:packages/lh… [truncated 163 chars] ⇒ succeeded
+=== lhc-convex branch: schema + example (characterize the port) ===
+--- convex source files on branch ---
+packages/lhc-convex/.gitignore
+packages/lhc-convex/PORTING_LEDGER.md
+packages/lhc-convex/convex.config.ts
+packages/lhc-convex/convex.json
+packages/lhc-convex/convex/_generated/api.d.ts
+packages/lhc-convex/convex/_generated/api.js
+packages/lhc-convex/convex/_generated/component.ts
+packages/lhc-convex/convex/_generated/dataModel.d.ts
+packages/lhc-convex/convex/_generated/server.d.ts
+packages/l… [truncated 2506 chars] ⇒ succeeded
+
+Assistant response
+Let me settle the one concrete correctness claim — whether `work-queue`'s `complete`/`failTerminal` are the alleged dead duplicates — and grab the Convex port's ledger.
+
+[user]
+sorry before you continue, did you say there are a bunch of untracked changes for the lhc-convexx?
+
+[assistant]
+Right — let me be precise, because "untracked changes" is slightly misleading for what's actually there.
+
+Two separate things are going on, and I conflated them in shorthand:
+
+**1. The `lhc-convex` git branch** (`origin/lhc-convex`, 13 commits ahead of main) — this is the *real* work: a from-scratch port of LHC to a Convex backend component. Its source (`convex/*.ts`, `src/client`, `src/shared`, an `example/` host, `PORTING_LEDGER.md`) is properly committed **on that branch**. It is *not* untracked — it's just on a different branch than the one you have checked out (`cc-lhc-modal-tightening`).
+
+**2. The `packages/lhc-convex/` directory sitting in your current working tree** — *this* is what shows as untracked (`?? packages/lhc-convex/`) in `git status`. But what's physically in it on this branch is **not source code** — it's only generated/local artifacts left behind from when you were working on that branch:
+
+- `dist/` — compiled build output
+- `.convex/` and `example/.convex/` — local Convex dev-backend state (sqlite DBs, `.blob` module files)
+- `node_modules/`
+- `tsconfig.build.tsbuildinfo`
+- `.env.local` (and `example/.env.local`)
+
+So: no hand-written source is untracked here — it's build output and a local Convex backend that would normally be gitignored. The whole directory is untracked because this branch has no `packages/lhc-convex/` in its tree at all; these files are just... sitting there on disk from the other branch's work.
+
+**One thing worth flagging:** there are two `.env.local` files in that untracked directory. Those commonly hold Convex deploy keys and (given the `openaiModel.ts` example host) possibly an OpenAI API key. They're untracked so they're not going into git, but they are loose in the working tree — worth a look if you don't remember what's in them. I didn't read them (didn't want to pull secrets into this transcript unprompted).
+
+Nothing I reviewed is *modified tracked* except the cc-lhc modal-freeze work (the 10 files in `git diff`) — that's your genuine in-flight change.
+
+Want me to continue the full repository report from here? And if useful I can tell you exactly what those two `.env.local` files contain (or just whether they hold live credentials) before moving on.
+
+[user]
+any challenges with merging all the code in the convex branch into main? with basically merging all the code into main and committing before you go on?
+
+[assistant]
+Good question to pause on — because the answer changes what "merge into main" actually means here. Let me check the real mechanics before touching anything, since this turns out not to be a simple additive merge.
+
+[tool call · Bash · toolu_01QftvAtX6pg25322EMSYgEQ]
+{"command":"cd /srv/work/long-horizon-context\necho \"=== Is main an ancestor of lhc-convex? (fast-forwardable?) ===\"\nif git merge-base --is-ancestor main origin/lhc-convex; then echo \"YES — main is an ancestor; merge would FAST-FORWARD (no conflicts mechanically)\"; else echo \"NO — divergent; real merge needed\"; fi\necho \"\"\necho \"=== merge-base main <-> origin/lhc-convex ===\"\ngit merge-base main origin/lhc-convex\necho \"(main tip = $(git rev-parse --short main))\"\necho \"\"\necho \"=== Commits main..origin/lhc-convex (what would come in) ===\"\ngit log --oneline main..origin/lhc-convex\necho \"\"\necho \"=== The one-shot-queue pivot commit 3dd0b08 — what it TOUCHES in core ===\"\ngit show 3dd0b08 --stat --oneline | head -40","description":"Check fast-forward-ability and the queue-pivot commit scope"}
+
+[tool result · toolu_01QftvAtX6pg25322EMSYgEQ]
+=== Is main an ancestor of lhc-convex? (fast-forwardable?) ===
+YES — main is an ancestor; merge would FAST-FORWARD (no conflicts mechanically)
+
+=== merge-base main <-> origin/lhc-convex ===
+1b2ee588fb57a94e3513c98574ed6af1006e8e09
+(main tip = 1b2ee58)
+
+=== Commits main..origin/lhc-convex (what would come in) ===
+b5b29cd lhc-convex: read chunk-scope summaries from the example host
+d257c04 lhc-convex: real OpenAI provider for the example host
+8eea0d7 lhc-convex: exercise the example host against a live local backend
+1680a65 lhc-convex: finalize ledger — 51 ported / 1 n/a / 0 open
+3af0819 lhc-convex: fix typecheck + lint on ported tests
+e0421d1 lhc-convex: port final cluster (10 suites) + cover crash-never-gates
+7de30ae lhc-convex: port chunk/turns cluster (5 suites)
+66369ac lhc-convex: port view-rendering cluster (5 suites)
+cea60fd lhc-convex: port inspect/report/mutations cluster + fix closed-chunk cascade bug
+c23c1a7 lhc-convex: port inference cluster (7 suites)
+bf32cfa lhc-convex: port derivation-turns, view-compact-preview, view-fixture
+b867b14 lhc-convex: rounds 2-3 — validation differential, tool-result subsystem, threads A-8
+baf5249 lhc-convex: LHC as a Convex component — round 1 checkpoint
+3dd0b08 lhc: one-shot work queue — remove retry/backoff
+
+=== The one-shot-queue pivot commit 3dd0b08 — what it TOUCHES in core ===
+3dd0b08 lhc: one-shot work queue — remove retry/backoff
+ docs/decision-registry.md                          |  14 +-
+ docs/onboard/01-core-concepts.md                   |   2 +-
+ packages/lhc/src/inspect/internal/health.ts        |  22 +-
+ packages/lhc/src/inspect/internal/overview.ts      |   9 +-
+ packages/lhc/src/messages/index.ts                 |   2 +-
+ packages/lhc/src/messages/internal/derivations.ts  |   3 +-
+ packages/lhc/src/messages/internal/derive.ts       |  12 +-
+ packages/lhc/src/messages/internal/handlers.ts     |   4 +-
+ packages/lhc/src/sdk.ts                            |  20 +-
+ packages/lhc/src/shared-tech/classify.ts           |  20 +-
+ packages/lhc/src/shared-tech/derivation.ts         |  23 +-
+ packages/lhc/src/shared-tech/durable-work/index.ts |  48 +--
+ packages/lhc/src/shared-tech/errors.ts             |   3 +-
+ packages/lhc/src/shared-tech/inference-adapter.ts  |  27 +-
+ packages/lhc/src/shared-tech/inspect.ts            |   8 +-
+ .../lhc/src/shared-tech/logging/derivation-log.ts  |   2 -
+ packages/lhc/src/shared-tech/report.ts             |  10 +-
+ packages/lhc/src/shared-tech/scheduler.ts          | 153 ++++------
+ packages/lhc/src/shared-tech/storage.ts            |   2 +-
+ packages/lhc/src/shared-tech/thread-migrate.ts     |  13 +-
+ packages/lhc/src/shared-tech/view.ts               |   2 +-
+ packages/lhc/src/shared-tech/work-queue/index.ts   | 295 ++++--------------
+ packages/lhc/src/thread-view/index.ts              |  26 +-
+ packages/lhc/src/threads/internal/create.ts        |   8 +-
+ packages/lhc/src/turns/internal/derivations.ts     |   3 +-
+ packages/lhc/src/turns/internal/derive.ts          |  83 ++---
+ .../lhc/test/chunk-brief-from-detailed.test.ts     |  14 +-
+ packages/lhc/test/chunk-compact-recovery.test.ts   |  19 +-
+ packages/lhc/test/chunk-detailed-format.test.ts    |  10 +-
+ packages/lhc/test/derivation-messages.test.ts      |  42 ++-
+ packages/lhc/test/derivation-turns.test.ts         |  12 +-
+ .../lhc/test/detailed-turn-compression.test.ts     |  42 +--
+ packages/lhc/test/epic-fix-02.test.ts              |  80 +----
+ packages/lhc/test/fixtures.test.ts                 |  22 +-
+ packages/lhc/test/fixtures/drain-runner.ts         |   3 +-
+ packages/lhc/test/fixtures/index.ts                |   2 +-
+ .../test/fixtures/inference-callbacks-double.ts    |  15 +-
+ packages/lhc/test/fixtures/lifecycle.ts            |   3 +-
+ packages/lhc/test/fixtures/seam-conformance.ts     |   1 -
+
+[assistant]
+Here's the real picture — and it's more consequential than a "new isolated package" merge.
+
+## The headline challenge
+
+Mechanically, the merge is *trivial*: `main` is a direct ancestor of `origin/lhc-convex` (merge-base = `main`'s tip `1b2ee58`), so `git merge origin/lhc-convex` into main is a clean **fast-forward — zero conflicts**.
+
+But **it is not additive.** Those 14 commits sit on top of `3dd0b08 lhc: one-shot work queue — remove retry/backoff` (the `remove-queue-retries` branch). That commit is a **core-SDK behavior change**, not Convex-only:
+
+- rewrites `shared-tech/work-queue/index.ts` (~295 lines gone), `scheduler.ts` (153 lines), `durable-work/index.ts`, `sdk.ts`, `inference-adapter.ts`, `errors.ts` — it rips out retry + exponential backoff entirely
+- rewrites **~28 core `lhc` test files** to match one-shot semantics
+- already edits `docs/decision-registry.md` and `01-core-concepts.md`, but the rest of the doc corpus (README, 02, 04, the QUEUE-* decisions) still describes retry/backoff — those go stale
+
+So fast-forwarding `lhc-convex` onto main doesn't just add a package — it **changes production behavior for all three shipped hosts** (pi-lhc, cc-lhc, codex-lhc all run on `lhc`'s queue). After the merge, a failed retryable inference call (`rate_limit`, `timeout`, `network`, `empty_output`) lands `failed` on the first try instead of backing off and retrying. For the wrapper hosts that shell out to `claude -p` (which *does* hit rate limits), that's a real regression risk. Plus you'd be landing exploratory WIP (an "example host," live-backend test scaffolding, "51 ported / 1 n/a") onto the trunk.
+
+## Two things that de-risk it
+
+1. **Nothing is at risk of being lost.** The Convex source is already safely committed on `origin/lhc-convex` and local `lhc-convex`. Only *build artifacts* (`dist/`, `.convex/`, `.env.local`) are untracked in this working tree. There's no "rescue the untracked work" urgency.
+2. **A fast-forward is locally reversible** (you haven't pushed; `git reset` restores it) — but the *consequence* (retry-removal on trunk) is the part that matters, and whether that's wanted is your call, not mine to assume.
+
+There's also a practical blocker: you're on `cc-lhc-modal-tightening` with the uncommitted modal-freeze work. Moving `main` means dealing with that first (commit it here or stash) — it's unrelated to the Convex work.
+
+Given that "merge all into main" turns out to carry a core behavior change you may or may not intend, I'd rather confirm the direction than silently fast-forward it onto trunk.
+
+[tool call · AskUserQuestion · toolu_01UUw6BvxrjJ8Zy7XPPhp5Vs]
+{"questions":[{"header":"Merge scope","multiSelect":false,"options":[{"description":"Leave lhc-convex on its branch (already safely committed). Don't move trunk. I note it in the report and continue the review. Safest; nothing lost.","label":"Keep as branch/PR for now"},{"description":"Merge just remove-queue-retries (3dd0b08) to main if dropping retry/backoff is a decided SDK direction. Keep the Convex port on its branch until it's release-ready. Requires doc updates.","label":"Only the queue simplification"},{"description":"main becomes b5b29cd: queue pivot + full Convex port + example host land on trunk. Clean FF, but trunk carries WIP and the host-facing behavior change. Docs go stale.","label":"Fast-forward everything to main"}],"question":"Merging lhc-convex into main also lands the 'remove retry/backoff' core-queue change + exploratory Convex WIP on the trunk (clean fast-forward, but it changes behavior for pi/cc/codex hosts). How do you want to proceed?"},{"header":"Modal WIP","multiSelect":false,"options":[{"description":"Commit the 10 modified files + freeze-repro.test.ts on cc-lhc-modal-tightening so the tree is clean before anything else. (I'll only do this if you also pick a merge action that needs it.)","label":"Commit it on this branch first"},{"description":"Don't touch it. Appropriate if you pick 'Keep as branch/PR' — no branch move happens, so the WIP can stay uncommitted while I continue the report.","label":"Leave it as-is"},{"description":"git stash the modal work, do the main operation, then restore. Keeps it uncommitted but out of the way.","label":"Stash it"}],"question":"Before any branch move, what should happen to the uncommitted cc-lhc modal-freeze work in this tree?"}]}
+
+[tool result · toolu_01UUw6BvxrjJ8Zy7XPPhp5Vs · error]
+The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.
+
+[user]
+[Request interrupted by user for tool use]
+
+[user]
+merge it all to main
+
+[assistant]
+Clear — you've got the full picture and want it all on main. Executing now. First let me confirm the exact target commit (local vs origin `lhc-convex`) and re-confirm the fast-forward is safe, before moving the ref.
+
+[tool call · Bash · toolu_01LJ45c5ejY1ucJ6Nwr6Ronu]
+{"command":"cd /srv/work/long-horizon-context\necho \"=== current branch ===\"; git rev-parse --abbrev-ref HEAD\necho \"\"\necho \"=== ref commits ===\"\nprintf 'main            '; git rev-parse --short main\nprintf 'HEAD (current)  '; git rev-parse --short HEAD\nprintf 'lhc-convex(loc) '; git rev-parse --short lhc-convex\nprintf 'origin/lhc-convex '; git rev-parse --short origin/lhc-convex\necho \"\"\necho \"=== local lhc-convex == origin/lhc-convex ? ===\"\nif [ \"$(git rev-parse lhc-convex)\" = \"$(git rev-parse origin/lhc-convex)\" ]; then echo \"SAME commit — unambiguous target\"; else echo \"DIFFER:\"; git log --oneline origin/lhc-convex..lhc-convex; echo \"---\"; git log --oneline lhc-convex..origin/lhc-convex; fi\necho \"\"\necho \"=== FF-safety: is main an ancestor of lhc-convex? (moving main loses nothing) ===\"\nif git merge-base --is-ancestor main lhc-convex; then echo \"YES — fast-forward, no main commits lost\"; else echo \"NO — STOP\"; fi","description":"Verify convex ref target and fast-forward safety"}
+
+[tool result · toolu_01LJ45c5ejY1ucJ6Nwr6Ronu]
+=== current branch ===
+cc-lhc-modal-tightening
+
+=== ref commits ===
+main            1b2ee58
+HEAD (current)  1b2ee58
+lhc-convex(loc) b5b29cd
+origin/lhc-convex b5b29cd
+
+=== local lhc-convex == origin/lhc-convex ? ===
+SAME commit — unambiguous target
+
+=== FF-safety: is main an ancestor of lhc-convex? (moving main loses nothing) ===
+YES — fast-forward, no main commits lost
+
+[assistant]
+Verified: target is `b5b29cd` (local == origin), and `main` fast-forwards cleanly with nothing lost. Advancing `main` now — I'll use `git branch -f` so it moves `main` forward *without* checking it out, leaving your modal-freeze WIP on `cc-lhc-modal-tightening` completely untouched.
+
+[tool call · Bash · toolu_01HzH2VYTkLiavPAoPgzE6pj]
+{"command":"cd /srv/work/long-horizon-context\necho \"=== BEFORE: main at $(git rev-parse --short main) ===\"\n# Fast-forward main to the convex tip without checking it out\ngit branch -f main lhc-convex\necho \"=== AFTER: main at $(git rev-parse --short main) ===\"\necho \"\"\necho \"=== main now contains the 14 convex commits (tip 3) ===\"\ngit log --oneline -3 main\necho \"\"\necho \"=== I am still on my WIP branch, untouched ===\"\ngit rev-parse --abbrev-ref HEAD\necho \"main..HEAD (behind by):\"; git log --oneline main..HEAD | wc -l\necho \"HEAD..main (ahead by):\"; git log --oneline HEAD..main | wc -l\necho \"\"\necho \"=== WIP still intact (tracked modifications preserved) ===\"\ngit status --short | head -15","description":"Fast-forward main to convex tip and verify state"}
+
+[tool result · toolu_01HzH2VYTkLiavPAoPgzE6pj]
+=== BEFORE: main at 1b2ee58 ===
+=== AFTER: main at b5b29cd ===
+
+=== main now contains the 14 convex commits (tip 3) ===
+b5b29cd lhc-convex: read chunk-scope summaries from the example host
+d257c04 lhc-convex: real OpenAI provider for the example host
+8eea0d7 lhc-convex: exercise the example host against a live local backend
+
+=== I am still on my WIP branch, untouched ===
+cc-lhc-modal-tightening
+main..HEAD (behind by):
+0
+HEAD..main (ahead by):
+14
+
+=== WIP still intact (tracked modifications preserved) ===
+ M docs/onboard/05-host-cc-lhc.md
+ M packages/cc-lhc/README.md
+ M packages/cc-lhc/src/wrapper/command-guard.ts
+ M packages/cc-lhc/src/wrapper/modal.ts
+ M packages/cc-lhc/src/wrapper/panel.ts
+ M packages/cc-lhc/src/wrapper/run.ts
+ M packages/cc-lhc/test/wrapper/command-guard.test.ts
+ M packages/cc-lhc/test/wrapper/modal.test.ts
+ M packages/cc-lhc/test/wrapper/panel.test.ts
+ M packages/cc-lhc/test/wrapper/run.test.ts
+?? packages/cc-lhc/test/wrapper/freeze-repro.test.ts
+?? packages/lhc-convex/
+
+[assistant]
+✅ **Done — `main` now contains all the Convex work.**
+
+- `main`: `1b2ee58` → **`b5b29cd`** (fast-forwarded, all 14 commits)
+- Your modal-freeze WIP is **untouched** on `cc-lhc-modal-tightening` (still 10 modified files + `freeze-repro.test.ts`, uncommitted, exactly as it was)
+
+A couple of honest notes on what just happened:
+
+- **No new commit was created, and that's correct.** Because `main` was a strict ancestor, this is a *fast-forward* — the 14 convex commits already existed; `main`'s pointer just advanced onto them. There was nothing new to commit. If you specifically wanted an explicit merge-commit node in the history (`--no-ff`), say so and I'll redo it that way.
+- **Not pushed.** `origin/main` still points at `1b2ee58`. Advancing the shared remote trunk is the outward-facing, hard-to-undo step, so I left it for your explicit go. Want me to `git push origin main`?
+- **Trunk now carries the behavior change + stale docs**, as flagged: retry/backoff is gone from the core queue for *all* hosts, and `README.md` / `02-domain-design.md` / the `QUEUE-*` decision entries still describe retries. That's follow-up work (the `3dd0b08` commit already updated `01-core-concepts.md` and the decision registry, just not the rest).
+
+One framing point for the report below: **my entire review was read against `1b2ee58`** (the pre-merge trunk, which is what's still checked out in this working tree). `main` has now moved past that. Where it matters, I'll note it.
+
+---
+
+# Comprehensive Repository Report: Long Horizon Context (LHC)
+
+## 1. What this is
+
+**Long Horizon Context (LHC)** is a durable context-management system for AI coding agents. The problem it solves: long-running agent sessions produce conversation threads that blow past LLM context windows. LHC records every event of a session to SQLite, derives compressed/summarized forms through an inference pipeline, and serves **"smart compact"** views — intelligently compressed histories that fit a token budget while preserving what the agent needs to keep working.
+
+The architecture is a **single-login-free, in-process SDK** (`lhc`) consumed by **host harnesses** that adapt it to a specific coding agent. It never touches the network itself — all model calls are delegated back to the host through a callback boundary.
+
+**Maturity:** the core SDK is production-shaped and exceptionally disciplined; the hosts are explicitly POC-grade but functional and dogfooded. ~75,000 lines of TypeScript, ~6 weeks of near-daily solo development (Jun 3 – Jul 12 2026), one primary author (Lee Moore, 234 commits), one co-identity ("T3 Code", 22 commits), one external PR contributor.
+
+## 2. Repository layout & tooling
+
+```
+long-horizon-context/
+├── packages/
+│   ├── lhc/         Core SDK — 72 src files / 13.7k lines, 69 test files / 21.2k lines
+│   ├── pi-lhc/      PI connector — 50 / 5.9k src, 53 / 9.6k test
+│   ├── cc-lhc/      Claude Code PTY wrapper — 30 / 4.9k src, 24 / 5.2k test
+│   ├── codex-lhc/   Codex PTY wrapper — 34 / 5.5k src, 29 / 6.2k test
+│   ├── t3code-lhc/  Docs-only (4 .md) — design for a web host built in a separate fork
+│   └── lhc-convex/  Convex-backend port (just merged to main; see §4/§5)
+├── docs/
+│   ├── onboard/     01-core-concepts, 02-domain-design, 03-decisions-brief,
+│   │                04/05/06-host-{pi,cc,codex}-lhc, bad-code-log
+│   ├── decision-registry.md   (1,451 lines — the canonical authority)
+│   └── backlog.md   (8 items on the road to v1)
+├── vendor/pi/       git submodule → earendil-works/pi (pinned SHA)
+├── pi-extensions/   PI harness extensions (exa-search, fast, exit-alias)
+├── scripts/ .setup/ Cold-install automation for agents to execute
+├── memory/          Agent persistent memory (local-only, untracked)
+└── biome.json, pnpm-workspace.yaml, AGENTS.md
+```
+
+**Tooling stance:**
+- **pnpm workspace**, `pnpm@11.8.0`, **Node ≥ 24.17.0** (deliberately — it depends on the stable built-in `node:sqlite`, which is why the floor is so high).
+- **Biome 2.5.0** for format + lint (single tool, no ESLint/Prettier split).
+- **Verify gates**: `verify` = format-check → lint → typecheck → fast tests; `verify:all` adds real-inference integration tests (gated behind `LHC_RUN_INTEGRATION=1` + `OPENROUTER_API_KEY`).
+- **Vendored PI as a submodule** pointing directly at upstream `earendil-works/pi` at a pinned SHA, with pnpm `overrides` forcing the transitive `pi-ai`/`pi-agent-core`/`pi-tui` deps to the vendored copies. Notably **carries zero local patches now** — see the submodule saga in §4.
+- Root `package.json` still calls itself `"liminal-context"` — a **leftover from the pre-rename name** (the repo was renamed to `long-horizon-context`; the `bad-code-log` paths still reference `.../liminal-context`).
+
+## 3. The packages
+
+### 3.1 `lhc` — the core SDK (the crown jewel)
+
+A Node library with **no CLI and no network**. The entire public API is `initLhc(config) → Lhc`, exposing domain namespaces: `threads`, `intakeStream`, `messages`, `turns`, `threadView`, `inspect`, `logging`, `work`.
+
+**Domain model** (each domain owns one part of the conversation model and is reached the same way whether called by the host, another domain, or a future app-server endpoint):
+
+- **Threads** — one durable conversation = one SQLite file (WAL mode). The file *is* the thread; a separate registry maps ids→paths as a lookup convenience, never authority. Thread ids are random (`th_`+hex); everything inside is deterministic positional (`t<n>`, `m<n>`, `c<n>`). Schema-versioned, migrates forward on open.
+- **Intake stream** — the *only* content-entry path. Nine closed event kinds, closed schemas (unknown fields rejected structurally via Effect Schema), all-or-nothing batches, thread-scoped idempotency. Turn boundaries are decided **synchronously at intake**, never inferred later; exactly one open turn is a hard invariant.
+- **Messages** — normalized readable view (typed blocks + token estimate). Owns two message-level derivations (smoothed prompt, tool-result summary) and edit/delete with cascade invalidation.
+- **Turns** — turn state machine + chunk formation. Chunks group whole consecutive closed turns by a deterministic token-arithmetic policy (target 2200 / max 4400). Owns four turn/chunk derivations.
+- **Thread view** — smart compact + serving. Four fidelity bands (full live tail → smooth → detailed → brief) as a *gradient, not a cliff*. Compact never calls a model — it's pure assembly from already-derived artifacts, with a fallback ladder (degrade over drop) and a hard refusal on canonical-record damage.
+- **Inspect** — read-only reports (overview/health/view), reads through other domains' surfaces, changes nothing.
+
+**Seven derivations** in a dependency hierarchy: 4 inference-backed (`smoothed_prompt`, `tool_result_summary`, `detailed_turn_compression`, `chunk_summary_brief`), 3 deterministic (`turn_rendering`, `pre_detailed_assembly`, `chunk_summary_detailed`). Each carries state (`pending`/`ready`/`failed`/`blocked`) and a `source_version` for optimistic concurrency.
+
+**Shared-tech** (machinery with no domain surface, except logging): a **durable SQLite work queue** with claim/lease + **epoch fencing** + **source-version fencing** + FIFO no-skip-ahead; a **scheduler** (per-thread single-flight drain with pending-flag coalescing); an **inference adapter** (ModelCall → callbacks, input bounding, failure classification, timeout containment); a **prompt registry** (versioned name-keyed templates); an **instance seam** (AsyncLocalStorage scoping so multiple SDKs in one process never cross-drain); local **token counting** (`o200k_base`).
+
+I read `sdk.ts` end-to-end and it is **genuinely excellent code**: the inference-config XOR validation (callbacks *or* config, never both/neither), exhaustive construction-time validation that *throws* on programmer error but returns `OpResult` for operational failure, the `scopeSurface` per-instance seam wrapping, and a clean `registerTestingWork` WeakMap seam that replaced an earlier leak of test hooks onto the runtime surface (documented in the bad-code-log as a fixed smell). The design discipline in the docs is faithfully reflected in the code I sampled.
+
+### 3.2 `pi-lhc` — the PI connector (the reference host)
+
+One package holding a **PI extension** + a **launcher binary**. Every PI message is captured into an LHC thread; PI's native compaction is intercepted and replaced by LHC smart compact; a session is seeded from the LHC thread view instead of a PI session file. The LHC thread is the durable record; the PI session is a rendering of it.
+
+Highlights: an **observe-only hook rail** that never retains PI `ctx`/session objects (they're replaced each call), so `/reload` reconstructs cleanly. Capture is **lagged one hook by design** (PI persists entry ids *after* `message_end`). One LHC turn spans a whole agent run (`agent_end` closes it, not PI's per-step `turn_end`). Capture failures isolate into durable gap `runtime_note`s — nothing throws into PI. The compact bridge is a strict ladder that cancels loudly only on real failure (a 50k floor + genuine errors), with a `seed-entry-map` bridging LHC message ids → PI entry ids across session boundaries. **Largest known debt:** derivation inference rides PI's own model registry (a harness-mediated lane, contamination-adjacent) — the planned fix is the SDK-native inference lane (backlog 17/18).
+
+### 3.3 `cc-lhc` — the Claude Code wrapper (POC)
+
+A **PTY wrapper around the closed `claude` CLI**. Since Claude Code has no extension API rich enough, cc-lhc takes the *outside* position: owns the process, passes the terminal through transparently, and reaches LHC by two side channels — **watching the rollout JSONL** Claude Code writes (capture), and a **ctrl-] leader-key modal** on the alternate screen (control). Because it can't inject context into a running session, compact/prune **rebuild a fresh rollout file + inject `/resume <newId>`** to hot-swap the session in place.
+
+This host contains the most impressive *systems-level terminal engineering* in the repo. The "output doctrine" (the wrapper never writes into a UI it doesn't own), the alt-screen modal that makes input ownership unambiguous by construction, leader recognition across three terminal encodings (raw / kitty CSI-u / xterm modifyOtherKeys), the swap-confirmation oracle (watch for the failure line *and* use rebuilt-rollout growth as ground truth), and failure-safe-by-construction resume — all of it reads as hard-won from live debugging. **This is exactly where your uncommitted WIP lives**: two modal-freeze fixes (kitty-encoded ctrl-C was dropped mid-command leaving no working detach key on kitty terminals; a stray string-terminator introducer wedged the modal) — now captured in `freeze-repro.test.ts`.
+
+### 3.4 `codex-lhc` — the Codex wrapper (POC)
+
+A PTY wrapper around the closed **OpenAI Codex CLI**, built by **copy-adapting cc-lhc** (deliberately not a shared core yet — seam hygiene preserved for a later extraction). Key divergences from cc-lhc: Codex can't hot-swap, so compact/prune **kill-and-respawn** `codex resume <newId>`; Codex stores all sessions in one global date-dir tree, so discovery **requires a cwd filter** (without it, a concurrent Codex session in another workspace hijacks capture — found live); the mapper treats `response_item` as canonical and never intakes the `event_msg` layer (avoids double-writes). Same `claude -p` Sonnet-no-thinking inference lane as cc-lhc.
+
+### 3.5 `t3code-lhc` — docs-only
+
+Four markdown files: design + validation for a **"T3 Code" web host** (capture via provider runtime events, a shared swap controller with a "flip-last cursor invariant", deferred Grok/Cursor research, a Linux deployment handoff). **The implementation lives in a separate `liminal-ai/t3code` fork** — this package is the design record only.
+
+### 3.6 `lhc-convex` — the Convex port (now on main)
+
+A **from-scratch reimplementation of LHC as a Convex component** — the "web/desktop app server" future the core docs hinted at. It mirrors the domain decomposition on Convex's reactive backend (`convex/{schema,intake,queue,threads,view,work,inspect,logging,records}.ts`), plus a `src/client` + `src/shared` logic mirror and an `example/` host with both a fake and a **real OpenAI provider**, exercised against a live local Convex backend. Its `PORTING_LEDGER.md` reports **51 test suites ported / 1 n/a / 0 open**. Critically, it's built on the **`remove-queue-retries` pivot** (`3dd0b08`) — a one-shot work queue with no retry/backoff, because Convex owns scheduling/retry semantics itself. That pivot is a core-SDK change, which is why merging this to main changed trunk behavior for every host (§1 notes).
+
+> ⚠️ The untracked `packages/lhc-convex/` **in your working tree** (on `cc-lhc-modal-tightening`) is still just build artifacts + local backend state + **two `.env.local` files** that likely hold Convex/OpenAI keys. Now that the source is tracked on `main`, those artifacts are gitignored there — but the loose `.env.local` files are worth a look. I did not read them.
+
+## 4. Full git history — the development arc
+
+221 commits, Jun 3 → Jul 12 2026. What's remarkable is the **legibility**: this reads like a textbook of disciplined incremental delivery. The arc breaks into clear phases.
+
+**Phase 0 — Prototype spike (Jun 3–4, 10 commits).** A throwaway vertical slice (`Scaffold lhc thread events core` → `Close chunks with compression artifacts`). Abandoned on Jun 10 when the real build restarts with a formal foundation.
+
+**Phase 1 — Epic-driven core SDK (Jun 10–12).** The signature methodology appears: **numbered Epics, each with a "spec pack" → numbered "Stories" → "fix batches" → a "closeout" with an epic-review pass and a final gate (N/N tests)**. Epic 01 (threads/events/messages/turns/queueing), 02 (derivation pipeline: queue execution, message/turn/chunk derivation, edit+delete cascade), 03 (thread views + smart compact, goldens G1–G4), 04 (read surfaces + inspect), **05 (CLI retirement + inference seam)** — this one is notable for *deleting* an entire CLI surface and 12 spawned-process test suites to prove an SDK-only API, then building the inference adapter + 7 prompts + failure classification. Extraordinary process rigor for a solo (AI-assisted) developer.
+
+**Phase 2 — PI connector, Epic 01 (Jun 14–15).** Extension foundation, session lifecycle, capture, replay verification, derivation recovery.
+
+**Phase 3 — Architecture realignment (Jun 18, "Epic 07").** The big naming/boundary cleanup: derivation-provider seam → **inference callbacks**, `initLhc` introduced, shared-tech public boundary established, Biome added, relic tests + custom gates removed, Node pinned. Commit `0ed3749` here is the reference point cited throughout `bad-code-log.md`.
+
+**Phase 4 — Queue hardening (Jun 19–21).** Epoch fencing on claims, scheduler wake on lease expiry, "harden durable workqueue coordination" — the correctness spine.
+
+**Phase 5 — Inference tuning + comment hygiene (Jun 22–27).** Tool-result classification routing, smooth-turn-compression dial-in, chunk detailed/brief. Plus a striking **~20-commit "Trim stale comments" campaign** in a single day (Jun 22) — comments must state current invariants, not implementation history (a ratified rule, PROC-16). Then legacy-shim removal and smart-compact foundation.
+
+**Phase 6 — cc-lhc host + docs reorg (Jul 1–6).** cc-lhc **slices 1–7** (PTY wrapper → rollout capture → `claude -p` inference → command interception → prune/compact-via-rebuild+resume → cross-launch continuity → own home dir). The v3 compression prompt + "prompt lab." Docs reorg + decisions-brief + **byte-identical resume-fidelity verification**. PI vendored as a submodule.
+
+**Phase 7 — Modal rework + codex-lhc (Jul 6–7).** The fragile "shadow-count MITM" input interception is **thrown out** and replaced by the alt-screen leader-key modal (ambiguity impossible by construction). Then codex-lhc is spun up by copy-adapting cc-lhc, and the modal fixes ported across.
+
+**Phase 8 — Consolidation (Jul 10–12).** `backlog.md` replaces the old `fixes-feature-log` (pruned to 8 items; "git history is the record"), t3code-lhc design docs, **pi-lhc home unification** (`PI_LHC_HOME` → `~/.pi-lhc`, offline migration + backup rail), flags namespaced under `--lhc-*`.
+
+**Phase 9 — the frontier (branches, now partly merged).**
+- **`remove-queue-retries` → `lhc-convex`**: the one-shot-queue pivot and the full Convex port (13 further commits, +25k lines). **Just fast-forwarded onto `main` at your request.**
+- **Uncommitted WIP**: the cc-lhc modal-freeze fixes on `cc-lhc-modal-tightening`.
+
+**Two sub-sagas worth calling out:**
+- **The vendored-PI journey**: fork with a signed-thinking-block patch (Jul 5) → patch merged upstream as PR #6457 (Jul 10) → fork retired, submodule re-pointed straight at upstream carrying *zero* patches (Jul 12). Clean open-source citizenship.
+- **The repo rename**: `liminal-context` → `long-horizon-context` (Jul 6), plus public-repo hygiene (untracking `memory/`, sanitizing harvested prompt-lab data and real prompt text from fixtures). The old name still lingers in root `package.json`.
+
+**Contributors:** Lee Moore (234), "T3 Code" (22 — a second commit identity, concentrated in the codex/cc host work), ravensgatedev (1 — external PR #2, "Match Claude Code project path encoding"). Cadence was intense and bursty: peak days of 29 (Jun 22), 21 (Jul 5), 18 (Jun 11) commits.
+
+## 5. Cross-cutting assessment
+
+**What stands out as genuinely strong:**
+- **Design-first discipline.** A 1,451-line evidence-cited **decision registry** with statuses and *graveyards* (retired decisions kept as tombstones), a **decisions-brief** orientation cut, per-domain design docs with "last verified against code" stamps and an explicit precedence order (code > README > brief > doc). The docs I cross-checked against source were accurate.
+- **A `bad-code-log`** capturing AI-coding failure modes as they were caught (generic `input`/`opts` names, regression-tombstone tests, premature compat shims, queue mechanics leaking onto domain surfaces). This is a rare and valuable practice.
+- **Test discipline.** ~1.3–1.5× test:source ratio, deterministic inference callbacks (`fnv1a` digests for stable derivation content without real LLM calls), golden files pinning ratified compact arrangements, explicit "NOT-RAN accounting" instead of silent auth-skips.
+- **Correctness machinery** (epoch + source-version fencing, atomic snapshot replace, coverage invariants) reasoned about explicitly.
+- **The terminal engineering in the wrapper hosts** is genuinely hard, and it's tackled with an articulated doctrine rather than ad-hoc patches.
+
+**Risks / debt (mostly self-acknowledged):**
+- **Trunk now carries the retry/backoff removal** (from the merge you just approved) and the docs describing retries are stale. The three shipped hosts inherit no-retry inference behavior — validate that `claude -p` rate-limit handling is still acceptable, or the retry removal was scoped as intended.
+- **Hosts are POC-grade** with open warts carried honestly in their READMEs (janky exit re-emit, ASCII-only modal, lossy rollout rebuild, unbounded wrapper log).
+- **pi-lhc inference contamination** (shared PI registry lane) — backlog 17/18.
+- **`thread-view` reads other domains' tables directly** for tail assembly — acknowledged boundary debt.
+- **Backlog item 35** flagged a dead-duplicate of the version-fenced completion logic in the work queue. I began verifying this against the pre-merge trunk (confirmed `applyDerivationSuccess` in `durable-work` is live; didn't finish checking `work-queue`'s `complete`/`failTerminal` call-sites before the merge detour) — but note the `3dd0b08` queue rewrite that **just landed on main** slashed `work-queue/index.ts` by ~295 lines and likely supersedes this finding. Worth re-checking against the *new* main rather than the code I reviewed.
+
+## 6. Bottom line
+
+This is an unusually mature, thoughtfully-architected system for its age — a clean core SDK with real correctness engineering, wrapped by pragmatic POC hosts, all documented to a standard most teams never reach. The primary open frontier is the **inference lane** (SDK-native HTTP inference to replace host-mediated callbacks) and the **Convex port** you just promoted to trunk. The biggest immediate follow-ups from today: decide on **pushing `main`**, reconcile the **retry-removal doc staleness**, and glance at those loose **`.env.local`** files.
+
+---
+
+Two quick decisions for you: **(1)** push `main` to `origin`? **(2)** want me to keep going — e.g. re-verify backlog item 35 against the *new* main, or dig into the Convex port's design in depth?
+
+[user]
+modal freeze needs to be merged in too
+
+[user]
+I need it all on main and committed
+
+[user]
+[Request interrupted by user]
+
+[user]
+yeah push main to origin please
+
+[user]
+don't ontinue on just yet. just push to main
+
+[assistant]
+On it — committing the modal-freeze work, merging it into main (this one's a real merge, since main moved to the Convex tip), then pushing. First let me review the actual source diff so the commit message is faithful, and confirm I stage *only* the modal files (never the `lhc-convex` artifacts).
+
+[tool call · Bash · toolu_01NRStJSS831B48RncASoWN8]
+{"command":"cd /srv/work/long-horizon-context\necho \"=== SOURCE DIFF (the substance of the modal work) ===\"\ngit diff -- packages/cc-lhc/src/wrapper/command-guard.ts packages/cc-lhc/src/wrapper/modal.ts packages/cc-lhc/src/wrapper/panel.ts packages/cc-lhc/src/wrapper/run.ts","description":"Review modal source diff for an accurate commit message"}
+
+[tool result · toolu_01NRStJSS831B48RncASoWN8]
+=== SOURCE DIFF (the substance of the modal work) ===
+diff --git a/packages/cc-lhc/src/wrapper/command-guard.ts b/packages/cc-lhc/src/wrapper/command-guard.ts
+index 21212b4..849a701 100644
+--- a/packages/cc-lhc/src/wrapper/command-guard.ts
++++ b/packages/cc-lhc/src/wrapper/command-guard.ts
+@@ -1,15 +1,34 @@
+-export const COMMAND_BUSY_MESSAGE = "busy — command in progress";
++export interface InFlightCommand {
++  /** Human-readable command label ("status", "prune 30000") for busy/late receipts. */
++  label: string;
++  startedAtMs: number;
++}
+ 
++/**
++ * Single-flight guard over modal commands. It remembers WHAT is running and
++ * since WHEN so a busy refusal can say "prune still running (41s)" instead of
++ * a bare "busy" — after a detach, that named line is the only way the user
++ * can tell a slow command from a dead one.
++ */
+ export class CommandInFlightGuard {
+-  private inFlight = false;
++  private inFlight: InFlightCommand | null = null;
+ 
+-  tryAcquire(): boolean {
+-    if (this.inFlight) return false;
+-    this.inFlight = true;
++  tryAcquire(label: string, nowMs: number): boolean {
++    if (this.inFlight !== null) return false;
++    this.inFlight = { label, startedAtMs: nowMs };
+     return true;
+   }
+ 
++  current(): InFlightCommand | null {
++    return this.inFlight;
++  }
++
+   release(): void {
+-    this.inFlight = false;
++    this.inFlight = null;
+   }
+ }
++
++export function formatBusyMessage(current: InFlightCommand, nowMs: number): string {
++  const seconds = Math.max(0, Math.floor((nowMs - current.startedAtMs) / 1000));
++  return `busy — ${current.label} still running (${seconds}s); its receipt will land here when it settles`;
++}
+diff --git a/packages/cc-lhc/src/wrapper/modal.ts b/packages/cc-lhc/src/wrapper/modal.ts
+index fcaf0bd..cf33a4c 100644
+--- a/packages/cc-lhc/src/wrapper/modal.ts
++++ b/packages/cc-lhc/src/wrapper/modal.ts
+@@ -14,8 +14,14 @@
+ // for the duration and renders the panel on the ALTERNATE SCREEN (panel.ts) —
+ // this module emits no terminal bytes of its own, it only evolves state.
+ // Enter executes a command (mode becomes EXECUTING until the command
+-// settles), Esc/ctrl-C/leader cancel. Ambiguity about "whose input box is
+-// this" cannot exist by construction — while modal, it is ours.
++// settles), Esc/ctrl-C/leader cancel. While EXECUTING the same three keys
++// DETACH — the panel closes and output resumes while the command keeps
++// running — in every encoding a terminal may deliver them (raw byte, kitty
++// CSI-u, xterm modifyOtherKeys). A stuck command must never hold the screen
++// hostage: the freeze this fixed was a kitty terminal (claude pushes kitty
++// disambiguate mode) sending ctrl-C as CSI 99;5u, which the executing gate
++// dropped — leaving NO working escape key. Ambiguity about "whose input box
++// is this" cannot exist by construction — while modal, it is ours.
+ //
+ // Leader default is ctrl-] (0x1d), telnet's escape-to-control-channel
+ // precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
+@@ -150,6 +156,19 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
+   };
+ }
+ 
++/**
++ * Receipts from a command that settled AFTER the user detached and reopened
++ * the panel: land them above the prompt they are looking at, labelled so the
++ * late arrival is legible, without clobbering the line they may be typing.
++ * (A settle in passthrough still goes to the wrapper log — run.ts decides.)
++ */
++export function showLateReceipts(state: InputState, label: string, lines: string[]): InputState {
++  return {
++    ...state,
++    panelRows: [`${label} finished:`, ...lines.flatMap((line) => line.split("\n"))],
++  };
++}
++
+ /** Cancel any modal/executing UI unconditionally (held-output overflow path). */
+ export function forceResetInput(state: InputState): InputState {
+   if (state.mode === "passthrough") return state;
+@@ -433,8 +452,18 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
+     (finalByte === 0x75 && isKittyLeaderParams(params, state.leaderByte)) ||
+     (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, state.leaderByte));
+   if (encodedLeader && !state.inPaste) {
+-    // Encoded leader-again: same cancel as raw 0x1d (dropped while executing,
+-    // like the raw form — applyModalKey gates on mode).
++    // Encoded leader-again: same cancel as raw 0x1d (detach while executing).
++    return { key: { kind: "cancel" }, forward: false };
++  }
++  // Encoded ctrl-C — the leader matchers are generic ctrl-byte matchers, so
++  // byte 0x03 reuses them (kitty keycode 99, ctrl-only modifier). Without
++  // this, a kitty-protocol terminal (claude pushes kitty disambiguate mode)
++  // had NO working detach key while a command executed: raw 0x03 never
++  // arrives there, and CSI 99;5u fell through to "none" — the freeze repro.
++  const encodedCtrlC =
++    (finalByte === 0x75 && isKittyLeaderParams(params, 0x03)) ||
++    (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, 0x03));
++  if (encodedCtrlC && !state.inPaste) {
+     return { key: { kind: "cancel" }, forward: false };
+   }
+   if (finalByte === 0x75) {
+@@ -452,7 +481,14 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
+ }
+ 
+ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
+-  if (state.mode === "executing") return { state };
++  if (state.mode === "executing") {
++    // Cancel-family keys DETACH a running command (Esc, ctrl-C, leader — any
++    // encoding): the panel closes and output resumes; the command keeps
++    // running and its receipt lands late (reopened panel or wrapper log).
++    // Editor keys stay dropped — there is no line to edit while executing.
++    if (key.kind === "cancel") return cancelModal(state);
++    return { state };
++  }
+   switch (key.kind) {
+     case "enter":
+       return submitModalLine(state);
+@@ -490,13 +526,9 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
+       }
+       // Any other byte resolves the held ESC as a bare Esc keypress — this
+       // works across chunk boundaries, so a sequence split after its ESC is
+-      // never misread. While executing, Esc is dropped (ctrl-C detaches);
+-      // while modal, Esc cancels and the current byte belongs to passthrough.
++      // never misread. Modal or executing, Esc cancels/detaches and the
++      // current byte belongs to passthrough.
+       const cleared: InputState = { ...state, escape: null, heldSeq: [] };
+-      if (state.mode === "executing") {
+-        if (byte === 0x03) return cancelModal(cleared);
+-        return { state: cleared };
+-      }
+       const cancelled = cancelModal(cleared);
+       const after = passthroughByte(byte, cancelled.state);
+       return {
+@@ -522,12 +554,30 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
+     }
+ 
+     case "string_term":
++      // Escape hatch for the wedge repro: a raw ctrl-C or leader byte CANNOT
++      // occur inside a legal OSC/DCS/PM/APC payload (BEL and ESC are the only
++      // controls those strings admit), so seeing one proves this "sequence"
++      // was a user keypress burst (alt-], a truncated response) — without the
++      // hatch every later key forwarded to the child as presumed protocol and
++      // the modal wedged with no escape at all. Close the introducer already
++      // sent to the child with ST (a bare ST is a no-op for a parser that is
++      // not inside a string), consume the byte, and cancel/detach.
++      if (byte === 0x03 || byte === state.leaderByte) {
++        const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
++        return { state: hatch.state, toPty: Buffer.from([0x1b, 0x5c]), actions: hatch.actions ?? [] };
++      }
+       if (byte === 0x07) return { state: { ...state, escape: null }, toPty: Buffer.from([byte]) };
+       if (byte === 0x1b)
+         return { state: { ...state, escape: { kind: "string_term_esc" } }, toPty: Buffer.from([byte]) };
+       return { state, toPty: Buffer.from([byte]) };
+ 
+     case "string_term_esc":
++      // Same hatch one byte deeper: the string's ESC is already forwarded, so
++      // a lone backslash completes ST for the child.
++      if (byte === 0x03 || byte === state.leaderByte) {
++        const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
++        return { state: hatch.state, toPty: Buffer.from([0x5c]), actions: hatch.actions ?? [] };
++      }
+       if (byte === 0x5c) return { state: { ...state, escape: null }, toPty: Buffer.from([byte]) };
+       return { state: { ...state, escape: { kind: "pending_esc" } }, toPty: Buffer.from([byte]) };
+ 
+@@ -567,13 +617,14 @@ function modalByte(byte: number, state: InputState): StepOutcome {
+   if (byte === 0x03) {
+     // Modal: cancel. Executing: DETACH — the modal UI is torn down and output
+     // resumes, but the in-flight command keeps running (the single-flight
+-    // guard still serializes); its receipt prints raw on completion and may
+-    // be repainted over. This is the escape hatch for a hung command.
++    // guard still serializes); its receipt lands late — in a reopened panel
++    // or the wrapper log. This is the escape hatch for a hung command.
+     return cancelModal(state);
+   }
+ 
+   if (byte === state.leaderByte) {
+-    if (state.mode === "executing") return { state };
++    // Leader-again dismisses in every mode — while executing it detaches,
++    // same as Esc and ctrl-C (a running command must never trap the screen).
+     return cancelModal(state);
+   }
+ 
+@@ -619,8 +670,8 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
+ /**
+  * Resolve a pending ESC that no further byte has resolved (run.ts calls this
+  * from a ~50ms timer): it was a bare Esc keypress. Modal → cancel; executing
+- * → drop it (Esc does not detach; ctrl-C does). Null when nothing is pending
+- * or the state has since moved on.
++ * → detach (the command keeps running). Null when nothing is pending or the
++ * state has since moved on.
+  */
+ export function resolveBareEsc(
+   state: InputState,
+@@ -648,9 +699,6 @@ export function resolveBareEsc(
+   }
+   if (state.escape?.kind !== "pending_esc") return null;
+   const cleared: InputState = { ...state, escape: null, heldSeq: [] };
+-  if (state.mode === "modal") {
+-    const cancelled = cancelModal(cleared);
+-    return { state: cancelled.state, actions: cancelled.actions ?? [] };
+-  }
+-  return { state: cleared, actions: [] };
++  const cancelled = cancelModal(cleared);
++  return { state: cancelled.state, actions: cancelled.actions ?? [] };
+ }
+diff --git a/packages/cc-lhc/src/wrapper/panel.ts b/packages/cc-lhc/src/wrapper/panel.ts
+index c119a38..4cd5cf7 100644
+--- a/packages/cc-lhc/src/wrapper/panel.ts
++++ b/packages/cc-lhc/src/wrapper/panel.ts
+@@ -11,14 +11,19 @@ import type { InputState } from "./modal.js";
+ 
+ export const PANEL_PROMPT = "long-horizon commands> ";
+ export const PANEL_HINT = "Enter run · Esc close · ctrl-C detach";
+-/** Shown while a command runs — Esc is dropped in executing mode. */
+-export const PANEL_HINT_EXECUTING = "ctrl-C detach";
++/** Shown while a command runs — Esc/ctrl-C/leader all detach in executing mode. */
++export const PANEL_HINT_EXECUTING = "Esc/ctrl-C detach · command keeps running";
+ 
+-/** Static progress line for swap commands during rebuild; null for non-swap commands. */
+-export function swapCommandProgressLabel(commandLine: string): string | null {
++/**
++ * Progress line while a command executes. Every command gets one — a panel
++ * that keeps showing the prompt with a frozen line is indistinguishable from
++ * a hang, which is exactly how the modal used to read during a slow `status`.
++ */
++export function commandProgressLabel(commandLine: string, elapsedSeconds?: number): string {
+   const name = commandLine.trim().split(/\s+/)[0] ?? "";
+-  if (name === "compact" || name === "prune") return `${name} — rebuilding…`;
+-  return null;
++  const verb = name === "compact" || name === "prune" ? "rebuilding…" : "running…";
++  const elapsed = elapsedSeconds !== undefined && elapsedSeconds >= 1 ? ` (${elapsedSeconds}s)` : "";
++  return `${name === "" ? "command" : name} — ${verb}${elapsed}`;
+ }
+ 
+ /** Switch to the alternate screen (saves main screen + cursor). */
+@@ -76,13 +81,14 @@ interface PanelLine {
+ 
+ /**
+  * Full positioned redraw of the panel, centered for the given terminal size:
+- * receipt/notice rows, the prompt line with the current input (or the running
+- * command while executing), and a dim key-hint line. Idempotent — run.ts
+- * calls it after every input chunk and on resize while the modal is open.
+- * The real cursor sits at the end of the input while editing and is hidden
+- * while a command runs.
++ * receipt/notice rows, the prompt line with the current input (or a progress
++ * line while executing — with elapsed seconds when run.ts's ticker supplies
++ * them), and a dim key-hint line. Idempotent — run.ts calls it after every
++ * input chunk, on resize, and on each ticker beat while a command runs. The
++ * real cursor sits at the end of the input while editing and is hidden while
++ * a command runs.
+  */
+-export function renderPanel(state: InputState, cols: number, rows: number): string {
++export function renderPanel(state: InputState, cols: number, rows: number, elapsedSeconds?: number): string {
+   const safeCols = Math.max(20, cols);
+   const safeRows = Math.max(5, rows);
+   const maxWidth = safeCols - 2;
+@@ -92,19 +98,14 @@ export function renderPanel(state: InputState, cols: number, rows: number): stri
+   for (const row of state.panelRows) lines.push({ text: truncate(row) });
+   if (state.panelRows.length > 0) lines.push({ text: "" });
+ 
+-  const swapProgress =
+-    state.mode === "executing" ? swapCommandProgressLabel(state.line) : null;
+-  if (swapProgress !== null) {
+-    lines.push({ text: truncate(swapProgress) });
++  if (state.mode === "executing") {
++    lines.push({ text: truncate(commandProgressLabel(state.line, elapsedSeconds)) });
+     lines.push({ text: "" });
+     lines.push({ text: truncate(PANEL_HINT_EXECUTING), dim: true });
+   } else {
+     lines.push({ text: truncate(PANEL_PROMPT + state.line), prompt: true });
+     lines.push({ text: "" });
+-    lines.push({
+-      text: truncate(state.mode === "executing" ? PANEL_HINT_EXECUTING : PANEL_HINT),
+-      dim: true,
+-    });
++    lines.push({ text: truncate(PANEL_HINT), dim: true });
+   }
+ 
+   const blockWidth = Math.max(...lines.map((line) => line.text.length));
+diff --git a/packages/cc-lhc/src/wrapper/run.ts b/packages/cc-lhc/src/wrapper/run.ts
+index 316d1ee..ab5beff 100644
+--- a/packages/cc-lhc/src/wrapper/run.ts
++++ b/packages/cc-lhc/src/wrapper/run.ts
+@@ -2,6 +2,7 @@ import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
+ 
+ import {
+   dispatchLhcCommand,
++  type DispatchOutcome,
+   formatCommandOutput,
+   type LhcCommandRuntime,
+   type SessionRestartPlan,
+@@ -11,7 +12,7 @@ import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
+ import { defaultLineageDbPath, safeRecordSessionThread } from "../intake/lineage-db.js";
+ import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+ import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
+-import { COMMAND_BUSY_MESSAGE, CommandInFlightGuard } from "./command-guard.js";
++import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
+ import { createInputDebugLogger } from "./input-debug.js";
+ import {
+   createInputState,
+@@ -21,6 +22,7 @@ import {
+   processInputChunk,
+   resolveBareEsc,
+   resolveLeaderByte,
++  showLateReceipts,
+   showReceipts,
+ } from "./modal.js";
+ import { OutputHold } from "./output-hold.js";
+@@ -242,7 +244,35 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
+ 
+   const renderModalPanel = (): void => {
+     if (inputState.mode === "passthrough") return;
+-    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS));
++    const inFlight = commandGuard.current();
++    const elapsedSeconds =
++      inputState.mode === "executing" && inFlight !== null
++        ? Math.floor((Date.now() - inFlight.startedAtMs) / 1000)
++        : undefined;
++    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS, elapsedSeconds));
++  };
++
++  // Once-a-second repaint while a command executes: the progress line's
++  // elapsed counter is the panel's liveness signal — without it a slow
++  // `status` is indistinguishable from a hang. Self-cancels the moment the
++  // mode leaves executing (settle, detach, overflow reset, signal restore).
++  let executingTicker: NodeJS.Timeout | null = null;
++  const stopExecutingTicker = (): void => {
++    if (executingTicker !== null) {
++      clearInterval(executingTicker);
++      executingTicker = null;
++    }
++  };
++  const startExecutingTicker = (): void => {
++    stopExecutingTicker();
++    executingTicker = setInterval(() => {
++      if (inputState.mode !== "executing") {
++        stopExecutingTicker();
++        return;
++      }
++      renderModalPanel();
++    }, 1_000);
++    executingTicker.unref?.();
+   };
+ 
+   const handleSigwinch = (): void => {
+@@ -280,6 +310,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
+         clearTimeout(pendingEscTimer);
+         pendingEscTimer = null;
+       }
++      stopExecutingTicker();
+       stdin.removeListener("data", forwardInput);
+       stdin.removeListener("end", onStdinGone);
+       stdin.removeListener("close", onStdinGone);
+@@ -392,30 +423,55 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
+     // screen, so receipts stay readable whatever the main-screen TUI is doing.
+     // One keypress (Esc/ctrl-C/leader) dismisses: leave the alt screen (the
+     // terminal restores CC's layout exactly), then flush the held output.
+-    const settleCommand = (messages: string[]): void => {
+-      if (inputState.mode !== "executing") {
+-        // Modal was detached (ctrl-C) or force-cancelled (overflow) while the
+-        // command ran: the child owns the live screen again, so the receipt
+-        // goes to the wrapper log (doctrine — never write into CC's UI).
+-        for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): ${message}`);
++    const settleCommand = (messages: string[], label: string): void => {
++      stopExecutingTicker();
++      if (inputState.mode === "executing") {
++        if (messages.length === 0) {
++          inputState = finishExecuting(inputState);
++          altScreen.leave();
++          outputHold.flush();
++          return;
++        }
++        inputState = showReceipts(inputState, messages);
++        renderModalPanel();
+         return;
+       }
+-      if (messages.length === 0) {
+-        inputState = finishExecuting(inputState);
+-        altScreen.leave();
+-        outputHold.flush();
++      if (inputState.mode === "modal") {
++        // The user detached and REOPENED the panel: land the late receipt
++        // where they are looking instead of vanishing it into the log,
++        // preserving whatever they are mid-typing.
++        if (messages.length === 0) return;
++        inputState = showLateReceipts(inputState, label, messages);
++        renderModalPanel();
+         return;
+       }
+-      inputState = showReceipts(inputState, messages);
+-      renderModalPanel();
++      // Detached (ctrl-C/Esc/leader) or force-cancelled (overflow) and never
++      // reopened: the child owns the live screen, so the receipt goes to the
++      // wrapper log (doctrine — never write into CC's UI).
++      for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
+     };
+ 
+     const runModalCommand = (commandLine: string): void => {
+-      if (!commandGuard.tryAcquire()) {
+-        settleCommand([COMMAND_BUSY_MESSAGE]);
++      const label = commandLine.replace(/^\/lhc-/, "");
++      if (!commandGuard.tryAcquire(label, Date.now())) {
++        const inFlight = commandGuard.current();
++        settleCommand([inFlight === null ? "busy — command in progress" : formatBusyMessage(inFlight, Date.now())], label);
++        return;
++      }
++      startExecutingTicker();
++      // A synchronous throw (runtime-snapshot construction, dispatch setup)
++      // must not escape into the stdin data handler as an uncaught exception —
++      // settle it exactly like an async failure.
++      let dispatched: Promise<DispatchOutcome>;
++      try {
++        dispatched = dispatchLhcCommand(commandLine, commandRuntime());
++      } catch (cause) {
++        const message = cause instanceof Error ? cause.message : String(cause);
++        settleCommand([`command error: ${message}`], label);
++        commandGuard.release();
+         return;
+       }
+-      void dispatchLhcCommand(commandLine, commandRuntime())
++      void dispatched
+         .then(async (outcome) => {
+           const resume =
+             outcome.restart === undefined
+@@ -426,16 +482,17 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
+           if (receipts === null) {
+             // Confirmed swap: auto-dismiss — panel already left at injection;
+             // settleCommand([]) is a no-op safety (alt-screen leave is idempotent).
+-            settleCommand([]);
++            settleCommand([], label);
+             return;
+           }
+-          settleCommand(receipts);
++          settleCommand(receipts, label);
+         })
+         .catch((cause: unknown) => {
+           const message = cause instanceof Error ? cause.message : String(cause);
+-          settleCommand([`command error: ${message}`]);
++          settleCommand([`command error: ${message}`], label);
+         })
+         .finally(() => {
++          stopExecutingTicker();
+           commandGuard.release();
+         });
+     };
+
+[assistant]
+The diff confirms it's a coherent "modal tightening" change: the two freeze fixes (kitty ctrl-C detach parity across all encodings; string-terminator wedge escape hatch) plus riders — a universal progress ticker, named busy/late receipts, and sync-throw safety. Let me write a faithful commit message and stage **only** the modal files (explicit paths + a guard so nothing under `lhc-convex` can sneak in).
+
+[tool call · Write · toolu_012Aj3tnfP2gKsZ9CkuVWf1q]
+{"content":"cc-lhc: modal freeze fixes + executing-state tightening\n\nTwo modal freezes on kitty-protocol terminals (claude pushes kitty\ndisambiguate mode), now covered by freeze-repro.test.ts:\n\n- kitty-encoded ctrl-C (CSI 99;5u) was dropped while a command executed,\n  leaving NO working detach key (Esc dropped by design, leader dropped by\n  design, ctrl-C dropped by omission). Cancel-family keys (Esc, ctrl-C,\n  leader-again) now DETACH a running command in every encoding it may arrive\n  in: raw byte, kitty CSI-u, and xterm modifyOtherKeys.\n- a stray string-terminator introducer (ESC ] — alt-], or a truncated OSC\n  response) wedged the modal permanently: every later keypress forwarded to\n  the child as presumed protocol. A raw ctrl-C or leader byte cannot occur\n  inside a legal OSC/DCS/PM/APC payload, so it now escapes the wedge, closing\n  the child's dangling introducer with ST.\n\nExecuting-state UX tightening that rode along:\n\n- every command gets a progress line with an elapsed-seconds counter,\n  repainted by a 1s ticker (a frozen panel is indistinguishable from a hang);\n  the ticker self-cancels the moment the mode leaves executing.\n- the single-flight guard remembers what is running and since when, so a busy\n  refusal names the command and its age (\"prune still running (41s)\").\n- receipts that settle after a detach land in a reopened panel (labelled,\n  without clobbering the input line) or the wrapper log, per output doctrine.\n- a synchronous throw during dispatch construction settles like an async\n  failure instead of escaping into the stdin data handler.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n","file_path":"/tmp/claude-1000/-srv-work-long-horizon-context/db06cf85-e3ff-45eb-a9c2-6d1b9b0d5a2c/scratchpad/modal-commit-msg.txt"}
+
+[tool result · toolu_012Aj3tnfP2gKsZ9CkuVWf1q]
+File created successfully at: /tmp/claude-1000/-srv-work-long-horizon-context/db06cf85-e3ff-45eb-a9c2-6d1b9b0d5a2c/scratchpad/modal-commit-msg.txt (file state is current in your context — no need to Read it back)
+
+[tool call · Bash · toolu_01TLkvWrg5i7qUC71L85M96i]
+{"command":"cd /srv/work/long-horizon-context\n# Stage ONLY the modal-freeze files — explicit paths, never a directory glob\ngit add \\\n  docs/onboard/05-host-cc-lhc.md \\\n  packages/cc-lhc/README.md \\\n  packages/cc-lhc/src/wrapper/command-guard.ts \\\n  packages/cc-lhc/src/wrapper/modal.ts \\\n  packages/cc-lhc/src/wrapper/panel.ts \\\n  packages/cc-lhc/src/wrapper/run.ts \\\n  packages/cc-lhc/test/wrapper/command-guard.test.ts \\\n  packages/cc-lhc/test/wrapper/modal.test.ts \\\n  packages/cc-lhc/test/wrapper/panel.test.ts \\\n  packages/cc-lhc/test/wrapper/run.test.ts \\\n  packages/cc-lhc/test/wrapper/freeze-repro.test.ts\n\n# GUARD: abort if anything under lhc-convex got staged\nif git diff --cached --name-only | grep -q 'packages/lhc-convex'; then\n  echo \"ABORT: lhc-convex path staged — resetting\"; git reset -q; exit 1\nfi\n\necho \"=== STAGED (must be 11 cc-lhc/doc files, NO lhc-convex) ===\"\ngit diff --cached --name-only\necho \"\"\necho \"=== STILL UNTRACKED (lhc-convex artifacts stay out) ===\"\ngit status --short | grep '^??'\necho \"\"\ngit commit -F /tmp/claude-1000/-srv-work-long-horizon-context/db06cf85-e3ff-45eb-a9c2-6d1b9b0d5a2c/scratchpad/modal-commit-msg.txt\necho \"\"\necho \"=== HEAD now ===\"\ngit log --oneline -1\necho \"branch: $(git rev-parse --abbrev-ref HEAD)\"","description":"Stage modal files with guard, commit on cc-lhc-modal-tightening"}
+
+[tool result · toolu_01TLkvWrg5i7qUC71L85M96i]
+=== STAGED (must be 11 cc-lhc/doc files, NO lhc-convex) ===
+docs/onboard/05-host-cc-lhc.md
+packages/cc-lhc/README.md
+packages/cc-lhc/src/wrapper/command-guard.ts
+packages/cc-lhc/src/wrapper/modal.ts
+packages/cc-lhc/src/wrapper/panel.ts
+packages/cc-lhc/src/wrapper/run.ts
+packages/cc-lhc/test/wrapper/command-guard.test.ts
+packages/cc-lhc/test/wrapper/freeze-repro.test.ts
+packages/cc-lhc/test/wrapper/modal.test.ts
+packages/cc-lhc/test/wrapper/panel.test.ts
+packages/cc-lhc/test/wrapper/run.test.ts
+
+=== STILL UNTRACKED (lhc-convex artifacts stay out) ===
+?? packages/lhc-convex/
+
+[cc-lhc-modal-tightening 7921fd5] cc-lhc: modal freeze fixes + executing-state tightening
+ 11 files changed, 477 insertions(+), 100 deletions(-)
+ create mode 100644 packages/cc-lhc/test/wrapper/freeze-repro.test.ts
+
+=== HEAD now ===
+7921fd5 cc-lhc: modal freeze fixes + executing-state tightening
+branch: cc-lhc-modal-tightening
+
+[assistant]
+Commit `7921fd5` landed cleanly on `cc-lhc-modal-tightening` — 11 files, `lhc-convex` artifacts stayed untracked. Now checking out `main`, merging the modal branch (disjoint file sets from the Convex work, so no conflicts expected), and pushing. The `&&` chain gates the push on a clean merge.
+
+[tool call · Bash · toolu_01GqX3uQe9Lx6v5MJNX8MFeT]
+{"command":"cd /srv/work/long-horizon-context\ngit checkout main \\\n&& echo \"=== on main @ $(git rev-parse --short HEAD); merging modal branch ===\" \\\n&& git merge --no-ff \\\n     -m \"Merge branch 'cc-lhc-modal-tightening' into main — cc-lhc modal freeze fixes\" \\\n     -m \"Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\" \\\n     cc-lhc-modal-tightening \\\n&& echo \"\" \\\n&& echo \"=== MERGE RESULT (graph, last 6) ===\" \\\n&& git log --oneline --graph -6 \\\n&& echo \"\" \\\n&& echo \"=== to be pushed (origin/main..main) ===\" \\\n&& git log --oneline origin/main..main \\\n&& echo \"\" \\\n&& echo \"=== PUSHING origin main ===\" \\\n&& git push origin main \\\n&& echo \"\" \\\n&& echo \"=== DONE: origin/main @ $(git rev-parse --short origin/main), local main @ $(git rev-parse --short main) ===\" \\\n&& git status --short | grep '^??'","description":"Checkout main, merge modal branch, push to origin"}
+
+[tool result · toolu_01GqX3uQe9Lx6v5MJNX8MFeT · error]
+The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.
+
+[user]
+[Request interrupted by user for tool use]
+
+[user]
+I'm trying to get everythign committed. are you saying there are still OTHER files not committed to main?
+
+[assistant]
+Good question — let me give you a precise, complete inventory instead of asserting it. Nothing here should surprise you.
+
+[tool call · Bash · toolu_01T8eP1V41HDX1Vgk4EfKVes]
+{"command":"cd /srv/work/long-horizon-context\necho \"=== where am I ===\"\necho \"current branch: $(git rev-parse --abbrev-ref HEAD)\"\necho \"main            @ $(git rev-parse --short main)\"\necho \"cc-lhc-modal-tightening @ $(git rev-parse --short cc-lhc-modal-tightening)\"\necho \"\"\necho \"=== FULL git status ===\"\ngit status\necho \"\"\necho \"=== EVERY untracked file (expanded, not collapsed) — is any of it real source? ===\"\ngit status --porcelain --untracked-files=all | grep '^??'\necho \"\"\necho \"=== is the modal commit on main yet? ===\"\necho \"commits on cc-lhc-modal-tightening NOT on main:\"; git log --oneline main..cc-lhc-modal-tightening","description":"Full working-tree and branch inventory"}
+
+[tool result · toolu_01T8eP1V41HDX1Vgk4EfKVes]
+=== where am I ===
+current branch: cc-lhc-modal-tightening
+main            @ b5b29cd
+cc-lhc-modal-tightening @ 7921fd5
+
+=== FULL git status ===
+On branch cc-lhc-modal-tightening
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	packages/lhc-convex/
+
+nothing added to commit but untracked files present (use "git add" to track)
+
+=== EVERY untracked file (expanded, not collapsed) — is any of it real source? ===
+?? packages/lhc-convex/.env.local
+?? packages/lhc-convex/example/.env.local
+
+=== is the modal commit on main yet? ===
+commits on cc-lhc-modal-tightening NOT on main:
+7921fd5 cc-lhc: modal freeze fixes + executing-state tightening
+
+[assistant]
+Crystal clear now — and reassuring. Here's the **complete** inventory:
+
+## Are there other uncommitted files? No source, no.
+
+When I expand the untracked list fully (git normally *collapses* `packages/lhc-convex/` to one line, which is what made it look scary), the **only** files not committed anywhere are exactly two:
+
+```
+packages/lhc-convex/.env.local
+packages/lhc-convex/example/.env.local
+```
+
+Both are **`.env.local` secret/config files** — Convex deploy URL/key and (for the OpenAI example host) likely an API key. You do **not** want those in git. Everything else under `packages/lhc-convex/` (`dist/`, `.convex/`, `node_modules/`, `tsbuildinfo`) is **gitignored build/local state** — not committed by design. And they only show as untracked *at all* because you're standing on `cc-lhc-modal-tightening`, which predates the lhc-convex package; once `main` is checked out, its `.gitignore` covers even the `.env.local` files and they vanish from status.
+
+## What's actually committed where
+
+| Thing | Committed? | Where |
+|---|---|---|
+| Convex port (source) | ✅ yes | `main` @ `b5b29cd` |
+| **Modal-freeze work** | ✅ yes (as `7921fd5`) | **`cc-lhc-modal-tightening` — not yet on `main`** |
+| Two `.env.local` files | ❌ no (correctly — secrets) | nowhere; gitignored on main |
+
+So **nothing source is loose.** The one and only remaining step to get everything onto `main` is to **merge `7921fd5` into `main`** — which is exactly the command you just stopped. There are no other files hiding behind it.
+
+The reason it's a *merge* and not already "on main": your modal commit sits on the `cc-lhc-modal-tightening` branch (based on the old trunk), while `main` moved forward to the Convex tip. They have to be joined. The file sets are completely disjoint (modal work = `packages/cc-lhc/` + `docs/onboard/05`; Convex work = `packages/lhc/` + `packages/lhc-convex/`), so the merge is conflict-free.
+
+**Shall I re-run it?** The plan, unchanged: `checkout main → merge cc-lhc-modal-tightening (no-ff) → push origin main`. The two `.env.local` files stay untracked (as they should). Just say go and I'll run it — or if you'd rather, I can do the merge locally first and hold the push for a separate confirm.
+
+(If it'd help, I can also check whether those two `.env.local` files actually contain live credentials — without printing the values — so you know what's sitting in your working tree.)
+
+[user]
+will you merge that shit into main. jesus fucking christ
+
+[assistant]
+On it.
+
+[tool call · Bash · toolu_015nwThLUgCquTmG1zj5ChHQ]
+{"command":"cd /srv/work/long-horizon-context\ngit checkout main \\\n&& git merge --no-ff \\\n     -m \"Merge branch 'cc-lhc-modal-tightening' into main — cc-lhc modal freeze fixes\" \\\n     -m \"Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\" \\\n     cc-lhc-modal-tightening \\\n&& echo \"\" && echo \"=== merged; history ===\" \\\n&& git log --oneline --graph -5 \\\n&& echo \"\" && echo \"=== pushing ===\" \\\n&& git push origin main \\\n&& echo \"\" && echo \"=== DONE ===\" \\\n&& echo \"local  main @ $(git rev-parse --short main)\" \\\n&& echo \"origin main @ $(git rev-parse --short origin/main)\"","description":"Merge modal branch into main and push to origin"}
+
+[tool result · toolu_015nwThLUgCquTmG1zj5ChHQ · error]
+The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.
+
+[user]
+[Request interrupted by user for tool use]
+
+[user]
+the env files are gitignored so obviously not those
+
+[assistant]
+Agreed — the `.env.local` files are gitignored on main, not the concern. Merging now.
+
+[tool call · Bash · toolu_015EYqXMQo9MnZbugh1caMEZ]
+{"command":"git checkout main && git merge --no-ff cc-lhc-modal-tightening -m \"Merge branch 'cc-lhc-modal-tightening' into main — cc-lhc modal freeze fixes\" -m \"Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\" && git push origin main","description":"Merge modal branch into main and push"}
+
+[tool result · toolu_015EYqXMQo9MnZbugh1caMEZ]
+Switched to branch 'main'
+Your branch is ahead of 'origin/main' by 14 commits.
+  (use "git push" to publish your local commits)
+Merge made by the 'ort' strategy.
+ docs/onboard/05-host-cc-lhc.md                     |   4 +-
+ packages/cc-lhc/README.md                          |   4 +-
+ packages/cc-lhc/src/wrapper/command-guard.ts       |  31 ++++-
+ packages/cc-lhc/src/wrapper/modal.ts               |  90 +++++++++++----
+ packages/cc-lhc/src/wrapper/panel.ts               |  41 +++----
+ packages/cc-lhc/src/wrapper/run.ts                 |  97 ++++++++++++----
+ packages/cc-lhc/test/wrapper/command-guard.test.ts |  24 ++--
+ packages/cc-lhc/test/wrapper/freeze-repro.test.ts  |  82 ++++++++++++++
+ packages/cc-lhc/test/wrapper/modal.test.ts         | 126 +++++++++++++++++++--
+ packages/cc-lhc/test/wrapper/panel.test.ts         |  25 ++--
+ packages/cc-lhc/test/wrapper/run.test.ts           |  53 +++++++++
+ 11 files changed, 477 insertions(+), 100 deletions(-)
+ create mode 100644 packages/cc-lhc/test/wrapper/freeze-repro.test.ts
+To https://github.com/liminal-ai/long-horizon-context.git
+   1b2ee58..763dccb  main -> main
+
+[assistant]
+Done. Everything's on `main` and pushed to origin.
+
+- `origin/main`: `1b2ee58` → **`763dccb`**
+- Contains: the full Convex port (14 commits) **+** the modal-freeze commit (`7921fd5`), joined by the merge commit.
+- Merge was clean (`ort` strategy, zero conflicts), 11 files.
+- Only thing left in the working tree is the two gitignored-on-main `.env.local` files — nothing else, nothing lost.
+
+You're on `main` now. Standing by — say the word if you want me to pick the repository report back up.
+
+[user]
+[runtime note] session db06cf85-e3ff-45eb-a9c2-6d1b9b0d5a2c preserved; resumed in-place as 47a79975-8668-47ea-9f26-d4c68ffd0767 (expect ~52 replayed lines to re-intake)
+
+[assistant]
+No response requested.

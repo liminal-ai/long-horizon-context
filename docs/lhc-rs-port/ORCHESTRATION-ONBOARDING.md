@@ -112,7 +112,8 @@ Python handoff §"The loop" applies with these deltas:
 
 1. `impl-waveN.md` → cursor-subagent (fresh session for wave 1; reuse the
    session id it gives you for later waves — it accumulates port context).
-2. `verify-waveN-sol.md` + `verify-waveN-fable.md` → both verifiers,
+2. `verify-waveN-sol.md` + `verify-waveN-opus.md` → both verifiers,
+   (existing `*-fable.md` files are the historical Phase 1-2 runs),
    parallel, detached.
 3. Reconcile → `fixN-waveN.md` → resume implementor. Re-verify changed
    scope only (single verifier alternating, unless findings were severe).
