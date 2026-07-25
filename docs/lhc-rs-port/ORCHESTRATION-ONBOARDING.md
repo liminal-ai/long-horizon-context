@@ -140,10 +140,13 @@ of round churn in the project.
 - **Fresh sessions:** only at the FIRST full verification of a new
   chunk/wave (fresh eyes on new scope).
 - **Resumed sessions:** every subsequent fix-round re-verification in
-  that chunk. The resumed verifier re-checks its own prior findings
-  against the changed scope instead of re-auditing the world; its brief
-  should say "confirm your findings N, M are resolved; flag regressions
-  in the changed files only."
+  that chunk. Give it the changed scope and let it decide what to
+  examine. **Do not narrow it** — no "only look at your prior findings",
+  no "changed files only". Continuity is what produces convergence: a
+  verifier that remembers what it already checked and accepted will
+  steer there by itself. Constraining its scope does not speed that up,
+  it just caps the quality of the audit. The verifiers are as capable as
+  the orchestrator; brief them on what changed, not on what to think.
 - Independence between the two lanes is unchanged: each lane resumes
   its OWN session and still never sees the other's reports.
 - Track the two session ids in the chunk record next to the round log.
