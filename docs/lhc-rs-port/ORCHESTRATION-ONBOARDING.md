@@ -338,10 +338,25 @@ A timer has no condition to get wrong. It always returns. You always wake.
 3. On wake: run one cheap `status` check yourself.
 4. Job still running → re-arm the timer. Job finished or failed → handle it.
 
-**Choosing N** (Lee's instruction): short at first to confirm the run actually
-started and is producing events, then lengthen to **3–5 minutes**, scaled to how
-long these runs typically take (implementor rounds 10–40 min; verifier audits
-10–30 min). Do not poll faster than that; do not go silent for longer.
+**Choosing N — Lee's exact instruction, follow it:**
+
+| Phase | Interval |
+|---|---|
+| Immediately after kickoff | check **at once** — confirm it actually started |
+| Early, until clearly moving | **60–90s** |
+| Once it is clearly going | **3–5 min** |
+| Long runs (20–30 min+) | may stretch to **6 min — that is the ceiling** |
+
+Faster than 3 minutes once a run is going **wastes context**; that was the
+original complaint and it still stands. Slower than ~6 minutes and a hang goes
+unnoticed for too long.
+
+**Why this is the job, not an optimisation.** Processes hang. Processes get
+terminated without emitting anything you would notice. If you do not wake up on
+a timer, you simply **stop** — and an orchestration meant to run 6–7 hours
+unattended dies silently while you believe work is in flight. Babysitting the
+run to completion IS the orchestrator's job. If Lee has to ask whether anything
+is happening, you have already failed at it.
 
 **Side benefit, and not a minor one:** each wake produces a visible status
 check, so Lee can see the work is alive. A condition-waiter that is quietly
