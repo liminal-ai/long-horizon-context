@@ -343,13 +343,22 @@ codex-subagent result <prior-run-id> | python3 -c "import json,sys; \
   t=sys.stdin.read(); print(json.loads(t[:t.rfind('}')+1]).get('session_id'))"
 
 codex-subagent start --prompt-file <brief> -m gpt-5.6-sol \
-  -c model_reasoning_effort=medium --resume <session_id>
+  -c model_reasoning_effort=medium -c sandbox_mode=danger-full-access \
+  --resume <session_id>
 ```
 
 Passing the run_id, or keeping `--sandbox`, exits 2 in ~60ms with
 `running:false` and an envelope — which looks exactly like a completed run.
 **This is why the protocol checks status immediately after kickoff and treats
 `running:false` + envelope as failure until the exit code is read.**
+
+**`--sandbox` must become `-c sandbox_mode=danger-full-access`.** Dropping it to
+satisfy `resume` leaves codex on its default bwrap sandbox, which fails in this
+environment with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+— every command fails, including `pwd`. That run exits **0** with a normal-
+looking report, so the exit code will not save you; the report says it could not
+run. Sol handled this correctly, declining to produce a verdict it had no
+evidence for, which is the behaviour we want from a blocked verifier.
 
 **Opus / claude.** `claude-subagent start --resume <run-id>` — takes the run id
 directly and keeps its normal flags.
