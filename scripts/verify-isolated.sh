@@ -58,14 +58,20 @@ rsync -a --exclude='.git/index.lock' "$SRC/" "$DST/"
 } > "$DST/ISOLATED-TREE.txt"
 
 cd "$DST"
+# setsid + </dev/null: without a fully detached session the codex CLI can exit
+# with `status:"error"` and stderr "Reading additional input from stdin..."
+# roughly a minute in — it looks like a completed run to a naive watcher, but
+# produced only its opening plan message. Redirecting stdin alone was NOT
+# enough; the new session is what fixes it.
 case "$MODEL" in
   sol)
-    codex-subagent start --prompt-file "$BRIEF" \
-      -m gpt-5.6-sol -c model_reasoning_effort=medium --sandbox danger-full-access
+    setsid codex-subagent start --prompt-file "$BRIEF" \
+      -m gpt-5.6-sol -c model_reasoning_effort=medium --sandbox danger-full-access \
+      < /dev/null
     ;;
   opus)
-    claude-subagent start --prompt-file "$BRIEF" \
-      --model claude-opus-5 --effort high
+    setsid claude-subagent start --prompt-file "$BRIEF" \
+      --model claude-opus-5 --effort high < /dev/null
     ;;
   *) echo "unknown model: $MODEL" >&2; exit 1 ;;
 esac
