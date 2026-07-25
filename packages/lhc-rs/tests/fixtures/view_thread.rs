@@ -16,16 +16,25 @@
 use std::collections::HashSet;
 
 use lhc::intake_stream::MessageEventInput;
-use lhc::messages::MutationResult;
-use lhc::sdk::Lhc;
-use lhc::shared_tech::derivation::{ChunkPolicyConfig, DerivationReportEntry, DerivationState};
+use lhc::messages::{EditInput, MutationResult};
+use lhc::sdk::{DrainOpts, Lhc, init_lhc};
+use lhc::shared_tech::derivation::{
+    ChunkPolicyConfig, DerivationReportEntry, DerivationState, SdkConfig, SdkMode, ToolResultConfig,
+};
 use lhc::shared_tech::errors::OpResult;
+use lhc::shared_tech::inference_types::{DerivationGuards, DetailedTurnCompressionGuards};
+use lhc::shared_tech::scheduler::{DrainDisposition, DrainStoppedBecause};
 use lhc::shared_tech::storage::{SqlParam, open_database};
 use lhc::shared_tech::view::CompactReceipt;
+use lhc::thread_view::CompactOpts;
+use lhc::threads::{NewThreadInput, ThreadRef};
 
 use super::TempStore;
-use super::inference_callbacks_double::InferenceCallbacksDouble;
-use super::threads::ChunkSnapshot;
+use super::corrupt::corrupt_two_open_turns;
+use super::inference_callbacks_double::{
+    InferenceCallbacksDouble, create_inference_callbacks_double,
+};
+use super::threads::{ChunkSnapshot, read_chunks};
 use super::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
     AssistantThinkingPayload, ToolCallOverrides, ToolCallPayload, ToolResultOverrides,
@@ -125,14 +134,37 @@ fn turn_events(turn: i64) -> Vec<MessageEventInput> {
     events
 }
 
-/// TS private `send` — PARTIAL (SDK intake).
-async fn send(_sdk: &Lhc, _file_path: &str, _batch: &[MessageEventInput]) -> Vec<String> {
-    todo!("phase 2")
+/// TS private `send` — SDK intake.
+async fn send(sdk: &Lhc, file_path: &str, batch: &[MessageEventInput]) -> Vec<String> {
+    let result = sdk
+        .intake_stream
+        .message_events(ThreadRef::file_path(file_path), batch)
+        .await;
+    match result {
+        OpResult::Ok { value } => value
+            .events
+            .into_iter()
+            .map(|entry| entry.message_id.unwrap_or_default())
+            .collect(),
+        OpResult::Err { error } => panic!("fixture batch failed: {}", error.reason),
+    }
 }
 
-/// TS private `drain` — PARTIAL (SDK work.drain).
-async fn drain(_sdk: &Lhc, _file_path: &str) {
-    todo!("phase 2")
+/// TS private `drain` — SDK work.drain.
+async fn drain(sdk: &Lhc, file_path: &str) {
+    let report = sdk.work.drain(ThreadRef::file_path(file_path), None).await;
+    match report {
+        OpResult::Ok { value } => {
+            if value.stopped_because != DrainStoppedBecause::Empty || value.remaining != 0 {
+                panic!(
+                    "fixture drain left work behind (stopped: {}, remaining: {})",
+                    value.stopped_because.as_str(),
+                    value.remaining
+                );
+            }
+        }
+        OpResult::Err { error } => panic!("fixture drain failed: {}", error.reason),
+    }
 }
 
 /// TS private `failedEntries` — REAL pure filter.
@@ -241,36 +273,413 @@ pub struct BlockedSiblingResult {
     pub blocked_turn_id: String,
 }
 
-/// TS `derivedThreadFixture` — PARTIAL (SDK-driving).
-///
-/// Phase 2 body must: build via [`turn_events`]/[`send`]/[`drain`],
-/// pin [`FIXTURE_CHUNK_POLICY`] / [`TURN_COUNT`], manufacture failures with
-/// [`set_message_derivation_failed`] + [`failed_entries`], and enforce the
-/// pinned chunk-shape invariants (4 chunks / 3 closed) inline inside the
-/// Phase 2 body — not via a separate invented helper.
+/// TS `derivedThreadFixture`.
 pub async fn derived_thread_fixture(
-    _store: &TempStore,
-    _opts: DerivedThreadOptions,
+    store: &TempStore,
+    opts: DerivedThreadOptions,
 ) -> DerivedThreadFixture {
-    todo!("phase 2")
+    let failures = opts.failures.unwrap_or(true);
+    let double = create_inference_callbacks_double();
+    let sdk = init_lhc(SdkConfig {
+        inference_callbacks: Some(double.to_callbacks()),
+        inference: None,
+        mode: SdkMode::Manual,
+        clock: None,
+        guards: Some(DerivationGuards {
+            smoothed_prompt: None,
+            tool_result_summary: None,
+            detailed_turn_compression: Some(DetailedTurnCompressionGuards {
+                tiny_turn_tokens: Some(1),
+            }),
+        }),
+        tool_result: Some(ToolResultConfig {
+            small_tier_tokens: 1,
+            small_target_ratio: 0.15,
+            mid_target_ratio: 0.04,
+        }),
+        lease: None,
+        chunk_policy: Some(FIXTURE_CHUNK_POLICY),
+        view: None,
+    });
+
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = sdk
+        .threads
+        .new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+    if !created.is_ok() {
+        let OpResult::Err { error } = created else {
+            unreachable!()
+        };
+        panic!("fixture thread creation failed: {}", error.reason);
+    }
+
+    let mut turn_ids = Vec::new();
+    let mut failed_transient = None;
+    let mut failed_permanent = None;
+
+    for turn in 1..=TURN_COUNT {
+        if failures && turn == 6 {
+            double.fail_kind("tool_result_summary", 1, Some(RATE_LIMIT_FAILURE_REASON));
+        }
+        if failures && turn == 7 {
+            double.fail_kind("tool_result_summary", 1, Some(PERMANENT_FAILURE_REASON));
+        }
+        let message_ids = send(&sdk, &file_path, &turn_events(turn)).await;
+        let first_tool_result_id = message_ids.get(3).cloned().filter(|s| !s.is_empty());
+        if failures && (turn == 6 || turn == 7) {
+            let Some(id) = first_tool_result_id else {
+                panic!("fixture invariant: turn {turn} carries no first tool result message");
+            };
+            if turn == 6 {
+                failed_transient = Some(id);
+            } else {
+                failed_permanent = Some(id);
+            }
+        }
+        drain(&sdk, &file_path).await;
+        turn_ids.push(format!("t{turn}"));
+    }
+
+    let chunks = read_chunks(&file_path);
+    if chunks.chunks.len() != 4 {
+        panic!(
+            "fixture invariant: expected 4 chunks, got {} — re-pin FIXTURE_CHUNK_POLICY",
+            chunks.chunks.len()
+        );
+    }
+    let closed = chunks
+        .chunks
+        .iter()
+        .filter(|c| c.status == lhc::turns::TurnStatus::Closed)
+        .count();
+    if closed != 3 {
+        panic!(
+            "fixture invariant: expected 3 closed chunks, got {closed} closed — re-pin FIXTURE_CHUNK_POLICY"
+        );
+    }
+
+    if failures {
+        if let Some(ref id) = failed_transient {
+            set_message_derivation_failed(&file_path, id, RATE_LIMIT_FAILURE_REASON);
+        }
+        if let Some(ref id) = failed_permanent {
+            set_message_derivation_failed(&file_path, id, PERMANENT_FAILURE_REASON);
+        }
+        let report = sdk
+            .messages
+            .report(ThreadRef::file_path(&file_path), None)
+            .await;
+        let OpResult::Ok { value: entries } = report else {
+            let OpResult::Err { error } = report else {
+                unreachable!()
+            };
+            panic!("fixture report failed: {}", error.reason);
+        };
+        let transient = failed_entries(&entries, RATE_LIMIT_FAILURE_REASON);
+        let permanent = failed_entries(&entries, PERMANENT_FAILURE_REASON);
+        if transient.len() != 1
+            || transient[0].subject_id != failed_transient.as_deref().unwrap_or("")
+            || permanent.len() != 1
+            || permanent[0].subject_id != failed_permanent.as_deref().unwrap_or("")
+        {
+            panic!(
+                "fixture invariant: expected exactly one transient-failed and one permanent-failed tool_result_summary on the named subjects"
+            );
+        }
+    }
+
+    DerivedThreadFixture {
+        file_path,
+        sdk,
+        double,
+        turn_ids,
+        chunks,
+        failed_transient_message_id: failed_transient,
+        failed_permanent_message_id: failed_permanent,
+    }
 }
 
-/// The canonical-corruption variant (FC-0.5) — PARTIAL (SDK-driving).
-pub async fn corrupted_variant_thread(_store: &TempStore) -> CorruptedVariantResult {
-    todo!("phase 2")
+/// The canonical-corruption variant (FC-0.5).
+pub async fn corrupted_variant_thread(store: &TempStore) -> CorruptedVariantResult {
+    let double = create_inference_callbacks_double();
+    let sdk = init_lhc(SdkConfig {
+        inference_callbacks: Some(double.to_callbacks()),
+        inference: None,
+        mode: SdkMode::Manual,
+        clock: None,
+        guards: Some(DerivationGuards {
+            smoothed_prompt: None,
+            tool_result_summary: None,
+            detailed_turn_compression: Some(DetailedTurnCompressionGuards {
+                tiny_turn_tokens: Some(1),
+            }),
+        }),
+        tool_result: None,
+        lease: None,
+        chunk_policy: None,
+        view: None,
+    });
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = sdk
+        .threads
+        .new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+    if !created.is_ok() {
+        let OpResult::Err { error } = created else {
+            unreachable!()
+        };
+        panic!("fixture thread creation failed: {}", error.reason);
+    }
+    for turn in 1..=3 {
+        let _ = send(&sdk, &file_path, &turn_events(turn)).await;
+    }
+    drain(&sdk, &file_path).await;
+    let _ = send(
+        &sdk,
+        &file_path,
+        &[valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "left open before the damage".into(),
+                }),
+                ..Default::default()
+            },
+        )],
+    )
+    .await;
+    corrupt_two_open_turns(&file_path);
+    CorruptedVariantResult { file_path, sdk }
 }
 
-/// The mutation-in-flight variant — PARTIAL (SDK-driving).
-pub async fn mutation_in_flight_variant(_store: &TempStore) -> MutationInFlightFixture {
-    todo!("phase 2")
+/// The mutation-in-flight variant.
+pub async fn mutation_in_flight_variant(store: &TempStore) -> MutationInFlightFixture {
+    let fixture = derived_thread_fixture(
+        store,
+        DerivedThreadOptions {
+            failures: Some(false),
+        },
+    )
+    .await;
+    let sdk = &fixture.sdk;
+    let file_path = &fixture.file_path;
+
+    let compacted = sdk
+        .thread_view
+        .compact(
+            ThreadRef::file_path(file_path),
+            CompactOpts {
+                profile: None,
+                params: None,
+                signal: None,
+            },
+        )
+        .await;
+    let OpResult::Ok {
+        value: compact_receipt,
+    } = compacted
+    else {
+        let OpResult::Err { error } = compacted else {
+            unreachable!()
+        };
+        panic!("fixture compact failed: {}", error.reason);
+    };
+
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(file_path), None)
+        .await;
+    let OpResult::Ok { value: listed } = listed else {
+        let OpResult::Err { error } = listed else {
+            unreachable!()
+        };
+        panic!("fixture list failed: {}", error.reason);
+    };
+    let target = listed
+        .iter()
+        .find(|record| record.kind.as_str() == "user_prompt" && record.turn_id == "t2");
+    let Some(target) = target else {
+        panic!("fixture invariant: turn 2 carries no prompt message");
+    };
+
+    let edited = sdk
+        .messages
+        .edit(
+            ThreadRef::file_path(file_path),
+            EditInput {
+                message_id: target.message_id.clone(),
+                content: "turn 2 revised: investigate area 2 again".into(),
+            },
+        )
+        .await;
+    let OpResult::Ok { value: mutation } = edited else {
+        let OpResult::Err { error } = edited else {
+            unreachable!()
+        };
+        panic!("fixture edit failed: {}", error.reason);
+    };
+
+    MutationInFlightFixture {
+        file_path: fixture.file_path,
+        sdk: fixture.sdk,
+        double: fixture.double,
+        turn_ids: fixture.turn_ids,
+        chunks: fixture.chunks,
+        compact_receipt,
+        edited_message_id: target.message_id.clone(),
+        mutation,
+        failed_transient_message_id: fixture.failed_transient_message_id,
+        failed_permanent_message_id: fixture.failed_permanent_message_id,
+    }
 }
 
-/// The mixed-state variant (TC-4.1's substrate) — PARTIAL (SDK-driving).
-pub async fn mixed_state_variant_thread(_store: &TempStore) -> MixedStateFixture {
-    todo!("phase 2")
+/// The mixed-state variant (TC-4.1's substrate).
+pub async fn mixed_state_variant_thread(store: &TempStore) -> MixedStateFixture {
+    let fixture = derived_thread_fixture(store, DerivedThreadOptions { failures: None }).await;
+    let sdk = &fixture.sdk;
+    let file_path = &fixture.file_path;
+
+    let _ = send(sdk, file_path, &turn_events(13)).await;
+    let prompt_ids = send(
+        sdk,
+        file_path,
+        &[valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "turn 14: this prompt's smoothing stays pending".into(),
+                }),
+                ..Default::default()
+            },
+        )],
+    )
+    .await;
+    let pending_prompt_message_id = prompt_ids
+        .first()
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .expect("fixture invariant: turn 14 prompt did not project");
+
+    corrupt_two_open_turns(file_path);
+
+    let report = sdk
+        .work
+        .drain(
+            ThreadRef::file_path(file_path),
+            Some(DrainOpts { max_items: Some(2) }),
+        )
+        .await;
+    let OpResult::Ok { value: report } = report else {
+        let OpResult::Err { error } = report else {
+            unreachable!()
+        };
+        panic!("fixture drain failed: {}", error.reason);
+    };
+    let blocked_run = report.ran.iter().find(|entry| {
+        entry.kind == "turn_derivation" && entry.disposition == DrainDisposition::FailedTerminal
+    });
+    if blocked_run.is_none() {
+        panic!("fixture invariant: turn 13 derivation expected to land terminal on damage");
+    }
+    if report.remaining != 1 {
+        panic!(
+            "fixture invariant: expected exactly one queued item left, got {}",
+            report.remaining
+        );
+    }
+
+    MixedStateFixture {
+        file_path: fixture.file_path,
+        sdk: fixture.sdk,
+        double: fixture.double,
+        turn_ids: fixture.turn_ids,
+        chunks: fixture.chunks,
+        blocked_turn_id: "t13".into(),
+        pending_prompt_message_id,
+        failed_transient_message_id: fixture.failed_transient_message_id,
+        failed_permanent_message_id: fixture.failed_permanent_message_id,
+    }
 }
 
-/// The blocked state's sacrificial sibling (FC-0.3) — PARTIAL (SDK-driving).
-pub async fn blocked_sibling_thread(_store: &TempStore) -> BlockedSiblingResult {
-    todo!("phase 2")
+/// The blocked state's sacrificial sibling (FC-0.3).
+pub async fn blocked_sibling_thread(store: &TempStore) -> BlockedSiblingResult {
+    let double = create_inference_callbacks_double();
+    let sdk = init_lhc(SdkConfig {
+        inference_callbacks: Some(double.to_callbacks()),
+        inference: None,
+        mode: SdkMode::Manual,
+        clock: None,
+        guards: Some(DerivationGuards {
+            smoothed_prompt: None,
+            tool_result_summary: None,
+            detailed_turn_compression: Some(DetailedTurnCompressionGuards {
+                tiny_turn_tokens: Some(1),
+            }),
+        }),
+        tool_result: None,
+        lease: None,
+        chunk_policy: None,
+        view: None,
+    });
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = sdk
+        .threads
+        .new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+    if !created.is_ok() {
+        let OpResult::Err { error } = created else {
+            unreachable!()
+        };
+        panic!("fixture thread creation failed: {}", error.reason);
+    }
+    let _ = send(&sdk, &file_path, &turn_events(1)).await;
+    let _ = send(
+        &sdk,
+        &file_path,
+        &[valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "left open before the damage".into(),
+                }),
+                ..Default::default()
+            },
+        )],
+    )
+    .await;
+    corrupt_two_open_turns(&file_path);
+    let report = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
+    let OpResult::Ok { value: report } = report else {
+        let OpResult::Err { error } = report else {
+            unreachable!()
+        };
+        panic!("fixture drain failed: {}", error.reason);
+    };
+    let blocked = report.ran.iter().find(|entry| {
+        entry.kind == "turn_derivation" && entry.disposition == DrainDisposition::FailedTerminal
+    });
+    if blocked.is_none() {
+        panic!("fixture invariant: turn_derivation expected to land terminal on damage");
+    }
+    BlockedSiblingResult {
+        file_path,
+        sdk,
+        blocked_turn_id: "t1".into(),
+    }
 }

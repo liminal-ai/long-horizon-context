@@ -84,6 +84,9 @@ const SQL_ROLLBACK: &str = "ROLLBACK;";
 /// `dependencyNotReady`; [`DetailedChunkComposition`] stays exhaustive over
 /// the same non-ok arms.
 enum NonOkHandlerOutcome {
+    /// TS `Extract<HandlerOutcome, { ok: false }>` includes Deferred; turn
+    /// derive paths currently construct Failed/Blocked only.
+    #[allow(dead_code)]
     Deferred {
         reason: String,
         on_deferred: Box<dyn for<'a> FnOnce(CompletionTx<'a>) + Send>,

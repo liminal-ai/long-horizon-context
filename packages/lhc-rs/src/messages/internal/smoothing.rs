@@ -37,6 +37,8 @@ fn clean_prose(text: &str) -> String {
 }
 
 struct ReadLineResult {
+    /// TS `raw` line including terminator — retained for shape fidelity.
+    #[allow(dead_code)]
     raw: String,
     body: String,
     next: usize,

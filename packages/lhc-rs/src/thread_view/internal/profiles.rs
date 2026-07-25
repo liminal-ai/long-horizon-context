@@ -63,6 +63,7 @@ pub const DEFAULT_VISIBILITY: VisibilityBudgets = VisibilityBudgets {
 pub const DEFAULT_COMPACT_THRESHOLD: f64 = 160000.0;
 
 /// TS `BAND_KEYS` — profile percentage field names (verbatim).
+#[allow(dead_code)] // TS vocabulary; validation uses explicit field reads
 pub(crate) const BAND_KEYS: [&str; 4] = ["full", "smooth", "detailed", "brief"];
 
 /// TS `BUDGET_KEYS` — raw config object keys (verbatim TS camelCase).

@@ -9,14 +9,26 @@
 use std::sync::{Arc, Mutex};
 
 use lhc::Lhc;
-use lhc::shared_tech::derivation::Derivation;
+use lhc::sdk::init_lhc;
+use lhc::shared_tech::derivation::{ChunkPolicyConfig, Derivation, SdkConfig, SdkMode};
+use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::inference_types::{
-    ModelCall, ModelCallInput, ModelCallMessage, ModelCallMessageRole, ModelCallResult,
-    ThinkingLevel,
+    DerivationGuards, DetailedTurnCompressionGuards, InferenceConfig, ModelCall, ModelCallInput,
+    ModelCallMessage, ModelCallMessageRole, ModelCallResult, ThinkingLevel,
 };
+use lhc::shared_tech::scheduler::DrainStoppedBecause;
+use lhc::threads::{NewThreadInput, ThreadRef};
 
 use super::TempStore;
-use super::model_call::InferenceAssignments;
+use super::model_call::{
+    DERIVATION_TYPES, INFERENCE_DERIVATION_TYPES, InferenceAssignments, InferenceDerivationType,
+};
+use super::threads::read_derived_forms;
+use super::{
+    AssistantTextOverrides, AssistantTextPayload, ToolCallOverrides, ToolCallPayload,
+    ToolResultOverrides, ToolResultPayload, TurnEndOverrides, UserPromptOverrides,
+    UserPromptPayload, kind, valid_event,
+};
 
 /// TS `const FAILURE_KINDS = new Set([...])` — private immutable vocabulary.
 const FAILURE_KINDS: &[&str] = &[
@@ -92,20 +104,230 @@ pub struct RoutingRunResult {
     pub log: Arc<Mutex<Vec<ModelCallInput>>>,
 }
 
-/// Private TS `seedAllSevenKinds` — SDK-driving; Phase 1 notimpl.
+/// Private TS `seedAllSevenKinds`.
 #[allow(dead_code)]
-async fn seed_all_seven_kinds(_sdk: &Lhc, _store: &TempStore) -> String {
-    todo!("phase 2")
+async fn seed_all_seven_kinds(sdk: &Lhc, store: &TempStore) -> String {
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = sdk
+        .threads
+        .new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+    assert!(
+        created.is_ok(),
+        "conformance fixture: thread creation failed"
+    );
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "path".into(),
+        serde_json::Value::String("fixture.txt".into()),
+    );
+    let result = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "please inspect the fixture file".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::TOOL_CALL,
+                    ToolCallOverrides {
+                        payload: Some(ToolCallPayload {
+                            tool_call_id: "call-seam-1".into(),
+                            tool_name: "read_file".into(),
+                            arguments: args,
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::TOOL_RESULT,
+                    ToolResultOverrides {
+                        payload: Some(ToolResultPayload {
+                            tool_call_id: "call-seam-1".into(),
+                            content: ("contents of fixture.txt ".repeat(1500)),
+                            is_error: Some(false),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload {
+                            text: "the fixture file holds fixture text".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "thanks, now summarize it".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload {
+                            text: "summarized".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(result.is_ok(), "conformance fixture: intake batch failed");
+    file_path
 }
 
-/// TC-1.2 routing assertions extracted for TC-4.3 reuse. Hits init_lhc/drain —
-/// Phase 1 notimpl at the first behavior boundary. Signature kept complete
-/// (closed total [`InferenceAssignments`], cloned-input logging, roles,
-/// failure diagnostics).
+/// TC-1.2 routing assertions extracted for TC-4.3 reuse.
 pub async fn assert_routing_through_sdk(
-    _call: ModelCall,
-    _assignments: InferenceAssignments,
-    _store: &TempStore,
+    call: ModelCall,
+    assignments: InferenceAssignments,
+    store: &TempStore,
 ) -> RoutingRunResult {
-    todo!("phase 2")
+    let log: Arc<Mutex<Vec<ModelCallInput>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_for_call = Arc::clone(&log);
+    let logged: ModelCall = Arc::new(move |input| {
+        let call = Arc::clone(&call);
+        let log_for_call = Arc::clone(&log_for_call);
+        Box::pin(async move {
+            log_for_call
+                .lock()
+                .expect("routing log")
+                .push(input.clone());
+            call(input).await
+        })
+    });
+
+    let sdk = init_lhc(SdkConfig {
+        inference_callbacks: None,
+        inference: Some(InferenceConfig {
+            call: logged,
+            assignments: Some(assignments.to_string_keyed()),
+            timeout_ms: None,
+            max_input_chars: None,
+        }),
+        mode: SdkMode::Manual,
+        clock: None,
+        guards: Some(DerivationGuards {
+            smoothed_prompt: None,
+            tool_result_summary: None,
+            detailed_turn_compression: Some(DetailedTurnCompressionGuards {
+                tiny_turn_tokens: Some(1),
+            }),
+        }),
+        tool_result: None,
+        lease: None,
+        chunk_policy: Some(ChunkPolicyConfig {
+            target_projected_tokens: 5,
+            max_projected_tokens: 4400,
+        }),
+        view: None,
+    });
+    let file_path = seed_all_seven_kinds(&sdk, store).await;
+
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
+    assert!(drained.is_ok(), "conformance drain failed");
+    let OpResult::Ok { value: drained } = drained else {
+        unreachable!()
+    };
+    assert_eq!(
+        drained.stopped_because,
+        DrainStoppedBecause::Empty,
+        "conformance drain left work behind"
+    );
+    assert_eq!(
+        drained.remaining, 0,
+        "conformance drain left items remaining"
+    );
+
+    let forms = read_derived_forms(&file_path);
+    for kind in DERIVATION_TYPES {
+        assert!(
+            forms
+                .iter()
+                .any(|form| { form.derivation_type == *kind && form.state.as_str() == "ready" }),
+            "expected at least one ready {kind} form after the drain"
+        );
+    }
+
+    let captured = log.lock().expect("routing log").clone();
+    assert!(
+        !captured.is_empty(),
+        "no calls crossed the ModelCall boundary"
+    );
+    for input in &captured {
+        let matched: Vec<_> = InferenceDerivationType::ALL
+            .iter()
+            .copied()
+            .filter(|kind| {
+                let a = assignments.get(*kind);
+                a.provider == input.provider && a.model == input.model
+            })
+            .collect();
+        assert!(
+            !matched.is_empty(),
+            "call carried provider/model \"{}\"/\"{}\" matching no kind's assignment",
+            input.provider,
+            input.model
+        );
+        assert!(
+            !input.messages.is_empty(),
+            "a call crossed the boundary with no messages"
+        );
+        assert!(
+            input
+                .messages
+                .iter()
+                .any(|m| m.role == ModelCallMessageRole::User),
+            "single-turn shape requires a user message"
+        );
+        for message in &input.messages {
+            assert!(
+                matches!(
+                    message.role,
+                    ModelCallMessageRole::System | ModelCallMessageRole::User
+                ),
+                "message role \"{}\" is outside the single-turn vocabulary",
+                message.role.as_str()
+            );
+            let _: &str = message.content.as_str();
+        }
+    }
+    for kind in InferenceDerivationType::ALL {
+        let a = assignments.get(*kind);
+        assert!(
+            captured
+                .iter()
+                .any(|input| input.provider == a.provider && input.model == a.model),
+            "no boundary call carried {}'s assigned provider/model lane",
+            kind.as_str()
+        );
+    }
+
+    RoutingRunResult {
+        sdk,
+        file_path,
+        derivations: forms,
+        log,
+    }
 }

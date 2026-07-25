@@ -93,6 +93,21 @@ pub async fn run_with_instance_seam<T>(
         .await
 }
 
+/// Sync counterpart of [`run_with_instance_seam`] for namespace methods that
+/// are synchronous in TS (`create`, `openThreadDatabase`, `cleanPrompt`, …).
+///
+/// TS `AsyncLocalStorage.run` covers sync callees; Rust carriers wrap those
+/// bodies with this helper so poke/touch still resolve to the instance seam.
+///
+/// `pub(crate)` only — Rust decomposition for SDK carriers; not part of the
+/// frozen shared-tech public export census (Phase 1: 126 names).
+pub(crate) fn run_with_instance_seam_sync<T>(
+    seam: Arc<InstanceSeam>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    TOUCH_SUPPRESSED.sync_scope(false, || SEAM_STORE.sync_scope(Some(seam), operation))
+}
+
 pub fn set_scheduler_poke(poke: Option<SchedulerPoke>) {
     SCHEDULER_POKE.with(|slot| {
         *slot.borrow_mut() = poke.map(Arc::from);

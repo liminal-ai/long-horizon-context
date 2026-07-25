@@ -20,7 +20,7 @@ use futures::FutureExt;
 use serde_json::{Map, Value};
 
 use crate::messages;
-use crate::shared_tech::context::resolve_instance_view_config;
+use crate::shared_tech::context::{resolve_instance_config, resolve_instance_view_config};
 use crate::shared_tech::derivation::{DerivationReportEntry, DerivationState};
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
 use crate::shared_tech::js_json::{js_json_stringify, js_number_value, js_string_of_number};
@@ -1153,7 +1153,13 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
             })
             .collect();
 
-        let created_at = system_time_to_iso(SystemTime::now());
+        // TS `new Date().toISOString()` — under the SDK seam, honor the
+        // instance clock (lifecycle freezes Date / injects SdkConfig.clock).
+        let created_at = system_time_to_iso(
+            resolve_instance_config()
+                .map(|c| (c.clock)())
+                .unwrap_or_else(SystemTime::now),
+        );
 
         fire_view_injection(ViewInjectionPoint::CompactWrite);
 

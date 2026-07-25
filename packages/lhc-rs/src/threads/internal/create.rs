@@ -194,10 +194,6 @@ fn not_a_thread_file<T>(file_path: &str, detail: &str) -> OpResult<T> {
     }
 }
 
-fn error_detail(cause: &dyn std::fmt::Display) -> String {
-    cause.to_string()
-}
-
 fn map_inspect_failure(file_path: &str, detail: &str) -> OpResult<()> {
     // SQLite may defer "not a database" until the first query; identity failure
     // at any stage (open / schema / metadata), matching TS catch.

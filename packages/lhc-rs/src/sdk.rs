@@ -25,6 +25,7 @@ pub use crate::shared_tech::durable_work::{
     DurableWorkDispatchResult, DurableWorkDispatcher, DurableWorkDispatcherMap,
     DurableWorkOperation, apply_derivation_success,
 };
+use crate::shared_tech::errors::storage_failure;
 pub use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
 pub use crate::shared_tech::inference_types::{
     InferenceConfig, ModelAssignment, ModelCall, ModelCallFailureKind, ModelCallInput,
@@ -63,33 +64,58 @@ pub use crate::turns::{ChunkRecord, TurnRecord};
 
 // ── Construction / private helpers ───────────────────────────────────
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use indexmap::IndexMap;
 
+use crate::messages::internal::derive::{
+    DispatchMessageDeriveWorkItem, dispatch_message_derive_work,
+};
+use crate::messages::internal::handlers::MESSAGE_WORK_HANDLERS;
 use crate::messages::{
-    EditInput, MessageCreateResult, MessageDeriveResult, MessageReportOpts, RecordedEvent,
+    self, EditInput, MessageCreateResult, MessageDeriveResult, MessageReportOpts, RecordedEvent,
     RemoveInput,
 };
-use crate::shared_tech::context::InstanceSeam;
-use crate::shared_tech::derivation::CompressionTargets;
-use crate::shared_tech::durable_work::DurableWorkOperationName;
-#[allow(unused_imports)] // Phase 2 init path; mirror TS dependency graph
+use crate::shared_tech::context::{
+    InstanceSeam, run_with_instance_seam, run_with_instance_seam_sync,
+};
+use crate::shared_tech::derivation::{
+    BriefTargets, ChunkPolicyConfig, Clock, CompressionTargets, LeaseConfig, SdkMode,
+    ToolResultConfig,
+};
+use crate::shared_tech::durable_work::{DurableWorkDispatcherItem, DurableWorkOperationName};
 use crate::shared_tech::inference_adapter::create_inference_callbacks;
-use crate::shared_tech::inference_types::{ResolvedDerivationGuards, ThinkingLevel};
-use crate::shared_tech::logging::{DerivationLogQuery, StoredDerivationLogEntry};
-#[allow(unused_imports)] // Phase 2 init path; mirror TS dependency graph
-use crate::shared_tech::prompts::PROMPT_REGISTRY;
+use crate::shared_tech::inference_types::{
+    ResolvedDerivationGuards, ResolvedInferenceConfig, ThinkingLevel, resolve_guards,
+};
+use crate::shared_tech::js_json::js_string_of_number;
+use crate::shared_tech::logging::{
+    DerivationLogQuery, StoredDerivationLogEntry, query_derivation_log,
+};
+use crate::shared_tech::persist::DbTransaction;
+use crate::shared_tech::prompts::registry_get;
+use crate::shared_tech::scheduler::{
+    DrainDeps, DrainOpenOpts, create_scheduler, peek_thread_id, run_drain,
+};
 use crate::shared_tech::storage::Db;
-use crate::thread_view::{CompactOpts, MaterializeOpts, MaterializeResult, PruneParams};
+use crate::thread_view::{
+    self, CompactOpts, MaterializeOpts, MaterializeResult, PruneParams, resolve_view_config,
+};
 use crate::threads::{
-    ListThreadsInput, NewThreadInput, NewThreadResult, ResolveInput, ResolvedThreadPath, ThreadInfo,
+    self, ListThreadsInput, NewThreadInput, NewThreadResult, ResolveInput, ResolvedThreadPath,
+    ThreadInfo, open_thread_database,
 };
 use crate::turns::internal::chunk_recovery::CompactChunkMaterial;
+use crate::turns::internal::derive::{
+    DispatchTurnOwnedWorkItem, TURN_WORK_HANDLERS, dispatch_turn_owned_work,
+};
 use crate::turns::{
-    ChunkDeriveDerivationType, ChunkDeriveResult, RecordedTurnEvent, TurnChunkStructure,
+    self, ChunkDeriveDerivationType, ChunkDeriveResult, RecordedTurnEvent, TurnChunkStructure,
     TurnDeriveResult, TurnReportOpts, TurnTransitionOutcome,
 };
+use crate::{inspect, intake_stream};
 
 // TS `WORK_KIND_REGISTRY` Record → canonical Rust exhaustive fn
 // [`work_kind_registry`] (Wave 0/2 ruling). No SCREAMING alias at root.
@@ -110,15 +136,29 @@ pub struct DrainOpts {
 #[derive(Clone)]
 pub struct WorkSurface {
     seam: Arc<InstanceSeam>,
+    drain_deps: Arc<DrainDeps>,
 }
 
 impl WorkSurface {
-    fn new(seam: Arc<InstanceSeam>) -> Self {
-        Self { seam }
+    fn new(seam: Arc<InstanceSeam>, drain_deps: Arc<DrainDeps>) -> Self {
+        Self { seam, drain_deps }
     }
 
-    pub async fn drain(&self, _ref: ThreadRef, _opts: Option<DrainOpts>) -> OpResult<DrainReport> {
-        todo!("phase 2")
+    pub async fn drain(&self, ref_: ThreadRef, opts: Option<DrainOpts>) -> OpResult<DrainReport> {
+        let seam = Arc::clone(&self.seam);
+        let drain_deps = Arc::clone(&self.drain_deps);
+        run_with_instance_seam(seam, async move {
+            let resolved_ref = threads::resolve_thread_ref(ref_).await;
+            let file_path = match resolved_ref {
+                OpResult::Ok { value } => value.file_path,
+                OpResult::Err { error } => return OpResult::Err { error },
+            };
+            let open_opts = opts.map(|o| DrainOpenOpts {
+                max_items: o.max_items,
+            });
+            run_drain(&file_path, drain_deps.as_ref(), open_opts).await
+        })
+        .await
     }
 }
 
@@ -126,27 +166,100 @@ impl WorkSurface {
 #[derive(Clone)]
 pub struct LoggingSurface {
     seam: Arc<InstanceSeam>,
+    clock: Clock,
 }
 
 impl LoggingSurface {
-    fn new(seam: Arc<InstanceSeam>) -> Self {
-        Self { seam }
+    fn new(seam: Arc<InstanceSeam>, clock: Clock) -> Self {
+        Self { seam, clock }
     }
 
-    pub async fn write(&self, _ref: ThreadRef, _entry: LogEntry) -> OpResult<()> {
-        todo!("phase 2")
+    pub async fn write(&self, ref_: ThreadRef, entry: LogEntry) -> OpResult<()> {
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        let seam = Arc::clone(&self.seam);
+        let clock = Arc::clone(&self.clock);
+        // TS sdk.ts wraps each logging transaction in try/catch; Rust helpers
+        // re-panic callback/SQL/close failures — contain at the SDK boundary.
+        let fut = run_with_instance_seam(seam, async move {
+            match create_db_write_transaction(
+                ref_,
+                move |transaction| {
+                    let entry = entry.clone();
+                    Box::pin(async move {
+                        write_log(DbTransaction::Write(transaction), &entry);
+                    })
+                },
+                Some(clock),
+            )
+            .await
+            {
+                OpResult::Ok { .. } => OpResult::Ok { value: () },
+                OpResult::Err { error } => OpResult::Err { error },
+            }
+        });
+        match AssertUnwindSafe(fut).catch_unwind().await {
+            Ok(result) => result,
+            Err(payload) => {
+                storage_failure(&format!("log write failed: {}", panic_detail(payload)))
+            }
+        }
     }
 
-    pub async fn query(&self, _ref: ThreadRef, _q: LogQuery) -> OpResult<Vec<StoredLogEntry>> {
-        todo!("phase 2")
+    pub async fn query(&self, ref_: ThreadRef, q: LogQuery) -> OpResult<Vec<StoredLogEntry>> {
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        let seam = Arc::clone(&self.seam);
+        let fut = run_with_instance_seam(seam, async move {
+            create_db_read_transaction(ref_, move |transaction| {
+                let q = q.clone();
+                Box::pin(async move { query_log(transaction.db, &q) })
+            })
+            .await
+        });
+        match AssertUnwindSafe(fut).catch_unwind().await {
+            Ok(result) => result,
+            Err(payload) => {
+                storage_failure(&format!("log query failed: {}", panic_detail(payload)))
+            }
+        }
     }
 
     pub async fn query_derivation_log(
         &self,
-        _ref: ThreadRef,
-        _q: DerivationLogQuery,
+        ref_: ThreadRef,
+        q: DerivationLogQuery,
     ) -> OpResult<Vec<StoredDerivationLogEntry>> {
-        todo!("phase 2")
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        let seam = Arc::clone(&self.seam);
+        let fut = run_with_instance_seam(seam, async move {
+            create_db_read_transaction(ref_, move |transaction| {
+                let q = q.clone();
+                Box::pin(async move { query_derivation_log(transaction.db, &q) })
+            })
+            .await
+        });
+        match AssertUnwindSafe(fut).catch_unwind().await {
+            Ok(result) => result,
+            Err(payload) => storage_failure(&format!(
+                "derivation log query failed: {}",
+                panic_detail(payload)
+            )),
+        }
+    }
+}
+
+fn panic_detail(panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -162,48 +275,69 @@ impl ThreadViewSurface {
         Self { seam }
     }
 
-    pub async fn get_llm_request_context(&self, _ref: ThreadRef) -> OpResult<LlmRequestContext> {
-        todo!("phase 2")
+    pub async fn get_llm_request_context(&self, ref_: ThreadRef) -> OpResult<LlmRequestContext> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            thread_view::get_llm_request_context(ref_).await
+        })
+        .await
     }
 
-    pub async fn get_session_thread_view(&self, _ref: ThreadRef) -> OpResult<SessionThreadView> {
-        todo!("phase 2")
+    pub async fn get_session_thread_view(&self, ref_: ThreadRef) -> OpResult<SessionThreadView> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            thread_view::get_session_thread_view(ref_).await
+        })
+        .await
     }
 
-    pub async fn status(&self, _ref: ThreadRef) -> OpResult<ViewStatus> {
-        todo!("phase 2")
+    pub async fn status(&self, ref_: ThreadRef) -> OpResult<ViewStatus> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::status(ref_).await }).await
     }
 
     pub async fn prune(
         &self,
-        _ref: ThreadRef,
-        _params: Option<PruneParams>,
+        ref_: ThreadRef,
+        params: Option<PruneParams>,
     ) -> OpResult<PruneReceipt> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::prune(ref_, params).await }).await
     }
 
-    pub async fn describe(&self, _ref: ThreadRef) -> OpResult<Option<StoredView>> {
-        todo!("phase 2")
+    pub async fn describe(&self, ref_: ThreadRef) -> OpResult<Option<StoredView>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::describe(ref_).await }).await
     }
 
     pub async fn preview_compact(
         &self,
-        _ref: ThreadRef,
-        _opts: CompactOpts,
+        ref_: ThreadRef,
+        opts: CompactOpts,
     ) -> OpResult<PreviewCompactOutcome> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            thread_view::preview_compact(ref_, opts).await
+        })
+        .await
     }
 
-    pub async fn compact(&self, _ref: ThreadRef, _opts: CompactOpts) -> OpResult<CompactReceipt> {
-        todo!("phase 2")
+    pub async fn compact(&self, ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::compact(ref_, opts).await }).await
     }
 
     pub async fn materialize(
         &self,
-        _ref: ThreadRef,
-        _opts: MaterializeOpts,
+        ref_: ThreadRef,
+        opts: MaterializeOpts,
     ) -> OpResult<MaterializeResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(
+            seam,
+            async move { thread_view::materialize(ref_, opts).await },
+        )
+        .await
     }
 }
 
@@ -218,16 +352,19 @@ impl InspectSurface {
         Self { seam }
     }
 
-    pub async fn overview(&self, _ref: ThreadRef) -> OpResult<InspectOverview> {
-        todo!("phase 2")
+    pub async fn overview(&self, ref_: ThreadRef) -> OpResult<InspectOverview> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { inspect::overview(ref_).await }).await
     }
 
-    pub async fn health(&self, _ref: ThreadRef) -> OpResult<HealthReport> {
-        todo!("phase 2")
+    pub async fn health(&self, ref_: ThreadRef) -> OpResult<HealthReport> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { inspect::health(ref_).await }).await
     }
 
-    pub async fn view(&self, _ref: ThreadRef) -> OpResult<ViewContentsReport> {
-        todo!("phase 2")
+    pub async fn view(&self, ref_: ThreadRef) -> OpResult<ViewContentsReport> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { inspect::view(ref_).await }).await
     }
 }
 
@@ -244,60 +381,91 @@ impl LhcMessages {
 
     pub fn create(
         &self,
-        _transaction: &DbWriteTransaction,
-        _recorded_event: &RecordedEvent,
-        _turn_id: &str,
+        transaction: &DbWriteTransaction,
+        recorded_event: &RecordedEvent,
+        turn_id: &str,
     ) -> MessageCreateResult {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam_sync(seam, || {
+            messages::create(transaction, recorded_event, turn_id)
+        })
     }
 
     pub async fn list(
         &self,
-        _thread_ref: ThreadRef,
-        _filter: Option<MessageListOptions>,
+        thread_ref: ThreadRef,
+        filter: Option<MessageListOptions>,
     ) -> OpResult<Vec<MessageRecord>> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(
+            seam,
+            async move { messages::list(thread_ref, filter).await },
+        )
+        .await
     }
 
-    pub fn read_live_messages(&self, _db: &Db) -> Vec<MessageRecord> {
-        todo!("phase 2")
+    pub fn read_live_messages(&self, db: &Db) -> Vec<MessageRecord> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam_sync(seam, || messages::read_live_messages(db))
     }
 
-    pub async fn show(&self, _thread_ref: ThreadRef, _message_id: &str) -> OpResult<MessageDetail> {
-        todo!("phase 2")
+    pub async fn show(&self, thread_ref: ThreadRef, message_id: &str) -> OpResult<MessageDetail> {
+        let seam = Arc::clone(&self.seam);
+        let message_id = message_id.to_string();
+        run_with_instance_seam(seam, async move {
+            messages::show(thread_ref, &message_id).await
+        })
+        .await
     }
 
     pub async fn report(
         &self,
-        _thread_ref: ThreadRef,
-        _opts: Option<MessageReportOpts>,
+        thread_ref: ThreadRef,
+        opts: Option<MessageReportOpts>,
     ) -> OpResult<Vec<DerivationReportEntry>> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(
+            seam,
+            async move { messages::report(thread_ref, opts).await },
+        )
+        .await
     }
 
     pub async fn derive(
         &self,
-        _thread_ref: ThreadRef,
-        _message_ids: &[String],
+        thread_ref: ThreadRef,
+        message_ids: &[String],
     ) -> OpResult<Vec<MessageDeriveResult>> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let message_ids = message_ids.to_vec();
+        run_with_instance_seam(seam, async move {
+            messages::derive(thread_ref, &message_ids).await
+        })
+        .await
     }
 
-    pub async fn edit(&self, _thread_ref: ThreadRef, _edit: EditInput) -> OpResult<MutationResult> {
-        todo!("phase 2")
+    pub async fn edit(&self, thread_ref: ThreadRef, edit: EditInput) -> OpResult<MutationResult> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { messages::edit(thread_ref, edit).await }).await
     }
 
     pub async fn remove(
         &self,
-        _thread_ref: ThreadRef,
-        _removal: RemoveInput,
+        thread_ref: ThreadRef,
+        removal: RemoveInput,
     ) -> OpResult<MutationResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(
+            seam,
+            async move { messages::remove(thread_ref, removal).await },
+        )
+        .await
     }
 
-    /// TS `sdk.messages.cleanPrompt` — Phase 2 wraps through the instance seam.
-    pub fn clean_prompt(&self, _text: &str) -> String {
-        todo!("phase 2")
+    /// TS `sdk.messages.cleanPrompt` — wraps through the instance seam.
+    pub fn clean_prompt(&self, text: &str) -> String {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam_sync(seam, || messages::clean_prompt(text))
     }
 }
 
@@ -312,31 +480,35 @@ impl LhcThreads {
         Self { seam }
     }
 
-    pub async fn new_thread(&self, _input: NewThreadInput) -> OpResult<NewThreadResult> {
-        todo!("phase 2")
+    pub async fn new_thread(&self, input: NewThreadInput) -> OpResult<NewThreadResult> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { threads::new_thread(input).await }).await
     }
 
-    pub async fn resolve(&self, _input: ResolveInput) -> OpResult<ThreadInfo> {
-        todo!("phase 2")
+    pub async fn resolve(&self, input: ResolveInput) -> OpResult<ThreadInfo> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { threads::resolve(input).await }).await
     }
 
-    pub async fn list_threads(
-        &self,
-        _input: Option<ListThreadsInput>,
-    ) -> OpResult<Vec<ThreadInfo>> {
-        todo!("phase 2")
+    pub async fn list_threads(&self, input: Option<ListThreadsInput>) -> OpResult<Vec<ThreadInfo>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { threads::list_threads(input).await }).await
     }
 
-    pub async fn info(&self, _ref: ThreadRef) -> OpResult<ThreadFileInfo> {
-        todo!("phase 2")
+    pub async fn info(&self, ref_: ThreadRef) -> OpResult<ThreadFileInfo> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { threads::info(ref_).await }).await
     }
 
-    pub async fn resolve_thread_ref(&self, _ref: ThreadRef) -> OpResult<ResolvedThreadPath> {
-        todo!("phase 2")
+    pub async fn resolve_thread_ref(&self, ref_: ThreadRef) -> OpResult<ResolvedThreadPath> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { threads::resolve_thread_ref(ref_).await }).await
     }
 
-    pub fn open_thread_database(&self, _file_path: &str) -> OpResult<Db> {
-        todo!("phase 2")
+    pub fn open_thread_database(&self, file_path: &str) -> OpResult<Db> {
+        let seam = Arc::clone(&self.seam);
+        let file_path = file_path.to_string();
+        run_with_instance_seam_sync(seam, || open_thread_database(&file_path))
     }
 }
 
@@ -356,19 +528,29 @@ impl LhcIntakeStream {
 
     pub async fn message_events(
         &self,
-        _thread_ref: ThreadRef,
-        _events: &[MessageEventInput],
+        thread_ref: ThreadRef,
+        events: &[MessageEventInput],
     ) -> OpResult<BatchResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let events = events.to_vec();
+        run_with_instance_seam(seam, async move {
+            intake_stream::message_events(thread_ref, &events).await
+        })
+        .await
     }
 
-    pub async fn list_events(&self, _thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
-        todo!("phase 2")
+    pub async fn list_events(&self, thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(
+            seam,
+            async move { intake_stream::list_events(thread_ref).await },
+        )
+        .await
     }
 
     /// TS `intakeStream.initLhc` — same function as crate-root [`init_lhc`].
-    pub fn init_lhc(&self, _config: SdkConfig) -> Lhc {
-        todo!("phase 2")
+    pub fn init_lhc(&self, config: SdkConfig) -> Lhc {
+        init_lhc(config)
     }
 }
 
@@ -385,63 +567,91 @@ impl LhcTurns {
 
     pub fn create(
         &self,
-        _transaction: &DbWriteTransaction,
-        _recorded_event: &RecordedTurnEvent,
+        transaction: &DbWriteTransaction,
+        recorded_event: &RecordedTurnEvent,
     ) -> TurnTransitionOutcome {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam_sync(seam, || turns::create(transaction, recorded_event))
     }
 
-    pub async fn list_turns(&self, _thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
-        todo!("phase 2")
+    pub async fn list_turns(&self, thread_ref: ThreadRef) -> OpResult<Vec<TurnRecord>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { turns::list_turns(thread_ref).await }).await
     }
 
-    pub async fn list_chunks(&self, _thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
-        todo!("phase 2")
+    pub async fn list_chunks(&self, thread_ref: ThreadRef) -> OpResult<Vec<ChunkRecord>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { turns::list_chunks(thread_ref).await }).await
     }
 
     pub fn get_chunk_text(
         &self,
-        _transaction: &DbReadTransaction,
-        _chunk_id: &str,
-        _derivation_type: Option<ChunkDeriveDerivationType>,
+        transaction: &DbReadTransaction,
+        chunk_id: &str,
+        derivation_type: Option<ChunkDeriveDerivationType>,
     ) -> CompactChunkMaterial {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let chunk_id = chunk_id.to_string();
+        run_with_instance_seam_sync(seam, || {
+            turns::get_chunk_text(transaction, &chunk_id, derivation_type)
+        })
     }
 
-    pub fn read_turn_chunk_structure(&self, _db: &Db) -> TurnChunkStructure {
-        todo!("phase 2")
+    pub fn read_turn_chunk_structure(&self, db: &Db) -> TurnChunkStructure {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam_sync(seam, || turns::read_turn_chunk_structure(db))
     }
 
     pub async fn report(
         &self,
-        _thread_ref: ThreadRef,
-        _opts: Option<&TurnReportOpts>,
+        thread_ref: ThreadRef,
+        opts: Option<&TurnReportOpts>,
     ) -> OpResult<Vec<DerivationReportEntry>> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let opts = opts.cloned();
+        run_with_instance_seam(seam, async move {
+            turns::report(thread_ref, opts.as_ref()).await
+        })
+        .await
     }
 
     pub async fn derive_turn(
         &self,
-        _thread_ref: ThreadRef,
-        _turn_id: &str,
+        thread_ref: ThreadRef,
+        turn_id: &str,
     ) -> OpResult<TurnDeriveResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let turn_id = turn_id.to_string();
+        run_with_instance_seam(seam, async move {
+            turns::derive_turn(thread_ref, &turn_id).await
+        })
+        .await
     }
 
     pub async fn derive_detailed_chunk(
         &self,
-        _thread_ref: ThreadRef,
-        _chunk_id: &str,
+        thread_ref: ThreadRef,
+        chunk_id: &str,
     ) -> OpResult<ChunkDeriveResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let chunk_id = chunk_id.to_string();
+        run_with_instance_seam(seam, async move {
+            turns::derive_detailed_chunk(thread_ref, &chunk_id).await
+        })
+        .await
     }
 
     pub async fn derive_brief_chunk(
         &self,
-        _thread_ref: ThreadRef,
-        _chunk_id: &str,
+        thread_ref: ThreadRef,
+        chunk_id: &str,
     ) -> OpResult<ChunkDeriveResult> {
-        todo!("phase 2")
+        let seam = Arc::clone(&self.seam);
+        let chunk_id = chunk_id.to_string();
+        run_with_instance_seam(seam, async move {
+            turns::derive_brief_chunk(thread_ref, &chunk_id).await
+        })
+        .await
     }
 }
 
@@ -464,8 +674,15 @@ pub struct Lhc {
 }
 
 impl Lhc {
-    pub async fn drain_settled(&self, _ref: ThreadRef) {
-        todo!("phase 2")
+    pub async fn drain_settled(&self, ref_: ThreadRef) {
+        let resolved_ref = threads::resolve_thread_ref(ref_).await;
+        let OpResult::Ok { value } = resolved_ref else {
+            return; // nothing can be scheduled for an unresolvable ref
+        };
+        let Some(thread_id) = peek_thread_id(&value.file_path) else {
+            return;
+        };
+        self.scheduler.drain_settled(&thread_id).await;
     }
 }
 
@@ -484,10 +701,22 @@ pub struct TestingWorkRegistration {
     pub dispatchers: Option<DurableWorkDispatcherMap>,
 }
 
-/// TS `registerTestingWork` — Phase 1 exact todo; mutates
-/// [`Lhc::work_registration`] in Phase 2.
-pub fn register_testing_work(_sdk: &Lhc, _registration: TestingWorkRegistration) {
-    todo!("phase 2")
+/// TS `registerTestingWork` — mutates [`Lhc::work_registration`].
+pub fn register_testing_work(sdk: &Lhc, registration: TestingWorkRegistration) {
+    let mut target = sdk
+        .work_registration
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(handlers) = registration.handlers {
+        for (kind, handler) in handlers {
+            target.work_handlers.insert(kind, handler);
+        }
+    }
+    if let Some(dispatchers) = registration.dispatchers {
+        for (op, dispatcher) in dispatchers {
+            target.work_dispatchers.insert(op, dispatcher);
+        }
+    }
 }
 
 fn unknown_work_kind<T>(kind: &str) -> OpResult<T> {
@@ -553,20 +782,26 @@ pub fn lookup_work_dispatcher(
 
 const INIT_CONFIG_PREFIX: &str = "initLhc config";
 
-fn require_positive(_value: f64, _name: &str) {
-    todo!("phase 2")
+fn require_positive(value: f64, name: &str) {
+    if !value.is_finite() || value <= 0.0 {
+        panic!(
+            "{INIT_CONFIG_PREFIX}: {name} must be a positive number, got {}",
+            js_string_of_number(value)
+        );
+    }
 }
 
-fn require_positive_i64(_value: i64, _name: &str) {
-    todo!("phase 2")
+fn require_positive_i64(value: i64, name: &str) {
+    require_positive(value as f64, name);
 }
 
 /// Bind a domain surface to one SDK instance's delivery seam (epic-fix-001).
 ///
-/// In Rust the namespace bindings are already owned structs; Phase 2 wraps each
-/// method body in [`run_with_instance_seam`]. Signature retained for fidelity.
-fn scope_surface<T>(_surface: T, _seam: Arc<InstanceSeam>) -> T {
-    todo!("phase 2")
+/// In Rust the namespace bindings are already owned structs whose methods wrap
+/// [`run_with_instance_seam`]; this identity helper preserves the TS
+/// `scopeSurface` call shape without a Proxy.
+fn scope_surface<T>(surface: T, _seam: Arc<InstanceSeam>) -> T {
+    surface
 }
 
 struct DefaultInferenceLane {
@@ -645,7 +880,7 @@ fn default_inference_assignments() -> IndexMap<&'static str, ModelAssignment> {
     map
 }
 
-/// TS `resolveTargetRatios` — private; behavior Phase 2.
+/// TS `resolveTargetRatios` — private.
 enum TargetRatioKind {
     DetailedTurnCompression,
     ChunkSummaryBrief,
@@ -661,25 +896,394 @@ impl TargetRatioKind {
 }
 
 fn resolve_target_ratios(
-    _kind: TargetRatioKind,
-    _assignment: Option<&ModelAssignment>,
+    kind: TargetRatioKind,
+    assignment: Option<&ModelAssignment>,
 ) -> CompressionTargets {
-    todo!("phase 2")
+    let defaults = default_inference_assignments();
+    let defaults = defaults
+        .get(kind.as_str())
+        .expect("default inference assignment present");
+    CompressionTargets {
+        min_ratio: assignment
+            .and_then(|a| a.target_min_ratio)
+            .or(defaults.target_min_ratio)
+            .expect("target min ratio"),
+        aim_ratio: assignment
+            .and_then(|a| a.target_aim_ratio)
+            .or(defaults.target_aim_ratio)
+            .expect("target aim ratio"),
+        max_ratio: assignment
+            .and_then(|a| a.target_max_ratio)
+            .or(defaults.target_max_ratio)
+            .expect("target max ratio"),
+    }
+}
+
+fn merge_assignment(default: &ModelAssignment, override_: &ModelAssignment) -> ModelAssignment {
+    ModelAssignment {
+        provider: override_.provider.clone(),
+        model: override_.model.clone(),
+        prompt: override_.prompt.clone(),
+        target_min_ratio: override_.target_min_ratio.or(default.target_min_ratio),
+        target_aim_ratio: override_.target_aim_ratio.or(default.target_aim_ratio),
+        target_max_ratio: override_.target_max_ratio.or(default.target_max_ratio),
+        thinking: override_.thinking.or(default.thinking),
+    }
 }
 
 /// Resolve the `inference` construction path: validate host function and
 /// assignment map, fill defaults, build [`InferenceCallbacks`].
 fn resolve_inference_callbacks(
-    _inference: &InferenceConfig,
-    _guards: &ResolvedDerivationGuards,
+    inference: &InferenceConfig,
+    guards: &ResolvedDerivationGuards,
 ) -> InferenceCallbacks {
-    todo!("phase 2")
+    let provided = inference.assignments.as_ref();
+    let defaults = default_inference_assignments();
+    let inference_keys: Vec<&str> = defaults.keys().copied().collect();
+
+    if let Some(provided) = provided {
+        for key in provided.keys() {
+            if !defaults.contains_key(key.as_str()) {
+                panic!(
+                    "{INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type \"{key}\""
+                );
+            }
+        }
+    }
+
+    let mut merged: IndexMap<String, ModelAssignment> = IndexMap::new();
+    for kind in &inference_keys {
+        let default = defaults.get(kind).expect("default present");
+        let assignment = match provided.and_then(|p| p.get(*kind)) {
+            None => default.clone(),
+            Some(override_) => merge_assignment(default, override_),
+        };
+        for (field, value) in [
+            ("provider", assignment.provider.as_str()),
+            ("model", assignment.model.as_str()),
+            ("prompt", assignment.prompt.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                panic!(
+                    "{INIT_CONFIG_PREFIX}: inference.assignments.{kind}.{field} must be a non-empty string"
+                );
+            }
+        }
+        for (field, value) in [
+            ("targetMinRatio", assignment.target_min_ratio),
+            ("targetAimRatio", assignment.target_aim_ratio),
+            ("targetMaxRatio", assignment.target_max_ratio),
+        ] {
+            if let Some(value) = value {
+                if !value.is_finite() || value <= 0.0 {
+                    panic!(
+                        "{INIT_CONFIG_PREFIX}: inference.assignments.{kind}.{field} must be a positive number"
+                    );
+                }
+            }
+        }
+        if registry_get(&assignment.prompt).is_none() {
+            panic!(
+                "{INIT_CONFIG_PREFIX}: inference.assignments.{kind}.prompt names unknown template \"{}\"",
+                assignment.prompt
+            );
+        }
+        merged.insert((*kind).to_string(), assignment);
+    }
+
+    let timeout_ms = inference.timeout_ms.unwrap_or(60_000);
+    let max_input_chars = inference.max_input_chars.unwrap_or(200_000);
+    require_positive_i64(timeout_ms, "inference.timeoutMs");
+    require_positive_i64(max_input_chars, "inference.maxInputChars");
+    create_inference_callbacks(ResolvedInferenceConfig {
+        call: Arc::clone(&inference.call),
+        assignments: merged,
+        guards: guards.clone(),
+        timeout_ms,
+        max_input_chars,
+    })
+}
+
+fn turn_owned_dispatcher(kind: WorkKind) -> DurableWorkDispatcher {
+    Arc::new(move |run, item| {
+        Box::pin(async move {
+            dispatch_turn_owned_work(
+                &run,
+                &DispatchTurnOwnedWorkItem {
+                    work_item_id: item.work_item_id,
+                    kind,
+                    source_ref: item.source_ref,
+                    source_version: item.source_version,
+                    derivations: item.derivations,
+                },
+            )
+            .await
+        })
+    })
 }
 
 /// TS `initLhc` — the only initialization path.
 ///
 /// Config mistakes are programmer errors at construction and panic; operating
 /// failures after construction return [`OpResult`] per the error contract.
-pub fn init_lhc(_config: SdkConfig) -> Lhc {
-    todo!("phase 2")
+pub fn init_lhc(config: SdkConfig) -> Lhc {
+    if config.inference_callbacks.is_some() == config.inference.is_some() {
+        panic!("{INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference");
+    }
+
+    let guards = resolve_guards(config.guards.as_ref());
+    let provided_assignments = config
+        .inference
+        .as_ref()
+        .and_then(|inf| inf.assignments.as_ref());
+    let compression_targets = resolve_target_ratios(
+        TargetRatioKind::DetailedTurnCompression,
+        provided_assignments.and_then(|m| m.get("detailed_turn_compression")),
+    );
+    let brief_targets_raw = resolve_target_ratios(
+        TargetRatioKind::ChunkSummaryBrief,
+        provided_assignments.and_then(|m| m.get("chunk_summary_brief")),
+    );
+    let brief_targets = BriefTargets {
+        min_ratio: brief_targets_raw.min_ratio,
+        aim_ratio: brief_targets_raw.aim_ratio,
+        max_ratio: brief_targets_raw.max_ratio,
+    };
+
+    // Typed `InferenceCallbacks` already guarantees all four operations;
+    // TS's runtime missing-operation loop has no Rust counterpart.
+    let inference_callbacks = if let Some(inference) = &config.inference {
+        resolve_inference_callbacks(inference, &guards)
+    } else {
+        config.inference_callbacks.expect("XOR checked above")
+    };
+
+    let resolved = ResolvedSdkConfig {
+        inference_callbacks,
+        mode: config.mode,
+        clock: config
+            .clock
+            .unwrap_or_else(|| Arc::new(|| SystemTime::now())),
+        guards,
+        compression_targets,
+        brief_targets,
+        tool_result: config.tool_result.unwrap_or(ToolResultConfig {
+            small_tier_tokens: 1000,
+            small_target_ratio: 0.15,
+            mid_target_ratio: 0.04,
+        }),
+        lease: config.lease.unwrap_or(LeaseConfig {
+            duration_ms: 120_000,
+        }),
+        chunk_policy: config.chunk_policy.unwrap_or(ChunkPolicyConfig {
+            target_projected_tokens: 2200,
+            max_projected_tokens: 4400,
+        }),
+        view: resolve_view_config(config.view.as_ref()),
+    };
+
+    require_positive_i64(
+        resolved.guards.smoothed_prompt.max_inference_tokens,
+        "guards.smoothedPrompt.maxInferenceTokens",
+    );
+    require_positive(
+        resolved.guards.smoothed_prompt.suspicious_output_ratio,
+        "guards.smoothedPrompt.suspiciousOutputRatio",
+    );
+    require_positive_i64(
+        resolved.guards.tool_result_summary.timeout_ms,
+        "guards.toolResultSummary.timeoutMs",
+    );
+    require_positive_i64(
+        resolved.guards.detailed_turn_compression.tiny_turn_tokens,
+        "guards.detailedTurnCompression.tinyTurnTokens",
+    );
+    require_positive(
+        resolved.compression_targets.min_ratio,
+        "compressionTargets.minRatio",
+    );
+    require_positive(
+        resolved.compression_targets.aim_ratio,
+        "compressionTargets.aimRatio",
+    );
+    require_positive(
+        resolved.compression_targets.max_ratio,
+        "compressionTargets.maxRatio",
+    );
+    if resolved.compression_targets.max_ratio < resolved.compression_targets.min_ratio {
+        panic!("{INIT_CONFIG_PREFIX}: compressionTargets.maxRatio must be >= minRatio");
+    }
+    if resolved.compression_targets.aim_ratio < resolved.compression_targets.min_ratio
+        || resolved.compression_targets.aim_ratio > resolved.compression_targets.max_ratio
+    {
+        panic!(
+            "{INIT_CONFIG_PREFIX}: compressionTargets.aimRatio must be between minRatio and maxRatio"
+        );
+    }
+    require_positive(resolved.brief_targets.min_ratio, "briefTargets.minRatio");
+    require_positive(resolved.brief_targets.aim_ratio, "briefTargets.aimRatio");
+    require_positive(resolved.brief_targets.max_ratio, "briefTargets.maxRatio");
+    if resolved.brief_targets.max_ratio < resolved.brief_targets.min_ratio {
+        panic!("{INIT_CONFIG_PREFIX}: briefTargets.maxRatio must be >= minRatio");
+    }
+    if resolved.brief_targets.aim_ratio < resolved.brief_targets.min_ratio
+        || resolved.brief_targets.aim_ratio > resolved.brief_targets.max_ratio
+    {
+        panic!("{INIT_CONFIG_PREFIX}: briefTargets.aimRatio must be between minRatio and maxRatio");
+    }
+    require_positive_i64(
+        resolved.tool_result.small_tier_tokens,
+        "toolResult.smallTierTokens",
+    );
+    require_positive(
+        resolved.tool_result.small_target_ratio,
+        "toolResult.smallTargetRatio",
+    );
+    require_positive(
+        resolved.tool_result.mid_target_ratio,
+        "toolResult.midTargetRatio",
+    );
+    require_positive_i64(resolved.lease.duration_ms, "lease.durationMs");
+    require_positive_i64(
+        resolved.chunk_policy.target_projected_tokens,
+        "chunkPolicy.targetProjectedTokens",
+    );
+    if resolved.chunk_policy.max_projected_tokens < resolved.chunk_policy.target_projected_tokens {
+        panic!(
+            "{INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens"
+        );
+    }
+
+    // Handler maps merge from per-domain contributions at construction.
+    let work_handlers =
+        map_work_q_handlers(&[MESSAGE_WORK_HANDLERS.clone(), TURN_WORK_HANDLERS.clone()]);
+    let mut work_dispatchers: DurableWorkDispatcherMap = HashMap::new();
+    work_dispatchers.insert(
+        DurableWorkOperationName::MessagesDerive,
+        Arc::new(|run, item: DurableWorkDispatcherItem| {
+            Box::pin(async move {
+                dispatch_message_derive_work(
+                    &run,
+                    &DispatchMessageDeriveWorkItem {
+                        work_item_id: item.work_item_id,
+                        source_version: item.source_version,
+                        derivations: item.derivations,
+                    },
+                )
+                .await
+            })
+        }),
+    );
+    work_dispatchers.insert(
+        DurableWorkOperationName::TurnsDeriveTurn,
+        turn_owned_dispatcher(WorkKind::TurnDerivation),
+    );
+    work_dispatchers.insert(
+        DurableWorkOperationName::TurnsDeriveDetailedTurnCompression,
+        turn_owned_dispatcher(WorkKind::DetailedTurnCompression),
+    );
+    work_dispatchers.insert(
+        DurableWorkOperationName::TurnsDeriveDetailedChunk,
+        turn_owned_dispatcher(WorkKind::ChunkSummaryDetailed),
+    );
+    work_dispatchers.insert(
+        DurableWorkOperationName::TurnsDeriveBriefChunk,
+        turn_owned_dispatcher(WorkKind::ChunkSummaryBrief),
+    );
+
+    let work_registration = Arc::new(Mutex::new(WorkRegistration {
+        work_handlers,
+        work_dispatchers,
+    }));
+
+    let reg_for_lookup = Arc::clone(&work_registration);
+    let reg_for_any = Arc::clone(&work_registration);
+    let drain_deps = Arc::new(DrainDeps {
+        lookup_dispatcher: Box::new(move |operation, kind| {
+            let map = {
+                let guard = reg_for_lookup.lock().unwrap_or_else(|e| e.into_inner());
+                // Clone Arcs out under the lock; never invoke callbacks while held.
+                guard.work_dispatchers.clone()
+            };
+            lookup_work_dispatcher(&map, operation, kind)
+        }),
+        has_any_handler: Box::new(move || {
+            let guard = reg_for_any.lock().unwrap_or_else(|e| e.into_inner());
+            !guard.work_dispatchers.is_empty()
+        }),
+        config: resolved.clone(),
+        open_thread_database: Box::new(|file_path| open_thread_database(file_path)),
+    });
+
+    let scheduler_mode = match resolved.mode {
+        SdkMode::Background => SchedulerMode::Background,
+        SdkMode::Manual => SchedulerMode::Manual,
+    };
+    // DrainDeps is not Clone; create_scheduler takes ownership. Rebuild an
+    // equivalent deps Arc-share for WorkSurface via the same registration.
+    let reg_for_sched = Arc::clone(&work_registration);
+    let reg_for_sched_any = Arc::clone(&work_registration);
+    let sched_deps = DrainDeps {
+        lookup_dispatcher: Box::new(move |operation, kind| {
+            let map = {
+                let guard = reg_for_sched.lock().unwrap_or_else(|e| e.into_inner());
+                guard.work_dispatchers.clone()
+            };
+            lookup_work_dispatcher(&map, operation, kind)
+        }),
+        has_any_handler: Box::new(move || {
+            let guard = reg_for_sched_any.lock().unwrap_or_else(|e| e.into_inner());
+            !guard.work_dispatchers.is_empty()
+        }),
+        config: resolved.clone(),
+        open_thread_database: Box::new(|file_path| open_thread_database(file_path)),
+    };
+    let scheduler = create_scheduler(scheduler_mode, sched_deps);
+
+    let seam: Arc<InstanceSeam> = match resolved.mode {
+        SdkMode::Background => {
+            let poke_scheduler = scheduler.shared_handle();
+            let touch_scheduler = scheduler.shared_handle();
+            Arc::new(InstanceSeam {
+                poke: Box::new(move |thread_id| poke_scheduler.poke(thread_id)),
+                touch: Box::new(move |file_path, db| touch_scheduler.touch(file_path, db)),
+                view: Some(resolved.view.clone()),
+                config: Some(resolved.clone()),
+            })
+        }
+        SdkMode::Manual => Arc::new(InstanceSeam {
+            poke: Box::new(|_thread_id| {}),
+            touch: Box::new(|_file_path, _db| {}),
+            view: Some(resolved.view.clone()),
+            config: Some(resolved.clone()),
+        }),
+    };
+
+    if resolved.mode == SdkMode::Background {
+        let poke_scheduler = scheduler.shared_handle();
+        let touch_scheduler = scheduler.shared_handle();
+        set_scheduler_poke(Some(Box::new(move |thread_id| {
+            poke_scheduler.poke(thread_id)
+        })));
+        set_thread_touch(Some(Box::new(move |file_path, db| {
+            touch_scheduler.touch(file_path, db)
+        })));
+    }
+
+    let work = WorkSurface::new(Arc::clone(&seam), Arc::clone(&drain_deps));
+    let logging = LoggingSurface::new(Arc::clone(&seam), Arc::clone(&resolved.clock));
+
+    Lhc {
+        threads: scope_surface(LhcThreads::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        intake_stream: scope_surface(LhcIntakeStream::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        messages: scope_surface(LhcMessages::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        turns: scope_surface(LhcTurns::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        thread_view: scope_surface(ThreadViewSurface::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        inspect: scope_surface(InspectSurface::new(Arc::clone(&seam)), Arc::clone(&seam)),
+        logging,
+        config: resolved,
+        scheduler,
+        work,
+        work_registration,
+    }
 }

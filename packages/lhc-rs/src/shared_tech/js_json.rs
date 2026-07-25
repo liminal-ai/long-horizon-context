@@ -164,6 +164,12 @@ pub fn js_number_value(n: f64) -> Value {
         return Value::Null;
     }
     let n = if n == 0.0 { 0.0 } else { n };
+    // Safe-integer integrals use an i64 Number leaf so Value PartialEq matches
+    // `json!(N)` and stringify stays bare (`3` not `3.0`). Fractions and
+    // non-safe magnitudes stay on the f64 Number lane (Amendment H/I spelling).
+    if n == n.trunc() && n.abs() <= 9_007_199_254_740_992.0 {
+        return Value::Number((n as i64).into());
+    }
     match serde_json::Number::from_f64(n) {
         Some(num) => Value::Number(num),
         None => Value::Null,

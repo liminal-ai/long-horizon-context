@@ -237,10 +237,6 @@ fn is_blank_path(file_path: &str) -> bool {
     file_path.trim().is_empty()
 }
 
-fn detail(cause: &dyn std::fmt::Display) -> String {
-    cause.to_string()
-}
-
 fn panic_detail(panic: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
         (*s).to_string()
@@ -251,8 +247,8 @@ fn panic_detail(panic: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-fn iso_now() -> String {
-    let ms = SystemTime::now()
+fn iso_from_system_time(time: SystemTime) -> String {
+    let ms = time
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_millis() as i64;
@@ -265,6 +261,10 @@ fn iso_now() -> String {
     let mm = (tod % 3600) / 60;
     let ss = tod % 60;
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
+}
+
+fn iso_now() -> String {
+    iso_from_system_time(SystemTime::now())
 }
 
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
@@ -302,7 +302,10 @@ pub async fn new_thread(input: NewThreadInput) -> OpResult<NewThreadResult> {
     }
 
     let thread_id = generate_thread_id();
-    let created_at = iso_now();
+    // TS `new Date().toISOString()` — honor SdkConfig.clock under the seam.
+    let created_at = crate::shared_tech::context::resolve_instance_config()
+        .map(|c| iso_from_system_time((c.clock)()))
+        .unwrap_or_else(iso_now);
 
     let create = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         create_thread_file(&input.file_path, &thread_id, &created_at);

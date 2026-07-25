@@ -1406,6 +1406,33 @@ shared `StoredView.config` producer only. Integer readers reject the
 select / boundary / prune-zone; repair-r5). `path_resolve` propagates cwd
 failure (never fabricates `/`).
 
+#### Amendment J (Phase-gate addendum; name in Wave 7 commit body)
+
+Forced spawnable drain-runner counterpart (Sol full audit FAIL
+`20260725-054823-a112a9`; Copilot-Fable full audit initially PASS then
+focused adjudication `20260725-061935-a4dcca` **FORCED REPAIR** after
+independently reproducing Sol's evidence and proving the narrow wrapper in
+an isolated copy). Prior frozen representation compiled
+`tests/fixtures/drain_runner.rs` only as a private fixture module, leaving
+its `main` behavior unreachable; TS `packages/lhc/test/fixtures/drain-runner.ts:53`
+(`main().catch(...)` at module top-level) plus Cargo metadata uniquely
+require a spawnable counterpart.
+
+Exact repair (Rust-native shape):
+
+- auto-discovered `examples/drain_runner.rs` path-includes the fixture
+  module and calls `fixtures::drain_runner::process_main()`;
+- fixture `process_main` visibility `pub(crate)` for that example crate only
+  (fixtures are outside `src`; not a library export; fixture barrel adds no
+  re-export);
+- no Cargo.toml `[[example]]` / dependency edits, no library surface, no
+  counted test / ignore / certification denominator, no persisted/serialized
+  shape, and no Phase 3 surface changes.
+
+Not a persisted-byte amendment: it makes already verified protocol bytes
+reachable without changing their producer/shape, so no new oracle fixture is
+warranted. **Name Amendment J in the Wave 7 commit body.**
+
 #### Production repairs
 
 1. **Reentrant walk hook** — store `Arc` callback; `call_walk_hook` clones out
@@ -2312,3 +2339,146 @@ through the SDK.
 preserved; orchestrator comparison artifacts
 `/tmp/lhc-ts-profiles-current.txt` and `/tmp/lhc-rs-profiles-current.txt`
 removed and confirmed absent.
+
+---
+
+## Phase 2 Wave 7 — SDK + inspect + final green (DUAL-CERTIFIED)
+
+**Status:** implemented locally on `lhc-rs-port` from certified Wave 6
+`a0434bc`; dual full review forced Amendment J (spawnable drain-runner);
+repair-r3 passed dual changed-scope confirmation. **Wave 7 dual-certified**;
+whole Phase 2 remains pending the separate completion audit. Model:
+`cursor-grok-4.5-high-fast`.
+
+**Gate (default threads and `RUST_TEST_THREADS=1`):**
+
+```text
+exact-todo: tokens=0 bodies=0 covered=0
+classified=496 cargo-reported=496 (binaries: 58)
+passed=481 suspicious=0 notimpl=0 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic vs Wave 6: **+312 passed / −312 notimpl**. Active progress
+**481/481**. Final mode: crate-wide real Phase-2 todo count is **0**, so
+every non-ignored cargo ok counts as a pass (transitional allowlist of
+names retired for classification; exact `481/0/15/0/0` required).
+
+**Scope delivered:**
+
+- `src/sdk.rs` — `init_lhc` builds `Arc<InstanceSeam>` carriers; all
+  namespace methods scope through the seam; per-instance work registration;
+  no process-global bleed. Export census preserved.
+- `src/inspect/mod.rs` + `internal/{health,overview,view_report}.rs` —
+  full TS-faithful bodies.
+- Remaining production todos cleared (`src` real tokens **0**).
+- Fixture SDK builders: `lifecycle`, `view_thread`, `drain_runner`,
+  `read_only_delta`, `seam_conformance`, `threads` (fixture real tokens
+  **0**).
+- `classify_tool_result` total via `js_number_value`; safe-integer i64
+  leaves in the shared JS number lane; Amendment I consumer still green.
+- Seam clock honored for compact / intake / write-txn / `new_thread`
+  (lifecycle fixed clock).
+- `check_gate.py` final mode + trybuild multi-line `ui` parse for serial
+  runs.
+
+**Ignores:** 15, mapped 1:1 to TS `it.skip` (unchanged set).
+
+**Report:** `docs/lhc-rs-port/phase2-impl-wave7-report.md`.
+
+**Immutable:** root `cc-lhc-*.txt` preserved; no golden regeneration; tests /
+assertions / oracles untouched except implementing pre-existing fixture
+`todo!` bodies.
+
+### Phase 2 Wave 7 repair-r1 (2026-07-25) — NOT CERTIFIED
+
+Sol/Fable-facing fidelity gaps closed on the uncommitted Wave 7 tree
+(baseline Wave 6 `a0434bc`). Still **not certified**. No commit/push.
+
+**Repairs (evidence in `docs/lhc-rs-port/phase2-impl-wave7-report.md`):**
+
+1. **Frozen public surface** — `run_with_instance_seam_sync` → `pub(crate)`;
+   removed public `Scheduler: Clone`; added `pub(crate) fn shared_handle`
+   used at the four SDK capture sites. Wave 6→Wave 7 **public delta empty**:
+   sync helper not public; no public `Scheduler` Clone. Certified Phase 1
+   TS-aligned **126-name** census left to the independent verifier (do not
+   substitute a generic scanner total).
+2. **Keepalives / skeleton residue** — removed fake
+   `INFERENCE_CALLBACK_OPERATIONS` loop, mode `js_json_stringify` no-op,
+   lifecycle ISO keepalive, threads `DrainStoppedBecause` keepalive; lifecycle
+   load-bearing constant is Unix secs; removed crate-wide
+   `#![allow(dead_code)]` from `lib.rs` with Phase 2 library docs; obsolete
+   private helpers removed; narrow local allows only for TS-shape residue.
+3. **SDK logging containment (r1 partial)** — catch_unwind on
+   `LoggingSurface::{write,query,query_derivation_log}` with TS prefixes.
+   r1 proved public query + derivation_log; **public write panic proof in
+   repair-r2**.
+4. **JS Number captures** — non-finite regex captures → ordered JSON `null`
+   (not `0` / omitted); inferred totals retain NonFinite provenance (no
+   `Number(null)=0`); finite via `js_number_value`. Node↔Rust probe matrix
+   including 309-digit, `2^63` → `9223372036854776000`, fractions, non-finite sums.
+5. **Drain runner protocol (r1 partial)** — ordered value keys; Result-path
+   failures → stderr `drain-runner failed: ` + exit 1. **Private surface +
+   full panic containment in repair-r2**.
+6. **Allowlist retirement** — deleted `scripts/gate_allowlist.txt`; final mode
+   rejects nonempty reintroduced allowlist (mutation self-test); parser +
+   duplicate detector retained.
+7. **Docs** — README / PORT_STATUS / Wave 7 report / onboarding denominator
+   (`481 active / 15 ignored / 496 total`) corrected; Phase 2 still not certified.
+
+**Gate after repair-r1:** same `481/0/15/0/0` target (re-run in repair report).
+
+### Phase 2 Wave 7 repair-r2 (2026-07-25) — NOT CERTIFIED
+
+Focused follow-up before dual Wave 7 review. Still **not certified**. No
+commit/push. Evidence detail:
+`docs/lhc-rs-port/phase2-impl-wave7-report.md` § Repair-r2.
+
+1. **Drain-runner private + panic containment** — `run_protocol` /
+   `process_main` file-private; async `catch_unwind` over whole
+   `run_protocol_inner` (+ runtime construction) so Result errors and panic
+   payloads share one `drain-runner failed: <detail>` + exit 1. Probes:
+   missing/invalid config, construction panic (`leaseMs: 0`), async-path
+   panic latch, success `DRAIN_DONE`, claim key order
+   `ran,stoppedBecause,remaining,claimExpiresAt`.
+2. **Public `logging.write` mutation proof** — unique panic inside the real
+   write-transaction callback → public `sdk.logging.write` returns
+   `code=storage_failure` /
+   `reason="log write failed: w7r2-log-write-unique-payload"`; RED when
+   catch_unwind removed; ordinary OpResult error without prefix. Restored.
+3. **Doc residue** — README
+   `fixtures/derivation-json-order-cases.jsonl`; census wording without
+   scanner-substitute “227”; report/ledger claims match these probes.
+
+**Gate after repair-r2:** exact `481/0/15` twice (default +
+`RUST_TEST_THREADS=1`); allowlist remains deleted.
+
+### Phase 2 Wave 7 dual-review → repair-r3 (2026-07-25) — NOT CERTIFIED
+
+Dual independent full Wave 7 review agreed on one forced repair; all other
+full-review scope passed. Citations: Sol `20260725-054823-a112a9` **FAIL**
+(no committed executable target); Copilot-Fable `20260725-054823-f951dd`
+initially **PASS**, then adjudication `20260725-061935-a4dcca` changed that
+item to **FORCED REPAIR** / FAIL-pending-repair after reproducing Sol and
+proving the narrow example wrapper in an isolated copy.
+
+**Repair-r3 (Amendment J):** committed auto-discovered
+`examples/drain_runner.rs` + fixture-crate-only `pub(crate) process_main`.
+Real-target evidence on `cargo build --example drain_runner` (not
+in-module harness) recorded in
+`docs/lhc-rs-port/phase2-impl-wave7-report.md` § Repair-r3.
+
+**Final changed-scope certification:** Sol `20260725-064346-dd2ff2`
+**PASS** and Copilot-Fable `20260725-064246-0cae89` **PASS** on the actual
+committed example target. Both built/spawned the target, proved missing /
+invalid / construction-panic / polling-panic / success paths, exercised a
+real in-flight claim with exact
+`ran,stoppedBecause,remaining,claimExpiresAt` order, removed the wrapper in
+isolation for a RED target proof, reran metadata/export/immutable audits, and
+obtained the exact `481/0/15` gate under default and serial execution.
+
+**Wave 7 of 7 is dual-certified.** This completes the seven Wave-level
+implementation/verification units of Phase 2 of 3 (approximately unit 15 of
+18), but Phase 2 is not yet accepted until the independent whole-phase
+completion audit passes. All Phase 3 Grok Build integration remains before
+the user-facing deliverable.

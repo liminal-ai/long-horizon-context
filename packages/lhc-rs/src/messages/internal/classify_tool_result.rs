@@ -12,7 +12,7 @@ use crate::shared_tech::derivation::{
     ToolOutcome, ToolResultClassification, ToolResultFacts, ToolResultOperationClass,
     ToolResultPromptMode, ToolResultResponseShape,
 };
-use crate::shared_tech::js_json::{js_len, js_trim};
+use crate::shared_tech::js_json::{js_len, js_number_value, js_trim};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResultClassificationInput {
@@ -444,13 +444,8 @@ fn parse_search_matches(
             if let Some(caps) = path_line_re.captures(&line) {
                 let mut m = Map::new();
                 m.insert("path".into(), Value::String(caps[1].to_string()));
-                m.insert(
-                    "line".into(),
-                    match js_number(&caps[2]) {
-                        JsNumber::Finite(v) => v,
-                        _ => Value::Number(0.into()),
-                    },
-                );
+                // TS `Number(capture)` — non-finite → JSON null (not 0).
+                m.insert("line".into(), js_number_json(&caps[2]));
                 m.insert(
                     "text".into(),
                     Value::String(
@@ -464,13 +459,7 @@ fn parse_search_matches(
             }
             if let Some(caps) = line_only_re.captures(&line) {
                 let mut m = Map::new();
-                m.insert(
-                    "line".into(),
-                    match js_number(&caps[1]) {
-                        JsNumber::Finite(v) => v,
-                        _ => Value::Number(0.into()),
-                    },
-                );
+                m.insert("line".into(), js_number_json(&caps[1]));
                 m.insert(
                     "text".into(),
                     Value::String(
@@ -508,20 +497,19 @@ fn parse_test_summary(
         .or_else(|| re_capture_i(r"#\s*pass\s+([0-9]+)", output));
     let failed_match = re_capture_i(r"(?:#\s*)?([0-9]+)\s+fail(?:ed)?(?-u:\b)", output)
         .or_else(|| re_capture_i(r"#\s*fail\s+([0-9]+)", output));
-    if let Some(s) = total_match
-        && let JsNumber::Finite(n) = js_number(&s)
-    {
-        summary.insert("total".into(), n);
+    // Private provenance: distinguish NonFinite captured Numbers (JSON null)
+    // from absent keys so inferred totals match TS `Number(a)+Number(b)`
+    // when either operand was Infinity (sum → Infinity → null), not Number(null)=0.
+    let mut nonfinite_captures: std::collections::HashSet<&'static str> =
+        std::collections::HashSet::new();
+    if let Some(s) = total_match {
+        insert_summary_capture(&mut summary, &mut nonfinite_captures, "total", &s);
     }
-    if let Some(s) = passed_match
-        && let JsNumber::Finite(n) = js_number(&s)
-    {
-        summary.insert("passed".into(), n);
+    if let Some(s) = passed_match {
+        insert_summary_capture(&mut summary, &mut nonfinite_captures, "passed", &s);
     }
-    if let Some(s) = failed_match
-        && let JsNumber::Finite(n) = js_number(&s)
-    {
-        summary.insert("failed".into(), n);
+    if let Some(s) = failed_match {
+        insert_summary_capture(&mut summary, &mut nonfinite_captures, "failed", &s);
     }
     if let Some(line) = tests_line {
         summary.insert("countLine".into(), Value::String(line.clone()));
@@ -570,18 +558,22 @@ fn parse_test_summary(
         && summary.contains_key("passed")
         && summary.contains_key("failed")
     {
-        let passed = summary.get("passed").and_then(Value::as_f64).unwrap_or(0.0);
-        let failed = summary.get("failed").and_then(Value::as_f64).unwrap_or(0.0);
-        let total = passed + failed;
-        let total_val =
-            if total.fract() == 0.0 && total >= (i64::MIN as f64) && total <= (i64::MAX as f64) {
-                Value::Number((total as i64).into())
-            } else {
-                serde_json::Number::from_f64(total)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null)
-            };
-        summary.insert("total".into(), total_val);
+        // TS: Number(summary["passed"]) + Number(summary["failed"]).
+        // Non-finite captured operands stay Infinity until stringify → null;
+        // do not reinterpret JSON-null leaves as zero.
+        if nonfinite_captures.contains("passed") || nonfinite_captures.contains("failed") {
+            summary.insert("total".into(), Value::Null);
+        } else {
+            let passed = summary
+                .get("passed")
+                .and_then(Value::as_f64)
+                .expect("finite passed capture");
+            let failed = summary
+                .get("failed")
+                .and_then(Value::as_f64)
+                .expect("finite failed capture");
+            summary.insert("total".into(), js_number_value(passed + failed));
+        }
     }
 
     let assertion_lines: Vec<String> = lines
@@ -606,10 +598,8 @@ fn parse_test_summary(
         );
     }
 
-    if let Some(s) = re_capture_i(r"Command exited with code\s+([0-9]+)", output)
-        && let JsNumber::Finite(n) = js_number(&s)
-    {
-        summary.insert("exitCode".into(), n);
+    if let Some(s) = re_capture_i(r"Command exited with code\s+([0-9]+)", output) {
+        insert_summary_capture(&mut summary, &mut nonfinite_captures, "exitCode", &s);
     }
     if summary.is_empty() {
         None
@@ -1005,8 +995,6 @@ enum JsNumber {
     NonFinite,
 }
 
-const JS_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
-
 fn js_number(s: &str) -> JsNumber {
     let Ok(n) = s.parse::<f64>() else {
         return JsNumber::None;
@@ -1014,12 +1002,33 @@ fn js_number(s: &str) -> JsNumber {
     if !n.is_finite() {
         return JsNumber::NonFinite;
     }
-    if n.fract() == 0.0 && n.abs() <= JS_MAX_SAFE_INTEGER {
-        return JsNumber::Finite(Value::Number((n as i64).into()));
+    // Shared JS number lane (safe-integer i64 leaves, Node large-magnitude spelling).
+    JsNumber::Finite(js_number_value(n))
+}
+
+/// TS `Number(capture)` as a JSON leaf — finite via shared lane; non-finite → null.
+fn js_number_json(s: &str) -> Value {
+    match js_number(s) {
+        JsNumber::Finite(v) => v,
+        JsNumber::NonFinite | JsNumber::None => Value::Null,
     }
-    match serde_json::Number::from_f64(n) {
-        Some(num) => JsNumber::Finite(Value::Number(num)),
-        None => JsNumber::NonFinite,
+}
+
+fn insert_summary_capture(
+    summary: &mut Map<String, Value>,
+    nonfinite_captures: &mut std::collections::HashSet<&'static str>,
+    key: &'static str,
+    s: &str,
+) {
+    match js_number(s) {
+        JsNumber::Finite(v) => {
+            summary.insert(key.into(), v);
+        }
+        JsNumber::NonFinite => {
+            nonfinite_captures.insert(key);
+            summary.insert(key.into(), Value::Null);
+        }
+        JsNumber::None => {}
     }
 }
 

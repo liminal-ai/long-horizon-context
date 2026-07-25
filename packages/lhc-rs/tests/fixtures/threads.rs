@@ -3,7 +3,8 @@
 //! [`read_derived_forms`] / [`read_chunks`] / [`set_form_state`] are below-SDK
 //! sqlite helpers — REAL. SDK-calling thread builders remain `todo!("phase 2")`.
 
-use lhc::intake_stream::MessageEventInput;
+use lhc::intake_stream::{self, MessageEventInput};
+use lhc::sdk::Lhc;
 use lhc::shared_tech::derivation::SizeDisposition;
 use lhc::shared_tech::derivation::{
     DependencyGap, Derivation, DerivationMetadata, DerivationState, ProviderProvenance,
@@ -12,10 +13,18 @@ use lhc::shared_tech::derivation::{
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::js_json::js_json_stringify_of;
 use lhc::shared_tech::storage::{SqlParam, open_database};
+use lhc::threads::{self, NewThreadInput, ThreadRef};
 use lhc::turns::TurnStatus;
 
 use super::TempStore;
+use super::corrupt::corrupt_two_open_turns;
+use super::inference_callbacks_double::InferenceCallbacksDouble;
 use super::model_call::DerivationType;
+use super::{
+    AssistantTextOverrides, AssistantTextPayload, ToolCallOverrides, ToolCallPayload,
+    ToolResultOverrides, ToolResultPayload, TurnEndOverrides, UserPromptOverrides,
+    UserPromptPayload, kind, valid_event,
+};
 
 // ── chunk read-back (Story 3): raw rows for boundary assertions ──
 
@@ -343,16 +352,33 @@ fn parse_gaps(raw: &str) -> Vec<DependencyGap> {
         .collect()
 }
 
-/// TS private `newThreadFile` — SDK-driving; Phase 1 exact todo.
+/// TS private `newThreadFile`.
 #[allow(dead_code)]
-async fn new_thread_file(_store: &TempStore) -> String {
-    todo!("phase 2")
+async fn new_thread_file(store: &TempStore) -> String {
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = threads::new_thread(NewThreadInput {
+        file_path: file_path.clone(),
+        title: None,
+        cwd: None,
+        registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+    })
+    .await;
+    match created {
+        OpResult::Ok { .. } => file_path,
+        OpResult::Err { error } => {
+            panic!("fixture thread creation failed: {}", error.reason)
+        }
+    }
 }
 
-/// TS private `send` — SDK-driving; Phase 1 exact todo.
+/// TS private `send`.
 #[allow(dead_code)]
-async fn send(_file_path: &str, _batch: &[MessageEventInput]) {
-    todo!("phase 2")
+async fn send(file_path: &str, batch: &[MessageEventInput]) {
+    let result = intake_stream::message_events(ThreadRef::file_path(file_path), batch).await;
+    match result {
+        OpResult::Ok { .. } => {}
+        OpResult::Err { error } => panic!("fixture batch failed: {}", error.reason),
+    }
 }
 
 /// TC-3.2's fallback-rendering state as one shared builder (coverage.md
@@ -368,43 +394,379 @@ pub struct GappedRenderingThreadResult {
     pub turn_id: String,
 }
 
-/// TS `gappedRenderingThread` — PARTIAL (SDK-driving).
-/// Needs: threads::new_thread, intake_stream::message_events, sdk.work.drain,
-/// plus REAL [`set_form_state`] / [`read_derived_forms`].
+/// TS `gappedRenderingThread`.
 pub async fn gapped_rendering_thread(
-    _store: &TempStore,
-    _sdk: &lhc::Lhc,
-    _double: &super::inference_callbacks_double::InferenceCallbacksDouble,
+    store: &TempStore,
+    sdk: &Lhc,
+    double: &InferenceCallbacksDouble,
 ) -> GappedRenderingThreadResult {
-    todo!("phase 2")
+    let file_path = new_thread_file(store).await;
+    double.fail_kind("prompt_smoothing", 1, Some(GAPPED_SMOOTHING_REASON));
+    send(
+        &file_path,
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "gapped prompt".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::ASSISTANT_TEXT,
+                AssistantTextOverrides {
+                    payload: Some(AssistantTextPayload {
+                        text: "gapped answer".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
+    match &drained {
+        OpResult::Ok { .. } => {}
+        OpResult::Err { error } => panic!("fixture drain failed: {}", error.reason),
+    }
+    set_form_state(
+        &file_path,
+        &FormStateTarget {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m1".into(),
+            derivation_type: DerivationType::SmoothedPrompt,
+        },
+        &FormStateUpdate {
+            state: DerivationState::Failed,
+            content: None,
+            reason: Some(GAPPED_SMOOTHING_REASON.into()),
+            metadata: None,
+            derived_at: None,
+        },
+    );
+    let forms = read_derived_forms(&file_path);
+    let smoothing = forms
+        .iter()
+        .find(|form| form.subject_id == "m1" && form.derivation_type == "smoothed_prompt");
+    let rendering = forms
+        .iter()
+        .find(|form| form.subject_id == "t1" && form.derivation_type == "turn_rendering");
+    if smoothing.map(|s| s.state) != Some(DerivationState::Failed)
+        || rendering.map(|r| r.state) != Some(DerivationState::Ready)
+        || rendering.and_then(|r| r.gaps.as_ref()).is_some()
+    {
+        panic!("fixture invariant: failed smoothing under a ready fallback rendering expected");
+    }
+    GappedRenderingThreadResult {
+        file_path,
+        message_id: "m1".into(),
+        turn_id: "t1".into(),
+    }
 }
 
-/// TS `damagedSourceThread` — PARTIAL (SDK + [`super::corrupt::corrupt_two_open_turns`]).
-/// Needs: threads::new_thread, intake_stream::message_events, then
-/// corrupt_two_open_turns (REAL in corrupt.rs).
-pub async fn damaged_source_thread(_store: &TempStore) -> DamagedSourceThreadResult {
-    todo!("phase 2")
+/// TS `damagedSourceThread`.
+pub async fn damaged_source_thread(store: &TempStore) -> DamagedSourceThreadResult {
+    let built = thread_with_closed_turns(store, 1).await;
+    let file_path = built.file_path;
+    send(
+        &file_path,
+        &[valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "left open".into(),
+                }),
+                ..Default::default()
+            },
+        )],
+    )
+    .await;
+    corrupt_two_open_turns(&file_path);
+    let turn_id = built
+        .turn_ids
+        .first()
+        .cloned()
+        .expect("fixture invariant: one closed turn expected");
+    DamagedSourceThreadResult { file_path, turn_id }
 }
 
-/// TS `multiStateThread` — PARTIAL.
-pub async fn multi_state_thread(_store: &TempStore) -> MultiStateThreadResult {
-    todo!("phase 2")
+/// TS `multiStateThread`.
+pub async fn multi_state_thread(store: &TempStore) -> MultiStateThreadResult {
+    let file_path = new_thread_file(store).await;
+    let mut args = serde_json::Map::new();
+    args.insert("path".into(), serde_json::Value::String("a.txt".into()));
+    send(
+        &file_path,
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "first prompt".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::ASSISTANT_TEXT,
+                AssistantTextOverrides {
+                    payload: Some(AssistantTextPayload {
+                        text: "working on it".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::TOOL_CALL,
+                ToolCallOverrides {
+                    payload: Some(ToolCallPayload {
+                        tool_call_id: "call-ms-1".into(),
+                        tool_name: "read_file".into(),
+                        arguments: args,
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::TOOL_RESULT,
+                ToolResultOverrides {
+                    payload: Some(ToolResultPayload {
+                        tool_call_id: "call-ms-1".into(),
+                        content: "contents of a.txt".into(),
+                        is_error: Some(false),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "second prompt".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    let derived_at = "2026-06-10T12:00:00.000Z";
+    set_form_state(
+        &file_path,
+        &FormStateTarget {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m1".into(),
+            derivation_type: DerivationType::SmoothedPrompt,
+        },
+        &FormStateUpdate {
+            state: DerivationState::Ready,
+            content: Some("smoothed(fixture:first prompt)".into()),
+            reason: None,
+            metadata: None,
+            derived_at: Some(derived_at.into()),
+        },
+    );
+    set_form_state(
+        &file_path,
+        &FormStateTarget {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m4".into(),
+            derivation_type: DerivationType::ToolResultSummary,
+        },
+        &FormStateUpdate {
+            state: DerivationState::Ready,
+            content: Some("toolresult(fixture:contents of a.txt)".into()),
+            reason: None,
+            metadata: Some(DerivationMetadata {
+                outcome: Some(ToolOutcome::Succeeded),
+                last_error: None,
+                discard_reason: None,
+                fallback_floor: None,
+                fallback_used: None,
+                inference_attempted: None,
+                inference_succeeded: None,
+                size_disposition: None,
+                provenance: None,
+            }),
+            derived_at: Some(derived_at.into()),
+        },
+    );
+    set_form_state(
+        &file_path,
+        &FormStateTarget {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t1".into(),
+            derivation_type: DerivationType::TurnRendering,
+        },
+        &FormStateUpdate {
+            state: DerivationState::Failed,
+            content: None,
+            reason: Some("provider_failure: scripted failure (fixture)".into()),
+            metadata: None,
+            derived_at: None,
+        },
+    );
+    set_form_state(
+        &file_path,
+        &FormStateTarget {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t2".into(),
+            derivation_type: DerivationType::TurnRendering,
+        },
+        &FormStateUpdate {
+            state: DerivationState::Blocked,
+            content: None,
+            reason: Some("source_damaged: manufactured damage (fixture)".into()),
+            metadata: None,
+            derived_at: None,
+        },
+    );
+    let expected = vec![
+        MultiStateClaim {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m1".into(),
+            derivation_type: DerivationType::SmoothedPrompt,
+            state: DerivationState::Ready,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m4".into(),
+            derivation_type: DerivationType::ToolResultSummary,
+            state: DerivationState::Ready,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Message,
+            subject_id: "m6".into(),
+            derivation_type: DerivationType::SmoothedPrompt,
+            state: DerivationState::Pending,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t1".into(),
+            derivation_type: DerivationType::TurnRendering,
+            state: DerivationState::Failed,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t1".into(),
+            derivation_type: DerivationType::PreDetailedAssembly,
+            state: DerivationState::Pending,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t2".into(),
+            derivation_type: DerivationType::TurnRendering,
+            state: DerivationState::Blocked,
+        },
+        MultiStateClaim {
+            subject_kind: SubjectKind::Turn,
+            subject_id: "t2".into(),
+            derivation_type: DerivationType::PreDetailedAssembly,
+            state: DerivationState::Pending,
+        },
+    ];
+    MultiStateThreadResult {
+        file_path,
+        expected,
+    }
 }
 
-/// TS `threadWithClosedTurns` — PARTIAL.
-pub async fn thread_with_closed_turns(
-    _store: &TempStore,
-    _n: usize,
-) -> ThreadWithClosedTurnsResult {
-    todo!("phase 2")
+/// TS `threadWithClosedTurns`.
+pub async fn thread_with_closed_turns(store: &TempStore, n: usize) -> ThreadWithClosedTurnsResult {
+    let file_path = new_thread_file(store).await;
+    let mut turn_ids = Vec::new();
+    for i in 1..=n {
+        send(
+            &file_path,
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: format!("prompt for turn {i}"),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload {
+                            text: format!("answer for turn {i}"),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+        turn_ids.push(format!("t{i}"));
+    }
+    ThreadWithClosedTurnsResult {
+        file_path,
+        turn_ids,
+    }
 }
 
-/// TS `threadWithToolRun` — PARTIAL.
+/// TS `threadWithToolRun`.
 pub async fn thread_with_tool_run(
-    _store: &TempStore,
-    _opts: Option<ToolRunOpts>,
+    store: &TempStore,
+    opts: Option<ToolRunOpts>,
 ) -> ThreadWithToolRunResult {
-    todo!("phase 2")
+    let opts = opts.unwrap_or_default();
+    let file_path = new_thread_file(store).await;
+    let mut args = serde_json::Map::new();
+    args.insert("path".into(), serde_json::Value::String("notes.txt".into()));
+    let mut batch = vec![
+        valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "please run the tool".into(),
+                }),
+                ..Default::default()
+            },
+        ),
+        valid_event(
+            kind::TOOL_CALL,
+            ToolCallOverrides {
+                payload: Some(ToolCallPayload {
+                    tool_call_id: "call-fixture-1".into(),
+                    tool_name: "read_file".into(),
+                    arguments: args,
+                }),
+                ..Default::default()
+            },
+        ),
+    ];
+    if opts.missing_result != Some(true) {
+        batch.push(valid_event(
+            kind::TOOL_RESULT,
+            ToolResultOverrides {
+                payload: Some(ToolResultPayload {
+                    tool_call_id: "call-fixture-1".into(),
+                    content: opts
+                        .result_content
+                        .clone()
+                        .unwrap_or_else(|| "contents of notes.txt".into()),
+                    is_error: Some(opts.is_error.unwrap_or(false)),
+                }),
+                ..Default::default()
+            },
+        ));
+    }
+    batch.push(valid_event(kind::TURN_END, TurnEndOverrides::default()));
+    send(&file_path, &batch).await;
+    ThreadWithToolRunResult {
+        file_path,
+        turn_id: "t1".into(),
+    }
 }
 
 #[derive(Debug, Clone)]

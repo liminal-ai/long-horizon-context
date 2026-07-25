@@ -11,14 +11,22 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lhc::intake_stream::{BatchResult, MessageEventInput};
-use lhc::messages::MutationResult;
-use lhc::sdk::Lhc;
-use lhc::shared_tech::derivation::DerivationReportEntry;
+use lhc::messages::{EditInput, MessageReportOpts, MutationResult, RemoveInput};
+use lhc::sdk::{Lhc, init_lhc};
+use lhc::shared_tech::derivation::{
+    ChunkPolicyConfig, DerivationReportEntry, SdkConfig, SdkMode, ToolResultConfig,
+};
+use lhc::shared_tech::deterministic::create_deterministic_inference_callbacks;
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::inference_types::{DerivationGuards, InferenceConfig};
 use lhc::shared_tech::inspect::{HealthReport, InspectOverview, ViewContentsReport};
-use lhc::shared_tech::view::{CompactReceipt, LlmRequestContext, ViewStatus};
-use lhc::threads::NewThreadResult;
+use lhc::shared_tech::view::{
+    CompactReceipt, LlmRequestContext, PartialViewProfilePercentages, SdkViewConfig,
+    ViewProfileOverride, ViewStatus,
+};
+use lhc::thread_view::{CompactOpts, MaterializeOpts};
+use lhc::threads::{NewThreadInput, NewThreadResult, ThreadRef};
+use lhc::turns::TurnReportOpts;
 
 use super::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
@@ -29,18 +37,13 @@ use super::{
 // ── the one SDK configuration (AC-5.1) ────────────────────────────
 
 /// Fixed instant the TS lifecycle harness freezes via
-/// `vi.setSystemTime(new Date("2026-06-12T00:00:00.000Z"))`.
-///
-/// Phase 2 `create_lifecycle_sdk` must inject this through `SdkConfig.clock`
-/// (type-glue / const only here — the function body remains exact
-/// `todo!("phase 2")`).
-#[allow(dead_code)] // referenced by Phase 2 create_lifecycle_sdk body
-const LIFECYCLE_FIXED_CLOCK_ISO: &str = "2026-06-12T00:00:00.000Z";
+/// Fixed lifecycle clock — Unix seconds for TS
+/// `vi.setSystemTime(new Date("2026-06-12T00:00:00.000Z"))` (ISO is prose only).
+const LIFECYCLE_FIXED_CLOCK_SECS: u64 = 1_781_222_400;
 
-/// [`SystemTime`] for [`LIFECYCLE_FIXED_CLOCK_ISO`] — Phase 2 clock injection.
-#[allow(dead_code)] // referenced by Phase 2 create_lifecycle_sdk body
+/// [`SystemTime`] for the fixed lifecycle instant — injected via `SdkConfig.clock`.
 fn lifecycle_fixed_clock_instant() -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(1_781_222_400)
+    UNIX_EPOCH + Duration::from_secs(LIFECYCLE_FIXED_CLOCK_SECS)
 }
 
 /// Amendment I — TS `number` band shares / lowerBound (fractional-capable).
@@ -298,20 +301,320 @@ pub struct LifecycleRun {
     pub phases: LifecyclePhases,
 }
 
-/// TS `createLifecycleSdk` — PARTIAL (SDK construction).
+/// TS `createLifecycleSdk`.
 ///
-/// Phase 2 body (exact `todo!("phase 2")` until then) must inject
-/// [`LIFECYCLE_FIXED_CLOCK_ISO`] through `SdkConfig.clock` via
-/// [`lifecycle_fixed_clock_instant`] — TS freezes Date with that instant;
+/// Injects [`LIFECYCLE_FIXED_CLOCK_SECS`] through `SdkConfig.clock` via
+/// [`lifecycle_fixed_clock_instant`] — TS freezes Date at 2026-06-12T00:00:00.000Z;
 /// Rust recomputes the baseline per test (no async beforeAll).
 pub fn create_lifecycle_sdk(
-    _inference: Option<InferenceConfig>,
-    _guards: Option<DerivationGuards>,
+    inference: Option<InferenceConfig>,
+    guards: Option<DerivationGuards>,
 ) -> Lhc {
-    todo!("phase 2")
+    let clock_instant = lifecycle_fixed_clock_instant();
+    init_lhc(SdkConfig {
+        inference_callbacks: if inference.is_some() {
+            None
+        } else {
+            Some(create_deterministic_inference_callbacks())
+        },
+        inference,
+        mode: SdkMode::Background,
+        clock: Some(Arc::new(move || clock_instant)),
+        guards,
+        chunk_policy: Some(ChunkPolicyConfig {
+            target_projected_tokens: 90,
+            max_projected_tokens: 4400,
+        }),
+        tool_result: Some(ToolResultConfig {
+            small_tier_tokens: 1,
+            small_target_ratio: 0.15,
+            mid_target_ratio: 0.04,
+        }),
+        lease: None,
+        view: Some(SdkViewConfig {
+            profiles: Some(vec![ViewProfileOverride {
+                name: LIFECYCLE_PROFILE.name.to_string(),
+                lower_bound: Some(LIFECYCLE_PROFILE.lower_bound),
+                percentages: Some(PartialViewProfilePercentages {
+                    full: Some(LIFECYCLE_PROFILE.percentages.full),
+                    smooth: Some(LIFECYCLE_PROFILE.percentages.smooth),
+                    detailed: Some(LIFECYCLE_PROFILE.percentages.detailed),
+                    brief: Some(LIFECYCLE_PROFILE.percentages.brief),
+                }),
+            }]),
+            visibility: None,
+            compact_threshold: Some(300.0),
+        }),
+    })
 }
 
-/// TS `runLifecycle` — PARTIAL (SDK-driving sequence).
-pub async fn run_lifecycle(_store: &TempStore, _opts: LifecycleOptions) -> LifecycleRun {
-    todo!("phase 2")
+fn clone_inference_config(inf: &InferenceConfig) -> InferenceConfig {
+    InferenceConfig {
+        call: Arc::clone(&inf.call),
+        assignments: inf.assignments.clone(),
+        timeout_ms: inf.timeout_ms,
+        max_input_chars: inf.max_input_chars,
+    }
+}
+
+fn expect_ok<'a, T>(result: &'a OpResult<T>, phase: &str) -> &'a T {
+    match result {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => {
+            panic!(
+                "lifecycle {phase} failed: {} — {}",
+                error.code.as_str(),
+                error.reason
+            )
+        }
+    }
+}
+
+/// TS `runLifecycle`.
+pub async fn run_lifecycle(store: &TempStore, opts: LifecycleOptions) -> LifecycleRun {
+    let name = opts.name.as_deref().unwrap_or("lifecycle");
+    let file_path = store.thread_path(Some(name)).to_string_lossy().into_owned();
+    let out_path = store
+        .dir
+        .join(format!("{name}-session.jsonl"))
+        .to_string_lossy()
+        .into_owned();
+    let ref_ = ThreadRef::file_path(&file_path);
+
+    let mut sdk = create_lifecycle_sdk(
+        opts.inference.as_ref().map(clone_inference_config),
+        opts.guards.clone(),
+    );
+    let fresh = opts.fresh_sdk_between_groups.unwrap_or(false);
+
+    // ── group 1: create → intake → drain → status ──
+    let create = sdk
+        .threads
+        .new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+    let thread_id = expect_ok(&create, "create").thread_id.clone();
+
+    let mut intake = Vec::new();
+    for batch in intake_batches() {
+        let sent = sdk.intake_stream.message_events(ref_.clone(), &batch).await;
+        expect_ok(&sent, "intake");
+        intake.push(sent);
+    }
+
+    sdk.drain_settled(ref_.clone()).await;
+    let drain = LifecycleDrainPhase { settled: true };
+
+    let status = sdk.thread_view.status(ref_.clone()).await;
+    expect_ok(&status, "status");
+
+    // ── group 2: compact1 → llmContext1 → inspect1 ──
+    if fresh {
+        sdk = create_lifecycle_sdk(
+            opts.inference.as_ref().map(clone_inference_config),
+            opts.guards.clone(),
+        );
+    }
+    let compact1 = sdk
+        .thread_view
+        .compact(
+            ref_.clone(),
+            CompactOpts {
+                profile: Some(LIFECYCLE_PROFILE.name.to_string()),
+                params: None,
+                signal: None,
+            },
+        )
+        .await;
+    expect_ok(&compact1, "compact1");
+    let llm_context1 = sdk.thread_view.get_llm_request_context(ref_.clone()).await;
+    expect_ok(&llm_context1, "llmContext1");
+    let inspect1 = LifecycleInspect1 {
+        overview: sdk.inspect.overview(ref_.clone()).await,
+        view: sdk.inspect.view(ref_.clone()).await,
+        health: sdk.inspect.health(ref_.clone()).await,
+    };
+    expect_ok(&inspect1.overview, "inspect1.overview");
+    expect_ok(&inspect1.view, "inspect1.view");
+    expect_ok(&inspect1.health, "inspect1.health");
+    if let Some(cb) = &opts.on_checkpoint {
+        cb(
+            LifecycleCheckpoint::Inspect1,
+            LifecycleCheckpointCtx {
+                sdk: &sdk,
+                file_path: file_path.clone(),
+            },
+        )
+        .await;
+    }
+
+    // ── group 3: mutate → rebuild → health2 ──
+    if fresh {
+        sdk = create_lifecycle_sdk(
+            opts.inference.as_ref().map(clone_inference_config),
+            opts.guards.clone(),
+        );
+    }
+    let listed = sdk.messages.list(ref_.clone(), None).await;
+    let listed = expect_ok(&listed, "mutate.list");
+    let edit_message_id = listed
+        .iter()
+        .find(|record| {
+            record.kind.as_str() == EDIT_TARGET.kind && record.turn_id == EDIT_TARGET.turn_id
+        })
+        .map(|r| r.message_id.clone());
+    let delete_message_id = listed
+        .iter()
+        .find(|record| {
+            record.kind.as_str() == DELETE_TARGET.kind && record.turn_id == DELETE_TARGET.turn_id
+        })
+        .map(|r| r.message_id.clone());
+    let (Some(edit_message_id), Some(delete_message_id)) = (edit_message_id, delete_message_id)
+    else {
+        panic!("lifecycle invariant: edit/delete targets not found in the record");
+    };
+    let edit = sdk
+        .messages
+        .edit(
+            ref_.clone(),
+            EditInput {
+                message_id: edit_message_id.clone(),
+                content: EDITED_MESSAGE_TEXT.to_string(),
+            },
+        )
+        .await;
+    expect_ok(&edit, "mutate.edit");
+    let deleted = sdk
+        .messages
+        .remove(
+            ref_.clone(),
+            RemoveInput {
+                message_id: delete_message_id.clone(),
+            },
+        )
+        .await;
+    expect_ok(&deleted, "mutate.delete");
+    let mutate = LifecycleMutatePhase {
+        edited_message_id: edit_message_id,
+        deleted_message_id: delete_message_id,
+        edit,
+        delete: deleted,
+        health_after_mutate: sdk.inspect.health(ref_.clone()).await,
+        messages_not_ready: sdk
+            .messages
+            .report(
+                ref_.clone(),
+                Some(MessageReportOpts {
+                    not_ready: Some(true),
+                    message_id: None,
+                }),
+            )
+            .await,
+        turns_not_ready: sdk
+            .turns
+            .report(
+                ref_.clone(),
+                Some(&TurnReportOpts {
+                    not_ready: Some(true),
+                    turn_id: None,
+                    chunk_id: None,
+                }),
+            )
+            .await,
+    };
+    expect_ok(&mutate.health_after_mutate, "mutate.health");
+    expect_ok(&mutate.messages_not_ready, "mutate.messagesNotReady");
+    expect_ok(&mutate.turns_not_ready, "mutate.turnsNotReady");
+
+    sdk.drain_settled(ref_.clone()).await;
+    let rebuild = LifecycleDrainPhase { settled: true };
+
+    let health2 = sdk.inspect.health(ref_.clone()).await;
+    expect_ok(&health2, "health2");
+    if let Some(cb) = &opts.on_checkpoint {
+        cb(
+            LifecycleCheckpoint::Health2,
+            LifecycleCheckpointCtx {
+                sdk: &sdk,
+                file_path: file_path.clone(),
+            },
+        )
+        .await;
+    }
+
+    // ── group 4: compact2 → llmContext2 → materialize ──
+    if fresh {
+        sdk = create_lifecycle_sdk(
+            opts.inference.as_ref().map(clone_inference_config),
+            opts.guards.clone(),
+        );
+    }
+    let compact2 = sdk
+        .thread_view
+        .compact(
+            ref_.clone(),
+            CompactOpts {
+                profile: Some(LIFECYCLE_PROFILE.name.to_string()),
+                params: None,
+                signal: None,
+            },
+        )
+        .await;
+    expect_ok(&compact2, "compact2");
+    let llm_context2 = sdk.thread_view.get_llm_request_context(ref_.clone()).await;
+    expect_ok(&llm_context2, "llmContext2");
+    let materialize_raw = sdk
+        .thread_view
+        .materialize(
+            ref_.clone(),
+            MaterializeOpts {
+                path: out_path.clone(),
+                format: None,
+            },
+        )
+        .await;
+    expect_ok(&materialize_raw, "materialize");
+    let materialize = match materialize_raw {
+        OpResult::Ok { value } => OpResult::Ok {
+            value: LifecycleMaterializeResult {
+                written_path: value.written_path,
+            },
+        },
+        OpResult::Err { error } => OpResult::Err { error },
+    };
+    if let Some(cb) = &opts.on_checkpoint {
+        cb(
+            LifecycleCheckpoint::Materialize,
+            LifecycleCheckpointCtx {
+                sdk: &sdk,
+                file_path: file_path.clone(),
+            },
+        )
+        .await;
+    }
+
+    LifecycleRun {
+        file_path,
+        out_path,
+        thread_id,
+        phases: LifecyclePhases {
+            create,
+            intake,
+            drain,
+            status,
+            compact1,
+            llm_context1,
+            inspect1,
+            mutate,
+            rebuild,
+            health2,
+            compact2,
+            llm_context2,
+            materialize,
+        },
+    }
 }

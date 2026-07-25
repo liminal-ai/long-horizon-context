@@ -27,8 +27,10 @@ Build; approximately three Phase 3 integration chunks remain.
 
    Inspect the final gate implementation itself: zero real Phase-2 todos must
    switch it to an exact all-active-pass contract, the transitional allowlist
-   must be retired rather than expanded to 481 names or a wildcard, and every
-   existing tripwire/self-test must remain effective.
+   file must be absent rather than ignored, expanded to 481 names, or replaced
+   by a wildcard. In an isolated copy, reintroducing a nonempty allowlist in
+   final mode must fail; every existing tripwire/self-test, including exact
+   duplicate parsing, must remain effective.
 
 2. Prove zero real `todo!("phase 2")` bodies in production or SDK-driving
    fixtures and no disguised panic, unreachable, catch/reroute, test-name
@@ -56,7 +58,10 @@ Build; approximately three Phase 3 integration chunks remain.
    config/receipt/describe/inspect producer that depends on it.
    Include `classify_tool_result` inferred `summary.total`: TS stores direct
    `Number(passed)+Number(failed)`, so probe `2^63` and reject any
-   `i64::MAX` saturation masquerading as integral JSON spelling.
+   `i64::MAX` saturation masquerading as integral JSON spelling. Probe 309+
+   digit explicit total/passed/failed/exit-code captures and huge search line
+   numbers: nested non-finite Numbers must retain their ordered keys as JSON
+   null, and non-finite operands must propagate to inferred `total: null`.
 6. Audit public crate exports and serde shapes against accepted Phase 1 plus
    documented Amendments A–D and later forced addenda. No compatibility
    surfaces, host coupling, C ABI, subprocess inference, or Grok dependency.
@@ -66,9 +71,15 @@ Build; approximately three Phase 3 integration chunks remain.
    validation, live abort, concurrent derive/compact/drain, panic cleanup,
    lexical Node `path.resolve` without symlink dereference, and strict
    fractional/non-finite/out-of-range rejection in integer domains.
+   Force polling-time panic through each SDK logging operation and require its
+   exact TS-prefixed structured storage failure. Verify drain-runner runtime
+   JSON order `ran,stoppedBecause,remaining[,claimExpiresAt]` and its
+   `drain-runner failed:` stderr/exit-1 outer protocol.
 8. Run fmt/check/clippy and dependency/package audit. Distinguish carried style
    warnings from correctness; confirm ordinary in-process Cargo consumption
-   remains the canonical packaging direction.
+   remains the canonical packaging direction. Re-run the frozen export census:
+   no public sync-seam helper, no public `Scheduler: Clone`, and no crate-wide
+   dead-code suppression.
 9. Verify ledger/README/version-control history: seven certified wave commits,
    exact gate arithmetic, no false completion language, four unrelated root
    files excluded, clean tracked tree, and separate Phase 3 integration brief

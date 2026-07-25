@@ -161,15 +161,6 @@ fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
-fn band_from_wire(band: &str) -> Band {
-    match band {
-        "brief" => Band::Brief,
-        "detailed" => Band::Detailed,
-        "smooth" => Band::Smooth,
-        other => panic!("unknown band from row: {other}"),
-    }
-}
-
 fn rendering_part_kind_from_wire(kind: &str) -> RenderingPartKind {
     match kind {
         "user_prompt" => RenderingPartKind::UserPrompt,

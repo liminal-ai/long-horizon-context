@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Phase 1 gate for lhc-rs — run from packages/lhc-rs: python3 scripts/check_gate.py
+"""Phase 2 gate for lhc-rs — run from packages/lhc-rs: python3 scripts/check_gate.py
 
 Buckets every test outcome and verdicts the tree (Python-port playbook,
 Rust-adapted):
 
   BLOCKER    cargo check/build failure — nothing else is trustworthy
-  notimpl    test failed by panicking through a `todo!("phase 2")` body (expected)
-  WRONG      test failed any other way — a real shape/linking defect, investigate
-  passed     allowed only for tests matching scripts/gate_allowlist.txt
-             (Wave 0 infrastructure, constants, goldens); any other pass is
-             SUSPICIOUS — a skeleton should not satisfy a behavior test
+  notimpl    test failed by panicking through a `todo!("phase 2")` body
+  WRONG      test failed any other way — a real shape/linking defect
+  passed     transitional mode (real Phase-2 todos remain): exact-name
+             allowlist only (`scripts/gate_allowlist.txt` if present);
+             final mode (crate-wide real todo count == 0): every non-ignored
+             cargo ok is a pass. A nonempty allowlist in final mode is a
+             GATE FAIL (transitional list retired). Target then is exactly
+             481 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
   ignored    #[ignore] tests, reported for the ledger
+  suspicious transitional: cargo ok not on the exact-name allowlist
 
 Reconciliation: classified counts must equal cargo's own totals per binary —
 silently-dropped tests were a blind spot in the Python port's first gate.
@@ -85,6 +89,35 @@ def _test_allowlist_duplicate_detector() -> None:
         raise AssertionError("duplicate allowlist entry must raise")
     except ValueError as err:
         assert str(err) == "duplicate allowlist entry: foo", err
+
+
+def final_mode_rejects_nonempty_allowlist(final_mode: bool, allow: list[str]) -> str | None:
+    """Return a GATE FAIL message when final mode still has allowlist entries."""
+    if final_mode and allow:
+        return (
+            "GATE FAIL: final mode forbids a nonempty transitional allowlist "
+            f"({len(allow)} non-comment entries in scripts/gate_allowlist.txt); "
+            "delete the file or leave only comments"
+        )
+    return None
+
+
+def _test_final_mode_nonempty_allowlist_rejection() -> None:
+    """Mutation-test final-mode nonempty-allowlist rejection (always-run)."""
+    assert final_mode_rejects_nonempty_allowlist(True, []) is None
+    assert final_mode_rejects_nonempty_allowlist(False, ["x::y"]) is None
+    msg = final_mode_rejects_nonempty_allowlist(True, ["x::y"])
+    assert msg is not None and "forbids a nonempty transitional allowlist" in msg, msg
+    # Prove the parser still surfaces entries that would trip final mode.
+    assert parse_allowlist_lines("# retired\nreintroduced::case\n") == [
+        "reintroduced::case"
+    ]
+    assert (
+        final_mode_rejects_nonempty_allowlist(
+            True, parse_allowlist_lines("# retired\nreintroduced::case\n")
+        )
+        is not None
+    )
 
 
 def serialization_tripwire() -> list[str]:
@@ -762,13 +795,23 @@ def classify() -> int:
     panics: dict[str, str] = {}  # "binary::test" -> captured stdout section
     cargo_totals: list[tuple[str, int]] = []  # (binary, total run)
     section: str | None = None
+    # trybuild's harness test often prints `test ui ...     Checking ...` with
+    # the status on a later bare `ok` line (common under RUST_TEST_THREADS=1).
+    pending_trybuild: str | None = None
 
     for line in out.splitlines():
         m = re.match(r"\s*Running (?:unittests )?(\S+)", line)
         if m:
             binary = Path(m.group(1)).stem
+            pending_trybuild = None
             continue
-        m = re.match(r"test (\S+) \.\.\. (ok|FAILED|ignored)", line)
+        m = re.match(r"\s*Doc-tests (\S+)", line)
+        if m:
+            # Keep the following `test result: 0 passed` off the prior binary.
+            binary = f"doctest_{m.group(1)}"
+            pending_trybuild = None
+            continue
+        m = re.match(r"test (\S+) \.\.\. (ok|FAILED|ignored)\b", line)
         if m:
             # trybuild prints nested `test tests/ui/foo.rs ... ok` lines that
             # are not cargo test cases — ignore path-shaped names so totals
@@ -777,6 +820,20 @@ def classify() -> int:
             if "/" in case or case.endswith(".rs"):
                 continue
             results[f"{binary}::{case}"] = m.group(2)
+            pending_trybuild = None
+            section = None
+            continue
+        m = re.match(r"test (\S+) \.\.\.(?:\s|$)", line)
+        if m:
+            case = m.group(1)
+            if "/" in case or case.endswith(".rs"):
+                continue
+            # Incomplete status on this line (trybuild parent) — wait for bare ok.
+            pending_trybuild = case
+            continue
+        if pending_trybuild is not None and line.strip() in ("ok", "FAILED", "ignored"):
+            results[f"{binary}::{pending_trybuild}"] = line.strip()
+            pending_trybuild = None
             section = None
             continue
         m = re.match(r"---- (\S+) stdout ----", line)
@@ -793,19 +850,32 @@ def classify() -> int:
         if section is not None:
             panics[section] = panics[section] + line + "\n"
 
+    # Final mode when crate-wide real Phase-2 todo count is zero: every
+    # non-ignored cargo ok is a pass (transitional name allowlist retired).
+    # While todos remain, keep exact-name allowlist behavior so premature
+    # greens are SUSPICIOUS (historical commits may still ship the file).
+    _, todo_summary_for_mode = exact_phase2_todo_tripwire()
+    m_todo = re.search(r"tokens=(\d+)", todo_summary_for_mode)
+    todo_count = int(m_todo.group(1)) if m_todo else -1
+    final_mode = todo_count == 0
+
+    if (fail_msg := final_mode_rejects_nonempty_allowlist(final_mode, allow)) is not None:
+        print(fail_msg)
+        return 1
+
     buckets: dict[str, list[str]] = {
         "passed": [], "suspicious": [], "notimpl": [], "wrong": [], "ignored": []}
     for name, status in results.items():
         if status == "ignored":
             buckets["ignored"].append(name)
         elif status == "ok":
-            if any(fnmatch.fnmatch(name, pat) for pat in allow):
+            if final_mode or any(fnmatch.fnmatch(name, pat) for pat in allow):
                 buckets["passed"].append(name)
             else:
                 buckets["suspicious"].append(name)
         else:
-            text = panics.get(name, "")
-            if any(marker in text for marker in NOTIMPL_MARKERS):
+            panic_text = panics.get(name, "")
+            if any(marker in panic_text for marker in NOTIMPL_MARKERS):
                 buckets["notimpl"].append(name)
             else:
                 buckets["wrong"].append(name)
@@ -832,6 +902,21 @@ def classify() -> int:
     if buckets["wrong"] or buckets["suspicious"]:
         print("GATE FAIL")
         return 1
+    if final_mode:
+        # Explicit reconciled target — do not replace the transitional list
+        # with 481 names or a broad/prefix wildcard.
+        if (
+            len(buckets["passed"]) != 481
+            or len(buckets["notimpl"]) != 0
+            or len(buckets["ignored"]) != 15
+            or len(buckets["wrong"]) != 0
+            or len(buckets["suspicious"]) != 0
+        ):
+            print(
+                "GATE FAIL: final mode requires "
+                "passed=481 notimpl=0 ignored=15 wrong=0 suspicious=0"
+            )
+            return 1
     print("GATE PASS")
     return 0
 
@@ -839,6 +924,7 @@ def classify() -> int:
 if __name__ == "__main__":
     _test_json_macro_to_string_detector()
     _test_allowlist_duplicate_detector()
+    _test_final_mode_nonempty_allowlist_rejection()
     print(_test_exact_phase2_todo_bodies())
     todo_hits, todo_summary = exact_phase2_todo_tripwire()
     print(todo_summary)

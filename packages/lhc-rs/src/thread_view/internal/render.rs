@@ -71,11 +71,14 @@ pub(crate) const LITERAL_DERIVATION_CHUNK_SUMMARY_DETAILED: &str = "chunk_summar
 pub(crate) const LITERAL_DERIVATION_CHUNK_SUMMARY_BRIEF: &str = "chunk_summary_brief";
 pub(crate) const LITERAL_LADDER_STATE_ABSENT: &str = "absent";
 /// select.ts `derivationState` when the derivation is undefined (coverage path).
+#[allow(dead_code)] // TS select.ts vocabulary; coverage path may not hit every literal
 pub(crate) const LITERAL_DERIVATION_STATE_MISSING: &str = "missing";
 /// select.ts coverage fallback marker.
+#[allow(dead_code)]
 pub(crate) const LITERAL_FALLBACK_COVERAGE_FROM_PRE_DETAILED_ASSEMBLY: &str =
     "coverage-from-pre-detailed-assembly";
 /// select.ts / compact coverage derivation type key.
+#[allow(dead_code)]
 pub(crate) const LITERAL_DERIVATION_PRE_DETAILED_ASSEMBLY: &str = "pre_detailed_assembly";
 
 // ── complete fallback-reason templates (render.ts gap rungs) ──────

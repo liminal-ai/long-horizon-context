@@ -417,7 +417,13 @@ where
         };
     };
     let (hook_set, post_commit_hook) = post_commit_pair();
-    let clock: Clock = clock.unwrap_or_else(|| Arc::new(SystemTime::now));
+    // Explicit arg wins; else the running SDK instance clock; else wall time.
+    // Mirrors TS Date freeze / SdkConfig.clock for write-path stamps.
+    let clock: Clock = clock
+        .or_else(|| {
+            crate::shared_tech::context::resolve_instance_config().map(|c| Arc::clone(&c.clock))
+        })
+        .unwrap_or_else(|| Arc::new(SystemTime::now));
     let poke: Arc<dyn Fn(&str) + Send + Sync> = Arc::from(resolve_instance_poke());
 
     // Outer try/finally (persist.ts:188-220): metadata then BEGIN IMMEDIATE.

@@ -63,10 +63,6 @@ fn call_walk_hook(db: &Db, index: i64) {
     }
 }
 
-fn detail(cause: &dyn std::fmt::Display) -> String {
-    cause.to_string()
-}
-
 fn panic_detail(panic: Box<dyn std::any::Any + Send>) -> String {
     if let Some(err) = panic.downcast_ref::<TurnStateCorruptionError>() {
         return err.message.clone();
@@ -217,8 +213,13 @@ pub async fn run_message_events(
         return OpResult::Err { error };
     }
 
+    // Explicit arg / test seam / SDK instance clock / wall time — TS freezes
+    // Date globally; Rust lifecycle injects SdkConfig.clock on the seam.
     let effective: Clock = clock
         .or_else(take_injected_clock)
+        .or_else(|| {
+            crate::shared_tech::context::resolve_instance_config().map(|c| Arc::clone(&c.clock))
+        })
         .unwrap_or_else(|| Arc::new(SystemTime::now));
 
     let events_owned = events.to_vec();

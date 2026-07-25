@@ -628,11 +628,12 @@ pub async fn run_drain(
         Ok(result) => result,
         Err(payload) => {
             if let Some(err) = payload.downcast_ref::<DerivationCompletionError>() {
+                // TS `reason: cause.message` — Display includes the code prefix.
                 OpResult::Err {
                     error: ErrorResult {
                         error_class: ErrorClass::StateCorruption,
                         code: ErrorCode::DerivationCompletionMismatch,
-                        reason: err.detail.clone(),
+                        reason: err.to_string(),
                         event_index: None,
                     },
                 }
@@ -699,6 +700,8 @@ fn cancel_timer(handle: WakeTimerHandle) {
 
 /// TS private `ThreadDrainState` — per-thread single-flight + wake coalescing.
 struct ThreadDrainState {
+    /// Mirrored from TS state map key; map lookup uses the HashMap key.
+    #[allow(dead_code)]
     thread_id: String,
     file_path: String,
     running: bool,
@@ -1064,6 +1067,16 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Crate-private Arc-handle share for SDK seam/default poke+touch captures.
+    /// Not a public `Clone` surface — TS Scheduler is not cloneable; Rust only
+    /// needs to duplicate the Arc-backed closure handle at init sites.
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self {
+            mode: self.mode,
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     pub fn poke(&self, thread_id: &str) {
         if self.mode != SchedulerMode::Background {
             return;
