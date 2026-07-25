@@ -30,6 +30,59 @@ Read any host `AGENTS.md` and current upstream divergence before each chunk.
 Work on a dedicated branch. Preserve an immediate feature-flag/config rollback
 to the existing compaction path until live certification is complete.
 
+## Chunk 0 — fork discipline (before any hook lands)
+
+The upstream is unlike t3code or hermes: `xai-org/grok-build` publishes via
+daily monorepo squash-syncs (every commit is "Synced from monorepo",
+6.7k-57k line diffs), accepts no external PRs, and may reset history without
+notice. The fork must survive a history reset with zero archaeology. Set this
+up FIRST — it is cheaper to build before the first hook than to retrofit.
+
+1. **Layout.** All fork code lives in `crates/lhc/` (vendored `lhc` +
+   `grok-lhc-host` adapter) — zero-collision directory, same isolation rule
+   that survived three t3code upstream merges. Vendor `lhc` as a git
+   submodule pinned to a certified commit of `long-horizon-context`
+   (`lhc-rs-port` @ 358c8d1 or later) — the t3code pattern; never copy the
+   port into the fork.
+2. **Core touchpoints as a patch series, not just commits.** Every core-file
+   insertion (expect ~3: persistence tee, compact bridge, request-builder
+   read) is 1-5 lines, marked `// LHC-HOOK <n>/<total>: <purpose>`, and ALSO
+   maintained as `patches/NNNN-*.patch` files (git format-patch output,
+   regenerated whenever a hook changes) checked into the fork. On a normal
+   sync these are redundant; on a history reset they are the recovery path:
+   fresh clone of new upstream → re-add `crates/lhc/` → `git am patches/*`
+   → tripwires. Recovery must be mechanical, documented in FORK.md, and
+   rehearsed once before Chunk 3 sign-off.
+3. **Tripwires, all three layers, in-fork and runnable by one script:**
+   - sentinel count: `scripts/check-lhc-hooks.sh` greps the exact expected
+     `LHC-HOOK` markers; wrong count = failed sync, stop;
+   - compile: the adapter crate imports the host types it seams into, so
+     upstream drift at a seam breaks the build loudly (prefer exhaustive
+     matches over host enums at the seam — vocabulary drift becomes a
+     compile error, the port's own rule 6 applied to the host boundary);
+   - behavioral: the capture/rebuild golden smoke (Chunk 1 certification
+     artifacts, rerun on every sync) — the sync-smoke drill that certified
+     13/13 on t3code.
+4. **Known recurring conflict:** the auto-generated root `Cargo.toml`
+   workspace-members list will conflict on most syncs. The resolution rule
+   (our members entry is part of patch 0001) lives in FORK.md so no sync
+   ever improvises it.
+5. **FORK.md at repo root** (upstream never touches it): what the fork adds,
+   the touchpoint inventory (every owned core line, hook by hook), the sync
+   drill, the history-reset recovery drill, submodule pin policy, and the
+   never-run list (`grok upgrade` self-update against a source checkout).
+   Make `lhc` the default branch, set the repo description — the
+   scan-friendly fork presentation, same as hermes-lhc.
+6. **Sync cadence:** weekly or on-need, not per upstream commit (upstream
+   moves daily; the tripwires make each sync mechanical). Each sync commit
+   body records: upstream range, tripwire results, sync-smoke verdict. This
+   drill is designed to be handed to a maintainer agent later — write it so
+   a fresh agent can run it from FORK.md alone.
+
+Certification for Chunk 0: FORK.md + patch series + tripwire script exist;
+a rehearsed dry-run sync against current upstream tip passes all three
+tripwire layers; default branch and description set.
+
 ## Chunk 1 — packaging, session identity, and event capture
 
 1. Choose and document ordinary Cargo consumption of `lhc` (workspace/path
@@ -56,6 +109,16 @@ Certification:
 - no loss or duplication under injected crashes;
 - Phase 2 crate gate remains green in its source repo;
 - host default behavior remains unchanged while the flag is off.
+
+### Host obligations from the Phase 2 acceptance record (PORT_STATUS.md)
+
+- Timestamps the host passes into public APIs (`now`, lease times) MUST be
+  canonical `YYYY-MM-DDTHH:MM:SS(.mmm)Z` — offset forms TS would accept are
+  rejected/expired by design (Amendment D ceiling). Use LHC's own formatting
+  helpers.
+- Do not supply `SdkConfig.clock` in production — the ports differ in how far
+  a configured clock reaches (recorded_at provenance); wall time is the
+  cross-port-identical path.
 
 ## Chunk 2 — inference adapter and context/compaction injection
 
