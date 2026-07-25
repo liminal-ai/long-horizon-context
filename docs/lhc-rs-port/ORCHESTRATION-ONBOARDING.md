@@ -305,35 +305,59 @@ Corollary: never run the implementor concurrently with a verifier either, for
 the same reason. If a verifier reports the tree changing under it, treat that
 report as authoritative and re-run in isolation.
 
-## Watcher protocol — MANDATORY (added 2026-07-25, after losing ~15 min to a self-deadlocked monitor)
+## Monitor protocol — MANDATORY (rewritten 2026-07-25 after getting it wrong twice)
 
-Every detached run is invisible unless a watcher wakes you. Four rules, each
-written after the corresponding failure:
+**The monitor is a PERIODIC TIMER, never a condition-waiter.**
 
-1. **Launch and watcher are ONE step.** Never start a detached run and set the
-   watcher "next". A Sol verifier once ran and completed entirely unobserved
-   because the watcher was deferred and then forgotten.
-2. **A watcher must never be able to match itself.** `pgrep -f "rsync.*<dir>"`
-   matches the watching shell's own command line, so `! pgrep …` is *never*
-   true and the loop spins forever on an unsatisfiable condition. **Do not
-   introspect the process table.** Check the artifact (does the path exist and
-   has its size stopped growing?) or the tool's own `status`.
-3. **`running:false` is not success.** A crashed run reports it too. Always
-   read `result` and check for `"status":"error"` before announcing completion —
-   a lane failed three times while the watcher reported "BOTH DONE".
-4. **Every watcher needs a sanity deadline.** After ~45 min, report *whatever*
-   the state is rather than waiting for a condition that may never fire. A
-   watcher that cannot fire is worse than no watcher: it produces confident
-   silence.
+```
+Monitor(command="sleep 240")        # correct: a timer
+```
 
-Cadence (Lee's instruction): 45s × 4 to confirm launch, 120s × 3, then 300s
-cruise. Plus stall detection — no new events **and** no file writes for two
-consecutive cruise checks.
+not
+
+```
+Monitor(command="while true; do ...check...; done")   # WRONG
+```
+
+**Why this is the whole protocol.** A condition-waiting loop only wakes you if
+its condition fires. If the condition logic is wrong, or the job dies in a way
+the loop does not anticipate, **the loop never exits and you are never woken** —
+and you sit idle indefinitely believing work is in flight. That is not a
+hypothetical: a watcher here tested `! pgrep -f "rsync.*<dir>"`, which matched
+the watcher's own command line, so the condition was unsatisfiable and ~15
+minutes were lost in confident silence. Every "improvement" made afterwards —
+failure detection, stall detection, sanity deadlines — was **logic inside the
+broken pattern**, and none of it fixes the case where the loop itself hangs.
+
+A timer has no condition to get wrong. It always returns. You always wake.
+
+**The loop:**
+
+1. Launch the detached run.
+2. Immediately arm `Monitor(command="sleep N")`.
+3. On wake: run one cheap `status` check yourself.
+4. Job still running → re-arm the timer. Job finished or failed → handle it.
+
+**Choosing N** (Lee's instruction): short at first to confirm the run actually
+started and is producing events, then lengthen to **3–5 minutes**, scaled to how
+long these runs typically take (implementor rounds 10–40 min; verifier audits
+10–30 min). Do not poll faster than that; do not go silent for longer.
+
+**Side benefit, and not a minor one:** each wake produces a visible status
+check, so Lee can see the work is alive. A condition-waiter that is quietly
+spinning is indistinguishable, from outside, from a hung process.
 
 **Launch quirk:** `codex-subagent` can exit `status:"error"` with stderr
 `Reading additional input from stdin...` unless launched under `setsid` with
-`< /dev/null`. Redirecting stdin alone is not sufficient. It has also failed
-3/3 in rsync copies while working from the canonical tree; cause unknown
-(submodule gitdir is relative and git works in the copy, so that is not it).
-Workaround: give that lane the canonical tree and the other lane a copy — the
-two lanes are still in separate trees, which is the property that matters.
+`< /dev/null`; redirecting stdin alone is not enough. It has also failed 3/3 in
+rsync copies while working from the canonical tree (cause unknown — the
+submodule gitdir is relative and git works in the copy, so that is not it).
+Workaround: give that lane the canonical tree and the other lane a copy; the
+lanes stay in separate trees, which is the property that matters.
+
+**Still true, and still not sufficient on their own:**
+
+- Launch and monitor are ONE step — never "I will arm it next".
+- `running:false` is NOT success; a crashed run reports it too. Read `result`
+  and check for `"status":"error"`.
+- Verifier lanes never share a working tree (see verifier isolation above).
