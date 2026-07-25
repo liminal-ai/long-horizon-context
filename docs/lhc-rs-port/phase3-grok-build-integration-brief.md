@@ -79,6 +79,28 @@ up FIRST — it is cheaper to build before the first hook than to retrofit.
    drill is designed to be handed to a maintainer agent later — write it so
    a fresh agent can run it from FORK.md alone.
 
+**Chunk 1 status: DONE** (2026-07-25, fork `9ea06ea`..`af62816` on
+`liminal-ai/grok-build-lhc` branch `lhc`). Capture running behind `GROK_LHC`
+(off by default, host bit-identical when off): persistence tee, exhaustive
+`ConversationItem` -> `MessageEventInput` mapping, model/thinking tee, session
+identity and teardown. Three marked core hooks + the root workspace entry;
+61 tests (20 unit / 37 certification / 4 golden); tripwire green with both
+test binaries inside layer 3. Five repair rounds, dual adversarial verification
+each. Orchestrator amendments recorded in the commit body: the sidecar->
+`last_event_order` redesign (A1), the supersession of the orchestrator's own
+"emit nothing on replace_history" ruling (B1), and a shipped `blocking_recv`
+panic on the enabled path caught by an orchestrator probe (C1). Two accepted
+limitations documented in FORK.md. **The history-reset recovery drill was
+rehearsed at Chunk 1** against the raw upstream tip (brief asked for it before
+Chunk 3; done early), record in `patches/README.md`.
+
+Chunk 2 rulings made by the orchestrator, recorded here so they are not
+re-litigated: compaction implements **both** `shadow` (default) and `replace`
+(opt-in) modes, mutually exclusive by construction so two writers on one
+request are impossible; and the failure policy is **fail open to the existing
+path**, cited from this brief's own requirement to preserve an immediate
+rollback to the existing compaction path until live certification.
+
 **Chunk 0 status: DONE** (Fable, 2026-07-25, fork commit `f99b4fb` on
 `liminal-ai/grok-build-lhc` branch `lhc`). Branched from upstream tip
 `6e38642`; submodule pinned `e582465`; tripwires green (sentinel 0/0,
