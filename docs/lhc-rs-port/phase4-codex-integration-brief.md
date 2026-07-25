@@ -217,3 +217,65 @@ Replicate the grok-build-lhc Chunk 0 exactly, adapted:
 5. **Encrypted reasoning** — capture stores what the wire carries;
    fidelity ceiling documented if payloads are opaque (same class as the
    t3code narration-redaction ceiling: provider-side, not fork bugs).
+
+---
+
+## Binding laws carried forward from Phase 3
+
+These were paid for with defect rounds in Grok Build. They are **binding for
+Phase 4**, not advice.
+
+### Law 1 — hosts never parse renders
+
+**Never reconstruct structure from rendered text.** If the host needs to know
+what a view entry *is*, take it from the typed session view
+(`get_session_thread_view`): `source_messages` emptiness, entry variants,
+`message_id` / `idempotency_key`. Never parse the rendered string.
+
+The typed session view exists **precisely so hosts never parse renders**. This
+defect family has now been hit in **two hosts**. In Grok Build Chunk 2 a
+prefix-based classifier produced a new defect in three consecutive rounds —
+desync in the default compact mode, image-bearing prompts failing to match
+because `text_content()` drops image parts while capture mapping appends
+`[image:…]`, and a residual that misplaced a `prompt_index` marker and could
+corrupt cancelled-turn rewind. Each fix was locally correct; the class survived
+until the design changed.
+
+**Corollary:** classify on typed structure **only**, never on content
+byte-equality with native state — `get_session_thread_view` truncates
+tool-result content at the view boundary. Any classifier keyed on content is
+unsound by construction. Pin truncation-insensitivity with a test.
+
+### Law 2 — one conversation state
+
+**Never leave the host and LHC holding divergent conversation state.** The
+host's conversation after a compact swap *is* the rebuilt LHC state — write the
+compacted body back through the host's own replace-conversation path. Serving
+LHC's view alongside a separate native body is the "two-truths" failure mode:
+it desynchronises token accounting, strands the fail-open path on an oversized
+body, and silently diverges any consumer that reads native state directly.
+Hit in Hermes, then again in Grok Build Chunk 2. Treat any divergent-state
+design as **suspect by default**.
+
+### Law 3 — a test that cannot fail is not a test
+
+Every test guarding a production invariant must be **demonstrated** to fail
+when that invariant is broken — break the code, watch it fail, restore. In
+Chunk 2, three tests passed while the production behaviour they claimed to
+guard could have been deleted outright, and survived three rounds of flagging
+because "would it fail?" was answered by argument rather than by running it.
+Assertion of sensitivity is not evidence of sensitivity.
+
+**Corollary:** know what your gate script actually runs. Chunk 2's tripwire
+executed only the integration binaries and reported green over a red unit
+suite for two rounds, because the unit tests lived in `src/` and nothing ran
+`--lib`.
+
+### Law 4 — fixtures must be shapes the host can actually produce
+
+A fixture that cannot occur in production tests nothing. Chunk 2's write-back
+gate ran against a body with no bands — a shape impossible after a real
+compact, since bands lead the view by construction — and that unfaithfulness
+hid a compounding re-record defect through a full dual-verify round. Capture
+fixtures from a real run where possible; where not, prove the fixture is
+reachable from the renderer contract and schedule a real-body diff.
