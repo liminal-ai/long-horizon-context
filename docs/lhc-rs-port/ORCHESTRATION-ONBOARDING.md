@@ -270,3 +270,37 @@ interrupt with recommendations, not one turn each. State the position
 against the full project, what is blocked, what is NOT blocked (keep
 working on anything independent while waiting), and your recommendation
 per item.
+
+## Verifier isolation — MANDATORY (added 2026-07-25, Chunk 2)
+
+**Never launch two verifiers with the same working directory.** Use
+`scripts/verify-isolated.sh <lane> <brief> <sol|opus>`, which rsyncs the fork
+tree to `/srv/work/grok-verif-<lane>` and launches the verifier there.
+
+**Why.** Through Chunk 2 both lanes were launched with cwd `/srv/work/grok-build`
+— one tree, concurrently. Verifier mandates now include mutation testing (break
+the code, watch it fail, restore), so two verifiers were editing and reverting
+the same files at the same time. A verifier observed `equivalence.rs` change
+under it mid-run (961 → 1160 lines → 961) and identified the cause as the other
+lane's add-run-revert cycle.
+
+Three consequences, all real:
+
+1. **Unattributable measurements.** Any suite run overlapping the other lane's
+   edits may have measured a tree neither verifier intended. Discard and re-run.
+2. **Independence is unenforceable at the filesystem level.** One verifier read
+   the other's test names and bodies off disk before writing its own. When that
+   happens, agreement between lanes is **corroboration, not two independent
+   samples** — and independent sampling is the whole reason for dual verify.
+3. **Destructive restores.** A verifier restoring its own backup can silently
+   delete the other's in-flight work, or resurrect work the other deleted.
+
+**Assume this affected every dual-verify round in Chunk 2.** The findings
+themselves were traced to source and the important ones were independently
+re-derived by the orchestrator, so the substance largely stands — but no Chunk 2
+round may be described as having produced *independent* agreement. Say
+"corroborated", not "independently confirmed", for those rounds.
+
+Corollary: never run the implementor concurrently with a verifier either, for
+the same reason. If a verifier reports the tree changing under it, treat that
+report as authoritative and re-run in isolation.
