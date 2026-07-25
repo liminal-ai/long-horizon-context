@@ -145,7 +145,49 @@ Restated under the simplified shape, per Lee's request:
   **structured** `ConversationItem`s (preserving tool calls), not flattened
   prose. That is a better hook than the one we would be removing.
 
-### Decision requested
+### DECIDED — remove by evidence, not by argument
+
+Ruling (Fable phase-reviewer, relayed by Lee 2026-07-25). The recommendation is
+accepted **in substance**, but the removal is gated on measurement rather than
+on the argument above:
+
+- **Hook 4 stays through Chunk 2 certification, demoted to
+  "instrumented-redundant."** Add an equivalence assertion: the served view and
+  the natively-built request body must be **identical between compacts**, at
+  byte level after the same normalization the cert diffs use. Any divergence is
+  logged **with the triggering state**.
+- Chunk 2 cert **and** Chunk 3 live sessions run with that instrumentation
+  armed.
+- **Zero divergence through live cert → hook 4 comes out at Chunk 3**, as a
+  touchpoint-set change: sentinels, FORK.md inventory, and patch series updated
+  **in the same commit**. The fail-open story dies with it.
+- **Any divergence →** each instance is either a bug to fix or the documented
+  reason the hook stays. **Bring the first one to Lee.**
+
+**Scope note of record:** prune/mutation serving is **out of Phase 3 scope**. If
+a later phase adds it, mutations route through the **same native replacement
+path** — the write-back law — and **not** through a revived serving
+substitution.
+
+### Ruling 4 — the structural test limitation does not rest as "accepted"
+
+The gate tests drive the adapter path (`handle.replace_history(&body)`), not
+the real shell write-back, which the adapter suite structurally cannot reach.
+The flag is endorsed, and explicitly **must not** become a permanent accepted
+limitation.
+
+Requirement: **capture the real body the shell write-back delivers** — item
+shapes, ordering, system prefix, `prompt_index` markers — from an **actual
+compaction run**. A live harness in Chunk 2 if feasible; otherwise a
+**mandatory Chunk 3 live-cert checkpoint**. Diff it against the
+adapter-simulated body the four gate tests use. **If they differ, regenerate
+the test fixtures from the real body and rerun the gate.**
+
+**Chunk 1's accepted limitation #1** (the hook-2/hook-3 session-id coupling,
+verifiable only by inspection) gets the **same treatment at the same
+checkpoint**: scheduled verification, not a permanent blind spot.
+
+### Superseded — original decision request
 
 Remove hook 4 in Chunk 2, or keep it. I recommend removing it. Either way
 write-back proceeds — it is approved and independent, and is already being
