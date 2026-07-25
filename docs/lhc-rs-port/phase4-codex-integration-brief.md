@@ -25,6 +25,28 @@ numbers WILL rot within days (see churn); symbols are the durable
 reference. Re-verify each seam at the current tip before building on it;
 a vanished seam is an escalation discovery, not something to route around.
 
+## The cast (Phase 4 — supersedes the onboarding doc's cast for this phase)
+
+- **Implementor: grok-4.5 at high effort via `grok-subagent`**
+  (`--model grok-4.5 --effort high`). NOT cursor-subagent — that lane is
+  rate-limit-exhausted (Lee, 2026-07-25). Note the grok CLI has no
+  `-fast` model ids (those were Cursor-specific); `grok-4.5` is the
+  lane, verified headless (exec + detached status, envelope records the
+  model). Same implementor failure modes as recorded in the onboarding
+  doc §cast, plus the Phase 3 additions: flattening structured items to
+  prose, content-keyed classification, fixtures shaped like nothing the
+  host produces.
+- **Dual verifiers, run in parallel, independent:**
+  - **GPT-5.6 Sol via `codex-subagent`** (`-m gpt-5.6-sol -c
+    model_reasoning_effort=medium -s danger-full-access` — the sandbox
+    flag is required on this box; bubblewrap is broken).
+  - **Opus 5 via `claude-subagent`** (`--model claude-opus-5
+    --effort medium`), verified headless.
+- Loop shape, monitoring cadence, escalation rules, and reporting
+  protocol: as the onboarding doc, with the Phase 3 deltas pattern
+  applied to this fork (tripwires as the per-round check, fork commit
+  conventions per its FORK.md once Chunk 0 lands).
+
 ## Upstream model (different from grok-build — read carefully)
 
 - Normal public git history, external PRs accepted, no squash-sync resets
