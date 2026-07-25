@@ -1,93 +1,119 @@
-# Chunk 2 fix round 16 — make the pinning claim true
+# Chunk 2 fix round 16 — make the coverage claim true
 
 **Chunk 2 of 3, Phase 3 of 4 — unit 17 of ~22.**
 
-Round 15's scalar pins are real and verified — a verifier re-ran the deletion
-sweep independently and the scalar deletions failed their tests as claimed. U2's
-`Option` presence bits are correct. The regression suite is green.
+Both verifiers independently confirm **the engineering in U1/U2 is sound**. One
+ran a 63-contribution deletion sweep; U1's fourteen fields plus
+`model_fingerprint` and the action variants are all genuinely deletion-caught.
+`push_option_str`'s presence bit is load-bearing (forcing the `None` arm to emit
+`"s"` fails five tests) and **cannot be spoofed** — a payload starting with
+`s`/`n` lands in the second length-framed field and cannot migrate into the
+first. FORK.md's carve-out table is verified correct and complete. The tree was
+restored byte-identical.
 
-Two things are not true as documented.
-
----
-
-## V1 [blocking] The count pins do not pin the counts
-
-A verifier re-ran the sweep and found that deleting **only** the count integer
-leaves the matching test green for `tool_calls.len()`, `images.len()`,
-`summary.len()`, `content.len()`, `sources_count`, and `User.content_count`.
-The tests only fail when the integer **and its whole item loop** are removed.
-The `Search`/`OpenPage` discriminant tags behave the same way.
-
-So `MAPPING.md`'s "one deletion-proof pin per framed field" is inaccurate for
-these. Do **not** fix this by rewording the claim into something vague — an
-unpinned field that nobody notices is exactly what U1 was about.
-
-**Answer the real question first, per count site:** *is the count load-bearing
-for injectivity at all?*
-
-The elements are individually length-framed and, at some sites, tag-prefixed
-(`"summary_text"`, etc.). A count matters when it is the only thing preventing a
-**boundary shift** — two different groupings whose framed bytes would otherwise
-be identical, e.g. a sequence of N elements followed by another field versus
-N−1 elements where the last element's bytes are absorbed by the next field.
-Where the surrounding tags are disjoint, the count may genuinely be redundant.
-
-For each count, determine which it is and act accordingly:
-
-- **Load-bearing** → pin it with a **boundary-shift test**: construct two items
-  whose element bytes concatenate identically but whose grouping differs, and
-  assert different fingerprints. That is a genuine single-property pin, and it
-  is the test the round-15 pins should have been.
-- **Genuinely redundant** → **remove the field** and say so. A field that cannot
-  affect the outcome should not be in the encoding pretending to.
-
-Either way `MAPPING.md` becomes accurate: every framed field is either pinned by
-a test that fails when it is deleted, or gone.
-
-Note the verifier's reasoning, which is correct and worth preserving: no two
-valid Rust values can differ **only** in a derived `Vec::len()`, which is why a
-single-field-difference test cannot pin a count. That is a fact about the test
-shape, not a reason to leave the field unverified.
-
-## V2 [blocking] The pin inventory is still incomplete
-
-Framed projections with **no** direct single-field pin:
-
-| Arm | Unpinned projections |
-|---|---|
-| `System` | `content` |
-| `User` | `content_count`; content-part `Text`/`Image` tag and payload |
-| `Assistant` | tool-call `id`; plain and tool-assistant `content` |
-| `ToolResult` | `tool_call_id`, `content`; image tag and payload |
-| `WebSearch` | kind tag, `query`, source `type` / `url`; Find and OpenPage payloads |
-
-These are ordinary varying fields — unlike the counts, each **can** differ
-between two otherwise-identical items, so each takes a straightforward pin.
-
-Then enumerate **every** field written by `raw_fingerprint` and show the
-complete field → test mapping, with the deletion result for each. The
-enumeration is the deliverable; a list that omits a field is the defect this
-round exists to close. If the list and the code disagree, the code wins and the
-list was wrong.
-
-## V3 [minor] MAPPING.md
-
-Update the Test | Expect table to the true state after V1 and V2: every framed
-field pinned by a test that fails on its deletion, with the boundary-shift
-tests named for counts and any removed-as-redundant fields recorded as removed
-and why.
+**The code is right. The documented claim is not.** That is the whole of this
+round.
 
 ---
 
-## Standing requirements
+## W1 [blocking] MAPPING.md asserts coverage that does not exist
 
-Break-watch-restore with captured output for every new test. Full suite counts,
-both fmt gates, `--all-targets` clippy attributed. Vendored port, capture tee
-and dedup semantics untouched.
+MAPPING.md states a universal pin-coverage guarantee. A sweep deleting each of
+**63** framed contributions one at a time found **41 survive** against the full
+175-test suite — they can be removed and every test stays green.
+
+Survivors are payload and identity fields, not the framing metadata U1 pinned:
+`System.content`, `Assistant.content`, `AsstTools.content`,
+`ToolResult.content`, `ToolResult.tool_call_id`, `AsstTools.tc.id`,
+**`Reasoning.id` and the entire `Reasoning.summary` loop**,
+`WS.Find.url`/`.pattern`, `WS.FindInPage.url`/`.pattern`, `WS.Search.query`,
+`src.type`/`src.url`, `XSearch.id`/`.name`/`.input`,
+`CodeInterp.id`/`.status`, and all six variant tags.
+
+**Make the claim true.** Every framed contribution must be **either**:
+
+- **pinned** by a test that fails when it alone is deleted, **or**
+- **explicitly documented as structurally redundant**, with the argument for
+  why no test can pin it.
+
+No third category. A field that is neither pinned nor explained is the defect
+this round closes. Produce the full 63-row accounting — field, disposition,
+test name or redundancy argument.
+
+Prioritise pinning: default to a pin, and use the redundancy exemption only
+where you can argue it as rigorously as the two cases below.
+
+## W2 [blocking] Two tests claim coverage they do not provide
+
+Worse than a plain gap, because a reader sees the assertion and stops looking:
+
+- **`raw_fingerprint_reasoning_summary_parts_do_not_collide`** asserts
+  `"summary part boundaries and id must be framed"` — but its two fixtures
+  differ in **both** `id` (`r1`/`r2`) **and** summary shape, so neither is
+  individually pinned. This is why `Reasoning.id` and the whole summary loop
+  are deletable with the suite green.
+- **`pin_websearch_find_vs_find_in_page`** compares two **variants**, so
+  deleting `Find.url` entirely still leaves the pair distinguishable.
+
+De-confound both: vary exactly one thing per test. Then re-check whether the
+fields they were supposed to cover are now genuinely caught.
+
+## W3 [do not "fix"] The count fields are provably redundant — record the proof
+
+Do **not** add tests for these and do **not** remove the fields. A verifier
+established, and I accept, that:
+
+- The counts are **derived** from the vector they precede, so "two items
+  differing only in the count" describes **no constructible pair** — no test
+  can pin them, in principle.
+- Deleting a count leaves the encoding **injective anyway**: `push_framed` is
+  length-prefixed so the field sequence is uniquely decodable, and each arm has
+  fixed arity around its loop (`ToolResult` = 2 fixed + 2·k; `AsstTools` = 6
+  fixed + 3·k + trailing content; `Reasoning`'s summary terminates on the
+  literal `"summary_text"` tag, which can never equal the `"n"`/`"s"` presence
+  bit that follows).
+
+So their weaker pin creates **no false-negative risk**. Record that argument in
+MAPPING.md as the redundancy exemption for all six counts (`images_count`,
+`toolcalls_count`, `summary_count`, `content_count`, `User.content_count`,
+`WS.sources_count`).
+
+**Add the comment the verifier flagged:** the `Reasoning` case leans on
+`"summary_text"` never colliding with `"n"`/`"s"`. True today; note it at the
+code site so a future edit to either literal is caught.
+
+## W4 [minor] `push_option_dbg`'s presence bit is inert — say so
+
+Forcing the `None` arm of `push_option_dbg` to emit `"s"` **survives the full
+suite**, because `Debug` output is never empty for those types, so `None`
+(`|1:s|0:`) and `Some(v)` (`|1:s|N:v`) still differ on the value field. All
+three `Option`s without an absent-vs-present pin — `User.cwd_generation`,
+`prior_turn_interrupt`, `prompt_index` — go through it.
+
+So the "missing" tests would pin a mechanism that does nothing there. **Do not
+add them.** Document the distinction in MAPPING.md: `push_option_str`'s bit is
+load-bearing and pinned; `push_option_dbg`'s is defence-in-depth and inert
+given non-empty `Debug`. That asymmetry is exactly what the current doc gets
+wrong by claiming uniform coverage.
+
+## Severity note — for your own calibration, not to relax the work
+
+`raw_fingerprint` feeds only `structural_divergence`;
+`observe_serve_equivalence`'s return is discarded at `turn.rs:2145` (`let _ =`)
+and `apply_serve_decision` has already run. A dropped field makes the
+instrument **under-report divergence**; it cannot corrupt served output or
+write-back. Every field is framed correctly **today** — what is missing is the
+guard against future removal. That still matters, because Chunk 3's hook-4
+removal ruling reads this instrument's output and a silent regression reports
+zero divergences, which is indistinguishable from success.
+
+---
 
 ## Report
 
-Position against the full project. Lead with V1: for **each** count site, your
-load-bearing-or-redundant determination with the reasoning, and either the
-boundary-shift test or the removal. Then V2's complete field → test →
-deletion-result table. Then V3.
+Position against the full project. Lead with the **complete 63-row accounting**
+— every framed contribution, its disposition (pinned / documented-redundant),
+and the test name or argument. Then W2's de-confounded tests with
+break-watch-restore output, and W3/W4's MAPPING.md text. Full suite counts,
+both fmt gates, `--all-targets` clippy attributed. Vendored port, capture tee
+and dedup semantics untouched.
