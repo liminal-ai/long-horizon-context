@@ -360,8 +360,32 @@ looking report, so the exit code will not save you; the report says it could not
 run. Sol handled this correctly, declining to produce a verdict it had no
 evidence for, which is the behaviour we want from a blocked verifier.
 
-**Opus / claude.** `claude-subagent start --resume <run-id>` — takes the run id
-directly and keeps its normal flags.
+**Opus / claude.** Also takes the **UUID `session_id`** from the prior envelope,
+not the run id, and keeps its normal flags:
+
+```
+claude-subagent start --prompt-file <brief> --model claude-opus-5 \
+  --effort high --resume <session_id>
+```
+
+**Session continuity and per-round tree isolation actively conflict — this bites
+every round.** Claude stores sessions per *project path*
+(`~/.claude/projects/<encoded-cwd>/<session_id>.jsonl`). Isolation gives each
+round a **new** tree path, so a resume from the new tree fails with
+`No conversation found with session ID: …` even though the session exists.
+
+Relocate the session file to the new project dir before resuming:
+
+```
+mkdir -p ~/.claude/projects/-srv-work-<new-tree>
+cp ~/.claude/projects/-srv-work-<old-tree>/<session_id>.jsonl \
+   ~/.claude/projects/-srv-work-<new-tree>/
+```
+
+The file survives deletion of its tree, so this works even after the old copy is
+reclaimed — but copy it **before** deleting, or find it under the old encoded
+path. Codex is unaffected: it keys sessions by thread id, not cwd, which is why
+Sol resumed across trees without help.
 
 ## Verifier session continuity — see §The loop
 
