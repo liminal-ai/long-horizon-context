@@ -1438,13 +1438,11 @@ warranted. **Name Amendment J in the Wave 7 commit body.**
 1. **Reentrant walk hook** — store `Arc` callback; `call_walk_hook` clones out
    of the `RefCell` before invoke. Disposable probe: clear/replace self +
    nested intake on a second thread file — no borrow panic.
-2. **WAL-aware validation** — new
-   `storage::open_database_for_thread_validation` copies main+`-wal`/`-shm`/
-   `-journal` to a private temp dir and opens `mode=ro` **without**
-   `immutable=1`. `open_database_read_only` (`immutable=1`) left untouched for
-   `peek_thread_id`. Lib probe: live-WAL schema visible to validate,
-   invisible to immutable peek; RO-dir / closed-WAL / foreign / malformed
-   candidates non-mutating.
+2. **WAL-aware validation (historical repair-r1, superseded below)** — the
+   first repair copied main+`-wal`/`-shm`/`-journal`; the controlling final
+   repair excludes `-shm` and copies an epoch-stable main/WAL/journal set
+   (see the SHM ruling below). `open_database_read_only` (`immutable=1`)
+   stayed untouched for `peek_thread_id`.
 3. **Deferred error mapping + close hygiene** — `validate_thread_file` catches
    open/query/close panics; `"not a database"` at any stage →
    `thread_not_found`; other failures → `storage_failure`; close never masks
@@ -2482,3 +2480,47 @@ implementation/verification units of Phase 2 of 3 (approximately unit 15 of
 18), but Phase 2 is not yet accepted until the independent whole-phase
 completion audit passes. All Phase 3 Grok Build integration remains before
 the user-facing deliverable.
+
+---
+
+## Phase 2 completion audit — ACCEPTED
+
+**Accepted range:** Phase 1 acceptance `12830b3` through dual-certified
+Wave 7 `1129bd8`.
+
+Independent whole-phase reviewers:
+
+- Sol `20260725-065705-6e2055`: **PHASE 2 ACCEPTED**
+- Copilot-Fable `20260725-065705-520fa3`: **PHASE 2 ACCEPTED**
+
+Both independently ran the default and `RUST_TEST_THREADS=1` gates:
+
+```text
+exact-todo: tokens=0 bodies=0 covered=0
+classified=496 cargo-reported=496 (binaries: 58)
+passed=481 suspicious=0 notimpl=0 wrong=0 ignored=15
+GATE PASS
+```
+
+They reconciled all 15 Rust ignores one-for-one to TS `it.skip`, regenerated
+all five committed oracle families byte-identically, checked all 15 goldens,
+re-proved the 132+7 SDK/root and 126 shared-tech export censuses, and audited
+persisted SQLite/JSON bytes, Amendments A–J, transaction/close ownership,
+callback lock freedom, scheduler wake/cancellation, instance isolation,
+read-only validation, live abort, integer domains, lexical path resolution,
+logging panic containment, and the real Amendment J drain-runner process.
+Allowlist reintroduction, wrapper removal, containment removal, numeric
+coercion, and persisted-producer mutations all turned RED in isolated copies.
+
+Non-blocking observations, accepted without moving the frozen denominator:
+
+1. Fractional inspect composition and the `2^63` classifier boundary are
+   behavior- and mutation-proven; neither TS nor the frozen Rust inventory has
+   a permanent dedicated regression row.
+2. Historical Wave 3 wording that said `-shm` was copied is corrected above;
+   the later controlling ruling and implementation never copy SHM.
+
+**Phase 2 of 3 (units 9–15 of approximately 18) is ACCEPTED as a certified,
+host-agnostic, in-process Cargo library.** Phase 3—approximately three Grok
+Build integration chunks—remains the larger user-facing work, and is not
+started by this acceptance.

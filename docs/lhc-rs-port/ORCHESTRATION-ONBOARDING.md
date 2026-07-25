@@ -13,16 +13,14 @@ in real sessions. The path there is **3 phases, ~18 units of work**:
 1. **Phase 1 — port shape** (8 waves): **DONE and dual-certified**
    (commits `0314283`…`483bf19`; gate 493 classified, wrong=0; independent
    phase review by Fable). Nothing runs — it compiles and the tests collect.
-2. **Phase 2 — port behavior** (7 waves): implement until **481 active /
-   15 ignored / 496 total** tests meet the amended done-definition,
-   certified against the TS reference. **This is the current phase — its
-   governing brief is `phase2-brief.md` in this directory; read it after
-   this document.** All seven waves are dual-certified; Phase 2 is **not yet
-   accepted** until the independent whole-phase completion audit. At Phase 2's end
-   there is a certified library — still nothing Lee can use.
-3. **Phase 3 — Grok Build integration** (~3 chunks): capture/compact/
-   inference hooks in the fork + live certification. Only this delivers
-   the deliverable.
+2. **Phase 2 — port behavior** (7 waves): **DONE and ACCEPTED** at
+   **481 active / 15 ignored / 496 total**, with all seven waves
+   dual-certified and independent whole-phase Sol/Fable acceptance over
+   `12830b3..1129bd8`. This produces the certified host-agnostic library,
+   but still nothing Lee can use directly.
+3. **Phase 3 — Grok Build integration** (~3 chunks): **NEXT / NOT STARTED**.
+   Capture/compact/inference hooks in the fork + live certification. Only
+   this delivers the user-facing result.
 
 **Status-report rule (Lee's standing rule, hard):** every report you write
 names the position against the full project ("wave 3 of 7, phase 1 of 3 —
@@ -51,7 +49,8 @@ inside a smaller frame than Lee's deliverable.
   `fix1-wave2.md` — model your wave briefs on these, Rust-adapted.
 - Gate: `cd packages/lhc-rs && python3 scripts/check_gate.py` (needs
   `. "$HOME/.cargo/env"`). PASS = wrong=0, suspicious=0, reconciled.
-  Current state: passed=4 (allowlisted js_json), notimpl=4, wrong=0.
+  Accepted Phase 2 state: classified=496, passed=481, ignored=15,
+  notimpl=0, wrong=0, suspicious=0; the transitional allowlist is absent.
 - Oracle fixtures are COMMITTED: `packages/lhc-rs/fixtures/
   prompt-renders.json` (all nine prompts, byte-parity contract for Wave 1)
   and `js-json-cases.jsonl`. Verifiers compare against these files, not

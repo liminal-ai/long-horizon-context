@@ -3,9 +3,9 @@
 Rust port of the LHC (long-horizon context) SDK — `packages/lhc` is the
 TypeScript reference implementation and stays the source of truth.
 
-**Status: Phase 2 Wave 7 of 7 is dual-certified (unit 15 of ~18 across the
-full project); whole Phase 2 acceptance is pending the independent completion
-audit.** The host-agnostic Cargo library reaches the Phase 2 gate target
+**Status: Phase 2 of 3 is ACCEPTED and dual-certified (units 9–15 of ~18
+across the full project).** The host-agnostic Cargo library meets the final
+Phase 2 gate:
 
 ```text
 classified=496 cargo-reported=496
@@ -13,10 +13,9 @@ passed=481 notimpl=0 ignored=15
 wrong=0 suspicious=0
 ```
 
-Wave 7 is committed only after its certification record is finalized; the
-separate Phase 2 audit must still accept the complete seven-wave range.
-Phase 3 (Grok Build integration) then remains and is the user-facing
-deliverable—only Phase 3 puts LHC inside Grok Build.
+All seven implementation waves and the independent whole-phase Sol/Fable
+completion audits are accepted. Phase 3 (Grok Build integration) remains the
+larger user-facing deliverable—only Phase 3 puts LHC inside Grok Build.
 
 This crate stays an in-process, host-agnostic Cargo library/SDK: no
 Grok/Codex dependency, no C ABI, no network implementation; hosts supply

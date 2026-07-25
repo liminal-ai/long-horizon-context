@@ -3,7 +3,7 @@
 Independent read-only phase review in `/srv/work/long-horizon-context`,
 branch `lhc-rs-port`, after all seven Phase 2 wave commits. Do not edit,
 commit, or push. Compare the entire Phase 2 range from accepted Phase 1 commit
-`12830b3` through the final Wave 7 commit against:
+`12830b3` through final Wave 7 commit `1129bd8` against:
 
 - TypeScript authority `packages/lhc`;
 - Phase 1/Phase 2 briefs and every `PORT_STATUS.md` ruling/addendum;
@@ -74,7 +74,11 @@ Build; approximately three Phase 3 integration chunks remain.
    Force polling-time panic through each SDK logging operation and require its
    exact TS-prefixed structured storage failure. Verify drain-runner runtime
    JSON order `ran,stoppedBecause,remaining[,claimExpiresAt]` and its
-   `drain-runner failed:` stderr/exit-1 outer protocol.
+   `drain-runner failed:` stderr/exit-1 outer protocol. Amendment J must
+   deliver this as the auto-discovered `examples/drain_runner.rs` target:
+   prove Cargo metadata/build, spawn real success/failure/panic/two-process
+   claim paths, and remove the wrapper in isolation for a RED target proof.
+   It must add no library export, manifest entry, or test-denominator change.
 8. Run fmt/check/clippy and dependency/package audit. Distinguish carried style
    warnings from correctness; confirm ordinary in-process Cargo consumption
    remains the canonical packaging direction. Re-run the frozen export census:

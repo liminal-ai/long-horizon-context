@@ -1,11 +1,9 @@
 //! Host-agnostic LHC (long-horizon context) Cargo library — Rust port of
 //! `packages/lhc`. TypeScript remains the behavioral source of truth.
 //!
-//! Phase 2 Wave 7 implemented the SDK, inspect, and remaining behavior bodies
-//! against the ported suite (gate target `481 passed / 0 notimpl / 15 ignored`).
-//! Wave 7 / Phase 2 are **not certified** until dual verification and the
-//! orchestrator completion audit. Phase 3 (Grok Build integration) remains
-//! before the user-facing deliverable.
+//! Phase 2 is accepted and dual-certified as a host-agnostic library at
+//! `481 passed / 0 notimpl / 15 ignored`. Phase 3 (Grok Build integration)
+//! remains before the larger user-facing deliverable.
 //!
 //! Crate-root surface mirrors `export * from "./sdk.js"` — the TS SDK's named
 //! export closure (reference count 139), with seven namespace values mapped to
