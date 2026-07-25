@@ -43,29 +43,30 @@ fn lifecycle_fixed_clock_instant() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_781_222_400)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Amendment I — TS `number` band shares / lowerBound (fractional-capable).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LifecycleProfilePercentages {
-    pub full: i64,
-    pub smooth: i64,
-    pub detailed: i64,
-    pub brief: i64,
+    pub full: f64,
+    pub smooth: f64,
+    pub detailed: f64,
+    pub brief: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LifecycleProfile {
     pub name: &'static str,
-    pub lower_bound: i64,
+    pub lower_bound: f64,
     pub percentages: LifecycleProfilePercentages,
 }
 
 pub const LIFECYCLE_PROFILE: LifecycleProfile = LifecycleProfile {
     name: "lifecycle",
-    lower_bound: 400,
+    lower_bound: 400.0,
     percentages: LifecycleProfilePercentages {
-        full: 25,
-        smooth: 16,
-        detailed: 10,
-        brief: 49,
+        full: 25.0,
+        smooth: 16.0,
+        detailed: 10.0,
+        brief: 49.0,
     },
 };
 

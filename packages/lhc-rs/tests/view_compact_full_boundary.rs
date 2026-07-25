@@ -110,12 +110,12 @@ fn compact_point_at(full_budget: i64) -> i64 {
     let SelectionResult { compact_point, .. } = select_arrangement(
         &selection_inputs(mid_thread_turns(), mid_thread_messages()),
         &SelectionConfig {
-            lower_bound: full_budget,
+            lower_bound: full_budget as f64,
             percentages: ViewProfilePercentages {
-                full: 100,
-                smooth: 0,
-                detailed: 0,
-                brief: 0,
+                full: 100.0,
+                smooth: 0.0,
+                detailed: 0.0,
+                brief: 0.0,
             },
         },
     )
@@ -233,12 +233,12 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                 CompactOpts {
                     profile: None,
                     params: Some(ViewCompactParams {
-                        lower_bound: Some(120),
+                        lower_bound: Some(120.0),
                         percentages: Some(PartialViewProfilePercentages {
-                            full: Some(25),
-                            smooth: Some(25),
-                            detailed: Some(25),
-                            brief: Some(25),
+                            full: Some(25.0),
+                            smooth: Some(25.0),
+                            detailed: Some(25.0),
+                            brief: Some(25.0),
                         }),
                     }),
                     signal: None,
@@ -318,12 +318,12 @@ fn starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it() {
     let selection = select_arrangement(
         &selection_inputs(turns, messages),
         &SelectionConfig {
-            lower_bound: 40,
+            lower_bound: 40.0,
             percentages: ViewProfilePercentages {
-                full: 100,
-                smooth: 0,
-                detailed: 0,
-                brief: 0,
+                full: 100.0,
+                smooth: 0.0,
+                detailed: 0.0,
+                brief: 0.0,
             },
         },
     )
@@ -371,12 +371,12 @@ fn treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddli
     let selection = select_arrangement(
         &selection_inputs(turns, messages),
         &SelectionConfig {
-            lower_bound: 60,
+            lower_bound: 60.0,
             percentages: ViewProfilePercentages {
-                full: 100,
-                smooth: 0,
-                detailed: 0,
-                brief: 0,
+                full: 100.0,
+                smooth: 0.0,
+                detailed: 0.0,
+                brief: 0.0,
             },
         },
     )
@@ -460,12 +460,12 @@ async fn runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null
                 CompactOpts {
                     profile: None,
                     params: Some(ViewCompactParams {
-                        lower_bound: Some(120),
+                        lower_bound: Some(120.0),
                         percentages: Some(PartialViewProfilePercentages {
-                            full: Some(25),
-                            smooth: Some(25),
-                            detailed: Some(25),
-                            brief: Some(25),
+                            full: Some(25.0),
+                            smooth: Some(25.0),
+                            detailed: Some(25.0),
+                            brief: Some(25.0),
                         }),
                     }),
                     signal: None,

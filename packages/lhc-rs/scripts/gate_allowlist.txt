@@ -129,9 +129,17 @@ work_queue::restart_survival_a_reopened_thread_file_holds_its_work_items_intact
 work_queue::complete_surface_rollback_a_rejected_batch_leaves_records_at_baseline
 work_queue::tc_5_4_no_work_item_clause_a_skipped_event_queues_nothing
 
-# Wave 6 — REAL view-injection seam (hook table fires/clears without Phase 2 bodies).
+# Wave 6 — REAL view-injection seam + host-agnostic select/full-boundary greens
+# (SDK-built cases remain Wave 7-blocked at init_lhc).
 view_fixture::an_installed_hook_fires_its_throw_propagates_and_uninstalling_restores_the_no_op
 view_fixture::uninstalled_the_point_is_a_no_op
+view_compact::renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
+view_compact_full_boundary::keeps_a_mid_thread_straddling_turn_on_an_exact_50_50_split
+view_compact_full_boundary::evicts_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_smooth_side
+view_compact_full_boundary::keeps_an_exactly_covered_closed_turn_in_full
+view_compact_full_boundary::keeps_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_full_side
+view_compact_full_boundary::treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddling_turn
+view_compact_full_boundary::starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it
 
 # Phase 2 Wave 2 — inference adapter max-input / brief-routing greens
 # (cross-wave consumer inference_prompts; Wave 2 owns the adapter bodies).

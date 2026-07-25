@@ -16,15 +16,25 @@
 //! member turn. Entry costs are the tokens of the rendered entry text itself,
 //! so the budgeted tokens are the stored tokens — no second estimate.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use super::render::{CompactChunkMaterialSnapshot, DerivationLookup, DerivationSnapshot};
+use super::exact_i64::f64_to_exact_i64;
+use super::render::{
+    CompactChunkMaterialSnapshot, DerivationLookup, DerivationSnapshot, ExcerptBlock,
+    ResolvedRepresentation, excerpt_line, render_arrangement_entry, resolve_brief_representation,
+    resolve_detailed_representation, resolve_smooth_representation,
+};
+use crate::messages::read_live_messages;
+use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::storage::Db;
+use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::view::{Band, ViewProfilePercentages, ViewSubjectKind};
+use crate::turns::{TurnStatus, read_turn_chunk_structure};
 
 /// TS SQL — exact source bytes.
 pub(crate) const SQL_DERIVATION_ROWS: &str =
@@ -187,18 +197,244 @@ pub struct SelectionResult {
     pub entries: Vec<ArrangementEntry>,
 }
 
-/// ── reads (corruption check lives here, pre-transaction) ─────────
-
-pub fn read_selection_inputs(_db: &Db) -> Result<SelectionInputs, CanonicalCorruptionError> {
-    todo!("phase 2")
+fn map_required_str(row: &serde_json::Map<String, Value>, key: &str) -> String {
+    row.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("missing column {key}"))
+        .to_string()
 }
 
-/// ── the pure walk ─────────────────────────────────────────────────
+fn map_optional_str(row: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    match row.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => panic!("column {key} not text: {other}"),
+    }
+}
+
+fn map_required_i64(row: &serde_json::Map<String, Value>, key: &str) -> i64 {
+    match row.get(key) {
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                return i;
+            }
+            if let Some(f) = n.as_f64() {
+                return f64_to_exact_i64(f).unwrap_or_else(|| panic!("column {key} not integer"));
+            }
+            panic!("column {key} not integer");
+        }
+        Some(Value::String(s)) => s
+            .parse()
+            .unwrap_or_else(|_| panic!("column {key} not integer")),
+        _ => panic!("missing column {key}"),
+    }
+}
+
+fn derivation_state_from_wire(state: &str) -> DerivationState {
+    match state {
+        "pending" => DerivationState::Pending,
+        "ready" => DerivationState::Ready,
+        "failed" => DerivationState::Failed,
+        "blocked" => DerivationState::Blocked,
+        other => panic!("unknown derivation state from row: {other}"),
+    }
+}
+
+fn selection_turn_status(status: TurnStatus) -> SelectionTurnStatus {
+    match status {
+        TurnStatus::Open => SelectionTurnStatus::Open,
+        TurnStatus::Closed => SelectionTurnStatus::Closed,
+    }
+}
+
+fn selection_chunk_status(status: TurnStatus) -> SelectionChunkStatus {
+    match status {
+        TurnStatus::Open => SelectionChunkStatus::Open,
+        TurnStatus::Closed => SelectionChunkStatus::Closed,
+    }
+}
+
+// ── reads (corruption check lives here, pre-transaction) ─────────
+
+pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorruptionError> {
+    // Message, turn, and chunk material comes from the owner domains, not direct
+    // SQL against their tables (bad-code-log: domain-boundary leakage). The
+    // owners return source-faithful structure — turns carry the deleted flag,
+    // chunks carry raw membership — so thread-view keeps ownership of the
+    // source-state corruption policy below. The derivation and event-aggregate
+    // reads stay here as thread-view's own selection inputs.
+    let structure = read_turn_chunk_structure(db);
+    // Referential checks compare against every turn row (a tombstoned turn is
+    // a legitimate reference target, not damage); the selection walk itself
+    // sees live turns only.
+    let turn_ids: HashSet<String> = structure
+        .turns
+        .iter()
+        .map(|row| row.turn_id.clone())
+        .collect();
+    let turns: Vec<SelectionTurn> = structure
+        .turns
+        .iter()
+        .filter(|row| !row.deleted)
+        .map(|row| SelectionTurn {
+            turn_id: row.turn_id.clone(),
+            turn_order: row.turn_order,
+            status: selection_turn_status(row.status),
+            opened_at: row.opened_at_event_order,
+            closed_at: row.closed_at_event_order,
+        })
+        .collect();
+
+    // Canonical damage the walk cannot select across: the turn-state invariant
+    // (at most one open turn, open turns carry no close), and referential damage
+    // between chunk/message rows and their turns.
+    let open_turns: Vec<&SelectionTurn> = turns
+        .iter()
+        .filter(|turn| turn.status == SelectionTurnStatus::Open)
+        .collect();
+    if open_turns.len() > 1 {
+        let open_ids = open_turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>()
+            .join(DIAG_LIST_JOIN_COMMA_SPACE);
+        return Err(CanonicalCorruptionError::new(
+            CanonicalCorruptionCode::TurnStateCorrupt,
+            format!(
+                "{}{}{}{}{}",
+                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_PREFIX,
+                open_turns.len(),
+                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_MID,
+                open_ids,
+                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_SUFFIX,
+            ),
+        ));
+    }
+    for turn in &turns {
+        if turn.status == SelectionTurnStatus::Closed && turn.closed_at.is_none() {
+            return Err(CanonicalCorruptionError::new(
+                CanonicalCorruptionCode::SourceDamaged,
+                format!(
+                    "{}{}{}",
+                    DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_PREFIX,
+                    turn.turn_id,
+                    DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_SUFFIX,
+                ),
+            ));
+        }
+    }
+
+    let mut messages: Vec<SelectionMessage> = Vec::new();
+    for record in read_live_messages(db) {
+        let turn_id = record.turn_id.clone();
+        if !turn_ids.contains(&turn_id) {
+            return Err(CanonicalCorruptionError::new(
+                CanonicalCorruptionCode::SourceDamaged,
+                format!(
+                    "{}{}{}{}",
+                    DIAG_CANONICAL_MESSAGE_MISSING_TURN_PREFIX,
+                    record.message_id,
+                    DIAG_CANONICAL_MESSAGE_MISSING_TURN_MID,
+                    turn_id,
+                ),
+            ));
+        }
+        let blocks: Vec<ExcerptBlock> = record
+            .blocks
+            .iter()
+            .map(|block| ExcerptBlock {
+                block_type: block.block_type.as_str().to_string(),
+                content: block.content.clone(),
+            })
+            .collect();
+        messages.push(SelectionMessage {
+            message_id: record.message_id,
+            order: record.source_event_order,
+            kind: record.kind.as_str().to_string(),
+            token_estimate: record.token_estimate,
+            turn_id,
+            text: excerpt_line(record.kind.as_str(), &blocks),
+        });
+    }
+
+    let mut chunks: Vec<SelectionChunk> = Vec::new();
+    for row in &structure.chunks {
+        for member_turn_id in &row.member_turn_ids {
+            if !turn_ids.contains(member_turn_id) {
+                return Err(CanonicalCorruptionError::new(
+                    CanonicalCorruptionCode::SourceDamaged,
+                    format!(
+                        "{}{}{}{}",
+                        DIAG_CANONICAL_CHUNK_MISSING_TURN_PREFIX,
+                        row.chunk_id,
+                        DIAG_CANONICAL_CHUNK_MISSING_TURN_MID,
+                        member_turn_id,
+                    ),
+                ));
+            }
+        }
+        chunks.push(SelectionChunk {
+            chunk_id: row.chunk_id.clone(),
+            chunk_order: row.chunk_order,
+            status: selection_chunk_status(row.status),
+            member_turn_ids: row.member_turn_ids.clone(),
+        });
+    }
+
+    let derivation_rows = db.prepare(SQL_DERIVATION_ROWS).all(&[]);
+    let mut derivations: IndexMap<String, DerivationSnapshot> = IndexMap::new();
+    for row in derivation_rows {
+        let subject_id = map_required_str(&row, "subject_id");
+        let derivation_type = map_required_str(&row, "derivation_type");
+        let state = derivation_state_from_wire(&map_required_str(&row, "state"));
+        let mut snapshot = DerivationSnapshot {
+            state,
+            content: None,
+            reason: None,
+        };
+        if let Some(content) = map_optional_str(&row, "content") {
+            snapshot.content = Some(content);
+        }
+        if let Some(reason) = map_optional_str(&row, "reason") {
+            snapshot.reason = Some(reason);
+        }
+        derivations.insert(format!("{subject_id}/{derivation_type}"), snapshot);
+    }
+
+    let max_row = db
+        .prepare(SQL_MAX_EVENT_ORDER)
+        .get()
+        .expect("COALESCE(MAX(...), 0) always returns a row");
+    let max_event_order = map_required_i64(&max_row, "m");
+
+    let count_rows = db.prepare(SQL_DERIVATION_COUNTS).all(&[]);
+    let mut derivation_counts: IndexMap<String, IndexMap<String, i64>> = IndexMap::new();
+    for row in count_rows {
+        let dtype = map_required_str(&row, "derivation_type");
+        let state = map_required_str(&row, "state");
+        let n = map_required_i64(&row, "n");
+        let entry = derivation_counts.entry(dtype).or_default();
+        entry.insert(state, n);
+    }
+
+    Ok(SelectionInputs {
+        messages,
+        turns,
+        chunks,
+        derivations,
+        compact_chunk_materials: None,
+        max_event_order,
+        derivation_counts,
+    })
+}
+
+// ── the pure walk ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectionConfig {
-    pub lower_bound: i64,
+    /// Amendment I: TS `number` (fractional-capable).
+    pub lower_bound: f64,
     pub percentages: ViewProfilePercentages,
 }
 
@@ -233,6 +469,13 @@ impl ChunkEntryBand {
         match self {
             ChunkEntryBand::Detailed => "detailed",
             ChunkEntryBand::Brief => "brief",
+        }
+    }
+
+    fn to_band(self) -> Band {
+        match self {
+            ChunkEntryBand::Detailed => Band::Detailed,
+            ChunkEntryBand::Brief => Band::Brief,
         }
     }
 }
@@ -285,82 +528,226 @@ pub(crate) const DIAG_COVERAGE_GAP_REASON_PREFIX: &str = "closed turn before com
 pub(crate) const DIAG_COVERAGE_GAP_REASON_MID: &str = ", pre_detailed_assembly: ";
 pub(crate) const DIAG_COVERAGE_GAP_REASON_CLOSE: &str = ")";
 
+/// Amendment I — `fullSideTokens` is the float budget-line split (TS `number`);
+/// do not truncate before comparing to the smooth side.
 fn straddling_turn_stays_in_full(
-    _full_side_tokens: i64,
-    _turn_tokens: i64,
-    _eviction_would_empty_full: bool,
+    full_side_tokens: f64,
+    turn_tokens: i64,
+    eviction_would_empty_full: bool,
 ) -> bool {
-    todo!("phase 2")
+    if eviction_would_empty_full {
+        return true;
+    }
+    let smooth_side_tokens = turn_tokens as f64 - full_side_tokens;
+    full_side_tokens >= smooth_side_tokens
 }
 
 /// TS nested `lookup` inside `selectArrangement`.
 fn lookup(
-    _derivations: &IndexMap<String, DerivationSnapshot>,
-    _subject_id: &str,
-    _derivation_type: &str,
+    derivations: &IndexMap<String, DerivationSnapshot>,
+    subject_id: &str,
+    derivation_type: &str,
 ) -> Option<DerivationSnapshot> {
-    todo!("phase 2")
+    derivations
+        .get(&format!("{subject_id}/{derivation_type}"))
+        .cloned()
 }
 
 /// TS nested `chunkMaterial` inside `selectArrangement`.
 fn chunk_material(
-    _inputs: &SelectionInputs,
-    _chunk_id: &str,
-    _derivation_type: ChunkMaterialDerivation,
+    inputs: &SelectionInputs,
+    chunk_id: &str,
+    derivation_type: ChunkMaterialDerivation,
 ) -> Option<CompactChunkMaterialSnapshot> {
-    todo!("phase 2")
+    inputs
+        .compact_chunk_materials
+        .as_ref()?
+        .get(&format!("{chunk_id}/{}", derivation_type.as_str()))
+        .cloned()
 }
 
-/// TS nested `budget` inside `selectArrangement`.
-fn budget(_lower_bound: i64, _share: i64) -> f64 {
-    todo!("phase 2")
+/// TS nested `budget` inside `selectArrangement` (private — not a test surface).
+fn budget(lower_bound: f64, share: f64) -> f64 {
+    (lower_bound * share) / 100.0
 }
 
 /// TS nested `previousClose` inside `snapCompactPoint`.
-fn previous_close(_closed_turns: &[SelectionTurn], _turn: &SelectionTurn) -> i64 {
-    todo!("phase 2")
+fn previous_close(closed_turns: &[SelectionTurn], turn: &SelectionTurn) -> i64 {
+    let previous = closed_turns
+        .iter()
+        .rfind(|t| t.turn_order < turn.turn_order);
+    previous.and_then(|t| t.closed_at).unwrap_or(0)
 }
 
 /// TS nested `byRecordOrder` inside `selectArrangement`.
-fn by_record_order(_a: &ArrangementEntry, _b: &ArrangementEntry) -> std::cmp::Ordering {
-    todo!("phase 2")
+fn by_record_order(a: &ArrangementEntry, b: &ArrangementEntry) -> std::cmp::Ordering {
+    a.start_order.cmp(&b.start_order)
 }
 
 fn snap_compact_point(
-    _oldest_taken: &SelectionMessage,
-    _turns_by_id: &HashMap<String, SelectionTurn>,
-    _closed_turns: &[SelectionTurn],
-    _messages: &[SelectionMessage],
-    _messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
-    _full_budget: f64,
+    oldest_taken: &SelectionMessage,
+    turns_by_id: &HashMap<String, SelectionTurn>,
+    closed_turns: &[SelectionTurn],
+    messages: &[SelectionMessage],
+    messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
+    full_budget: f64,
 ) -> Result<i64, CanonicalCorruptionError> {
-    todo!("phase 2")
+    let candidate = turns_by_id.get(&oldest_taken.turn_id);
+    let Some(candidate) = candidate else {
+        return Err(CanonicalCorruptionError::new(
+            CanonicalCorruptionCode::SourceDamaged,
+            format!(
+                "{}{}{}{}",
+                DIAG_CANONICAL_MESSAGE_MISSING_TURN_PREFIX,
+                oldest_taken.message_id,
+                DIAG_CANONICAL_MESSAGE_MISSING_TURN_MID,
+                oldest_taken.turn_id,
+            ),
+        ));
+    };
+    if candidate.status == SelectionTurnStatus::Open {
+        // Open-turn messages are tail regardless of budget; the tail begins at
+        // the open turn's start.
+        return Ok(previous_close(closed_turns, candidate));
+    }
+    // Fully covered down to the turn's start ⇒ the tail begins at this turn.
+    if oldest_taken.order <= turn_start_order(candidate, messages_by_turn) {
+        return Ok(previous_close(closed_turns, candidate));
+    }
+
+    // A partially-covered closed turn straddles the full-budget line. Keep it
+    // whole in full when evicting it would leave no live tail; otherwise round
+    // toward the side holding at least half of the turn's tokens (ties stay in
+    // full). The split is at the exact budget line, even when that line falls
+    // inside the crossing message's estimate.
+    let candidate_messages = messages_by_turn
+        .get(&candidate.turn_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let turn_tokens: i64 = candidate_messages
+        .iter()
+        .map(|message| message.token_estimate)
+        .sum();
+    let newer_tokens: i64 = messages
+        .iter()
+        .filter(|message| {
+            candidate
+                .closed_at
+                .is_some_and(|closed_at| message.order > closed_at)
+        })
+        .map(|message| message.token_estimate)
+        .sum();
+    // Amendment I: keep the float budget-line operand; Math.max/min in TS.
+    let full_side_tokens = (full_budget - newer_tokens as f64).clamp(0.0, turn_tokens as f64);
+    // Empty = no mappable live messages past the candidate — runtime_note alone
+    // does not count as a rebuildable tail.
+    let eviction_would_empty_full = !messages.iter().any(|message| {
+        candidate
+            .closed_at
+            .is_some_and(|closed_at| message.order > closed_at)
+            && PI_MAPPABLE_KIND_SET.contains(message.kind.as_str())
+    });
+    if straddling_turn_stays_in_full(full_side_tokens, turn_tokens, eviction_would_empty_full) {
+        return Ok(previous_close(closed_turns, candidate));
+    }
+    Ok(candidate.closed_at.unwrap_or(0))
 }
 
 fn turn_start_order(
-    _turn: &SelectionTurn,
-    _messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
+    turn: &SelectionTurn,
+    messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
 ) -> i64 {
-    todo!("phase 2")
+    let candidates = messages_by_turn
+        .get(&turn.turn_id)
+        .map(|list| list.iter().map(|message| message.order).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if candidates.is_empty() {
+        turn.opened_at
+    } else {
+        candidates.into_iter().min().expect("non-empty")
+    }
 }
 
 fn build_turn_entry(
-    _turn: &SelectionTurn,
-    _messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
-    _lookup: &DerivationLookup,
+    turn: &SelectionTurn,
+    messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
+    lookup: &DerivationLookup,
 ) -> ArrangementEntry {
-    todo!("phase 2")
+    let turn_messages = messages_by_turn
+        .get(&turn.turn_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let excerpt = if turn_messages.is_empty() {
+        None
+    } else {
+        Some(
+            turn_messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    let rep = resolve_smooth_representation(turn.turn_id.as_str(), lookup, excerpt.as_deref());
+    let text = render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[]);
+    ArrangementEntry {
+        band: Band::Smooth,
+        subject_kind: ViewSubjectKind::Turn,
+        subject_id: turn.turn_id.clone(),
+        derivation_used: rep.derivation_used,
+        degraded: rep.degraded,
+        gap: rep.gap,
+        reason: rep.reason,
+        start_order: turn_start_order(turn, messages_by_turn),
+        tokens: estimate_tokens(&text),
+        text,
+    }
 }
 
 fn build_chunk_entry(
-    _chunk: &SelectionChunk,
-    _band: ChunkEntryBand,
-    _compact_point: i64,
-    _turns_by_id: &HashMap<String, SelectionTurn>,
-    _lookup: &DerivationLookup,
-    _material: Option<&CompactChunkMaterialSnapshot>,
+    chunk: &SelectionChunk,
+    band: ChunkEntryBand,
+    compact_point: i64,
+    turns_by_id: &HashMap<String, SelectionTurn>,
+    lookup: &DerivationLookup,
+    material: Option<&CompactChunkMaterialSnapshot>,
 ) -> ArrangementEntry {
-    todo!("phase 2")
+    let rep = match band {
+        ChunkEntryBand::Detailed => {
+            resolve_detailed_representation(chunk.chunk_id.as_str(), lookup, material)
+        }
+        ChunkEntryBand::Brief => {
+            resolve_brief_representation(chunk.chunk_id.as_str(), lookup, material)
+        }
+    };
+    let text = render_arrangement_entry(ViewSubjectKind::Chunk, chunk.chunk_id.as_str(), &rep, &[]);
+    // Signature has no messages_by_turn; without live messages the start falls
+    // back to each member's open boundary (same as empty-message turnStartOrder).
+    // select_arrangement overwrites start_order with the message-aware minimum.
+    let member_starts: Vec<i64> = chunk
+        .member_turn_ids
+        .iter()
+        .filter_map(|turn_id| turns_by_id.get(turn_id))
+        .map(|turn| turn.opened_at)
+        .collect();
+    let start_order = if member_starts.is_empty() {
+        compact_point
+    } else {
+        member_starts.into_iter().min().expect("non-empty")
+    };
+    let _ = band.as_str();
+    ArrangementEntry {
+        band: band.to_band(),
+        subject_kind: ViewSubjectKind::Chunk,
+        subject_id: chunk.chunk_id.clone(),
+        derivation_used: rep.derivation_used,
+        degraded: rep.degraded,
+        gap: rep.gap,
+        reason: rep.reason,
+        start_order,
+        tokens: estimate_tokens(&text),
+        text,
+    }
 }
 
 struct FillBandResult<T> {
@@ -368,35 +755,383 @@ struct FillBandResult<T> {
     rest: Vec<T>,
 }
 
-fn fill_band<T, F>(_candidates: &[T], _band_budget: f64, _build: F) -> FillBandResult<T>
+fn fill_band<T, F>(candidates: &[T], band_budget: f64, build: F) -> FillBandResult<T>
 where
     T: Clone,
     F: Fn(&T) -> ArrangementEntry,
 {
-    todo!("phase 2")
+    let mut included: Vec<ArrangementEntry> = Vec::new();
+    let mut sum: i64 = 0;
+    for (i, candidate) in candidates.iter().enumerate() {
+        let entry = build(candidate);
+        if (sum as f64) + (entry.tokens as f64) <= band_budget {
+            sum += entry.tokens;
+            included.push(entry);
+            continue;
+        }
+        if included.is_empty() {
+            included.push(entry);
+            return FillBandResult {
+                included,
+                rest: candidates[i + 1..].to_vec(),
+            };
+        }
+        return FillBandResult {
+            included,
+            rest: candidates[i..].to_vec(),
+        };
+    }
+    FillBandResult {
+        included,
+        rest: Vec::new(),
+    }
 }
 
-fn ready_content(_derivation: Option<&DerivationSnapshot>) -> Option<String> {
-    todo!("phase 2")
+fn ready_content(derivation: Option<&DerivationSnapshot>) -> Option<String> {
+    match derivation {
+        Some(d) if d.state == DerivationState::Ready => d.content.clone(),
+        _ => None,
+    }
 }
 
-fn derivation_state(_derivation: Option<&DerivationSnapshot>) -> String {
-    todo!("phase 2")
+fn derivation_state(derivation: Option<&DerivationSnapshot>) -> String {
+    match derivation {
+        None => "missing".to_string(),
+        Some(d) => d.state.as_str().to_string(),
+    }
 }
 
 fn build_coverage_entry(
-    _turn: &SelectionTurn,
-    _messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
-    _lookup: &DerivationLookup,
+    turn: &SelectionTurn,
+    messages_by_turn: &HashMap<String, Vec<SelectionMessage>>,
+    lookup: &DerivationLookup,
 ) -> ArrangementEntry {
-    todo!("phase 2")
+    let compression = lookup(turn.turn_id.as_str(), "detailed_turn_compression");
+    let assembly = lookup(turn.turn_id.as_str(), "pre_detailed_assembly");
+    let compression_content = ready_content(compression.as_ref());
+    let assembly_content = ready_content(assembly.as_ref());
+    let rep = if let Some(body) = compression_content {
+        ResolvedRepresentation {
+            derivation_used: "detailed_turn_compression".to_string(),
+            body,
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        }
+    } else if let Some(body) = assembly_content {
+        ResolvedRepresentation {
+            derivation_used: "pre_detailed_assembly".to_string(),
+            body,
+            degraded: true,
+            gap: false,
+            degraded_marker: Some("coverage-from-pre-detailed-assembly".to_string()),
+            reason: Some(format!(
+                "{}{}",
+                DIAG_COVERAGE_DETAILED_TURN_COMPRESSION_PREFIX,
+                derivation_state(compression.as_ref()),
+            )),
+        }
+    } else {
+        ResolvedRepresentation {
+            derivation_used: "gap".to_string(),
+            body: String::new(),
+            degraded: false,
+            gap: true,
+            degraded_marker: None,
+            reason: Some(format!(
+                "{}{}{}{}{}",
+                DIAG_COVERAGE_GAP_REASON_PREFIX,
+                derivation_state(compression.as_ref()),
+                DIAG_COVERAGE_GAP_REASON_MID,
+                derivation_state(assembly.as_ref()),
+                DIAG_COVERAGE_GAP_REASON_CLOSE,
+            )),
+        }
+    };
+    let text = render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[]);
+    ArrangementEntry {
+        band: Band::Detailed,
+        subject_kind: ViewSubjectKind::Turn,
+        subject_id: turn.turn_id.clone(),
+        derivation_used: rep.derivation_used,
+        degraded: rep.degraded,
+        gap: rep.gap,
+        reason: rep.reason,
+        start_order: turn_start_order(turn, messages_by_turn),
+        tokens: estimate_tokens(&text),
+        text,
+    }
 }
 
 /// TS `selectArrangement` — throws `CanonicalCorruptionError` on damaged source;
 /// Rust returns [`Result`].
 pub fn select_arrangement(
-    _inputs: &SelectionInputs,
-    _config: &SelectionConfig,
+    inputs: &SelectionInputs,
+    config: &SelectionConfig,
 ) -> Result<SelectionResult, CanonicalCorruptionError> {
-    todo!("phase 2")
+    let messages = &inputs.messages;
+    let turns = &inputs.turns;
+    let chunks = &inputs.chunks;
+    // DerivationLookup is `dyn Fn + 'static`; own the map so the closure does not
+    // borrow `inputs` (render.rs alias has no lifetime parameter).
+    let derivations = Arc::new(inputs.derivations.clone());
+    let lookup_fn = {
+        let derivations = Arc::clone(&derivations);
+        move |subject_id: &str, derivation_type: &str| -> Option<DerivationSnapshot> {
+            lookup(&derivations, subject_id, derivation_type)
+        }
+    };
+
+    let turns_by_id: HashMap<String, SelectionTurn> = turns
+        .iter()
+        .map(|turn| (turn.turn_id.clone(), turn.clone()))
+        .collect();
+    let mut messages_by_turn: HashMap<String, Vec<SelectionMessage>> = HashMap::new();
+    for message in messages {
+        messages_by_turn
+            .entry(message.turn_id.clone())
+            .or_default()
+            .push(message.clone());
+    }
+
+    // Rule 1 — compact point: messages newest-first until the estimate sum
+    // first reaches the full share; the point snaps to a turn boundary so the
+    // tail never begins mid-turn. Open-turn messages always land in the tail.
+    let full_budget = budget(config.lower_bound, config.percentages.full);
+    let closed_turns: Vec<SelectionTurn> = turns
+        .iter()
+        .filter(|turn| turn.status == SelectionTurnStatus::Closed)
+        .cloned()
+        .collect();
+    let mut compact_point: i64 = 0;
+    if !closed_turns.is_empty() && !messages.is_empty() {
+        let mut sum: i64 = 0;
+        let mut crossing: Option<&SelectionMessage> = None;
+        for message in messages.iter().rev() {
+            sum += message.token_estimate;
+            if (sum as f64) >= full_budget {
+                crossing = Some(message);
+                break;
+            }
+        }
+        // Budget never reached ⇒ the whole record fits the full share:
+        // everything is tail, no bands.
+        compact_point = match crossing {
+            None => 0,
+            Some(oldest_taken) => snap_compact_point(
+                oldest_taken,
+                &turns_by_id,
+                &closed_turns,
+                messages,
+                &messages_by_turn,
+                full_budget,
+            )?,
+        };
+    }
+
+    // Band candidates: closed turns wholly behind the compact point. Rule 5 is
+    // structural here — chunked or not, a banded turn is a smooth candidate
+    // (bands are defined by representation, not strict time strata).
+    let banded_turns: Vec<SelectionTurn> = closed_turns
+        .iter()
+        .filter(|turn| {
+            turn.closed_at
+                .is_some_and(|closed_at| closed_at <= compact_point)
+        })
+        .cloned()
+        .collect();
+    let banded_turn_ids: HashSet<String> = banded_turns
+        .iter()
+        .map(|turn| turn.turn_id.clone())
+        .collect();
+
+    // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
+    // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
+    // the smooth representation, and consumes this budget).
+    let smooth_candidates: Vec<SelectionTurn> = banded_turns.iter().rev().cloned().collect();
+    let smooth = fill_band(
+        &smooth_candidates,
+        budget(config.lower_bound, config.percentages.smooth),
+        |turn| build_turn_entry(turn, &messages_by_turn, &lookup_fn),
+    );
+    let oldest_smooth_order = smooth.included.iter().fold(f64::INFINITY, |oldest, entry| {
+        let turn_order = turns_by_id
+            .get(&entry.subject_id)
+            .map(|turn| turn.turn_order as f64)
+            .unwrap_or(f64::INFINITY);
+        oldest.min(turn_order)
+    });
+
+    // Rules 3–4 — chunk candidacy: chunks entirely older than the smooth
+    // band's coverage, with the pinned tie-breaker doing the deciding — chunk
+    // coverage is its NEWEST member turn, which must sit behind the compact
+    // point and be older than the smooth band's oldest included turn.
+    let chunk_candidates: Vec<SelectionChunk> = chunks
+        .iter()
+        .filter(|chunk| chunk.status == SelectionChunkStatus::Closed)
+        .filter(|chunk| {
+            let live_members: Vec<&SelectionTurn> = chunk
+                .member_turn_ids
+                .iter()
+                .filter_map(|turn_id| turns_by_id.get(turn_id))
+                .collect();
+            if live_members.is_empty() {
+                return false; // fully tombstoned membership
+            }
+            let newest_member = live_members.iter().fold(live_members[0], |newest, turn| {
+                if turn.turn_order > newest.turn_order {
+                    turn
+                } else {
+                    newest
+                }
+            });
+            banded_turn_ids.contains(&newest_member.turn_id)
+                && (newest_member.turn_order as f64) < oldest_smooth_order
+        })
+        .rev()
+        .cloned()
+        .collect(); // newest-first
+
+    // Rule 3 — detailed: same fill rule against its share.
+    let detailed = fill_band(
+        &chunk_candidates,
+        budget(config.lower_bound, config.percentages.detailed),
+        |chunk| {
+            let material = chunk_material(
+                inputs,
+                &chunk.chunk_id,
+                ChunkMaterialDerivation::ChunkSummaryDetailed,
+            );
+            // Faithful member start: turnStartOrder, not opened_at alone.
+            let member_starts: Vec<i64> = chunk
+                .member_turn_ids
+                .iter()
+                .filter_map(|turn_id| turns_by_id.get(turn_id))
+                .map(|turn| turn_start_order(turn, &messages_by_turn))
+                .collect();
+            let mut entry = build_chunk_entry(
+                chunk,
+                ChunkEntryBand::Detailed,
+                compact_point,
+                &turns_by_id,
+                &lookup_fn,
+                material.as_ref(),
+            );
+            entry.start_order = if member_starts.is_empty() {
+                compact_point
+            } else {
+                member_starts.into_iter().min().expect("non-empty")
+            };
+            entry
+        },
+    );
+    // Rule 4 — brief: the remaining chunks, same fill rule against its share.
+    let brief = fill_band(
+        &detailed.rest,
+        budget(config.lower_bound, config.percentages.brief),
+        |chunk| {
+            let material = chunk_material(
+                inputs,
+                &chunk.chunk_id,
+                ChunkMaterialDerivation::ChunkSummaryBrief,
+            );
+            let member_starts: Vec<i64> = chunk
+                .member_turn_ids
+                .iter()
+                .filter_map(|turn_id| turns_by_id.get(turn_id))
+                .map(|turn| turn_start_order(turn, &messages_by_turn))
+                .collect();
+            let mut entry = build_chunk_entry(
+                chunk,
+                ChunkEntryBand::Brief,
+                compact_point,
+                &turns_by_id,
+                &lookup_fn,
+                material.as_ref(),
+            );
+            entry.start_order = if member_starts.is_empty() {
+                compact_point
+            } else {
+                member_starts.into_iter().min().expect("non-empty")
+            };
+            entry
+        },
+    );
+
+    let selected_entries: Vec<&ArrangementEntry> = brief
+        .included
+        .iter()
+        .chain(detailed.included.iter())
+        .chain(smooth.included.iter())
+        .collect();
+
+    // Coverage invariant: every closed turn behind the compact point must be
+    // represented by a selected turn, represented by a selected chunk's
+    // membership, or explicitly surfaced as a smooth gap. This catches the
+    // normal open-chunk shape where older closed turns are too old for smooth
+    // but cannot be represented by their still-open chunk.
+    let mut covered_turn_ids: HashSet<String> = HashSet::new();
+    let chunks_by_id: HashMap<String, &SelectionChunk> = chunks
+        .iter()
+        .map(|chunk| (chunk.chunk_id.clone(), chunk))
+        .collect();
+    let mut oldest_selected_turn_order = f64::INFINITY;
+    for entry in &selected_entries {
+        if entry.subject_kind == ViewSubjectKind::Turn {
+            covered_turn_ids.insert(entry.subject_id.clone());
+            if let Some(turn) = turns_by_id.get(&entry.subject_id) {
+                oldest_selected_turn_order = oldest_selected_turn_order.min(turn.turn_order as f64);
+            }
+            continue;
+        }
+        let chunk = chunks_by_id.get(&entry.subject_id);
+        for turn_id in chunk.map(|c| c.member_turn_ids.as_slice()).unwrap_or(&[]) {
+            if let Some(turn) = turns_by_id.get(turn_id)
+                && banded_turn_ids.contains(turn_id)
+            {
+                covered_turn_ids.insert(turn_id.clone());
+                oldest_selected_turn_order = oldest_selected_turn_order.min(turn.turn_order as f64);
+            }
+        }
+    }
+
+    let coverage_gaps: Vec<ArrangementEntry> = banded_turns
+        .iter()
+        .filter(|turn| {
+            (turn.turn_order as f64) >= oldest_selected_turn_order
+                && !covered_turn_ids.contains(&turn.turn_id)
+        })
+        .map(|turn| build_coverage_entry(turn, &messages_by_turn, &lookup_fn))
+        .collect();
+
+    let mut brief_sorted = brief.included;
+    brief_sorted.sort_by(by_record_order);
+    let mut detailed_sorted = detailed.included;
+    detailed_sorted.extend(coverage_gaps);
+    detailed_sorted.sort_by(by_record_order);
+    let mut smooth_sorted = smooth.included;
+    smooth_sorted.sort_by(by_record_order);
+
+    let entries: Vec<ArrangementEntry> = brief_sorted
+        .into_iter()
+        .chain(detailed_sorted)
+        .chain(smooth_sorted)
+        .collect();
+
+    let covered_from = if entries.is_empty() {
+        compact_point
+    } else {
+        entries
+            .iter()
+            .map(|entry| entry.start_order)
+            .min()
+            .expect("non-empty")
+    };
+
+    Ok(SelectionResult {
+        compact_point,
+        covered_from,
+        entries,
+    })
 }

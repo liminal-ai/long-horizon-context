@@ -20,17 +20,30 @@ use std::panic::AssertUnwindSafe;
 use fixtures::{
     ClosingDb, DerivedThreadFixture, DerivedThreadOptions, TempStore, UserPromptOverrides,
     UserPromptPayload, ViewInjectionPoint, blocked_sibling_thread, corrupted_variant_thread,
-    create_inference_callbacks_double, derived_thread_fixture, fire_view_injection, kind,
+    create_inference_callbacks_double, derived_thread_fixture, fire_view_injection, kind, open_raw,
     set_view_injection_hook, temp_store, valid_event,
 };
+use indexmap::IndexMap;
+use serde_json::Value;
+
 use lhc::messages::{self, MessageReportOpts};
 use lhc::shared_tech::derivation::{DerivationState, SdkConfig, SdkMode};
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
+use lhc::shared_tech::js_json::js_json_stringify_of;
+use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::view::{
-    PartialViewProfilePercentages, PartialVisibilityBudgets, SdkViewConfig, ViewProfile,
-    ViewProfileOverride, ViewProfilePercentages, VisibilityBudgets,
+    CompactReceipt, PartialViewProfilePercentages, PartialVisibilityBudgets, SdkViewConfig,
+    ViewCompactParams, ViewProfile, ViewProfileOverride, ViewProfilePercentages, VisibilityBudgets,
 };
+use lhc::thread_view::internal::profiles::profile_violation;
+use lhc::thread_view::internal::render::DerivationSnapshot;
+use lhc::thread_view::internal::select::{
+    SelectionChunk, SelectionChunkStatus, SelectionConfig, SelectionInputs, SelectionMessage,
+    SelectionResult, SelectionTurn, SelectionTurnStatus, select_arrangement,
+};
+use lhc::thread_view::{CompactOpts, compact, describe, resolve_view_config};
 use lhc::threads::ThreadRef;
+use lhc::threads::internal::create::create_thread_file;
 use lhc::turns;
 use lhc::{Lhc, init_lhc};
 
@@ -214,12 +227,12 @@ fn rejects_a_profile_whose_band_percentages_do_not_sum_to_100() {
             let _ = manual_sdk(Some(SdkViewConfig {
                 profiles: Some(vec![ViewProfileOverride {
                     name: "skewed".into(),
-                    lower_bound: Some(50000),
+                    lower_bound: Some(50000.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(30),
-                        smooth: Some(35),
-                        detailed: Some(20),
-                        brief: Some(20),
+                        full: Some(30.0),
+                        smooth: Some(35.0),
+                        detailed: Some(20.0),
+                        brief: Some(20.0),
                     }),
                 }]),
                 visibility: None,
@@ -256,12 +269,12 @@ fn rejects_a_non_positive_lower_bound() {
             let _ = manual_sdk(Some(SdkViewConfig {
                 profiles: Some(vec![ViewProfileOverride {
                     name: "hollow".into(),
-                    lower_bound: Some(0),
+                    lower_bound: Some(0.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(25),
-                        smooth: Some(35),
-                        detailed: Some(20),
-                        brief: Some(20),
+                        full: Some(25.0),
+                        smooth: Some(35.0),
+                        detailed: Some(20.0),
+                        brief: Some(20.0),
                     }),
                 }]),
                 visibility: None,
@@ -280,7 +293,7 @@ fn rejects_a_partial_profile_that_overrides_no_built_in_unknown_override_target(
             let _ = manual_sdk(Some(SdkViewConfig {
                 profiles: Some(vec![ViewProfileOverride {
                     name: "mystery".into(),
-                    lower_bound: Some(64000),
+                    lower_bound: Some(64000.0),
                     percentages: None,
                 }]),
                 visibility: None,
@@ -297,7 +310,7 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
     let sdk = manual_sdk(Some(SdkViewConfig {
         profiles: Some(vec![ViewProfileOverride {
             name: "coding".into(),
-            lower_bound: Some(64000),
+            lower_bound: Some(64000.0),
             percentages: None,
         }]),
         visibility: None,
@@ -315,12 +328,12 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
         sdk.config.view.profiles.get("coding"),
         Some(&ViewProfile {
             name: "coding".into(),
-            lower_bound: 64000,
+            lower_bound: 64000.0,
             percentages: ViewProfilePercentages {
-                full: 25,
-                smooth: 35,
-                detailed: 20,
-                brief: 20,
+                full: 25.0,
+                smooth: 35.0,
+                detailed: 20.0,
+                brief: 20.0,
             },
         })
     );
@@ -328,12 +341,12 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
         sdk.config.view.profiles.get("continuation"),
         Some(&ViewProfile {
             name: "continuation".into(),
-            lower_bound: 120000,
+            lower_bound: 120000.0,
             percentages: ViewProfilePercentages {
-                full: 30,
-                smooth: 30,
-                detailed: 20,
-                brief: 20,
+                full: 30.0,
+                smooth: 30.0,
+                detailed: 20.0,
+                brief: 20.0,
             },
         })
     );
@@ -344,10 +357,10 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
             .get("conversation")
             .map(|p| &p.percentages),
         Some(&ViewProfilePercentages {
-            full: 12,
-            smooth: 48,
-            detailed: 20,
-            brief: 20,
+            full: 12.0,
+            smooth: 48.0,
+            detailed: 20.0,
+            brief: 20.0,
         })
     );
 }
@@ -577,10 +590,643 @@ async fn the_corruption_variant_refuses_canonical_consumption_with_state_corrupt
 
 // ── FC-0.6 ───────────────────────────────────────────────────────────
 
-#[test]
-fn uninstalled_the_point_is_a_no_op() {
+#[tokio::test]
+async fn uninstalled_the_point_is_a_no_op() {
     let _hook_guard = ClearCompactWriteHook::install();
     fire_view_injection(ViewInjectionPoint::CompactWrite);
+
+    // Amendment I — Node oracle for fractional lowerBound / percentages through
+    // production resolve, violation, selection, and the real compact → SQLite /
+    // describe / receipt chain. Inventory unchanged: same counted Wave 6 test.
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/profile-number-cases.jsonl"
+    );
+    let body = std::fs::read_to_string(path).expect("read profile-number-cases.jsonl");
+    let mut checked = 0usize;
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: Value = serde_json::from_str(line).expect("fixture jsonl row");
+        let name = row.get("name").and_then(Value::as_str).expect("name");
+        let kind = row.get("kind").and_then(Value::as_str).expect("kind");
+        let input = row.get("input").expect("input");
+        match kind {
+            "resolve_profile" => {
+                let expected = row
+                    .get("expected")
+                    .and_then(Value::as_str)
+                    .expect("expected");
+                let profiles = input
+                    .get("profiles")
+                    .and_then(Value::as_array)
+                    .expect("profiles");
+                let overrides: Vec<ViewProfileOverride> =
+                    profiles.iter().map(profile_override_from_fixture).collect();
+                let resolved = resolve_view_config(Some(&SdkViewConfig {
+                    profiles: Some(overrides),
+                    visibility: None,
+                    compact_threshold: None,
+                }));
+                let profile_name = profiles[0]
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .expect("profile name");
+                let profile = resolved
+                    .profiles
+                    .get(profile_name)
+                    .unwrap_or_else(|| panic!("{name}: missing resolved profile"));
+                let got = js_json_stringify_of(profile).expect("stringify profile");
+                assert_eq!(got, expected, "{name}: resolve_view_config profile bytes");
+                checked += 1;
+            }
+            "profile_violation" => {
+                let expected = match row.get("expected") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(s)) => Some(s.as_str()),
+                    other => panic!("{name}: expected string|null, got {other:?}"),
+                };
+                let profile = view_profile_from_fixture(input);
+                let got = profile_violation(&profile);
+                assert_eq!(
+                    got.as_deref(),
+                    expected,
+                    "{name}: profile_violation diagnostic"
+                );
+                checked += 1;
+            }
+            "stored_config_json"
+            | "describe_config_json"
+            | "receipt_config_json"
+            | "inspect_meta_config_json" => {
+                let expected = row
+                    .get("expected")
+                    .and_then(Value::as_str)
+                    .expect("expected");
+                let lower_bound = fixture_f64(input.get("lowerBound").expect("lowerBound"));
+                let percentages = percentages_from_fixture(input.get("percentages").expect("pct"));
+                let store = temp_store();
+                let file_path = store.dir.join(format!("amendment-i-{kind}.sqlite"));
+                let file_path = file_path.to_str().expect("utf8 path");
+                seed_amendment_i_thread(file_path, false);
+                let receipt = compact_with_profile(file_path, lower_bound, &percentages).await;
+
+                if kind == "receipt_config_json" {
+                    // Receipt shape is `{...percentages, lowerBound}` — not stored
+                    // config_json key order (`lowerBound` then `percentages`).
+                    let got = js_json_stringify_of(&receipt.config)
+                        .expect("stringify CompactReceipt.config");
+                    assert_eq!(got, expected, "{name}: compact receipt.config bytes");
+                    checked += 1;
+                    continue;
+                }
+
+                let db = open_raw(file_path);
+                let raw = db
+                    .prepare("SELECT config_json FROM thread_view LIMIT 1")
+                    .get()
+                    .expect("row");
+                let raw_config = raw
+                    .get("config_json")
+                    .and_then(Value::as_str)
+                    .expect("config_json text");
+                assert_eq!(raw_config, expected, "{name}: raw SQLite config_json");
+                db.close();
+
+                let described = match describe(ThreadRef::file_path(file_path)).await {
+                    OpResult::Ok { value: Some(v) } => v,
+                    OpResult::Ok { value: None } => {
+                        panic!("{name}: describe returned null after compact")
+                    }
+                    OpResult::Err { error } => panic!("{name}: describe {}", error.reason),
+                };
+                let describe_config =
+                    js_json_stringify_of(&described.config).expect("stringify describe config");
+                assert_eq!(
+                    describe_config, expected,
+                    "{name}: public describe StoredView.config"
+                );
+
+                if kind == "inspect_meta_config_json" {
+                    // Wave 7: compose_view_report remains todo. Inspect
+                    // meta.config is describe's StoredView.config (r1 note).
+                    assert_eq!(
+                        describe_config, expected,
+                        "{name}: inspect meta.config via describe StoredView.config \
+                         (compose_view_report remains Wave 7)"
+                    );
+                }
+                checked += 1;
+            }
+            "source_state_json" => {
+                let expected = row
+                    .get("expected")
+                    .and_then(Value::as_str)
+                    .expect("expected");
+                let store = temp_store();
+                let file_path = store.dir.join("amendment-i-source.sqlite");
+                let file_path = file_path.to_str().expect("utf8 path");
+                seed_amendment_i_thread(file_path, true);
+                let frac = ViewProfilePercentages {
+                    full: 12.5,
+                    smooth: 47.5,
+                    detailed: 20.0,
+                    brief: 20.0,
+                };
+                let _receipt = compact_with_profile(file_path, 12.5, &frac).await;
+
+                let db = open_raw(file_path);
+                let raw = db
+                    .prepare("SELECT source_state_json FROM thread_view LIMIT 1")
+                    .get()
+                    .expect("row");
+                let raw_ss = raw
+                    .get("source_state_json")
+                    .and_then(Value::as_str)
+                    .expect("source_state_json text");
+                assert_eq!(raw_ss, expected, "{name}: raw SQLite source_state_json");
+                db.close();
+
+                let described = match describe(ThreadRef::file_path(file_path)).await {
+                    OpResult::Ok { value: Some(v) } => v,
+                    OpResult::Ok { value: None } => {
+                        panic!("{name}: describe returned null after compact")
+                    }
+                    OpResult::Err { error } => panic!("{name}: describe {}", error.reason),
+                };
+                let got =
+                    js_json_stringify_of(&described.source_state).expect("stringify source_state");
+                assert_eq!(got, expected, "{name}: describe source_state bytes");
+                // Shape proof: multi-type × multi-state. Expected bytes are the
+                // order authority (SQLite GROUP BY order may differ from hand maps).
+                assert!(
+                    described.source_state.derivation_counts.len() >= 2,
+                    "{name}: expected ≥2 derivation types"
+                );
+                for (dtype, states) in &described.source_state.derivation_counts {
+                    assert!(
+                        states.len() >= 2,
+                        "{name}: type {dtype} must keep multi-state map"
+                    );
+                }
+                checked += 1;
+            }
+            "selection" => {
+                let expected = row.get("expected").expect("expected");
+                let lower_bound = fixture_f64(input.get("lowerBound").expect("lowerBound"));
+                let inputs = selection_inputs_from_fixture(
+                    input.get("selectionInputs").expect("selectionInputs"),
+                );
+                let has_dual =
+                    expected.get("fractional").is_some() && expected.get("truncated").is_some();
+                if has_dual {
+                    let percentages =
+                        percentages_from_fixture(input.get("percentages").expect("pct"));
+                    let truncated_percentages = percentages_from_fixture(
+                        input
+                            .get("truncatedPercentages")
+                            .expect("truncatedPercentages"),
+                    );
+                    let fractional = select_arrangement(
+                        &inputs,
+                        &SelectionConfig {
+                            lower_bound,
+                            percentages,
+                        },
+                    )
+                    .expect("fractional selection arrangement");
+                    let truncated = select_arrangement(
+                        &inputs,
+                        &SelectionConfig {
+                            lower_bound,
+                            percentages: truncated_percentages,
+                        },
+                    )
+                    .expect("truncated selection arrangement");
+                    assert_selection_projection(
+                        name,
+                        "fractional",
+                        &fractional,
+                        expected.get("fractional").expect("fractional"),
+                    );
+                    assert_selection_projection(
+                        name,
+                        "truncated",
+                        &truncated,
+                        expected.get("truncated").expect("truncated"),
+                    );
+                } else {
+                    let percentages =
+                        percentages_from_fixture(input.get("percentages").expect("pct"));
+                    let got = select_arrangement(
+                        &inputs,
+                        &SelectionConfig {
+                            lower_bound,
+                            percentages,
+                        },
+                    )
+                    .expect("selection arrangement");
+                    assert_selection_projection(name, "", &got, expected);
+                }
+                checked += 1;
+            }
+            other => panic!("{name}: unknown Amendment I fixture kind {other}"),
+        }
+    }
+    assert_eq!(checked, 26, "Amendment I fixture case count");
+}
+
+fn assert_selection_projection(name: &str, label: &str, got: &SelectionResult, expected: &Value) {
+    let prefix = if label.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}/{label}")
+    };
+    assert_eq!(
+        got.compact_point,
+        expected
+            .get("compactPoint")
+            .and_then(Value::as_i64)
+            .expect("compactPoint"),
+        "{prefix}: compact_point"
+    );
+    assert_eq!(
+        got.covered_from,
+        expected
+            .get("coveredFrom")
+            .and_then(Value::as_i64)
+            .expect("coveredFrom"),
+        "{prefix}: covered_from"
+    );
+    let want_entries = expected
+        .get("entries")
+        .and_then(Value::as_array)
+        .expect("entries");
+    assert_eq!(
+        got.entries.len(),
+        want_entries.len(),
+        "{prefix}: entry count"
+    );
+    for (i, (entry, want)) in got.entries.iter().zip(want_entries.iter()).enumerate() {
+        assert_eq!(
+            entry.band.as_str(),
+            want.get("band").and_then(Value::as_str).expect("band"),
+            "{prefix}: entries[{i}].band"
+        );
+        assert_eq!(
+            entry.subject_kind.as_str(),
+            want.get("subjectKind")
+                .and_then(Value::as_str)
+                .expect("subjectKind"),
+            "{prefix}: entries[{i}].subject_kind"
+        );
+        assert_eq!(
+            entry.subject_id,
+            want.get("subjectId")
+                .and_then(Value::as_str)
+                .expect("subjectId"),
+            "{prefix}: entries[{i}].subject_id"
+        );
+        assert_eq!(
+            entry.derivation_used,
+            want.get("derivationUsed")
+                .and_then(Value::as_str)
+                .expect("derivationUsed"),
+            "{prefix}: entries[{i}].derivation_used"
+        );
+        assert_eq!(
+            entry.degraded,
+            want.get("degraded")
+                .and_then(Value::as_bool)
+                .expect("degraded"),
+            "{prefix}: entries[{i}].degraded"
+        );
+        assert_eq!(
+            entry.gap,
+            want.get("gap").and_then(Value::as_bool).expect("gap"),
+            "{prefix}: entries[{i}].gap"
+        );
+        assert_eq!(
+            entry.start_order,
+            want.get("startOrder")
+                .and_then(Value::as_i64)
+                .expect("startOrder"),
+            "{prefix}: entries[{i}].start_order"
+        );
+    }
+}
+
+/// Seed a compactable thread: closed t1 + user_prompt / assistant_text / turn_end.
+/// When `seed_nested_derivations`, insert the five rows that yield multi-type ×
+/// multi-state derivationCounts after compact.
+fn seed_amendment_i_thread(file_path: &str, seed_nested_derivations: bool) {
+    create_thread_file(file_path, "th_amend_i", "2020-01-01T00:00:00.000Z");
+    let db = open_raw(file_path);
+    let ts = "2020-01-01T00:00:00.000Z";
+    db.prepare(
+        "UPDATE turns SET status = 'closed', closed_at_event_order = 3 WHERE turn_id = 't1'",
+    )
+    .run(&[]);
+    for (order, kind, key, payload) in [
+        (1i64, "user_prompt", "k1", r#"{"text":"hello fractional"}"#),
+        (2, "assistant_text", "k2", r#"{"text":"world"}"#),
+        (3, "turn_end", "k3", "{}"),
+    ] {
+        db.prepare(
+            "INSERT INTO event (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
+             VALUES (?, ?, ?, 'oracle', 'profile-number', ?, ?)",
+        )
+        .run(&[
+            SqlParam::from(order),
+            SqlParam::from(kind),
+            SqlParam::from(key),
+            SqlParam::from(payload),
+            SqlParam::from(ts),
+        ]);
+    }
+    for (mid, order, kind, text) in [
+        ("m1", 1i64, "user_prompt", "hello fractional"),
+        ("m2", 2, "assistant_text", "world"),
+    ] {
+        db.prepare(
+            "INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
+             VALUES (?, ?, ?, 1, 'oracle', 'profile-number', 't1')",
+        )
+        .run(&[
+            SqlParam::from(mid),
+            SqlParam::from(order),
+            SqlParam::from(kind),
+        ]);
+        let content = format!(r#"{{"text":"{text}"}}"#);
+        db.prepare(
+            "INSERT INTO message_block (message_id, block_index, block_type, content)
+             VALUES (?, 0, 'text', ?)",
+        )
+        .run(&[SqlParam::from(mid), SqlParam::from(content.as_str())]);
+    }
+    if seed_nested_derivations {
+        // smoothed_prompt ready×2 pending×1; detailed_turn_compression ready×1 failed×1
+        for (sk, sid, dtype, state) in [
+            ("message", "m1", "smoothed_prompt", "ready"),
+            ("message", "m2", "smoothed_prompt", "ready"),
+            ("message", "m3", "smoothed_prompt", "pending"),
+            ("turn", "t1", "detailed_turn_compression", "ready"),
+            ("turn", "t2", "detailed_turn_compression", "failed"),
+        ] {
+            db.prepare(
+                "INSERT INTO derivation (subject_kind, subject_id, derivation_type, state, source_version)
+                 VALUES (?, ?, ?, ?, 1)",
+            )
+            .run(&[
+                SqlParam::from(sk),
+                SqlParam::from(sid),
+                SqlParam::from(dtype),
+                SqlParam::from(state),
+            ]);
+        }
+    }
+    db.close();
+}
+
+async fn compact_with_profile(
+    file_path: &str,
+    lower_bound: f64,
+    percentages: &ViewProfilePercentages,
+) -> CompactReceipt {
+    let result = compact(
+        ThreadRef::file_path(file_path),
+        CompactOpts {
+            profile: None,
+            params: Some(ViewCompactParams {
+                lower_bound: Some(lower_bound),
+                percentages: Some(PartialViewProfilePercentages {
+                    full: Some(percentages.full),
+                    smooth: Some(percentages.smooth),
+                    detailed: Some(percentages.detailed),
+                    brief: Some(percentages.brief),
+                }),
+            }),
+            signal: None,
+        },
+    )
+    .await;
+    match result {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => panic!("{}", error.reason),
+    }
+}
+
+fn fixture_f64(value: &Value) -> f64 {
+    match value {
+        Value::Number(n) => n.as_f64().expect("finite number"),
+        Value::String(s) => match s.as_str() {
+            "NaN" => f64::NAN,
+            "Infinity" => f64::INFINITY,
+            "-Infinity" => f64::NEG_INFINITY,
+            "-0" => -0.0,
+            other => panic!("unknown tagged f64 {other}"),
+        },
+        other => panic!("expected number|tagged string, got {other:?}"),
+    }
+}
+
+fn percentages_from_fixture(value: &Value) -> ViewProfilePercentages {
+    let obj = value.as_object().expect("percentages object");
+    ViewProfilePercentages {
+        full: fixture_f64(obj.get("full").expect("full")),
+        smooth: fixture_f64(obj.get("smooth").expect("smooth")),
+        detailed: fixture_f64(obj.get("detailed").expect("detailed")),
+        brief: fixture_f64(obj.get("brief").expect("brief")),
+    }
+}
+
+fn view_profile_from_fixture(value: &Value) -> ViewProfile {
+    ViewProfile {
+        name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("name")
+            .to_string(),
+        lower_bound: fixture_f64(value.get("lowerBound").expect("lowerBound")),
+        percentages: percentages_from_fixture(value.get("percentages").expect("percentages")),
+    }
+}
+
+fn profile_override_from_fixture(value: &Value) -> ViewProfileOverride {
+    let percentages = value.get("percentages").map(|pct| {
+        let obj = pct.as_object().expect("percentages object");
+        PartialViewProfilePercentages {
+            full: obj.get("full").map(fixture_f64),
+            smooth: obj.get("smooth").map(fixture_f64),
+            detailed: obj.get("detailed").map(fixture_f64),
+            brief: obj.get("brief").map(fixture_f64),
+        }
+    });
+    ViewProfileOverride {
+        name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("name")
+            .to_string(),
+        lower_bound: value.get("lowerBound").map(fixture_f64),
+        percentages,
+    }
+}
+
+fn selection_inputs_from_fixture(value: &Value) -> SelectionInputs {
+    let obj = value.as_object().expect("selectionInputs object");
+    let messages = obj
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages")
+        .iter()
+        .map(|m| {
+            let m = m.as_object().expect("message object");
+            SelectionMessage {
+                message_id: m
+                    .get("messageId")
+                    .and_then(Value::as_str)
+                    .expect("messageId")
+                    .to_string(),
+                order: m.get("order").and_then(Value::as_i64).expect("order"),
+                kind: m
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .expect("kind")
+                    .to_string(),
+                token_estimate: m
+                    .get("tokenEstimate")
+                    .and_then(Value::as_i64)
+                    .expect("tokenEstimate"),
+                turn_id: m
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .expect("turnId")
+                    .to_string(),
+                text: m
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .expect("text")
+                    .to_string(),
+            }
+        })
+        .collect();
+    let turns = obj
+        .get("turns")
+        .and_then(Value::as_array)
+        .expect("turns")
+        .iter()
+        .map(|t| {
+            let t = t.as_object().expect("turn object");
+            let status = match t.get("status").and_then(Value::as_str).expect("status") {
+                "closed" => SelectionTurnStatus::Closed,
+                "open" => SelectionTurnStatus::Open,
+                other => panic!("unknown turn status {other}"),
+            };
+            SelectionTurn {
+                turn_id: t
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .expect("turnId")
+                    .to_string(),
+                turn_order: t
+                    .get("turnOrder")
+                    .and_then(Value::as_i64)
+                    .expect("turnOrder"),
+                status,
+                opened_at: t.get("openedAt").and_then(Value::as_i64).expect("openedAt"),
+                closed_at: match t.get("closedAt") {
+                    Some(Value::Null) | None => None,
+                    Some(v) => Some(v.as_i64().expect("closedAt")),
+                },
+            }
+        })
+        .collect();
+    let chunks = obj
+        .get("chunks")
+        .and_then(Value::as_array)
+        .expect("chunks")
+        .iter()
+        .map(|c| {
+            let c = c.as_object().expect("chunk object");
+            let status = match c.get("status").and_then(Value::as_str).expect("status") {
+                "closed" => SelectionChunkStatus::Closed,
+                "open" => SelectionChunkStatus::Open,
+                other => panic!("unknown chunk status {other}"),
+            };
+            SelectionChunk {
+                chunk_id: c
+                    .get("chunkId")
+                    .and_then(Value::as_str)
+                    .expect("chunkId")
+                    .to_string(),
+                chunk_order: c
+                    .get("chunkOrder")
+                    .and_then(Value::as_i64)
+                    .expect("chunkOrder"),
+                status,
+                member_turn_ids: c
+                    .get("memberTurnIds")
+                    .and_then(Value::as_array)
+                    .expect("memberTurnIds")
+                    .iter()
+                    .map(|id| id.as_str().expect("memberTurnId").to_string())
+                    .collect(),
+            }
+        })
+        .collect();
+    let mut derivations = IndexMap::new();
+    if let Some(map) = obj.get("derivations").and_then(Value::as_object) {
+        for (key, snap) in map {
+            let snap = snap.as_object().expect("derivation snapshot");
+            let state = match snap.get("state").and_then(Value::as_str).expect("state") {
+                "pending" => DerivationState::Pending,
+                "ready" => DerivationState::Ready,
+                "failed" => DerivationState::Failed,
+                "blocked" => DerivationState::Blocked,
+                other => panic!("unknown derivation state {other}"),
+            };
+            derivations.insert(
+                key.clone(),
+                DerivationSnapshot {
+                    state,
+                    content: snap
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    reason: snap
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                },
+            );
+        }
+    }
+    let mut derivation_counts = IndexMap::new();
+    if let Some(outer) = obj.get("derivationCounts").and_then(Value::as_object) {
+        for (dtype, states) in outer {
+            let mut inner = IndexMap::new();
+            if let Some(states) = states.as_object() {
+                for (state, count) in states {
+                    inner.insert(state.clone(), count.as_i64().expect("count"));
+                }
+            }
+            derivation_counts.insert(dtype.clone(), inner);
+        }
+    }
+    SelectionInputs {
+        messages,
+        turns,
+        chunks,
+        derivations,
+        compact_chunk_materials: None,
+        max_event_order: obj
+            .get("maxEventOrder")
+            .and_then(Value::as_i64)
+            .expect("maxEventOrder"),
+        derivation_counts,
+    }
 }
 
 #[test]

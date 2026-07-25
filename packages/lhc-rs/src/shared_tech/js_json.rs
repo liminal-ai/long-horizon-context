@@ -11,17 +11,17 @@
 //! them `1`. That one-character drift corrupted digests in the Python port
 //! until audited; here the gate greps for violations.
 //!
-//! Documented, accepted divergences from JS (all unreachable with LHC data;
-//! carried over from the lhc-py audit):
+//! Documented, accepted divergences from JS (carried over from the lhc-py audit):
 //! - Integers beyond 2^53 print exactly (JS rounds through f64).
-//! - |x| ≥ 1e21 prints as full decimal digits (JS switches to exponent form).
 //! - `js_slice` cannot keep a lone surrogate from a mid-pair slice (Rust
 //!   strings are valid UTF-8); the split pair is dropped instead.
 //!
 //! Small-exponent floats (`0 < |x| < 1e-6`) are Node-oracle-covered
 //! (Amendment H): lowercase `e` spelling with shortest round-trip significand
-//! and bare negative exponent (`1e-7`, never `1e-07`). `|x| == 1e-6` and larger
-//! magnitudes in the decimal band stay on `Display`.
+//! and bare negative exponent (`1e-7`, never `1e-07`). `|x| == 1e-6` through
+//! `|x| < 1e21` stay on decimal `Display`. `|x| ≥ 1e21` uses Node's
+//! exponent form (`1e+21`) via `serde_json::Number` spelling (Amendment I —
+//! profile `lowerBound` / diagnostics make this reachable).
 
 use serde::Serialize;
 use serde_json::Value;
@@ -36,6 +36,8 @@ pub fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// JS `String.prototype.trim` — WhiteSpace + LineTerminator + BOM (U+FEFF).
+///
 /// ECMAScript WhiteSpace + LineTerminator + BOM (U+FEFF) for trim/trimStart.
 ///
 /// Deliberately excludes U+0085 NEL (JS does not trim it; Rust `str::trim` does).
@@ -123,6 +125,83 @@ pub fn js_json_stringify_pretty(value: &Value) -> String {
 /// encoder, made a first-class citizen from Wave 0).
 pub fn js_json_stringify_of<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
     Ok(js_json_stringify(&serde_json::to_value(value)?))
+}
+
+/// JS `String(number)` — template-literal / diagnostic spelling.
+///
+/// Handles `NaN`, `±Infinity`, and `-0 → 0` directly. Do **not** route
+/// non-finite values through `Value::from(f64)` / `serde_json::Number`: serde
+/// maps those to JSON `null`. Finite leaves reuse [`write_number`] (Amendment H
+/// small-exponent boundary included).
+pub fn js_string_of_number(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
+    if n.is_infinite() {
+        return if n.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    // JS ToString(-0) === "0".
+    let n = if n == 0.0 { 0.0 } else { n };
+    match serde_json::Number::from_f64(n) {
+        Some(num) => {
+            let mut out = String::new();
+            write_number(&mut out, &num);
+            out
+        }
+        None => unreachable!("finite f64 always converts to serde_json::Number"),
+    }
+}
+
+/// Build a JSON number leaf for object/array construction before
+/// [`js_json_stringify`]. Finite values keep Node spelling; non-finite become
+/// JSON `null` (JSON.stringify contract), never a second Display formatter.
+pub fn js_number_value(n: f64) -> Value {
+    if !n.is_finite() {
+        return Value::Null;
+    }
+    let n = if n == 0.0 { 0.0 } else { n };
+    match serde_json::Number::from_f64(n) {
+        Some(num) => Value::Number(num),
+        None => Value::Null,
+    }
+}
+
+/// JS `String(value ?? "")` for JSON-representable runtime values.
+///
+/// Number leaves go through [`js_string_of_number`] so diagnostic and
+/// nullish-string paths share one spelling lane.
+pub fn js_string_nullish(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Bool(true)) => "true".to_string(),
+        Some(Value::Bool(false)) => "false".to_string(),
+        Some(Value::Number(n)) => {
+            if let Some(f) = n.as_f64() {
+                js_string_of_number(f)
+            } else {
+                // i64/u64-only Number — stringify via the JSON number lane.
+                js_json_stringify(&Value::Number(n.clone()))
+            }
+        }
+        Some(Value::Array(items)) => {
+            // Array.prototype.toString → join(",") with recursive ToString;
+            // null/undefined elements become empty.
+            items
+                .iter()
+                .map(|item| match item {
+                    Value::Null => String::new(),
+                    other => js_string_nullish(Some(other)),
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        Some(Value::Object(_)) => "[object Object]".to_string(),
+    }
 }
 
 fn write_value(out: &mut String, value: &Value) {
@@ -235,12 +314,16 @@ fn write_number(out: &mut String, n: &serde_json::Number) {
                 // uses lowercase exponent form. serde_json::Number's finite
                 // shortest spelling matches Node here (significand + bare
                 // `e-N`, signed). Do not use `format!("{f}")` (decimal).
-                // Do not use Number spelling for |x| >= 1e-6 — serde_json's
-                // finite formatter emits `1e-6` / `1.2e-6` while Node keeps
-                // decimal.
+                out.push_str(&n.to_string());
+            } else if abs >= 1e21 {
+                // Amendment I — Node switches to `1e+21` / `-1.2e+21` at
+                // |x| ≥ 1e21. `serde_json::Number` matches that form; Rust
+                // `Display` emits full decimal digits and must not be used.
                 out.push_str(&n.to_string());
             } else {
-                // Decimal band including |x| == 1e-6 and 0.0000012.
+                // Decimal band: |x| == 1e-6 .. |x| < 1e21 (incl. 1e-6, 1e20).
+                // Do not use Number spelling here — serde emits `1e-6` /
+                // `1e+20` while Node keeps decimal.
                 out.push_str(&format!("{f}"));
             }
             return;

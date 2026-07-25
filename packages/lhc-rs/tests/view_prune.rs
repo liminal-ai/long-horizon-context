@@ -274,7 +274,7 @@ async fn starts_from_the_compact_point_boundary_and_prunes_only_the_tail_zone() 
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(40),
+                    lower_bound: Some(40.0),
                     percentages: None,
                 }),
                 signal: None,

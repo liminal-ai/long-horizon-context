@@ -104,10 +104,10 @@ pub struct InspectOverview {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewContentsMetaConfig {
-    /// Token-count target — unified with ViewProfile / StoredViewConfig → i64.
-    pub lower_bound: i64,
-    /// Insertion-ordered band shares.
-    pub percentages: IndexMap<String, i64>,
+    /// Token-count target — Amendment I: TS `number` (fractional-capable).
+    pub lower_bound: f64,
+    /// Insertion-ordered band shares (Amendment I: fractional-capable).
+    pub percentages: IndexMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

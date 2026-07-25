@@ -6,8 +6,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lhc::intake_stream::MessageEventInput;
+use lhc::intake_stream::{self, MessageEventInput};
 use lhc::sdk::Lhc;
+use lhc::shared_tech::errors::OpResult;
+use lhc::threads::ThreadRef;
 
 use super::{
     ToolCallOverrides, ToolCallPayload, ToolResultOverrides, ToolResultPayload, TurnEndOverrides,
@@ -101,11 +103,22 @@ pub fn turned_tool_result_events(turns: &[TurnedToolResultsSpec]) -> Vec<Message
     events
 }
 
-/// TS `seedTurnedToolResults` — PARTIAL (SDK intake).
+/// TS `seedTurnedToolResults` — domain `intake_stream::message_events` is the
+/// exact host-agnostic dependency (SDK intake wiring remains Wave 7).
 pub async fn seed_turned_tool_results(
     _sdk: &Lhc,
-    _file_path: &str,
-    _turns: &[TurnedToolResultsSpec],
+    file_path: &str,
+    turns: &[TurnedToolResultsSpec],
 ) {
-    todo!("phase 2")
+    let result = intake_stream::message_events(
+        ThreadRef::file_path(file_path),
+        &turned_tool_result_events(turns),
+    )
+    .await;
+    match result {
+        OpResult::Ok { .. } => {}
+        OpResult::Err { error } => {
+            panic!("boundary seed intake failed: {}", error.reason);
+        }
+    }
 }

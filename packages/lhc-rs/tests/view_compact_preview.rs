@@ -33,48 +33,48 @@ use serde_json::Value;
 
 fn target_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(400),
+        lower_bound: Some(400.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(25),
-            detailed: Some(25),
-            brief: Some(25),
+            full: Some(25.0),
+            smooth: Some(25.0),
+            detailed: Some(25.0),
+            brief: Some(25.0),
         }),
     }
 }
 
 fn gradient_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(400),
+        lower_bound: Some(400.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(16),
-            detailed: Some(10),
-            brief: Some(49),
+            full: Some(25.0),
+            smooth: Some(16.0),
+            detailed: Some(10.0),
+            brief: Some(49.0),
         }),
     }
 }
 
 fn all_fits_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(1_000_000),
+        lower_bound: Some(1_000_000.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(25),
-            detailed: Some(25),
-            brief: Some(25),
+            full: Some(25.0),
+            smooth: Some(25.0),
+            detailed: Some(25.0),
+            brief: Some(25.0),
         }),
     }
 }
 
 fn near_no_op_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(50),
+        lower_bound: Some(50.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(10),
-            smooth: Some(10),
-            detailed: Some(10),
-            brief: Some(70),
+            full: Some(10.0),
+            smooth: Some(10.0),
+            detailed: Some(10.0),
+            brief: Some(70.0),
         }),
     }
 }
@@ -535,12 +535,12 @@ async fn exactness_golden_corpus_sizes_agree_on_compact_point_no_op_banded_re_co
         (
             "no-op-small",
             ViewCompactParams {
-                lower_bound: Some(500_000),
+                lower_bound: Some(500_000.0),
                 percentages: Some(PartialViewProfilePercentages {
-                    full: Some(25),
-                    smooth: Some(25),
-                    detailed: Some(25),
-                    brief: Some(25),
+                    full: Some(25.0),
+                    smooth: Some(25.0),
+                    detailed: Some(25.0),
+                    brief: Some(25.0),
                 }),
             },
         ),

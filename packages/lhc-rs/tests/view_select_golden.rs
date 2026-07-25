@@ -94,17 +94,17 @@ struct GoldenGap {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GoldenParams {
-    lower_bound: i64,
+    lower_bound: f64,
     percentages: GoldenPercentages,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GoldenPercentages {
-    full: i64,
-    smooth: i64,
-    detailed: i64,
-    brief: i64,
+    full: f64,
+    smooth: f64,
+    detailed: f64,
+    brief: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

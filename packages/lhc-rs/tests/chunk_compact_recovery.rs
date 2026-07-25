@@ -199,12 +199,12 @@ async fn seed_four_closed_turns(sdk: &Lhc, file_path: &str) {
 
 fn compact_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(120),
+        lower_bound: Some(120.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(10),
-            smooth: Some(10),
-            detailed: Some(70),
-            brief: Some(10),
+            full: Some(10.0),
+            smooth: Some(10.0),
+            detailed: Some(70.0),
+            brief: Some(10.0),
         }),
     }
 }

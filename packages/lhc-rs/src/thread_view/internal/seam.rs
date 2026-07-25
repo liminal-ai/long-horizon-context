@@ -50,12 +50,16 @@ pub fn set_view_injection_hook(point: ViewInjectionPoint, hook: Option<ViewInjec
 
 /// TS `fireViewInjection` — no-op when nothing is installed. An installed
 /// hook's panic propagates to the call site on purpose — that is the injected
-/// failure the call site must survive. The hook runs outside the table lock
-/// so a panic cannot poison subsequent set/clear/fire calls.
+/// failure the call site must survive (compact's write path rolls back). The
+/// hook is cloned under the table lock and invoked outside it so a panic
+/// cannot poison subsequent set/clear/fire calls.
 pub fn fire_view_injection(point: ViewInjectionPoint) {
-    let hook = match point {
-        ViewInjectionPoint::CompactWrite => hooks_lock().clone(),
-    };
+    let hook = {
+        let guard = hooks_lock();
+        match point {
+            ViewInjectionPoint::CompactWrite => guard.clone(),
+        }
+    }; // lock released before invoke
     if let Some(hook) = hook {
         hook();
     }

@@ -195,12 +195,12 @@ fn bands_from_raw(raw: &StoredView) -> Vec<ViewContentsBand> {
 
 fn degraded_compact_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(400),
+        lower_bound: Some(400.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(25),
-            detailed: Some(10),
-            brief: Some(40),
+            full: Some(25.0),
+            smooth: Some(25.0),
+            detailed: Some(10.0),
+            brief: Some(40.0),
         }),
     }
 }
@@ -399,10 +399,10 @@ async fn report_entries_derivations_degraded_flags_gap_reasons_config_and_proven
     let report: ViewContentsReport =
         result_value(sdk.inspect.view(ThreadRef::file_path(file_path)).await);
     let mut percentages = IndexMap::new();
-    percentages.insert("full".into(), 25);
-    percentages.insert("smooth".into(), 25);
-    percentages.insert("detailed".into(), 10);
-    percentages.insert("brief".into(), 40);
+    percentages.insert("full".into(), 25.0);
+    percentages.insert("smooth".into(), 25.0);
+    percentages.insert("detailed".into(), 10.0);
+    percentages.insert("brief".into(), 40.0);
     assert_eq!(
         report.meta,
         Some(ViewContentsMeta {
@@ -410,7 +410,7 @@ async fn report_entries_derivations_degraded_flags_gap_reasons_config_and_proven
             created_at: raw.created_at.clone(),
             profile: None,
             config: ViewContentsMetaConfig {
-                lower_bound: 400,
+                lower_bound: 400.0,
                 percentages: percentages.clone(),
             },
             compact_point: raw.compact_point,
@@ -582,12 +582,12 @@ async fn tail_costs_short_forms_short_and_total_equals_an_independent_context_re
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(60),
+                    lower_bound: Some(60.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(25),
-                        smooth: Some(25),
-                        detailed: Some(10),
-                        brief: Some(40),
+                        full: Some(25.0),
+                        smooth: Some(25.0),
+                        detailed: Some(10.0),
+                        brief: Some(40.0),
                     }),
                 }),
                 signal: None,

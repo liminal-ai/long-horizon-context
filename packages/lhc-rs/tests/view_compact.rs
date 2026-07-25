@@ -53,35 +53,35 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 const TARGET_PARAMS: ViewCompactParams = ViewCompactParams {
-    lower_bound: Some(400),
+    lower_bound: Some(400.0),
     percentages: Some(PartialViewProfilePercentages {
-        full: Some(25),
-        smooth: Some(25),
-        detailed: Some(25),
-        brief: Some(25),
+        full: Some(25.0),
+        smooth: Some(25.0),
+        detailed: Some(25.0),
+        brief: Some(25.0),
     }),
 };
 
 fn gradient_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(400),
+        lower_bound: Some(400.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(16),
-            detailed: Some(10),
-            brief: Some(49),
+            full: Some(25.0),
+            smooth: Some(16.0),
+            detailed: Some(10.0),
+            brief: Some(49.0),
         }),
     }
 }
 
 fn edge_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(100),
+        lower_bound: Some(100.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(50),
-            smooth: Some(10),
-            detailed: Some(10),
-            brief: Some(30),
+            full: Some(50.0),
+            smooth: Some(10.0),
+            detailed: Some(10.0),
+            brief: Some(30.0),
         }),
     }
 }
@@ -656,10 +656,10 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                 params: Some(ViewCompactParams {
                     lower_bound: None,
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(30),
-                        smooth: Some(30),
-                        detailed: Some(25),
-                        brief: Some(20),
+                        full: Some(30.0),
+                        smooth: Some(30.0),
+                        detailed: Some(25.0),
+                        brief: Some(20.0),
                     }),
                 }),
                 signal: None,
@@ -681,7 +681,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(0),
+                    lower_bound: Some(0.0),
                     percentages: None,
                 }),
                 signal: None,
@@ -741,11 +741,11 @@ async fn compacts_with_a_built_in_profile_the_profiles_bound_and_mix_land_in_the
     assert_eq!(
         value.config,
         CompactReceiptConfig {
-            full: 25,
-            smooth: 35,
-            detailed: 20,
-            brief: 20,
-            lower_bound: 120000,
+            full: 25.0,
+            smooth: 35.0,
+            detailed: 20.0,
+            brief: 20.0,
+            lower_bound: 120000.0,
         }
     );
     assert_eq!(value.compact_point, 0);
@@ -765,11 +765,11 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
             CompactOpts {
                 profile: Some("coding".into()),
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(400),
+                    lower_bound: Some(400.0),
                     percentages: Some(PartialViewProfilePercentages {
                         full: None,
-                        smooth: Some(40),
-                        detailed: Some(15),
+                        smooth: Some(40.0),
+                        detailed: Some(15.0),
                         brief: None,
                     }),
                 }),
@@ -784,11 +784,11 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
     assert_eq!(
         value.config,
         CompactReceiptConfig {
-            full: 25,
-            smooth: 40,
-            detailed: 15,
-            brief: 20,
-            lower_bound: 400,
+            full: 25.0,
+            smooth: 40.0,
+            detailed: 15.0,
+            brief: 20.0,
+            lower_bound: 400.0,
         }
     );
     assert!(value.profile.is_none());
@@ -874,8 +874,8 @@ async fn keeps_a_latest_open_turn_with_a_dangling_tool_call_in_the_live_session_
     assert!(value.bands.smooth.entries > 0);
     let full_share = (TARGET_PARAMS.lower_bound.unwrap()
         * TARGET_PARAMS.percentages.as_ref().unwrap().full.unwrap())
-        / 100;
-    assert!(value.tail_tokens > full_share);
+        / 100.0;
+    assert!((value.tail_tokens as f64) > full_share);
 
     let view = sdk
         .thread_view
@@ -1075,12 +1075,12 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
     let selection = select_arrangement(
         &inputs,
         &SelectionConfig {
-            lower_bound: 1000,
+            lower_bound: 1000.0,
             percentages: ViewProfilePercentages {
-                full: 10,
-                smooth: 10,
-                detailed: 40,
-                brief: 40,
+                full: 10.0,
+                smooth: 10.0,
+                detailed: 40.0,
+                brief: 40.0,
             },
         },
     )
@@ -1413,12 +1413,12 @@ async fn completes_with_ladder_fallbacks_marked_gap_entries_for_unusable_spans_a
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(400),
+                    lower_bound: Some(400.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(25),
-                        smooth: Some(25),
-                        detailed: Some(10),
-                        brief: Some(40),
+                        full: Some(25.0),
+                        smooth: Some(25.0),
+                        detailed: Some(10.0),
+                        brief: Some(40.0),
                     }),
                 }),
                 signal: None,
@@ -1478,12 +1478,12 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(400),
+                    lower_bound: Some(400.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(25),
-                        smooth: Some(25),
-                        detailed: Some(10),
-                        brief: Some(40),
+                        full: Some(25.0),
+                        smooth: Some(25.0),
+                        detailed: Some(10.0),
+                        brief: Some(40.0),
                     }),
                 }),
                 signal: None,
@@ -1570,12 +1570,12 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(80),
+                    lower_bound: Some(80.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(50),
-                        smooth: Some(30),
-                        detailed: Some(10),
-                        brief: Some(10),
+                        full: Some(50.0),
+                        smooth: Some(30.0),
+                        detailed: Some(10.0),
+                        brief: Some(10.0),
                     }),
                 }),
                 signal: None,
@@ -1629,12 +1629,12 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
             CompactOpts {
                 profile: None,
                 params: Some(ViewCompactParams {
-                    lower_bound: Some(80),
+                    lower_bound: Some(80.0),
                     percentages: Some(PartialViewProfilePercentages {
-                        full: Some(50),
-                        smooth: Some(30),
-                        detailed: Some(10),
-                        brief: Some(10),
+                        full: Some(50.0),
+                        smooth: Some(30.0),
+                        detailed: Some(10.0),
+                        brief: Some(10.0),
                     }),
                 }),
                 signal: None,

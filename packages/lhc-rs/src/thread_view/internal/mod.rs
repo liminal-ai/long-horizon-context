@@ -7,6 +7,7 @@
 pub mod assemble;
 pub mod boundary;
 pub mod compact_compute;
+pub(crate) mod exact_i64;
 pub mod materialize;
 pub mod profiles;
 pub mod render;

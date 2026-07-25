@@ -292,8 +292,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
   (`set_view_injection_hook` / `fire_view_injection`).
 - Wave 6: `PruneParams.target_tokens: Option<f64>` (TS `number`; tests pass
   `10.5`). Visibility `max_tokens`/`target_tokens`/`compact_threshold` and
-  derived ViewStatus/PruneReceipt fields are `f64`; `lowerBound` and profile
-  percentages stay `i64` (Wave 1 court of record). Canonical
+  derived ViewStatus/PruneReceipt fields are `f64`. Phase 1 recorded
+  `lowerBound`/profile percentages as `i64`; **Amendment I** (Phase 2)
+  widens them to `f64` — see phase-gate addendum I. Canonical
   `MaterializeResult` owned in `materialize.rs` and re-exported from
   `thread_view`. `ExcerptBlock` required `block_type`+`content`.
   `MaterializeOpts.format: Option<String>` (no invented `MaterializeFormat`
@@ -321,8 +322,10 @@ Wave 0 rulings (court of record — extend, don't reshape):
   `view_thread` (complete surface incl. `FIXTURE_CHUNK_POLICY` /
   `TURN_COUNT` / `TOOL_HEAVY_TURNS` + private helpers); goldens `g*.json` +
   README and `pi-session-structure.{jsonl,provenance.md}` byte-identical to
-  TS. Eleven suites, 101 tests (2 ignored preserve `it.skip`).
-- Wave 6 allowlisted passes (exact names only):
+  TS. Eleven suites, **102** tests (100 active + 2 ignored preserve `it.skip`;
+  Amendment C unfolded census — was mis-recorded as 101).
+- Wave 6 allowlisted passes (exact names only; Phase 1 seam pair, plus Phase 2
+  host-agnostic select/full-boundary greens — see Phase 2 Wave 6 note):
   `view_fixture::an_installed_hook_fires_its_throw_propagates_and_uninstalling_restores_the_no_op`;
   `view_fixture::uninstalled_the_point_is_a_no_op`.
 - Wave 6 repair-r1: Sol and Fable both returned FAIL on the initial Wave 6
@@ -365,8 +368,9 @@ Wave 0 rulings (court of record — extend, don't reshape):
   Wave 7's final fidelity audit, with shipped/required inputs unaffected.
 - Wave 6 **dual-certified** after three repair rounds. Final gate:
   exact-todo **472**, classified **448**, passed **40**, notimpl **394**,
-  ignored **14**, wrong/suspicious **0/0**; eleven suites **101** tests
-  including two preserved ignores; seven immutable assets byte-identical.
+  ignored **14**, wrong/suspicious **0/0**; eleven suites **102** tests
+  (Amendment C census; was mis-recorded as 101) including two preserved
+  ignores; seven immutable assets byte-identical.
 - Wave 7 (Phase 1 completion wave): inspect domain (`mod` + health/overview/
   view_report) with helpers/`BAND_ORDER`/capture-gap constants; `shared_tech`
   index `export *` closure (15 modules); full `sdk.rs` / crate-root surface
@@ -483,17 +487,17 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/shared_tech/tool_result_rendering.rs` | ☑ | Wave 1 |
 | 50 | `src/shared-tech/view.ts` | `src/shared_tech/view.rs` | ☑ | Wave 1 |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/shared_tech/work_queue/mod.rs` | ☑ | Wave 2: full surface; work_kind_registry + map_work_q_handlers + from_wire REAL; other bodies todo |
-| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Wave 6+r1: full surface; f64 prune/visibility; MaterializeOpts.format Option String; generic errors; entriesByBand; CompactAbortSignal only — bodies Phase 2 |
-| 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☑ | Wave 6 — bodies Phase 2 |
-| 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☑ | Wave 6 — bodies Phase 2 |
-| 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☑ | Wave 6+r1: CompactAbortSignal only (no duplicate AbortSignal); maps CanonicalCorruptionError |
-| 56 | `src/thread-view/internal/materialize.ts` | `src/thread_view/internal/materialize.rs` | ☑ | Wave 6: canonical MaterializeResult + PI_SESSION_VERSION=3 |
-| 57 | `src/thread-view/internal/profiles.ts` | `src/thread_view/internal/profiles.rs` | ☑ | Wave 6: CONSTANT DATA real; BUDGET_KEYS maxTokens/targetTokens; DEFAULT_* f64 |
-| 58 | `src/thread-view/internal/render.ts` | `src/thread_view/internal/render.rs` | ☑ | Wave 6+r1: ExcerptBlock; DerivationLookup alias; render/diagnostic literals hoisted |
-| 59 | `src/thread-view/internal/seam.ts` | `src/thread_view/internal/seam.rs` | ☑ | Wave 6: REAL hook table (Arc + outside-lock fire) |
-| 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☑ | Wave 6+r1: PI_MAPPABLE_KIND_SET derived; nested helpers; select_arrangement Result |
-| 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☑ | Wave 6+r1: flushAssistant + session literals |
-| 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☑ | Wave 6+r1: RawViewRow + BEGIN/COMMIT/ROLLBACK literals |
+| 52 | `src/thread-view/index.ts` | `src/thread_view/mod.rs` | ☑ | Phase 2 Wave 6: full surface bodies; Amendment I f64 config; nested derivationCounts; Wave 7 still owns init_lhc |
+| 53 | `src/thread-view/internal/assemble.ts` | `src/thread_view/internal/assemble.rs` | ☑ | Phase 2 Wave 6 bodies |
+| 54 | `src/thread-view/internal/boundary.ts` | `src/thread_view/internal/boundary.rs` | ☑ | Phase 2 Wave 6 bodies |
+| 55 | `src/thread-view/internal/compact-compute.ts` | `src/thread_view/internal/compact_compute.rs` | ☑ | Phase 2 Wave 6: CompactAbortSignal live re-read; maps CanonicalCorruptionError |
+| 56 | `src/thread-view/internal/materialize.ts` | `src/thread_view/internal/materialize.rs` | ☑ | Phase 2 Wave 6: PI_SESSION_VERSION=3; lexical path_resolve |
+| 57 | `src/thread-view/internal/profiles.ts` | `src/thread_view/internal/profiles.rs` | ☑ | Phase 2 Wave 6 + Amendment I; diagnostics via shared `js_string_of_number` |
+| 58 | `src/thread-view/internal/render.ts` | `src/thread_view/internal/render.rs` | ☑ | Phase 2 Wave 6 bodies; hoisted literals |
+| 59 | `src/thread-view/internal/seam.ts` | `src/thread_view/internal/seam.rs` | ☑ | Phase 2 Wave 6: Arc + outside-lock fire (REAL) |
+| 60 | `src/thread-view/internal/select.ts` | `src/thread_view/internal/select.rs` | ☑ | Phase 2 Wave 6 + Amendment I fractional budget/straddle |
+| 61 | `src/thread-view/internal/session-view.ts` | `src/thread_view/internal/session_view.rs` | ☑ | Phase 2 Wave 6 bodies; lexical array-key diagnostics |
+| 62 | `src/thread-view/internal/snapshot.ts` | `src/thread_view/internal/snapshot.rs` | ☑ | Phase 2 Wave 6: nested derivationCounts; f64 StoredViewConfig |
 | 63 | `src/threads/index.ts` | `src/threads/mod.rs` | ☑ | Wave 3: new_thread/resolve/list/info/resolve_thread_ref REAL; ThreadRef closed wire preserved |
 | 64 | `src/threads/internal/create.ts` | `src/threads/internal/create.rs` | ☑ | Wave 3: generate/create/delete/open/validate + schema REAL |
 | 65 | `src/threads/internal/registry.ts` | `src/threads/internal/registry.rs` | ☑ | Wave 3: open/select/insert/prefix/list REAL |
@@ -550,7 +554,7 @@ Wave 0 rulings (court of record — extend, don't reshape):
 | 39 | `test/turns.test.ts` | `tests/turns.rs` | ☑ | ☑ | Wave 5: 12 tests |
 | 40 | `test/validation.test.ts` | `tests/validation.rs` | ☑ | ☑ |  |
 | 41 | `test/view-boundary-turn-end.test.ts` | `tests/view_boundary_turn_end.rs` | ☑ | ☑ | Wave 6: 2 tests |
-| 42 | `test/view-boundary.test.ts` | `tests/view_boundary.rs` | ☑ | ☑ | Wave 6: 7 tests (1 #[ignore] it.skip) |
+| 42 | `test/view-boundary.test.ts` | `tests/view_boundary.rs` | ☑ | ☑ | Wave 6: 8 tests (7 active + 1 #[ignore] it.skip) |
 | 43 | `test/view-compact-full-boundary.test.ts` | `tests/view_compact_full_boundary.rs` | ☑ | ☑ | Wave 6: 9 tests |
 | 44 | `test/view-compact-preview.test.ts` | `tests/view_compact_preview.rs` | ☑ | ☑ | Wave 6: 13 tests |
 | 45 | `test/view-compact.test.ts` | `tests/view_compact.rs` | ☑ | ☑ | Wave 6: 17 tests; sdk.work.drain; TC-1.3 strictness |
@@ -1351,6 +1355,57 @@ coverage through this threshold.
   rows — **no** new test / ignore / allowlist / denominator.
 - Preserves inventory `496` and Wave 5 gate `162/319/0/15`.
 
+#### Amendment I (Phase-gate addendum; name in Wave 6 commit body)
+
+Forced fractional `lowerBound` / profile-percentage correction (independent
+Copilot-Fable `20260725-020940-6c4d05` and Sol `20260725-021347-3389b2` both
+ruled `FRACTIONAL AMENDMENT I`). The Phase 1 `i64` carve-out was a factual
+mis-inference from integral fixtures: TypeScript `number` accepts, computes
+with, persists, and serves fractional values. Does **not** change inventory
+`496`, Wave 6 suite count denominator logic, or Phase 2 target `481/0/15`.
+
+Complete `f64` / `Option<f64>` chain (no truncating boundary):
+
+- `ViewProfilePercentages` / `PartialViewProfilePercentages` leaves;
+  `ViewProfile.lower_bound`; `ViewProfileOverride.lower_bound`;
+  `ViewCompactParams.lower_bound`; `StoredViewConfig` lower-bound/percentage
+  values; all five `CompactReceiptConfig` values;
+- `ViewContentsMetaConfig` lower-bound/percentage values;
+- `select::SelectionConfig.lower_bound`, `budget` operands, and
+  `straddling_turn_stays_in_full`'s full-side token operand (token estimates,
+  event orders, compact points, entry counts, stored token counts remain
+  integer domains).
+
+Diagnostics and stored-config leaves share one `js_json` lane —
+`js_string_of_number` / `js_number_value` / `js_string_nullish` (no
+thread_view-local `String(number)` helpers). Spelling covers `-0→0`,
+integrals without `.0`, fractions, `NaN` / `±Infinity`, Amendment H
+small-exponent (`1e-7`), and Amendment I large-exponent (`1e+21` /
+`-1e+21`). Non-finite spelling must not route through
+`serde_json::Value::from(f64)` (serde maps those to JSON `null`).
+
+Oracle: `(cd packages/lhc && npm run build) && node
+scripts/gen-profile-number-fixtures.mjs` →
+`fixtures/profile-number-cases.jsonl` (**26** rows; SHA-256
+`abe4c924f3dc91789e75eab2567799c4ad17af6af1a82914b3c30c8de3c19068`),
+double-regenerated byte-identical. Rows come from real TS
+`resolveViewConfig` / `profileViolation` / `selectArrangement` (load-bearing
+14-turn/4-chunk selection projection — repair-r3; plus fractional-vs-
+truncated 2-turn selection projection — repair-r4), and from a disposable
+`initLhc` → seed nested derivation rows → compact → raw SQLite
+`config_json` / `source_state_json` / compact receipt / `describe` /
+`inspect.view` meta.config chain (no hand-built `replaceViewSnapshot`
+source-state row; no formula-only budgets row). Sanctioned extension of
+existing `view_fixture::uninstalled_the_point_is_a_no_op` (async) drives
+persisted/receipt/describe rows through public `thread_view::compact` +
+`describe` and selection through `select_arrangement` — **no** new
+`#[test]` / ignore / assertion-meaning change / golden touch. Final
+`compose_view_report` remains Wave 7; inspect meta.config asserts the
+shared `StoredView.config` producer only. Integer readers reject the
+`2^63` f64 alias via private `thread_view::internal::exact_i64` (snapshot /
+select / boundary / prune-zone; repair-r5). `path_resolve` propagates cwd
+failure (never fabricates `/`).
+
 #### Production repairs
 
 1. **Reentrant walk hook** — store `Arc` callback; `call_walk_hook` clones out
@@ -2027,8 +2082,10 @@ No push.** Wave 5 remains **not certified**.
    emit `serde_json::Number::to_string()` (Node exponent form); otherwise keep
    `format!("{f}")` decimal band (covers `1e-6`, `0.0000012`).
 2. Module prose corrected: small exponents are Node-oracle-covered; remaining
-   accepted divergences are integer-over-2^53, `|x| >= 1e21`, and surrogate
-   slice drops.
+   accepted divergences at Wave 5 close were integer-over-2^53, `|x| >= 1e21`,
+   and surrogate slice drops. **Superseded for `|x| ≥ 1e21`:** Phase 2 Wave 6
+   Amendment I repair-r1 makes large-exponent profile magnitudes reachable and
+   Node-spells them (`1e+21`).
 3. Generator/fixture extended (46 cases); double regen byte-identical.
 4. Prior r1 false closure of `1e-7` number spelling corrected in the r1 note
    above.
@@ -2108,3 +2165,150 @@ pass. Tests, assertions, goldens, TypeScript, manifests, and dependencies are
 unchanged; only the two sanctioned generated oracle fixtures changed/landed.
 No repository probe remains, and the four unrelated root `cc-lhc-*.txt`
 files remain untouched.
+
+---
+
+## Phase 2 Wave 6 — thread view (DUAL-CERTIFIED)
+
+**Status:** dual-certified after Amendment I repair-r1–r5. Copilot-Fable r4
+confirmation `20260725-040456-301c90` PASS supplies the full producer/oracle/
+selection/abort audit; its narrow claim that every integer reader rejected
+`2^63` was overridden by source. Sol r4 `20260725-040456-03703f` found the
+two missed readers, and Sol r5 changed-scope confirmation
+`20260725-043457-51c591` PASS directly mutation-proved the repaired boundary,
+aggregate, and prune paths. Gate `169/312/0/15 = 496`. Wave 7 and all Phase 3
+integration remain.
+
+**Baseline:** certified Wave 5 `81553fc` gate `162/319/0/15`, inventory
+`496`.
+
+**Scope delivered (production):**
+
+- `src/thread_view/mod.rs` + all ten internals (`assemble`, `boundary`,
+  `compact_compute`, `materialize`, `profiles`, `render`, `seam`, `select`,
+  `session_view`, `snapshot`) — zero remaining `todo!("phase 2")` in
+  `src/thread_view/**`.
+- Amendment I: shared view/inspect/selection types are `f64`; budgets and
+  straddling use float operands; integer domains reject fractional,
+  non-finite, and the `2^63` f64 alias via private shared
+  `internal::exact_i64::f64_to_exact_i64` used by snapshot, select,
+  boundary, and prune/zone (`mod.rs`) readers — no saturating `as i64`.
+  Exact `i64` JSON integers (including `i64::MIN` / `i64::MAX`) still
+  accepted via `as_i64()`.
+- One shared JS number lane in `shared_tech/js_json.rs`; large-exponent
+  `|x| ≥ 1e21` is Node-compatible (`1e+21`). Integer-over-2^53 remains a
+  separate accepted divergence.
+- Nested `sourceState.derivationCounts` produced by compact from
+  `read_selection_inputs` (not oracle-only writers). Materialize
+  `path_resolve` is lexical Node resolve; cwd failure propagates (never
+  fabricates `/`); no symlink canonicalize. PI session v3; seam
+  clone-under-lock; `select` uses `rfind`.
+- Closed-vocab matches: band/budget field access; `RenderingPartKind`
+  exhaustive. Open JSON/`&str` defaults match TS.
+- **No oracle-only public surfaces:** `stored_view_config_json`,
+  `compact_receipt_config`, `budget`, and `lexical_path_resolve` are
+  private; `path_resolve` is `pub(crate)` only.
+
+**Fixtures:** `view_boundary` / `view_seam` bodies real where host-agnostic;
+`view_thread` / `lifecycle` SDK builders remain honest `todo!("phase 2")`
+(Wave 7 `init_lhc`). Lifecycle mirror percentages/`lower_bound` widened to
+`f64` (`Eq` dropped; other derives retained).
+
+**Owning census (Amendment C):** eleven suites **102** tests (100 active +
+2 TS-mirroring ignores). `view_boundary` **8** total / 7 active / 1 ignored.
+
+**Gate (pre-certification, after Wave 6 bodies + Amendment I repair-r5):**
+
+```text
+exact-todo: tokens=83 bodies=83 covered=83
+classified=496 cargo-reported=496 (binaries: 58)
+passed=169 suspicious=0 notimpl=312 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic vs Wave 5 certified baseline: **+7 passed / −7 notimpl** (exact
+host-agnostic greens below). Active progress **169/481**. Do **not** claim
+a +98 owning-suite delta — 91 of 100 active view cases still stop at Wave 7
+`init_lhc` / SDK fixture builders.
+
+**Exact newly green names (+7; allowlisted):**
+
+- `view_compact::renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk`
+- `view_compact_full_boundary::keeps_a_mid_thread_straddling_turn_on_an_exact_50_50_split`
+- `view_compact_full_boundary::evicts_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_smooth_side`
+- `view_compact_full_boundary::keeps_an_exactly_covered_closed_turn_in_full`
+- `view_compact_full_boundary::keeps_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_full_side`
+- `view_compact_full_boundary::treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddling_turn`
+- `view_compact_full_boundary::starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it`
+
+Prior Wave 6 seam pair remains green; async
+`uninstalled_the_point_is_a_no_op` hosts the Amendment I oracle via
+public `compact` / `describe` and load-bearing `select_arrangement`.
+
+**Amendment I oracle (repair-r4):** `fixtures/profile-number-cases.jsonl`
+SHA-256 `abe4c924f3dc91789e75eab2567799c4ad17af6af1a82914b3c30c8de3c19068`
+(**26** cases). Keeps r3's load-bearing integral selection row; adds
+`selection_fractional_vs_truncated_operands` — Node `selectArrangement`
+twice (fractional 12.5/47.5 vs truncated 12/48) over a 2-turn input,
+asserting dual projections (`fractional` / `truncated`). Nested
+`source_state_json` and stored-config rows (including `lowerBound: 1e21`)
+still come from real compact → SQLite. Generator: build TS then
+`node scripts/gen-profile-number-fixtures.mjs` (double-regen byte-identical).
+Goldens under `tests/goldens/**` byte-unchanged vs `81553fc` (15 files, 0
+drift).
+
+**Repair-r2 mutation matrix (historical; selection overstated):** merge trunc;
+selection/`budget` i64 cast claimed RED but only full-budget was load-bearing
+(smooth/detailed/brief → `0.0` stayed GREEN). Compact config writer trunc;
+compact source-state empty map; snapshot reader trunc; receipt trunc; NaN
+spelling; large-exponent `Display` bypass. Disposable: `2^63` `maxEventOrder`
+rejected (mutated `<= i64::MAX as f64` bound accepts/saturates).
+
+**Complementary selection matrices:**
+- **r3 (band load-bearing; integral profile):** four separate `0.0` call-site
+  mutations RED — `full_budget = 0.0` → compact_point 130≠120; smooth fill
+  `0.0` → entries[4].band detailed≠smooth; detailed fill `0.0` →
+  entries[2].band brief≠detailed; brief fill `0.0` → covered_from 30≠10.
+- **r4 (Amendment I arithmetic; fractional operands):** shared
+  `budget` → `(lower_bound.trunc() * share.trunc()) / 100.0` turns counted
+  consumer RED on
+  `selection_fractional_vs_truncated_operands/fractional: compact_point`
+  (left 5 right 0) — not 1e21 overflow. Integral load-bearing row may stay
+  green under this mutation (expected).
+
+**Repair-r5 (`2^63` reader union):** Sol confirmation
+`20260725-040456-03703f` found `boundary.rs` and `mod.rs` still used
+`f <= i64::MAX as f64` then `f as i64` (harness cleanup later aborted the
+Sol write-up — treat the source finding as FAIL). Copilot-Fable
+`20260725-040456-301c90` returned PASS but over-claimed that all integer
+readers reject `2^63`; that narrow claim is overridden. Shared private
+`exact_i64` now backs snapshot/select/boundary/prune-zone. Disposable
+probes: REAL `2^63` rejected on `read_boundary_position`,
+`visibility_zone_tokens`, and public `prune`→`tokens_behind_boundary`;
+integral reals OK. Reverting either missed reader to the rounded bound
+accepts/saturates. Sweep
+`rg 'f <= i64::MAX as f64|f >= i64::MIN as f64' src/thread_view` → 0
+executable hits (comments only elsewhere). Gate arithmetic unchanged
+`169/312/0/15`. Sol's scratch `/tmp/lhc-w6-confirm-r4-t1J6AaXE` left for
+the Sol verifier to clean.
+
+**Final changed-scope certification:** Sol
+`20260725-043457-51c591` **PASS** after cleaning its exact prior scratch.
+It directly proved REAL `2^63` rejection and integral-real acceptance through
+`read_boundary_position`, `visibility_zone_tokens`, and public prune; separate
+rounded-bound reversions made boundary/aggregate accept `i64::MAX` and prune
+return a saturated receipt. Fmt/check/clippy, the 26-row fixture at
+`abe4c924f3dc91789e75eab2567799c4ad17af6af1a82914b3c30c8de3c19068`,
+and the full `169/312/0/15` gate passed. Both Sol scratch directories were
+removed. Together with Copilot-Fable r4 PASS on the unchanged broader scope,
+Wave 6 is dual-certified.
+
+**Wave 7 blockers:** `sdk.rs::init_lhc`; SDK-calling fixture builders in
+`lifecycle` / `view_thread`; `inspect/internal/view_report.rs`
+`compose_view_report`; remaining view suite cases that construct threads
+through the SDK.
+
+**Immutable audit:** no golden regeneration; four root `cc-lhc-*.txt`
+preserved; orchestrator comparison artifacts
+`/tmp/lhc-ts-profiles-current.txt` and `/tmp/lhc-rs-profiles-current.txt`
+removed and confirmed absent.

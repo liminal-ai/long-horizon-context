@@ -32,12 +32,12 @@ use serde_json::{Map, Value};
 /// All three bands non-empty (Story 2's reference config).
 fn gradient_params() -> ViewCompactParams {
     ViewCompactParams {
-        lower_bound: Some(400),
+        lower_bound: Some(400.0),
         percentages: Some(PartialViewProfilePercentages {
-            full: Some(25),
-            smooth: Some(16),
-            detailed: Some(10),
-            brief: Some(49),
+            full: Some(25.0),
+            smooth: Some(16.0),
+            detailed: Some(10.0),
+            brief: Some(49.0),
         }),
     }
 }

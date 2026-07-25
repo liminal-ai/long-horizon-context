@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::snapshot::TailMessageRow;
-use crate::shared_tech::derivation::DerivationState;
-use crate::shared_tech::tool_result_rendering::FALLBACK_TRUNCATION_LIMIT;
+use crate::shared_tech::derivation::{DerivationState, RenderingPartKind};
+use crate::shared_tech::js_json::{js_json_stringify, js_string_nullish};
+use crate::shared_tech::tool_result_rendering::{FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback};
 use crate::shared_tech::view::{Band, ViewSubjectKind};
 
 /// Deterministic abbreviation: a fixed prefix plus an exact tail marker, a pure
@@ -118,16 +119,23 @@ pub struct AssembledContextMessage {
     pub band: Option<Band>,
 }
 
-pub fn deterministic_truncation(_text: &str) -> String {
-    todo!("phase 2")
+pub fn deterministic_truncation(text: &str) -> String {
+    truncate_for_fallback(text)
 }
 
-fn block_content(_message: &TailMessageRow) -> Map<String, Value> {
-    todo!("phase 2")
+fn block_content(message: &TailMessageRow) -> Map<String, Value> {
+    message
+        .blocks
+        .first()
+        .map(|b| b.content.clone())
+        .unwrap_or_default()
 }
 
-fn text_of(_message: &TailMessageRow) -> String {
-    todo!("phase 2")
+fn text_of(message: &TailMessageRow) -> String {
+    match block_content(message).get("text") {
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
 }
 
 /// What the tail renderer needs beyond the message itself: the boundary
@@ -143,43 +151,179 @@ pub struct TailRenderContext {
 /// The call-id → tool-name map from the messages in hand. Pairing within the
 /// tail is structurally sufficient: the compact point snaps to a turn start,
 /// so a tail result's call is never behind it.
-pub fn tool_names_by_call_id(_messages: &[TailMessageRow]) -> IndexMap<String, String> {
-    todo!("phase 2")
+pub fn tool_names_by_call_id(messages: &[TailMessageRow]) -> IndexMap<String, String> {
+    let mut names = IndexMap::new();
+    for message in messages {
+        if message.kind != RenderingPartKind::ToolCall {
+            continue;
+        }
+        let block = block_content(message);
+        let call_id = block.get("toolCallId");
+        let tool_name = block.get("toolName");
+        if let (Some(Value::String(call_id)), Some(Value::String(tool_name))) = (call_id, tool_name)
+        {
+            names.insert(call_id.clone(), tool_name.clone());
+        }
+    }
+    names
 }
 
-fn render_tool_call(_message: &TailMessageRow) -> AssembledContextMessage {
-    todo!("phase 2")
+fn render_tool_call(message: &TailMessageRow) -> AssembledContextMessage {
+    let block = block_content(message);
+    let name = match block.get("toolName") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => LITERAL_UNKNOWN_TOOL,
+    };
+    // TS `JSON.stringify(block["arguments"] ?? {})` — nullish → `{}`.
+    let args = match block.get("arguments") {
+        None | Some(Value::Null) => Value::Object(Map::new()),
+        Some(v) => v.clone(),
+    };
+    AssembledContextMessage {
+        role: AssembledContextRole::Assistant,
+        content: format!(
+            "{LITERAL_TOOL_CALL_PREFIX}{name}{LITERAL_TOOL_CALL_CLOSE_SPACE}{}",
+            js_json_stringify(&args)
+        ),
+        band: None,
+    }
 }
 
-fn tool_result_raw_content(_message: &TailMessageRow) -> String {
-    todo!("phase 2")
+fn tool_result_raw_content(message: &TailMessageRow) -> String {
+    match block_content(message).get("content") {
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
 }
 
 /// Tool-result body for session loading: full ahead of the boundary, truncated at-or-behind.
-pub fn tool_result_session_content(_message: &TailMessageRow, _ctx: &TailRenderContext) -> String {
-    todo!("phase 2")
+pub fn tool_result_session_content(message: &TailMessageRow, ctx: &TailRenderContext) -> String {
+    let content = tool_result_raw_content(message);
+    if message.source_event_order > ctx.boundary_position {
+        content
+    } else {
+        deterministic_truncation(&content)
+    }
 }
 
 fn render_tool_result(
-    _message: &TailMessageRow,
-    _ctx: &TailRenderContext,
+    message: &TailMessageRow,
+    ctx: &TailRenderContext,
 ) -> AssembledContextMessage {
-    todo!("phase 2")
+    let block = block_content(message);
+    let name = match block.get("toolCallId") {
+        Some(Value::String(call_id)) => ctx
+            .tool_name_by_call_id
+            .get(call_id)
+            .map(String::as_str)
+            .unwrap_or(LITERAL_UNKNOWN_TOOL),
+        _ => LITERAL_UNKNOWN_TOOL,
+    };
+    if message.source_event_order > ctx.boundary_position {
+        AssembledContextMessage {
+            role: AssembledContextRole::User,
+            content: format!(
+                "{LITERAL_TOOL_RESULT_PREFIX}{name}{LITERAL_TOOL_RESULT_CLOSE}\n{}",
+                tool_result_raw_content(message)
+            ),
+            band: None,
+        }
+    } else {
+        let short = deterministic_truncation(&tool_result_raw_content(message));
+        AssembledContextMessage {
+            role: AssembledContextRole::User,
+            content: format!(
+                "{LITERAL_TOOL_RESULT_PREFIX}{name}{LITERAL_TOOL_RESULT_ABRIDGED_MID}\n{short}"
+            ),
+            band: None,
+        }
+    }
 }
 
 /// One tail message → one assembled message per the mapping table. Each kind is its
 /// own arm so a single kind's drift fails its own named test leg.
 pub fn render_tail_message(
-    _message: &TailMessageRow,
-    _ctx: &TailRenderContext,
+    message: &TailMessageRow,
+    ctx: &TailRenderContext,
 ) -> AssembledContextMessage {
-    todo!("phase 2")
+    match message.kind {
+        RenderingPartKind::UserPrompt => AssembledContextMessage {
+            role: AssembledContextRole::User,
+            content: text_of(message),
+            band: None,
+        },
+        RenderingPartKind::AssistantText => AssembledContextMessage {
+            role: AssembledContextRole::Assistant,
+            content: text_of(message),
+            band: None,
+        },
+        RenderingPartKind::AssistantThinking => {
+            // Included: the tail is full fidelity (bands compress thinking away for
+            // older turns); harness-side conversion may re-block or drop.
+            AssembledContextMessage {
+                role: AssembledContextRole::Assistant,
+                content: format!(
+                    "{LITERAL_THINKING_OPEN}{}{LITERAL_THINKING_CLOSE}",
+                    text_of(message)
+                ),
+                band: None,
+            }
+        }
+        RenderingPartKind::ToolCall => render_tool_call(message),
+        RenderingPartKind::ToolResult => render_tool_result(message, ctx),
+        RenderingPartKind::RuntimeNote => AssembledContextMessage {
+            role: AssembledContextRole::User,
+            content: format!("{LITERAL_RUNTIME_NOTE_PREFIX}{}", text_of(message)),
+            band: None,
+        },
+        RenderingPartKind::ModelChange => {
+            let block = message
+                .blocks
+                .first()
+                .map(|b| &b.content)
+                .cloned()
+                .unwrap_or_default();
+            AssembledContextMessage {
+                role: AssembledContextRole::User,
+                content: format!(
+                    "{LITERAL_MODEL_CHANGE_PREFIX}{}{LITERAL_MODEL_CHANGE_ARROW}{}",
+                    js_string_nullish(block.get("previousModel")),
+                    js_string_nullish(block.get("newModel"))
+                ),
+                band: None,
+            }
+        }
+        RenderingPartKind::ThinkingLevelChange => {
+            let block = message
+                .blocks
+                .first()
+                .map(|b| &b.content)
+                .cloned()
+                .unwrap_or_default();
+            AssembledContextMessage {
+                role: AssembledContextRole::User,
+                content: format!(
+                    "{LITERAL_THINKING_LEVEL_CHANGE_PREFIX}{}{LITERAL_MODEL_CHANGE_ARROW}{}",
+                    js_string_nullish(block.get("previousLevel")),
+                    js_string_nullish(block.get("newLevel"))
+                ),
+                band: None,
+            }
+        }
+    }
 }
 
 /// One non-empty band to one labeled `user` message: band-marker header, then
 /// the snapshot bytes verbatim. Inference APIs reject unknown roles.
-pub fn render_band_message(_band: Band, _rendered_text: &str) -> AssembledContextMessage {
-    todo!("phase 2")
+pub fn render_band_message(band: Band, rendered_text: &str) -> AssembledContextMessage {
+    AssembledContextMessage {
+        role: AssembledContextRole::User,
+        band: Some(band),
+        content: format!(
+            "{LITERAL_CONTEXT_PREFIX}{}{LITERAL_CONTEXT_MID}{rendered_text}",
+            band.as_str()
+        ),
+    }
 }
 
 // ── band entries: degrade ladders, gaps, keys ────────────────────
@@ -222,42 +366,178 @@ pub struct ResolvedRepresentation {
     pub reason: Option<String>,
 }
 
-fn usable(_derivation: Option<&DerivationSnapshot>) -> bool {
-    todo!("phase 2")
+fn usable(derivation: Option<&DerivationSnapshot>) -> bool {
+    // "Usable" means state = ready.
+    matches!(
+        derivation,
+        Some(DerivationSnapshot {
+            state: DerivationState::Ready,
+            content: Some(_),
+            ..
+        })
+    )
 }
 
-fn ladder_state(_derivation: Option<&DerivationSnapshot>) -> String {
-    todo!("phase 2")
+fn ladder_state(derivation: Option<&DerivationSnapshot>) -> String {
+    match derivation {
+        None => LITERAL_LADDER_STATE_ABSENT.to_string(),
+        Some(d) => d.state.as_str().to_string(),
+    }
 }
 
 /// Smooth (turn) ladder: turn_rendering → detailed_turn_compression →
 /// deterministic excerpt of the turn's live messages → gap entry.
 pub fn resolve_smooth_representation(
-    _turn_id: &str,
-    _lookup: &DerivationLookup,
-    _excerpt: Option<&str>,
+    turn_id: &str,
+    lookup: &DerivationLookup,
+    excerpt: Option<&str>,
 ) -> ResolvedRepresentation {
-    todo!("phase 2")
+    let rendering = lookup(turn_id, LITERAL_DERIVATION_TURN_RENDERING);
+    if usable(rendering.as_ref()) {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_TURN_RENDERING.to_string(),
+            body: rendering.unwrap().content.unwrap(),
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        };
+    }
+    let compression = lookup(turn_id, LITERAL_DERIVATION_DETAILED_TURN_COMPRESSION);
+    if usable(compression.as_ref()) {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_DETAILED_TURN_COMPRESSION.to_string(),
+            body: compression.unwrap().content.unwrap(),
+            degraded: true,
+            gap: false,
+            degraded_marker: Some(LITERAL_FALLBACK_SMOOTH_FROM_COMPRESSION.to_string()),
+            reason: None,
+        };
+    }
+    if let Some(excerpt) = excerpt {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_MESSAGE_EXCERPT.to_string(),
+            body: deterministic_truncation(excerpt),
+            degraded: true,
+            gap: false,
+            degraded_marker: Some(LITERAL_FALLBACK_SMOOTH_FROM_EXCERPT.to_string()),
+            reason: None,
+        };
+    }
+    ResolvedRepresentation {
+        derivation_used: LITERAL_DERIVATION_GAP.to_string(),
+        body: String::new(),
+        degraded: false,
+        gap: true,
+        degraded_marker: None,
+        reason: Some(format!(
+            "{DIAG_NO_USABLE_DERIVATION_OPEN}{DIAG_FALLBACK_SMOOTH_TURN_RENDERING_LABEL}{}{DIAG_FALLBACK_SMOOTH_DETAILED_SEP}{}{DIAG_FALLBACK_SMOOTH_NO_LIVE_MESSAGES_CLOSE}",
+            ladder_state(rendering.as_ref()),
+            ladder_state(compression.as_ref())
+        )),
+    }
 }
 
 /// Detailed (chunk) ladder: chunk_summary_detailed → chunk_summary_brief →
 /// concatenated member smooth compressions (truncated, marked) → gap entry.
 pub fn resolve_detailed_representation(
-    _chunk_id: &str,
-    _lookup: &DerivationLookup,
-    _material: Option<&CompactChunkMaterialSnapshot>,
+    chunk_id: &str,
+    lookup: &DerivationLookup,
+    material: Option<&CompactChunkMaterialSnapshot>,
 ) -> ResolvedRepresentation {
-    todo!("phase 2")
+    let detailed = lookup(chunk_id, LITERAL_DERIVATION_CHUNK_SUMMARY_DETAILED);
+    if usable(detailed.as_ref()) {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_CHUNK_SUMMARY_DETAILED.to_string(),
+            body: detailed.unwrap().content.unwrap(),
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        };
+    }
+    if let Some(CompactChunkMaterialSnapshot::Ready { content }) = material {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_CHUNK_SUMMARY_DETAILED.to_string(),
+            body: content.clone(),
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        };
+    }
+    if let Some(CompactChunkMaterialSnapshot::Concat { content, reason }) = material {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_STORED_MEMBER_CONCAT.to_string(),
+            body: content.clone(),
+            degraded: true,
+            gap: false,
+            degraded_marker: Some(LITERAL_FALLBACK_DETAILED_FROM_STORED_MEMBERS.to_string()),
+            reason: Some(reason.clone()),
+        };
+    }
+    ResolvedRepresentation {
+        derivation_used: LITERAL_DERIVATION_GAP.to_string(),
+        body: String::new(),
+        degraded: false,
+        gap: true,
+        degraded_marker: None,
+        reason: Some(format!(
+            "{DIAG_NO_USABLE_DERIVATION_OPEN}{DIAG_FALLBACK_DETAILED_LABEL}{}{DIAG_FALLBACK_COMPACT_MATERIAL_ABSENT_CLOSE}",
+            ladder_state(detailed.as_ref())
+        )),
+    }
 }
 
 /// Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
 /// truncated → gap entry (no compression rung in this band's ladder).
 pub fn resolve_brief_representation(
-    _chunk_id: &str,
-    _lookup: &DerivationLookup,
-    _material: Option<&CompactChunkMaterialSnapshot>,
+    chunk_id: &str,
+    lookup: &DerivationLookup,
+    material: Option<&CompactChunkMaterialSnapshot>,
 ) -> ResolvedRepresentation {
-    todo!("phase 2")
+    let brief = lookup(chunk_id, LITERAL_DERIVATION_CHUNK_SUMMARY_BRIEF);
+    if usable(brief.as_ref()) {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_CHUNK_SUMMARY_BRIEF.to_string(),
+            body: brief.unwrap().content.unwrap(),
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        };
+    }
+    if let Some(CompactChunkMaterialSnapshot::Ready { content }) = material {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_CHUNK_SUMMARY_BRIEF.to_string(),
+            body: content.clone(),
+            degraded: false,
+            gap: false,
+            degraded_marker: None,
+            reason: None,
+        };
+    }
+    if let Some(CompactChunkMaterialSnapshot::Concat { content, reason }) = material {
+        return ResolvedRepresentation {
+            derivation_used: LITERAL_DERIVATION_STORED_MEMBER_CONCAT.to_string(),
+            body: content.clone(),
+            degraded: true,
+            gap: false,
+            degraded_marker: Some(LITERAL_FALLBACK_BRIEF_FROM_STORED_MEMBERS.to_string()),
+            reason: Some(reason.clone()),
+        };
+    }
+    ResolvedRepresentation {
+        derivation_used: LITERAL_DERIVATION_GAP.to_string(),
+        body: String::new(),
+        degraded: false,
+        gap: true,
+        degraded_marker: None,
+        reason: Some(format!(
+            "{DIAG_NO_USABLE_DERIVATION_OPEN}{DIAG_FALLBACK_BRIEF_LABEL}{}{DIAG_FALLBACK_COMPACT_MATERIAL_ABSENT_CLOSE}",
+            ladder_state(brief.as_ref())
+        )),
+    }
 }
 
 /// TS inline `{ blockType: string; content: Record<string, unknown> }` —
@@ -271,8 +551,25 @@ pub struct ExcerptBlock {
 
 /// The per-message line an excerpt or note renders — a compact, deterministic
 /// excerpt of the raw record (last-rung fallback, not the tail mapping).
-pub fn excerpt_line(_kind: &str, _blocks: &[ExcerptBlock]) -> String {
-    todo!("phase 2")
+pub fn excerpt_line(kind: &str, blocks: &[ExcerptBlock]) -> String {
+    let content = blocks.first().map(|b| &b.content);
+    let empty = Map::new();
+    let content = content.unwrap_or(&empty);
+    let text = match content.get("text") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    match kind {
+        "tool_call" => {
+            let name = match content.get("toolName") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => LITERAL_UNKNOWN_TOOL,
+            };
+            format!("{LITERAL_TOOL_CALL_PREFIX}{name}{LITERAL_TOOL_RESULT_CLOSE}")
+        }
+        "tool_result" => LITERAL_EXCERPT_TOOL_RESULT.to_string(),
+        _ => text.to_string(),
+    }
 }
 
 /// One selected subject → its band-entry text: any attached inter-turn notes
@@ -281,15 +578,38 @@ pub fn excerpt_line(_kind: &str, _blocks: &[ExcerptBlock]) -> String {
 /// gap line as the last rung. select.ts prices exactly this text in the fill
 /// walk; the band stores exactly this text.
 pub fn render_arrangement_entry(
-    _subject_kind: ViewSubjectKind,
+    subject_kind: ViewSubjectKind,
     _subject_id: &str,
-    _rep: &ResolvedRepresentation,
-    _note_texts: &[String],
+    rep: &ResolvedRepresentation,
+    note_texts: &[String],
 ) -> String {
-    todo!("phase 2")
+    let mut lines: Vec<String> = note_texts
+        .iter()
+        .map(|text| format!("{LITERAL_INTER_TURN_NOTE_PREFIX}{text}"))
+        .collect();
+    if rep.gap {
+        lines.push(format!(
+            "{LITERAL_GAP_OPEN}{}{LITERAL_GAP_UNAVAILABLE_MID}{}{LITERAL_TOOL_RESULT_CLOSE}",
+            subject_kind.as_str(),
+            rep.reason.as_deref().unwrap_or(LITERAL_GAP_UNKNOWN_REASON)
+        ));
+    } else {
+        let marker = if rep.degraded {
+            format!(
+                "{LITERAL_DEGRADED_PREFIX}{}{LITERAL_DEGRADED_CLOSE}",
+                rep.degraded_marker
+                    .as_deref()
+                    .unwrap_or(rep.derivation_used.as_str())
+            )
+        } else {
+            String::new()
+        };
+        lines.push(format!("{marker}{}", rep.body));
+    }
+    lines.join(LITERAL_ARRANGEMENT_ENTRY_JOIN)
 }
 
 /// A band's snapshot bytes: its entries oldest-first, blank-line separated.
-pub fn assemble_band_text(_entry_texts: &[String]) -> String {
-    todo!("phase 2")
+pub fn assemble_band_text(entry_texts: &[String]) -> String {
+    entry_texts.join(LITERAL_BAND_TEXT_JOIN)
 }

@@ -73,8 +73,9 @@ the TS authority changes. The live-network `inference-real` suite and
    `Arc<InstanceSeam>`. `Lhc` retains stable per-instance work registration;
    do not reintroduce address-key identity.
 8. `CompactAbortSignal` requires a live-cancellation audit before compact
-   behavior is certified. Preserve the recorded numeric rulings:
-   lower-bound/profile percentages `i64`, visibility budgets `f64`.
+   behavior is certified. Preserve the amended numeric rulings: Amendment I
+   supersedes the factually disproved integer carve-out, so lower-bound/profile
+   percentages and visibility budgets are `f64` through their complete chains.
 9. The gate must remain reconciled every wave: no previously green test may
    regress, every newly green test is inspected, and expected pass names are
    recorded exactly—never by broad prefix.

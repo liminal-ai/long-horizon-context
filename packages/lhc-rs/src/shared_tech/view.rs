@@ -42,13 +42,14 @@ impl ViewSubjectKind {
     }
 }
 
+/// Amendment I — TS `number` band shares (fractional-capable).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewProfilePercentages {
-    pub full: i64,
-    pub smooth: i64,
-    pub detailed: i64,
-    pub brief: i64,
+    pub full: f64,
+    pub smooth: f64,
+    pub detailed: f64,
+    pub brief: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,8 +57,8 @@ pub struct ViewProfilePercentages {
 pub struct ViewProfile {
     pub name: String,
     /// Target assembled size; whole-entry fills may land under or over because
-    /// the bound is a target, not a cap.
-    pub lower_bound: i64,
+    /// the bound is a target, not a cap. Amendment I: TS `number` (fractional).
+    pub lower_bound: f64,
     /// Band shares of the lower bound; must sum to 100.
     pub percentages: ViewProfilePercentages,
 }
@@ -67,13 +68,13 @@ pub struct ViewProfile {
 #[serde(rename_all = "camelCase")]
 pub struct PartialViewProfilePercentages {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub full: Option<i64>,
+    pub full: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub smooth: Option<i64>,
+    pub smooth: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub detailed: Option<i64>,
+    pub detailed: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub brief: Option<i64>,
+    pub brief: Option<f64>,
 }
 
 /// A user profile entry as configured: a full profile under a new name, or a
@@ -85,7 +86,7 @@ pub struct PartialViewProfilePercentages {
 pub struct ViewProfileOverride {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lower_bound: Option<i64>,
+    pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
 }
@@ -97,7 +98,7 @@ pub struct ViewProfileOverride {
 #[serde(rename_all = "camelCase")]
 pub struct ViewCompactParams {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lower_bound: Option<i64>,
+    pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
 }
@@ -362,10 +363,10 @@ pub struct StoredViewGap {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredViewConfig {
-    /// Token-count target (same domain as ViewProfile.lower_bound → i64).
-    pub lower_bound: i64,
+    /// Token-count target (Amendment I: TS `number`, fractional-capable).
+    pub lower_bound: f64,
     /// `Record<string, number>` — insertion-ordered (JSON.stringify contract).
-    pub percentages: IndexMap<String, i64>,
+    pub percentages: IndexMap<String, f64>,
 }
 
 /// Judgment: TS declares `derivationCounts: Record<string, number>`
@@ -500,15 +501,15 @@ pub struct CompactReceiptBands {
     pub smooth: CompactBandStats,
 }
 
-/// ViewProfile percentages & { lowerBound }.
+/// ViewProfile percentages & { lowerBound }. Amendment I: all five are `f64`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactReceiptConfig {
-    pub full: i64,
-    pub smooth: i64,
-    pub detailed: i64,
-    pub brief: i64,
-    pub lower_bound: i64,
+    pub full: f64,
+    pub smooth: f64,
+    pub detailed: f64,
+    pub brief: f64,
+    pub lower_bound: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

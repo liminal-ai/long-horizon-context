@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::shared_tech::js_json::js_json_stringify;
+use crate::shared_tech::js_json::{js_json_stringify, js_string_nullish};
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::shared_tech::tool_result_rendering::truncate_for_fallback;
 use crate::turns::ChunkDeriveDerivationType;
@@ -41,33 +41,6 @@ pub enum CompactChunkMaterial {
     Concat { content: String, reason: String },
     #[serde(rename_all = "camelCase")]
     Blocked { reason: String },
-}
-
-/// JS `String(value ?? "")` for JSON-representable runtime values.
-fn js_string_nullish(value: Option<&Value>) -> String {
-    match value {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Bool(true)) => "true".to_string(),
-        Some(Value::Bool(false)) => "false".to_string(),
-        // For finite JSON numbers, JS `String(number)` and `JSON.stringify`
-        // share the same number spelling. Reuse the crate's Node-compatible
-        // lane so -0 and exponent thresholds do not drift through Rust Display.
-        Some(Value::Number(n)) => js_json_stringify(&Value::Number(n.clone())),
-        Some(Value::Array(items)) => {
-            // Array.prototype.toString → join(",") with recursive ToString;
-            // null/undefined elements become empty.
-            items
-                .iter()
-                .map(|item| match item {
-                    Value::Null => String::new(),
-                    other => js_string_nullish(Some(other)),
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        }
-        Some(Value::Object(_)) => "[object Object]".to_string(),
-    }
 }
 
 /// TS property read on a JSON.parse result cast to Record — live Node boxes
