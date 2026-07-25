@@ -217,3 +217,36 @@ against fixture shapes.
   Harmless, but it **carries no weight toward the removal ruling** — do not
   count it.
 - **Monotonic merge** has unit coverage only.
+
+### B8.4 — Carried from Chunk 3A verification (both lanes, separate trees)
+
+Five findings both 3A verifiers classified **carryable**, recorded here so they
+are checkpoints rather than rediscoveries. Each is real and source-traced;
+none was fixed in 3A.
+
+- **`GROK_LHC=on` is accepted then dropped.** `env_truthy`
+  (`runtime_config.rs:62`) accepts `on`; `gating::is_enabled()` (`gating.rs:10`)
+  accepts only `1`/`true`. Status honestly reports off, so this is a value the
+  product accepts and silently ignores — not a lie, but a trap. *(3A fix round 1
+  attempts this under Y7; if it landed, verify rather than re-fix.)*
+- **Malformed `[lhc]` section silently resolves to off** while `has_section`
+  still attributes provenance to `config` — so `enabled = true` plus one typo'd
+  sibling key renders "off (source: config)". *(Also attempted under Y7.)*
+- **Unknown `/lhc` subcommands fall through to Status.** `parse_lhc_action`'s
+  final `else` maps anything unrecognised to `Status`, and
+  `strip_prefix("repair confirm ")` is case-sensitive while every other arm uses
+  `eq_ignore_ascii_case`. The `id.is_empty()` usage message is near-unreachable.
+  UX only — confirm the live `/lhc` surface handles a typo sanely.
+- **Status early-return asymmetry.** `status_report` early-returns on
+  `!enabled && !any_capture_active()` (process-wide) while
+  `format_status_report` picks its off-branch on `!enabled && !capture_active`
+  (session-local). In a process where another session has capture live, `/lhc`
+  on an LHC-off session runs the full I/O path then renders the off-branch.
+  Output is correct; the work exceeds the "no I/O when off" claim. Confirm the
+  claim's exact scope and state it precisely.
+- **Latent `unsafe set_var` mid-process.** `refresh_settings_and_reapply`
+  (`agent_ops.rs:977-990`) re-enters `apply_resolved_config` on `/new` with
+  tokio workers live. Usually a no-op, but a config edit flipping
+  `enabled` / `compact_experimental` / `inference_model` between refreshes fires
+  a real `setenv` concurrent with other threads' `getenv`. Narrow and
+  unobserved — decide guard-or-document, do not leave silent.
