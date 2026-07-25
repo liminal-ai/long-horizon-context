@@ -99,10 +99,14 @@ a vanished seam is an escalation discovery, not something to route around.
   `ModelClient` and `ModelClientSession` are now publicly exported from
   core (`core/src/lib.rs`: `pub use client::ModelClient`). LHC's
   ModelCall consumes them directly; the audit's re-export/reimplement
-  workaround is obsolete. Caveat unchanged: derivation calls ride the
-  user's auth lane — under a ChatGPT plan this spends plan quota and may
-  look anomalous; prefer a dedicated/API-key lane config, decided with
-  Lee at Chunk 2.
+  workaround is obsolete. **Auth lane RULED (Lee, 2026-07-26):
+  derivation calls ride ChatGPT auth — the same auth Lee runs Codex
+  with — on `gpt-5.6-luna` at the lowest reasoning effort (`none` if
+  the client accepts it, else the minimum available), both derivation
+  lanes (small-op and big-op), through the in-process ModelClient only
+  (no CLI spawns as providers). Plan-quota spend accepted; report per
+  chunk. (Grok-build's parallel ruling: its lanes ride grok-4.5 at low
+  thinking via its own sampler.)**
 - **Certification level:** core's ContextManager normalizes items, so
   certify at the rollout/replacement-history level (bytes LHC hands
   over vs bytes persisted/replayed), not at raw request level.
