@@ -147,3 +147,73 @@ differed and what re-running the gate against the real body showed. Then the
 blind spots, the `/btw`/memory-flush verdict, the done-definition evidence
 table, rollback and recoverability, equivalence numbers, and performance
 figures. End with the live-track handoff list.
+
+---
+
+## B8 [blocking] Pre-registered live-cert watch items
+
+Carried from the Chunk 2 final acceptance review. These are **predictions
+traced from source, not established facts** — confirm or refute each, and do
+not let one masquerade as a new discovery mid-cert.
+
+### B8.1 — The zero-divergence reading that means nothing
+
+**This is the easiest number in the whole cert to misread.** A hook-2/hook-3
+session-id mismatch produces **zero compared turns**, which in a summary reads
+**identically to a clean run**: `informational_divergences == 0`.
+
+**Rule: never read `informational_divergences == 0` as evidence without first
+asserting `turns_served_and_compared > 0`.** That distinction is the entire
+reason the fallback counter exists. Report both numbers together, always, and
+report the **ratio** `turns_fallen_back : turns_served_and_compared` — a high
+fallback ratio means the zero-divergence pile is thin no matter what the
+divergence counter says.
+
+This also discharges part of B2: the session-id coupling is inspection-only
+today, and the equivalence counters **cannot** catch a mismatch on their own.
+
+### B8.2 — Expected informational divergence that is capture encoding, not a serving bug
+
+`mapping.rs:442-455` wraps tool arguments that are not JSON objects: malformed
+→ `{"raw": "<original>"}`, non-object JSON → `{"value": <parsed>}`. On the serve
+side those return **wrapped**, while the native side canonicalizes the original
+bytes to themselves. So a truncated or non-object tool-argument payload projects
+as:
+
+```
+native : [tool call · x] {not json
+served : [tool call · x] {"raw":"{not json"}
+```
+
+and **fires informational divergence** — correctly, in that the model really
+would see different text, but as a **capture-encoding artifact**, not a serving
+defect.
+
+Standing rule says the first informational divergence goes to Lee. **This shape
+is pre-registered**: triage it as encoding and report it as such. If it turns
+out to be something else, escalate then.
+
+### B8.3 — G2 re-verifies calibration, not just fixtures
+
+Already mandatory, with an addition. Every equivalence result from Chunk 2 rests
+on **renderer-faithful fixtures**, not a captured live Replace body. If the live
+body differs from the fixtures, it is **not** sufficient to regenerate the
+fixtures and re-run — the instrument's **calibration** must be re-verified
+against the real body, because the canonicalization and fingerprint were tuned
+against fixture shapes.
+
+### B8.4 — Coverage gaps to close on the harness
+
+- **No equivalence test drives the served side through real serving code with
+  argument-bearing tool calls.** `equiv_post_writeback_band_collapse_informational_silent`
+  uses real `decide_substitution` but its window has no tool arguments. One
+  harness test feeding `decide_substitution` output (live-tail tool call with
+  args) against a native body holding **pretty-printed provider bytes** turns
+  source-reading into proof. Chunk 2 round 13 addresses the unit-level version
+  of this; the harness is where it becomes real.
+- **`equiv_tool_window_structural_only`** builds its served side by
+  round-tripping the projection, so its informational-silence assertion is a
+  fixpoint property of the projection rather than evidence about serving.
+  Harmless, but it **carries no weight toward the removal ruling** — do not
+  count it.
+- **Monotonic merge** has unit coverage only.
