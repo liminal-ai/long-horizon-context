@@ -87,6 +87,51 @@ a vanished seam is an escalation discovery, not something to route around.
 - **Scope:** main session only; subagent/multi-thread capture is a
   recorded non-goal until after live cert (same ruling as grok-build).
 
+## Laws from the Phase 3 Chunk 2 escalation (2026-07-25) — binding here
+
+Grok Build's Chunk 2 hit a design flaw worth encoding permanently: LHC
+served its compacted view into requests while the host kept its own
+unreduced conversation state. Two truths → the host's token accounting
+never went down (native compaction writer suppressed), the auto-compact
+threshold stayed permanently tripped (LHC re-compacted every turn), and
+the serving hook's fail-open fallback guaranteed an oversized native
+body — the safety path became the dangerous one. Same disease as the
+Hermes two-counter incident. The fix was write-back: LHC's compacted
+body becomes native host state via the host's own replacement API.
+
+1. **Write-back is the architecture, not an option.** After an LHC
+   compact, the host's conversation state IS the LHC body (this brief
+   already routes through `replace_compacted_history`, which is
+   write-back by construction — keep it that way). Any design where host
+   and LHC hold divergent conversation state is suspect by default and
+   needs a ruling, not an implementation.
+2. **The LHC compact arm must feed the same accounting the native arms
+   feed.** Verify at Chunk 2 that token counters and the auto-compact
+   window state (`auto_compact_window_snapshot` and neighbors) observe
+   the LHC replacement exactly as they observe native compaction — cert
+   includes a threshold-untrips test (compact once, counter drops, no
+   re-trigger next turn).
+3. **Enumerate every fail-open path and every full-conversation consumer
+   at Chunk 2 start, not when one bites.** Any fallback must fall back
+   to a body that fits the window (write-back makes this hold — verify,
+   don't assume). Census host features that read full history outside
+   the request builder (resume, forks, review/subagent flows, manual
+   /compact, anything /btw-shaped) and confirm each rides native state;
+   record the census in the chunk notes.
+4. **Capture must be idempotent under LHC's own write-back.** If the
+   capture tee observes `replace_compacted_history` (it likely does —
+   verify whether that path routes through `record_conversation_items`),
+   LHC's output re-enters capture. Design for it explicitly: the
+   write-back must record exactly once or not at all, never doubled, and
+   Chunk 1 certification gains a loop test with crash-injection
+   (write-back interrupted mid-flight must not double-record on retry).
+5. **Hard-constraint tests must be real.** Grok's only test for its
+   rewind-critical invariant asserted a constant against itself. For
+   every constraint this brief calls hard (rollout replay fidelity, item
+   ordering across resume), certification requires a test that fails
+   when the constraint is violated — verifiers check vacuousness
+   explicitly.
+
 ## Chunk 0 — fork discipline (mirror grok-build-lhc, merge-based flavor)
 
 Replicate the grok-build-lhc Chunk 0 exactly, adapted:
