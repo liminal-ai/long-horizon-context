@@ -32,10 +32,19 @@ SRC=/srv/work/grok-build
 DST="/srv/work/grok-verif-${LANE}"
 
 if [ ! -f "$BRIEF" ]; then echo "brief not found: $BRIEF" >&2; exit 1; fi
+# Absolutise BEFORE the cd below — a relative brief path stops resolving once
+# we chdir into the isolated copy.
+BRIEF="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
 if [ -e "$DST" ]; then echo "destination exists, refusing to clobber: $DST" >&2; exit 1; fi
 
 # Copy the whole tree including the vendored submodule and build artifacts.
 # --delete is deliberately absent: DST must not exist, checked above.
+#
+# Cost note: target/ dominates (~59G of a ~59G tree), so a copy takes minutes
+# and ~60G. That is deliberate — excluding target/ would force each verifier
+# into a full cold rebuild of the workspace, which is slower in wall-clock and
+# makes "run the tripwire" the expensive step rather than a cheap one. Check
+# free space before launching two lanes: `df -h /srv/work`.
 rsync -a --exclude='.git/index.lock' "$SRC/" "$DST/"
 
 # Record provenance so a report can be attributed to an exact tree state.
