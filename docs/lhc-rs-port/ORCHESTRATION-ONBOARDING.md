@@ -329,45 +329,38 @@ Corollary: never run the implementor concurrently with a verifier either, for
 the same reason. If a verifier reports the tree changing under it, treat that
 report as authoritative and re-run in isolation.
 
-## Verifier session continuity — MANDATORY (added 2026-07-25, root cause of the Chunk 2 round count)
+## Verifier session continuity — see §The loop
 
-**Resume verifier sessions across rounds. Never start a fresh verifier for a
-re-verify of work it has already reviewed.**
+**The policy lives in "Verifier session continuity" under §The loop (Lee's
+ruling).** Fresh sessions only at the FIRST full verification of a new
+chunk/wave; resumed for every subsequent fix-round in that chunk. Do not carry
+a previous chunk's session across a chunk boundary — new scope gets fresh eyes.
 
-Sol:  `codex-subagent start --resume <run-id> ...`
-Opus: `claude-subagent start --resume <run-id> ...`
+Recorded here only because it is the single largest source of round churn in
+the project, and the reason is worth keeping next to the isolation rules:
 
-Current chunk-2 sessions to resume from:
-- Sol  — `20260725-201551-e785a1`
-- Opus — `20260725-202050-b4143c`
-(Implementor, already continuous: `e92f3e09-3dac-4a7f-9225-7c9e73d00f3a`.)
-
-**Why — this is what made Chunk 2 take 17 rounds.** Every verifier run in
-Chunk 2 was a fresh `start`. A fresh adversarial verifier does not know it is
-round 17. It sees a codebase for the first time, assumes first contact, and
-runs a maximal search. Sixteen rounds of convergence are invisible to it, so it
-always finds *something* new — and since the orchestrator's stopping rule was
-"dispatch until both verifiers PASS", the loop had **no fixed point**.
+**Why Chunk 2 took 17 rounds.** Every verifier run in Chunk 2 was a fresh
+`start`. A fresh adversarial verifier does not know it is round 17 — it sees
+the codebase for the first time, assumes first contact, and runs a maximal
+search. Sixteen rounds of convergence are invisible to it, so it always finds
+*something* new. Combined with an orchestrator stopping rule of "dispatch until
+both verifiers PASS", the loop had **no fixed point**.
 
 Carrying a "Settled — flagging these is a false positive" list in the brief is
 **not** a substitute. It worked (no verifier re-litigated write-back, dedup, or
 the ratified design) but it only suppresses re-raising *closed* items. It does
 nothing about the incentive to open new ones.
 
-A resumed verifier remembers what it already checked, what it accepted, and
-what it decided was not worth flagging. It steers toward convergence instead of
-restarting the hunt.
+**Orthogonal to isolation:** resume the session, isolate the filesystem. Both
+apply.
 
-**Keep alongside this:** verifier lanes still never share a working tree (see
-verifier isolation). Resume the session; isolate the filesystem. Those are
-orthogonal.
-
-**Corollary for the orchestrator's own stopping rule:** before dispatching a
+**Corollary for the orchestrator's own stopping rule.** Before dispatching a
 round, state what would make you stop. If the last two rounds produced only
 documentation or test-metadata findings on a component both verifiers agree is
 functionally sound, that is a stop — accept, and carry residuals as named
 checkpoints. "Blocking" means the product is wrong, not that a table row is
-mislabeled.
+mislabeled. In Chunk 2 the orchestrator let every CHANGES REQUIRED continue the
+loop while never letting a PASS end it.
 
 ## Monitor protocol — MANDATORY (rewritten 2026-07-25 after getting it wrong twice)
 
