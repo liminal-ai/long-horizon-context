@@ -192,3 +192,58 @@ checkpoint**: scheduled verification, not a permanent blind spot.
 Remove hook 4 in Chunk 2, or keep it. I recommend removing it. Either way
 write-back proceeds — it is approved and independent, and is already being
 implemented without entangling the substitution path.
+
+---
+
+## Ruling 5 — identical-content dedup is CORRECT BY DESIGN
+
+Source: Fable phase-reviewer ruling, relayed by Lee 2026-07-25, after reading
+`idempotency.rs`. Raised by Sol during the Chunk 2 hard gate as a possible
+capture defect; surfaced rather than patched, per the capture-semantics rule.
+
+**Ruling:** a summary that serializes byte-identically to an already-recorded
+item is deduped away, and that is the content-addressed contract working as
+intended — not a defect. The B1 key design (stable generation, content digest
++ occurrence, dedup-as-diff-engine) makes the record **content-complete**: a
+byte-identical summary adds no information. Compaction *provenance* does not
+live in the event log and is not lost.
+
+**Where compaction provenance actually lives** (verified in the port):
+
+| Provenance | Location |
+|---|---|
+| Compact receipts | `CompactReceipt` (`vendor/.../thread_view/mod.rs:1235-1250`) — `view_id`, `profile`, `config`, `bands` band report, `tail_tokens`, `total_tokens`, `covered_from`, `compact_point`, `degraded` |
+| Derivation family | `query_derivation_log` → `Vec<StoredDerivationLogEntry>` (`vendor/.../sdk.rs:230`) |
+
+So "was this text produced by a compaction, and under what profile/config?" is
+answerable from the receipt and derivation log, not from a duplicate event.
+
+### Three requirements attached to the ruling
+
+1. **Document it** in the capture-semantics notes (`MAPPING.md`) as a
+   deliberate property, citing where compaction provenance lives (table above).
+2. **Pin it with a narrow test:** a summary byte-identical to a recorded item
+   yields **no new event**, causes **no key-stream disturbance for subsequent
+   items**, and the **occurrence walk stays aligned**.
+3. **Confirm the only reachable byte-identical case is the degenerate-render
+   one** — a summary that degenerates to the original text. If a verifier can
+   construct a case where a summary with genuinely **new** provenance collides
+   with an **unrelated** item's bytes at a **colliding occurrence**, that is a
+   different animal and **goes back to Lee**.
+
+### Orchestrator note on requirement 3 — sequencing and the search space
+
+Requirement 3 must be evaluated against the **post-H1 body shape**, not the
+current one: H1 changes how bands and tool results are represented in the
+written-back body, which changes the collision surface itself. Evaluating it
+before H1 lands would answer a question about a body that is being replaced.
+
+Prior analysis to sharpen (not replace) the verifier's search: a key collides
+only if the serialized `ConversationItem` JSON is byte-identical **and** the
+slice-local occurrence index matches. Band-derived text always carries the
+`LITERAL_CONTEXT_PREFIX` / `LITERAL_CONTEXT_MID` framing
+(`vendor/.../render.rs:321-330`), so a band summary cannot collide with an
+ordinary user message unless that message reproduces the framing exactly. The
+natural reachable case is therefore degenerate-render. The contrived case — a
+user pasting text that matches the band-render framing, landing at an aligned
+occurrence — is worth an explicit attempt before the requirement is signed off.
