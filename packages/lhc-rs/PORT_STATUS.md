@@ -2524,3 +2524,44 @@ Non-blocking observations, accepted without moving the frozen denominator:
 host-agnostic, in-process Cargo library.** Phase 3—approximately three Grok
 Build integration chunks—remains the larger user-facing work, and is not
 started by this acceptance.
+
+## Phase 2 acceptance review (Fable, 2026-07-25) — ACCEPTED with three parity repairs
+
+Independent of the loop's completion audit; methods: fresh-input cross-language
+conformance (42 events, float/2^53/astral-unicode/BOM classes — all 15 tables
+and all 5 outputs byte-identical vs built TS after thread-id/timestamp
+normalization; re-verified post-repair), full Phase 2 test-diff adjudication
+(all 24 files, zero unsanctioned edits; Amendments G-J each satisfy the
+decide-and-proceed conditions), adversarial shortcut hunt (zero fake
+greenness), and five-pair algorithm deep-read.
+
+Repairs applied at this gate (gate re-run PASS 496/481/15, wrong=0):
+- scheduler.rs logDerivationExecution: removed a catch_unwind swallow with no
+  TS counterpart — a log-close failure now propagates to the drain's catch as
+  storageFailure, matching scheduler.ts:96-101.
+- work_queue map_i64: non-integral REALs no longer truncate-match — TS
+  Number() keeps 1.5 !== 1 → boundary mismatch (fail-closed); truncation
+  failed open.
+- select.rs full_side_tokens: clamp → composed min/max; clamp panics when a
+  corrupt negative token sum inverts the bounds, TS yields 0.
+
+Ruled, recorded, deliberately not repaired now:
+- C1 forward-compat: TS lists unregistered-kind work rows (drain-recovery
+  design, index.ts:612-627); Rust list_items panics. Unreachable until a new
+  WorkKind exists; tripwire comment at the panic site directs whoever adds
+  one to resolve it (kind becomes wire string). Blocking that future change,
+  not this acceptance.
+- Amendment D ceiling (review C2): hosts must pass canonical
+  YYYY-MM-DDTHH:MM:SS(.mmm)Z strings as public-API `now`/timestamps; offset
+  forms TS would accept panic or read as expired. Phase 3 host brief must say
+  so.
+- Clock plumbing: SdkConfig.clock reaches intake stamping in Rust (documented
+  ladder — Rust's translation of TS tests freezing global Date); a host
+  supplying a clock gets different recorded_at provenance per port. No host
+  does; provenance-only.
+- P1 (-Infinity vs 1 on empty derivation list, unreachable), P2 (three REAL
+  column policies vs TS uniform Number(), corrupt-only, strict sites fail
+  closed), P6 (extreme-year ISO spelling). Documented, no action.
+- P4 follow-up worth doing in Phase 3: one committed tokenizer corpus fixture
+  (CJK/ZWJ/lone-surrogate/digit-runs) js-tiktoken vs tiktoken-rs; the
+  conformance run's unicode content already exercised parity on real paths.

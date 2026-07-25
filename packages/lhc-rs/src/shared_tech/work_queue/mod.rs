@@ -385,9 +385,12 @@ fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
 
 fn map_i64(row: &Map<String, Value>, key: &str) -> i64 {
     match row.get(key) {
+        // Integral REALs convert exactly; non-integral must NOT truncate —
+        // TS Number() keeps 1.5, which !== target → boundary mismatch
+        // (fail-closed), where truncation would fail open (phase-2 review C3).
         Some(Value::Number(n)) => n
             .as_i64()
-            .or_else(|| n.as_f64().map(|f| f as i64))
+            .or_else(|| n.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
             .unwrap_or_else(|| panic!("column {key} not integer")),
         Some(Value::String(s)) => s
             .parse()
@@ -1247,6 +1250,11 @@ pub fn list_items(db: &Db, owner: WorkOwner) -> Vec<WorkItemRecord> {
     rows.into_iter()
         .map(|row| {
             let kind_str = map_required_str(&row, "kind");
+            // KNOWN DIVERGENCE (phase-2 review C1, ledger-ruled): TS lists
+            // unregistered-kind rows (blind cast, index.ts:612-627) so drain
+            // recovery can land them failed_terminal; this panics instead.
+            // Unreachable until a new WorkKind exists — whoever adds one MUST
+            // resolve this (WorkItemRecord.kind becomes wire string).
             let kind = WorkKind::from_wire(&kind_str)
                 .unwrap_or_else(|| panic!("invalid work kind: {kind_str}"));
             let source_ref: WorkSourceRef =

@@ -173,9 +173,10 @@ fn log_derivation_execution(
             event_kind,
             payload: payload.clone(),
         };
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            append_derivation_log(DbTransaction::Read(&txn), &entry);
-        }));
+        // Bare call, as TS logDerivationExecution (scheduler.ts:96-101):
+        // fail-softness lives inside append_derivation_log; a close-failure
+        // there propagates to the drain's catch, same as TS (phase-2 review).
+        append_derivation_log(DbTransaction::Read(&txn), &entry);
     }
 }
 

@@ -637,8 +637,12 @@ fn snap_compact_point(
         })
         .map(|message| message.token_estimate)
         .sum();
-    // Amendment I: keep the float budget-line operand; Math.max/min in TS.
-    let full_side_tokens = (full_budget - newer_tokens as f64).clamp(0.0, turn_tokens as f64);
+    // Amendment I: keep the float budget-line operand. TS Math.max(0, Math.min(
+    // turnTokens, …)) — composed min/max, NOT clamp: clamp panics when a
+    // corrupt negative token sum makes max < min; TS yields 0 (phase-2 review P3).
+    let full_side_tokens = (full_budget - newer_tokens as f64)
+        .min(turn_tokens as f64)
+        .max(0.0);
     // Empty = no mappable live messages past the candidate — runtime_note alone
     // does not count as a rebuildable tail.
     let eviction_would_empty_full = !messages.iter().any(|message| {
