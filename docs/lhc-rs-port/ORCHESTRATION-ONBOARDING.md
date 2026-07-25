@@ -17,9 +17,10 @@ working material. Read it fully before launching anything.
 
 ## The whole project (report against THIS, always)
 
-Lee's deliverable is **LHC running inside Grok Build** — his fork
-(`liminal-ai/grok-build-lhc`) with LHC-based context management he can use
-in real sessions. The path there is **3 phases, ~18 units of work**:
+Lee's deliverable is **LHC running inside his agent CLIs** — first Grok
+Build (`liminal-ai/grok-build-lhc`), then Codex (`liminal-ai/codex-lhc`),
+with LHC-based context management he can use in real sessions. The frame
+is **4 phases, ~22 units of work** (Phase 4 added 2026-07-25 by Lee):
 
 1. **Phase 1 — port shape** (8 waves): **DONE and dual-certified**
    (commits `0314283`…`483bf19`; gate 493 classified, wrong=0; independent
@@ -35,6 +36,13 @@ in real sessions. The path there is **3 phases, ~18 units of work**:
    tripwire script, FORK.md runbook). Chunks 1-3 (capture; inference +
    compact bridge; live certification) remain. Only Chunk 3's sign-off
    delivers the user-facing result.
+4. **Phase 4 — Codex integration** (~4 units, 19–22): **PLANNED, NOT
+   STARTED — do not begin without Lee's explicit kickoff.** Brief:
+   `phase4-codex-integration-brief.md` (seams verified 2026-07-25; fork
+   `liminal-ai/codex-lhc` exists, remotes wired at `/srv/work/codex`).
+   Everything in this document governs Phase 4 the same way it governs
+   Phase 3, with the fork surface being `codex-rs/lhc/` + enumerated
+   hooks.
 
 **Status-report rule (Lee's standing rule, hard):** every report you write
 names the position against the full project ("wave 3 of 7, phase 1 of 3 —
