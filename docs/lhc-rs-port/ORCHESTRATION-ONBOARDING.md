@@ -332,6 +332,28 @@ Corollary: never run the implementor concurrently with a verifier either, for
 the same reason. If a verifier reports the tree changing under it, treat that
 report as authoritative and re-run in isolation.
 
+## Resuming a verifier — exact invocations (learned the hard way)
+
+**Sol / codex.** `codex exec resume` takes **codex's own `session_id`**, not the
+subagent `run_id`, and **rejects `--sandbox`**. Get the id from the prior run's
+envelope:
+
+```
+codex-subagent result <prior-run-id> | python3 -c "import json,sys; \
+  t=sys.stdin.read(); print(json.loads(t[:t.rfind('}')+1]).get('session_id'))"
+
+codex-subagent start --prompt-file <brief> -m gpt-5.6-sol \
+  -c model_reasoning_effort=medium --resume <session_id>
+```
+
+Passing the run_id, or keeping `--sandbox`, exits 2 in ~60ms with
+`running:false` and an envelope — which looks exactly like a completed run.
+**This is why the protocol checks status immediately after kickoff and treats
+`running:false` + envelope as failure until the exit code is read.**
+
+**Opus / claude.** `claude-subagent start --resume <run-id>` — takes the run id
+directly and keeps its normal flags.
+
 ## Verifier session continuity — see §The loop
 
 **The policy lives in "Verifier session continuity" under §The loop (Lee's
