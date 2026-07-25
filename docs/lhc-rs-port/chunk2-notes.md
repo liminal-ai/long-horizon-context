@@ -247,3 +247,54 @@ ordinary user message unless that message reproduces the framing exactly. The
 natural reachable case is therefore degenerate-render. The contrived case — a
 user pasting text that matches the band-render framing, landing at an aligned
 occurrence — is worth an explicit attempt before the requirement is signed off.
+
+---
+
+## LAW — hosts never parse renders (ratified 2026-07-25)
+
+Ratified by Lee (Fable phase-reviewer) as a **reusable law**, not a Chunk 2
+note. It is going into the Phase 4 brief as one.
+
+> **Never reconstruct structure from rendered text. If a host needs to know
+> what a view entry *is*, it takes that from the typed session view —
+> `source_messages` emptiness, entry variants, `message_id` /
+> `idempotency_key` — never by parsing the rendered string.**
+
+**Why.** This is the same defect family hit in **two hosts** now. The typed
+session view (`get_session_thread_view`) exists precisely so hosts never parse
+renders. In Chunk 2 the prefix-based classifier produced a new defect in each
+of three consecutive rounds — Shadow-mode desync in the *default* config,
+image-bearing prompts failing to match because `text_content()` drops image
+parts while capture mapping appends `[image:…]`, and a residual that could
+misplace a `prompt_index` marker and corrupt cancelled-turn rewind. Each fix
+was locally correct and the class survived.
+
+**Corollary, ratified with it:** classify on typed structure **only**. Never on
+content byte-equality with native state — `get_session_thread_view` truncates
+tool-result content at the view boundary (audited, known), so any classifier
+keyed on content is unsound by construction. The classifier must be provably
+insensitive to boundary truncation.
+
+## Ruling 6 — the classifier redesign is RATIFIED
+
+Decide-and-proceed was the correct call: inside the fork surface, no new hook,
+no port change, no target movement, and a status quo three defect rounds had
+made indefensible. **Proceed-and-flag is the right mechanism for this class** —
+keep using it.
+
+**Retroactive condition:** the pending dual-verify must confirm the new
+classifier is **sound**, not merely accept it. If either verifier faults the
+**design** (as distinct from the implementation), that **reopens as a stop**.
+
+## Ruling 7 — vacuous tests are now blocking
+
+Three flaggings is past the limit. All three become **blocking for this round's
+gate**: each must **demonstrably fail when its constraint is violated** — break
+the code, watch it fail, restore — before Chunk 2 goes to acceptance. Asserting
+that a test *would* fail is no longer sufficient; it must be shown.
+
+The crash test specifically must **arm on a novel post-bootstrap event**, so a
+torn write-back is actually exercised.
+
+**No fourth flagging.** If a test cannot be made genuinely sensitive, the
+specific obstruction goes to Lee.
