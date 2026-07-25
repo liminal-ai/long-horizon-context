@@ -126,6 +126,30 @@ Python handoff §"The loop" applies with these deltas:
 3. Reconcile → `fixN-waveN.md` → resume implementor. Re-verify changed
    scope only (single verifier alternating, unless findings were severe).
    Expect 1–2 fix rounds; trivial residue you fix yourself and note.
+
+### Verifier session continuity — MANDATORY (added 2026-07-25, Lee's ruling)
+
+**Within a chunk/wave, re-verification RESUMES the same verifier
+sessions** (`--resume <session_id>` from the prior envelope — every
+subagent CLI supports it). A fresh verifier each round re-derives the
+whole chunk from zero and arrives with a fresh set of priorities to
+flag; the loop then chases convergence against a moving target. Chunk 2
+of Phase 3 burned ~16 fix rounds this way — the single largest source
+of round churn in the project.
+
+- **Fresh sessions:** only at the FIRST full verification of a new
+  chunk/wave (fresh eyes on new scope).
+- **Resumed sessions:** every subsequent fix-round re-verification in
+  that chunk. The resumed verifier re-checks its own prior findings
+  against the changed scope instead of re-auditing the world; its brief
+  should say "confirm your findings N, M are resolved; flag regressions
+  in the changed files only."
+- Independence between the two lanes is unchanged: each lane resumes
+  its OWN session and still never sees the other's reports.
+- Track the two session ids in the chunk record next to the round log.
+- If a resumed session errors or its CLI loses it, note the break in
+  the round log and start the replacement fresh with the prior round's
+  findings-list (not report prose) as seed context.
 4. Your independent pass, every wave, never skipped:
    - gate PASS (run it yourself);
    - `git status --short` scope check (nothing outside packages/lhc-rs);
