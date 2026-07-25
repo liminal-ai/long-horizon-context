@@ -87,6 +87,40 @@ description set. Per Lee, the dry-run sync rehearsal was waived — the first
 real upstream sync (upstream moves daily) is the rehearsal; run the FORK.md
 sync drill for it. Orchestrators: start at Chunk 1; read FORK.md first.
 
+## Host seam map (symbol-level; from the 2026-07-24 feasibility audit)
+
+Upstream churns daily, so line numbers are useless — these are the durable
+crate/symbol-level findings. **Verify each at the current tip before
+building on it**; if one has moved or vanished, that is your first
+escalation-worthy discovery, not something to silently work around.
+
+- **Capture (Chunk 1):** all conversation mutations flow through a single
+  `ChatPersistence`-trait construction site in `xai-chat-state` — a tee
+  decorator there is the whole capture hook. Model-change events ride a
+  separate channel (small second tee, or derive from per-response fields).
+  `chat_history.jsonl` is the model-facing record and natively carries
+  tagged `ConversationItem`s including tool calls, reasoning items
+  (round-tripped for KV-cache stability), and synthetic-input markers —
+  richer native capture than any prior host. Open question from the audit:
+  whether some models' reasoning items are encrypted-only.
+- **Rebuild/serving (Chunk 2):** the host already has full-history
+  substitution APIs — `load_session`, `replace_conversation` /
+  `replace_conversation_for_compaction` — used by resume and native
+  compaction. The compact bridge is a small patch at the existing
+  auto-compact gate. **Hard constraint: substituted views must preserve
+  `prompt_index` or rewind/fork break.**
+- **Inference (Chunk 2):** native compaction already runs on a dedicated
+  non-main model via a `CompactionSampler`-style trait over multi-backend
+  `SamplingConfig` — LHC's ModelCall follows that template; the audit
+  found zero core patch needed for this seam.
+- **No in-process plugin registry** (`xai-grok-hooks` is external
+  subprocess/HTTP only) — hence the marked-hook fork approach; there is
+  nothing to register into.
+- **Subagents have separate chat histories** — scope Phase 3 to the main
+  session; subagent capture is a recorded non-goal until after live cert.
+- **KV-cache economics:** compaction swaps bust the prefix cache by
+  nature; measure during live cert (Chunk 3), don't pre-optimize.
+
 ## Chunk 1 — packaging, session identity, and event capture
 
 1. Choose and document ordinary Cargo consumption of `lhc` (workspace/path
