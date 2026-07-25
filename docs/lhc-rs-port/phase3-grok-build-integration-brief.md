@@ -79,9 +79,13 @@ up FIRST — it is cheaper to build before the first hook than to retrofit.
    drill is designed to be handed to a maintainer agent later — write it so
    a fresh agent can run it from FORK.md alone.
 
-Certification for Chunk 0: FORK.md + patch series + tripwire script exist;
-a rehearsed dry-run sync against current upstream tip passes all three
-tripwire layers; default branch and description set.
+**Chunk 0 status: DONE** (Fable, 2026-07-25, fork commit `f99b4fb` on
+`liminal-ai/grok-build-lhc` branch `lhc`). Branched from upstream tip
+`6e38642`; submodule pinned `e582465`; tripwires green (sentinel 0/0,
+compile ok, golden smoke SKIP until Chunk 1 arms it); default branch and
+description set. Per Lee, the dry-run sync rehearsal was waived — the first
+real upstream sync (upstream moves daily) is the rehearsal; run the FORK.md
+sync drill for it. Orchestrators: start at Chunk 1; read FORK.md first.
 
 ## Chunk 1 — packaging, session identity, and event capture
 
