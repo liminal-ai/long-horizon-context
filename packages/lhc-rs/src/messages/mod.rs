@@ -13,20 +13,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::intake_stream::{EventKind, EventRecord};
-use crate::shared_tech::derivation::{Derivation, DerivationReportEntry, SubjectKind};
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::shared_tech::context::resolve_instance_config;
+use crate::shared_tech::derivation::{
+    Derivation, DerivationReportEntry, HandlerRunContext, SubjectKind,
+};
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
-use crate::shared_tech::persist::{DbWriteTransaction, create_db_read_transaction};
-use crate::shared_tech::storage::Db;
+use crate::shared_tech::persist::{
+    DbWriteTransaction, create_db_read_transaction, create_db_write_transaction,
+};
+use crate::shared_tech::storage::{Db, open_database};
 use crate::shared_tech::work_queue::{
     EnqueueDerivationTarget, EnqueueInput, WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef,
     enqueue,
 };
-use crate::threads::ThreadRef;
+use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 
-use internal::cascade::CascadeClear;
-use internal::derivations::read_message_derivations;
+use internal::cascade::{CascadeClear, cascade_from_message, cascade_message_delete};
+use internal::derivations::{
+    MessageReportOptions, read_message_derivations, report_message_derivations,
+};
+use internal::derive::derive_message_in_thread;
 use internal::project::project_event;
-use internal::store::{MessageReadOptions, MessageRow, insert_message, read_messages};
+use internal::store::{
+    MessageReadOptions, MessageRow, apply_message_edit, insert_message, mark_message_deleted,
+    read_message_by_id, read_messages, read_mutable_message,
+};
 use internal::work::{MESSAGE_WORK_DERIVATIONS, MESSAGE_WORK_KINDS};
 
 pub use internal::derive::{MessageDeriveDerivationType, MessageDeriveResult};
@@ -390,8 +404,8 @@ pub async fn list(
 }
 
 /// In-transaction read for coordinators that already hold an open thread handle.
-pub fn read_live_messages(_db: &Db) -> Vec<MessageRecord> {
-    todo!("phase 2")
+pub fn read_live_messages(db: &Db) -> Vec<MessageRecord> {
+    read_messages(db, &MessageReadOptions::default())
 }
 
 /// TS `MessageDetail` — canonical record + honest deleted + report derivations.
@@ -411,8 +425,54 @@ pub struct MessageDetail {
     pub derivations: Vec<DerivationReportEntry>,
 }
 
-pub async fn show(_thread_ref: ThreadRef, _message_id: &str) -> OpResult<MessageDetail> {
-    todo!("phase 2")
+pub async fn show(thread_ref: ThreadRef, message_id: &str) -> OpResult<MessageDetail> {
+    let message_id = message_id.to_string();
+    let result = AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+        let message_id = message_id.clone();
+        Box::pin(async move {
+            let record = read_message_by_id(transaction.db, &message_id);
+            let Some(record) = record else {
+                return OpResult::Err {
+                    error: ErrorResult {
+                        error_class: ErrorClass::CallerError,
+                        code: ErrorCode::MessageNotFound,
+                        reason: format!("no message {message_id} exists in this thread"),
+                        event_index: None,
+                    },
+                };
+            };
+            let derivations = report_message_derivations(
+                transaction.db,
+                &MessageReportOptions {
+                    not_ready: None,
+                    message_id: Some(message_id),
+                },
+            );
+            OpResult::Ok {
+                value: MessageDetail {
+                    message_id: record.message_id,
+                    source_event_order: record.source_event_order,
+                    kind: record.kind,
+                    blocks: record.blocks,
+                    token_estimate: record.token_estimate,
+                    actor: record.actor,
+                    harness: record.harness,
+                    recorded_at: record.recorded_at,
+                    turn_id: record.turn_id,
+                    deleted: record.deleted,
+                    derivations,
+                },
+            }
+        })
+    }))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => value,
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!("message show failed: {}", panic_detail(payload))),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -422,17 +482,88 @@ pub struct MessageReportOpts {
 }
 
 pub async fn report(
-    _thread_ref: ThreadRef,
-    _opts: Option<MessageReportOpts>,
+    thread_ref: ThreadRef,
+    opts: Option<MessageReportOpts>,
 ) -> OpResult<Vec<DerivationReportEntry>> {
-    todo!("phase 2")
+    let report_opts = MessageReportOptions {
+        not_ready: opts.as_ref().and_then(|o| o.not_ready),
+        message_id: opts.and_then(|o| o.message_id),
+    };
+    let result = AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+        let report_opts = report_opts.clone();
+        Box::pin(async move { report_message_derivations(transaction.db, &report_opts) })
+    }))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!("report read failed: {}", panic_detail(payload))),
+    }
 }
 
 pub async fn derive(
-    _thread_ref: ThreadRef,
-    _message_ids: &[String],
+    thread_ref: ThreadRef,
+    message_ids: &[String],
 ) -> OpResult<Vec<MessageDeriveResult>> {
-    todo!("phase 2")
+    let Some(config) = resolve_instance_config() else {
+        return OpResult::Err {
+            error: ErrorResult {
+                error_class: ErrorClass::CallerError,
+                code: ErrorCode::InferenceUnavailable,
+                reason: "messages.derive requires an initialized LHC SDK inference configuration"
+                    .into(),
+                event_index: None,
+            },
+        };
+    };
+    let resolved = match resolve_thread_ref(thread_ref).await {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let file_path = resolved.file_path;
+    if !Path::new(&file_path).exists() {
+        return thread_not_found(&file_path);
+    }
+    let db = match open_thread_database(&file_path) {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    let result = AssertUnwindSafe(async {
+        let thread_id = db
+            .prepare(SQL_SELECT_THREAD_ID)
+            .get_params(&[])
+            .and_then(|row| {
+                row.get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+        let Some(thread_id) = thread_id else {
+            return storage_failure(&format!("thread file at {file_path} lost its metadata row"));
+        };
+        let reopen_path = file_path.clone();
+        let run = HandlerRunContext {
+            thread_id,
+            file_path: file_path.clone(),
+            open_db: Arc::new(move || open_database(&reopen_path)),
+            inference_callbacks: config.inference_callbacks.clone(),
+            clock: Arc::clone(&config.clock),
+            config: config.clone(),
+        };
+        let mut results = Vec::new();
+        for message_id in message_ids {
+            results.push(derive_message_in_thread(&run, message_id, None).await);
+        }
+        OpResult::Ok { value: results }
+    })
+    .catch_unwind()
+    .await;
+    db.close();
+    match result {
+        Ok(value) => value,
+        Err(payload) => storage_failure(&format!("derive failed: {}", panic_detail(payload))),
+    }
 }
 
 /// TS `MutationResult.changed`.
@@ -477,10 +608,196 @@ pub struct RemoveInput {
     pub message_id: String,
 }
 
-pub async fn edit(_thread_ref: ThreadRef, _edit: EditInput) -> OpResult<MutationResult> {
-    todo!("phase 2")
+pub async fn edit(thread_ref: ThreadRef, edit: EditInput) -> OpResult<MutationResult> {
+    let result = AssertUnwindSafe(create_db_write_transaction(
+        thread_ref,
+        move |transaction| {
+            let edit = edit;
+            Box::pin(async move {
+                let target = read_mutable_message(transaction.db, &edit.message_id);
+                let Some(target) = target else {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::MessageNotFound,
+                            reason: format!(
+                                "no message {} exists in this thread",
+                                edit.message_id
+                            ),
+                            event_index: None,
+                        },
+                    };
+                };
+                if target.turn_status != Some(internal::store::MutableTurnStatus::Closed) {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::TurnOpen,
+                            reason: if target.turn_status
+                                == Some(internal::store::MutableTurnStatus::Open)
+                            {
+                                format!(
+                                    "message {} belongs to open turn {}; open-turn messages cannot be edited (v1 boundary)",
+                                    edit.message_id, target.turn_id
+                                )
+                            } else {
+                                format!(
+                                    "message {} references no readable turn; only closed-turn messages can be edited (v1 boundary)",
+                                    edit.message_id
+                                )
+                            },
+                            event_index: None,
+                        },
+                    };
+                }
+                apply_message_edit(transaction.db, &edit.message_id, &edit.content);
+                let cascade = cascade_from_message(transaction, &edit.message_id);
+                OpResult::Ok {
+                    value: MutationResult {
+                        changed: MutationChanged {
+                            message_ids: vec![edit.message_id],
+                            turn_ids: Vec::new(),
+                        },
+                        cleared: cascade.cleared,
+                        dropped: cascade.dropped,
+                        queued: cascade
+                            .queued
+                            .into_iter()
+                            .map(|q| MutationQueuedWork {
+                                work_item_id: q.work_item_id,
+                                kind: q.kind,
+                            })
+                            .collect(),
+                        superseded: cascade.superseded,
+                    },
+                }
+            })
+        },
+        None,
+    ))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => value,
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!("edit failed: {}", panic_detail(payload))),
+    }
 }
 
-pub async fn remove(_thread_ref: ThreadRef, _removal: RemoveInput) -> OpResult<MutationResult> {
-    todo!("phase 2")
+pub async fn remove(thread_ref: ThreadRef, removal: RemoveInput) -> OpResult<MutationResult> {
+    let result = AssertUnwindSafe(create_db_write_transaction(
+        thread_ref,
+        move |transaction| {
+            let removal = removal;
+            Box::pin(async move {
+                let target = read_mutable_message(transaction.db, &removal.message_id);
+                let Some(target) = target else {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::MessageNotFound,
+                            reason: format!(
+                                "no message {} exists in this thread",
+                                removal.message_id
+                            ),
+                            event_index: None,
+                        },
+                    };
+                };
+                if target.turn_status != Some(internal::store::MutableTurnStatus::Closed) {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::TurnOpen,
+                            reason: if target.turn_status
+                                == Some(internal::store::MutableTurnStatus::Open)
+                            {
+                                format!(
+                                    "message {} belongs to open turn {}; open-turn messages cannot be deleted (v1 boundary)",
+                                    removal.message_id, target.turn_id
+                                )
+                            } else {
+                                format!(
+                                    "message {} references no readable turn; only closed-turn messages can be deleted (v1 boundary)",
+                                    removal.message_id
+                                )
+                            },
+                            event_index: None,
+                        },
+                    };
+                }
+                if target.initiates_turn {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::MessageInitiatesTurn,
+                            reason: format!(
+                                "message {} is the prompt that initiates turn {}; deleting the initiating prompt or whole turn is not supported in this slice",
+                                removal.message_id, target.turn_id
+                            ),
+                            event_index: None,
+                        },
+                    };
+                }
+                let deleted_at = system_time_to_iso((transaction.clock)());
+                mark_message_deleted(transaction.db, &removal.message_id, &deleted_at);
+                let cascade = cascade_message_delete(transaction, &removal.message_id);
+                OpResult::Ok {
+                    value: MutationResult {
+                        changed: MutationChanged {
+                            message_ids: vec![removal.message_id],
+                            turn_ids: Vec::new(),
+                        },
+                        cleared: cascade.cleared,
+                        dropped: cascade.dropped,
+                        queued: cascade
+                            .queued
+                            .into_iter()
+                            .map(|q| MutationQueuedWork {
+                                work_item_id: q.work_item_id,
+                                kind: q.kind,
+                            })
+                            .collect(),
+                        superseded: cascade.superseded,
+                    },
+                }
+            })
+        },
+        None,
+    ))
+    .catch_unwind()
+    .await;
+
+    match result {
+        Ok(OpResult::Ok { value }) => value,
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!("delete failed: {}", panic_detail(payload))),
+    }
+}
+
+fn system_time_to_iso(time: std::time::SystemTime) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+    let ms = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis() as i64;
+    let secs = ms.div_euclid(1000);
+    let millis = ms.rem_euclid(1000) as u32;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }).div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    let hh = tod / 3600;
+    let mm = (tod % 3600) / 60;
+    let ss = tod % 60;
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }

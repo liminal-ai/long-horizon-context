@@ -1562,3 +1562,231 @@ at recorded `todo!("phase 2")` boundaries. Test/fixture changes are limited to
 approved Amendments E/F; committed goldens/oracles and inventory remain
 unchanged. Wave 7 must still re-audit the below-SDK thread-local
 scheduler-touch/poke seam against real SDK/task-local cross-thread behavior.
+
+### Phase 2 Wave 4 implementation (2026-07-24) — NOT certified
+
+Messages domain behavior from certified Wave 3 `04e9050`. Phase 2 of 3,
+unit 12 of ~18. Does **not** implement SDK namespace / `init_lhc` (Wave 7).
+Wave 4 remains **not certified** pending independent Sol and Copilot-Fable
+review. No commit. No push.
+
+#### Gate
+
+```text
+exact-todo: tokens=250 bodies=250 covered=250
+classified=496 cargo-reported=496 (binaries: 58)
+passed=146 suspicious=0 notimpl=335 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic from certified Wave 3 `145/336/15`: **+1 passed**, **−1 notimpl**,
+exact-todo **295→250** (−45 message-domain bodies). Inventory unchanged at
+`496`. Final target remains `481/0/15`.
+
+#### Exact newly green (+1)
+
+- `smoothing_recovery::cleanprompt_is_pure_for_deterministic_recovery_floors`
+
+Allowlisted under “Phase 2 Wave 4” in `scripts/gate_allowlist.txt`.
+
+#### Production files implemented
+
+- `src/messages/mod.rs` — `read_live_messages`, `show`, `report`, `derive`,
+  `edit`, `remove` (plus existing Wave 3 `create`/`list`)
+- `src/messages/internal/store.rs` — `read_mutable_message`,
+  `mark_message_deleted`, `apply_message_edit`, `read_message_by_id`
+- `src/messages/internal/cascade.rs` — full edit/delete cascade
+- `src/messages/internal/derivations.rs` — source/row/report/pair helpers
+- `src/messages/internal/derive.rs` — inline derive + floor write + dispatch;
+  `.changes` consumed directly at INSERT OR IGNORE / UPDATE hit paths
+- `src/messages/internal/handlers.rs` — prompt_smoothing +
+  tool_result_summary handlers (Arc identity preserved)
+- `src/messages/internal/smoothing.rs` — `clean_prompt` / `cleanProse` with
+  ASCII `(?-u:\bi\b)` for JS `\b`
+- `src/messages/internal/outcome.rs` — `derive_tool_outcome`
+- `project.rs` / `work.rs` / `classify_tool_result.rs` — unchanged this wave
+  (already REAL / exemplar)
+
+#### Owning-suite status (first later-wave blocker)
+
+| Suite | Result | First blocker |
+| --- | --- | --- |
+| `smoothing_recovery` | 1/9 green | remaining tests: `init_lhc` (Wave 7) |
+| `smoothed_prompt_guards` | 0/11 | `init_lhc` (Wave 7) |
+| `tool_result_summary_inference` | 0/3 | `init_lhc` (Wave 7) — `make_run` |
+| `messages_read` | 0/10 | `init_lhc` (Wave 7) |
+| `mutations` / `mutations_delete` | 0/8 + 0/5 | `init_lhc` (Wave 7) |
+| `derivation_messages` | 0/6 active (+3 ignore) | `init_lhc` (Wave 7) |
+| `turn_cascade` | 0/14 | `init_lhc` (Wave 7) |
+
+No test-name / work-kind routing. Remaining notimpls stop at the first true
+Wave 5–7 boundary (`init_lhc` / SDK surfaces / turns).
+
+#### Mutation / adversarial evidence (disposable, removed)
+
+- `derive_tool_outcome(None)→Succeeded` turns probe red; restore green
+- `clean_prompt` fence / `i`→`I` / whitespace matrix green
+- Store edit projection exercised via disposable probe then removed
+
+#### Audit
+
+- Tests/goldens/oracles/fixtures **untouched**
+- `cc-lhc-*.txt` preserved
+- fmt/check/clippy (carried warnings), Wave 3 direct suites, `persist_borrow`,
+  `inference_prompts`, `js_json_conformance` 4/4, `check_prompt_bytes.py` OK
+- Disposable `_probe_r0_wave4.rs` deleted
+- **No commit. No push.** Wave 4 **not certified**.
+
+### Phase 2 Wave 4 certification (2026-07-25) — CERTIFIED
+
+**Full-project position:** Wave 4 of 7 in Phase 2 of 3 is certified (unit 12
+of approximately 18). Waves 5–7 and all Phase 3 Grok Build integration
+remain; this commit does not yet expose message behavior through `init_lhc`.
+
+Certification reconciles the complete reviews and focused ruling by union
+against TypeScript:
+
+- Cursor implementor `20260724-233059-d7b580`, session
+  `0080ea30-39bd-48b7-a3e4-99738b18037e`, verified
+  `Cursor Grok 4.5 High Fast`;
+- full Sol `20260724-234342-bfa6b0` **FAIL**, session
+  `019f9683-6a0a-7d72-817b-4c4e51bd7c93`;
+- full Copilot-Fable `20260724-234345-f6528f`, repair-required despite its
+  PASS headline, session `5d0178b3-7931-4c50-9a62-38da8202e45b`,
+  `claude-fable-5` medium;
+- focused Fable ruling `20260725-000443-47e3d0`: arbitrary REAL
+  `source_version` / unknown metadata raw seeds are out-of-contract
+  corruption, not a forced frozen-shape amendment; open failures must throw
+  into existing containment;
+- repair-r1 Cursor `20260725-001300-9e3efb`, verified fast;
+- changed-scope Copilot-Fable `20260725-002043-74ff8d` **PASS**, same
+  session/model, with five independent mutation kills.
+
+Final repaired behavior includes exact ECMAScript trim/trimStart
+(BOM included, NEL excluded), UTF-16-unit marker bounds, TS-throw-equivalent
+open failure containment at all derive/handler sites, and fail-loud rejection
+of corrupt non-integer versions without changing certified public types.
+Sol's proposal to preserve arbitrary REAL versions/unknown metadata was
+overridden by the focused cross-runtime ruling: production writers are
+integer/typed-closed, sanctioned corruption fixtures do not create those
+rows, and widening shared `Derivation`/turn/report shapes is not forced.
+
+Final orchestrator gate:
+
+```text
+exact-todo: tokens=250 bodies=250 covered=250
+classified=496 cargo-reported=496 (binaries: 58)
+passed=146 suspicious=0 notimpl=335 wrong=0 ignored=15
+GATE PASS
+```
+
+Arithmetic from certified Wave 3: **+1 passed / −1 notimpl**; the sole new
+green remains
+`smoothing_recovery::cleanprompt_is_pure_for_deterministic_recovery_floors`.
+All other owning cases stop at the genuine Wave 7 `init_lhc` boundary.
+`cargo fmt --check`, `cargo check --tests`, JS-JSON 4/4, prompt-byte
+reconstruction, prior-wave suites, and focused Node/Rust mutation matrices
+are green. Tests, fixtures, goldens, and oracles are unchanged. All scratch
+was removed and the four unrelated root `cc-lhc-*.txt` files remain
+untouched.
+
+### Phase 2 Wave 4 repair-r1 (2026-07-25) — NOT certified
+
+Cursor implementor session `0080ea30-39bd-48b7-a3e4-99738b18037e`,
+`cursor-grok-4.5-high-fast`. Reconciles Sol FAIL
+`20260724-234342-bfa6b0` / `019f9683-6a0a-7d72-817b-4c4e51bd7c93`,
+Copilot-Fable repair-required `20260724-234345-f6528f` /
+`5d0178b3-7931-4c50-9a62-38da8202e45b` (`claude-fable-5` medium), and focused
+Fable ruling `20260725-000443-47e3d0`. Inventory / Wave 4 arithmetic
+`146/335/0/15` / wave plan unchanged. No commit. No push. Wave 4 remains
+**not certified**.
+
+#### Exact fixes
+
+1. **ECMAScript trim / trimStart** — extracted shared `is_js_trim_char` in
+   `shared_tech/js_json.rs`; added `js_trim_start`. `smoothing.rs`
+   `cleanProse` / fence detection use `js_trim` / `js_trim_start` (BOM in,
+   NEL out). No duplicated whitespace table.
+2. **UTF-16 marker quantifier** — replaced scalar-count
+   `MARKER_PROMPT_PATTERN` with private `matches_marker_prompt_pattern`
+   matching `/^\[[^\]]{1,80}\]$/` via `js_char_codes` / `js_len` (UTF-16
+   units). `is_marker_prompt` trims with `js_trim`.
+3. **open_db infrastructure failures throw into containment** —
+   `(run.open_db)()` `Err` sites in `derive.rs` (inline derive, race reopen,
+   floor write, dispatch) and `handlers.rs` (load source, inference-failure
+   log reopen ×2, pair lookup) panic with the underlying reason. Outer
+   public derive → `storage_failure("derive failed: …")`; scheduler →
+   `handler threw: …` / Failed (not Blocked/`source_damaged`). Successful
+   open + missing/deleted/wrong-kind still `message_not_found` /
+   `source_damaged`. Best-effort post-commit log reopens may still swallow
+   (accepted durable-work/scheduler precedent).
+4. **Corrupt numeric hardening; no shape amendment** — reject Sol’s proposed
+   REAL `source_version` / unknown-metadata preservation. Focused Fable:
+   those raw-SQL seeds are out-of-contract; do **not** reshape
+   `Derivation.source_version: i64` or `DerivationMetadata`. Both Wave 4
+   `map_required_i64` decoders (`derivations.rs`, `cascade.rs`) reject
+   non-integer Number/string (no `f as i64` truncate). Seed `1.75` panics
+   into existing containment; INTEGER / integer strings unchanged.
+5. **Ledger precision** — see Clippy / adjudications below.
+
+#### Verifier override / corruption doctrine
+
+- REAL `source_version` and unknown metadata keys are **not** certification
+  requirements; no frozen-shape amendment.
+- Production stampers remain integer-closed; metadata is
+  `DerivationMetadata`-closed; no sanctioned corruption fixture writes those
+  seeds.
+- Read-back/cascade must fail loudly on non-integer numerics rather than
+  silently truncate.
+
+#### Adjudications (no production change)
+
+- NULL `turn_id` cascade note is schema-unreachable (`NOT NULL`).
+- Post-commit log reopen swallowing remains an accepted precedent.
+
+#### Clippy warning precision
+
+- **Repair-r1 newly introduced (fixed):** `handlers.rs` marker
+  `iter().any` → `contains` (mechanical).
+- **Wave 4 messages-domain carried (10, not broadened):**
+  `cascade.rs` collapse-if + `sort_by_key`; `derivations.rs` collapse-if;
+  `derive.rs` complex type + collapse-if; `handlers.rs` large-enum ×2
+  (`DeriveSmoothedPromptResult` / `DeriveToolResultSummaryResult`);
+  `messages/mod.rs` collapse-if ×3.
+- **Inherited crate debt** remains outside this repair’s cleanup scope
+  (`cargo clippy --lib` ≈28 warnings total).
+
+#### Mutation evidence (disposable probes, removed)
+
+| Producer | Mutation | Probe turns red |
+| --- | --- | --- |
+| BOM inclusion in `js_trim` | drop U+FEFF from table | `probe_js_trim_bom_in_nel_out` |
+| NEL exclusion | add U+0085 to table | same probe (NEL preserved fails) |
+| UTF-16 marker | restore scalar `{1,80}` regex | `probe_marker_utf16_quantifier` (41 emoji matches) |
+| Handler open_db throw | restore Err→`source_damaged` | `probe_open_db_handler_load_throws` |
+| Inline derive open_db throw | restore Err→`message_not_found` | `probe_open_db_inline_derive_storage_failure` |
+| `map_required_i64` harden | restore `f as i64` truncate | `probe_corrupt_source_version_1_75_panics` |
+
+Node oracle (`String.prototype.trim` / `trimStart` WhiteSpace+LineTerminator
+matrix, NEL near-miss, `/^\[[^\]]{1,80}\]$/` 40 vs 41 emoji + mixed 80/81)
+byte-compared green before deletion. Missing-source after successful open
+retains `source_damaged`. Integer `source_version=1` still reads as 1.
+
+#### Gate
+
+```text
+exact-todo: tokens=250 bodies=250 covered=250
+classified=496 cargo-reported=496 (binaries: 58)
+passed=146 suspicious=0 notimpl=335 wrong=0 ignored=15
+GATE PASS
+```
+
+#### Immutable audit / cleanup
+
+- Tests/goldens/oracles/fixtures **untouched**
+- Four root `cc-lhc-*.txt` preserved
+- Disposable `_probe_wave4_r1.rs` + `_probe_wave4_r1_node.mjs` deleted
+- fmt/check/clippy, eight owning suites (still Wave 7 `init_lhc` blocked),
+  `threads_a8` 10/10, `persist_borrow` 2/2, `inference_prompts` 25/25,
+  `js_json_conformance` 4/4, `check_prompt_bytes.py` OK
+- **No commit. No push.** Wave 4 **not certified**.

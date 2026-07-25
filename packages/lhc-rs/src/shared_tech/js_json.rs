@@ -33,29 +33,38 @@ pub fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// ECMAScript WhiteSpace + LineTerminator + BOM (U+FEFF) for trim/trimStart.
+///
+/// Deliberately excludes U+0085 NEL (JS does not trim it; Rust `str::trim` does).
+fn is_js_trim_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}' // TAB
+        | '\u{000B}' // VT
+        | '\u{000C}' // FF
+        | '\u{0020}' // SP
+        | '\u{00A0}' // NBSP
+        | '\u{FEFF}' // BOM / ZWNBSP
+        | '\u{000A}' // LF
+        | '\u{000D}' // CR
+        | '\u{2028}' // LS
+        | '\u{2029}' // PS
+        | '\u{1680}'
+        | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
+}
+
 /// JS `String.prototype.trim` — WhiteSpace + LineTerminator + BOM (U+FEFF).
 ///
 /// Covers TAB/VT/FF/SP/NBSP, Unicode Space_Separator (Zs), LF/CR/LS/PS, and
 /// BOM. Use wherever a Wave 1 body translates JS `.trim()`.
 pub fn js_trim(s: &str) -> &str {
-    fn is_js_trim_char(c: char) -> bool {
-        matches!(
-            c,
-            '\u{0009}' // TAB
-            | '\u{000B}' // VT
-            | '\u{000C}' // FF
-            | '\u{0020}' // SP
-            | '\u{00A0}' // NBSP
-            | '\u{FEFF}' // BOM / ZWNBSP
-            | '\u{000A}' // LF
-            | '\u{000D}' // CR
-            | '\u{2028}' // LS
-            | '\u{2029}' // PS
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
-        )
-    }
     s.trim_matches(is_js_trim_char)
+}
+
+/// JS `String.prototype.trimStart` — same character set as [`js_trim`].
+pub fn js_trim_start(s: &str) -> &str {
+    s.trim_start_matches(is_js_trim_char)
 }
 
 /// JS `s.slice(start, end)` over UTF-16 code units (negative indices count

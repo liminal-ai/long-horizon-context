@@ -149,16 +149,79 @@ pub struct MutableMessageView {
     pub initiates_turn: bool,
 }
 
-pub fn read_mutable_message(_db: &Db, _message_id: &str) -> Option<MutableMessageView> {
-    todo!("phase 2")
+pub fn read_mutable_message(db: &Db, message_id: &str) -> Option<MutableMessageView> {
+    let row = db
+        .prepare(SQL_READ_MUTABLE_MESSAGE)
+        .get_params(&[SqlParam::from(message_id)])?;
+    let turn_status = match map_optional_str(&row, "turn_status").as_deref() {
+        None => None,
+        Some("open") => Some(MutableTurnStatus::Open),
+        Some("closed") => Some(MutableTurnStatus::Closed),
+        Some(other) => panic!("unknown turn status from row: {other}"),
+    };
+    Some(MutableMessageView {
+        message_id: map_required_str(&row, "message_id"),
+        kind: map_required_str(&row, "kind"),
+        turn_id: map_required_str(&row, "turn_id"),
+        turn_status,
+        initiates_turn: map_required_i64(&row, "is_first_member") == 1,
+    })
 }
 
-pub fn mark_message_deleted(_db: &Db, _message_id: &str, _deleted_at: &str) {
-    todo!("phase 2")
+pub fn mark_message_deleted(db: &Db, message_id: &str, deleted_at: &str) {
+    db.prepare(SQL_MARK_MESSAGE_DELETED)
+        .run(&[SqlParam::from(deleted_at), SqlParam::from(message_id)]);
 }
 
-pub fn apply_message_edit(_db: &Db, _message_id: &str, _content: &str) {
-    todo!("phase 2")
+pub fn apply_message_edit(db: &Db, message_id: &str, content: &str) {
+    use crate::shared_tech::token_counting::estimate_tokens;
+
+    let blocks = db
+        .prepare(SQL_SELECT_BLOCKS_FOR_EDIT)
+        .all(&[SqlParam::from(message_id)]);
+    let update = db.prepare(SQL_UPDATE_MESSAGE_BLOCK);
+    let mut token_estimate = estimate_tokens(content);
+    for block in blocks {
+        let content_text = map_required_str(&block, "content");
+        let parsed: Value =
+            serde_json::from_str(&content_text).unwrap_or_else(|err| panic!("{err}"));
+        // TS mutates properties on JSON.parse result; a scalar throws → rollback.
+        let mut parsed = match parsed {
+            Value::Object(map) => map,
+            other => panic!("message {message_id} block content is not a JSON object: {other}"),
+        };
+        let block_type = map_required_str(&block, "block_type");
+        match block_type.as_str() {
+            "text" => {
+                parsed.insert("text".into(), Value::String(content.to_string()));
+            }
+            "tool_result" => {
+                parsed.insert("content".into(), Value::String(content.to_string()));
+            }
+            "tool_call" => {
+                // Arguments are the call's counted content; the edit's string lands
+                // verbatim as the new arguments value.
+                parsed.insert("arguments".into(), Value::String(content.to_string()));
+                token_estimate =
+                    estimate_tokens(&js_json_stringify(&Value::String(content.to_string())));
+            }
+            "model_change" => {
+                parsed.insert("newModel".into(), Value::String(content.to_string()));
+            }
+            "thinking_level_change" => {
+                parsed.insert("newLevel".into(), Value::String(content.to_string()));
+            }
+            other => panic!("message {message_id} carries unknown block type {other}"),
+        }
+        let encoded = js_json_stringify(&Value::Object(parsed));
+        update.run(&[
+            SqlParam::from(encoded.as_str()),
+            SqlParam::from(message_id),
+            SqlParam::from(map_required_i64(&block, "block_index")),
+        ]);
+    }
+    db.prepare(SQL_UPDATE_TOKEN_ESTIMATE)
+        .run(&[SqlParam::from(token_estimate), SqlParam::from(message_id)]);
 }
 
 struct RawMessageRow {
@@ -382,6 +445,53 @@ pub struct MessageRecordWithDeleted {
     pub derivations: Option<Vec<Derivation>>,
 }
 
-pub fn read_message_by_id(_db: &Db, _message_id: &str) -> Option<MessageRecordWithDeleted> {
-    todo!("phase 2")
+pub fn read_message_by_id(db: &Db, message_id: &str) -> Option<MessageRecordWithDeleted> {
+    let row_map = db
+        .prepare(SQL_READ_MESSAGE_BY_ID)
+        .get_params(&[SqlParam::from(message_id)])?;
+    let row = RawMessageRow {
+        message_id: map_required_str(&row_map, "message_id"),
+        source_event_order: map_required_i64(&row_map, "source_event_order"),
+        kind: map_required_str(&row_map, "kind"),
+        token_estimate: map_required_i64(&row_map, "token_estimate"),
+        actor: map_required_str(&row_map, "actor"),
+        harness: map_required_str(&row_map, "harness"),
+        turn_id: map_required_str(&row_map, "turn_id"),
+        deleted_at: map_optional_str(&row_map, "deleted_at"),
+        recorded_at: map_required_str(&row_map, "recorded_at"),
+    };
+    let block_maps = db
+        .prepare(SQL_READ_BLOCKS_BY_MESSAGE_ID)
+        .all(&[SqlParam::from(message_id)]);
+    let blocks: Vec<Block> = block_maps
+        .into_iter()
+        .map(|block| {
+            let content_text = map_required_str(&block, "content");
+            let parsed: Value =
+                serde_json::from_str(&content_text).unwrap_or_else(|err| panic!("{err}"));
+            let content = match parsed {
+                Value::Object(map) => map,
+                other => panic!("message block content is not a JSON object: {other}"),
+            };
+            Block {
+                block_type: block_type_from_wire(&map_required_str(&block, "block_type")),
+                content,
+            }
+        })
+        .collect();
+    let deleted = row.deleted_at.is_some();
+    let record = record_from_row(&row, blocks);
+    Some(MessageRecordWithDeleted {
+        message_id: record.message_id,
+        source_event_order: record.source_event_order,
+        kind: record.kind,
+        blocks: record.blocks,
+        token_estimate: record.token_estimate,
+        actor: record.actor,
+        harness: record.harness,
+        recorded_at: record.recorded_at,
+        turn_id: record.turn_id,
+        deleted,
+        derivations: record.derivations,
+    })
 }

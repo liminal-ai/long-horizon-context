@@ -185,3 +185,6 @@ work_queue::tc_2_9_text_thinking_and_note_messages_queue_nothing_the_kind_gate_i
 work_queue::tc_3_3_work_half_explicit_close_durably_queues_turn_derivation_owner_turns
 work_queue::tc_3_6_work_half_implicit_close_queues_the_same_work_item_contract
 work_queue::tc_3_8_work_count_a_multi_turn_batch_queues_one_turn_derivation_item_per_closed_turn
+
+# Phase 2 Wave 4 — exact newly green names (+1; no suite globs).
+smoothing_recovery::cleanprompt_is_pure_for_deterministic_recovery_floors

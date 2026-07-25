@@ -1,4 +1,4 @@
-//! Ported from packages/lhc/src/messages/internal/outcome.ts. Phase 1 skeleton.
+//! Ported from packages/lhc/src/messages/internal/outcome.ts.
 //!
 //! Mechanical ToolOutcome stamping: the outcome on a tool-activity summary is a
 //! pure function of the record — paired-result presence and its isError flag —
@@ -12,6 +12,10 @@ pub struct PairedResult {
     pub is_error: bool,
 }
 
-pub fn derive_tool_outcome(_paired_result: Option<PairedResult>) -> ToolOutcome {
-    todo!("phase 2")
+pub fn derive_tool_outcome(paired_result: Option<PairedResult>) -> ToolOutcome {
+    match paired_result {
+        None => ToolOutcome::Unknown,
+        Some(PairedResult { is_error: true }) => ToolOutcome::Failed,
+        Some(PairedResult { is_error: false }) => ToolOutcome::Succeeded,
+    }
 }
