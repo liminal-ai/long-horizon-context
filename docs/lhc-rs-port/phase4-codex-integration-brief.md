@@ -82,9 +82,13 @@ a vanished seam is an escalation discovery, not something to route around.
   `ThreadLifecycleContributor` (`on_thread_start/resume/idle/stop`) and
   `TurnLifecycleContributor` (`on_turn_start/stop/abort/error`) in
   `ext/extension-api/src/contributors.rs` — turn boundaries and thread
-  lifecycle come free, and **`on_thread_idle` is a natural background-
-  drain pump** (the Hermes per-turn-drain lesson, already provided by
-  this host). `ContextContributor`/`TurnInputContributor` exist but are
+  lifecycle come free. **CORRECTED (Lee, 2026-07-26): the earlier text
+  here called `on_thread_idle` "a natural background-drain pump" — that
+  was wrong, a Hermes workaround pattern-matched onto a host that needs
+  no pump. The host never drives drain: intake on the hot path
+  projects, inserts derivation records, enqueues, and the post-commit
+  poke kicks the SDK's own async scheduler (cancel/coalesce built in).
+  Run the SDK in background mode; no host drain calls anywhere.** `ContextContributor`/`TurnInputContributor` exist but are
   prompt-fragment-shaped — not a capture path.
 - **Rebuild/serving (Chunk 2):** `Session::replace_compacted_history`
   (`core/src/session/mod.rs`) accepts an arbitrary replacement history,
