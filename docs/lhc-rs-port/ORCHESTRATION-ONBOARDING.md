@@ -165,7 +165,20 @@ the hot path and one capped `drainSettled` at shutdown), Rust port
 `scheduler.rs:1010-1031` (same machinery on tokio, exercised by 17
 background-mode tests including the lifecycle capstone).
 
-### The fix, per fork
+### The repair — you own the design
+
+Read the foundation docs first (top of this file); this section is
+useless without them. The goal state is simple to say: **your fork
+behaves like the reference hosts — the SDK's own machinery does the
+work, and the host neither drives nor waits on derivation.** How to get
+your fork there is yours to design against the operating model and your
+host's real constraints. The numbered items below are the known
+symptoms in the delivered code and the evidence a conforming system
+shows — a checklist of what was found, NOT an exhaustive spec of the
+repair. If any item conflicts with the operating model or with
+something real in your host, say so and escalate — do not follow it
+blindly; blind implementation of a reviewer's step-list is precisely
+how the defect got in.
 
 1. **Run the SDK in Background mode** (one line in each fork's
    `session.rs`). The host never drives drain: intake on the hot path
