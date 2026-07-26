@@ -4,6 +4,20 @@ You are the orchestrator for the LHC-in-Grok-Build project. This document
 is your entry point: it frames the whole project, then points you at the
 working material. Read it fully before launching anything.
 
+> **REQUIRED FOUNDATION — before ANY integration design decision.**
+> Read `docs/onboard/01-core-concepts.md` and `02-domain-design.md`
+> (this repo) in full, and `04-host-pi-lhc.md` as the reference host
+> pattern. These define LHC's operating model: the canonical event log,
+> intake as the hot path, the durable work queue written in the same
+> transaction as the change that caused it, Background vs Manual mode,
+> the fallback ladder, and compact as a selection walk that never waits.
+> The drain-architecture defect (§Drain architecture repair below)
+> happened because integration work proceeded WITHOUT this foundation —
+> a directive is not a substitute for the model. If a design choice you
+> are about to make contradicts something in those documents, the
+> documents win; escalate if you believe the host genuinely cannot
+> follow them.
+>
 > **Phase 3 orchestrator? Start here.** Phases 1-2 (the port) are DONE and
 > accepted — you are integrating, not porting. Read in order:
 > `phase3-grok-build-integration-brief.md` (this directory — mission,
