@@ -88,7 +88,7 @@ def test_creates_the_three_view_tables_with_their_check_constraints_and_seeds_th
     db = open_raw(fixture.file_path)
     try:
         version = db.prepare("PRAGMA user_version").get()
-        assert int(version["user_version"] if version else 0) == 4  # type: ignore[index]
+        assert int(version["user_version"] if version else 0) == 5  # type: ignore[index]
 
         tables = [
             str(row["name"])

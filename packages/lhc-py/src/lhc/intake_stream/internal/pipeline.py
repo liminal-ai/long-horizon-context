@@ -169,6 +169,7 @@ async def run_message_events(
                     RecordedTurnEvent(
                         event_kind=event["eventKind"],
                         event_order=last_order,
+                        payload=event["payload"],
                     ),
                 )
                 turn_transitions.extend(

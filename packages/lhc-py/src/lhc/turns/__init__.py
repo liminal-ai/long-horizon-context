@@ -29,6 +29,12 @@ class TurnRecord:
     member_message_ids: list[str]
     opened_at_event_order: int
     closed_at_event_order: int | None = None
+    # Host-observed facts from turn_end (schema v5). Absent when unknown —
+    # pre-v5 turns, prompt-boundary closes, or hosts that omit them.
+    outcome: Literal["completed", "aborted"] | None = None
+    outcome_reason: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
     # Present once the turn's derivation placed it in a chunk. Stored values
     # read back; reads never recompute placement.
     chunk_id: str | None = None
@@ -49,6 +55,7 @@ from .internal.chunk_recovery import (
 )
 from .internal.chunks import ChunkStructureRow
 from .internal.store import (
+    TurnCloseHostFacts,
     TurnStructureRow,
     close_turn,
     count_turn_members,
@@ -110,12 +117,14 @@ def _current_open_turn_id(transaction: DbWriteTransaction) -> str:
 
 # Closing a turn durably queues that turn's derivation work in the same
 # transaction: the close update and the work item commit or roll back together.
+# host_facts land only from turn_end; prompt-boundary closes leave them unset.
 def _close_turn_and_queue_work(
     transaction: DbWriteTransaction,
     turn_id: str,
     event_order: int,
+    host_facts: TurnCloseHostFacts | None = None,
 ) -> WorkItemRecord:
-    close_turn(transaction.db, turn_id, event_order)
+    close_turn(transaction.db, turn_id, event_order, host_facts)
     return enqueue(
         transaction,
         EnqueueInput(
@@ -145,6 +154,9 @@ def _close_turn_and_queue_work(
 class RecordedTurnEvent:
     event_kind: EventKind
     event_order: int
+    # turn_end payload (validated closed TurnEndPayload at intake); other
+    # kinds carry their own payload, unused by turn close.
+    payload: dict[str, object]
 
 
 def create(
@@ -160,8 +172,33 @@ def create(
                 turn_id=open_turn_id,
                 queued_work=[],
             )
+        # Payload was closed-validated as TurnEndPayload at intake (validate layer 3).
+        payload = recorded_event.payload
+        outcome = payload.get("outcome")
+        host_facts = TurnCloseHostFacts(
+            outcome=(
+                outcome  # type: ignore[arg-type]
+                if outcome in ("completed", "aborted")
+                else None
+            ),
+            outcome_reason=(
+                str(payload["outcomeReason"])
+                if "outcomeReason" in payload and payload["outcomeReason"] is not None
+                else None
+            ),
+            started_at=(
+                str(payload["startedAt"])
+                if "startedAt" in payload and payload["startedAt"] is not None
+                else None
+            ),
+            ended_at=(
+                str(payload["endedAt"])
+                if "endedAt" in payload and payload["endedAt"] is not None
+                else None
+            ),
+        )
         item = _close_turn_and_queue_work(
-            transaction, open_turn_id, recorded_event.event_order
+            transaction, open_turn_id, recorded_event.event_order, host_facts
         )
         turn_id = insert_open_turn(
             transaction.db,

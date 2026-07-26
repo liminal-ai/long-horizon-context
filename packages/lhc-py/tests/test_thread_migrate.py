@@ -20,6 +20,7 @@ from lhc.shared_tech.thread_migrate import (
     THREAD_SCHEMA_VERSION_1,
     THREAD_SCHEMA_VERSION_2,
     THREAD_SCHEMA_VERSION_4,
+    THREAD_SCHEMA_VERSION_5,
 )
 from lhc.threads.internal.create import open_thread_database
 from fixtures import (
@@ -94,9 +95,21 @@ def _add_legacy_queue_columns(db: _RawDb) -> None:
     db.exec("ALTER TABLE work_item ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;")
 
 
+# Fresh threads are created at the current schema. Simulating an older file
+# means stripping columns that that older version never had, so the migration
+# step that adds them can run for real.
+def _strip_v5_host_fact_columns(db: _RawDb) -> None:
+    db.exec("ALTER TABLE turns DROP COLUMN outcome;")
+    db.exec("ALTER TABLE turns DROP COLUMN outcome_reason;")
+    db.exec("ALTER TABLE turns DROP COLUMN started_at;")
+    db.exec("ALTER TABLE turns DROP COLUMN ended_at;")
+    db.exec("ALTER TABLE message DROP COLUMN provider_usage;")
+
+
 def _simulate_v1_thread(file_path: str) -> None:
     db = _connect(file_path)
     try:
+        _strip_v5_host_fact_columns(db)
         _add_legacy_queue_columns(db)
         db.exec("DROP TABLE IF EXISTS derivation_log;")
         db.exec(f"PRAGMA user_version = {THREAD_SCHEMA_VERSION_1};")
@@ -131,6 +144,7 @@ def _simulate_v2_thread_with_old_derivation_names(file_path: str) -> None:
     )
     db = _connect(file_path)
     try:
+        _strip_v5_host_fact_columns(db)
         _add_legacy_queue_columns(db)
         db.prepare(
             """INSERT INTO derivation
@@ -230,6 +244,7 @@ async def _fixture_poisoned_turn_derivation_work_item(
                    WHERE kind = 'turn_derivation'"""
             ).run()
         if downgrade_to_v2:
+            _strip_v5_host_fact_columns(db)
             _add_legacy_queue_columns(db)
             db.exec(f"PRAGMA user_version = {THREAD_SCHEMA_VERSION_2};")
     finally:
@@ -309,7 +324,7 @@ async def test_opens_a_v1_thread_file_migrates_derivation_log_and_preserves_exis
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_4
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
         assert (
             db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get()
             is not None
@@ -340,7 +355,7 @@ async def test_migrates_v2_derivation_rows_and_stored_view_json(store: TempStore
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_4
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
         derivation = db.prepare(
             """SELECT derivation_type, content FROM derivation
                WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'detailed_turn_compression'"""
@@ -400,7 +415,7 @@ async def test_normalizes_queued_old_shape_turn_derivation_items_and_drains_clea
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_4
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
         payload = json.loads(
             db.prepare("SELECT payload FROM work_item WHERE kind = 'turn_derivation'").get()["payload"]
         )
@@ -514,3 +529,130 @@ async def test_heals_a_crash_window_partial_normalization_on_reopen(store: TempS
         db.close()
 
     await _drain_turn_derivations_green(file_path)
+
+
+# Schema v5 (D4): add nullable turn host-fact + message provider_usage columns
+# with no backfill. Existing rows keep NULL in every new field.
+def _simulate_v4_thread(file_path: str) -> None:
+    db = _connect(file_path)
+    try:
+        _strip_v5_host_fact_columns(db)
+        db.exec(f"PRAGMA user_version = {THREAD_SCHEMA_VERSION_4};")
+    finally:
+        db.close()
+
+
+async def test_migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backfills_nothing(
+    store: TempStore,
+) -> None:
+    """migrates a v4 file: adds nullable host-fact columns, preserves data, backfills nothing"""
+    file_path = store.thread_path()
+    created = await threads.new_thread(
+        NewThreadInput(file_path=file_path, registry_path=store.registry_path)
+    )
+    assert created.ok is True
+    if not created.ok:
+        return
+
+    intake = await intake_stream.message_events(
+        {"filePath": file_path},
+        [
+            valid_event("user_prompt", {"payload": {"text": "v4 migration prompt"}}),
+            valid_event("assistant_text", {"payload": {"text": "v4 migration answer"}}),
+            valid_event("turn_end"),
+        ],
+    )
+    assert intake.ok is True
+    if not intake.ok:
+        return
+
+    before = _connect(file_path, read_only=True)
+    try:
+        event_count = int(
+            before.prepare("SELECT COUNT(*) AS count FROM event").get()["count"]  # type: ignore[index]
+        )
+        message_ids = [
+            str(row["message_id"])
+            for row in before.prepare(
+                "SELECT message_id FROM message ORDER BY source_event_order"
+            ).all()
+        ]
+        turn_ids = [
+            str(row["turn_id"])
+            for row in before.prepare(
+                "SELECT turn_id FROM turns ORDER BY turn_order"
+            ).all()
+        ]
+        assert event_count == 3
+        assert message_ids == ["m1", "m2"]
+        assert turn_ids == ["t1", "t2"]
+    finally:
+        before.close()
+
+    _simulate_v4_thread(file_path)
+
+    pre_migrate = _connect(file_path, read_only=True)
+    try:
+        assert get_schema_version(pre_migrate) == THREAD_SCHEMA_VERSION_4
+        turn_cols = [
+            str(row["name"])
+            for row in pre_migrate.prepare("PRAGMA table_info(turns)").all()
+        ]
+        message_cols = [
+            str(row["name"])
+            for row in pre_migrate.prepare("PRAGMA table_info(message)").all()
+        ]
+        assert "outcome" not in turn_cols
+        assert "outcome_reason" not in turn_cols
+        assert "started_at" not in turn_cols
+        assert "ended_at" not in turn_cols
+        assert "provider_usage" not in message_cols
+    finally:
+        pre_migrate.close()
+
+    opened = open_thread_database(file_path)
+    assert opened.ok is True
+    if not opened.ok:
+        return
+
+    db = opened.value
+    try:
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
+
+        turn_cols = [
+            str(row["name"]) for row in db.prepare("PRAGMA table_info(turns)").all()
+        ]
+        message_cols = [
+            str(row["name"]) for row in db.prepare("PRAGMA table_info(message)").all()
+        ]
+        for col in ("outcome", "outcome_reason", "started_at", "ended_at"):
+            assert col in turn_cols
+        assert "provider_usage" in message_cols
+
+        # All pre-migration rows keep NULL in every new field — no invented values.
+        turn_rows = db.prepare(
+            "SELECT turn_id, outcome, outcome_reason, started_at, ended_at FROM turns ORDER BY turn_order"
+        ).all()
+        assert [str(row["turn_id"]) for row in turn_rows] == turn_ids
+        for row in turn_rows:
+            assert row["outcome"] is None
+            assert row["outcome_reason"] is None
+            assert row["started_at"] is None
+            assert row["ended_at"] is None
+
+        message_rows = db.prepare(
+            "SELECT message_id, provider_usage FROM message ORDER BY source_event_order"
+        ).all()
+        assert [str(row["message_id"]) for row in message_rows] == message_ids
+        for row in message_rows:
+            assert row["provider_usage"] is None
+
+        # Existing record content is intact.
+        assert int(db.prepare("SELECT COUNT(*) AS count FROM event").get()["count"]) == event_count  # type: ignore[index]
+        prompt = db.prepare(
+            "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0"
+        ).get()
+        assert prompt is not None
+        assert json.loads(str(prompt["content"])) == {"text": "v4 migration prompt"}
+    finally:
+        db.close()

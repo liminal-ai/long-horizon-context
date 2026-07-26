@@ -29,8 +29,12 @@ _SQL_INSERT_OPEN_TURN = (
      VALUES (?, ?, 'open', ?)"""
 )
 
+# Host facts (outcome/timing) project only from a turn_end payload. Closers
+# that lack them (prompt-boundary close, empty turn_end) leave NULLs.
 _SQL_CLOSE_TURN = (
-    """UPDATE turns SET status = 'closed', closed_at_event_order = ? WHERE turn_id = ? AND status = 'open'"""
+    """UPDATE turns SET status = 'closed', closed_at_event_order = ?,
+       outcome = ?, outcome_reason = ?, started_at = ?, ended_at = ?
+     WHERE turn_id = ? AND status = 'open'"""
 )
 
 _SQL_SELECT_TURN_MEMBERS = (
@@ -39,7 +43,8 @@ _SQL_SELECT_TURN_MEMBERS = (
 )
 
 _SQL_SELECT_TURNS_LIVE = (
-    """SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order
+    """SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order,
+              outcome, outcome_reason, started_at, ended_at
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order"""
 )
 
@@ -71,8 +76,31 @@ def insert_open_turn(db: Database, turn_order: int, opened_at_event_order: int) 
     return turn_id
 
 
-def close_turn(db: Database, turn_id: str, closed_at_event_order: int) -> None:
-    db.prepare(_SQL_CLOSE_TURN).run(closed_at_event_order, turn_id)
+# Host facts (outcome/timing) project only from a turn_end payload. Closers
+# that lack them (prompt-boundary close, empty turn_end) leave NULLs.
+@dataclass(frozen=True, slots=True)
+class TurnCloseHostFacts:
+    outcome: Literal["completed", "aborted"] | None = None
+    outcome_reason: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+
+
+def close_turn(
+    db: Database,
+    turn_id: str,
+    closed_at_event_order: int,
+    host_facts: TurnCloseHostFacts | None = None,
+) -> None:
+    facts = host_facts if host_facts is not None else TurnCloseHostFacts()
+    db.prepare(_SQL_CLOSE_TURN).run(
+        closed_at_event_order,
+        facts.outcome,
+        facts.outcome_reason,
+        facts.started_at,
+        facts.ended_at,
+        turn_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +110,10 @@ class _RawTurnRow:
     status: str
     opened_at_event_order: int
     closed_at_event_order: int | None
+    outcome: str | None
+    outcome_reason: str | None
+    started_at: str | None
+    ended_at: str | None
 
 
 # Membership is stored on the member (message.turn_id), never as a list on
@@ -111,6 +143,13 @@ def read_turns(db: Database) -> list[TurnRecord]:
         turn_id = str(row["turn_id"])
         closed = row["closed_at_event_order"]
         placement = placements.get(turn_id)
+        outcome_raw = row["outcome"]
+        outcome_reason_raw = row["outcome_reason"]
+        started_raw = row["started_at"]
+        ended_raw = row["ended_at"]
+        # Host-observed facts present only when the source turn_end carried
+        # them. NULL rows (pre-v5, prompt-boundary closes, empty turn_end)
+        # omit the keys (None on the dataclass).
         records.append(
             TurnRecord(
                 turn_id=turn_id,
@@ -119,6 +158,17 @@ def read_turns(db: Database) -> list[TurnRecord]:
                 member_message_ids=list(members_by_turn.get(turn_id, [])),
                 opened_at_event_order=int(row["opened_at_event_order"]),
                 closed_at_event_order=None if closed is None else int(closed),
+                # Column CHECK + null filter: only completed|aborted remain.
+                outcome=(
+                    None
+                    if outcome_raw is None
+                    else str(outcome_raw)  # type: ignore[arg-type]
+                ),
+                outcome_reason=(
+                    None if outcome_reason_raw is None else str(outcome_reason_raw)
+                ),
+                started_at=None if started_raw is None else str(started_raw),
+                ended_at=None if ended_raw is None else str(ended_raw),
                 chunk_id=None if placement is None else placement.chunk_id,
                 member_idx=None if placement is None else placement.member_idx,
             )

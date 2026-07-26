@@ -92,10 +92,25 @@ class _EventEnvelopeSchema(TypedDict):
 # ── Layer 3 — per-kind payload, closed ─────────────────────────────
 # NOTE (Phase 2): NonEmptyString minLength(1) and onExcessProperty closedness
 # are not expressed by TypedDict alone.
+# turn_end may be empty or carry only the optional host-observed outcome/timing
+# fields (D1). assistant_text may carry optional providerUsage as a verbatim
+# JSON object (no inner shape).
 
 
 class _TextPayloadSchema(TypedDict):
     text: str
+
+
+class _AssistantTextPayloadSchema(TypedDict):
+    text: str
+    providerUsage: NotRequired[dict[str, object]]
+
+
+class _TurnEndPayloadSchema(TypedDict, total=False):
+    outcome: Literal["completed", "aborted"]
+    outcomeReason: str
+    startedAt: str
+    endedAt: str
 
 
 class _ModelChangePayloadSchema(TypedDict):
@@ -162,6 +177,9 @@ def _type_label(kind: str) -> str:
         return "unknown"
     if kind == "event_kind":
         return '"user_prompt"'
+    # Effect Schema.Literal("completed", "aborted") surface for turn_end.outcome.
+    if kind == "outcome_literal":
+        return '"completed" | "aborted"'
     return kind
 
 
@@ -221,6 +239,12 @@ def _struct_issue(
                     (name,),
                     f'Expected "user_prompt", actual {_actual(item)}',
                 )
+        elif kind == "outcome_literal":
+            if not isinstance(item, str) or item not in ("completed", "aborted"):
+                return _ParseError(
+                    (name,),
+                    f'Expected "completed" | "aborted", actual {_actual(item)}',
+                )
         elif kind == "unknown":
             continue
 
@@ -233,6 +257,8 @@ def _decode_issue(
         | type[_ThreadRefByPathSchema]
         | type[_EventEnvelopeSchema]
         | type[_TextPayloadSchema]
+        | type[_AssistantTextPayloadSchema]
+        | type[_TurnEndPayloadSchema]
         | type[_ModelChangePayloadSchema]
         | type[_ThinkingLevelChangePayloadSchema]
         | type[_ToolCallPayloadSchema]
@@ -262,6 +288,21 @@ def _decode_issue(
         )
     elif schema is _TextPayloadSchema:
         issue = _struct_issue(value, (("text", "string", False),))
+    elif schema is _AssistantTextPayloadSchema:
+        issue = _struct_issue(
+            value,
+            (("text", "string", False), ("providerUsage", "record", True)),
+        )
+    elif schema is _TurnEndPayloadSchema:
+        issue = _struct_issue(
+            value,
+            (
+                ("outcome", "outcome_literal", True),
+                ("outcomeReason", "string", True),
+                ("startedAt", "string", True),
+                ("endedAt", "string", True),
+            ),
+        )
     elif schema is _ModelChangePayloadSchema:
         issue = _struct_issue(
             value,
@@ -357,23 +398,20 @@ def _validate_one_event(event: object, index: int) -> ErrorResult | None:
     if not isinstance(payload, dict):
         return _caller_error("event: payload must be a JSON object", index)
 
-    if kind == "turn_end":
-        if payload:
-            first_key = next(iter(payload))
-            return _caller_error(
-                f'payload: turn_end events carry an empty payload; found field "{first_key}"',
-                index,
-            )
-        return None
-
     payload_schema: type[
         _TextPayloadSchema
+        | _AssistantTextPayloadSchema
+        | _TurnEndPayloadSchema
         | _ModelChangePayloadSchema
         | _ThinkingLevelChangePayloadSchema
         | _ToolCallPayloadSchema
         | _ToolResultPayloadSchema
     ]
-    if kind == "tool_call":
+    if kind == "turn_end":
+        payload_schema = _TurnEndPayloadSchema
+    elif kind == "assistant_text":
+        payload_schema = _AssistantTextPayloadSchema
+    elif kind == "tool_call":
         payload_schema = _ToolCallPayloadSchema
     elif kind == "tool_result":
         payload_schema = _ToolResultPayloadSchema

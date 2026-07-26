@@ -52,6 +52,10 @@ _THREAD_SCHEMA_STATEMENT_TEMPLATES: tuple[str, ...] = (
       status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
       opened_at_event_order INTEGER NOT NULL,
       closed_at_event_order INTEGER,
+      outcome TEXT CHECK (outcome IN ('completed', 'aborted') OR outcome IS NULL),
+      outcome_reason TEXT,
+      started_at TEXT,
+      ended_at TEXT,
       deleted_at TEXT
     );""",
     """CREATE TABLE message (
@@ -62,6 +66,7 @@ _THREAD_SCHEMA_STATEMENT_TEMPLATES: tuple[str, ...] = (
       actor TEXT NOT NULL,
       harness TEXT NOT NULL,
       turn_id TEXT NOT NULL REFERENCES turns(turn_id),
+      provider_usage TEXT,
       deleted_at TEXT
     );""",
     """CREATE TABLE message_block (

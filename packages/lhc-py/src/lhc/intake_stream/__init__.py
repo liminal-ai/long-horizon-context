@@ -19,6 +19,13 @@ class TextPayload(TypedDict):
     text: str
 
 
+# Provider usage is the host's verbatim JSON object for one model call — no
+# fixed column set, no interpretation inside LHC (schema v5 / D1, D3).
+class AssistantTextPayload(TypedDict):
+    text: str
+    providerUsage: NotRequired[dict[str, object]]
+
+
 class ModelChangePayload(TypedDict):
     previousModel: str
     newModel: str
@@ -41,8 +48,13 @@ class ToolResultPayload(TypedDict):
     isError: NotRequired[bool]
 
 
-class TurnEndPayload(TypedDict):
-    pass  # Record<string, never> — closed empty object
+# Host-observed turn outcome/timing on turn_end (schema v5 / D1). All optional;
+# empty payload stays valid for hosts that do not report these facts.
+class TurnEndPayload(TypedDict, total=False):
+    outcome: Literal["completed", "aborted"]
+    outcomeReason: str
+    startedAt: str
+    endedAt: str
 
 
 class UserPromptEvent(TypedDict):
@@ -58,7 +70,7 @@ class AssistantTextEvent(TypedDict):
     idempotencyKey: str
     actor: str
     harness: str
-    payload: TextPayload
+    payload: AssistantTextPayload
 
 
 class AssistantThinkingEvent(TypedDict):
@@ -202,7 +214,7 @@ class AssistantTextEventRecord(TypedDict):
     idempotencyKey: str
     actor: str
     harness: str
-    payload: TextPayload
+    payload: AssistantTextPayload
     eventOrder: int
     recordedAt: str
 

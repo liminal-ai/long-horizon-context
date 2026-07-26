@@ -73,6 +73,9 @@ class MessageRecord:
     harness: str
     recorded_at: str
     turn_id: str
+    # Host-observed provider usage from assistant_text (schema v5). Absent when
+    # the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
+    provider_usage: dict[str, object] | None = None
     # Stored derivations for messages that are derivation sources. Kinds with no
     # derivable output carry no rows and no key. Stored state is returned
     # verbatim, never re-derived on read.
@@ -136,6 +139,15 @@ def create(
         return MessageCreateResult(message=None, queued_work=[])
     kind = recorded_event["eventKind"]
     message_id = f'm{recorded_event["eventOrder"]}'
+    # providerUsage rides assistant_text only; projectEvent leaves it on the
+    # event payload and storage writes it as a message column (not a block).
+    provider_usage: dict[str, object] | None = None
+    if kind == "assistant_text":
+        payload = recorded_event["payload"]
+        if isinstance(payload, dict) and "providerUsage" in payload:
+            usage = payload["providerUsage"]
+            if isinstance(usage, dict):
+                provider_usage = usage
     insert_message(
         transaction.db,
         MessageRow(
@@ -147,6 +159,7 @@ def create(
             harness=recorded_event["harness"],
             turn_id=turn_id,
             blocks=projected.blocks,
+            provider_usage=provider_usage,
         ),
     )
     if kind in ("tool_call", "tool_result"):
@@ -329,6 +342,9 @@ class MessageDetail:
     # The owner report's queue-joined entries, never synthesized here: the same
     # `report_message_derivations` read messages.report serves, scoped by id.
     derivations: list[DerivationReportEntry]
+    # Host-observed provider usage from assistant_text (schema v5). Absent when
+    # the source event did not carry it.
+    provider_usage: dict[str, object] | None = None
 
 
 async def show(thread_ref: ThreadRef, message_id: str) -> OpResult[MessageDetail]:
@@ -362,6 +378,7 @@ async def show(thread_ref: ThreadRef, message_id: str) -> OpResult[MessageDetail
                     harness=record.harness,
                     recorded_at=record.recorded_at,
                     turn_id=record.turn_id,
+                    provider_usage=record.provider_usage,
                     deleted=record.deleted,
                     derivations=derivations,
                 )

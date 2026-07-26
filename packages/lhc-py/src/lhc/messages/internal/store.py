@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+from ...shared_tech._jsstr import js_json_dumps
 from ...shared_tech.derivation import Derivation
 from ...shared_tech.storage import Database
 
@@ -20,8 +21,8 @@ from ...shared_tech.storage import Database
 from .. import Block, MessageKind, MessageRecord
 
 _SQL_INSERT_MESSAGE = (
-    """INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)"""
+    """INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
 )
 
 _SQL_INSERT_MESSAGE_BLOCK = (
@@ -57,7 +58,7 @@ _SQL_UPDATE_TOKEN_ESTIMATE = """UPDATE message SET token_estimate = ? WHERE mess
 
 _SQL_READ_MESSAGES_SELECT = (
     """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order"""
 )
 
@@ -71,7 +72,7 @@ _SQL_READ_BLOCKS_FOR_IDS_SUFFIX = """)
 
 _SQL_READ_MESSAGE_BY_ID = (
     """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order
        WHERE m.message_id = ?"""
 )
@@ -94,9 +95,17 @@ class MessageRow:
     # intake. Written once here, never updated.
     turn_id: str
     blocks: list[Block]
+    # Verbatim provider usage JSON for assistant_text events that carried it
+    # (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
+    provider_usage: dict[str, object] | None = None
 
 
 def insert_message(db: Database, row: MessageRow) -> None:
+    # CRITICAL byte-parity: provider_usage must be js_json_dumps (JS-parity
+    # serializer) — dict insertion order is load-bearing.
+    provider_usage_param = (
+        None if row.provider_usage is None else js_json_dumps(row.provider_usage)
+    )
     db.prepare(_SQL_INSERT_MESSAGE).run(
         row.message_id,
         row.source_event_order,
@@ -105,6 +114,7 @@ def insert_message(db: Database, row: MessageRow) -> None:
         row.actor,
         row.harness,
         row.turn_id,
+        provider_usage_param,
     )
     insert_block = db.prepare(_SQL_INSERT_MESSAGE_BLOCK)
     for index, block in enumerate(row.blocks):
@@ -210,6 +220,7 @@ class _RawMessageRow:
     actor: str
     harness: str
     turn_id: str
+    provider_usage: str | None
     deleted_at: str | None
     # The source event's recorded_at, joined from the durable event row on
     # source_event_order = event_order (every message has exactly one source
@@ -225,6 +236,16 @@ class _RawBlockRow:
 
 
 def _record_from_row(row: _RawMessageRow, blocks: list[Block]) -> MessageRecord:
+    # Provider usage is present only when the source event carried it. NULL
+    # rows (pre-v5 messages, non-assistant kinds) omit the key (None).
+    provider_usage: dict[str, object] | None = None
+    if row.provider_usage is not None:
+        parsed = json.loads(row.provider_usage)
+        if not isinstance(parsed, dict):
+            raise TypeError(
+                f"provider_usage column is not a JSON object: {type(parsed).__name__}"
+            )
+        provider_usage = parsed
     return MessageRecord(
         message_id=row.message_id,
         source_event_order=row.source_event_order,
@@ -235,6 +256,7 @@ def _record_from_row(row: _RawMessageRow, blocks: list[Block]) -> MessageRecord:
         harness=row.harness,
         recorded_at=row.recorded_at,
         turn_id=row.turn_id,
+        provider_usage=provider_usage,
         deleted=True if row.deleted_at is not None else None,
     )
 
@@ -281,6 +303,11 @@ def read_messages(db: Database, opts: MessageReadOptions | None = None) -> list[
             actor=str(row["actor"]),
             harness=str(row["harness"]),
             turn_id=str(row["turn_id"]),
+            provider_usage=(
+                str(row["provider_usage"])
+                if row["provider_usage"] is not None
+                else None
+            ),
             deleted_at=(
                 str(row["deleted_at"]) if row["deleted_at"] is not None else None
             ),
@@ -331,13 +358,14 @@ class MessageRecordWithDeleted:
     recorded_at: str
     turn_id: str
     deleted: bool
+    provider_usage: dict[str, object] | None = None
     derivations: list[Derivation] | None = None
 
 
 def read_message_by_id(db: Database, message_id: str) -> MessageRecordWithDeleted | None:
     row = db.prepare(
         """SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-                  m.turn_id, m.deleted_at, e.recorded_at
+                  m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
            FROM message m JOIN event e ON e.event_order = m.source_event_order
            WHERE m.message_id = ?"""
     ).get(message_id)
@@ -354,15 +382,31 @@ def read_message_by_id(db: Database, message_id: str) -> MessageRecordWithDelete
         )
         for block in block_rows
     ]
-    return MessageRecordWithDeleted(
+    raw = _RawMessageRow(
         message_id=str(row["message_id"]),
         source_event_order=int(row["source_event_order"]),
-        kind=str(row["kind"]),  # type: ignore[arg-type]
-        blocks=blocks,
+        kind=str(row["kind"]),
         token_estimate=int(row["token_estimate"]),
         actor=str(row["actor"]),
         harness=str(row["harness"]),
-        recorded_at=str(row["recorded_at"]),
         turn_id=str(row["turn_id"]),
+        provider_usage=(
+            str(row["provider_usage"]) if row["provider_usage"] is not None else None
+        ),
+        deleted_at=str(row["deleted_at"]) if row["deleted_at"] is not None else None,
+        recorded_at=str(row["recorded_at"]),
+    )
+    record = _record_from_row(raw, blocks)
+    return MessageRecordWithDeleted(
+        message_id=record.message_id,
+        source_event_order=record.source_event_order,
+        kind=record.kind,
+        blocks=record.blocks,
+        token_estimate=record.token_estimate,
+        actor=record.actor,
+        harness=record.harness,
+        recorded_at=record.recorded_at,
+        turn_id=record.turn_id,
+        provider_usage=record.provider_usage,
         deleted=row["deleted_at"] is not None,
     )

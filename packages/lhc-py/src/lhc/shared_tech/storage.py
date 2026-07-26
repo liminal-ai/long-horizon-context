@@ -41,7 +41,7 @@ class Database(Protocol):
 # while the Protocol seam is the public surface.
 SqliteConnection = sqlite3.Connection
 
-CURRENT_THREAD_SCHEMA_VERSION = 4
+CURRENT_THREAD_SCHEMA_VERSION = 5
 
 # node:sqlite DatabaseSync path registry (WeakMap).
 _database_paths: WeakKeyDictionary[Database, str] = WeakKeyDictionary()

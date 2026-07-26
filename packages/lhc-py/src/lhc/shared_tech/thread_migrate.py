@@ -18,6 +18,7 @@ THREAD_SCHEMA_VERSION_1 = 1
 THREAD_SCHEMA_VERSION_2 = 2
 THREAD_SCHEMA_VERSION_3 = 3
 THREAD_SCHEMA_VERSION_4 = 4
+THREAD_SCHEMA_VERSION_5 = 5
 
 _OLD_DERIVATION_TYPE = "smooth_turn_compression"
 _NEW_DERIVATION_TYPE = "detailed_turn_compression"
@@ -215,6 +216,20 @@ def _migrate_one_shot_work_queue(db: Database) -> None:
     db.exec("CREATE INDEX idx_work_item_queue ON work_item (status);")
 
 
+# v4→v5: host-observed turn outcome/timing and per-call provider usage.
+# Nullable columns only; no backfill — pre-v5 facts were never recorded.
+# ALTER statements append after existing columns (fresh-DDL places them
+# before deleted_at — position asymmetry is deliberate and load-bearing).
+def _migrate_turn_host_facts(db: Database) -> None:
+    db.exec(
+        "ALTER TABLE turns ADD COLUMN outcome TEXT CHECK (outcome IN ('completed', 'aborted') OR outcome IS NULL);"
+    )
+    db.exec("ALTER TABLE turns ADD COLUMN outcome_reason TEXT;")
+    db.exec("ALTER TABLE turns ADD COLUMN started_at TEXT;")
+    db.exec("ALTER TABLE turns ADD COLUMN ended_at TEXT;")
+    db.exec("ALTER TABLE message ADD COLUMN provider_usage TEXT;")
+
+
 def migrate_thread_schema(db: Database) -> None:
     version = get_schema_version(db)
     if version >= CURRENT_THREAD_SCHEMA_VERSION:
@@ -236,6 +251,9 @@ def migrate_thread_schema(db: Database) -> None:
             _migrate_queued_turn_derivation_work_items(db)
             _migrate_one_shot_work_queue(db)
             version = THREAD_SCHEMA_VERSION_4
+        if version == THREAD_SCHEMA_VERSION_4:
+            _migrate_turn_host_facts(db)
+            version = THREAD_SCHEMA_VERSION_5
         if version != CURRENT_THREAD_SCHEMA_VERSION:
             raise RuntimeError(f"unsupported thread schema version {version}")
         db.exec(f"PRAGMA user_version = {CURRENT_THREAD_SCHEMA_VERSION};")

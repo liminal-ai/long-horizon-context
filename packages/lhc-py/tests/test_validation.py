@@ -52,7 +52,8 @@ async def test_tc_4_1_four_invalidity_categories_each_rejected_whole_with_a_name
         ([unknown_kind], r"unknown event kind"),  # type: ignore[list-item]
         ([without_key], r"idempotencyKey"),  # type: ignore[list-item]
         ([server_field], r"server-generated.*eventOrder"),  # type: ignore[list-item]
-        ([turn_end_with_payload], r"turn_end"),  # type: ignore[list-item]
+        # turn_end may carry optional host facts, but unknown keys stay closed.
+        ([turn_end_with_payload], r'"text".*unexpected|unexpected.*"text"'),  # type: ignore[list-item]
     ]
 
     import re
