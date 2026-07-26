@@ -387,6 +387,28 @@ reclaimed — but copy it **before** deleting, or find it under the old encoded
 path. Codex is unaffected: it keys sessions by thread id, not cwd, which is why
 Sol resumed across trees without help.
 
+## Do not tell a verifier what the other lane found
+
+Independence has **two** channels, and both leak. Tree isolation closes the
+filesystem one. The **brief** is the other, and it was left open for 15 briefs
+across Chunk 2 and Chunk 3A — each lane was told what the other had found, with
+quoted probe output.
+
+- **Legitimate in a re-verify brief:** what CHANGED in the code, and why. A
+  re-verifier cannot work without that.
+- **Contaminating:** "the other lane found X", quoting their evidence, or naming
+  their verdict. That anchors the second lane on the first lane's frame.
+
+Consequence: on any round where the brief carried cross-lane findings,
+agreement is **corroboration, not independence** — report it that way.
+
+Evidence this matters: Chunk 3B's briefs carried no cross-lane references, and
+that is the round where one lane independently found that production Replace
+never drains the derivation lanes — a defect the other lane and the orchestrator
+both missed while verifying a pre-drained test.
+
+Rule: describe the delta, never the discoverer.
+
 ## Never copy a tree while something is writing to it
 
 **Sequence the rsync against the implementor, not against the clock.** A
