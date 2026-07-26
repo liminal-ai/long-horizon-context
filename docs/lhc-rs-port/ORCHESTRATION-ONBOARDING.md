@@ -127,7 +127,71 @@ Python handoff §"The loop" applies with these deltas:
    scope only (single verifier alternating, unless findings were severe).
    Expect 1–2 fix rounds; trivial residue you fix yourself and note.
 
-### Verifier session continuity — MANDATORY (added 2026-07-25, Lee's ruling)
+### Drain architecture repair — MANDATORY, both forks (Lee's ruling, 2026-07-26)
+
+Both integrations shipped with LHC's drain architecture inverted, and the
+defect is certified into delivered code: grok-build `session.rs:185` and
+codex `session.rs:85` both run `SdkMode::Manual`, then drive derivation by
+hand — codex with an idle pump plus a 75 s synchronous drain inside the
+compact arm (`compact_bridge.rs:337`), grok-build with a 600 s drain window
+that can compact "with partial material". Root cause was the Phase 4
+brief's own line "background drain pumped from on_thread_idle" (Fable's
+error — a Hermes workaround applied to hosts that need no pump;
+`CHUNK2-ROUNDLOG.md:149` records Chunk 2 implementing it as spec). The
+result: all derivation cost is presented as a bill at compact time, so
+first compact on a large thread misses its window and fails open to
+native — on exactly the threads LHC exists for.
+
+The correct pattern is already built and certified into the SDK — it was
+never engaged. Reference evidence: TS `scheduler.ts:455-490` (post-commit
+poke → coalesced per-thread run-loop; first-touch catch-up on thread open
+absorbs pre-existing backlog), t3code host `config.ts:23` (`mode:
+"background"`; the host's ONLY drain-adjacent code is one intake call on
+the hot path and one capped `drainSettled` at shutdown), Rust port
+`scheduler.rs:1010-1031` (same machinery on tokio, exercised by 17
+background-mode tests including the lifecycle capstone).
+
+### The fix, per fork
+
+1. **Run the SDK in Background mode** (one line in each fork's
+   `session.rs`). The host never drives drain: intake on the hot path
+   projects into messages/turns, inserts derivation records, enqueues
+   work, and the post-commit poke runs the SDK's own scheduler —
+   coalescing if a drain is already in flight. First-touch catch-up
+   handles pre-existing threads at open. Keep exactly one host-side
+   drain-related call: the capped `drainSettled` at shutdown (both
+   bridges already have it).
+2. **Delete the hand-rolled drivers.** Codex: the idle pump as a drain
+   mechanism (`seed_lhc_idle_derivation_callbacks` — an idle-time poke
+   may remain, nothing more), `DRAIN_TIME_BUDGET`, and the synchronous
+   drain in the compact arm. Grok-build: the 600 s drain window, the
+   drain-outcome registry's wait states, and the partial-material
+   fail-open. Compact is a selection walk with the fallback ladder,
+   immediately, unconditionally — there is no time budget in the compact
+   path of any correct LHC host.
+3. **Do not change what is derived.** Both bridges run the port's default
+   derivation profile (deterministic handling under the 1,000-token
+   tool-result threshold, standard chunk policy) — identical to t3code
+   production. Volume was never the defect; timing was.
+4. **Update abort-test semantics with the mode.** Background drain
+   continuing after a turn abort is correct behavior, not a leak. The
+   abort invariant is: no compact INSTALLS after abort. Re-point the
+   abort tests (codex N3 class) at that invariant, not at
+   call-cessation.
+5. **Certification evidence, t3code-shaped, on a real session:**
+   derivations ready BEFORE the compact threshold trips (report
+   ready-vs-total at trigger), compact wall-time in fractions of a
+   second, the queue observed settling between turns during live use,
+   and first-touch catch-up observed absorbing a pre-existing thread's
+   backlog at open. Re-run the fork's existing certification suites
+   after the change; the dual-verify loop applies as for any chunk.
+
+This repair supersedes every prior drain-related instruction in the
+briefs, including the Phase 4 brief's corrected capture section and any
+chunk record that treats compact-time draining or drain budgets as
+design. Treat those passages as historical record of the defect.
+
+## Verifier session continuity — MANDATORY (added 2026-07-25, Lee's ruling)
 
 **Within a chunk/wave, re-verification RESUMES the same verifier
 sessions** (`--resume <session_id>` from the prior envelope — every
