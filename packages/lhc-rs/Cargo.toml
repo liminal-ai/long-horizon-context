@@ -16,7 +16,12 @@ serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }
 # Host packaging note (codex-lhc Chunk 1): bumped 0.37 → 0.39 so libsqlite3-sys
 # aligns with codex-rs workspace (0.37). Pure packaging; no LHC semantics change.
-rusqlite = { version = "0.39", features = ["bundled"] }
+# Host-workspace compatibility range: codex-rs pins libsqlite3-sys 0.37
+# (forces rusqlite >= 0.39); grok-build pins an older libsqlite3-sys
+# (forces rusqlite <= 0.37). links = "sqlite3" allows exactly one major per
+# workspace, so the port accepts the range and each fork resolves its own.
+# Port source is verified to compile and gate-pass at both edges.
+rusqlite = { version = ">=0.37, <0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 futures = "0.3"
 regex = "1"
