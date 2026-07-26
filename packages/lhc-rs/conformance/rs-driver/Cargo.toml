@@ -1,0 +1,8 @@
+[package]
+name = "rs-driver"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+lhc = { path = "../.." }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = { version = "1", features = ["preserve_order"] }

@@ -275,11 +275,17 @@ pub async fn run_message_events(
                         ]);
                         skip_set.insert(key.to_string());
                         let recorded_event = build_recorded_event(event, last_order, &recorded_at);
+                        // turn_end payload carries host facts; other kinds pass empty.
+                        let turn_payload = recorded_event
+                            .turn_end_payload()
+                            .cloned()
+                            .unwrap_or_default();
                         let turn_outcome = create_turn(
                             transaction,
                             &RecordedTurnEvent {
                                 event_kind: recorded_event.event_kind(),
                                 event_order: last_order,
+                                payload: turn_payload,
                             },
                         );
                         turn_transitions

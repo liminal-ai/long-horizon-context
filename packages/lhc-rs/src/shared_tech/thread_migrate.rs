@@ -14,6 +14,7 @@ pub const THREAD_SCHEMA_VERSION_1: i64 = 1;
 pub const THREAD_SCHEMA_VERSION_2: i64 = 2;
 pub const THREAD_SCHEMA_VERSION_3: i64 = 3;
 pub const THREAD_SCHEMA_VERSION_4: i64 = 4;
+pub const THREAD_SCHEMA_VERSION_5: i64 = 5;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -343,6 +344,26 @@ fn migrate_one_shot_work_queue(db: &Db) {
     db.exec("CREATE INDEX idx_work_item_queue ON work_item (status);");
 }
 
+// v4→v5: host-observed turn outcome/timing and per-call provider usage.
+// Nullable columns only; no backfill — pre-v5 facts were never recorded.
+// ALTER statements must byte-match TS; migrated files append columns AFTER
+// existing ones (deliberate asymmetry with fresh DDL).
+const SQL_MIGRATE_V5_TURNS_OUTCOME: &str = "ALTER TABLE turns ADD COLUMN outcome TEXT CHECK (outcome IN ('completed', 'aborted') OR outcome IS NULL);";
+const SQL_MIGRATE_V5_TURNS_OUTCOME_REASON: &str =
+    "ALTER TABLE turns ADD COLUMN outcome_reason TEXT;";
+const SQL_MIGRATE_V5_TURNS_STARTED_AT: &str = "ALTER TABLE turns ADD COLUMN started_at TEXT;";
+const SQL_MIGRATE_V5_TURNS_ENDED_AT: &str = "ALTER TABLE turns ADD COLUMN ended_at TEXT;";
+const SQL_MIGRATE_V5_MESSAGE_PROVIDER_USAGE: &str =
+    "ALTER TABLE message ADD COLUMN provider_usage TEXT;";
+
+fn migrate_turn_host_facts(db: &Db) {
+    db.exec(SQL_MIGRATE_V5_TURNS_OUTCOME);
+    db.exec(SQL_MIGRATE_V5_TURNS_OUTCOME_REASON);
+    db.exec(SQL_MIGRATE_V5_TURNS_STARTED_AT);
+    db.exec(SQL_MIGRATE_V5_TURNS_ENDED_AT);
+    db.exec(SQL_MIGRATE_V5_MESSAGE_PROVIDER_USAGE);
+}
+
 pub fn migrate_thread_schema(db: &Db) {
     let mut version = match get_schema_version(db) {
         OpResult::Ok { value } => value,
@@ -372,6 +393,10 @@ pub fn migrate_thread_schema(db: &Db) {
             migrate_queued_turn_derivation_work_items(db);
             migrate_one_shot_work_queue(db);
             version = THREAD_SCHEMA_VERSION_4;
+        }
+        if version == THREAD_SCHEMA_VERSION_4 {
+            migrate_turn_host_facts(db);
+            version = THREAD_SCHEMA_VERSION_5;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

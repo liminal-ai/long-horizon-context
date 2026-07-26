@@ -62,8 +62,14 @@ pub struct ToolResultPayload {
     pub is_error: Option<bool>,
 }
 
+/// Host-observed turn outcome/timing on turn_end (schema v5). All optional.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TurnEndPayload {}
+pub struct TurnEndPayload {
+    pub outcome: Option<String>,
+    pub outcome_reason: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
 
 // ── Typed overrides (per kind) ─────────────────────────────────────────────
 
@@ -185,7 +191,11 @@ impl_kind_overrides!(UserPromptOverrides, UserPrompt, |p: UserPromptPayload| {
 impl_kind_overrides!(
     AssistantTextOverrides,
     AssistantText,
-    |p: AssistantTextPayload| { json!({"text": p.text}).as_object().expect("object").clone() }
+    |p: AssistantTextPayload| {
+        // providerUsage is attached by mutating MessageEventInput.payload in
+        // host-facts tests (optional schema v5 field; most fixtures omit it).
+        json!({"text": p.text}).as_object().expect("object").clone()
+    }
 );
 impl_kind_overrides!(
     AssistantThinkingOverrides,
@@ -244,8 +254,21 @@ impl_kind_overrides!(ToolResultOverrides, ToolResult, |p: ToolResultPayload| {
     }
     map
 });
-impl_kind_overrides!(TurnEndOverrides, TurnEnd, |_p: TurnEndPayload| {
-    Map::new()
+impl_kind_overrides!(TurnEndOverrides, TurnEnd, |p: TurnEndPayload| {
+    let mut map = Map::new();
+    if let Some(outcome) = p.outcome {
+        map.insert("outcome".into(), json!(outcome));
+    }
+    if let Some(reason) = p.outcome_reason {
+        map.insert("outcomeReason".into(), json!(reason));
+    }
+    if let Some(started) = p.started_at {
+        map.insert("startedAt".into(), json!(started));
+    }
+    if let Some(ended) = p.ended_at {
+        map.insert("endedAt".into(), json!(ended));
+    }
+    map
 });
 
 fn default_payload(kind: EventKind) -> Map<String, Value> {

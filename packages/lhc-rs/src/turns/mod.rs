@@ -16,7 +16,7 @@ use futures::FutureExt;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::intake_stream::EventKind;
+use crate::intake_stream::{EventKind, TurnEndPayload, TurnOutcome};
 use crate::shared_tech::context::resolve_instance_config;
 use crate::shared_tech::derivation::{
     Derivation, DerivationReportEntry, ResolvedSdkConfig, SubjectKind,
@@ -40,8 +40,8 @@ use internal::derivations::{
 };
 use internal::derive::{TurnOwnedDeriveResult, derive_turn_owned_in_open_db};
 use internal::store::{
-    TurnStructureRow, close_turn, count_turn_members, insert_open_turn, next_turn_order,
-    read_turn_structure, read_turns, select_open_turn_ids,
+    TurnCloseHostFacts, TurnStructureRow, close_turn, count_turn_members, insert_open_turn,
+    next_turn_order, read_turn_structure, read_turns, select_open_turn_ids,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +70,16 @@ pub struct TurnRecord {
     pub opened_at_event_order: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at_event_order: Option<i64>,
+    // Host-observed facts from turn_end (schema v5). Absent when unknown —
+    // pre-v5 turns, prompt-boundary closes, or hosts that omit them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TurnOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,12 +172,14 @@ fn current_open_turn_id(transaction: &DbWriteTransaction) -> String {
 
 /// Closing a turn durably queues that turn's derivation work in the same
 /// transaction: the close update and the work item commit or roll back together.
+/// host_facts land only from turn_end; prompt-boundary closes leave them unset.
 fn close_turn_and_queue_work(
     transaction: &DbWriteTransaction,
     turn_id: &str,
     event_order: i64,
+    host_facts: &TurnCloseHostFacts,
 ) -> WorkItemRecord {
-    close_turn(transaction.db, turn_id, event_order);
+    close_turn(transaction.db, turn_id, event_order, host_facts);
     // One work item backs two deterministic turn-owned derivation rows; compression
     // queues from the turn_derivation completion transaction.
     enqueue(
@@ -196,12 +208,23 @@ fn close_turn_and_queue_work(
     )
 }
 
-/// TS `RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder">`.
+/// TS `RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder" | "payload">`.
+/// Payload is the closed turn_end shape; other kinds pass an empty payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordedTurnEvent {
     pub event_kind: EventKind,
     pub event_order: i64,
+    pub payload: TurnEndPayload,
+}
+
+fn host_facts_from_turn_end(payload: &TurnEndPayload) -> TurnCloseHostFacts {
+    TurnCloseHostFacts {
+        outcome: payload.outcome,
+        outcome_reason: payload.outcome_reason.clone(),
+        started_at: payload.started_at.clone(),
+        ended_at: payload.ended_at.clone(),
+    }
 }
 
 /// Cross-domain surface, called by intake-stream inside the batch transaction
@@ -221,8 +244,14 @@ pub fn create(
                 queued_work: Vec::new(),
             };
         }
-        let item =
-            close_turn_and_queue_work(transaction, &open_turn_id, recorded_event.event_order);
+        // Payload was closed-validated as TurnEndPayload at intake (validate layer 3).
+        let host_facts = host_facts_from_turn_end(&recorded_event.payload);
+        let item = close_turn_and_queue_work(
+            transaction,
+            &open_turn_id,
+            recorded_event.event_order,
+            &host_facts,
+        );
         let turn_id = insert_open_turn(
             transaction.db,
             next_turn_order(transaction.db),
@@ -244,8 +273,13 @@ pub fn create(
         };
     }
     if recorded_event.event_kind == EventKind::UserPrompt && has_members {
-        let item =
-            close_turn_and_queue_work(transaction, &open_turn_id, recorded_event.event_order);
+        // Prompt-boundary closes leave host facts unset (NULLs).
+        let item = close_turn_and_queue_work(
+            transaction,
+            &open_turn_id,
+            recorded_event.event_order,
+            &TurnCloseHostFacts::default(),
+        );
         let turn_id = insert_open_turn(
             transaction.db,
             next_turn_order(transaction.db),
@@ -745,13 +779,14 @@ const _: fn() = || {
     let _ = count_turn_members as fn(&Db, &str) -> i64;
     let _ = next_turn_order as fn(&Db) -> i64;
     let _ = insert_open_turn as fn(&Db, i64, i64) -> String;
-    let _ = close_turn as fn(&Db, &str, i64);
+    let _ = close_turn as fn(&Db, &str, i64, &TurnCloseHostFacts);
     let _ = read_turn_structure as fn(&Db) -> Vec<TurnStructureRow>;
     let _ = read_chunk_structure as fn(&Db) -> Vec<ChunkStructureRow>;
     let _ = compact_chunk_material_from_stored_members
         as fn(&Db, &str, ChunkDeriveDerivationType) -> CompactChunkMaterial;
     let _ = current_open_turn_id;
     let _ = close_turn_and_queue_work;
+    let _ = host_facts_from_turn_end;
     let _ = thread_not_found::<()>;
     let _ = config_required;
     let _ = derive_chunk;

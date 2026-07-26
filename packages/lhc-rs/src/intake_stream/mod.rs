@@ -178,11 +178,22 @@ pub struct BatchResult {
 
 // ── EventRecord payloads (kind-exact, closed) ──────────────────────
 
-/// TS `{ text: string }` — user_prompt / assistant_text / assistant_thinking / runtime_note.
+/// TS `{ text: string }` — user_prompt / assistant_thinking / runtime_note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextPayload {
     pub text: String,
+}
+
+/// TS `AssistantTextPayload` — text plus optional verbatim provider usage (schema v5 / D1, D3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantTextPayload {
+    pub text: String,
+    /// Provider usage is the host's verbatim JSON object for one model call —
+    /// no fixed column set, no interpretation inside LHC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_usage: Option<Map<String, Value>>,
 }
 
 /// TS `{ previousModel; newModel }`.
@@ -220,10 +231,38 @@ pub struct ToolResultPayload {
     pub is_error: Option<bool>,
 }
 
-/// TS `Record<string, never>` — closed empty object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnEndPayload {}
+/// Host-observed turn outcome on `turn_end` (schema v5 / D1, D2). Closed vocab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TurnOutcome {
+    #[serde(rename = "completed")]
+    Completed,
+    #[serde(rename = "aborted")]
+    Aborted,
+}
+
+impl TurnOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnOutcome::Completed => "completed",
+            TurnOutcome::Aborted => "aborted",
+        }
+    }
+}
+
+/// Host-observed turn outcome/timing on turn_end (schema v5 / D1). All optional;
+/// empty payload stays valid for hosts that do not report these facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnEndPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TurnOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+}
 
 /// TS `EventRecord = MessageEventInput & { eventOrder; recordedAt }`.
 ///
@@ -246,7 +285,7 @@ pub enum EventRecord {
         idempotency_key: String,
         actor: String,
         harness: String,
-        payload: TextPayload,
+        payload: AssistantTextPayload,
         event_order: i64,
         recorded_at: String,
     },
@@ -423,10 +462,24 @@ impl EventRecord {
     pub fn text_payload(&self) -> Option<&TextPayload> {
         match self {
             EventRecord::UserPrompt { payload, .. }
-            | EventRecord::AssistantText { payload, .. }
             | EventRecord::AssistantThinking { payload, .. }
             | EventRecord::RuntimeNote { payload, .. } => Some(payload),
-            EventRecord::ModelChange { .. }
+            EventRecord::AssistantText { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
+        }
+    }
+
+    pub fn assistant_text_payload(&self) -> Option<&AssistantTextPayload> {
+        match self {
+            EventRecord::AssistantText { payload, .. } => Some(payload),
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }

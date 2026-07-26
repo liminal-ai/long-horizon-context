@@ -8,10 +8,22 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::intake_stream::TurnOutcome;
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::turns::{TurnRecord, TurnStatus};
 
 use super::chunks::read_placements;
+
+/// Host facts (outcome/timing) project only from a turn_end payload. Closers
+/// that lack them (prompt-boundary close, empty turn_end) leave NULLs.
+/// Mirrors TS `TurnCloseHostFacts` / `TurnEndPayload` optional fields.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TurnCloseHostFacts {
+    pub outcome: Option<TurnOutcome>,
+    pub outcome_reason: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
 
 const SQL_SELECT_OPEN_TURN_IDS: &str =
     "SELECT turn_id FROM turns WHERE status = 'open' ORDER BY turn_order";
@@ -24,12 +36,17 @@ const SQL_NEXT_TURN_ORDER: &str = "SELECT MAX(turn_order) AS max_order FROM turn
 const SQL_INSERT_OPEN_TURN: &str = r#"INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
      VALUES (?, ?, 'open', ?)"#;
 
-const SQL_CLOSE_TURN: &str = "UPDATE turns SET status = 'closed', closed_at_event_order = ? WHERE turn_id = ? AND status = 'open'";
+// Host facts (outcome/timing) project only from a turn_end payload. Closers
+// that lack them (prompt-boundary close, empty turn_end) leave NULLs.
+const SQL_CLOSE_TURN: &str = r#"UPDATE turns SET status = 'closed', closed_at_event_order = ?,
+       outcome = ?, outcome_reason = ?, started_at = ?, ended_at = ?
+     WHERE turn_id = ? AND status = 'open'"#;
 
 const SQL_SELECT_TURN_MEMBERS: &str = r#"SELECT message_id, turn_id FROM message
        WHERE turn_id IS NOT NULL AND deleted_at IS NULL ORDER BY source_event_order"#;
 
-const SQL_SELECT_TURNS_LIVE: &str = r#"SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order
+const SQL_SELECT_TURNS_LIVE: &str = r#"SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order,
+              outcome, outcome_reason, started_at, ended_at
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order"#;
 
 const SQL_SELECT_TURN_STRUCTURE: &str = r#"SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order, deleted_at
@@ -135,11 +152,40 @@ pub fn insert_open_turn(db: &Db, turn_order: i64, opened_at_event_order: i64) ->
     turn_id
 }
 
-pub fn close_turn(db: &Db, turn_id: &str, closed_at_event_order: i64) {
+pub fn close_turn(
+    db: &Db,
+    turn_id: &str,
+    closed_at_event_order: i64,
+    host_facts: &TurnCloseHostFacts,
+) {
     db.prepare(SQL_CLOSE_TURN).run(&[
         SqlParam::from(closed_at_event_order),
+        match host_facts.outcome {
+            Some(o) => SqlParam::from(o.as_str()),
+            None => SqlParam::Null,
+        },
+        match &host_facts.outcome_reason {
+            Some(s) => SqlParam::from(s.as_str()),
+            None => SqlParam::Null,
+        },
+        match &host_facts.started_at {
+            Some(s) => SqlParam::from(s.as_str()),
+            None => SqlParam::Null,
+        },
+        match &host_facts.ended_at {
+            Some(s) => SqlParam::from(s.as_str()),
+            None => SqlParam::Null,
+        },
         SqlParam::from(turn_id),
     ]);
+}
+
+fn turn_outcome_from_wire(outcome: &str) -> TurnOutcome {
+    match outcome {
+        "completed" => TurnOutcome::Completed,
+        "aborted" => TurnOutcome::Aborted,
+        other => panic!("unknown turn outcome from row: {other}"),
+    }
 }
 
 // Membership is stored on the member (message.turn_id), never as a list on
@@ -171,10 +217,30 @@ pub fn read_turns(db: &Db) -> Vec<TurnRecord> {
                 member_message_ids: members_by_turn.get(&turn_id).cloned().unwrap_or_default(),
                 opened_at_event_order: map_required_i64(&row, "opened_at_event_order"),
                 closed_at_event_order: map_optional_i64(&row, "closed_at_event_order"),
+                outcome: None,
+                outcome_reason: None,
+                started_at: None,
+                ended_at: None,
                 chunk_id: None,
                 member_idx: None,
                 derivations: None,
             };
+            // Host-observed facts present only when the source turn_end carried
+            // them. NULL rows (pre-v5, prompt-boundary closes, empty turn_end)
+            // omit the keys.
+            if let Some(outcome) = map_optional_str(&row, "outcome") {
+                // Column CHECK + null filter: only completed|aborted remain.
+                record.outcome = Some(turn_outcome_from_wire(&outcome));
+            }
+            if let Some(reason) = map_optional_str(&row, "outcome_reason") {
+                record.outcome_reason = Some(reason);
+            }
+            if let Some(started) = map_optional_str(&row, "started_at") {
+                record.started_at = Some(started);
+            }
+            if let Some(ended) = map_optional_str(&row, "ended_at") {
+                record.ended_at = Some(ended);
+            }
             if let Some(placement) = placements.get(&turn_id) {
                 record.chunk_id = Some(placement.chunk_id.clone());
                 record.member_idx = Some(placement.member_idx);
@@ -182,6 +248,14 @@ pub fn read_turns(db: &Db) -> Vec<TurnRecord> {
             record
         })
         .collect()
+}
+
+fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
+    match row.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => panic!("column {key} not text: {other}"),
+    }
 }
 
 // The turn structure for compact selection: every turn row in turn order,

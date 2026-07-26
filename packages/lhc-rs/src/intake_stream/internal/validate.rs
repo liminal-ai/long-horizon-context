@@ -102,12 +102,38 @@ struct EventEnvelopeSchema {
 // ── Layer 3 — per-kind payload, closed ─────────────────────────────
 // NOTE (Phase 2): NonEmptyString minLength(1) and onExcessProperty closedness
 // are not expressed by structs alone — `deny_unknown_fields` covers excess keys.
+// turn_end may be empty or carry only the optional host-observed outcome/timing
+// fields (D1). assistant_text may carry optional providerUsage as a verbatim
+// JSON object (no inner shape).
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
 struct TextPayloadSchema {
     text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct AssistantTextPayloadSchema {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_usage: Option<Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct TurnEndPayloadSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outcome_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ended_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +178,8 @@ enum DecodeSchema {
     ThreadRefByPath,
     EventEnvelope,
     TextPayload,
+    AssistantTextPayload,
+    TurnEndPayload,
     ModelChangePayload,
     ThinkingLevelChangePayload,
     ToolCallPayload,
@@ -224,6 +252,8 @@ fn type_label(kind: &str) -> &str {
         "record" => "{ readonly [x: string]: unknown }",
         "unknown" => "unknown",
         "event_kind" => "\"user_prompt\"",
+        // Effect Schema.Literal("completed", "aborted") surface for turn_end.outcome.
+        "outcome_literal" => "\"completed\" | \"aborted\"",
         other => other,
     }
 }
@@ -338,6 +368,20 @@ fn struct_issue(value: &Value, fields: &[(&str, &str, bool)]) -> Option<ParseErr
                     });
                 }
             }
+            "outcome_literal" => {
+                let ok = item
+                    .as_str()
+                    .is_some_and(|s| s == "completed" || s == "aborted");
+                if !ok {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!(
+                            "Expected \"completed\" | \"aborted\", actual {}",
+                            actual(item)
+                        ),
+                    });
+                }
+            }
             "unknown" => {}
             _ => {}
         }
@@ -371,6 +415,19 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
             )
         }
         DecodeSchema::TextPayload => struct_issue(value, &[("text", "string", false)]),
+        DecodeSchema::AssistantTextPayload => struct_issue(
+            value,
+            &[("text", "string", false), ("providerUsage", "record", true)],
+        ),
+        DecodeSchema::TurnEndPayload => struct_issue(
+            value,
+            &[
+                ("outcome", "outcome_literal", true),
+                ("outcomeReason", "string", true),
+                ("startedAt", "string", true),
+                ("endedAt", "string", true),
+            ],
+        ),
         DecodeSchema::ModelChangePayload => struct_issue(
             value,
             &[
@@ -502,21 +559,10 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
             Some(index),
         ));
     };
-    let payload_obj = payload.as_object().expect("is_object checked");
-
-    if kind == Some("turn_end") {
-        if let Some((first_key, _)) = payload_obj.iter().next() {
-            return Some(caller_error(
-                &format!(
-                    "payload: turn_end events carry an empty payload; found field \"{first_key}\""
-                ),
-                Some(index),
-            ));
-        }
-        return None;
-    }
 
     let payload_schema = match kind {
+        Some("turn_end") => DecodeSchema::TurnEndPayload,
+        Some("assistant_text") => DecodeSchema::AssistantTextPayload,
         Some("tool_call") => DecodeSchema::ToolCallPayload,
         Some("tool_result") => DecodeSchema::ToolResultPayload,
         Some("model_change") => DecodeSchema::ModelChangePayload,

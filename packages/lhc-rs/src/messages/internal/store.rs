@@ -13,8 +13,8 @@ use crate::shared_tech::derivation::Derivation;
 use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::storage::{Db, SqlParam};
 
-const SQL_INSERT_MESSAGE: &str = r#"INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)"#;
+const SQL_INSERT_MESSAGE: &str = r#"INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#;
 
 const SQL_INSERT_MESSAGE_BLOCK: &str = r#"INSERT INTO message_block (message_id, block_index, block_type, content)
      VALUES (?, ?, ?, ?)"#;
@@ -56,7 +56,7 @@ const SQL_UPDATE_TOKEN_ESTIMATE: &str =
 /// Predicates are appended in order: deleted → from → to (limit is a trailing
 /// clause, not a WHERE predicate; its `?` is still pushed onto params).
 const SQL_READ_MESSAGES_SELECT: &str = r#"SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order"#;
 
 /// Default live-row filter (`includeDeleted !== true`).
@@ -77,7 +77,7 @@ const SQL_READ_BLOCKS_FOR_IDS_SUFFIX: &str = r#")
 
 #[allow(dead_code)]
 const SQL_READ_MESSAGE_BY_ID: &str = r#"SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order
        WHERE m.message_id = ?"#;
 
@@ -96,10 +96,19 @@ pub struct MessageRow {
     /// Membership stamp, settled at intake: the current open turn after turn
     /// intake. Written once here, never updated.
     pub turn_id: String,
+    /// Verbatim provider usage JSON for assistant_text events that carried it
+    /// (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
+    pub provider_usage: Option<Map<String, Value>>,
     pub blocks: Vec<Block>,
 }
 
 pub fn insert_message(db: &Db, row: &MessageRow) {
+    // CRITICAL byte-parity: provider_usage must be js_json_stringify (the
+    // gate-enforced JS-parity serializer) — key order is load-bearing.
+    let provider_usage_param = match &row.provider_usage {
+        Some(usage) => SqlParam::from(js_json_stringify(&Value::Object(usage.clone()))),
+        None => SqlParam::Null,
+    };
     db.prepare(SQL_INSERT_MESSAGE).run(&[
         SqlParam::from(row.message_id.as_str()),
         SqlParam::from(row.source_event_order),
@@ -108,6 +117,7 @@ pub fn insert_message(db: &Db, row: &MessageRow) {
         SqlParam::from(row.actor.as_str()),
         SqlParam::from(row.harness.as_str()),
         SqlParam::from(row.turn_id.as_str()),
+        provider_usage_param,
     ]);
 
     let insert_block = db.prepare(SQL_INSERT_MESSAGE_BLOCK);
@@ -232,6 +242,7 @@ struct RawMessageRow {
     actor: String,
     harness: String,
     turn_id: String,
+    provider_usage: Option<String>,
     deleted_at: Option<String>,
     /// The source event's recorded_at, joined from the durable event row.
     recorded_at: String,
@@ -308,9 +319,20 @@ fn record_from_row(row: &RawMessageRow, blocks: Vec<Block>) -> MessageRecord {
         harness: row.harness.clone(),
         recorded_at: row.recorded_at.clone(),
         turn_id: row.turn_id.clone(),
+        provider_usage: None,
         derivations: None,
         deleted: None,
     };
+    // Provider usage is present only when the source event carried it. NULL
+    // rows (pre-v5 messages, non-assistant kinds) omit the key.
+    if let Some(raw) = &row.provider_usage {
+        let parsed: Value = serde_json::from_str(raw).unwrap_or_else(|err| panic!("{err}"));
+        let map = match parsed {
+            Value::Object(map) => map,
+            other => panic!("provider_usage column is not a JSON object: {other}"),
+        };
+        record.provider_usage = Some(map);
+    }
     // The deleted marker is present only on deleted rows, which only the
     // includeDeleted read surfaces. It is never silently mixed into default reads.
     if row.deleted_at.is_some() {
@@ -380,6 +402,7 @@ pub fn read_messages(db: &Db, opts: &MessageReadOptions) -> Vec<MessageRecord> {
             actor: map_required_str(row, "actor"),
             harness: map_required_str(row, "harness"),
             turn_id: map_required_str(row, "turn_id"),
+            provider_usage: map_optional_str(row, "provider_usage"),
             deleted_at: map_optional_str(row, "deleted_at"),
             recorded_at: map_required_str(row, "recorded_at"),
         })
@@ -440,6 +463,8 @@ pub struct MessageRecordWithDeleted {
     pub harness: String,
     pub recorded_at: String,
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_usage: Option<Map<String, Value>>,
     pub deleted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivations: Option<Vec<Derivation>>,
@@ -457,6 +482,7 @@ pub fn read_message_by_id(db: &Db, message_id: &str) -> Option<MessageRecordWith
         actor: map_required_str(&row_map, "actor"),
         harness: map_required_str(&row_map, "harness"),
         turn_id: map_required_str(&row_map, "turn_id"),
+        provider_usage: map_optional_str(&row_map, "provider_usage"),
         deleted_at: map_optional_str(&row_map, "deleted_at"),
         recorded_at: map_required_str(&row_map, "recorded_at"),
     };
@@ -491,6 +517,7 @@ pub fn read_message_by_id(db: &Db, message_id: &str) -> Option<MessageRecordWith
         harness: record.harness,
         recorded_at: record.recorded_at,
         turn_id: record.turn_id,
+        provider_usage: record.provider_usage,
         deleted,
         derivations: record.derivations,
     })

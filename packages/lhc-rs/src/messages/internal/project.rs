@@ -21,9 +21,21 @@ pub struct ProjectedMessage {
 pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
     match event {
         EventRecord::UserPrompt { payload, .. }
-        | EventRecord::AssistantText { payload, .. }
         | EventRecord::AssistantThinking { payload, .. }
         | EventRecord::RuntimeNote { payload, .. } => {
+            let mut content = Map::new();
+            content.insert("text".into(), json!(payload.text.clone()));
+            Some(ProjectedMessage {
+                blocks: vec![Block {
+                    block_type: BlockType::Text,
+                    content,
+                }],
+                token_estimate: estimate_tokens(&payload.text),
+            })
+        }
+        // providerUsage rides the event payload and is stored as a message
+        // column (not a block) — projection leaves only text in the block.
+        EventRecord::AssistantText { payload, .. } => {
             let mut content = Map::new();
             content.insert("text".into(), json!(payload.text.clone()));
             Some(ProjectedMessage {

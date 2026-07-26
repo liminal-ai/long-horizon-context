@@ -118,6 +118,10 @@ pub struct MessageRecord {
     pub harness: String,
     pub recorded_at: String,
     pub turn_id: String,
+    // Host-observed provider usage from assistant_text (schema v5). Absent when
+    // the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_usage: Option<Map<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivations: Option<Vec<Derivation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +197,20 @@ pub fn create(
     };
     let kind = message_kind_from_event(recorded_event.event_kind());
     let message_id = format!("m{}", recorded_event.event_order());
+    // providerUsage rides assistant_text only; projectEvent leaves it on the
+    // event payload and storage writes it as a message column (not a block).
+    // exactOptionalPropertyTypes: omit the key when absent — do not pass undefined.
+    let provider_usage = match recorded_event {
+        EventRecord::AssistantText { payload, .. } => payload.provider_usage.clone(),
+        EventRecord::UserPrompt { .. }
+        | EventRecord::AssistantThinking { .. }
+        | EventRecord::RuntimeNote { .. }
+        | EventRecord::ModelChange { .. }
+        | EventRecord::ThinkingLevelChange { .. }
+        | EventRecord::ToolCall { .. }
+        | EventRecord::ToolResult { .. }
+        | EventRecord::TurnEnd { .. } => None,
+    };
     insert_message(
         transaction.db,
         &MessageRow {
@@ -203,6 +221,7 @@ pub fn create(
             actor: recorded_event.actor().to_string(),
             harness: recorded_event.harness().to_string(),
             turn_id: turn_id.to_string(),
+            provider_usage,
             blocks: projected.blocks,
         },
     );
@@ -409,6 +428,7 @@ pub fn read_live_messages(db: &Db) -> Vec<MessageRecord> {
 }
 
 /// TS `MessageDetail` — canonical record + honest deleted + report derivations.
+/// Extends `Omit<MessageRecord, "derivations">` so host-fact fields ride through.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageDetail {
@@ -421,6 +441,8 @@ pub struct MessageDetail {
     pub harness: String,
     pub recorded_at: String,
     pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_usage: Option<Map<String, Value>>,
     pub deleted: bool,
     pub derivations: Vec<DerivationReportEntry>,
 }
@@ -459,6 +481,7 @@ pub async fn show(thread_ref: ThreadRef, message_id: &str) -> OpResult<MessageDe
                     harness: record.harness,
                     recorded_at: record.recorded_at,
                     turn_id: record.turn_id,
+                    provider_usage: record.provider_usage,
                     deleted: record.deleted,
                     derivations,
                 },

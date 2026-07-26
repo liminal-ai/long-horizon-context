@@ -12,6 +12,7 @@ use lhc::shared_tech::scheduler::DrainDisposition;
 use lhc::shared_tech::storage::{Db, SqlParam, get_schema_version};
 use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
+    THREAD_SCHEMA_VERSION_5,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
@@ -32,8 +33,20 @@ fn add_legacy_queue_columns(db: &Db) {
     db.exec("ALTER TABLE work_item ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;");
 }
 
+// Fresh threads are created at the current schema. Simulating an older file
+// means stripping columns that that older version never had, so the migration
+// step that adds them can run for real.
+fn strip_v5_host_fact_columns(db: &Db) {
+    db.exec("ALTER TABLE turns DROP COLUMN outcome;");
+    db.exec("ALTER TABLE turns DROP COLUMN outcome_reason;");
+    db.exec("ALTER TABLE turns DROP COLUMN started_at;");
+    db.exec("ALTER TABLE turns DROP COLUMN ended_at;");
+    db.exec("ALTER TABLE message DROP COLUMN provider_usage;");
+}
+
 fn simulate_v1_thread(file_path: &str) {
     let db = open_raw(file_path);
+    strip_v5_host_fact_columns(&db);
     add_legacy_queue_columns(&db);
     db.exec("DROP TABLE IF EXISTS derivation_log;");
     db.exec(&format!("PRAGMA user_version = {THREAD_SCHEMA_VERSION_1};"));
@@ -63,6 +76,7 @@ fn simulate_v2_thread_with_old_derivation_names(file_path: &str) {
         },
     }));
     let db = open_raw(file_path);
+    strip_v5_host_fact_columns(&db);
     add_legacy_queue_columns(&db);
     db.prepare(
         "INSERT INTO derivation
@@ -202,6 +216,7 @@ async fn fixture_poisoned_turn_derivation_work_item(file_path: &str, opts: Poiso
         .run(&[]);
     }
     if opts.downgrade_to_v2 {
+        strip_v5_host_fact_columns(&db);
         add_legacy_queue_columns(&db);
         db.exec(&format!("PRAGMA user_version = {THREAD_SCHEMA_VERSION_2};"));
     }
@@ -311,7 +326,7 @@ async fn opens_a_v1_thread_file_migrates_derivation_log_and_preserves_existing_d
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_4);
+    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_5);
     assert!(
         db.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'"
@@ -367,7 +382,7 @@ async fn migrates_v2_derivation_rows_and_stored_view_json_from_smooth_turn_compr
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_4);
+    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_5);
     let derivation = db
         .prepare(
             "SELECT derivation_type, content FROM derivation
@@ -501,7 +516,7 @@ async fn normalizes_queued_old_shape_turn_derivation_items_and_drains_cleanly_en
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_4);
+    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_5);
     let payload_raw = db
         .prepare("SELECT payload FROM work_item WHERE kind = 'turn_derivation'")
         .get()
@@ -722,5 +737,227 @@ async fn heals_a_crash_window_partial_normalization_on_reopen_new_shape_payload_
     db.close();
 
     drain_turn_derivations_green(&file_path_str).await;
+    store.cleanup();
+}
+
+// Schema v5 (D4): add nullable turn host-fact + message provider_usage columns
+// with no backfill. Existing rows keep NULL in every new field.
+fn simulate_v4_thread(file_path: &str) {
+    let db = open_raw(file_path);
+    strip_v5_host_fact_columns(&db);
+    db.exec(&format!("PRAGMA user_version = {THREAD_SCHEMA_VERSION_4};"));
+    db.close();
+}
+
+#[tokio::test]
+async fn migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backfills_nothing() {
+    let store = temp_store();
+    let file_path = store.thread_path(None);
+    let file_path_str = file_path.to_string_lossy().into_owned();
+    let created = threads::new_thread(NewThreadInput {
+        file_path: file_path_str.clone(),
+        title: None,
+        cwd: None,
+        registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+    })
+    .await;
+    assert!(created.is_ok());
+    if !created.is_ok() {
+        store.cleanup();
+        return;
+    }
+
+    let intake = intake_stream::message_events(
+        ThreadRef::file_path(&file_path_str),
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "v4 migration prompt".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::ASSISTANT_TEXT,
+                AssistantTextOverrides {
+                    payload: Some(AssistantTextPayload {
+                        text: "v4 migration answer".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    assert!(intake.is_ok());
+    if !intake.is_ok() {
+        store.cleanup();
+        return;
+    }
+
+    let before = open_raw(&file_path_str);
+    let event_count = before
+        .prepare("SELECT COUNT(*) AS count FROM event")
+        .get()
+        .and_then(|row| row.get("count").cloned())
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
+    let message_ids: Vec<String> = before
+        .prepare("SELECT message_id FROM message ORDER BY source_event_order")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| {
+            row.get("message_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    let turn_ids: Vec<String> = before
+        .prepare("SELECT turn_id FROM turns ORDER BY turn_order")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| {
+            row.get("turn_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(event_count, 3);
+    assert_eq!(message_ids, vec!["m1".to_string(), "m2".to_string()]);
+    assert_eq!(turn_ids, vec!["t1".to_string(), "t2".to_string()]);
+    before.close();
+
+    simulate_v4_thread(&file_path_str);
+
+    let pre_migrate = open_raw(&file_path_str);
+    assert_eq!(schema_version(&pre_migrate), THREAD_SCHEMA_VERSION_4);
+    let turn_cols: Vec<String> = pre_migrate
+        .prepare("PRAGMA table_info(turns)")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    let message_cols: Vec<String> = pre_migrate
+        .prepare("PRAGMA table_info(message)")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    assert!(!turn_cols.iter().any(|n| n == "outcome"));
+    assert!(!turn_cols.iter().any(|n| n == "outcome_reason"));
+    assert!(!turn_cols.iter().any(|n| n == "started_at"));
+    assert!(!turn_cols.iter().any(|n| n == "ended_at"));
+    assert!(!message_cols.iter().any(|n| n == "provider_usage"));
+    pre_migrate.close();
+
+    let opened = open_thread_database(&file_path_str);
+    assert!(opened.is_ok());
+    let OpResult::Ok { value: db } = opened else {
+        store.cleanup();
+        return;
+    };
+    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_5);
+
+    let turn_cols: Vec<String> = db
+        .prepare("PRAGMA table_info(turns)")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    let message_cols: Vec<String> = db
+        .prepare("PRAGMA table_info(message)")
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    for col in ["outcome", "outcome_reason", "started_at", "ended_at"] {
+        assert!(
+            turn_cols.iter().any(|n| n == col),
+            "turns missing column {col}: {turn_cols:?}"
+        );
+    }
+    assert!(message_cols.iter().any(|n| n == "provider_usage"));
+
+    // All pre-migration rows keep NULL in every new field — no invented values.
+    let turn_rows = db
+        .prepare(
+            "SELECT turn_id, outcome, outcome_reason, started_at, ended_at FROM turns ORDER BY turn_order",
+        )
+        .all(&[]);
+    assert_eq!(
+        turn_rows
+            .iter()
+            .filter_map(|row| row
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string))
+            .collect::<Vec<_>>(),
+        turn_ids
+    );
+    for row in &turn_rows {
+        assert!(matches!(
+            row.get("outcome"),
+            None | Some(serde_json::Value::Null)
+        ));
+        assert!(matches!(
+            row.get("outcome_reason"),
+            None | Some(serde_json::Value::Null)
+        ));
+        assert!(matches!(
+            row.get("started_at"),
+            None | Some(serde_json::Value::Null)
+        ));
+        assert!(matches!(
+            row.get("ended_at"),
+            None | Some(serde_json::Value::Null)
+        ));
+    }
+
+    let message_rows = db
+        .prepare("SELECT message_id, provider_usage FROM message ORDER BY source_event_order")
+        .all(&[]);
+    assert_eq!(
+        message_rows
+            .iter()
+            .filter_map(|row| {
+                row.get("message_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>(),
+        message_ids
+    );
+    for row in &message_rows {
+        assert!(matches!(
+            row.get("provider_usage"),
+            None | Some(serde_json::Value::Null)
+        ));
+    }
+
+    // Existing record content is intact.
+    assert_eq!(
+        db.prepare("SELECT COUNT(*) AS count FROM event")
+            .get()
+            .and_then(|row| row.get("count").cloned())
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1),
+        event_count
+    );
+    let prompt = db
+        .prepare("SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0")
+        .get()
+        .expect("prompt block");
+    let content: serde_json::Value = serde_json::from_str(
+        prompt
+            .get("content")
+            .and_then(|v| v.as_str())
+            .expect("content"),
+    )
+    .expect("content json");
+    assert_eq!(content["text"].as_str(), Some("v4 migration prompt"));
+    db.close();
     store.cleanup();
 }

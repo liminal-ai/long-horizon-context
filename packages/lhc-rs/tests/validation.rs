@@ -78,11 +78,13 @@ async fn tc_4_1_four_invalidity_categories_each_rejected_whole_with_a_named_reas
             .clone(),
     );
 
+    // turn_end may carry optional host facts, but unknown keys stay closed.
+    // TS reason: /"text".*unexpected|unexpected.*"text"/
     let cases: Vec<(Vec<MessageEventInput>, &str)> = vec![
         (vec![unknown_kind], "unknown event kind"),
         (vec![missing_key], "idempotencyKey"),
         (vec![server_field], "eventOrder"),
-        (vec![turn_end_with_payload], "turn_end"),
+        (vec![turn_end_with_payload], "text"),
     ];
 
     for (batch, reason) in cases {
@@ -105,6 +107,13 @@ async fn tc_4_1_four_invalidity_categories_each_rejected_whole_with_a_named_reas
                 assert!(
                     sg < eo,
                     "expected server-generated before eventOrder in reason={}",
+                    error.reason
+                );
+            } else if reason == "text" {
+                // Unknown key on closed turn_end payload.
+                assert!(
+                    error.reason.contains("\"text\"") && error.reason.contains("unexpected"),
+                    "reason={} expected \"text\" unexpected",
                     error.reason
                 );
             } else {
