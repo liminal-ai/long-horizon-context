@@ -387,6 +387,24 @@ reclaimed — but copy it **before** deleting, or find it under the old encoded
 path. Codex is unaffected: it keys sessions by thread id, not cwd, which is why
 Sol resumed across trees without help.
 
+## Never copy a tree while something is writing to it
+
+**Sequence the rsync against the implementor, not against the clock.** A
+verifier copy taken while a fix round is editing the main tree can capture
+half-written files: the verifier then measures a state that never existed, and
+its findings are unreproducible.
+
+Hit on 2026-07-26: an rsync ran 00:06:29–00:15 while a fix round started writing
+at 00:13:47. The copy was discarded rather than used.
+
+Rule: start the copy only when the implementor run has **finished** (envelope
+present AND exit code read), or copy before dispatching. If a dispatch has to
+happen mid-copy, discard the copy — it is cheaper than an unreproducible round.
+
+This is why verifiers are asked to fingerprint the tree at start and report if
+files changed under them; that check catches the case where this rule was
+broken.
+
 ## Verifier session continuity — see §The loop
 
 **The policy lives in "Verifier session continuity" under §The loop (Lee's
