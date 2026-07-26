@@ -5,6 +5,7 @@ export const THREAD_SCHEMA_VERSION_1 = 1;
 export const THREAD_SCHEMA_VERSION_2 = 2;
 export const THREAD_SCHEMA_VERSION_3 = 3;
 export const THREAD_SCHEMA_VERSION_4 = 4;
+export const THREAD_SCHEMA_VERSION_5 = 5;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -175,6 +176,16 @@ function migrateOneShotWorkQueue(db: DatabaseSync): void {
   db.exec("CREATE INDEX idx_work_item_queue ON work_item (status);");
 }
 
+// v4→v5: host-observed turn outcome/timing and per-call provider usage.
+// Nullable columns only; no backfill — pre-v5 facts were never recorded.
+function migrateTurnHostFacts(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE turns ADD COLUMN outcome TEXT CHECK (outcome IN ('completed', 'aborted') OR outcome IS NULL);`);
+  db.exec(`ALTER TABLE turns ADD COLUMN outcome_reason TEXT;`);
+  db.exec(`ALTER TABLE turns ADD COLUMN started_at TEXT;`);
+  db.exec(`ALTER TABLE turns ADD COLUMN ended_at TEXT;`);
+  db.exec(`ALTER TABLE message ADD COLUMN provider_usage TEXT;`);
+}
+
 export function migrateThreadSchema(db: DatabaseSync): void {
   let version = getSchemaVersion(db);
   if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
@@ -199,6 +210,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
       migrateQueuedTurnDerivationWorkItems(db);
       migrateOneShotWorkQueue(db);
       version = THREAD_SCHEMA_VERSION_4;
+    }
+    if (version === THREAD_SCHEMA_VERSION_4) {
+      migrateTurnHostFacts(db);
+      version = THREAD_SCHEMA_VERSION_5;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

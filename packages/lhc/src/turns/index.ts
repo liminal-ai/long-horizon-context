@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { EventRecord } from "../intake-stream/index.js";
+import type { EventRecord, TurnEndPayload } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
@@ -25,6 +25,7 @@ import {
   readTurnStructure,
   readTurns,
   selectOpenTurnIds,
+  type TurnCloseHostFacts,
   type TurnStructureRow,
 } from "./internal/store.js";
 
@@ -35,6 +36,12 @@ export interface TurnRecord {
   memberMessageIds: string[];
   openedAtEventOrder: number;
   closedAtEventOrder?: number;
+  // Host-observed facts from turn_end (schema v5). Absent when unknown —
+  // pre-v5 turns, prompt-boundary closes, or hosts that omit them.
+  outcome?: "completed" | "aborted";
+  outcomeReason?: string;
+  startedAt?: string;
+  endedAt?: string;
   // Present once the turn's derivation placed it in a chunk. Stored values
   // read back; reads never recompute placement.
   chunkId?: string;
@@ -82,8 +89,14 @@ function currentOpenTurnId(transaction: DbWriteTransaction): string {
 
 // Closing a turn durably queues that turn's derivation work in the same
 // transaction: the close update and the work item commit or roll back together.
-function closeTurnAndQueueWork(transaction: DbWriteTransaction, turnId: string, eventOrder: number): WorkItemRecord {
-  closeTurn(transaction.db, turnId, eventOrder);
+// hostFacts land only from turn_end; prompt-boundary closes leave them unset.
+function closeTurnAndQueueWork(
+  transaction: DbWriteTransaction,
+  turnId: string,
+  eventOrder: number,
+  hostFacts: TurnCloseHostFacts = {},
+): WorkItemRecord {
+  closeTurn(transaction.db, turnId, eventOrder, hostFacts);
   // One work item backs two deterministic turn-owned derivation rows; compression
   // queues from the turn_derivation completion transaction.
   return enqueue(transaction, {
@@ -100,14 +113,16 @@ function closeTurnAndQueueWork(transaction: DbWriteTransaction, turnId: string, 
 // Cross-domain surface, called by intake-stream inside the batch transaction
 // for every recorded event. Synchronous and throwing by design, like
 // messages.create: a turn-storage failure rejects the whole batch.
-export type RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder">;
+export type RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder" | "payload">;
 
 export function create(transaction: DbWriteTransaction, recordedEvent: RecordedTurnEvent): TurnTransitionOutcome {
   const openTurnId = currentOpenTurnId(transaction);
   const hasMembers = countTurnMembers(transaction.db, openTurnId) > 0;
   if (recordedEvent.eventKind === "turn_end") {
     if (!hasMembers) return { transitions: [], turnId: openTurnId, queuedWork: [] };
-    const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder);
+    // Payload was closed-validated as TurnEndPayload at intake (validate.ts layer 3).
+    const payload = recordedEvent.payload as TurnEndPayload;
+    const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder, payload);
     const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
     return {
       transitions: [

@@ -16,14 +16,26 @@ export interface MessageRow {
   // Membership stamp, settled at intake: the current open turn after turn
   // intake. Written once here, never updated.
   turnId: string;
+  // Verbatim provider usage JSON for assistant_text events that carried it
+  // (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
+  providerUsage?: Record<string, unknown>;
   blocks: Block[];
 }
 
 export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   db.prepare(
-    `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(row.messageId, row.sourceEventOrder, row.kind, row.tokenEstimate, row.actor, row.harness, row.turnId);
+    `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.messageId,
+    row.sourceEventOrder,
+    row.kind,
+    row.tokenEstimate,
+    row.actor,
+    row.harness,
+    row.turnId,
+    row.providerUsage === undefined ? null : JSON.stringify(row.providerUsage),
+  );
 
   const insertBlock = db.prepare(
     `INSERT INTO message_block (message_id, block_index, block_type, content)
@@ -146,6 +158,7 @@ interface RawMessageRow {
   actor: string;
   harness: string;
   turn_id: string;
+  provider_usage: string | null;
   deleted_at: string | null;
   // The source event's recorded_at, joined from the durable event row on
   // source_event_order = event_order (every message has exactly one source
@@ -171,6 +184,11 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
     recordedAt: row.recorded_at,
     turnId: row.turn_id,
   };
+  // Provider usage is present only when the source event carried it. NULL
+  // rows (pre-v5 messages, non-assistant kinds) omit the key.
+  if (row.provider_usage !== null) {
+    record.providerUsage = JSON.parse(row.provider_usage) as Record<string, unknown>;
+  }
   // The deleted marker is present only on deleted rows, which only the
   // includeDeleted read surfaces. It is never silently mixed into default reads.
   if (row.deleted_at !== null) record.deleted = true;
@@ -212,7 +230,7 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   const messageRows = db
     .prepare(
       `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ""}
        ORDER BY m.source_event_order${opts.limit !== undefined ? " LIMIT ?" : ""}`,
     )
@@ -253,7 +271,7 @@ export function readMessageById(
   const row = db
     .prepare(
       `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order
        WHERE m.message_id = ?`,
     )

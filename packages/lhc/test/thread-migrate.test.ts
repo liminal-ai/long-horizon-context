@@ -6,6 +6,7 @@ import {
   THREAD_SCHEMA_VERSION_1,
   THREAD_SCHEMA_VERSION_2,
   THREAD_SCHEMA_VERSION_4,
+  THREAD_SCHEMA_VERSION_5,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -25,9 +26,21 @@ afterEach(() => {
   store.cleanup();
 });
 
+// Fresh threads are created at the current schema. Simulating an older file
+// means stripping columns that that older version never had, so the migration
+// step that adds them can run for real.
+function stripV5HostFactColumns(db: DatabaseSync): void {
+  db.exec("ALTER TABLE turns DROP COLUMN outcome;");
+  db.exec("ALTER TABLE turns DROP COLUMN outcome_reason;");
+  db.exec("ALTER TABLE turns DROP COLUMN started_at;");
+  db.exec("ALTER TABLE turns DROP COLUMN ended_at;");
+  db.exec("ALTER TABLE message DROP COLUMN provider_usage;");
+}
+
 function simulateV1Thread(filePath: string): void {
   const db = new DatabaseSync(filePath);
   try {
+    stripV5HostFactColumns(db);
     addLegacyQueueColumns(db);
     db.exec("DROP TABLE IF EXISTS derivation_log;");
     db.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_1};`);
@@ -63,6 +76,7 @@ function simulateV2ThreadWithOldDerivationNames(filePath: string): void {
   });
   const db = new DatabaseSync(filePath);
   try {
+    stripV5HostFactColumns(db);
     addLegacyQueueColumns(db);
     db.prepare(
       `INSERT INTO derivation
@@ -154,6 +168,7 @@ async function fixturePoisonedTurnDerivationWorkItem(
       ).run();
     }
     if (opts.downgradeToV2 === true) {
+      stripV5HostFactColumns(db);
       addLegacyQueueColumns(db);
       db.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_2};`);
     }
@@ -223,7 +238,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -252,7 +267,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -323,7 +338,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_4);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -450,5 +465,128 @@ describe("thread schema migration", () => {
     }
 
     await drainTurnDerivationsGreen(filePath);
+  });
+
+  // Schema v5 (D4): add nullable turn host-fact + message provider_usage columns
+  // with no backfill. Existing rows keep NULL in every new field.
+  function simulateV4Thread(filePath: string): void {
+    const db = new DatabaseSync(filePath);
+    try {
+      stripV5HostFactColumns(db);
+      db.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_4};`);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("migrates a v4 file: adds nullable host-fact columns, preserves data, backfills nothing", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const intake = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "v4 migration prompt" } }),
+      validEvent("assistant_text", { payload: { text: "v4 migration answer" } }),
+      validEvent("turn_end"),
+    ]);
+    expect(intake.ok).toBe(true);
+    if (!intake.ok) return;
+
+    const before = new DatabaseSync(filePath, { readOnly: true });
+    let eventCount: number;
+    let messageIds: string[];
+    let turnIds: string[];
+    try {
+      eventCount = Number(
+        (before.prepare("SELECT COUNT(*) AS count FROM event").get() as { count: number | bigint }).count,
+      );
+      messageIds = (
+        before.prepare("SELECT message_id FROM message ORDER BY source_event_order").all() as Array<{
+          message_id: string;
+        }>
+      ).map((row) => row.message_id);
+      turnIds = (
+        before.prepare("SELECT turn_id FROM turns ORDER BY turn_order").all() as Array<{ turn_id: string }>
+      ).map((row) => row.turn_id);
+      expect(eventCount).toBe(3);
+      expect(messageIds).toEqual(["m1", "m2"]);
+      expect(turnIds).toEqual(["t1", "t2"]);
+    } finally {
+      before.close();
+    }
+
+    simulateV4Thread(filePath);
+
+    const preMigrate = new DatabaseSync(filePath, { readOnly: true });
+    try {
+      expect(getSchemaVersion(preMigrate)).toBe(THREAD_SCHEMA_VERSION_4);
+      const turnCols = (preMigrate.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      );
+      const messageCols = (preMigrate.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      );
+      expect(turnCols).not.toContain("outcome");
+      expect(turnCols).not.toContain("outcome_reason");
+      expect(turnCols).not.toContain("started_at");
+      expect(turnCols).not.toContain("ended_at");
+      expect(messageCols).not.toContain("provider_usage");
+    } finally {
+      preMigrate.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const db = opened.value;
+    try {
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
+
+      const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
+      const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      );
+      expect(turnCols).toEqual(expect.arrayContaining(["outcome", "outcome_reason", "started_at", "ended_at"]));
+      expect(messageCols).toContain("provider_usage");
+
+      // All pre-migration rows keep NULL in every new field — no invented values.
+      const turnRows = db
+        .prepare(`SELECT turn_id, outcome, outcome_reason, started_at, ended_at FROM turns ORDER BY turn_order`)
+        .all() as Array<{
+        turn_id: string;
+        outcome: string | null;
+        outcome_reason: string | null;
+        started_at: string | null;
+        ended_at: string | null;
+      }>;
+      expect(turnRows.map((row) => row.turn_id)).toEqual(turnIds);
+      for (const row of turnRows) {
+        expect(row.outcome).toBeNull();
+        expect(row.outcome_reason).toBeNull();
+        expect(row.started_at).toBeNull();
+        expect(row.ended_at).toBeNull();
+      }
+
+      const messageRows = db
+        .prepare(`SELECT message_id, provider_usage FROM message ORDER BY source_event_order`)
+        .all() as Array<{ message_id: string; provider_usage: string | null }>;
+      expect(messageRows.map((row) => row.message_id)).toEqual(messageIds);
+      for (const row of messageRows) {
+        expect(row.provider_usage).toBeNull();
+      }
+
+      // Existing record content is intact.
+      expect(
+        Number((db.prepare("SELECT COUNT(*) AS count FROM event").get() as { count: number | bigint }).count),
+      ).toBe(eventCount);
+      const prompt = db
+        .prepare(`SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0`)
+        .get() as { content: string };
+      expect(JSON.parse(prompt.content)).toEqual({ text: "v4 migration prompt" });
+    } finally {
+      db.close();
+    }
   });
 });

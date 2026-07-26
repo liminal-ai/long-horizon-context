@@ -47,9 +47,20 @@ const EventEnvelopeSchema = Schema.Struct({
   payload: Schema.Unknown,
 });
 
-// Layer 3 — per-kind payload, closed. turn_end's empty-payload rule is its
-// own named check below (a closed Struct({}) admits any object).
+// Layer 3 — per-kind payload, closed. turn_end may be empty or carry only the
+// optional host-observed outcome/timing fields (D1). assistant_text may carry
+// optional providerUsage as a verbatim JSON object (no inner shape).
 const TextPayloadSchema = Schema.Struct({ text: Schema.String });
+const AssistantTextPayloadSchema = Schema.Struct({
+  text: Schema.String,
+  providerUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+});
+const TurnEndPayloadSchema = Schema.Struct({
+  outcome: Schema.optional(Schema.Literal("completed", "aborted")),
+  outcomeReason: Schema.optional(Schema.String),
+  startedAt: Schema.optional(Schema.String),
+  endedAt: Schema.optional(Schema.String),
+});
 const ModelChangePayloadSchema = Schema.Struct({
   previousModel: NonEmptyString,
   newModel: NonEmptyString,
@@ -149,16 +160,14 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
     return callerError("event: payload must be a JSON object", index);
   }
 
-  if (envelope.right.eventKind === "turn_end") {
-    const extraKeys = Object.keys(payload);
-    if (extraKeys.length > 0) {
-      return callerError(`payload: turn_end events carry an empty payload; found field "${extraKeys[0]}"`, index);
-    }
-    return undefined;
-  }
-
   let issue: string | undefined;
   switch (envelope.right.eventKind) {
+    case "turn_end":
+      issue = decodeIssue(TurnEndPayloadSchema, payload);
+      break;
+    case "assistant_text":
+      issue = decodeIssue(AssistantTextPayloadSchema, payload);
+      break;
     case "tool_call":
       issue = decodeIssue(ToolCallPayloadSchema, payload);
       break;

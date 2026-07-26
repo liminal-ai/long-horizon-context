@@ -51,6 +51,9 @@ export interface MessageRecord {
   // read-time clock.
   recordedAt: string;
   turnId: string;
+  // Host-observed provider usage from assistant_text (schema v5). Absent when
+  // the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
+  providerUsage?: Record<string, unknown>;
   // Stored derivations for messages that are derivation sources. Kinds with no
   // derivable output carry no rows and no key. Stored state is returned
   // verbatim, never re-derived on read.
@@ -95,7 +98,10 @@ export function create(
   if (projected === null) return { message: null, queuedWork: [] };
   const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end">;
   const messageId = `m${recordedEvent.eventOrder}`;
-  insertMessage(transaction.db, {
+  // providerUsage rides assistant_text only; projectEvent leaves it on the
+  // event payload and storage writes it as a message column (not a block).
+  // exactOptionalPropertyTypes: omit the key when absent — do not pass undefined.
+  const row: Parameters<typeof insertMessage>[1] = {
     messageId,
     sourceEventOrder: recordedEvent.eventOrder,
     kind,
@@ -104,7 +110,11 @@ export function create(
     harness: recordedEvent.harness,
     turnId,
     blocks: projected.blocks,
-  });
+  };
+  if (recordedEvent.eventKind === "assistant_text" && recordedEvent.payload.providerUsage !== undefined) {
+    row.providerUsage = recordedEvent.payload.providerUsage;
+  }
+  insertMessage(transaction.db, row);
   const message =
     recordedEvent.eventKind === "tool_call" || recordedEvent.eventKind === "tool_result"
       ? { messageId, kind, toolCallId: recordedEvent.payload.toolCallId }

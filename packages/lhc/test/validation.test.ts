@@ -55,7 +55,8 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
       { batch: [unknownKind], reason: /unknown event kind/ },
       { batch: [missingKey], reason: /idempotencyKey/ },
       { batch: [serverField], reason: /server-generated.*eventOrder/ },
-      { batch: [turnEndWithPayload], reason: /turn_end/ },
+      // turn_end may carry optional host facts, but unknown keys stay closed.
+      { batch: [turnEndWithPayload], reason: /"text".*unexpected|unexpected.*"text"/ },
     ];
 
     for (const { batch, reason } of cases) {

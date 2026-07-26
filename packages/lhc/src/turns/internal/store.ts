@@ -36,9 +36,31 @@ export function insertOpenTurn(db: DatabaseSync, turnOrder: number, openedAtEven
   return turnId;
 }
 
-export function closeTurn(db: DatabaseSync, turnId: string, closedAtEventOrder: number): void {
-  db.prepare("UPDATE turns SET status = 'closed', closed_at_event_order = ? WHERE turn_id = ? AND status = 'open'").run(
+// Host facts (outcome/timing) project only from a turn_end payload. Closers
+// that lack them (prompt-boundary close, empty turn_end) leave NULLs.
+export interface TurnCloseHostFacts {
+  outcome?: "completed" | "aborted";
+  outcomeReason?: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export function closeTurn(
+  db: DatabaseSync,
+  turnId: string,
+  closedAtEventOrder: number,
+  hostFacts: TurnCloseHostFacts = {},
+): void {
+  db.prepare(
+    `UPDATE turns SET status = 'closed', closed_at_event_order = ?,
+       outcome = ?, outcome_reason = ?, started_at = ?, ended_at = ?
+     WHERE turn_id = ? AND status = 'open'`,
+  ).run(
     closedAtEventOrder,
+    hostFacts.outcome ?? null,
+    hostFacts.outcomeReason ?? null,
+    hostFacts.startedAt ?? null,
+    hostFacts.endedAt ?? null,
     turnId,
   );
 }
@@ -49,6 +71,10 @@ interface RawTurnRow {
   status: string;
   opened_at_event_order: number | bigint;
   closed_at_event_order: number | bigint | null;
+  outcome: string | null;
+  outcome_reason: string | null;
+  started_at: string | null;
+  ended_at: string | null;
 }
 
 // Membership is stored on the member (message.turn_id), never as a list on
@@ -73,7 +99,8 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
 
   const turnRows = db
     .prepare(
-      `SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order
+      `SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order,
+              outcome, outcome_reason, started_at, ended_at
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
@@ -89,6 +116,19 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
     };
     if (row.closed_at_event_order !== null) {
       record.closedAtEventOrder = Number(row.closed_at_event_order);
+    }
+    if (row.outcome !== null) {
+      // Column CHECK + null filter: only completed|aborted remain.
+      record.outcome = row.outcome as "completed" | "aborted";
+    }
+    if (row.outcome_reason !== null) {
+      record.outcomeReason = row.outcome_reason;
+    }
+    if (row.started_at !== null) {
+      record.startedAt = row.started_at;
+    }
+    if (row.ended_at !== null) {
+      record.endedAt = row.ended_at;
     }
     const placement = placements.get(row.turn_id);
     if (placement !== undefined) {
