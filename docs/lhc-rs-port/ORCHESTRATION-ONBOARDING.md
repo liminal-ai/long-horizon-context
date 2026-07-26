@@ -169,6 +169,31 @@ background-mode tests including the lifecycle capstone).
    fail-open. Compact is a selection walk with the fallback ladder,
    immediately, unconditionally — there is no time budget in the compact
    path of any correct LHC host.
+
+   **Why no wait is needed — understand this before touching the code.**
+   Compact never depends on derivations being ready, by design:
+   - Every item the selection walk wants a derived form for has a
+     fallback ladder: use the ready derivation if present; otherwise a
+     degraded-but-honest form; otherwise the verbatim original. A compact
+     built from fallbacks is complete and marks its degraded rungs — it
+     is never wrong, only less compressed than it will be.
+   - Nothing is ever lost by not waiting. The canonical event log holds
+     everything; bands are derived VIEWS over it. When background drain
+     finishes a derivation later, the stored form upgrades and the next
+     compact (or band re-render) picks it up. Waiting converts a
+     temporary "less compressed" into a user-visible stall — it buys
+     nothing that time doesn't deliver anyway.
+   - The residue at compact time is naturally dominated by the NEWEST
+     turns — and those land in the full-fidelity tail, which uses no
+     derivations at all. The old material the bands actually consume has
+     had the whole session to derive in the background. This is why a
+     healthy system shows ready-derivations ≈ total at threshold (the
+     t3code live evidence: 97 summaries pre-built, 0.4 s compact).
+   - Under continuous drain the "62-call bill at first compact" cannot
+     exist: catch-up starts absorbing a pre-existing thread's backlog at
+     OPEN, and per-turn work drains as turns close. The bill only
+     appears when drain is deferred — which is the defect this section
+     removes.
 3. **Do not change what is derived.** Both bridges run the port's default
    derivation profile (deterministic handling under the 1,000-token
    tool-result threshold, standard chunk policy) — identical to t3code
