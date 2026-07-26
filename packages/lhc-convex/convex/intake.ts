@@ -134,7 +134,29 @@ export const messageEvents = mutation({
         .take(1);
       const closesTurn = members.length > 0 && (event.eventKind === "turn_end" || event.eventKind === "user_prompt");
       if (closesTurn) {
-        await ctx.db.patch("turns", currentTurn._id, { status: "closed", closedAtEventOrder: eventOrder });
+        // Host facts project only from turn_end. Prompt-boundary closes and
+        // empty turn_end leave the optional fields absent (D1, D2, D4).
+        const closePatch: {
+          status: "closed";
+          closedAtEventOrder: number;
+          outcome?: "completed" | "aborted";
+          outcomeReason?: string;
+          startedAt?: string;
+          endedAt?: string;
+        } = { status: "closed", closedAtEventOrder: eventOrder };
+        if (event.eventKind === "turn_end") {
+          const hostFacts = event.payload as {
+            outcome?: "completed" | "aborted";
+            outcomeReason?: string;
+            startedAt?: string;
+            endedAt?: string;
+          };
+          if (hostFacts.outcome !== undefined) closePatch.outcome = hostFacts.outcome;
+          if (hostFacts.outcomeReason !== undefined) closePatch.outcomeReason = hostFacts.outcomeReason;
+          if (hostFacts.startedAt !== undefined) closePatch.startedAt = hostFacts.startedAt;
+          if (hostFacts.endedAt !== undefined) closePatch.endedAt = hostFacts.endedAt;
+        }
+        await ctx.db.patch("turns", currentTurn._id, closePatch);
         turnTransitions.push({ action: "closed", turnId: currentTurn.turn });
         queuedWork.push(
           await enqueueWork(ctx, thread, queue, {
@@ -166,7 +188,21 @@ export const messageEvents = mutation({
         eventReceipts.push({ idempotencyKey: event.idempotencyKey, outcome: "recorded" });
       } else {
         const messageId = `m${eventOrder}`;
-        await ctx.db.insert("messages", {
+        // providerUsage rides assistant_text only; omit the key when absent
+        // (exactOptionalPropertyTypes / D3 — no invented null).
+        const messageRow: {
+          instance: string;
+          thread: string;
+          message: string;
+          sourceOrder: number;
+          kind: string;
+          tokenEstimate: number;
+          actor: string;
+          harness: string;
+          turn: string;
+          recordedAt: string;
+          providerUsage?: Record<string, unknown>;
+        } = {
           instance: args.instance,
           thread: thread.thread,
           message: messageId,
@@ -177,7 +213,14 @@ export const messageEvents = mutation({
           harness: event.harness,
           turn: currentTurn.turn,
           recordedAt,
-        });
+        };
+        if (
+          event.eventKind === "assistant_text" &&
+          (event.payload as { providerUsage?: Record<string, unknown> }).providerUsage !== undefined
+        ) {
+          messageRow.providerUsage = (event.payload as { providerUsage: Record<string, unknown> }).providerUsage;
+        }
+        await ctx.db.insert("messages", messageRow);
         await ctx.db.insert("messageBlocks", {
           instance: args.instance,
           thread: thread.thread,

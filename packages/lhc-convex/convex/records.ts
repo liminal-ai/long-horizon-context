@@ -63,6 +63,9 @@ async function messageRecord(ctx: QueryCtx, row: Doc<"messages">) {
     harness: row.harness,
     recordedAt: row.recordedAt,
     turnId: row.turn,
+    // Provider usage present only when the source assistant_text carried it
+    // (schema v5 / D5). Pre-v5 docs and other kinds omit the key.
+    ...(row.providerUsage === undefined ? {} : { providerUsage: row.providerUsage as Record<string, unknown> }),
     ...(derivations.length === 0 ? {} : { derivations }),
     ...(row.deletedAt === undefined ? {} : { deleted: true }),
   };
@@ -194,6 +197,11 @@ export const listTurns = query({
         memberMessageIds: messages.map((message) => message.message),
         openedAtEventOrder: row.openedAtEventOrder,
         ...(row.closedAtEventOrder === undefined ? {} : { closedAtEventOrder: row.closedAtEventOrder }),
+        // Host facts from turn_end (schema v5 / D5). Absent when not recorded.
+        ...(row.outcome === undefined ? {} : { outcome: row.outcome }),
+        ...(row.outcomeReason === undefined ? {} : { outcomeReason: row.outcomeReason }),
+        ...(row.startedAt === undefined ? {} : { startedAt: row.startedAt }),
+        ...(row.endedAt === undefined ? {} : { endedAt: row.endedAt }),
         ...(placement === null ? {} : { chunkId: placement.chunk, memberIdx: placement.memberIdx }),
         ...(derivations.length === 0 ? {} : { derivations }),
       });

@@ -143,7 +143,31 @@ function eventCases(): ValidationCase[] {
         }),
       ],
     },
-    { name: "rejects non-empty turn_end payload", input: [event("turn_end", { payload: { text: "extra" } })] },
+    // turn_end is a closed optional struct (schema v5 / D1): empty stays valid;
+    // unknown keys reject with the allowed-field list (not the old mandatory-empty
+    // surface). Valid host-fact payloads are accepted.
+    { name: "rejects unknown turn_end payload field", input: [event("turn_end", { payload: { text: "extra" } })] },
+    {
+      name: "accepts empty turn_end payload",
+      input: [event("turn_end", { payload: {} })],
+    },
+    {
+      name: "accepts turn_end host-fact payload",
+      input: [
+        event("turn_end", {
+          payload: {
+            outcome: "aborted",
+            outcomeReason: "user cancelled",
+            startedAt: "2026-07-01T12:00:00.000Z",
+            endedAt: "2026-07-01T12:00:04.250Z",
+          },
+        }),
+      ],
+    },
+    {
+      name: "accepts assistant_text with providerUsage object",
+      input: [event("assistant_text", { payload: { text: "done", providerUsage: { input_tokens: 12 } } })],
+    },
     {
       name: "rejects a whole batch at the first invalid event",
       input: [event("user_prompt"), event("assistant_text"), event("assistant_thinking", { actor: "" })],

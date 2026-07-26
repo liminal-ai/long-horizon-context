@@ -137,16 +137,32 @@ interface BaseEvent<K extends string, P> {
   payload: P;
 }
 
+// Host-observed turn outcome/timing on turn_end (schema v5 / D1). All optional;
+// empty payload stays valid for hosts that do not report these facts.
+export type TurnEndPayload = {
+  outcome?: "completed" | "aborted";
+  outcomeReason?: string;
+  startedAt?: string;
+  endedAt?: string;
+};
+
+// Provider usage is the host's verbatim JSON object for one model call — no
+// fixed column set, no interpretation inside LHC (schema v5 / D1, D3).
+export type AssistantTextPayload = {
+  text: string;
+  providerUsage?: Record<string, unknown>;
+};
+
 export type MessageEventInput =
   | BaseEvent<"user_prompt", { text: string }>
-  | BaseEvent<"assistant_text", { text: string }>
+  | BaseEvent<"assistant_text", AssistantTextPayload>
   | BaseEvent<"assistant_thinking", { text: string }>
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
   | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> }>
   | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean }>
-  | BaseEvent<"turn_end", Record<string, never>>;
+  | BaseEvent<"turn_end", TurnEndPayload>;
 
 export type EventKind = MessageEventInput["eventKind"];
 export type EventRecord = MessageEventInput & { eventOrder: number; recordedAt: string };
@@ -243,6 +259,9 @@ export interface MessageRecord {
   harness: string;
   recordedAt: string;
   turnId: string;
+  // Host-observed provider usage from assistant_text (schema v5). Absent when
+  // the source event did not carry it (other kinds, pre-v5 docs, hosts that omit).
+  providerUsage?: Record<string, unknown>;
   derivations?: Derivation[];
   deleted?: boolean;
 }
@@ -266,6 +285,12 @@ export interface TurnRecord {
   memberMessageIds: string[];
   openedAtEventOrder: number;
   closedAtEventOrder?: number;
+  // Host-observed facts from turn_end (schema v5). Absent when unknown —
+  // pre-v5 turns, prompt-boundary closes, or hosts that omit them.
+  outcome?: "completed" | "aborted";
+  outcomeReason?: string;
+  startedAt?: string;
+  endedAt?: string;
   chunkId?: string;
   memberIdx?: number;
   derivations?: Derivation[];

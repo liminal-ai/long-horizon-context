@@ -136,16 +136,41 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
   return validatePayload(kind as (typeof EVENT_KINDS)[number], payload, index);
 }
 
+// turn_end may be empty or carry only these optional host-observed fields (D1).
+const TURN_END_FIELDS = new Set(["outcome", "outcomeReason", "startedAt", "endedAt"]);
+const TURN_END_EXPECTED = '"outcome" | "outcomeReason" | "startedAt" | "endedAt"';
+const OUTCOME_VALUES = new Set(["completed", "aborted"]);
+
 function validatePayload(
   kind: (typeof EVENT_KINDS)[number],
   payload: Record<string, unknown>,
   index: number,
 ): ErrorResult | undefined {
   if (kind === "turn_end") {
-    const field = Object.keys(payload)[0];
-    return field === undefined
-      ? undefined
-      : callerError(`payload: turn_end events carry an empty payload; found field "${field}"`, index);
+    // Closed optional struct: empty is valid; unknown keys rejected; outcome is
+    // a closed vocab. Matches the py/rs deliberate surface for
+    // Schema.Literal("completed", "aborted") (full union, not Effect's first-
+    // only report).
+    const extra = firstExtra(payload, TURN_END_FIELDS);
+    if (extra !== undefined) {
+      return callerError(`payload: ${unexpected(extra, TURN_END_EXPECTED)}`, index);
+    }
+    if ("outcome" in payload && payload["outcome"] !== undefined) {
+      const value = payload["outcome"];
+      if (typeof value !== "string" || !OUTCOME_VALUES.has(value)) {
+        return callerError(
+          `payload: "outcome" Expected "completed" | "aborted", actual ${actual(value)}`,
+          index,
+        );
+      }
+    }
+    for (const field of ["outcomeReason", "startedAt", "endedAt"] as const) {
+      if (!(field in payload) || payload[field] === undefined) continue;
+      if (typeof payload[field] !== "string") {
+        return callerError(`payload: "${field}" Expected string, actual ${actual(payload[field])}`, index);
+      }
+    }
+    return undefined;
   }
   const fields =
     kind === "tool_call"
@@ -156,7 +181,9 @@ function validatePayload(
           ? new Set(["previousModel", "newModel"])
           : kind === "thinking_level_change"
             ? new Set(["previousLevel", "newLevel"])
-            : new Set(["text"]);
+            : kind === "assistant_text"
+              ? new Set(["text", "providerUsage"])
+              : new Set(["text"]);
   const extra = firstExtra(payload, fields);
   if (extra !== undefined) {
     return callerError(
@@ -195,6 +222,18 @@ function validatePayload(
     if (previousIssue !== undefined) return callerError(`payload: ${previousIssue}`, index);
     const nextIssue = stringIssue(payload, "newLevel", true);
     if (nextIssue !== undefined) return callerError(`payload: ${nextIssue}`, index);
+  } else if (kind === "assistant_text") {
+    // text required; providerUsage optional verbatim JSON object (no inner shape).
+    const textIssue = stringIssue(payload, "text", false);
+    if (textIssue !== undefined) return callerError(`payload: ${textIssue}`, index);
+    if ("providerUsage" in payload && payload["providerUsage"] !== undefined) {
+      if (!isRecord(payload["providerUsage"])) {
+        return callerError(
+          `payload: "providerUsage" Expected { readonly [x: string]: unknown }, actual ${actual(payload["providerUsage"])}`,
+          index,
+        );
+      }
+    }
   } else {
     const textIssue = stringIssue(payload, "text", false);
     if (textIssue !== undefined) return callerError(`payload: ${textIssue}`, index);

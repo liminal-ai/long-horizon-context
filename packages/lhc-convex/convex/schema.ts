@@ -53,6 +53,13 @@ export default defineSchema({
     status: v.union(v.literal("open"), v.literal("closed")),
     openedAtEventOrder: v.number(),
     closedAtEventOrder: v.optional(v.number()),
+    // Host-observed outcome/timing from turn_end (schema v5 / D1–D2). Absent
+    // when unknown — pre-v5 docs, prompt-boundary closes, empty turn_end, or
+    // hosts that omit the fields. status stays open|closed only.
+    outcome: v.optional(v.union(v.literal("completed"), v.literal("aborted"))),
+    outcomeReason: v.optional(v.string()),
+    startedAt: v.optional(v.string()),
+    endedAt: v.optional(v.string()),
     deletedAt: v.optional(v.string()),
   })
     .index("by_instance_and_thread_and_turn", ["instance", "thread", "turn"])
@@ -70,6 +77,10 @@ export default defineSchema({
     harness: v.string(),
     turn: v.string(),
     recordedAt: v.string(),
+    // Verbatim provider usage JSON for assistant_text events that carried it
+    // (schema v5 / D1, D3). Absent for every other kind and for pre-v5 docs.
+    // Stored as host JSON verbatim — same precedent as event payload (v.any()).
+    providerUsage: v.optional(v.any()),
     deletedAt: v.optional(v.string()),
   })
     .index("by_instance_and_thread_and_message", ["instance", "thread", "message"])
