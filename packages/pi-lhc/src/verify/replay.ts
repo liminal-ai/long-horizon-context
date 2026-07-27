@@ -116,6 +116,8 @@ async function driveCorpus(corpus: Corpus, instance: LhcInstance): Promise<void>
 
   for (const [index, record] of corpus.source.entries()) {
     if (record.hook === "agent_end") {
+      // Corpora omit agent_end.messages; host facts come from latched
+      // message_end timestamps / stopReason (deterministic via fixture bodies).
       await flush(accumulator.onAgentEnd(), instance);
       continue;
     }
@@ -132,7 +134,7 @@ async function driveCorpus(corpus: Corpus, instance: LhcInstance): Promise<void>
       );
       continue;
     }
-    accumulator.onMessage(events);
+    accumulator.onMessage(events, record.message);
     await flush(events, instance);
   }
 }

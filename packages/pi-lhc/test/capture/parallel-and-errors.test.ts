@@ -113,6 +113,7 @@ describe("Story 2: error tool result (TC-2.5)", () => {
         role: "toolResult",
         toolCallId: "call_file",
         content: [{ type: "fileRef", path: "artifact.bin" }],
+        timestamp: 1_700_000_000_000,
       },
       { piSessionId: "sess" },
     );
@@ -134,6 +135,7 @@ describe("Story 2: error tool result (TC-2.5)", () => {
           { type: "fileRef", path: "artifact-a.bin" },
           { type: "fileRef", path: "artifact-b.bin" },
         ],
+        timestamp: 1_700_000_000_000,
       },
       { piSessionId: "sess" },
     );

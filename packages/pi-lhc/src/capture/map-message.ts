@@ -6,9 +6,12 @@ import type {
   FileRefPart,
   ImagePart,
   ToolResultMessage,
+  Usage,
   UserMessage,
 } from "../pi/types.js";
 import { eventKey } from "./idempotency.js";
+
+type AssistantTextPayload = Extract<MessageEventInput, { eventKind: "assistant_text" }>["payload"];
 
 // Pure mapping: one PI `AgentMessage` to the ordered LHC events for it. A user
 // message → one `user_prompt`; an assistant
@@ -18,6 +21,16 @@ import { eventKey } from "./idempotency.js";
 // parts and a wholly-empty message degrade to a `runtime_note` (never a silent
 // drop). A graceful interrupt carries its disposition through on a trailing
 // `runtime_note`.
+//
+// ## Capture gaps (schema v5 / providerUsage)
+//
+// `providerUsage` rides only on `assistant_text` (schema v5 D1). An assistant
+// message with NO text part — pure tool-call or thinking-only — has no
+// `assistant_text` vehicle, so its `usage` is NOT captured. Do not invent
+// empty-text events or alternate vehicles here. Eventual fix: schema-v6
+// candidate that widens the vehicle set (e.g. attach usage to the first event
+// of the message fan-out, or a dedicated per-call carrier). See
+// `docs/CAPTURE-GAPS.md`.
 
 export interface MapCtx {
   piSessionId: string;
@@ -169,6 +182,31 @@ function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
   return events;
 }
 
+/** Attach provider usage only when it is a plain JSON object (schema v5 D1/D3).
+ *  Arrays / primitives are rejected by LHC validation; omit rather than invent. */
+function providerUsageOf(usage: Usage | undefined): Record<string, unknown> | undefined {
+  if (usage === undefined || usage === null || typeof usage !== "object" || Array.isArray(usage)) {
+    return undefined;
+  }
+  // Verbatim object — no field filtering; provider shapes differ.
+  return usage as unknown as Record<string, unknown>;
+}
+
+function assistantTextEvent(text: string, key: string, usage: Usage | undefined): MessageEventInput {
+  const payload: AssistantTextPayload = { text };
+  const providerUsage = providerUsageOf(usage);
+  if (providerUsage !== undefined) {
+    payload.providerUsage = providerUsage;
+  }
+  return {
+    eventKind: "assistant_text",
+    idempotencyKey: key,
+    actor: "assistant",
+    harness: HARNESS,
+    payload,
+  };
+}
+
 function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   const events: MessageEventInput[] = [];
   const responseId = responseIdOf(msg);
@@ -189,12 +227,13 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   }
   if (parts.some((p) => p.type === "text")) {
     const text = textOf(parts);
+    // providerUsage only when a text vehicle exists — pure tool-call /
+    // thinking-only messages drop usage (documented CAPTURE-GAPS / schema-v6).
     events.push(
-      textEvent(
-        "assistant_text",
+      assistantTextEvent(
         text,
-        "assistant",
         buildKey(ctx, "assistant", "assistant_text", block, { responseId, content: text }),
+        msg.usage,
       ),
     );
     block += 1;

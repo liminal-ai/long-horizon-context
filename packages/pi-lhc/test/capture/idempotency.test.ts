@@ -98,15 +98,15 @@ describe("Story 2: idempotency key construction (deterministic goldens)", () => 
 
   it("uses caller-supplied source position fallback for same-content no-entry messages", () => {
     const first = mapMessage(
-      { role: "user", content: [{ type: "text", text: "repeatable prompt" }] },
+      { role: "user", content: [{ type: "text", text: "repeatable prompt" }], timestamp: 1_700_000_000_000 },
       { piSessionId: "s", fallbackId: "message_end:10" },
     );
     const firstReload = mapMessage(
-      { role: "user", content: [{ type: "text", text: "repeatable prompt" }] },
+      { role: "user", content: [{ type: "text", text: "repeatable prompt" }], timestamp: 1_700_000_000_000 },
       { piSessionId: "s", fallbackId: "message_end:10" },
     );
     const second = mapMessage(
-      { role: "user", content: [{ type: "text", text: "repeatable prompt" }] },
+      { role: "user", content: [{ type: "text", text: "repeatable prompt" }], timestamp: 1_700_000_000_000 },
       { piSessionId: "s", fallbackId: "message_end:11" },
     );
 

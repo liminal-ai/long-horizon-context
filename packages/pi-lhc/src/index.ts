@@ -754,7 +754,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         hadFailure = true;
         continue;
       }
-      captureSession.accumulator.onMessage(events);
+      captureSession.accumulator.onMessage(events, message.message);
       if (events.length === 0) continue;
       const result = await capture(events, instance);
       recordCaptureOutcome(result, events);
@@ -835,10 +835,12 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   // agent_end closes the LHC turn exactly once per agent run.
   // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
-  const onAgentEnd: PiHookHandler<"agent_end"> = async (_event, ctx) => {
+  // Final assistant stopReason on event.messages governs turn outcome (schema
+  // v5); hard-kill never reaches here and leaves the turn open with NULL facts.
+  const onAgentEnd: PiHookHandler<"agent_end"> = async (event, ctx) => {
     if (instance === null || captureSession === null) return;
     await flushPendingMessages(ctx);
-    const turnEnd = captureSession.accumulator.onAgentEnd();
+    const turnEnd = captureSession.accumulator.onAgentEnd({ messages: event.messages });
     if (turnEnd.length === 0) return;
     recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
   };

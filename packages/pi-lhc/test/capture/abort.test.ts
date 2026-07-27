@@ -27,14 +27,16 @@ describe("Story 2: graceful interrupt (TC-2.6)", () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
 
-    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("write a long essay")), ctx);
-    await connector.handlers.message_end(
-      makeMessageEnd(
-        makeAssistantMessage({ thinking: "starting the essay", text: "Once upon a", stopReason: "aborted" }),
-      ),
-      ctx,
-    );
-    await connector.handlers.agent_end(makeAgentEnd([]), ctx);
+    const user = makeUserMessage("write a long essay");
+    const assistant = makeAssistantMessage({
+      thinking: "starting the essay",
+      text: "Once upon a",
+      stopReason: "aborted",
+    });
+    await connector.handlers.message_end(makeMessageEnd(user), ctx);
+    await connector.handlers.message_end(makeMessageEnd(assistant), ctx);
+    // agent_end.messages final state governs outcome (schema v5).
+    await connector.handlers.agent_end(makeAgentEnd([user, assistant]), ctx);
 
     // A graceful interrupt is not a capture failure.
     expect(connector.snapshot().lastDiagnostic).toBeNull();
@@ -53,6 +55,11 @@ describe("Story 2: graceful interrupt (TC-2.6)", () => {
     expect(textOf(events[2]!)).toBe("Once upon a");
     // The aborted disposition is carried through on the runtime_note.
     expect(textOf(events[3]!).toLowerCase()).toContain("abort");
+    // turn_end host facts: aborted outcome (schema v5).
+    expect(events.at(-1)?.payload).toMatchObject({
+      outcome: "aborted",
+      outcomeReason: "aborted",
+    });
 
     // The interrupted turn closes at agent_end, and LHC opens the next empty turn.
     const counts = await turnCounts(threadRef);

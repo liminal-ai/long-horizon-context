@@ -85,7 +85,7 @@ export function makeTruncatedCorpus(): Corpus {
         recordType: "pi_hook",
         hook: "message_end",
         entryId: "truncated-entry-0",
-        message: { role: "user", content: [{ type: "text", text: "" }] },
+        message: { role: "user", content: [{ type: "text", text: "" }], timestamp: 1_700_000_000_000 },
       },
     ],
     expected: [
@@ -150,11 +150,23 @@ export function validateCorpus(corpus: Corpus): CorpusValidation {
 
     switch (ev.eventKind) {
       case "user_prompt":
-      case "assistant_text":
       case "assistant_thinking":
       case "runtime_note": {
         if (typeof ev.payload.text !== "string" || ev.payload.text === "") {
           problems.push(`${at}: ${ev.eventKind} has empty text`);
+        }
+        break;
+      }
+      case "assistant_text": {
+        if (typeof ev.payload.text !== "string" || ev.payload.text === "") {
+          problems.push(`${at}: ${ev.eventKind} has empty text`);
+        }
+        // Optional schema-v5 providerUsage: when present, must be a plain object.
+        if ("providerUsage" in ev.payload && ev.payload.providerUsage !== undefined) {
+          const usage = ev.payload.providerUsage;
+          if (typeof usage !== "object" || usage === null || Array.isArray(usage)) {
+            problems.push(`${at}: assistant_text.providerUsage must be a plain object when present`);
+          }
         }
         break;
       }
@@ -180,8 +192,23 @@ export function validateCorpus(corpus: Corpus): CorpusValidation {
         }
         break;
       }
-      case "turn_end":
+      case "turn_end": {
+        // Optional schema-v5 host facts: when present, check closed shape.
+        const p = ev.payload;
+        if (p.outcome !== undefined && p.outcome !== "completed" && p.outcome !== "aborted") {
+          problems.push(`${at}: turn_end.outcome must be "completed" | "aborted" when present`);
+        }
+        if (p.outcomeReason !== undefined && typeof p.outcomeReason !== "string") {
+          problems.push(`${at}: turn_end.outcomeReason must be a string when present`);
+        }
+        if (p.startedAt !== undefined && typeof p.startedAt !== "string") {
+          problems.push(`${at}: turn_end.startedAt must be a string when present`);
+        }
+        if (p.endedAt !== undefined && typeof p.endedAt !== "string") {
+          problems.push(`${at}: turn_end.endedAt must be a string when present`);
+        }
         break;
+      }
     }
   }
 

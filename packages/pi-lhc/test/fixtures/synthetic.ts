@@ -16,6 +16,7 @@ import type {
   SessionStartReason,
   ThinkingLevelSelectEvent,
   ToolResultMessage,
+  Usage,
   UserMessage,
 } from "../../src/pi/types.js";
 
@@ -66,8 +67,25 @@ export function eventBatch(kinds: readonly EventKind[]): MessageEventInput[] {
 
 // ── PI message builders ──────────────────────────────────────────────
 
-export function makeUserMessage(text = "please read the file"): UserMessage {
-  return { role: "user", content: [{ type: "text", text }] };
+/** Fixed default epoch so builders stay deterministic for replay/timing tests. */
+export const FIXTURE_TIMESTAMP_MS = 1_700_000_000_000;
+
+export function zeroUsage(overrides: Partial<Usage> = {}): Usage {
+  const baseCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  return {
+    input: overrides.input ?? 0,
+    output: overrides.output ?? 0,
+    cacheRead: overrides.cacheRead ?? 0,
+    cacheWrite: overrides.cacheWrite ?? 0,
+    totalTokens: overrides.totalTokens ?? 0,
+    cost: { ...baseCost, ...overrides.cost },
+    ...(overrides.cacheWrite1h !== undefined ? { cacheWrite1h: overrides.cacheWrite1h } : {}),
+    ...(overrides.reasoning !== undefined ? { reasoning: overrides.reasoning } : {}),
+  };
+}
+
+export function makeUserMessage(text = "please read the file", timestamp = FIXTURE_TIMESTAMP_MS): UserMessage {
+  return { role: "user", content: [{ type: "text", text }], timestamp };
 }
 
 export interface AssistantToolCall {
@@ -76,29 +94,58 @@ export interface AssistantToolCall {
   arguments?: Record<string, unknown>;
 }
 
+export interface MakeAssistantMessageOpts {
+  thinking?: string;
+  text?: string;
+  toolCalls?: AssistantToolCall[];
+  stopReason?: PiStopReason;
+  errorMessage?: string;
+  usage?: Usage;
+  timestamp?: number;
+  provider?: string;
+  model?: string;
+  responseId?: string;
+}
+
 /** Fans out to content parts in PI's confirmed order: thinking → text →
- *  toolCall×N (research §5a). */
-export function makeAssistantMessage(
-  opts: { thinking?: string; text?: string; toolCalls?: AssistantToolCall[]; stopReason?: PiStopReason } = {},
-): AssistantMessage {
+ *  toolCall×N (research §5a). Always supplies PI-required fields (timestamp,
+ *  stopReason, provider, model, usage) so typed tests match the real wire. */
+export function makeAssistantMessage(opts: MakeAssistantMessageOpts = {}): AssistantMessage {
   const content: ContentPart[] = [];
   if (opts.thinking !== undefined) content.push({ type: "thinking", thinking: opts.thinking });
   if (opts.text !== undefined) content.push({ type: "text", text: opts.text });
   for (const call of opts.toolCalls ?? []) {
     content.push({ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments ?? {} });
   }
-  const msg: AssistantMessage = { role: "assistant", content };
-  if (opts.stopReason !== undefined) msg.stopReason = opts.stopReason;
+  const msg: AssistantMessage = {
+    role: "assistant",
+    content,
+    provider: opts.provider ?? "test",
+    model: opts.model ?? "test-model",
+    usage: opts.usage ?? zeroUsage(),
+    stopReason: opts.stopReason ?? "stop",
+    timestamp: opts.timestamp ?? FIXTURE_TIMESTAMP_MS,
+  };
+  if (opts.errorMessage !== undefined) msg.errorMessage = opts.errorMessage;
+  if (opts.responseId !== undefined) msg.responseId = opts.responseId;
   return msg;
 }
 
-export function makeToolResult(opts: { id: string; isError?: boolean; content?: string }): ToolResultMessage {
+export function makeToolResult(opts: {
+  id: string;
+  isError?: boolean;
+  content?: string;
+  timestamp?: number;
+  toolName?: string;
+}): ToolResultMessage {
   const msg: ToolResultMessage = {
     role: "toolResult",
     toolCallId: opts.id,
     content: [{ type: "text", text: opts.content ?? "tool output" }],
+    timestamp: opts.timestamp ?? FIXTURE_TIMESTAMP_MS,
   };
   if (opts.isError !== undefined) msg.isError = opts.isError;
+  if (opts.toolName !== undefined) msg.toolName = opts.toolName;
   return msg;
 }
 

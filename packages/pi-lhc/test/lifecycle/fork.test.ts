@@ -264,10 +264,11 @@ describe("Story 4: fork as new thread", () => {
     expect(sourceHealth.ok).toBe(true);
     if (sourceHealth.ok) {
       // At least one derivation should be ready (smoothed_prompt).
+      // Counts no longer include `retrying` (lhc one-shot work queue, 3dd0b08).
       expect(sourceHealth.value.owners).toContainEqual({
         owner: "messages",
         kind: "smoothed_prompt",
-        counts: { ready: 1, pending: 0, retrying: 0, failed: 0, blocked: 0 },
+        counts: { ready: 1, pending: 0, failed: 0, blocked: 0 },
       });
     }
 
@@ -291,7 +292,7 @@ describe("Story 4: fork as new thread", () => {
       expect(forkHealth.value.owners).toContainEqual({
         owner: "messages",
         kind: "smoothed_prompt",
-        counts: { ready: 0, pending: 1, retrying: 0, failed: 0, blocked: 0 },
+        counts: { ready: 0, pending: 1, failed: 0, blocked: 0 },
       });
       expect(forkHealth.value.queue.queued).toBeGreaterThan(0);
     }

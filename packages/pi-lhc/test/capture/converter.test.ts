@@ -170,7 +170,7 @@ describe("Story 2: converter — connector fallback idempotency", () => {
   it("captures current PI string user content as one user_prompt", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
-    const message = { role: "user" as const, content: "plain string prompt" };
+    const message = { role: "user" as const, content: "plain string prompt", timestamp: 1_700_000_000_000 };
 
     await connector.handlers.message_end({ type: "message_end", message }, ctx);
     appendPiMessage(ctx, "pi-string-user", message);
@@ -185,8 +185,8 @@ describe("Story 2: converter — connector fallback idempotency", () => {
   it("records repeated same-text current PI prompts as distinct persisted entry events", async () => {
     const started = await startCapture(store);
     const { connector, ctx } = started;
-    const first = { role: "user" as const, content: "same text" };
-    const second = { role: "user" as const, content: "same text" };
+    const first = { role: "user" as const, content: "same text", timestamp: 1_700_000_000_000 };
+    const second = { role: "user" as const, content: "same text", timestamp: 1_700_000_000_000 };
 
     await connector.handlers.message_end({ type: "message_end", message: first }, ctx);
     appendPiMessage(ctx, "pi-user-1", first);
@@ -203,7 +203,7 @@ describe("Story 2: converter — connector fallback idempotency", () => {
   it("redelivery of the same current PI persisted message dedupes by session entry id", async () => {
     const started = await startCapture(store);
     const { connector, ctx, threadRef } = started;
-    const message = { role: "user" as const, content: "reload replay" };
+    const message = { role: "user" as const, content: "reload replay", timestamp: 1_700_000_000_000 };
 
     await connector.handlers.message_end({ type: "message_end", message }, ctx);
     appendPiMessage(ctx, "pi-replay-user", message);
@@ -276,10 +276,12 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     const health = await inspect.health(instance.threadRef);
     expect(health.ok).toBe(true);
     if (!health.ok) return;
+    // Health counts dropped `retrying` with the one-shot work queue (lhc
+    // 3dd0b08); capture_gap failures no longer carry `attempts`.
     expect(health.value.owners).toContainEqual({
       owner: "capture",
       kind: "capture_gap",
-      counts: { ready: 0, pending: 0, retrying: 0, failed: 1, blocked: 0 },
+      counts: { ready: 0, pending: 0, failed: 1, blocked: 0 },
     });
     expect(health.value.failures).toContainEqual({
       owner: "capture",
@@ -287,7 +289,6 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
       subjectId: String(gaps[0]!.eventOrder),
       derivationType: "capture_gap",
       reason: (gaps[0]!.payload as { text: string }).text,
-      attempts: 0,
     });
 
     await instance.dispose();
@@ -354,13 +355,14 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     const health = await inspect.health(threadRef);
     expect(health.ok).toBe(true);
     if (!health.ok) return;
+    // Failure detail is owner/subject/derivation/reason only — no attempts
+    // after the one-shot work queue (lhc 3dd0b08).
     expect(health.value.failures).toContainEqual({
       owner: "capture",
       subjectKind: "event",
       subjectId: String(gaps[0]!.eventOrder),
       derivationType: "capture_gap",
       reason: (gaps[0]!.payload as { text: string }).text,
-      attempts: 0,
     });
 
     await connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);

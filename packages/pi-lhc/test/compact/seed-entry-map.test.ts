@@ -182,7 +182,14 @@ describe("seed-entry-map", () => {
         compact.value.firstKeptMessageId,
         sessionViewAfter.value,
         seedMap,
-        [{ type: "message", id: keptRow.piEntryId, parentId: null, message: { role: "user", content: "x" } }],
+        [
+          {
+            type: "message",
+            id: keptRow.piEntryId,
+            parentId: null,
+            message: { role: "user", content: "x", timestamp: 1_700_000_000_000 },
+          },
+        ],
         "different_pi_session",
       );
       expect(mapping).toEqual({ firstKeptEntryId: keptRow.piEntryId, origin: "seeded" });

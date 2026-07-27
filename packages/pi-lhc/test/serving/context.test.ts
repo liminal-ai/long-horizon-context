@@ -197,6 +197,7 @@ describe("session thread view seeding", () => {
               { type: "text", text: `meta ${n}` },
               { type: "image", mimeType: "image/png" },
             ],
+            timestamp: 1_700_000_000_000,
           },
           `pi-tool-result-${n}`,
         ),

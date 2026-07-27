@@ -46,7 +46,6 @@ export async function buildCompactLhcFixture(store: TempStore): Promise<CompactL
   const sdk = initLhc({
     inferenceCallbacks: createDeterministicInferenceCallbacks(),
     mode: "manual",
-    retry: { budget: 3, backoffBaseMs: 0, backoffCapMs: 0 },
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },

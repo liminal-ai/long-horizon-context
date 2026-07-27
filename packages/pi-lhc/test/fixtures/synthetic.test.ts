@@ -34,9 +34,17 @@ describe("synthetic builders", () => {
     expect(toolResult.isError).toBe(true);
   });
 
-  it("omit optional fields rather than setting them undefined (exactOptionalPropertyTypes discipline)", () => {
-    const assistant = makeAssistantMessage({ text: "no stop reason here" });
-    expect("stopReason" in assistant).toBe(false);
+  it("supplies PI-required assistant fields by default; omits truly optional ones (exactOptionalPropertyTypes)", () => {
+    const assistant = makeAssistantMessage({ text: "defaults fill the wire" });
+    // stopReason / usage / timestamp / provider / model are mandatory on the PI wire.
+    expect(assistant.stopReason).toBe("stop");
+    expect(assistant.usage.totalTokens).toBe(0);
+    expect(typeof assistant.timestamp).toBe("number");
+    expect(assistant.provider).toBe("test");
+    expect(assistant.model).toBe("test-model");
+    // Truly optional fields stay absent rather than undefined.
+    expect("errorMessage" in assistant).toBe(false);
+    expect("responseId" in assistant).toBe(false);
     const toolResult = makeToolResult({ id: "call-a" });
     expect("isError" in toolResult).toBe(false);
   });

@@ -107,7 +107,14 @@ describe("mapFirstKeptToEntryId", () => {
       "m14",
       resumedView,
       makeSeedEntryMap([{ lhcMessageId: "m14", piEntryId: "entry_regenerated" }]),
-      [{ type: "message", id: "entry_regenerated", parentId: null, message: { role: "user", content: "kept" } }],
+      [
+        {
+          type: "message",
+          id: "entry_regenerated",
+          parentId: null,
+          message: { role: "user", content: "kept", timestamp: 1_700_000_000_000 },
+        },
+      ],
       PI_SESSION,
     );
     expect(mapping).toEqual({ firstKeptEntryId: "entry_regenerated", origin: "seeded" });
@@ -170,7 +177,29 @@ describe("mapFirstKeptToEntryId", () => {
         { lhcMessageId: "m11", piEntryId: "pi_asst" },
         { lhcMessageId: "m12", piEntryId: "pi_asst" },
       ]),
-      [{ type: "message", id: "pi_asst", parentId: null, message: { role: "assistant", content: [] } }],
+      [
+        {
+          type: "message",
+          id: "pi_asst",
+          parentId: null,
+          message: {
+            role: "assistant",
+            content: [],
+            provider: "test",
+            model: "test-model",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: 1_700_000_000_000,
+          },
+        },
+      ],
       "other_session",
     );
     expect(mapping).toEqual({ firstKeptEntryId: "pi_asst", origin: "seeded" });

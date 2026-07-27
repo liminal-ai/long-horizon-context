@@ -322,30 +322,67 @@ export interface FileRefPart {
 }
 export type ContentPart = TextPart | ThinkingPart | ToolCallPart | ImagePart | FileRefPart;
 
-export type PiStopReason = "stop" | "aborted" | "length" | "toolUse" | (string & {});
+// Matches pi-ai `StopReason` (vendor/pi/packages/ai/src/types.ts).
+export type PiStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
-export interface TokenUsage {
-  inputTokens?: number;
-  outputTokens?: number;
+/** Provider-reported token usage for one model call. Mirrors pi-ai `Usage`
+ *  (mandatory on real AssistantMessage). Captured verbatim as
+ *  `assistant_text.payload.providerUsage` when a text vehicle exists. */
+export interface Usage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Subset of `cacheWrite` written with 1h retention (Anthropic only). */
+  cacheWrite1h?: number;
+  /**
+   * Reasoning/thinking tokens when the provider reports them — a subset of
+   * `output`. Undefined when the provider does not expose a breakdown.
+   */
+  reasoning?: number;
+  totalTokens: number;
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+  };
 }
+
+/** @deprecated Use {@link Usage}. Kept as an alias for any residual readers. */
+export type TokenUsage = Usage;
 
 export interface UserMessage {
   role: "user";
   content: string | ContentPart[];
+  /** Unix epoch ms — present on every PI message role. */
+  timestamp: number;
 }
 /** Also the shape pi-ai's `complete()` returns (research §3); the model-call
  *  host maps it to text or a classified failure. */
 export interface AssistantMessage {
   role: "assistant";
   content: ContentPart[];
-  stopReason?: PiStopReason;
+  api?: string;
+  provider: string;
+  model: string;
+  responseModel?: string;
+  responseId?: string;
+  diagnostics?: unknown[];
+  usage: Usage;
+  stopReason: PiStopReason;
   errorMessage?: string;
-  usage?: TokenUsage;
+  /** Unix epoch ms — present on every PI message role. */
+  timestamp: number;
 }
 export interface ToolResultMessage {
   role: "toolResult";
   toolCallId: string;
+  toolName?: string;
   content: ContentPart[];
   isError?: boolean;
+  /** Unix epoch ms — present on every PI message role. */
+  timestamp: number;
 }
 export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage;

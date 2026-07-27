@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { classifyFailure, createModelCall, defaultAssignments } from "../../src/inference/model-call.js";
 import type { PiAiComplete } from "../../src/inference/pi-ai.js";
 import type { ExtensionContext, ModelHandle } from "../../src/pi/types.js";
-import { validEvent } from "../fixtures/synthetic.js";
+import { makeAssistantMessage, validEvent } from "../fixtures/synthetic.js";
 import { tempStore } from "../fixtures/thread.js";
 
 const INPUT: ModelCallInput = {
@@ -39,10 +39,9 @@ describe("Story 5: Inference Host Routing", () => {
         sessionManager: { getEntries: () => [] },
       };
 
-      const complete = vi.fn<PiAiComplete>(async (model) => ({
-        role: "assistant",
-        content: [{ type: "text", text: `real completion from ${model.provider}/${model.id}` }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async (model) =>
+        makeAssistantMessage({ text: `real completion from ${model.provider}/${model.id}` }),
+      );
       const modelCall = createModelCall(ctx, { complete });
       const result = await modelCall(INPUT);
 
@@ -73,10 +72,7 @@ describe("Story 5: Inference Host Routing", () => {
         sessionManager: { getEntries: () => [] },
       };
 
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       await modelCall(INPUT);
 
@@ -118,10 +114,7 @@ describe("Story 5: Inference Host Routing", () => {
         sessionManager: { getEntries: () => [] },
       };
 
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       const pending = modelCall(INPUT);
       await Promise.resolve();
@@ -176,10 +169,7 @@ describe("Story 5: Inference Host Routing", () => {
         sessionManager: { getEntries: () => [] },
       };
 
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       await modelCall({ ...INPUT, thinking: "none" });
 
@@ -228,10 +218,7 @@ describe("Story 5: Inference Host Routing", () => {
       };
 
       const modelCall = createModelCall(ctx, {
-        complete: async (resolved) => ({
-          role: "assistant",
-          content: [{ type: "text", text: `routed ${resolved.provider}/${resolved.id}` }],
-        }),
+        complete: async (resolved) => makeAssistantMessage({ text: `routed ${resolved.provider}/${resolved.id}` }),
       });
 
       // Call with different provider/model pairs
@@ -397,7 +384,7 @@ describe("Story 5: Inference Host Routing", () => {
       };
 
       const modelCall = createModelCall(ctx, {
-        complete: async () => ({ role: "assistant", content: [] }),
+        complete: async () => makeAssistantMessage({}),
       });
       const result = await modelCall(INPUT);
 
@@ -416,7 +403,6 @@ describe("Story 5: Inference Host Routing", () => {
             assignments: defaultAssignments({ provider: "openai-codex", id: "gpt-5.4" }),
           },
           mode: "manual",
-          retry: { budget: 1, backoffBaseMs: 0, backoffCapMs: 0 },
         });
         const created = await threads.newThread({
           filePath: store.threadPath(),
@@ -438,11 +424,12 @@ describe("Story 5: Inference Host Routing", () => {
         const health = await sdk.inspect.health({ filePath: created.value.filePath });
         expect(health.ok).toBe(true);
         if (health.ok) {
+          // HealthReport.failures carries reason only (no lastError field after
+          // the one-shot work-queue health surface; classification lives in reason).
           const failures = health.value.failures.filter((f) => f.derivationType === "smoothed_prompt");
           expect(failures).toEqual([
             expect.objectContaining({
               reason: expect.stringContaining("empty_output"),
-              lastError: expect.stringContaining("empty_output"),
             }),
           ]);
         }
@@ -467,10 +454,7 @@ describe("Story 5: Inference Host Routing", () => {
     };
 
     it("extracts a leading system message into context.systemPrompt", async () => {
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       await modelCall({
         ...INPUT,
@@ -491,10 +475,7 @@ describe("Story 5: Inference Host Routing", () => {
     });
 
     it("omits systemPrompt when messages contain no system role", async () => {
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       await modelCall(INPUT);
 
@@ -504,10 +485,7 @@ describe("Story 5: Inference Host Routing", () => {
     });
 
     it("extracts multiple system messages in order and joins with blank lines", async () => {
-      const complete = vi.fn<PiAiComplete>(async () => ({
-        role: "assistant",
-        content: [{ type: "text", text: "ok" }],
-      }));
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
       const modelCall = createModelCall(ctx, { complete });
       await modelCall({
         ...INPUT,
@@ -548,12 +526,11 @@ describe("Story 5: Inference Host Routing", () => {
       };
 
       const modelCall = createModelCall(ctx, {
-        complete: async () => ({
-          role: "assistant",
-          stopReason: "error",
-          errorMessage: "No API key for provider: openai-codex",
-          content: [],
-        }),
+        complete: async () =>
+          makeAssistantMessage({
+            stopReason: "error",
+            errorMessage: "No API key for provider: openai-codex",
+          }),
       });
       const result = await modelCall(INPUT);
 
@@ -578,10 +555,7 @@ describe("Story 5: Inference Host Routing", () => {
       };
 
       const modelCall = createModelCall(ctx, {
-        complete: async () => ({
-          role: "assistant",
-          content: [{ type: "text", text: "   " }],
-        }),
+        complete: async () => makeAssistantMessage({ text: "   " }),
       });
       const result = await modelCall(INPUT);
 
