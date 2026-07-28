@@ -15,6 +15,12 @@ Tie-breakers: inclusion thresholds are <=; walks are newest-first everywhere;
 chunk coverage is decided by the chunk's newest
 member turn. Entry costs are the tokens of the rendered entry text itself,
 so the budgeted tokens are the stored tokens — no second estimate.
+
+Crossing behaviour differs by band: smooth and detailed stop at the first
+entry that does not fit and hand the remainder down. Brief is the last band —
+nothing below it catches the remainder — so it passes the entry over and keeps
+walking to older candidates; one unrepresentable entry must never end
+processing of everything older than it.
 """
 
 from __future__ import annotations
@@ -106,12 +112,24 @@ class ArrangementEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionSkip:
+    """A candidate the last band's walk passed over: no entry at all, a hole in
+    the coverage window that the view reports as a gap."""
+
+    band: Band
+    subject_id: str
+    tokens: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SelectionResult:
     compact_point: int
     covered_from: int
     # Gradient order (brief → detailed → smooth), oldest-first within band —
     # the order the bands render and the arrangement persists.
     entries: list[ArrangementEntry]
+    skipped: list[SelectionSkip]
 
 
 _SQL_DERIVATION_ROWS = (
@@ -392,7 +410,10 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
             )
             if band == "detailed"
             else resolve_brief_representation(
-                chunk.chunk_id, lookup, chunk_material(chunk.chunk_id, "chunk_summary_brief")
+                chunk.chunk_id,
+                lookup,
+                budget(config.percentages.brief),
+                chunk_material(chunk.chunk_id, "chunk_summary_brief"),
             )
         )
         text = render_arrangement_entry("chunk", chunk.chunk_id, rep, [])
@@ -416,32 +437,61 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
         )
 
     # The one fill rule, shared by all three bands: newest-first whole-entry
-    # fill, <= inclusion (an entry exactly filling the budget is included), the
-    # first crossing entry stops the band, included only when the band was still
-    # empty.
+    # fill, <= inclusion (an entry exactly filling the budget is included), and
+    # a crossing entry that is always included when the band is still empty —
+    # every band renders at least one entry.
+    #
+    # What a crossing entry does to the rest of the walk is the band's own
+    # choice. "stop" ends the band and hands the remaining candidates to the
+    # band below. "skip" passes the entry over and keeps walking, for the last
+    # band, which has nothing below it: the walk ends only once the entries it
+    # actually included have consumed the budget. A passed-over candidate is
+    # reported only when something older was selected after it — a run of them
+    # at the tail of the walk is the ordinary window edge, not a hole.
     def fill_band(
         candidates: list[_T],
         band_budget: float,
         build: Callable[[_T], ArrangementEntry],
-    ) -> tuple[list[ArrangementEntry], list[_T]]:
+        crossing: Literal["stop", "skip"] = "stop",
+    ) -> tuple[list[ArrangementEntry], list[_T], list[SelectionSkip]]:
         included: list[ArrangementEntry] = []
+        skipped: list[SelectionSkip] = []
+        pending: list[SelectionSkip] = []
         total = 0
         for i, candidate in enumerate(candidates):
             entry = build(candidate)
             if total + entry.tokens <= band_budget:
                 included.append(entry)
                 total += entry.tokens
+                skipped.extend(pending)
+                pending = []
                 continue
             if len(included) == 0:
                 included.append(entry)
-                return included, candidates[i + 1 :]
-            return included, candidates[i:]
-        return included, []
+                total += entry.tokens
+                if crossing == "stop" or total >= band_budget:
+                    return included, candidates[i + 1 :], skipped
+                continue
+            if crossing == "stop":
+                return included, candidates[i:], skipped
+            pending.append(
+                SelectionSkip(
+                    band=entry.band,
+                    subject_id=entry.subject_id,
+                    tokens=entry.tokens,
+                    reason=(
+                        f"entry did not fit the remaining {entry.band} budget "
+                        f"({entry.tokens} tokens from {entry.derivation_used}); "
+                        "skipped so older entries could be selected"
+                    ),
+                )
+            )
+        return included, [], skipped
 
     # Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
     # not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
     # the smooth representation, and consumes this budget).
-    smooth_included, _smooth_rest = fill_band(
+    smooth_included, _smooth_rest, _smooth_skipped = fill_band(
         list(reversed(banded_turns)),
         budget(config.percentages.smooth),
         build_turn_entry,
@@ -478,16 +528,19 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
     chunk_candidates = list(reversed([chunk for chunk in chunks if chunk_is_candidate(chunk)]))
 
     # Rule 3 — detailed: same fill rule against its share.
-    detailed_included, detailed_rest = fill_band(
+    detailed_included, detailed_rest, _detailed_skipped = fill_band(
         chunk_candidates,
         budget(config.percentages.detailed),
         lambda chunk: build_chunk_entry(chunk, "detailed"),
     )
-    # Rule 4 — brief: the remaining chunks, same fill rule against its share.
-    brief_included, _brief_rest = fill_band(
+    # Rule 4 — brief: the remaining chunks, same fill rule against its share,
+    # skipping what it cannot fit — it is the last band, so stopping here would
+    # drop every older chunk on the floor.
+    brief_included, _brief_rest, brief_skipped = fill_band(
         detailed_rest,
         budget(config.percentages.brief),
         lambda chunk: build_chunk_entry(chunk, "brief"),
+        "skip",
     )
 
     def by_record_order(entry: ArrangementEntry) -> int:
@@ -520,6 +573,16 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
             if turn is not None and turn_id in banded_turn_ids:
                 covered_turn_ids.add(turn_id)
                 oldest_selected_turn_order = min(oldest_selected_turn_order, turn.turn_order)
+
+    # A skipped chunk's turns are accounted for by its gap note, so they count
+    # as covered: the coverage machinery must not answer the hole with the
+    # unbudgeted per-turn detailed material the band could not afford. They
+    # never move oldest_selected_turn_order — nothing was selected there.
+    for skip in brief_skipped:
+        chunk = chunks_by_id.get(skip.subject_id)
+        for turn_id in [] if chunk is None else chunk.member_turn_ids:
+            if turn_id in banded_turn_ids:
+                covered_turn_ids.add(turn_id)
 
     def ready_content(derivation: DerivationSnapshot | None) -> str | None:
         if (
@@ -596,7 +659,12 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
         compact_point if len(entries) == 0 else min(entry.start_order for entry in entries)
     )
 
-    return SelectionResult(compact_point=compact_point, covered_from=covered_from, entries=entries)
+    return SelectionResult(
+        compact_point=compact_point,
+        covered_from=covered_from,
+        entries=entries,
+        skipped=brief_skipped,
+    )
 
 
 def _snap_compact_point(

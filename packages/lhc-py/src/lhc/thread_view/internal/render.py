@@ -9,7 +9,9 @@ The band-entry side includes degrade ladders, gap entries as the last rung,
 the [degraded: ...] and [inter-turn note] markers, and band-text assembly.
 select.ts consumes the same entry renderer to price
 entries during the fill walk, so the tokens the walk budgets are the tokens
-the band stores: one renderer, no drift.
+the band stores: one renderer, no drift. The brief ladder additionally caps
+its fallback rungs (brief_fallback_cap_tokens): a failed brief must not cost
+the band what a full uncompressed body costs.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Union
 
-from ...shared_tech._jsstr import js_json_dumps
+from ...shared_tech._jsstr import js_json_dumps, js_len, js_slice
+from ...shared_tech.token_counting import estimate_tokens
 from ...shared_tech.tool_result_rendering import FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback
 from ...shared_tech.view import Band
 from .snapshot import TailMessageRow
@@ -337,11 +340,46 @@ def resolve_detailed_representation(
     )
 
 
+# The size floor a failed brief may cost: 5% of the brief band's own budget,
+# never below 200 tokens. A brief derivation exists to be small; when it fails
+# the ladder falls back to material sized for a different purpose (member
+# concat, i.e. raw turn text), and an uncompressed fallback that large is what
+# let one chunk consume the band. The floor is on the fallback only — a ready
+# brief is whatever the deriver made it.
+def brief_fallback_cap_tokens(brief_band_budget: float) -> float:
+    return max(brief_band_budget * 0.05, 200)
+
+
+# Character-level shrink priced by the same estimator the fill walk budgets
+# with, so the entry's reported size is its true size: start from the body's
+# own chars-per-token ratio, then step down until the kept text plus its
+# terminal marker prices at or under the cap.
+def _cap_fallback_body(body: str, cap_tokens: float) -> str:
+    body_tokens = estimate_tokens(body)
+    if body_tokens <= cap_tokens:
+        return body
+
+    def marker(dropped: int) -> str:
+        return f"[compression failed: ~{dropped} tokens of content truncated]"
+
+    # TS: body.length / body.slice — UTF-16 code units.
+    keep = int((js_len(body) / body_tokens) * cap_tokens)
+    while True:
+        kept = js_slice(body, 0, keep).rstrip()
+        dropped = max(0, body_tokens - estimate_tokens(kept))
+        capped = marker(dropped) if kept == "" else f"{kept}\n{marker(dropped)}"
+        if keep == 0 or estimate_tokens(capped) <= cap_tokens:
+            return capped
+        keep = max(0, min(keep - 1, int(keep * 0.9)))
+
+
 # Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
-# truncated → gap entry (no compression rung in this band's ladder).
+# truncated → gap entry (no compression rung in this band's ladder). Every
+# fallback rung is capped by the failure floor; the ready rungs never are.
 def resolve_brief_representation(
     chunk_id: str,
     lookup: DerivationLookup,
+    brief_band_budget: float,
     material: CompactChunkMaterialSnapshot | None = None,
 ) -> ResolvedRepresentation:
     brief = lookup(chunk_id, "chunk_summary_brief")
@@ -363,7 +401,7 @@ def resolve_brief_representation(
     if material is not None and material.kind == "concat":
         return ResolvedRepresentation(
             derivation_used="stored_member_concat",
-            body=material.content,
+            body=_cap_fallback_body(material.content, brief_fallback_cap_tokens(brief_band_budget)),
             degraded=True,
             gap=False,
             degraded_marker="brief-from-stored-members",

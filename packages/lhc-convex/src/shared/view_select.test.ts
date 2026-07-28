@@ -40,7 +40,8 @@ describe("frozen selection differential", () => {
       lowerBound: 100,
       percentages: { full: 10, smooth: 2, detailed: 44, brief: 44 },
     };
-    expect(selectConvex(inputs, config)).toEqual(frozen.selectArrangement(inputs, config));
+    const convex = selectConvex(inputs, config);
+    expect(convex).toEqual(frozen.selectArrangement(inputs, config));
   });
 
   test("an entry exactly filling the smooth budget is included (<= mutation proof)", () => {

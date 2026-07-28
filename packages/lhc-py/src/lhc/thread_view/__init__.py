@@ -77,7 +77,7 @@ from .internal.profiles import (
 )
 from .internal.render import assemble_band_text
 from .internal.seam import fire_view_injection
-from .internal.select import ArrangementEntry
+from .internal.select import ArrangementEntry, SelectionSkip
 from .internal.session_view import build_session_thread_view
 from .internal.snapshot import (
     ViewReplaceBand,
@@ -657,10 +657,47 @@ def _build_rendered_bands(
 
 @dataclass(frozen=True, slots=True)
 class _WouldWriteSelection:
-    """TS `selection: { compactPoint; entries }` for selectionWouldWriteSnapshot."""
+    """TS `selection: Pick<SelectionResult, "compactPoint" | "entries" | "skipped">`."""
 
     compact_point: int
     entries: Sequence[ArrangementEntry]
+    skipped: Sequence[SelectionSkip]
+
+
+# The view's gaps: gap entries (a rendered subject with no usable material)
+# and subjects the last band's walk skipped as too large (no entry at all).
+# Both are holes in the same coverage window, so both land in gaps_json and
+# the receipt.
+def _gap_notes(
+    entries: Sequence[ArrangementEntry],
+    skipped: Sequence[SelectionSkip],
+) -> list[CompactGapEntry]:
+    return [
+        *(
+            CompactGapEntry(
+                band=entry.band,
+                subject_id=entry.subject_id,
+                reason="unknown" if entry.reason is None else entry.reason,
+            )
+            for entry in entries
+            if entry.gap
+        ),
+        *(
+            CompactGapEntry(band=skip.band, subject_id=skip.subject_id, reason=skip.reason)
+            for skip in skipped
+        ),
+    ]
+
+
+# The persisted/compared spelling of a gap note (TS object literal keys).
+def _gap_notes_json(
+    entries: Sequence[ArrangementEntry],
+    skipped: Sequence[SelectionSkip],
+) -> list[dict[str, object]]:
+    return [
+        {"band": note.band, "subjectId": note.subject_id, "reason": note.reason}
+        for note in _gap_notes(entries, skipped)
+    ]
 
 
 # Preview helper for wouldProduceBands: true when compact would write a
@@ -691,15 +728,7 @@ def _selection_would_write_snapshot(
         }
         for entry in selection.entries
     ]
-    gaps = [
-        {
-            "band": entry.band,
-            "subjectId": entry.subject_id,
-            "reason": "unknown" if entry.reason is None else entry.reason,
-        }
-        for entry in selection.entries
-        if entry.gap
-    ]
+    gaps = _gap_notes_json(selection.entries, selection.skipped)
     stored_arrangement = [
         {
             "band": entry.band,
@@ -758,6 +787,7 @@ async def preview_compact(ref: ThreadRef, opts: CompactOpts) -> OpResult[Preview
                         _WouldWriteSelection(
                             compact_point=selection.compact_point,
                             entries=selection.entries,
+                            skipped=selection.skipped,
                         ),
                     ),
                     tail_tokens=tail_tokens,
@@ -895,17 +925,7 @@ async def compact(ref: ThreadRef, opts: CompactOpts) -> OpResult[CompactReceipt]
                         for entry in selection.entries
                     ]
                 ),
-                gaps_json=_json_compact(
-                    [
-                        {
-                            "band": entry.band,
-                            "subjectId": entry.subject_id,
-                            "reason": "unknown" if entry.reason is None else entry.reason,
-                        }
-                        for entry in selection.entries
-                        if entry.gap
-                    ]
-                ),
+                gaps_json=_json_compact(_gap_notes_json(selection.entries, selection.skipped)),
                 source_state_json=_json_compact(
                     {
                         "maxEventOrder": inputs.max_event_order,
@@ -963,15 +983,7 @@ async def compact(ref: ThreadRef, opts: CompactOpts) -> OpResult[CompactReceipt]
                     for entry in selection.entries
                     if entry.degraded
                 ],
-                gaps=[
-                    CompactGapEntry(
-                        band=entry.band,
-                        subject_id=entry.subject_id,
-                        reason="unknown" if entry.reason is None else entry.reason,
-                    )
-                    for entry in selection.entries
-                    if entry.gap
-                ],
+                gaps=_gap_notes(selection.entries, selection.skipped),
                 warnings=warnings,
                 rendered_bands=rendered_bands,
                 first_kept_message_id=first_kept_message_id,

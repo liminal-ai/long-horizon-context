@@ -9,7 +9,12 @@ import {
   toolNamesByCallId,
   toolResultSessionContent,
 } from "../src/shared/view_render.js";
-import { PI_MAPPABLE_MESSAGE_KINDS, type SelectionInputs, selectArrangement } from "../src/shared/view_select.js";
+import {
+  PI_MAPPABLE_MESSAGE_KINDS,
+  type SelectionInputs,
+  type SelectionResult,
+  selectArrangement,
+} from "../src/shared/view_select.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { mutation, query } from "./_generated/server.js";
 import {
@@ -528,6 +533,19 @@ async function computeSelection(
   }
 }
 
+// The view's gaps: gap entries (a rendered subject with no usable material)
+// and subjects the last band's walk skipped as too large (no entry at all).
+// Both are holes in the same coverage window, so both land in the stored gaps
+// and the receipt.
+function gapNotes(selection: Pick<SelectionResult, "entries" | "skipped">) {
+  return [
+    ...selection.entries
+      .filter((entry) => entry.gap)
+      .map((entry) => ({ band: entry.band, subjectId: entry.subjectId, reason: entry.reason ?? "unknown" })),
+    ...selection.skipped.map((skip) => ({ band: skip.band, subjectId: skip.subjectId, reason: skip.reason })),
+  ];
+}
+
 export const previewCompact = query({
   args: {
     instance: v.string(),
@@ -618,9 +636,7 @@ export const compact = mutation({
       derivationUsed: entry.derivationUsed,
       degraded: entry.degraded,
     }));
-    const gaps = selection.entries
-      .filter((entry) => entry.gap)
-      .map((entry) => ({ band: entry.band, subjectId: entry.subjectId, reason: entry.reason ?? "unknown" }));
+    const gaps = gapNotes(selection);
     await ctx.db.insert("threadViews", {
       instance: args.instance,
       thread: resolved.thread.thread,

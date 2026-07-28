@@ -7,8 +7,11 @@
 // the [degraded: ...] and [inter-turn note] markers, and band-text assembly.
 // select.ts consumes the same entry renderer to price
 // entries during the fill walk, so the tokens the walk budgets are the tokens
-// the band stores: one renderer, no drift.
+// the band stores: one renderer, no drift. The brief ladder additionally caps
+// its fallback rungs (briefFallbackCapTokens): a failed brief must not cost
+// the band what a full uncompressed body costs.
 import type { Band } from "../client/types.js";
+import { estimateTokens } from "./token_counting/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "./tool_result_rendering.js";
 
 export interface TailMessageRow {
@@ -268,11 +271,41 @@ export function resolveDetailedRepresentation(
   };
 }
 
+// The size floor a failed brief may cost: 5% of the brief band's own budget,
+// never below 200 tokens. A brief derivation exists to be small; when it fails
+// the ladder falls back to material sized for a different purpose (member
+// concat, i.e. raw turn text), and an uncompressed fallback that large is what
+// let one chunk consume the band. The floor is on the fallback only — a ready
+// brief is whatever the deriver made it.
+export function briefFallbackCapTokens(briefBandBudget: number): number {
+  return Math.max(briefBandBudget * 0.05, 200);
+}
+
+// Character-level shrink priced by the same estimator the fill walk budgets
+// with, so the entry's reported size is its true size: start from the body's
+// own chars-per-token ratio, then step down until the kept text plus its
+// terminal marker prices at or under the cap.
+function capFallbackBody(body: string, capTokens: number): string {
+  const bodyTokens = estimateTokens(body);
+  if (bodyTokens <= capTokens) return body;
+  const marker = (dropped: number): string => `[compression failed: ~${dropped} tokens of content truncated]`;
+  let keep = Math.floor((body.length / bodyTokens) * capTokens);
+  for (;;) {
+    const kept = body.slice(0, keep).trimEnd();
+    const dropped = Math.max(0, bodyTokens - estimateTokens(kept));
+    const capped = kept === "" ? marker(dropped) : `${kept}\n${marker(dropped)}`;
+    if (keep === 0 || estimateTokens(capped) <= capTokens) return capped;
+    keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * 0.9)));
+  }
+}
+
 // Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
-// truncated → gap entry (no compression rung in this band's ladder).
+// truncated → gap entry (no compression rung in this band's ladder). Every
+// fallback rung is capped by the failure floor; the ready rungs never are.
 export function resolveBriefRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
+  briefBandBudget: number,
   material?: CompactChunkMaterialSnapshot,
 ): ResolvedRepresentation {
   const brief = lookup(chunkId, "chunk_summary_brief");
@@ -290,7 +323,7 @@ export function resolveBriefRepresentation(
   if (material?.kind === "concat") {
     return {
       derivationUsed: "stored_member_concat",
-      body: material.content,
+      body: capFallbackBody(material.content, briefFallbackCapTokens(briefBandBudget)),
       degraded: true,
       gap: false,
       degradedMarker: "brief-from-stored-members",
