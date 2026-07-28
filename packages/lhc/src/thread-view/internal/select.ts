@@ -13,6 +13,13 @@
 // chunk coverage is decided by the chunk's newest
 // member turn. Entry costs are the tokens of the rendered entry text itself,
 // so the budgeted tokens are the stored tokens — no second estimate.
+//
+// An entry too large for its band's remaining budget stops smooth and detailed
+// (the rest cascades to the next band's candidates) but only skips in brief:
+// brief is the last band, and one unrepresentable entry may not end the walk
+// over everything older. A skipped subject renders no band text; it is
+// reported as a gap (SelectionResult.skipped) and covered_from runs to the
+// oldest INCLUDED entry, so coverage extends past the hole.
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
 import type { Band } from "../../shared-tech/index.js";
@@ -87,12 +94,23 @@ export interface ArrangementEntry {
   tokens: number;
 }
 
+// A candidate the last band's walk passed over because it did not fit while
+// older candidates still did: no band text, but a gap the receipt and
+// gaps_json name — subject, band, and the size that did not fit.
+export interface SkippedSubject {
+  band: Band;
+  subjectId: string;
+  tokens: number;
+  reason: string;
+}
+
 export interface SelectionResult {
   compactPoint: number;
   coveredFrom: number;
   // Gradient order (brief → detailed → smooth), oldest-first within band —
   // the order the bands render and the arrangement persists.
   entries: ArrangementEntry[];
+  skipped: SkippedSubject[];
 }
 
 // ── reads (corruption check lives here, pre-transaction) ─────────
@@ -329,9 +347,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     // does not count as a rebuildable tail.
     const evictionWouldEmptyFull = !messages.some(
       (message) =>
-        candidate.closedAt !== null &&
-        message.order > candidate.closedAt &&
-        PI_MAPPABLE_KIND_SET.has(message.kind),
+        candidate.closedAt !== null && message.order > candidate.closedAt && PI_MAPPABLE_KIND_SET.has(message.kind),
     );
     if (straddlingTurnStaysInFull(fullSideTokens, turnTokens, evictionWouldEmptyFull)) {
       return previousClose(candidate);
@@ -369,7 +385,12 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     const rep =
       band === "detailed"
         ? resolveDetailedRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_detailed"))
-        : resolveBriefRepresentation(chunk.chunkId, lookup, chunkMaterial(chunk.chunkId, "chunk_summary_brief"));
+        : resolveBriefRepresentation(
+            chunk.chunkId,
+            lookup,
+            budget(config.percentages.brief),
+            chunkMaterial(chunk.chunkId, "chunk_summary_brief"),
+          );
     const text = renderArrangementEntry("chunk", chunk.chunkId, rep, []);
     const memberStarts = chunk.memberTurnIds
       .map((turnId) => turnsById.get(turnId))
@@ -392,16 +413,38 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
 
   // The one fill rule, shared by all three bands: newest-first whole-entry
   // fill, <= inclusion (an entry exactly filling the budget is included), the
-  // first crossing entry stops the band, included only when the band was still
-  // empty.
+  // first crossing entry included only when the band was still empty.
+  //
+  // What a crossing entry does next depends on the band's position in the
+  // ladder. In smooth and detailed it stops the band and cascades the rest to
+  // the next band's candidates — that cascade is the ladder working. Brief has
+  // no lower band to catch the remainder, so stopping there discarded every
+  // older chunk for one unrepresentable entry (the incident: a chunk whose
+  // brief derivation failed rendered its whole uncompressed fallback and
+  // dropped 45 older chunks that all had healthy briefs). In `skip` mode a
+  // crossing entry is passed over and the walk continues to older candidates;
+  // the walk ends only when candidates run out or included entries genuinely
+  // consume the budget.
+  //
+  // Passed-over candidates the walk never got older than are not holes — they
+  // are the far edge of the window, where a full band has always simply
+  // stopped covering. Only a candidate with older entries selected after it
+  // is reported as skipped.
   function fillBand<T>(
     candidates: readonly T[], // newest-first
     bandBudget: number,
     build: (candidate: T) => ArrangementEntry,
-  ): { included: ArrangementEntry[]; rest: T[] } {
+    crossing: "stop" | "skip" = "stop",
+  ): { included: ArrangementEntry[]; rest: T[]; skipped: ArrangementEntry[] } {
     const included: ArrangementEntry[] = [];
+    const passedOver: Array<{ entry: ArrangementEntry; includedBefore: number }> = [];
+    const reportable = (): ArrangementEntry[] =>
+      passedOver.filter((candidate) => candidate.includedBefore < included.length).map((candidate) => candidate.entry);
     let sum = 0;
     for (let i = 0; i < candidates.length; i += 1) {
+      if (crossing === "skip" && included.length > 0 && sum >= bandBudget) {
+        return { included, rest: candidates.slice(i) as T[], skipped: reportable() };
+      }
       const entry = build(candidates[i] as T);
       if (sum + entry.tokens <= bandBudget) {
         included.push(entry);
@@ -410,11 +453,14 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       }
       if (included.length === 0) {
         included.push(entry);
-        return { included, rest: candidates.slice(i + 1) as T[] };
+        sum += entry.tokens;
+        if (crossing === "stop") return { included, rest: candidates.slice(i + 1) as T[], skipped: [] };
+        continue;
       }
-      return { included, rest: candidates.slice(i) as T[] };
+      if (crossing === "stop") return { included, rest: candidates.slice(i) as T[], skipped: [] };
+      passedOver.push({ entry, includedBefore: included.length });
     }
-    return { included, rest: [] };
+    return { included, rest: [], skipped: reportable() };
   }
 
   // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
@@ -446,8 +492,15 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
   const detailed = fillBand(chunkCandidates, budget(config.percentages.detailed), (chunk) =>
     buildChunkEntry(chunk, "detailed"),
   );
-  // Rule 4 — brief: the remaining chunks, same fill rule against its share.
-  const brief = fillBand(detailed.rest, budget(config.percentages.brief), (chunk) => buildChunkEntry(chunk, "brief"));
+  // Rule 4 — brief: the remaining chunks, same fill rule against its share,
+  // skipping (not stopping at) entries too large for the remaining budget —
+  // this is the last band, so a stop here would drop every older chunk.
+  const brief = fillBand(
+    detailed.rest,
+    budget(config.percentages.brief),
+    (chunk) => buildChunkEntry(chunk, "brief"),
+    "skip",
+  );
 
   const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number => a.startOrder - b.startOrder;
   const selectedEntries: ArrangementEntry[] = [...brief.included, ...detailed.included, ...smooth.included];
@@ -474,6 +527,16 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
         coveredTurnIds.add(turnId);
         oldestSelectedTurnOrder = Math.min(oldestSelectedTurnOrder, turn.turnOrder);
       }
+    }
+  }
+
+  // A skipped chunk's turns are accounted for — as a recorded gap, not as
+  // content. They must not fall through to the coverage machinery, which
+  // would answer a hole in the cheapest band with unbudgeted detailed
+  // material for every member turn.
+  for (const entry of brief.skipped) {
+    for (const turnId of chunksById.get(entry.subjectId)?.memberTurnIds ?? []) {
+      if (bandedTurnIds.has(turnId)) coveredTurnIds.add(turnId);
     }
   }
 
@@ -540,7 +603,17 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     ...smooth.included.sort(byRecordOrder),
   ];
 
+  // The coverage edge is the oldest INCLUDED entry: a skipped subject inside
+  // the window is a hole in coverage that already extends past it, so it
+  // neither moves the edge nor ends it.
   const coveredFrom = entries.length === 0 ? compactPoint : Math.min(...entries.map((entry) => entry.startOrder));
 
-  return { compactPoint, coveredFrom, entries };
+  const skipped: SkippedSubject[] = brief.skipped.map((entry) => ({
+    band: entry.band,
+    subjectId: entry.subjectId,
+    tokens: entry.tokens,
+    reason: `entry did not fit the remaining ${entry.band} budget (${entry.tokens} tokens from ${entry.derivationUsed}); skipped so older entries could be selected`,
+  }));
+
+  return { compactPoint, coveredFrom, entries, skipped };
 }

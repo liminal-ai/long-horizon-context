@@ -41,7 +41,7 @@ import { type MaterializeInput, writePiSessionFile } from "./internal/materializ
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { assembleBandText } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
-import type { ArrangementEntry } from "./internal/select.js";
+import type { ArrangementEntry, SelectionResult } from "./internal/select.js";
 import { buildSessionThreadView } from "./internal/session-view.js";
 import {
   readStoredView,
@@ -473,6 +473,27 @@ function buildRenderedBands(
   });
 }
 
+// The view's gaps: gap entries (a rendered subject with no usable material)
+// and subjects the last band's walk skipped as too large (no entry at all).
+// Both are holes in the same coverage window, so both land in gaps_json and
+// the receipt.
+function gapNotes(selection: Pick<SelectionResult, "entries" | "skipped">): CompactReceipt["gaps"] {
+  return [
+    ...selection.entries
+      .filter((entry) => entry.gap)
+      .map((entry) => ({
+        band: entry.band,
+        subjectId: entry.subjectId,
+        reason: entry.reason ?? "unknown",
+      })),
+    ...selection.skipped.map((skip) => ({
+      band: skip.band,
+      subjectId: skip.subjectId,
+      reason: skip.reason,
+    })),
+  ];
+}
+
 // Preview helper for wouldProduceBands: true when compact would write a
 // non-empty banded snapshot that differs from the stored view (or is the first
 // write). A different compact point in either direction counts as a write —
@@ -481,7 +502,7 @@ function buildRenderedBands(
 // snapshot is incomplete.
 function selectionWouldWriteSnapshot(
   transaction: DbReadTransaction,
-  selection: { compactPoint: number; entries: ArrangementEntry[] },
+  selection: Pick<SelectionResult, "compactPoint" | "entries" | "skipped">,
 ): boolean {
   if (selection.compactPoint <= 0) return false;
   const stored = readStoredView(transaction.db);
@@ -495,13 +516,7 @@ function selectionWouldWriteSnapshot(
     derivationUsed: entry.derivationUsed,
     degraded: entry.degraded,
   }));
-  const gaps = selection.entries
-    .filter((entry) => entry.gap)
-    .map((entry) => ({
-      band: entry.band,
-      subjectId: entry.subjectId,
-      reason: entry.reason ?? "unknown",
-    }));
+  const gaps = gapNotes(selection);
   return (
     JSON.stringify(arrangement) !== JSON.stringify(stored.arrangement) ||
     JSON.stringify(gaps) !== JSON.stringify(stored.gaps)
@@ -632,15 +647,7 @@ export async function compact(
           degraded: entry.degraded,
         })),
       ),
-      gapsJson: JSON.stringify(
-        selection.entries
-          .filter((entry) => entry.gap)
-          .map((entry) => ({
-            band: entry.band,
-            subjectId: entry.subjectId,
-            reason: entry.reason ?? "unknown",
-          })),
-      ),
+      gapsJson: JSON.stringify(gapNotes(selection)),
       sourceStateJson: JSON.stringify({
         maxEventOrder: inputs.maxEventOrder,
         derivationCounts: inputs.derivationCounts,
@@ -676,13 +683,7 @@ export async function compact(
             subjectId: entry.subjectId,
             usedDerivation: entry.derivationUsed,
           })),
-        gaps: selection.entries
-          .filter((entry) => entry.gap)
-          .map((entry) => ({
-            band: entry.band,
-            subjectId: entry.subjectId,
-            reason: entry.reason ?? "unknown",
-          })),
+        gaps: gapNotes(selection),
         warnings,
         renderedBands,
         firstKeptMessageId,
