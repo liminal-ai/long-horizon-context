@@ -15,6 +15,15 @@
 //! chunk coverage is decided by the chunk's newest
 //! member turn. Entry costs are the tokens of the rendered entry text itself,
 //! so the budgeted tokens are the stored tokens — no second estimate.
+//!
+//! Band crossing: smooth and detailed stop at the first entry that does not
+//! fit and hand the remainder down to the next band ([`BandCrossing::Stop`]).
+//! Brief is the last band — there is no lower band to catch the remainder — so
+//! it skips a crossing entry and continues to older candidates
+//! ([`BandCrossing::Skip`]). One unrepresentable entry must never end
+//! processing of everything older. Passed-over candidates are reported in
+//! [`SelectionResult::skipped`] only when older entries were selected after
+//! them; trailing ones are the ordinary window edge and stay quiet.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
@@ -188,13 +197,29 @@ pub struct ArrangementEntry {
     pub tokens: i64,
 }
 
+/// A candidate the last band's walk passed over as too large: no entry at all,
+/// a hole in the same coverage window a gap entry marks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkippedEntry {
+    pub band: Band,
+    pub subject_id: String,
+    pub tokens: i64,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionResult {
     pub compact_point: i64,
+    /// Oldest event order any included entry represents. Formula unchanged by
+    /// the skip walk — it now simply extends past a skipped entry's hole to the
+    /// older entries selected behind it.
     pub covered_from: i64,
     /// Gradient order (brief → detailed → smooth), oldest-first within band —
     /// the order the bands render and the arrangement persists.
     pub entries: Vec<ArrangementEntry>,
+    /// Candidates the last band's walk skipped, newest-first, with the trailing
+    /// window edge trimmed.
+    pub skipped: Vec<SkippedEntry>,
 }
 
 fn map_required_str(row: &serde_json::Map<String, Value>, key: &str) -> String {
@@ -520,6 +545,14 @@ pub(crate) const DIAG_CANONICAL_CHUNK_MISSING_TURN_PREFIX: &str =
     "canonical record corrupt: chunk ";
 pub(crate) const DIAG_CANONICAL_CHUNK_MISSING_TURN_MID: &str =
     " membership references missing turn ";
+/// `entry did not fit the remaining ${band} budget (${tokens} tokens from
+/// ${derivationUsed}); skipped so older entries could be selected` — the
+/// reason a last-band skip reports (reference wording, select.ts).
+pub(crate) const DIAG_SKIPPED_TOO_LARGE_PREFIX: &str = "entry did not fit the remaining ";
+pub(crate) const DIAG_SKIPPED_TOO_LARGE_MID_BUDGET: &str = " budget (";
+pub(crate) const DIAG_SKIPPED_TOO_LARGE_MID_FROM: &str = " tokens from ";
+pub(crate) const DIAG_SKIPPED_TOO_LARGE_SUFFIX: &str =
+    "); skipped so older entries could be selected";
 /// `detailed_turn_compression ${state}` (coverage degraded reason)
 pub(crate) const DIAG_COVERAGE_DETAILED_TURN_COMPRESSION_PREFIX: &str =
     "detailed_turn_compression ";
@@ -714,15 +747,21 @@ fn build_chunk_entry(
     compact_point: i64,
     turns_by_id: &HashMap<String, SelectionTurn>,
     lookup: &DerivationLookup,
+    // The brief band's own budget, threaded from the caller's budget
+    // computation so the brief ladder can price its failure floor against it.
+    brief_band_budget: f64,
     material: Option<&CompactChunkMaterialSnapshot>,
 ) -> ArrangementEntry {
     let rep = match band {
         ChunkEntryBand::Detailed => {
             resolve_detailed_representation(chunk.chunk_id.as_str(), lookup, material)
         }
-        ChunkEntryBand::Brief => {
-            resolve_brief_representation(chunk.chunk_id.as_str(), lookup, material)
-        }
+        ChunkEntryBand::Brief => resolve_brief_representation(
+            chunk.chunk_id.as_str(),
+            lookup,
+            brief_band_budget,
+            material,
+        ),
     };
     let text = render_arrangement_entry(ViewSubjectKind::Chunk, chunk.chunk_id.as_str(), &rep, &[]);
     // Signature has no messages_by_turn; without live messages the start falls
@@ -754,40 +793,92 @@ fn build_chunk_entry(
     }
 }
 
+/// What a band's fill walk does with a candidate that crosses its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BandCrossing {
+    /// Stop the walk and hand the crossing candidate (and everything older)
+    /// down to the next band. Smooth and detailed — a lower band catches them.
+    Stop,
+    /// Pass the candidate over and keep walking to older candidates. The last
+    /// band only: no lower band exists, so stopping would silently drop every
+    /// older candidate however small its own entry.
+    Skip,
+}
+
 struct FillBandResult<T> {
     included: Vec<ArrangementEntry>,
     rest: Vec<T>,
+    /// [`BandCrossing::Skip`] only, and only for candidates with older
+    /// candidates included behind them.
+    skipped: Vec<SkippedEntry>,
 }
 
-fn fill_band<T, F>(candidates: &[T], band_budget: f64, build: F) -> FillBandResult<T>
+fn fill_band<T, F>(
+    candidates: &[T],
+    band_budget: f64,
+    crossing: BandCrossing,
+    build: F,
+) -> FillBandResult<T>
 where
     T: Clone,
     F: Fn(&T) -> ArrangementEntry,
 {
     let mut included: Vec<ArrangementEntry> = Vec::new();
     let mut sum: i64 = 0;
+    let mut skipped: Vec<SkippedEntry> = Vec::new();
+    // Passed-over candidates are held here until an older candidate is
+    // included: a run of skips with nothing older behind it is the ordinary
+    // full-band window edge, not a hole, and is dropped at the walk's end.
+    let mut pending: Vec<SkippedEntry> = Vec::new();
     for (i, candidate) in candidates.iter().enumerate() {
         let entry = build(candidate);
         if (sum as f64) + (entry.tokens as f64) <= band_budget {
             sum += entry.tokens;
             included.push(entry);
+            skipped.append(&mut pending);
             continue;
         }
         if included.is_empty() {
+            // Force-include: a band never renders empty because its first
+            // candidate alone crosses. In Skip mode the forced entry still
+            // counts against the budget, which it has now wholly consumed —
+            // the walk exits rather than skipping every older candidate.
+            sum += entry.tokens;
             included.push(entry);
+            skipped.append(&mut pending);
+            // The forced entry crossed an empty band, so it has by definition
+            // consumed the whole budget — the walk exits in both modes.
+            debug_assert!((sum as f64) > band_budget);
             return FillBandResult {
                 included,
                 rest: candidates[i + 1..].to_vec(),
+                skipped,
             };
+        }
+        if crossing == BandCrossing::Skip {
+            pending.push(SkippedEntry {
+                band: entry.band,
+                subject_id: entry.subject_id.clone(),
+                tokens: entry.tokens,
+                reason: format!(
+                    "{DIAG_SKIPPED_TOO_LARGE_PREFIX}{}{DIAG_SKIPPED_TOO_LARGE_MID_BUDGET}{}{DIAG_SKIPPED_TOO_LARGE_MID_FROM}{}{DIAG_SKIPPED_TOO_LARGE_SUFFIX}",
+                    entry.band.as_str(),
+                    entry.tokens,
+                    entry.derivation_used
+                ),
+            });
+            continue;
         }
         return FillBandResult {
             included,
             rest: candidates[i..].to_vec(),
+            skipped,
         };
     }
     FillBandResult {
         included,
         rest: Vec::new(),
+        skipped,
     }
 }
 
@@ -954,9 +1045,11 @@ pub fn select_arrangement(
     // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
     // the smooth representation, and consumes this budget).
     let smooth_candidates: Vec<SelectionTurn> = banded_turns.iter().rev().cloned().collect();
+    let brief_budget = budget(config.lower_bound, config.percentages.brief);
     let smooth = fill_band(
         &smooth_candidates,
         budget(config.lower_bound, config.percentages.smooth),
+        BandCrossing::Stop,
         |turn| build_turn_entry(turn, &messages_by_turn, &lookup_fn),
     );
     let oldest_smooth_order = smooth.included.iter().fold(f64::INFINITY, |oldest, entry| {
@@ -1001,6 +1094,7 @@ pub fn select_arrangement(
     let detailed = fill_band(
         &chunk_candidates,
         budget(config.lower_bound, config.percentages.detailed),
+        BandCrossing::Stop,
         |chunk| {
             let material = chunk_material(
                 inputs,
@@ -1020,6 +1114,7 @@ pub fn select_arrangement(
                 compact_point,
                 &turns_by_id,
                 &lookup_fn,
+                brief_budget,
                 material.as_ref(),
             );
             entry.start_order = if member_starts.is_empty() {
@@ -1031,37 +1126,36 @@ pub fn select_arrangement(
         },
     );
     // Rule 4 — brief: the remaining chunks, same fill rule against its share.
-    let brief = fill_band(
-        &detailed.rest,
-        budget(config.lower_bound, config.percentages.brief),
-        |chunk| {
-            let material = chunk_material(
-                inputs,
-                &chunk.chunk_id,
-                ChunkMaterialDerivation::ChunkSummaryBrief,
-            );
-            let member_starts: Vec<i64> = chunk
-                .member_turn_ids
-                .iter()
-                .filter_map(|turn_id| turns_by_id.get(turn_id))
-                .map(|turn| turn_start_order(turn, &messages_by_turn))
-                .collect();
-            let mut entry = build_chunk_entry(
-                chunk,
-                ChunkEntryBand::Brief,
-                compact_point,
-                &turns_by_id,
-                &lookup_fn,
-                material.as_ref(),
-            );
-            entry.start_order = if member_starts.is_empty() {
-                compact_point
-            } else {
-                member_starts.into_iter().min().expect("non-empty")
-            };
-            entry
-        },
-    );
+    // Brief is the last band, so a crossing chunk is skipped and the walk
+    // continues to older candidates rather than ending the band there.
+    let brief = fill_band(&detailed.rest, brief_budget, BandCrossing::Skip, |chunk| {
+        let material = chunk_material(
+            inputs,
+            &chunk.chunk_id,
+            ChunkMaterialDerivation::ChunkSummaryBrief,
+        );
+        let member_starts: Vec<i64> = chunk
+            .member_turn_ids
+            .iter()
+            .filter_map(|turn_id| turns_by_id.get(turn_id))
+            .map(|turn| turn_start_order(turn, &messages_by_turn))
+            .collect();
+        let mut entry = build_chunk_entry(
+            chunk,
+            ChunkEntryBand::Brief,
+            compact_point,
+            &turns_by_id,
+            &lookup_fn,
+            brief_budget,
+            material.as_ref(),
+        );
+        entry.start_order = if member_starts.is_empty() {
+            compact_point
+        } else {
+            member_starts.into_iter().min().expect("non-empty")
+        };
+        entry
+    });
 
     let selected_entries: Vec<&ArrangementEntry> = brief
         .included
@@ -1096,6 +1190,19 @@ pub fn select_arrangement(
             {
                 covered_turn_ids.insert(turn_id.clone());
                 oldest_selected_turn_order = oldest_selected_turn_order.min(turn.turn_order as f64);
+            }
+        }
+    }
+
+    // A skipped chunk's member turns are covered by its gap note, not by an
+    // entry. Count them as covered so the coverage machinery does not resurrect
+    // the hole as unbudgeted per-turn detailed material — the whole point of
+    // the skip was that this subject does not fit.
+    for skip in &brief.skipped {
+        let chunk = chunks_by_id.get(&skip.subject_id);
+        for turn_id in chunk.map(|c| c.member_turn_ids.as_slice()).unwrap_or(&[]) {
+            if banded_turn_ids.contains(turn_id) {
+                covered_turn_ids.insert(turn_id.clone());
             }
         }
     }
@@ -1137,5 +1244,6 @@ pub fn select_arrangement(
         compact_point,
         covered_from,
         entries,
+        skipped: brief.skipped,
     })
 }

@@ -9,7 +9,9 @@
 //! the [degraded: ...] and [inter-turn note] markers, and band-text assembly.
 //! select.ts consumes the same entry renderer to price
 //! entries during the fill walk, so the tokens the walk budgets are the tokens
-//! the band stores: one renderer, no drift.
+//! the band stores: one renderer, no drift. The brief ladder additionally caps
+//! its fallback rungs ([`brief_fallback_cap_tokens`]): a failed brief must not
+//! cost the band what a full uncompressed body costs.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -17,7 +19,10 @@ use serde_json::{Map, Value};
 
 use super::snapshot::TailMessageRow;
 use crate::shared_tech::derivation::{DerivationState, RenderingPartKind};
-use crate::shared_tech::js_json::{js_json_stringify, js_string_nullish};
+use crate::shared_tech::js_json::{
+    js_json_stringify, js_len, js_slice, js_string_nullish, js_trim_end,
+};
+use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::tool_result_rendering::{FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback};
 use crate::shared_tech::view::{Band, ViewSubjectKind};
 
@@ -62,6 +67,12 @@ pub(crate) const LITERAL_FALLBACK_SMOOTH_FROM_EXCERPT: &str = "smooth-from-excer
 pub(crate) const LITERAL_FALLBACK_DETAILED_FROM_STORED_MEMBERS: &str =
     "detailed-from-stored-members";
 pub(crate) const LITERAL_FALLBACK_BRIEF_FROM_STORED_MEMBERS: &str = "brief-from-stored-members";
+/// TS `` `[compression failed: ~${dropped} tokens of content truncated]` `` —
+/// the terminal marker a capped brief fallback ends with.
+pub(crate) const LITERAL_COMPRESSION_FAILED_PREFIX: &str = "[compression failed: ~";
+pub(crate) const LITERAL_COMPRESSION_FAILED_SUFFIX: &str = " tokens of content truncated]";
+/// TS `` `${kept}\n${marker(dropped)}` `` — separator before the marker.
+pub(crate) const LITERAL_COMPRESSION_FAILED_JOIN: &str = "\n";
 pub(crate) const LITERAL_DERIVATION_GAP: &str = "gap";
 pub(crate) const LITERAL_DERIVATION_MESSAGE_EXCERPT: &str = "message_excerpt";
 pub(crate) const LITERAL_DERIVATION_STORED_MEMBER_CONCAT: &str = "stored_member_concat";
@@ -492,11 +503,62 @@ pub fn resolve_detailed_representation(
     }
 }
 
+/// The size floor a failed brief may cost: 5% of the brief band's own budget,
+/// never below 200 tokens. A brief derivation exists to be small; when it fails
+/// the ladder falls back to material sized for a different purpose (member
+/// concat, i.e. raw turn text), and an uncompressed fallback that large is what
+/// let one chunk consume the band. The floor is on the fallback only — a ready
+/// brief is whatever the deriver made it.
+pub fn brief_fallback_cap_tokens(brief_band_budget: f64) -> f64 {
+    (brief_band_budget * 0.05).max(200.0)
+}
+
+/// Character-level shrink priced by the same estimator the fill walk budgets
+/// with, so the entry's reported size is its true size: start from the body's
+/// own chars-per-token ratio, then step down until the kept text plus its
+/// terminal marker prices at or under the cap.
+///
+/// Character indices are JS `String` indices (UTF-16 code units) via
+/// [`js_len`] / [`js_slice`], and `trimEnd` is [`js_trim_end`] — the loop must
+/// step identically to the TS reference on every input.
+fn cap_fallback_body(body: &str, cap_tokens: f64) -> String {
+    let body_tokens = estimate_tokens(body);
+    if (body_tokens as f64) <= cap_tokens {
+        return body.to_string();
+    }
+    let marker = |dropped: i64| -> String {
+        format!("{LITERAL_COMPRESSION_FAILED_PREFIX}{dropped}{LITERAL_COMPRESSION_FAILED_SUFFIX}")
+    };
+    let mut keep: i64 =
+        (((js_len(body) as f64) / (body_tokens as f64)) * cap_tokens).floor() as i64;
+    loop {
+        let kept = js_trim_end(&js_slice(body, 0, Some(keep))).to_string();
+        let dropped = (body_tokens - estimate_tokens(&kept)).max(0);
+        let capped = if kept.is_empty() {
+            marker(dropped)
+        } else {
+            format!("{kept}{LITERAL_COMPRESSION_FAILED_JOIN}{}", marker(dropped))
+        };
+        if keep == 0 || (estimate_tokens(&capped) as f64) <= cap_tokens {
+            return capped;
+        }
+        keep = (keep - 1).min((keep as f64 * 0.9).floor() as i64).max(0);
+    }
+}
+
 /// Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
-/// truncated → gap entry (no compression rung in this band's ladder).
+/// truncated → gap entry (no compression rung in this band's ladder). Every
+/// fallback rung is capped by the failure floor; the ready rungs never are.
+///
+/// Rungs, in order: a ready `chunk_summary_brief` derivation (ready — never
+/// capped); a `ready` compact chunk-material snapshot, which is a stored ready
+/// brief (ready — never capped); a `concat` compact chunk-material snapshot,
+/// i.e. raw member text standing in for the failed brief (fallback — capped);
+/// the gap entry, whose body is empty (nothing to cap).
 pub fn resolve_brief_representation(
     chunk_id: &str,
     lookup: &DerivationLookup,
+    brief_band_budget: f64,
     material: Option<&CompactChunkMaterialSnapshot>,
 ) -> ResolvedRepresentation {
     let brief = lookup(chunk_id, LITERAL_DERIVATION_CHUNK_SUMMARY_BRIEF);
@@ -523,7 +585,7 @@ pub fn resolve_brief_representation(
     if let Some(CompactChunkMaterialSnapshot::Concat { content, reason }) = material {
         return ResolvedRepresentation {
             derivation_used: LITERAL_DERIVATION_STORED_MEMBER_CONCAT.to_string(),
-            body: content.clone(),
+            body: cap_fallback_body(content, brief_fallback_cap_tokens(brief_band_budget)),
             degraded: true,
             gap: false,
             degraded_marker: Some(LITERAL_FALLBACK_BRIEF_FROM_STORED_MEMBERS.to_string()),

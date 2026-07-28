@@ -54,7 +54,7 @@ use internal::render::{
     AssembledContextRole, LITERAL_DERIVATION_STORED_MEMBER_CONCAT, assemble_band_text,
 };
 use internal::seam::{ViewInjectionPoint, fire_view_injection};
-use internal::select::ArrangementEntry;
+use internal::select::{ArrangementEntry, SkippedEntry};
 use internal::session_view::build_session_thread_view;
 use internal::snapshot::{
     ViewReplaceBand, ViewReplaceInput, read_stored_view, read_thread_metadata, read_view_snapshot,
@@ -887,27 +887,39 @@ fn arrangement_json_value(entries: &[ArrangementEntry]) -> Value {
     )
 }
 
-fn gaps_json_value(entries: &[ArrangementEntry]) -> Value {
+/// The view's gaps: gap entries (a rendered subject with no usable material)
+/// and subjects the last band's walk skipped as too large (no entry at all).
+/// Both are holes in the same coverage window, so both land in gaps_json and
+/// the receipt — one projection, used at every serialization site.
+fn gap_notes(entries: &[ArrangementEntry], skipped: &[SkippedEntry]) -> Vec<CompactGapEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.gap)
+        .map(|entry| CompactGapEntry {
+            band: entry.band,
+            subject_id: entry.subject_id.clone(),
+            reason: entry
+                .reason
+                .clone()
+                .unwrap_or_else(|| LITERAL_UNKNOWN.to_string()),
+        })
+        .chain(skipped.iter().map(|skip| CompactGapEntry {
+            band: skip.band,
+            subject_id: skip.subject_id.clone(),
+            reason: skip.reason.clone(),
+        }))
+        .collect()
+}
+
+fn gaps_json_value(entries: &[ArrangementEntry], skipped: &[SkippedEntry]) -> Value {
     Value::Array(
-        entries
-            .iter()
-            .filter(|entry| entry.gap)
-            .map(|entry| {
+        gap_notes(entries, skipped)
+            .into_iter()
+            .map(|note| {
                 let mut obj = Map::new();
-                obj.insert(
-                    "band".into(),
-                    Value::String(entry.band.as_str().to_string()),
-                );
-                obj.insert("subjectId".into(), Value::String(entry.subject_id.clone()));
-                obj.insert(
-                    "reason".into(),
-                    Value::String(
-                        entry
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| LITERAL_UNKNOWN.to_string()),
-                    ),
-                );
+                obj.insert("band".into(), Value::String(note.band.as_str().to_string()));
+                obj.insert("subjectId".into(), Value::String(note.subject_id));
+                obj.insert("reason".into(), Value::String(note.reason));
                 Value::Object(obj)
             })
             .collect(),
@@ -919,6 +931,7 @@ fn selection_would_write_snapshot(
     transaction: &DbReadTransaction,
     compact_point: i64,
     entries: &[ArrangementEntry],
+    skipped: &[SkippedEntry],
 ) -> bool {
     if compact_point <= 0 {
         return false;
@@ -932,7 +945,7 @@ fn selection_would_write_snapshot(
     }
 
     let arrangement = arrangement_json_value(entries);
-    let gaps = gaps_json_value(entries);
+    let gaps = gaps_json_value(entries, skipped);
     let stored_arrangement =
         js_json_stringify(&serde_json::to_value(&stored.arrangement).unwrap_or(Value::Null));
     let stored_gaps = js_json_stringify(&serde_json::to_value(&stored.gaps).unwrap_or(Value::Null));
@@ -989,6 +1002,7 @@ pub async fn preview_compact(
                                 transaction,
                                 selection.compact_point,
                                 &selection.entries,
+                                &selection.skipped,
                             ),
                             tail_tokens,
                             first_kept_message_id: value.first_kept_message_id,
@@ -1187,7 +1201,10 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
                 profile_name: profile_name.clone(),
                 config_json: stored_view_config_json(merged.lower_bound, &merged.percentages),
                 arrangement_json: js_json_stringify(&arrangement_json_value(&selection.entries)),
-                gaps_json: js_json_stringify(&gaps_json_value(&selection.entries)),
+                gaps_json: js_json_stringify(&gaps_json_value(
+                    &selection.entries,
+                    &selection.skipped,
+                )),
                 source_state_json,
                 bands: bands
                     .iter()
@@ -1254,19 +1271,7 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
                         used_derivation: entry.derivation_used.clone(),
                     })
                     .collect(),
-                gaps: selection
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.gap)
-                    .map(|entry| CompactGapEntry {
-                        band: entry.band,
-                        subject_id: entry.subject_id.clone(),
-                        reason: entry
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| LITERAL_UNKNOWN.to_string()),
-                    })
-                    .collect(),
+                gaps: gap_notes(&selection.entries, &selection.skipped),
                 warnings: Some(warnings),
                 rendered_bands,
                 first_kept_message_id,

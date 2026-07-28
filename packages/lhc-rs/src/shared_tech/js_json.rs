@@ -72,6 +72,11 @@ pub fn js_trim_start(s: &str) -> &str {
     s.trim_start_matches(is_js_trim_char)
 }
 
+/// JS `String.prototype.trimEnd` — same character set as [`js_trim`].
+pub fn js_trim_end(s: &str) -> &str {
+    s.trim_end_matches(is_js_trim_char)
+}
+
 /// JS `s.slice(start, end)` over UTF-16 code units (negative indices count
 /// from the end). A slice boundary that splits a surrogate pair drops the
 /// lone half — see module divergence notes.
