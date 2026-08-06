@@ -237,7 +237,7 @@ The submodule build comes first — `pi-lhc` links against `vendor/pi`'s built `
 
 ### Vendored PI (submodule)
 
-`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA (currently v0.83.x). The pin may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. The pin is **stock upstream** — there are currently no local patches (the previous thinking-signature fix landed upstream as #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
+`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA (currently v0.84.x). The pin may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. The pin is **stock upstream** — there are currently no local patches (the previous thinking-signature fix landed upstream as #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
 
 Syncing with upstream (fetch in the submodule, then bump the pin here):
 

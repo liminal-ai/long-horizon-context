@@ -9,6 +9,7 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-agent-core@0.80.2'
   - '@earendil-works/pi-ai@0.80.2'
   - '@earendil-works/pi-tui@0.80.2'
+  - '@earendil-works/pi-telemetry@0.84.0'
 
 overrides:
   "@earendil-works/pi-ai": "file:./vendor/pi/packages/ai"
@@ -16,3 +17,4 @@ overrides:
   "@earendil-works/pi-tui": "file:./vendor/pi/packages/tui"
   "@earendil-works/pi-protocol": "file:./vendor/pi/packages/protocol"
   "@earendil-works/pi-client": "file:./vendor/pi/packages/client"
+  "@earendil-works/pi-telemetry": "file:./vendor/pi/packages/telemetry"

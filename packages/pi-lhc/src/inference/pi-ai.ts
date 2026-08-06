@@ -18,7 +18,8 @@ export interface CompleteContext {
 export interface CompleteOptions {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   apiKey?: string;
-  headers?: Record<string, string>;
+  /** May include null deletion markers (PI 0.84+ ProviderHeaders). */
+  headers?: Record<string, string | null>;
   env?: Record<string, string>;
 }
 

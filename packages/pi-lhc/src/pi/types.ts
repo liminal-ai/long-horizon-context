@@ -260,9 +260,12 @@ export interface ModelHandle extends ModelDescriptor {
   readonly [k: string]: unknown;
 }
 
+/** Header map may include null deletion markers (PI 0.84+ ProviderHeaders). */
+export type ProviderHeaders = Record<string, string | null>;
+
 export interface ModelRegistryAuthResolution {
   apiKey?: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   /** Optional provider base URL override from resolved auth (e.g. custom gateway). */
   baseUrl?: string;
   env?: Record<string, string>;

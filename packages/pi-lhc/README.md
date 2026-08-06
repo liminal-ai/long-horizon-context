@@ -10,7 +10,7 @@ Stable daily driver — this is the harness LHC is developed inside:
 
 - **Capture, serving, and compact bridge** all in production use. Smart compact replaces PI's native compaction via `session_before_compact`.
 - **Resume fidelity verified byte-exact**: a resumed session's rendered context matched the live session character-for-character on a ~150k-token real session (77 messages, 35 tool calls). Rendered identifiers were stripped from served text to make this hold.
-- **Runs on vendored stock PI** (`vendor/pi` submodule, currently v0.83.x): pure upstream pin — no local patches (the thinking-signature fix is upstream via #6457). See the root README's "Vendored PI" section.
+- **Runs on vendored stock PI** (`vendor/pi` submodule, currently v0.84.x): pure upstream pin — no local patches (the thinking-signature fix is upstream via #6457). See the root README's "Vendored PI" section.
 - **Commands**: `/lhc-rehydrate`, `/lhc-tool-prune [targetTokens]`, `/lhc-export-threadview`, `/lhc-export-pi-session`.
 
 Known open items:
