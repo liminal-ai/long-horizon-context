@@ -6,6 +6,10 @@ import { configDefaults, defineConfig } from "vitest/config";
 // suite retired.
 export default defineConfig({
   test: {
+    // Deterministic-pipeline tests are fast alone but share CPU with three
+    // sibling suites under workspace-recursive runs; vitest's 5s default
+    // intermittently times out the heavier fixture tests there.
+    testTimeout: 30_000,
     include: ["test/**/*.test.ts"],
     exclude: [...configDefaults.exclude],
     passWithNoTests: true,
