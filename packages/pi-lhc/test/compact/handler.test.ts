@@ -229,6 +229,23 @@ describe("handleSessionBeforeCompact", () => {
     expect(result.compaction).toBeDefined();
   });
 
+  it("passes per-model compactParams through to preview and compact", async () => {
+    const mocks = mockInstance();
+    const params = { lowerBound: 140_000, percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 } };
+    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
+      state: createSessionState({ threadId: "th_test" }),
+      instance: mocks.instance as never,
+      piSessionId: "th_test",
+      flushPendingCapture: mocks.flushSpy,
+      getSessionView: async () => mocks.sessionView() as never,
+      findSeedEntryMap: () => null,
+      compactParams: params,
+    });
+    expect(result.compaction).toBeDefined();
+    expect(mocks.previewSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ params }));
+    expect(mocks.compactSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ params }));
+  });
+
   it("cancels no_op below compact threshold without calling preview", async () => {
     const mocks = mockInstance({ servingContext: belowThresholdContext() });
     const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
@@ -248,6 +265,26 @@ describe("handleSessionBeforeCompact", () => {
     expect(mocks.previewSpy).not.toHaveBeenCalled();
     expect(mocks.compactSpy).not.toHaveBeenCalled();
   });
+
+  for (const reason of ["threshold", "overflow"] as const) {
+    it(`${reason} compact skips the floor — forced-by-context-pressure compacts must never wedge on it`, async () => {
+      const mocks = mockInstance({ servingContext: belowThresholdContext() });
+      const result = await handleSessionBeforeCompact(makeBeforeCompactEvent({ reason }), ctx, {
+        state: createSessionState({ threadId: "th_test" }),
+        instance: mocks.instance as never,
+        piSessionId: "th_test",
+        flushPendingCapture: mocks.flushSpy,
+        getSessionView: async () => mocks.sessionView() as never,
+        findSeedEntryMap: () => null,
+        recordCancel: (d) => {
+          diagnostics.push(d);
+        },
+      });
+      expect(diagnostics.some((d) => d.code === "no_op")).toBe(false);
+      expect(mocks.previewSpy).toHaveBeenCalled();
+      expect(result.compaction).toBeDefined();
+    });
+  }
 
   it("proceeds past an unchanged-view preview — explicit compact is never second-guessed", async () => {
     const mocks = mockInstance({

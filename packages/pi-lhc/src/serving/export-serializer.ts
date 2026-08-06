@@ -84,9 +84,7 @@ export function llmRequestContextMessageToExportEntry(message: LlmRequestContext
   };
 }
 
-export function llmRequestContextMessagesToExportEntries(
-  messages: readonly LlmRequestContextMessage[],
-): ExportEntry[] {
+export function llmRequestContextMessagesToExportEntries(messages: readonly LlmRequestContextMessage[]): ExportEntry[] {
   return messages.map(llmRequestContextMessageToExportEntry);
 }
 

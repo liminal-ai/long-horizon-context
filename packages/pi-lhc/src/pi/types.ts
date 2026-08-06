@@ -1,15 +1,10 @@
 // Local declarations of the PI extension surface the connector consumes.
 //
 // These mirror the current `@earendil-works/pi-coding-agent` extension API as
-// verified from repo-ref/pi. The original Epic 1 implementation targeted
-// v0.79.2 research; PI's public registration surface is now `pi.on(...)`, and
-// handlers receive `(event, ctx)`.
-// wiring research (docs/specs/02-pi-lhc/notes/pi-ext-integration-research.md,
-// headless + interactive recon, June 12 2026). The PI packages are not yet a
-// build-time dependency of this workspace, so the connector declares the slice
-// of their contract it touches and swaps to the real imports when the
-// dependency lands. Keeping the surface here rather than scattered `any` means
-// connector code gets real type-checking against the contract PI actually fires.
+// verified from vendor/pi (v0.83.x). The public registration surface is
+// `pi.on(...)`, and handlers receive `(event, ctx)`. This file is deliberately
+// a local mirror — do not import from pi-coding-agent here. Only surfaces
+// pi-lhc actually uses are declared; keep it minimal when re-syncing.
 
 // ── Hook vocabulary ──────────────────────────────────────────────────
 
@@ -25,6 +20,7 @@ export type PiHookName =
   | "session_before_switch"
   | "session_before_compact"
   | "session_compact"
+  | "session_before_tree"
   | "session_shutdown"
   | "context";
 
@@ -106,6 +102,8 @@ export interface CompactionResult<T = unknown> {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
+  /** Optional estimated tokens after compaction when PI reports it. */
+  estimatedTokensAfter?: number;
   details?: T;
 }
 
@@ -124,10 +122,26 @@ export interface SessionBeforeCompactResult {
   compaction?: CompactionResult;
 }
 
+/** Fired before /tree navigation (branch switch within the PI session tree).
+ *  Mirrored minimally: the connector only cancels or passes through. */
+export interface SessionBeforeTreeEvent {
+  type: "session_before_tree";
+  preparation: unknown;
+  signal: AbortSignal;
+}
+
+export interface SessionBeforeTreeResult {
+  cancel?: boolean;
+}
+
 export interface SessionCompactEvent {
   type: "session_compact";
   compactionEntry: SessionEntry;
   fromExtension: boolean;
+  /** What triggered the compaction: manual /compact, the context threshold, or context overflow recovery. */
+  reason?: SessionCompactReason;
+  /** True when the aborted turn is retried after this compaction (overflow recovery). */
+  willRetry?: boolean;
 }
 
 /** Return shape PI's `context` hook expects when replacing messages. */
@@ -147,12 +161,13 @@ export interface PiHookEventMap {
   session_before_switch: SessionBeforeSwitchEvent;
   session_before_compact: SessionBeforeCompactEvent;
   session_compact: SessionCompactEvent;
+  session_before_tree: SessionBeforeTreeEvent;
   session_shutdown: SessionShutdownEvent;
   context: ContextEvent;
 }
 
-/** Void-returning hooks (all except `session_before_compact` and `context`). */
-export type PiVoidHookName = Exclude<PiHookName, "session_before_compact" | "context">;
+/** Void-returning hooks (all except `session_before_compact`, `session_before_tree`, and `context`). */
+export type PiVoidHookName = Exclude<PiHookName, "session_before_compact" | "session_before_tree" | "context">;
 
 export type PiVoidHookHandler<N extends PiVoidHookName> = (
   event: PiHookEventMap[N],
@@ -202,6 +217,10 @@ export interface PiToolSpec {
 export interface ExtensionAPI {
   on<N extends PiVoidHookName>(name: N, handler: PiVoidHookHandler<N>): void;
   on(name: "session_before_compact", handler: PiHookHandler<"session_before_compact">): void;
+  on(
+    name: "session_before_tree",
+    handler: (event: SessionBeforeTreeEvent, ctx: ExtensionContext) => Promise<SessionBeforeTreeResult>,
+  ): void;
   on(name: "context", handler: PiContextHookHandler): void;
   registerCommand(name: string, options: { handler: PiCommandHandler; description?: string }): void;
   registerTool(tool: PiToolSpec): void;
@@ -236,6 +255,8 @@ export interface ModelHandle extends ModelDescriptor {
 export interface ModelRegistryAuthResolution {
   apiKey?: string;
   headers?: Record<string, string>;
+  /** Optional provider base URL override from resolved auth (e.g. custom gateway). */
+  baseUrl?: string;
   env?: Record<string, string>;
 }
 
@@ -251,6 +272,20 @@ export interface ModelRegistry {
 export interface ExtensionUI {
   notify(message: string, type?: "info" | "warning" | "error"): void;
   select?(title: string, options: string[]): Promise<string | undefined>;
+}
+
+/** PI's estimate of the live session context for the active model. */
+export interface ContextUsage {
+  /** Estimated context tokens, or null if unknown (e.g. right after compaction). */
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+
+export interface CompactOptions {
+  customInstructions?: string;
+  onComplete?: (result: CompactionResult) => void;
+  onError?: (error: Error) => void;
 }
 
 export interface SessionEntry {
@@ -276,6 +311,16 @@ export interface ExtensionContext {
   sessionManager: SessionManager;
   cwd: string;
   model?: ModelDescriptor;
+  /** Optional in the mirror so test fixtures stay minimal; always present on
+   *  real PI ≥ 0.83 contexts. */
+  getContextUsage?(): ContextUsage | undefined;
+  /** Trigger PI's compaction flow (fires session_before_compact) without
+   *  awaiting completion. WARNING: this is PI's MANUAL compact path — it
+   *  aborts any in-flight agent run first (agent-session.ts "Aborts current
+   *  agent operation first"). Only call when the agent is idle. */
+  compact?(options?: CompactOptions): void;
+  /** True when user messages are queued to run after the current agent run. */
+  hasPendingMessages?(): boolean;
 }
 
 /** Command handlers receive session-control methods on ctx. */

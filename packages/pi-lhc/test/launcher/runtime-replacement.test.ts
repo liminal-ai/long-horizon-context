@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage, parseArgs, SessionManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, parseArgs, SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLauncherRuntimeFactory } from "../../src/launcher/runtime-factory.js";
 
@@ -21,8 +21,12 @@ describe("launcher runtime replacement", () => {
       if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
     });
 
+    const modelRuntime = await ModelRuntime.create({
+      modelsPath: null,
+      allowModelNetwork: false,
+    });
     const factory = createLauncherRuntimeFactory({
-      authStorage: AuthStorage.inMemory(),
+      modelRuntime,
       extensionFlagValues: new Map(),
       extensionFactories: [],
       parsed: parseArgs([]),
@@ -43,6 +47,8 @@ describe("launcher runtime replacement", () => {
 
     expect(startup.session).not.toBe(replacement.session);
     expect(startup.services).not.toBe(replacement.services);
+    // Shared ModelRuntime is reused; other cwd-bound services are recreated.
+    expect(startup.services.modelRuntime).toBe(replacement.services.modelRuntime);
     expect(replacement.session.sessionManager.getSessionFile()).toBeUndefined();
   });
 });

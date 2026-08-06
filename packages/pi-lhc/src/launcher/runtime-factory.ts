@@ -1,13 +1,14 @@
 import type { Args } from "@earendil-works/pi-coding-agent";
 import {
   type AgentSessionRuntimeDiagnostic,
-  type AuthStorage,
   type CreateAgentSessionFromServicesOptions,
   type CreateAgentSessionRuntimeFactory,
   createAgentSessionFromServices,
   createAgentSessionServices,
   type ExtensionFactory,
   hasTrustRequiringProjectResources,
+  ModelRegistry,
+  type ModelRuntime,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { resolveLauncherCliModel } from "./resolve-cli-model.js";
@@ -20,7 +21,8 @@ export type LauncherSessionCreateOptions = Pick<
 >;
 
 export interface LauncherRuntimeFactoryOptions {
-  authStorage: AuthStorage;
+  /** Optional shared ModelRuntime (e.g. tests). When omitted, services create one. */
+  modelRuntime?: ModelRuntime;
   extensionFlagValues: Map<string, boolean | string>;
   extensionFactories: ExtensionFactory[];
   parsed: Args;
@@ -33,7 +35,7 @@ export interface LauncherRuntimeFactoryOptions {
 /** Runtime factory for launcher-owned pi-lhc: recreates cwd-bound services on each session replacement. */
 export function createLauncherRuntimeFactory(options: LauncherRuntimeFactoryOptions): CreateAgentSessionRuntimeFactory {
   const {
-    authStorage,
+    modelRuntime,
     extensionFlagValues,
     extensionFactories,
     parsed,
@@ -54,13 +56,16 @@ export function createLauncherRuntimeFactory(options: LauncherRuntimeFactoryOpti
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
-      authStorage,
+      ...(modelRuntime === undefined ? {} : { modelRuntime }),
+      modelRuntimeSignal: AbortSignal.timeout(15_000),
       settingsManager,
       extensionFlagValues,
       resourceLoaderOptions: buildLauncherResourceLoaderOptions(parsed, cwd, extensionFactories),
     });
 
-    const resolvedModel = resolveLauncherCliModel(parsed, services.modelRegistry);
+    // ModelRegistry is a sync facade over ModelRuntime (extensions still see it on ctx).
+    const modelRegistry = new ModelRegistry(services.modelRuntime);
+    const resolvedModel = resolveLauncherCliModel(parsed, modelRegistry);
     const {
       sessionOptions,
       cliThinkingFromModel,
@@ -75,7 +80,7 @@ export function createLauncherRuntimeFactory(options: LauncherRuntimeFactoryOpti
           message: "--api-key requires a model to be specified via --model or --provider/--model",
         });
       } else {
-        authStorage.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+        await services.modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
       }
     }
 

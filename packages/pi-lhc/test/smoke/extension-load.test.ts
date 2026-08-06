@@ -78,12 +78,7 @@ describe("extension load + hook rail", () => {
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
     expect(registered).not.toContain("context");
-    expect(commands).toEqual([
-      "lhc-rehydrate",
-      "lhc-export-threadview",
-      "lhc-export-pi-session",
-      "lhc-tool-prune",
-    ]);
+    expect(commands).toEqual(["lhc-rehydrate", "lhc-export-threadview", "lhc-export-pi-session", "lhc-tool-prune"]);
     expect(tools).toEqual([]);
   });
 

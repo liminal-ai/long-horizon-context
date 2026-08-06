@@ -1,13 +1,10 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpResult, ThreadRef } from "lhc";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  createConnector,
-  LHC_EXPORT_THREADVIEW_COMMAND,
-} from "../../src/index.js";
 import { handleExportThreadview } from "../../src/commands/export-threadview.js";
+import { createConnector, LHC_EXPORT_THREADVIEW_COMMAND } from "../../src/index.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "../../src/pi/types.js";
 import type { LhcInstance } from "../../src/shared/instance.js";
 
@@ -36,7 +33,12 @@ function mockCtx(cwd: string): {
   return { ctx, notifications };
 }
 
-function mockInstance(messages: OpResult<{ threadId: string; messages: Array<{ role: "user" | "assistant"; content: Array<{ type: "text"; text: string }> }> }>) {
+function mockInstance(
+  messages: OpResult<{
+    threadId: string;
+    messages: Array<{ role: "user" | "assistant"; content: Array<{ type: "text"; text: string }> }>;
+  }>,
+) {
   const getLlmRequestContext = vi.fn(async () => messages);
   const instance = {
     sdk: {

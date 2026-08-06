@@ -1,13 +1,11 @@
 import {
-  AuthStorage,
   createAgentSessionRuntime,
   type ExtensionFactory,
   getAgentDir,
   InteractiveMode,
-  ModelRegistry,
+  ModelRuntime,
   parseArgs,
   runPrintMode,
-  SettingsManager,
   VERSION,
 } from "@earendil-works/pi-coding-agent";
 import type { ThreadRef } from "lhc";
@@ -111,13 +109,14 @@ export async function runPiLhcLauncher(argv: readonly string[], deps: RunPiLhcLa
   }
 
   if (parsed.listModels !== undefined) {
-    const cwd = deps.cwd ?? process.cwd();
-    const agentDir = getAgentDir();
-    const authStorage = AuthStorage.create();
-    SettingsManager.create(cwd, agentDir);
-    const modelRegistry = ModelRegistry.create(authStorage);
+    // Mirror upstream main.ts credential-print / list-models early path:
+    // construct ModelRuntime before session services, then list available models.
+    const modelRuntime = await ModelRuntime.create({
+      allowModelNetwork: false,
+      signal: AbortSignal.timeout(15_000),
+    });
     const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-    printLauncherListModels(modelRegistry, searchPattern);
+    await printLauncherListModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
     return 0;
   }
 
@@ -156,9 +155,7 @@ export async function runPiLhcLauncher(argv: readonly string[], deps: RunPiLhcLa
     extensionFlagValues.set(name, value);
   }
 
-  const authStorage = AuthStorage.create();
   const createRuntime = createLauncherRuntimeFactory({
-    authStorage,
     extensionFlagValues,
     extensionFactories: [piLhcExtension],
     parsed,

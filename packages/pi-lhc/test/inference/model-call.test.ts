@@ -92,6 +92,46 @@ describe("Story 5: Inference Host Routing", () => {
       expect(passedOptions?.headers).toEqual(resolvedAuth.headers);
     });
 
+    it("applies resolved baseUrl on the model handle passed to complete()", async () => {
+      const mockHandle: ModelHandle = { provider: "custom", id: "my-model", baseUrl: "https://default.example" };
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => mockHandle,
+          hasConfiguredAuth: () => true,
+          getApiKeyAndHeaders: async () => ({
+            ok: true as const,
+            apiKey: "key",
+            baseUrl: "https://gateway.example/v1",
+          }),
+          getAvailable: () => [mockHandle],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>(async () => makeAssistantMessage({ text: "ok" }));
+      const modelCall = createModelCall(ctx, { complete });
+      await modelCall({ ...INPUT, provider: "custom", model: "my-model" });
+
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "custom", id: "my-model", baseUrl: "https://gateway.example/v1" }),
+        { messages: INPUT.messages },
+        expect.objectContaining({ apiKey: "key" }),
+      );
+      // baseUrl is not an option field — it rides on the model (upstream prepareRequest).
+      expect(complete.mock.calls[0]?.[2]).not.toHaveProperty("baseUrl");
+    });
+
+    it("resolves complete() from @earendil-works/pi-ai/compat against the vendored package", async () => {
+      const loaded = await import("@earendil-works/pi-ai/compat");
+      expect(typeof loaded.complete).toBe("function");
+      // Root export no longer carries complete() after the Models API migration.
+      const root = await import("@earendil-works/pi-ai");
+      expect((root as { complete?: unknown }).complete).toBeUndefined();
+    });
+
     it("awaits async getApiKeyAndHeaders before calling complete", async () => {
       const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
       let releaseAuth: (() => void) | undefined;

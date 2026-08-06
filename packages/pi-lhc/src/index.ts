@@ -19,6 +19,12 @@ export { LHC_EXPORT_THREADVIEW_COMMAND } from "./commands/export-threadview.js";
 import { handleToolPrune, LHC_TOOL_PRUNE_COMMAND } from "./commands/tool-prune.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
+import {
+  loadModelCompactSettings as loadModelCompactSettingsImpl,
+  resolveModelCompactSettings,
+  shouldTriggerModelCompact,
+  toCompactParams,
+} from "./compact/model-profiles.js";
 import { findSeedEntryMapInBranch } from "./compact/seed-entry-map.js";
 import { defaultNewThreadFilePath, defaultRegistryPath } from "./home.js";
 import { loadAssignments as loadAssignmentsImpl } from "./inference/assignments.js";
@@ -70,6 +76,16 @@ export {
   writeCompactCancelLog,
 } from "./compact/diagnostics.js";
 export { handleSessionBeforeCompact } from "./compact/handler.js";
+export {
+  AUTO_COMPACT_RETRY_GROWTH_TOKENS,
+  DEFAULT_MODEL_COMPACT_SETTINGS,
+  FALLBACK_COMPACT_SETTINGS,
+  loadModelCompactSettings,
+  type ModelCompactSettings,
+  resolveModelCompactSettings,
+  shouldTriggerModelCompact,
+  toCompactParams,
+} from "./compact/model-profiles.js";
 export { DEFAULT_COMPACT_PROFILE } from "./compact/profile.js";
 export {
   assembleCompactionResult,
@@ -141,8 +157,15 @@ export const EPIC_1_HOOKS = [
 /** Compact hooks for LHC smart compact (Story 1). */
 export const COMPACT_HOOKS = ["session_before_compact", "session_compact"] as const satisfies readonly PiHookName[];
 
+/** Guard hooks: registered to protect the linear LHC record, not to capture. */
+export const GUARD_HOOKS = ["session_before_tree"] as const satisfies readonly PiHookName[];
+
 /** Hooks registered by the connector. Context is loaded via SessionManager seeding, not the context hook. */
-export const CONNECTOR_HOOKS = [...EPIC_1_HOOKS, ...COMPACT_HOOKS] as const satisfies readonly PiHookName[];
+export const CONNECTOR_HOOKS = [
+  ...EPIC_1_HOOKS,
+  ...COMPACT_HOOKS,
+  ...GUARD_HOOKS,
+] as const satisfies readonly PiHookName[];
 
 export type CompactHook = (typeof COMPACT_HOOKS)[number];
 
@@ -169,6 +192,10 @@ export interface ConnectorDeps {
   /** Operator overrides for provider/model/prompt per derivation kind. Uses
    *  loadAssignments to merge over shipped defaults. */
   assignmentConfig?: unknown;
+  /** Operator override for per-model compact settings (trigger threshold,
+   *  lowerBound, band percentages). Replaces the shipped table wholesale;
+   *  fails loud on malformed entries. */
+  compactSettingsConfig?: unknown;
 }
 
 /** Everything the connector retains across hooks as PLAIN data — by
@@ -194,6 +221,10 @@ export interface Connector {
   /** The hook handlers, keyed by event — exposed so tests can drive them with
    *  synthetic ctx/events without a live PI. */
   readonly handlers: Readonly<Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>>;
+  readonly treeHandler: (
+    event: import("./pi/types.js").SessionBeforeTreeEvent,
+    ctx: ExtensionContext,
+  ) => Promise<import("./pi/types.js").SessionBeforeTreeResult>;
   readonly compactHandlers: Readonly<{
     session_before_compact: PiHookHandler<"session_before_compact">;
     session_compact: PiVoidHookHandler<"session_compact">;
@@ -340,6 +371,12 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   const buildSdkConfig =
     deps.buildSdkConfig ?? ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
+  const modelCompactSettings = loadModelCompactSettingsImpl(deps.compactSettingsConfig);
+  // Connector-side auto-compact trigger state. In-flight prevents overlap;
+  // last-attempt + growth guard prevents hammering a cancelling compact
+  // (e.g. capture_incomplete) every turn at the same context size.
+  let autoCompactInFlight = false;
+  let autoCompactLastAttemptTokens: number | null = null;
   // Production defaults resolve under ~/.pi-lhc (or PI_LHC_HOME). Tests inject
   // temp registry/thread paths via deps so optional registryPath plumbing stays.
   const registryPath = deps.registryPath ?? defaultRegistryPath();
@@ -385,6 +422,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // thread and seeds it from the source thread.
   const onSessionStart: PiHookHandler<"session_start"> = async (event, ctx) => {
     compactDiagnostics.clear();
+    autoCompactInFlight = false;
+    autoCompactLastAttemptTokens = null;
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       lastDiagnostic = diag("instance_not_configured", config.error.reason);
@@ -838,11 +877,14 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Final assistant stopReason on event.messages governs turn outcome (schema
   // v5); hard-kill never reaches here and leaves the turn open with NULL facts.
   const onAgentEnd: PiHookHandler<"agent_end"> = async (event, ctx) => {
-    if (instance === null || captureSession === null) return;
-    await flushPendingMessages(ctx);
-    const turnEnd = captureSession.accumulator.onAgentEnd({ messages: event.messages });
-    if (turnEnd.length === 0) return;
-    recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
+    if (instance !== null && captureSession !== null) {
+      await flushPendingMessages(ctx);
+      const turnEnd = captureSession.accumulator.onAgentEnd({ messages: event.messages });
+      if (turnEnd.length !== 0) {
+        recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
+      }
+    }
+    maybeTriggerAutoCompact(ctx);
   };
 
   // Contain every handler: an observe-only hook must never throw back into PI
@@ -862,11 +904,57 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
-  // Observe-only foundation: the remaining capture-bearing hook (PI's per-step
-  // turn_end) stays a no-op here. Each receives a fresh ctx and retains none of
-  // it.
+  // Per-model auto-compact trigger. Runs at agent_end ONLY — never per model
+  // turn: ctx.compact() routes through PI's MANUAL compact path, which aborts
+  // any in-flight agent run first. Between runs the abort is a no-op, and the full
+  // session_before_compact preflight (capture gate, mapping) still runs.
+  // Mid-run growth stays covered by PI's native machinery: its own threshold
+  // check (contextWindow − reserve) and overflow recovery are loop-integrated
+  // and safe to fire between model turns.
+  const maybeTriggerAutoCompact = (ctx: ExtensionContext): void => {
+    if (state === null || instance === null) return;
+    if (ctx.compact === undefined) return;
+    // Queued follow-ups start a new run immediately; compacting now would race
+    // it. The next agent_end re-checks.
+    if (ctx.hasPendingMessages?.() === true) return;
+    const settings = resolveModelCompactSettings(ctx.model?.id, modelCompactSettings);
+    const usage = ctx.getContextUsage?.();
+    const trigger = settings.triggerTokens;
+    if (
+      !shouldTriggerModelCompact({
+        contextTokens: usage?.tokens,
+        triggerTokens: trigger,
+        inFlight: autoCompactInFlight,
+        lastAttemptTokens: autoCompactLastAttemptTokens,
+      })
+    ) {
+      return;
+    }
+    autoCompactInFlight = true;
+    autoCompactLastAttemptTokens = usage?.tokens ?? null;
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        `lhc: context ~${Math.round((usage?.tokens ?? 0) / 1000)}k ≥ ${Math.round((trigger ?? 0) / 1000)}k threshold for ${ctx.model?.id ?? "model"} — triggering smart compact`,
+        "info",
+      );
+    }
+    ctx.compact({
+      onComplete: () => {
+        autoCompactInFlight = false;
+        autoCompactLastAttemptTokens = null;
+      },
+      onError: () => {
+        // Cancelled or failed: stay armed but only retry after real growth.
+        autoCompactInFlight = false;
+      },
+    });
+  };
+
+  // Observe-only foundation: PI's per-step turn_end stays a no-op — it is not
+  // an LHC turn boundary, and it must NOT host the auto-compact trigger (see
+  // maybeTriggerAutoCompact above for why).
   const noop: PiVoidHookHandler<Epic1Hook> = () => {
-    // Intentionally empty — turn_end is ignored as a boundary.
+    // Intentionally empty.
   };
 
   // session_before_fork: capture the fork point for use on the next session_start{fork}.
@@ -902,6 +990,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
             return instance.sdk.threadView.getSessionThreadView(state.threadRef);
           },
           findSeedEntryMap: findSeedEntryMapInBranch,
+          compactParams: toCompactParams(resolveModelCompactSettings(ctx.model?.id, modelCompactSettings)),
           recordCancel: async (diagnostic) => {
             await recordCompactCancel({
               diagnostic,
@@ -931,6 +1020,27 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   const onAfterCompact: PiVoidHookHandler<"session_compact"> = async () => {
     compactDiagnostics.clear();
+    autoCompactInFlight = false;
+    autoCompactLastAttemptTokens = null;
+  };
+
+  // /tree navigation switches the PI session's active branch. The LHC record
+  // is one linear stream per thread — capture cannot represent a branch
+  // switch, and continuing to capture after one silently diverges the record
+  // from what the model sees. Refuse loudly while a thread is attached; /fork
+  // (which creates and seeds a NEW thread) is the supported branching path.
+  const onBeforeTree = async (
+    _event: import("./pi/types.js").SessionBeforeTreeEvent,
+    ctx: ExtensionContext,
+  ): Promise<import("./pi/types.js").SessionBeforeTreeResult> => {
+    if (state === null) return {};
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        "pi-lhc: /tree navigation is blocked — the LHC thread record is linear and cannot follow a branch switch. Use /fork to branch onto a new thread.",
+        "warning",
+      );
+    }
+    return { cancel: true };
   };
 
   const compactHandlers = {
@@ -1028,6 +1138,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   return {
     handlers,
     compactHandlers,
+    treeHandler: onBeforeTree,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
       extensionPi = pi;
@@ -1064,6 +1175,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           pi.on(name, compactHandlers.session_compact);
         }
       }
+      pi.on("session_before_tree", onBeforeTree);
     },
     getCompactDiagnostics(): readonly CompactDiagnostic[] {
       return compactDiagnostics.snapshot();

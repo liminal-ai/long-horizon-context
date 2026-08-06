@@ -10,12 +10,12 @@ Stable daily driver — this is the harness LHC is developed inside:
 
 - **Capture, serving, and compact bridge** all in production use. Smart compact replaces PI's native compaction via `session_before_compact`.
 - **Resume fidelity verified byte-exact**: a resumed session's rendered context matched the live session character-for-character on a ~150k-token real session (77 messages, 35 tool calls). Rendered identifiers were stripped from served text to make this hold.
-- **Runs on vendored patched PI** (`vendor/pi` submodule): stock upstream plus a fix preserving signed thinking blocks in request history for `display: "omitted"` models. See the root README's "Vendored PI" section.
+- **Runs on vendored stock PI** (`vendor/pi` submodule, currently v0.83.x): pure upstream pin — no local patches (the thinking-signature fix is upstream via #6457). See the root README's "Vendored PI" section.
 - **Commands**: `/lhc-rehydrate`, `/lhc-tool-prune [targetTokens]`, `/lhc-export-threadview`, `/lhc-export-pi-session`.
 
 Known open items:
 
-- **Thinking-signature capture**: the record stores thinking text but not `thinkingSignature`, so a resumed session rebuilds history without prior signed thinking blocks — a one-time cache miss on resume for Claude lanes now that the PI patch preserves them live. Fix queued.
+- **Thinking-signature capture**: the record stores thinking text but not `thinkingSignature`, so a resumed session rebuilds history without prior signed thinking blocks — a one-time cache miss on resume for Claude lanes now that PI preserves them live. Fix queued.
 - **Token accounting understates real context**: image payloads and empty-text thinking are represented cheaply in the record, so thread token totals sit below what the live session actually costs.
 - **Tool-result summaries are truncation-only** (`FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true`); inference-backed summaries are wired but gated off.
 

@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 function formatTokenCount(count: number): string {
   if (count >= 1_000_000) {
@@ -18,27 +18,31 @@ function matchesSearch(model: Model<Api>, searchPattern: string): boolean {
   return haystack.includes(searchPattern.toLowerCase());
 }
 
-/** Print available models from ModelRegistry for --list-models. */
-export function printLauncherListModels(modelRegistry: ModelRegistry, searchPattern?: string): void {
-  const loadError = modelRegistry.getError();
+/** Print available models from ModelRuntime for --list-models (mirrors upstream cli/list-models). */
+export async function printLauncherListModels(
+  modelRuntime: ModelRuntime,
+  searchPattern?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const loadError = modelRuntime.getError();
   if (loadError) {
     console.error(`Warning: errors loading models.json:\n${loadError}`);
   }
 
-  let models = modelRegistry.getAvailable();
+  // Upstream lists auth-available models only (getAvailable), not the full catalog.
+  let models = [...(await modelRuntime.getAvailable(undefined, signal === undefined ? {} : { signal }))];
+
   if (models.length === 0) {
-    models = modelRegistry.getAll();
+    console.log("No models available. Configure PI auth/models before using pi-lhc.");
+    return;
   }
+
   if (searchPattern) {
     models = models.filter((model) => matchesSearch(model, searchPattern));
   }
 
   if (models.length === 0) {
-    if (searchPattern) {
-      console.log(`No models matching "${searchPattern}"`);
-    } else {
-      console.log("No models available. Configure PI auth/models before using pi-lhc.");
-    }
+    console.log(`No models matching "${searchPattern}"`);
     return;
   }
 

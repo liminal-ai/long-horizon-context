@@ -1,13 +1,16 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createConnector, LHC_EXPORT_PI_SESSION_COMMAND } from "../../src/index.js";
 import { handleExportPiSession } from "../../src/commands/export-pi-session.js";
+import { createConnector, LHC_EXPORT_PI_SESSION_COMMAND } from "../../src/index.js";
 import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "../../src/pi/types.js";
 import { makeAssistantMessage, makeUserMessage } from "../fixtures/synthetic.js";
 
-function mockCtx(cwd: string, entries: SessionEntry[]): {
+function mockCtx(
+  cwd: string,
+  entries: SessionEntry[],
+): {
   ctx: ExtensionCommandContext;
   notifications: Array<{ message: string; type?: string }>;
 } {

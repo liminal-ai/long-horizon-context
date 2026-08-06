@@ -1,3 +1,4 @@
+import type { ViewCompactParams } from "lhc";
 import { estimateTokens, type LlmRequestContextMessage, type OpResult, type SessionThreadView } from "lhc";
 import type { SessionState } from "../lifecycle/state.js";
 import type {
@@ -32,6 +33,9 @@ export interface CompactHandlerDeps {
   getSessionView: () => Promise<OpResult<SessionThreadView>>;
   findSeedEntryMap: (branchEntries: readonly SessionEntry[], activeThreadId: string) => LhcSeedEntryMap | null;
   recordCancel?: (diagnostic: CompactDiagnostic) => void | Promise<void>;
+  /** Compact params for this compact (per-model resolution happens at the
+   *  call site from ctx.model). Absent → the shipped default profile. */
+  compactParams?: ViewCompactParams;
 }
 
 function compactSignal(event: SessionBeforeCompactEvent): { aborted: boolean } {
@@ -75,15 +79,21 @@ export async function handleSessionBeforeCompact(
       return await cancel("compact_error", contextOutcome.error.reason);
     }
     const servingTokens = servingContextTokens(contextOutcome.value.messages);
-    if (servingTokens < COMPACT_FLOOR_TOKENS) {
+    // The floor exists for one case: a human typing /compact on a tiny thread
+    // where there is nothing to reclaim. Threshold and overflow compacts are
+    // forced by context pressure — flooring them can wedge a session whose
+    // model window is small enough that the trigger point sits under the floor
+    // (auto-compact would cancel forever, overflow recovery included).
+    if (event.reason === "manual" && servingTokens < COMPACT_FLOOR_TOKENS) {
       return await cancel(
         "no_op",
         `thread ${formatTokenThousands(servingTokens)} tokens is below the ${formatTokenThousands(COMPACT_FLOOR_TOKENS)} compact floor — nothing to reclaim`,
       );
     }
 
+    const compactParams = deps.compactParams ?? DEFAULT_COMPACT_PROFILE;
     const previewOutcome = await deps.instance.sdk.threadView.previewCompact(deps.state.threadRef, {
-      params: DEFAULT_COMPACT_PROFILE,
+      params: compactParams,
       signal: compactSignal(event),
     });
     if (!previewOutcome.ok) {
@@ -121,7 +131,7 @@ export async function handleSessionBeforeCompact(
     }
 
     const compactOutcome = await deps.instance.sdk.threadView.compact(deps.state.threadRef, {
-      params: DEFAULT_COMPACT_PROFILE,
+      params: compactParams,
       signal: compactSignal(event),
     });
     if (!compactOutcome.ok) {

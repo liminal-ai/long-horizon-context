@@ -51,6 +51,12 @@ function mergeCompleteOptions(
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+/** Apply resolved baseUrl onto the model handle (upstream ModelRuntime.prepareRequest pattern). */
+function modelWithResolvedBaseUrl(model: ModelHandle, auth: ModelRegistryAuthResolution | undefined): ModelHandle {
+  if (auth?.baseUrl === undefined || auth.baseUrl === "") return model;
+  return { ...model, baseUrl: auth.baseUrl };
+}
+
 function resolveRequestAuth(
   registry: ExtensionContext["modelRegistry"],
   model: ModelHandle,
@@ -67,6 +73,7 @@ function resolveRequestAuth(
       const auth: ModelRegistryAuthResolution = {
         ...(result.apiKey !== undefined ? { apiKey: result.apiKey } : {}),
         ...(result.headers !== undefined ? { headers: result.headers } : {}),
+        ...(result.baseUrl !== undefined ? { baseUrl: result.baseUrl } : {}),
         ...(result.env !== undefined ? { env: result.env } : {}),
       };
       if (!hasUsableRequestAuth(auth)) {
@@ -165,14 +172,17 @@ export function classifyFailure(err: unknown): ModelCallFailureKind {
   return "other";
 }
 
+/** pi-ai moved complete() to the /compat subpath (v0.83+). Dynamic import — wrong specifier fails at runtime. */
+const PI_AI_COMPLETE_SPECIFIER = "@earendil-works/pi-ai/compat";
+
 async function importPiAiComplete(): Promise<PiAiComplete> {
   const dynamicImport = new Function("specifier", "return import(specifier)") as (
     specifier: string,
   ) => Promise<unknown>;
-  const loaded = await dynamicImport("@earendil-works/pi-ai");
+  const loaded = await dynamicImport(PI_AI_COMPLETE_SPECIFIER);
   const complete = (loaded as { complete?: unknown }).complete;
   if (typeof complete !== "function") {
-    throw Object.assign(new Error("@earendil-works/pi-ai does not export complete()"), {
+    throw Object.assign(new Error(`${PI_AI_COMPLETE_SPECIFIER} does not export complete()`), {
       code: "invalid_request",
     });
   }
@@ -225,7 +235,9 @@ export function createModelCall(ctx: ExtensionContext, deps: ModelCallDeps = {})
       const complete = deps.complete ?? (await importPiAiComplete());
       const completeOptions = mergeCompleteOptions(thinking, requestAuth.auth);
       const context = partitionSystemPrompt(messages);
-      const response = await complete(resolved, context, completeOptions);
+      // Upstream applies baseUrl on the model object, not as a complete() option.
+      const modelForRequest = modelWithResolvedBaseUrl(resolved, requestAuth.auth);
+      const response = await complete(modelForRequest, context, completeOptions);
 
       const providerError = providerErrorFromResponse(response);
       if (providerError !== undefined) {

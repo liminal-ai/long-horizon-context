@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AgentSessionRuntimeDiagnostic,
-  AuthStorage,
+  ModelRuntime,
   parseArgs,
   SessionManager,
   type SettingsManager,
@@ -21,10 +21,17 @@ describe("launcher runtime factory CLI flags", () => {
     }
   });
 
+  async function createTestModelRuntime(): Promise<ModelRuntime> {
+    return ModelRuntime.create({
+      modelsPath: null,
+      allowModelNetwork: false,
+    });
+  }
+
   async function runFactory(
     argv: string[],
     options: {
-      authStorage?: AuthStorage;
+      modelRuntime?: ModelRuntime;
       observe?: (options: LauncherSessionCreateOptions) => void;
       observeSettingsManager?: (settingsManager: SettingsManager) => void;
     } = {},
@@ -36,9 +43,9 @@ describe("launcher runtime factory CLI flags", () => {
     });
 
     const observed: LauncherSessionCreateOptions[] = [];
-    const authStorage = options.authStorage ?? AuthStorage.inMemory();
+    const modelRuntime = options.modelRuntime ?? (await createTestModelRuntime());
     const factory = createLauncherRuntimeFactory({
-      authStorage,
+      modelRuntime,
       extensionFlagValues: new Map(),
       extensionFactories: [],
       parsed: parseArgs(argv),
@@ -62,7 +69,7 @@ describe("launcher runtime factory CLI flags", () => {
       sessionOptions: observed.at(-1),
       diagnostics: result.diagnostics,
       sessionManager: result.session,
-      authStorage,
+      modelRuntime,
     };
   }
 
@@ -119,11 +126,11 @@ describe("launcher runtime factory CLI flags", () => {
   });
 
   it("sets runtime api key when model is resolved", async () => {
-    const authStorage = AuthStorage.inMemory();
-    const setKey = vi.spyOn(authStorage, "setRuntimeApiKey");
+    const modelRuntime = await createTestModelRuntime();
+    const setKey = vi.spyOn(modelRuntime, "setRuntimeApiKey");
 
     await runFactory(["--provider", "amazon-bedrock", "--model", "amazon.nova-lite-v1:0", "--api-key", "test-key"], {
-      authStorage,
+      modelRuntime,
     });
 
     expect(setKey).toHaveBeenCalledWith("amazon-bedrock", "test-key");
@@ -141,7 +148,7 @@ describe("launcher runtime factory CLI flags", () => {
     const appendSpy = vi.spyOn(sessionManager, "appendSessionInfo");
 
     const factory = createLauncherRuntimeFactory({
-      authStorage: AuthStorage.inMemory(),
+      modelRuntime: await createTestModelRuntime(),
       extensionFlagValues: new Map(),
       extensionFactories: [],
       parsed: parseArgs(["--name", "my-thread"]),
