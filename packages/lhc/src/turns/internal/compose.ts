@@ -257,14 +257,27 @@ function runTallyText(counts: Record<ToolOutcome, number>): string {
   return segs.length > 0 ? segs.join(", ") : "no outcomes";
 }
 
+/** Short XML wrap: tag name is the entity id (`m12`, `t3`). */
+export function wrapEntityXml(entityId: string, body: string): string {
+  return `<${entityId}>\n${body}\n</${entityId}>`;
+}
+
+function wrapMessageLineXml(messageId: string, line: string): string {
+  return `<${messageId}>${line}</${messageId}>`;
+}
+
 // One RenderingPart for a maximal tool run: a run-level header over member
-// accounts in record order, each tool member stating its own outcome.
+// accounts in record order, each tool member stating its own outcome. Each
+// member line is tagged with its message id so smooth history can address it.
 function composeRun(members: readonly ComposeAtom[]): RenderingPart {
   const { counts, outcome, callCount, toolNames } = tallyRun(members);
   const tools = toolNames.length > 0 ? toolNames.join(", ") : "tools";
   const header = `tool run · ${tools} · ${callCount} call${callCount === 1 ? "" : "s"} · ${runTallyText(counts)}`;
   const detail = members
-    .map((m) => (m.isTool ? `${m.part.text} ⇒ ${m.part.outcome ?? "unknown"}` : m.part.text))
+    .map((m) => {
+      const line = m.isTool ? `${m.part.text} ⇒ ${m.part.outcome ?? "unknown"}` : m.part.text;
+      return wrapMessageLineXml(m.part.messageId, line);
+    })
     .join("\n");
   const text = `[${header}]\n${detail}`;
   const lead = members[0];
@@ -275,6 +288,7 @@ function composeRun(members: readonly ComposeAtom[]): RenderingPart {
     text,
     fallback: members.some((m) => m.isTool && m.part.fallback),
     outcome,
+    memberMessageIds: members.map((m) => m.part.messageId),
   };
 }
 
@@ -349,6 +363,55 @@ function composeDialogueText(parts: readonly RenderingPart[]): string {
     text += separator + formatDialogueSection(current);
   }
   return text.replace(/\n{3,}/g, "\n\n");
+}
+
+function renderingPartLabel(kind: RenderingPartKind): string {
+  switch (kind) {
+    case "user_prompt":
+      return "User prompt";
+    case "assistant_text":
+      return "Assistant response";
+    case "assistant_thinking":
+      return "Assistant thinking";
+    case "runtime_note":
+      return "Runtime note";
+    case "model_change":
+      return "Model change";
+    case "thinking_level_change":
+      return "Thinking level change";
+    case "tool_call":
+      return "Tool call";
+    case "tool_result":
+      return "Tool result";
+  }
+}
+
+/** Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
+ *  pre_detailed_assembly (compression stays untagged). */
+export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string): string {
+  const inner = parts
+    .map((part) => {
+      const annotations = [
+        part.fallback ? "fallback" : undefined,
+        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
+      ].filter((annotation): annotation is string => annotation !== undefined);
+      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
+      const header = `${renderingPartLabel(part.kind)}${suffix}`;
+      // Tool runs already tag each member line; other parts wrap the whole body.
+      const body =
+        part.memberMessageIds !== undefined && part.memberMessageIds.length > 0
+          ? part.text
+          : wrapEntityXml(part.messageId, part.text);
+      return `${header}\n${body}`;
+    })
+    .join("\n\n");
+  return wrapEntityXml(turnId, inner);
+}
+
+/** Chunk band header: member turn ids the model can request later. */
+export function formatTurnRangeHeader(turnIds: readonly string[]): string {
+  if (turnIds.length === 0) return "";
+  return `<turns>${turnIds.join(" ")}</turns>`;
 }
 
 // Dialog-register assembly for detailed-band compression: user prompts

@@ -27,6 +27,7 @@ import {
   type SdkConfig,
   threads,
 } from "../src/index.js";
+import { composeStructuredTurnText } from "../src/turns/internal/compose.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -116,27 +117,8 @@ function assemblyTokens(prompt: string, answer: string): number {
   return estimateTokens(dialogueAssemblyText(prompt, answer));
 }
 
-function structuredRendering(parts: readonly RenderingPart[]): string {
-  const labels: Record<RenderingPart["kind"], string> = {
-    user_prompt: "User prompt",
-    assistant_text: "Assistant response",
-    assistant_thinking: "Assistant thinking",
-    runtime_note: "Runtime note",
-    model_change: "Model change",
-    thinking_level_change: "Thinking level change",
-    tool_call: "Tool call",
-    tool_result: "Tool result",
-  };
-  return parts
-    .map((part) => {
-      const annotations = [
-        part.fallback ? "fallback" : undefined,
-        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
-      ].filter((annotation): annotation is string => annotation !== undefined);
-      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
-      return `${labels[part.kind]}${suffix}\n${part.text}`;
-    })
-    .join("\n\n");
+function structuredRendering(parts: readonly RenderingPart[], turnId = "t1"): string {
+  return composeStructuredTurnText(parts, turnId);
 }
 
 // The story-sanctioned re-queue path for TC-3.3/TC-3.8: the Story 1 queue

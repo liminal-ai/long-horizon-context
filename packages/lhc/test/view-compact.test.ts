@@ -278,7 +278,8 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     // c1 fits brief, c2 fills detailed as a loner, detailed also carries the
     // coverage entry for skipped t7, and tail remains under the full share
     // plus turn-boundary snap.
-    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 27 });
+    // Token count includes the <turns>…</turns> member-turn header on chunk bands.
+    expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 41 });
     expect(receipt.value.bands.detailed.entries).toBe(2);
     expect(receipt.value.bands.detailed.tokens).toBeGreaterThanOrEqual(shares.detailed);
     expect(receipt.value.bands.smooth.entries).toBe(1);

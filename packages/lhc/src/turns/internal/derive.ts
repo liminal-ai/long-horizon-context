@@ -11,7 +11,6 @@ import type {
   ErrorResult,
   HandlerOutcome,
   HandlerRunContext,
-  RenderingPart,
   ResolvedSdkConfig,
   WorkHandler,
 } from "../../shared-tech/index.js";
@@ -36,7 +35,7 @@ import {
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
 import { enqueueChunkSummaries, placeTurn } from "./chunks.js";
-import { composePreDetailedAssembly, composeRenderingInput } from "./compose.js";
+import { composePreDetailedAssembly, composeRenderingInput, composeStructuredTurnText } from "./compose.js";
 import {
   chunkExists,
   readChunkSummaryDerivation,
@@ -58,40 +57,6 @@ function inferenceFailed(result: { reason: string }): Extract<HandlerOutcome, { 
 
 function dependencyNotReady(reason: string): Extract<HandlerOutcome, { ok: false }> {
   return { ok: false, reason };
-}
-
-function renderingPartLabel(kind: RenderingPart["kind"]): string {
-  switch (kind) {
-    case "user_prompt":
-      return "User prompt";
-    case "assistant_text":
-      return "Assistant response";
-    case "assistant_thinking":
-      return "Assistant thinking";
-    case "runtime_note":
-      return "Runtime note";
-    case "model_change":
-      return "Model change";
-    case "thinking_level_change":
-      return "Thinking level change";
-    case "tool_call":
-      return "Tool call";
-    case "tool_result":
-      return "Tool result";
-  }
-}
-
-function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
-  return parts
-    .map((part) => {
-      const annotations = [
-        part.fallback ? "fallback" : undefined,
-        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
-      ].filter((annotation): annotation is string => annotation !== undefined);
-      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
-      return `${renderingPartLabel(part.kind)}${suffix}\n${part.text}`;
-    })
-    .join("\n\n");
 }
 
 function composeDetailedChunkSummary(memberProjections: readonly string[]): string {
@@ -203,7 +168,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
     });
   }
 
-  const renderingText = composeStructuredTurnText(parts);
+  const renderingText = composeStructuredTurnText(parts, turnId);
   const assemblyText = assembly.text;
   const projectedTokens = estimateTokens(assemblyText);
   const threadId = run.threadId;

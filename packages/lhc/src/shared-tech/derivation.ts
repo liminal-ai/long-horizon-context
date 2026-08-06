@@ -106,6 +106,9 @@ export interface RenderingPart {
   fallback: boolean; // true ⇒ gap recorded
   blocks?: Array<{ blockType: string; content: Record<string, unknown> }>;
   outcome?: ToolOutcome; // tool activity only
+  /** Tool-run parts: every member message id, in record order. Text already
+   *  carries per-member <m…> tags when this is set. */
+  memberMessageIds?: string[];
 }
 
 export interface InferenceCallbacks {

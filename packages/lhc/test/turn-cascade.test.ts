@@ -76,10 +76,18 @@ function renderingContent(filePath: string): string {
   return readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ?? "";
 }
 
+function stripEntityXml(body: string): string {
+  // Block wrap: <mN>\n…\n</mN>. Tool-run lines: <mN>…</mN> on each line.
+  const block = body.match(/^<m\d+>\n([\s\S]*)\n<\/m\d+>$/);
+  if (block?.[1] !== undefined) return block[1];
+  return body.replace(/<\/m\d+>/g, "").replace(/<m\d+>/g, "");
+}
+
 function renderingBodies(filePath: string): string[] {
-  return renderingContent(filePath)
-    .split("\n\n")
-    .map((part) => part.split("\n").slice(1).join("\n"));
+  let content = renderingContent(filePath);
+  // Drop the outer <tN>…</tN> wrap added for addressable smooth history.
+  content = content.replace(/^<t\d+>\n/, "").replace(/\n<\/t\d+>$/, "");
+  return content.split("\n\n").map((part) => stripEntityXml(part.split("\n").slice(1).join("\n")));
 }
 
 function execSql(filePath: string, sql: string, ...params: SQLInputValue[]): void {

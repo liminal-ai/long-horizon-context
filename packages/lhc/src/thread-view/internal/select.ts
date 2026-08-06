@@ -391,7 +391,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
             budget(config.percentages.brief),
             chunkMaterial(chunk.chunkId, "chunk_summary_brief"),
           );
-    const text = renderArrangementEntry("chunk", chunk.chunkId, rep, []);
+    const text = renderArrangementEntry("chunk", chunk.chunkId, rep, [], chunk.memberTurnIds);
     const memberStarts = chunk.memberTurnIds
       .map((turnId) => turnsById.get(turnId))
       .filter((turn): turn is SelectionTurn => turn !== undefined)
