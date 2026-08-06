@@ -158,10 +158,7 @@ function validatePayload(
     if ("outcome" in payload && payload["outcome"] !== undefined) {
       const value = payload["outcome"];
       if (typeof value !== "string" || !OUTCOME_VALUES.has(value)) {
-        return callerError(
-          `payload: "outcome" Expected "completed" | "aborted", actual ${actual(value)}`,
-          index,
-        );
+        return callerError(`payload: "outcome" Expected "completed" | "aborted", actual ${actual(value)}`, index);
       }
     }
     for (const field of ["outcomeReason", "startedAt", "endedAt"] as const) {

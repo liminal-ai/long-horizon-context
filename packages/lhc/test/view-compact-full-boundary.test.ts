@@ -21,9 +21,11 @@ const EMPTY_DERIVATION_COUNTS: SelectionInputs["derivationCounts"] = {};
 
 function selectionInputs(
   turns: SelectionTurn[],
-  messages: Array<Pick<SelectionMessage, "messageId" | "order" | "tokenEstimate" | "turnId"> & {
-    kind?: string;
-  }>,
+  messages: Array<
+    Pick<SelectionMessage, "messageId" | "order" | "tokenEstimate" | "turnId"> & {
+      kind?: string;
+    }
+  >,
 ): SelectionInputs {
   return {
     turns,

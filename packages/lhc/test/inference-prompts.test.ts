@@ -57,8 +57,7 @@ const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = 
   },
   "detailed-turn-compression-v1": {
     input: {
-      dialogueText:
-        "User prompt\nPlease inspect notes/plan.md\n\nAssistant response\nIt has 3 open items.",
+      dialogueText: "User prompt\nPlease inspect notes/plan.md\n\nAssistant response\nIt has 3 open items.",
       inputTokens: 120,
       targetMinTokens: 42,
       targetAimTokens: 60,

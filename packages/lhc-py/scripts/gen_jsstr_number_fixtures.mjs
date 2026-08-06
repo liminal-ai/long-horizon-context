@@ -73,7 +73,7 @@ for (let i = 0; i < 20; i++) {
   // Mix magnitudes across decimal and scientific bands (positive and negative).
   const u = rng();
   const exp = Math.floor(rng() * 80) - 40; // roughly 1e-40 .. 1e39
-  let v = (u + 0.1) * Math.pow(10, exp);
+  let v = (u + 0.1) * 10 ** exp;
   if (rng() < 0.5) v = -v;
   // Avoid non-finite:
   if (!Number.isFinite(v) || v === 0) v = 0.123456789 * (i + 1);
@@ -118,13 +118,7 @@ cases.push({
   expected: JSON.stringify(nestedValues.arr),
 });
 
-const out = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "tests",
-  "fixtures",
-  "jsstr-number-cases.json",
-);
+const out = join(dirname(fileURLToPath(import.meta.url)), "..", "tests", "fixtures", "jsstr-number-cases.json");
 writeFileSync(out, JSON.stringify(cases, null, 2) + "\n");
 console.log(`wrote ${cases.length} cases to ${out}`);
 
