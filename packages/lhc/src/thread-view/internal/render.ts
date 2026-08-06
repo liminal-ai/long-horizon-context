@@ -100,6 +100,23 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): Asse
   };
 }
 
+// Anthropic models running with omitted thinking display emit thinking blocks
+// whose text is empty, with the encrypted reasoning carried (if at all) in a
+// signature. An empty-text, unsigned block carries nothing a model can use,
+// and the two serving exits rendered it divergently (standalone [thinking]
+// husk vs empty adjacent part). Skip such rows at serve time only — capture
+// and derivations keep them. Signed blocks are served once signature capture
+// lands; the predicate already honors them.
+export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
+  if (message.kind !== "assistant_thinking") return false;
+  const content = message.blocks[0]?.content ?? {};
+  const text = content["text"];
+  const hasText = typeof text === "string" && text.trim() !== "";
+  const signature = content["signature"] ?? content["thinkingSignature"];
+  const hasSignature = typeof signature === "string" && signature !== "";
+  return !hasText && !hasSignature;
+}
+
 // One tail message → one assembled message per the mapping table. Each kind is its
 // own arm so a single kind's drift fails its own named test leg.
 export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {

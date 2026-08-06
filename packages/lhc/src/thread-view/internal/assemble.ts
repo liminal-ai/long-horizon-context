@@ -1,5 +1,11 @@
 import { readBoundaryPosition } from "./boundary.js";
-import { type AssembledContextMessage, renderBandMessage, renderTailMessage, toolNamesByCallId } from "./render.js";
+import {
+  type AssembledContextMessage,
+  isEmptyThinkingHusk,
+  renderBandMessage,
+  renderTailMessage,
+  toolNamesByCallId,
+} from "./render.js";
 import { readTailMessages, readViewSnapshot, type ViewSnapshot } from "./snapshot.js";
 
 export interface AssembledViewEntry {
@@ -34,6 +40,7 @@ export function assembleView(db: Parameters<typeof readViewSnapshot>[0]): Assemb
     }
   }
   for (const row of tailRows) {
+    if (isEmptyThinkingHusk(row)) continue;
     entries.push({
       message: renderTailMessage(row, renderCtx),
       entryId: row.messageId,

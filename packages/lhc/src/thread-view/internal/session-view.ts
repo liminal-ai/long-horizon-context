@@ -6,7 +6,7 @@ import type {
   SessionThreadViewEntrySource,
 } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
-import { type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
+import { isEmptyThinkingHusk, type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
 import type { TailMessageRow } from "./snapshot.js";
 import { readTailMessages, readThreadMetadata, readViewSnapshot } from "./snapshot.js";
 
@@ -108,6 +108,7 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
   };
 
   for (const row of rows) {
+    if (isEmptyThinkingHusk(row)) continue;
     switch (row.kind) {
       case "user_prompt":
         flushAssistant();
