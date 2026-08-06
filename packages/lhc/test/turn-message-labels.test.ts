@@ -2,6 +2,7 @@
 // (<t1>…</t1>, <m2>…</m2>). turn_rendering carries them; pre_detailed_assembly
 // (compression input) does not.
 import { describe, expect, it } from "vitest";
+import { renderArrangementEntry } from "../src/thread-view/internal/render.js";
 import {
   type ComposeMessage,
   composePreDetailedAssembly,
@@ -84,5 +85,16 @@ describe("formatTurnRangeHeader", () => {
   it("lists member turn ids for chunk bands", () => {
     expect(formatTurnRangeHeader(["t1", "t2", "t3"])).toBe("<turns>t1 t2 t3</turns>");
     expect(formatTurnRangeHeader([])).toBe("");
+  });
+
+  it("prefixes unavailable chunk entries as well as ready summaries", () => {
+    const text = renderArrangementEntry(
+      "chunk",
+      "c1",
+      { derivationUsed: "gap", body: "", degraded: false, gap: true, reason: "not ready" },
+      [],
+      ["t1", "t2"],
+    );
+    expect(text).toBe("<turns>t1 t2</turns>\n[chunk unavailable: not ready]");
   });
 });

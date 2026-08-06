@@ -386,13 +386,12 @@ export function renderArrangementEntry(
   memberTurnIds: readonly string[] = [],
 ): string {
   const lines = noteTexts.map((text) => `[inter-turn note] ${text}`);
+  if (subjectKind === "chunk" && memberTurnIds.length > 0) {
+    lines.push(`<turns>${memberTurnIds.join(" ")}</turns>`);
+  }
   if (rep.gap) {
     lines.push(`[${subjectKind} unavailable: ${rep.reason ?? "unknown"}]`);
   } else {
-    if (subjectKind === "chunk" && memberTurnIds.length > 0) {
-      // Keep format identical to formatTurnRangeHeader in turns/compose.
-      lines.push(`<turns>${memberTurnIds.join(" ")}</turns>`);
-    }
     const marker = rep.degraded ? `[degraded: ${rep.degradedMarker ?? rep.derivationUsed}]\n` : "";
     lines.push(`${marker}${rep.body}`);
   }
