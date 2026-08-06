@@ -116,4 +116,31 @@ describe("serving exits agree on empty thinking husks", () => {
     const kinds = detail.value.map((message) => message.kind);
     expect(kinds).toContain("assistant_thinking");
   });
+
+  it("does not reintroduce husks through a compacted smooth-band rendering", async () => {
+    for (let turn = 1; turn <= 3; turn += 1) {
+      await seedTurnWithHusk("");
+    }
+    const drained = await sdk.work.drain({ filePath });
+    if (!drained.ok) throw new Error(drained.error.reason);
+    const compacted = await sdk.threadView.compact(
+      { filePath },
+      { params: { lowerBound: 40, percentages: { full: 25, smooth: 75, detailed: 0, brief: 0 } } },
+    );
+    if (!compacted.ok) throw new Error(compacted.error.reason);
+    expect(compacted.value.bands.smooth.entries).toBeGreaterThan(0);
+
+    const context = await sdk.threadView.getLlmRequestContext({ filePath });
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    if (!context.ok || !view.ok) throw new Error("serve failed");
+    const contextText = context.value.messages
+      .flatMap((message) => message.content.map((part) => part.text))
+      .join("\n");
+    const sessionText = view.value.entries
+      .filter((entry) => "role" in entry && entry.role === "user")
+      .map((entry) => entry.content)
+      .join("\n");
+    expect(contextText).not.toContain("Assistant thinking");
+    expect(sessionText).not.toContain("Assistant thinking");
+  });
 });

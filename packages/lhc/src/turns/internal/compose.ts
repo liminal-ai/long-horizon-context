@@ -390,6 +390,9 @@ function renderingPartLabel(kind: RenderingPartKind): string {
  *  pre_detailed_assembly (compression stays untagged). */
 export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string): string {
   const inner = parts
+    // Empty thinking has no usable representation in a text band. Leaving it
+    // here bypasses the serving-exit tail filters once the turn is compacted.
+    .filter((part) => part.kind !== "assistant_thinking" || part.text.trim() !== "")
     .map((part) => {
       const annotations = [
         part.fallback ? "fallback" : undefined,
