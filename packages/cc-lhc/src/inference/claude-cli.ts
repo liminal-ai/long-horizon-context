@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 
 import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult } from "lhc";
 
@@ -106,7 +106,8 @@ export function killAllInferenceChildren(): void {
 export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
   const binary = deps.binary ?? resolveClaudeBin;
   const timeoutMs = deps.timeoutMs ?? parsePositiveInt(process.env.CC_LHC_INFERENCE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-  const maxConcurrency = deps.maxConcurrency ?? parsePositiveInt(process.env.CC_LHC_INFERENCE_CONCURRENCY, DEFAULT_CONCURRENCY);
+  const maxConcurrency =
+    deps.maxConcurrency ?? parsePositiveInt(process.env.CC_LHC_INFERENCE_CONCURRENCY, DEFAULT_CONCURRENCY);
   const spawnFn = deps.spawnFn ?? spawn;
   const limiter = deps.limiter ?? new ConcurrencyLimiter(maxConcurrency);
 
@@ -193,14 +194,22 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
       if (stdin !== null) {
         stdin.on("error", (cause) => {
           if (isEpipe(cause)) return;
-          finish({ ok: false, kind: "other", message: excerpt(cause instanceof Error ? cause.message : String(cause)) });
+          finish({
+            ok: false,
+            kind: "other",
+            message: excerpt(cause instanceof Error ? cause.message : String(cause)),
+          });
         });
         try {
           stdin.write(userBody);
           stdin.end();
         } catch (cause) {
           if (!isEpipe(cause)) {
-            finish({ ok: false, kind: "other", message: excerpt(cause instanceof Error ? cause.message : String(cause)) });
+            finish({
+              ok: false,
+              kind: "other",
+              message: excerpt(cause instanceof Error ? cause.message : String(cause)),
+            });
           }
         }
       }

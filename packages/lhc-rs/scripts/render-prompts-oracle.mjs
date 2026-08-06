@@ -6,7 +6,6 @@
  *   cd packages/lhc && pnpm exec tsx ../lhc-rs/scripts/render-prompts-oracle.mjs
  */
 import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { chunkBriefV1 } from "../../lhc/src/shared-tech/prompts/chunk-brief-v1.ts";
 import { chunkBriefV2 } from "../../lhc/src/shared-tech/prompts/chunk-brief-v2.ts";
 import { chunkBriefV3 } from "../../lhc/src/shared-tech/prompts/chunk-brief-v3.ts";

@@ -11,18 +11,18 @@ import {
   firstUserPrompt,
   formatSwapReceipt,
   parseRolloutEnvelopeFromContent,
-  runtimeNoteRolloutLine,
-  serializeRolloutLines,
   type RebuildRolloutInput,
   type RolloutEnvelope,
+  runtimeNoteRolloutLine,
+  serializeRolloutLines,
 } from "./rebuild.js";
 import {
   appendSessionsIndexEntry,
   loadSessionsIndexForAppend,
   projectPathFromIndex,
+  type RolloutWriteDeps,
   rolloutPathForSession,
   writeRolloutFileFsync,
-  type RolloutWriteDeps,
 } from "./sessions-index.js";
 
 export interface WriteRebuiltRolloutInput {

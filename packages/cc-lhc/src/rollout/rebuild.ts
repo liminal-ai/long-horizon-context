@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  SessionAssistantPart,
-  SessionThreadViewEntry,
-  SessionThreadViewMessage,
-} from "lhc";
+import type { SessionAssistantPart, SessionThreadViewEntry, SessionThreadViewMessage } from "lhc";
 
 import type { ContentBlock, RolloutLineItem } from "./types.js";
 
@@ -207,9 +203,7 @@ export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLin
     }
 
     if (entry.role === "assistant") {
-      const blocks = entry.content
-        .map(assistantPartBlock)
-        .filter((block): block is ContentBlock => block !== null);
+      const blocks = entry.content.map(assistantPartBlock).filter((block): block is ContentBlock => block !== null);
       if (blocks.length === 0) continue;
       // One API message across the entry: shared synthetic id, and the
       // native stop_reason ("tool_use" when the message issues tool calls).
@@ -287,9 +281,7 @@ export function parseRolloutEnvelopeFromContent(content: string, cwd: string): R
       if (partial.entrypoint !== undefined) envelope.entrypoint = partial.entrypoint;
       if (partial.dualSessionIdFields === true) envelope.dualSessionIdFields = true;
       if (partial.assistantModel !== undefined) envelope.assistantModel = partial.assistantModel;
-    } catch {
-      continue;
-    }
+    } catch {}
   }
   return envelope;
 }

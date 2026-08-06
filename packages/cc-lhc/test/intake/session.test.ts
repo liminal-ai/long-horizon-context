@@ -2,17 +2,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-
-import { describe, expect, it } from "vitest";
-
 import type { Lhc, ThreadRef } from "lhc";
-
+import { describe, expect, it } from "vitest";
+import { awaitDrainSettled, DRAIN_NOT_SETTLED_MESSAGE, startCaptureSession } from "../../src/intake/session.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
-import {
-  awaitDrainSettled,
-  DRAIN_NOT_SETTLED_MESSAGE,
-  startCaptureSession,
-} from "../../src/intake/session.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 
@@ -386,11 +379,10 @@ describe("awaitDrainSettled", () => {
   it("logs and proceeds when drainSettled does not resolve before cap", async () => {
     const errors: string[] = [];
     const threadRef = { threadId: "test-thread" } as ThreadRef;
-    await awaitDrainSettled(
-      { drainSettled: () => new Promise<void>(() => {}) } as unknown as Lhc,
-      threadRef,
-      { capMs: 20, logError: (message) => errors.push(message) },
-    );
+    await awaitDrainSettled({ drainSettled: () => new Promise<void>(() => {}) } as unknown as Lhc, threadRef, {
+      capMs: 20,
+      logError: (message) => errors.push(message),
+    });
     expect(errors).toContain(DRAIN_NOT_SETTLED_MESSAGE);
   });
 });

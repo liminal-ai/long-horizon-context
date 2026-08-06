@@ -157,12 +157,7 @@ const lines = cases.map(([name, input]) => {
   return JSON.stringify({ name, input, expected });
 });
 
-const out = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "fixtures",
-  "date-parse-cases.jsonl",
-);
+const out = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "date-parse-cases.jsonl");
 writeFileSync(out, lines.join("\n") + "\n");
 console.log(`wrote ${cases.length} cases to ${out}`);
 console.log(`node ${process.version}`);

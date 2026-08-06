@@ -1,6 +1,5 @@
-import { describe, expect, it } from "vitest";
-
 import type { MessageEventInput } from "lhc";
+import { describe, expect, it } from "vitest";
 
 import {
   createReplayDedupeState,

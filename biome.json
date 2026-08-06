@@ -19,7 +19,8 @@
       "!**/dist",
       "!**/node_modules",
       "!**/.turbo",
-      "!**/coverage"
+      "!**/coverage",
+      "!vendor"
     ]
   },
   "formatter": {

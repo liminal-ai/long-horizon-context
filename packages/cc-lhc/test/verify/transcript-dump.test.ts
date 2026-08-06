@@ -16,7 +16,12 @@ const toolHeavyEntries: SessionThreadViewEntry[] = [
     content: [
       { type: "thinking", thinking: "need ls" },
       { type: "text", text: "Listing now." },
-      { type: "toolCall", toolCallId: "toolu_01AB", toolName: "Bash", arguments: { command: "ls", description: "List" } },
+      {
+        type: "toolCall",
+        toolCallId: "toolu_01AB",
+        toolName: "Bash",
+        arguments: { command: "ls", description: "List" },
+      },
     ],
     sourceMessages: [],
   },

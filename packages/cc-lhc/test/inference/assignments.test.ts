@@ -1,6 +1,5 @@
-import { describe, expect, it } from "vitest";
-
 import { initLhc } from "lhc";
+import { describe, expect, it } from "vitest";
 
 import { ccAssignments, INFERENCE_ASSIGNMENT_KINDS } from "../../src/inference/assignments.js";
 import { createClaudeCliModelCall } from "../../src/inference/claude-cli.js";

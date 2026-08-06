@@ -62,10 +62,14 @@ const cases = [
   ["object_nested", '{"outer":{"inner":[1.0,{"deep":"v"}]},"tail":0.5}'],
   ["object_unicode_keys", '{"café":"x","日本":"y"}'],
   ["object_numeric_spellings", '{"a":1.0,"b":2,"c":0.25,"d":-0.0}'],
-  ["realistic_facts_bag",
-    '{"toolName":"bash","outcome":"failed","exitCode":127,"outputChars":58,"ratio":0.3,"pathMentions":["src/a.ts","b/c.js"]}'],
-  ["realistic_digest_input",
-    '{"text":"SENTINEL","inputTokens":2000,"targetMinTokens":160,"targetAimTokens":240,"targetMaxTokens":400}'],
+  [
+    "realistic_facts_bag",
+    '{"toolName":"bash","outcome":"failed","exitCode":127,"outputChars":58,"ratio":0.3,"pathMentions":["src/a.ts","b/c.js"]}',
+  ],
+  [
+    "realistic_digest_input",
+    '{"text":"SENTINEL","inputTokens":2000,"targetMinTokens":160,"targetAimTokens":240,"targetMaxTokens":400}',
+  ],
 ];
 
 const seen = new Set();

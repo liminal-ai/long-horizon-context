@@ -3,14 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
-import { watchRolloutFile, type RolloutWatcher } from "../../src/rollout/watcher.js";
 import type { WatcherEmission } from "../../src/rollout/types.js";
+import { type RolloutWatcher, watchRolloutFile } from "../../src/rollout/watcher.js";
 
-function collectBatches(
-  filePath: string,
-  pollMs = 50,
-): { batches: WatcherEmission[][]; watcher: RolloutWatcher } {
+function collectBatches(filePath: string, pollMs = 50): { batches: WatcherEmission[][]; watcher: RolloutWatcher } {
   const batches: WatcherEmission[][] = [];
   const watcher = watchRolloutFile(filePath, {
     pollMs,

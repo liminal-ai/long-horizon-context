@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 
 /** cc-lhc home directory (`~/.cc-lhc`, overridable via `CC_LHC_HOME` for tests). */
 export function ccLhcHome(): string {
@@ -23,7 +23,10 @@ export function defaultThreadFilePath(): string {
   return join(dir, `${randomUUID()}.sqlite`);
 }
 
-export function captureThreadRef(threadId: string, registryPath: string = defaultRegistryPath()): {
+export function captureThreadRef(
+  threadId: string,
+  registryPath: string = defaultRegistryPath(),
+): {
   threadId: string;
   registryPath: string;
 } {

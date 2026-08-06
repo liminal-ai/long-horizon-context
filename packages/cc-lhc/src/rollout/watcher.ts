@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, statSync, type FSWatcher, watch } from "node:fs";
+import { closeSync, type FSWatcher, openSync, readSync, statSync, watch } from "node:fs";
 
 import type { RolloutLineItem, WatcherEmission } from "./types.js";
 

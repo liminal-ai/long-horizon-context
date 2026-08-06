@@ -1,7 +1,7 @@
+import type { Dirent } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Dirent } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 

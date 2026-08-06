@@ -26,7 +26,8 @@ export interface LineageDbDeps {
   withDb?: (dbPath: string, run: (db: DatabaseSync) => void) => void;
 }
 
-const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn" | "readdirFn" | "statFn" | "accessFn">> & LineageDbDeps => ({
+const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn" | "readdirFn" | "statFn" | "accessFn">> &
+  LineageDbDeps => ({
   nowFn: () => new Date(),
   readdirFn: readdir,
   statFn: stat,
@@ -54,11 +55,7 @@ export function lineageReadFailureMessage(cause: unknown): string {
   return `[cc-lhc] lineage read failed (continuing): ${message}`;
 }
 
-function safeLineageRead<T>(
-  logError: (message: string) => void,
-  run: () => T,
-  fallback: T,
-): T {
+function safeLineageRead<T>(logError: (message: string) => void, run: () => T, fallback: T): T {
   try {
     return run();
   } catch (cause) {
@@ -181,12 +178,16 @@ export async function safeAppendThreadSignatures(
   }
 }
 
-export function lookupThreadForSession(dbPath: string, sessionId: string, deps: LineageDbDeps = {}): string | undefined {
+export function lookupThreadForSession(
+  dbPath: string,
+  sessionId: string,
+  deps: LineageDbDeps = {},
+): string | undefined {
   let threadId: string | undefined;
   withLineageDb(dbPath, deps, (db) => {
-    const row = db
-      .prepare("SELECT thread_id FROM cc_session_lineage WHERE rollout_session_id = ?")
-      .get(sessionId) as { thread_id: string } | undefined;
+    const row = db.prepare("SELECT thread_id FROM cc_session_lineage WHERE rollout_session_id = ?").get(sessionId) as
+      | { thread_id: string }
+      | undefined;
     threadId = row?.thread_id;
   });
   return threadId;

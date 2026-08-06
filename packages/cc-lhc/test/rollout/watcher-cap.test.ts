@@ -1,10 +1,10 @@
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { MAX_PARTIAL_BYTES, watchRolloutFile, type RolloutWatcher } from "../../src/rollout/watcher.js";
+import { MAX_PARTIAL_BYTES, type RolloutWatcher, watchRolloutFile } from "../../src/rollout/watcher.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

@@ -3,8 +3,7 @@ import { dirname, join } from "node:path";
 
 import { encodeProjectPath } from "./discover.js";
 
-export const SESSIONS_INDEX_UNREADABLE_MESSAGE =
-  "sessions-index.json unreadable; not touching it; session unchanged";
+export const SESSIONS_INDEX_UNREADABLE_MESSAGE = "sessions-index.json unreadable; not touching it; session unchanged";
 
 export interface SessionsIndexEntry {
   sessionId: string;
@@ -68,7 +67,11 @@ export function sessionsIndexTempPath(indexPath: string): string {
   return `${indexPath}.tmp.${String(process.pid)}.${String(Date.now())}.${String(sessionsIndexTempCounter)}`;
 }
 
-export async function writeRolloutFileFsync(filePath: string, content: string, deps: RolloutWriteDeps = {}): Promise<void> {
+export async function writeRolloutFileFsync(
+  filePath: string,
+  content: string,
+  deps: RolloutWriteDeps = {},
+): Promise<void> {
   const { mkdirFn, openFn } = { ...defaultDeps(), ...deps };
   await mkdirFn(dirname(filePath), { recursive: true });
   const handle = await openFn(filePath, "w");

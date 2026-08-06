@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { copyFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildRolloutLines,
   envelopeFromRolloutLine,
-  firstUserPrompt,
   parseRolloutEnvelopeFromContent,
   serializeRolloutLines,
 } from "../../src/rollout/rebuild.js";
@@ -151,9 +150,7 @@ describe("buildRolloutLines", () => {
 
   it("marks tool_result errors with is_error", () => {
     const lines = buildRolloutLines({
-      entries: [
-        { role: "toolResult", toolCallId: "tool-9", content: "boom", isError: true, sourceMessages: [] },
-      ],
+      entries: [{ role: "toolResult", toolCallId: "tool-9", content: "boom", isError: true, sourceMessages: [] }],
       newSessionId: "sid",
       envelope: { cwd: "/w" },
     });
@@ -170,7 +167,10 @@ describe("buildRolloutLines", () => {
       envelope: { cwd: "/w" },
     });
     const serialized = serializeRolloutLines(lines);
-    const parsed = serialized.trim().split("\n").map((line) => JSON.parse(line) as { type?: string });
+    const parsed = serialized
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string });
     expect(parsed).toHaveLength(1);
     expect(parsed[0]?.type).toBe("user");
   });
@@ -191,10 +191,7 @@ describe("parseRolloutEnvelopeFromContent", () => {
   });
 
   it("detects dual session id fields from a rollout line", () => {
-    const envelope = envelopeFromRolloutLine(
-      { type: "user", session_id: "abc", cwd: "/w" },
-      "/w",
-    );
+    const envelope = envelopeFromRolloutLine({ type: "user", session_id: "abc", cwd: "/w" }, "/w");
     expect(envelope.dualSessionIdFields).toBe(true);
   });
 });
@@ -325,7 +322,15 @@ describe("writeRebuiltRollout", () => {
     const lines = readFileSync(result.rolloutPath, "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { type?: string; uuid?: string; parentUuid?: string | null; message?: { content?: unknown } });
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type?: string;
+            uuid?: string;
+            parentUuid?: string | null;
+            message?: { content?: unknown };
+          },
+      );
     expect(lines).toHaveLength(5);
     const receipt = lines[4]!;
     expect(receipt.type).toBe("user");

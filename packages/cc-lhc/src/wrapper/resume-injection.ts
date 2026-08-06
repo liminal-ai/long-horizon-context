@@ -93,6 +93,7 @@ export function createTripwireScanner(phrase: string): TripwireScanner {
       switch (mode) {
         case "text":
           if (char === "\x1b") mode = "esc";
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strips raw PTY control bytes
           else if (!/[\s\x00-\x1f\x7f]/.test(char)) clean += char;
           break;
         case "esc":

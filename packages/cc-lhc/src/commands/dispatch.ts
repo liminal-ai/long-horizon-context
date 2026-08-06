@@ -107,9 +107,9 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
 }
 
 const HANDLERS: Record<string, CommandHandler> = {
-  "lhc-status": (line, runtime) => handleStatus(runtime),
-  "lhc-stats": (line, runtime) => Promise.resolve(handleStats(runtime)),
-  "lhc-help": (line, runtime) => Promise.resolve(handleHelp(runtime)),
+  "lhc-status": (_line, runtime) => handleStatus(runtime),
+  "lhc-stats": (_line, runtime) => Promise.resolve(handleStats(runtime)),
+  "lhc-help": (_line, runtime) => Promise.resolve(handleHelp(runtime)),
   "lhc-prune": runPruneCommand,
   "lhc-compact": runCompactCommand,
   "lhc-export": runExportCommand,

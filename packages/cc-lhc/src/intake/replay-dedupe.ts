@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 
 import type { MessageEventInput } from "lhc";
-
-import { mapRolloutLine } from "./map.js";
 import type { RolloutLineItem } from "../rollout/types.js";
+import { mapRolloutLine } from "./map.js";
 
 export const MAX_THREAD_SIGNATURES = 500;
 

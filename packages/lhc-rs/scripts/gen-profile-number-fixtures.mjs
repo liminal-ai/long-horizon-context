@@ -15,18 +15,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-} from "../../lhc/dist/index.js";
+import { createDeterministicInferenceCallbacks, initLhc } from "../../lhc/dist/index.js";
 import { view as inspectView } from "../../lhc/dist/inspect/index.js";
-import {
-  profileViolation,
-  resolveViewConfig,
-} from "../../lhc/dist/thread-view/internal/profiles.js";
+import { profileViolation, resolveViewConfig } from "../../lhc/dist/thread-view/internal/profiles.js";
 import { selectArrangement } from "../../lhc/dist/thread-view/internal/select.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,10 +38,8 @@ function add(name, kind, input, expected) {
 
 /** Load-bearing Amendment I selection inputs: every production budget share
  *  (full / smooth / detailed / brief) changes the asserted arrangement. */
-const SELECTION_SMOOTH =
-  "smooth alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha";
-const SELECTION_DETAILED =
-  "detailed beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta";
+const SELECTION_SMOOTH = "smooth alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha";
+const SELECTION_DETAILED = "detailed beta beta beta beta beta beta beta beta beta beta beta beta beta beta beta";
 const SELECTION_BRIEF = "brief gamma gamma gamma gamma gamma";
 
 const LOAD_BEARING_SELECTION = {
@@ -360,15 +352,11 @@ add(
   const result = selectArrangement(inputs, { lowerBound, percentages });
   const bands = new Set(result.entries.map((e) => e.band));
   if (result.entries.length < 6) {
-    throw new Error(
-      `selection load-bearing oracle too thin: entries.length=${result.entries.length}`,
-    );
+    throw new Error(`selection load-bearing oracle too thin: entries.length=${result.entries.length}`);
   }
   for (const need of ["brief", "detailed", "smooth"]) {
     if (!bands.has(need)) {
-      throw new Error(
-        `selection load-bearing oracle missing ${need} band subjects`,
-      );
+      throw new Error(`selection load-bearing oracle missing ${need} band subjects`);
     }
   }
   add(
@@ -516,10 +504,7 @@ try {
   }
   seedDb.close();
 
-  const compactResult = await sdk.threadView.compact(
-    { filePath },
-    { profile: "fractional" },
-  );
+  const compactResult = await sdk.threadView.compact({ filePath }, { profile: "fractional" });
   if (!compactResult.ok) throw new Error(compactResult.error.reason);
   const receipt = compactResult.value;
 
@@ -566,13 +551,8 @@ try {
   );
 
   const parsedSourceState = JSON.parse(rawSourceStateJson);
-  if (
-    !parsedSourceState.derivationCounts ||
-    Object.keys(parsedSourceState.derivationCounts).length < 2
-  ) {
-    throw new Error(
-      `nested source_state missing multi-type counts: ${rawSourceStateJson}`,
-    );
+  if (!parsedSourceState.derivationCounts || Object.keys(parsedSourceState.derivationCounts).length < 2) {
+    throw new Error(`nested source_state missing multi-type counts: ${rawSourceStateJson}`);
   }
   add(
     "source_state_nested_derivation_counts",
@@ -584,15 +564,10 @@ try {
   /** @param {number} lowerBound */
   async function storedConfigFromCompact(lowerBound) {
     const percentages = { full: 25, smooth: 25, detailed: 25, brief: 25 };
-    const result = await sdk.threadView.compact(
-      { filePath },
-      { params: { lowerBound, percentages } },
-    );
+    const result = await sdk.threadView.compact({ filePath }, { params: { lowerBound, percentages } });
     if (!result.ok) throw new Error(result.error.reason);
     const readDb = new DatabaseSync(filePath);
-    const configRow = readDb
-      .prepare("SELECT config_json FROM thread_view LIMIT 1")
-      .get();
+    const configRow = readDb.prepare("SELECT config_json FROM thread_view LIMIT 1").get();
     readDb.close();
     if (!configRow) throw new Error("compact wrote no thread_view row");
     return { percentages, configJson: configRow.config_json };
@@ -600,32 +575,17 @@ try {
 
   {
     const { percentages, configJson } = await storedConfigFromCompact(1e-6);
-    add(
-      "stored_config_small_exponent_leaves",
-      "stored_config_json",
-      { lowerBound: 1e-6, percentages },
-      configJson,
-    );
+    add("stored_config_small_exponent_leaves", "stored_config_json", { lowerBound: 1e-6, percentages }, configJson);
   }
   {
     const { percentages, configJson } = await storedConfigFromCompact(1e-7);
-    add(
-      "stored_config_below_1e_minus_6",
-      "stored_config_json",
-      { lowerBound: 1e-7, percentages },
-      configJson,
-    );
+    add("stored_config_below_1e_minus_6", "stored_config_json", { lowerBound: 1e-7, percentages }, configJson);
   }
   // Amendment I — valid positive lowerBound at Node's large-exponent boundary.
   // profileViolation(1e21) is null; compact → SQLite spells `1e+21`.
   {
     const { percentages, configJson } = await storedConfigFromCompact(1e21);
-    add(
-      "stored_config_large_exponent_1e21",
-      "stored_config_json",
-      { lowerBound: 1e21, percentages },
-      configJson,
-    );
+    add("stored_config_large_exponent_1e21", "stored_config_json", { lowerBound: 1e21, percentages }, configJson);
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

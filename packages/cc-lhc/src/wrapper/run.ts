@@ -1,9 +1,8 @@
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
-  dispatchLhcCommand,
   type DispatchOutcome,
-  formatCommandOutput,
+  dispatchLhcCommand,
   type LhcCommandRuntime,
   type SessionRestartPlan,
 } from "../commands/dispatch.js";
@@ -398,18 +397,17 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       const failureReceipt =
         result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan);
       if (dismissedForSwap) {
-        const idlePassthrough =
-          inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
+        const idlePassthrough = inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
         if (!idlePassthrough) {
           wrapperLog.warn(`swap failed after panel dismissal (user panel active): ${failureReceipt}`);
           return { swapped: false, receipts: [], failureSettled: true };
         }
         outputHold.hold();
         altScreen.enter();
-        inputState = showReceipts(
-          { ...createInputState(inputState.leaderByte), inPaste: inputState.inPaste },
-          [...outcomeMessages, failureReceipt],
-        );
+        inputState = showReceipts({ ...createInputState(inputState.leaderByte), inPaste: inputState.inPaste }, [
+          ...outcomeMessages,
+          failureReceipt,
+        ]);
         renderModalPanel();
         return { swapped: false, receipts: [], failurePanelShown: true };
       }
@@ -455,7 +453,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       const label = commandLine.replace(/^\/lhc-/, "");
       if (!commandGuard.tryAcquire(label, Date.now())) {
         const inFlight = commandGuard.current();
-        settleCommand([inFlight === null ? "busy — command in progress" : formatBusyMessage(inFlight, Date.now())], label);
+        settleCommand(
+          [inFlight === null ? "busy — command in progress" : formatBusyMessage(inFlight, Date.now())],
+          label,
+        );
         return;
       }
       startExecutingTicker();
@@ -474,9 +475,7 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       void dispatched
         .then(async (outcome) => {
           const resume =
-            outcome.restart === undefined
-              ? null
-              : await performResumeInjection(outcome.restart, outcome.messages);
+            outcome.restart === undefined ? null : await performResumeInjection(outcome.restart, outcome.messages);
           if (resume?.failurePanelShown === true || resume?.failureSettled === true) return;
           const receipts = settleReceipts(outcome.messages, resume);
           if (receipts === null) {

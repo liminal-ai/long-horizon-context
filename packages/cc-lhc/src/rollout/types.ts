@@ -37,12 +37,7 @@ export interface ConversationMessage {
   [key: string]: unknown;
 }
 
-export type RolloutLineType =
-  | "user"
-  | "assistant"
-  | "summary"
-  | "file-history-snapshot"
-  | string;
+export type RolloutLineType = "user" | "assistant" | "summary" | "file-history-snapshot" | string;
 
 export interface RolloutLineItem {
   type?: RolloutLineType;

@@ -1,9 +1,9 @@
-import { spawn as defaultSpawn } from "@lydell/node-pty";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { spawn as defaultSpawn } from "@lydell/node-pty";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionRestartPlan } from "../../src/commands/dispatch.js";
@@ -12,7 +12,13 @@ import * as statFile from "../../src/rollout/stat-file.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { DEFAULT_LEADER_BYTE } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN } from "../../src/wrapper/panel.js";
-import { onTerminalResize, OUTPUT_HOLD_OVERFLOW_MESSAGE, resizePty, run, type PtySpawn } from "../../src/wrapper/run.js";
+import {
+  OUTPUT_HOLD_OVERFLOW_MESSAGE,
+  onTerminalResize,
+  type PtySpawn,
+  resizePty,
+  run,
+} from "../../src/wrapper/run.js";
 import { createWrapperLog } from "../../src/wrapper/wrapper-log.js";
 
 const SWAP_PLAN: SessionRestartPlan = {
@@ -33,8 +39,7 @@ vi.mock("../../src/commands/dispatch.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/commands/dispatch.js")>();
   return {
     ...actual,
-    dispatchLhcCommand: (...args: Parameters<typeof actual.dispatchLhcCommand>) =>
-      runMocks.dispatchLhcCommand(...args),
+    dispatchLhcCommand: (...args: Parameters<typeof actual.dispatchLhcCommand>) => runMocks.dispatchLhcCommand(...args),
   };
 });
 
@@ -262,17 +267,14 @@ describe("run", () => {
       return proc;
     };
 
-    const runPromise = run(
-      ["-c", 'i=0; while true; do i=$((i+1)); echo "tick$i"; sleep 0.05; done'],
-      {
-        claudeBin: "bash",
-        stdin,
-        stdout,
-        spawnPty,
-        noInference: true,
-        resumeWindowMs: 5,
-      },
-    );
+    const runPromise = run(["-c", 'i=0; while true; do i=$((i+1)); echo "tick$i"; sleep 0.05; done'], {
+      claudeBin: "bash",
+      stdin,
+      stdout,
+      spawnPty,
+      noInference: true,
+      resumeWindowMs: 5,
+    });
 
     await sleep(150);
     await waitFor(() => output.some((chunk) => chunk.includes("tick2")), "child ticks to hold");
@@ -492,10 +494,7 @@ describe("run", () => {
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
     (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
 
-    await waitFor(
-      () => output.join("").includes("turn opened during rebuild"),
-      "turn-open refusal receipt",
-    );
+    await waitFor(() => output.join("").includes("turn opened during rebuild"), "turn-open refusal receipt");
     const joined = output.join("");
     expect(joined.split(LEAVE_ALT_SCREEN).length - 1).toBe(0);
 
@@ -664,7 +663,9 @@ describe("run", () => {
     expect(logText).toMatch(/\[warn\].*CC_LHC_LEADER/);
     expect(logText).toMatch(/\[info\].*cc-lhc-capture lines=/);
     expect(logText).toMatch(/\[warn\] capture diagnostic/);
-    expect(logText).toMatch(new RegExp(`\\[warn\\] ${OUTPUT_HOLD_OVERFLOW_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    expect(logText).toMatch(
+      new RegExp(`\\[warn\\] ${OUTPUT_HOLD_OVERFLOW_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
     expect(logText).toMatch(/command receipt \(modal dismissed early\)/);
     expect(logText).toMatch(/resuming in-place as/);
 

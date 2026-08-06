@@ -211,13 +211,7 @@ function add(name, kind, input, expectedObj, derivationType) {
 
 {
   const metadata = { outcome: "unknown" };
-  add(
-    "meta_tool_result_forced_or_small_tier",
-    "metadata",
-    { outcome: "unknown" },
-    metadata,
-    "tool_result_summary",
-  );
+  add("meta_tool_result_forced_or_small_tier", "metadata", { outcome: "unknown" }, metadata, "tool_result_summary");
 }
 
 {
@@ -262,13 +256,7 @@ function add(name, kind, input, expectedObj, derivationType) {
 
 // metadata-absent branches: expected empty object is not written; fixture
 // records the absent sentinel so the Rust helper path is not invoked.
-add(
-  "meta_absent_tiny_turn_or_deterministic",
-  "metadata_absent",
-  {},
-  null,
-  "detailed_turn_compression",
-);
+add("meta_absent_tiny_turn_or_deterministic", "metadata_absent", {}, null, "detailed_turn_compression");
 
 // ── Derivation / report public wire order ─────────────────────────
 
@@ -288,12 +276,7 @@ function buildDerivation(stateExtras) {
   return record;
 }
 
-add(
-  "deriv_pending",
-  "derivation",
-  { state: "pending" },
-  buildDerivation({ state: "pending" }),
-);
+add("deriv_pending", "derivation", { state: "pending" }, buildDerivation({ state: "pending" }));
 
 add(
   "deriv_failed",

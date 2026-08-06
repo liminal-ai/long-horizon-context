@@ -65,16 +65,15 @@ async function newestActiveJsonl(
 }
 
 /** Poll until a session JSONL for `cwd` appears or becomes active after `startedAt`. */
-export async function discoverSessionFile(
-  cwd: string,
-  startedAt: Date,
-  deps: DiscoverDeps = {},
-): Promise<string> {
+export async function discoverSessionFile(cwd: string, startedAt: Date, deps: DiscoverDeps = {}): Promise<string> {
   const projectsRoot = deps.projectsRoot ?? join(homedir(), ".claude", "projects");
   const projectDir = join(projectsRoot, encodeProjectPath(cwd));
   const startedAtMs = startedAt.getTime();
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
-  const readdirFn = deps.readdirFn ?? ((path: string) => readdir(path, { withFileTypes: true }) as Promise<Array<{ name: string; isFile: () => boolean }>>);
+  const readdirFn =
+    deps.readdirFn ??
+    ((path: string) =>
+      readdir(path, { withFileTypes: true }) as Promise<Array<{ name: string; isFile: () => boolean }>>);
   const statFn = deps.statFn ?? ((path: string) => stat(path));
   const sleep = deps.sleep ?? sleepDefault;
   const signal = deps.signal;
@@ -97,7 +96,10 @@ export async function findSessionFileOnce(
 ): Promise<string | null> {
   const projectsRoot = deps.projectsRoot ?? join(homedir(), ".claude", "projects");
   const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-  const readdirFn = deps.readdirFn ?? ((path: string) => readdir(path, { withFileTypes: true }) as Promise<Array<{ name: string; isFile: () => boolean }>>);
+  const readdirFn =
+    deps.readdirFn ??
+    ((path: string) =>
+      readdir(path, { withFileTypes: true }) as Promise<Array<{ name: string; isFile: () => boolean }>>);
   const statFn = deps.statFn ?? ((path: string) => stat(path));
   return newestActiveJsonl(projectDir, startedAt.getTime(), { readdirFn, statFn });
 }

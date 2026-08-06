@@ -4,11 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { idempotencyKey, mapRolloutLine, mapRolloutLines } from "../../src/intake/map.js";
-import {
-  createReplayDedupeState,
-  eventContentSignature,
-  filterReplayEvents,
-} from "../../src/intake/replay-dedupe.js";
+import { createReplayDedupeState, eventContentSignature, filterReplayEvents } from "../../src/intake/replay-dedupe.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
 const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "rollout-samples.jsonl");
