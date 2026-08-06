@@ -388,6 +388,7 @@ packages/pi-lhc/src/
 - `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
 - `docs/onboard/04-host-pi-lhc.md` — the PI connector host: capture, seeding, compact bridge, known debt
 - `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, leader-key modal, rollout capture, in-app resume flow
+- `docs/host-integrations.md` — all maintained hosts: the fork/patch process (codex, grok, hermes) and the non-fork patterns (pi extension, claude code wrapper)
 - `docs/decision-registry.md` — full decision registry (canonical authority)
 - `docs/fixes-feature-log.md` — running log of fixes, features, and open items
 
