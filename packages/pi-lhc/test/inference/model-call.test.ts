@@ -195,6 +195,36 @@ describe("Story 5: Inference Host Routing", () => {
       });
       expect(complete).not.toHaveBeenCalled();
     });
+
+    it("does not treat PI 0.84 null header deletion markers as request credentials", async () => {
+      const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
+      const ctx: ExtensionContext = {
+        cwd: "/test",
+        hasUI: false,
+        modelRegistry: {
+          find: () => mockHandle,
+          hasConfiguredAuth: () => true,
+          getApiKeyAndHeaders: async () => ({
+            ok: true as const,
+            headers: { Authorization: null },
+          }),
+          getAvailable: () => [mockHandle],
+        },
+        ui: { notify: () => {} },
+        sessionManager: { getEntries: () => [] },
+      };
+
+      const complete = vi.fn<PiAiComplete>();
+      const result = await createModelCall(ctx, { complete })(INPUT);
+
+      expect(result).toEqual({
+        ok: false,
+        kind: "auth",
+        message: "configured auth for openai-codex/gpt-5.4-mini did not resolve request credentials",
+      });
+      expect(complete).not.toHaveBeenCalled();
+    });
+
     it("passes thinking none to pi-ai as reasoningEffort none", async () => {
       const mockHandle: ModelHandle = { provider: "openai-codex", id: "gpt-5.4-mini" };
       const ctx: ExtensionContext = {

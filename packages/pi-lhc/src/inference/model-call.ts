@@ -36,7 +36,9 @@ function completeOptionsForThinking(thinking: ModelCallInput["thinking"]): Compl
 function hasUsableRequestAuth(auth: ModelRegistryAuthResolution | undefined): boolean {
   if (auth === undefined) return false;
   if (auth.apiKey !== undefined && auth.apiKey !== "") return true;
-  if (auth.headers !== undefined && Object.keys(auth.headers).length > 0) return true;
+  if (auth.headers !== undefined && Object.values(auth.headers).some((value) => value !== null && value !== "")) {
+    return true;
+  }
   return false;
 }
 
