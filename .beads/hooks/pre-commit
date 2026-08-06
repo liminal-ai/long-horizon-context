@@ -31,3 +31,20 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.1.2 ---
+
+# --- LHC workspace typecheck gate (long-horizon-context-erd) ---
+# SDK shape changes must not silently break hosts (cc-lhc derivation.retrying
+# precedent). Runs the workspace typecheck when any staged file touches a
+# package's TS surface. Skip explicitly with LHC_SKIP_TYPECHECK=1.
+if [ "${LHC_SKIP_TYPECHECK:-0}" != "1" ]; then
+  if git diff --cached --name-only | grep -qE '^packages/.*\.(ts|tsx|json)$'; then
+    echo "lhc: workspace typecheck (LHC_SKIP_TYPECHECK=1 to skip)..."
+    if ! pnpm run --silent typecheck >/tmp/lhc-typecheck.log 2>&1; then
+      echo >&2 "lhc: workspace typecheck FAILED — commit blocked. Log: /tmp/lhc-typecheck.log"
+      tail -20 /tmp/lhc-typecheck.log >&2
+      exit 1
+    fi
+    echo "lhc: typecheck ok"
+  fi
+fi
+# --- END LHC typecheck gate ---

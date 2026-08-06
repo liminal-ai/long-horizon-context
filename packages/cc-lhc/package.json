@@ -2,7 +2,7 @@
   "name": "cc-lhc",
   "version": "0.0.0",
   "private": true,
-  "description": "Claude Code ↔ LHC CLI wrapper (PTY passthrough).",
+  "description": "Claude Code \u2194 LHC CLI wrapper (PTY passthrough).",
   "type": "module",
   "bin": {
     "cc-lhc": "./dist/bin.js"
@@ -16,7 +16,8 @@
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "test:all": "pnpm run test"
+    "test:all": "pnpm run test",
+    "verify": "pnpm run typecheck && pnpm run test"
   },
   "engines": {
     "node": ">=24.17.0"
