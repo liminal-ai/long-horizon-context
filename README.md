@@ -25,7 +25,7 @@ All state is persisted to a per-thread SQLite file (WAL mode, `node:sqlite`). Th
 
 A PI extension that hooks into PI's session lifecycle. It captures PI events into an LHC thread, intercepts PI's compaction requests to run LHC smart compact instead, and seeds PI sessions from LHC thread views so agents start with full context history. It also provides the `pi-lhc` binary for launcher-owned startup.
 
-`pi-lhc` depends on `lhc` (workspace dependency) and on PI's packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`) via `file:` references into `vendor/pi`. pnpm overrides in `pnpm-workspace.yaml` force the transitive `pi-ai`/`pi-agent-core`/`pi-tui` deps to the vendored packages as well — without them, pnpm resolves those from the npm registry and the vendored patch never reaches the runtime.
+`pi-lhc` depends on `lhc` (workspace dependency) and on PI's packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`) via `file:` references into `vendor/pi`. pnpm overrides in `pnpm-workspace.yaml` force the transitive `pi-ai`/`pi-agent-core`/`pi-tui`/`pi-protocol`/`pi-client` deps to the vendored packages as well — without them, pnpm resolves those from the npm registry (or fails on unpublished ones) and the vendored submodule build never reaches the runtime.
 
 #### Slash commands
 
@@ -237,18 +237,18 @@ The submodule build comes first — `pi-lhc` links against `vendor/pi`'s built `
 
 ### Vendored PI (submodule)
 
-`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA — which may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. There are currently **no local patches** (the previous thinking-signature patch was retired when upstream merged #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
+`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA (currently v0.83.x). The pin may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. The pin is **stock upstream** — there are currently no local patches (the previous thinking-signature fix landed upstream as #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
 
-Syncing with upstream (done in a separate working clone, then the pin bumped here):
+Syncing with upstream (fetch in the submodule, then bump the pin here):
 
 ```bash
-git fetch upstream
-git checkout main && git merge --ff-only upstream/main && git push origin main
-git checkout patches && git rebase main
-# build + test, then:
-git push origin patches --force-with-lease
-# in this repo: cd vendor/pi && git fetch && git checkout origin/patches,
-# then commit the pin bump
+cd vendor/pi
+git fetch origin
+git checkout origin/main   # or a specific SHA after validating
+npm ci && npm run build
+cd ../..
+pnpm install
+# rebuild + verify pi-lhc, then commit the submodule pin bump in the outer repo
 ```
 
 Note: PI's build regenerates model-catalog files inside the submodule; if `git status` shows `vendor/pi` dirty after a build, that's what it is and it's discardable.

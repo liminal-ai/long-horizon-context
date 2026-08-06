@@ -43,7 +43,7 @@ The order is mandatory on a clean clone: pnpm snapshots the local `file:` PI pac
 
 Do not run the root `pnpm build` unless you want every package — the filtered builds above are enough.
 
-**Workspace overrides gotcha:** root `pnpm-workspace.yaml` forces transitive `pi-ai` / `pi-agent-core` / `pi-tui` deps to the vendored packages under `vendor/pi`. Without those overrides, pnpm resolves those packages from the npm registry and the vendored patch never reaches the runtime. Do not remove them.
+**Workspace overrides gotcha:** root `pnpm-workspace.yaml` forces transitive `pi-ai` / `pi-agent-core` / `pi-tui` / `pi-protocol` / `pi-client` deps to the vendored packages under `vendor/pi`. Without those overrides, pnpm resolves those packages from the npm registry — or fails outright on ones not published there (`pi-protocol`) — and the vendored submodule build never reaches the runtime (version drift from the pin). Do not remove them.
 
 **Expected dirt after PI's build:** PI regenerates model-catalog files inside the submodule. If `git status` shows `vendor/pi` dirty after `npm run build`, that is expected and discardable.
 
@@ -135,7 +135,7 @@ Or run interactive `pi-lhc`, exchange a message, and exit normally.
 ## What to watch on a new machine
 
 - **Vendored PI dirt:** after every submodule rebuild, model-catalog regen may dirty `vendor/pi` — discardable; do not commit it casually.
-- **Overrides:** if installs suddenly miss the thinking-signature patch or other vendor fixes, check that `pnpm-workspace.yaml` still pins `pi-ai` / `pi-agent-core` / `pi-tui` to `vendor/pi`.
+- **Overrides:** if installs suddenly resolve registry copies of `pi-ai` / `pi-agent-core` / `pi-tui` / `pi-protocol` / `pi-client` instead of the vendored pin (or 404 on `pi-protocol`), check that `pnpm-workspace.yaml` still overrides those packages to `vendor/pi`.
 - **Home isolation:** plain `pi` writes `~/.pi`; pi-lhc writes `~/.pi-lhc`. Mixing them is a common first-day confusion when auth "disappears."
 - **Backup rail:** without step 7 (and a git remote in the home), there is no automatic snapshot path for a fresh install.
 

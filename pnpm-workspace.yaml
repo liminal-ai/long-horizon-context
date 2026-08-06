@@ -14,3 +14,5 @@ overrides:
   "@earendil-works/pi-ai": "file:./vendor/pi/packages/ai"
   "@earendil-works/pi-agent-core": "file:./vendor/pi/packages/agent"
   "@earendil-works/pi-tui": "file:./vendor/pi/packages/tui"
+  "@earendil-works/pi-protocol": "file:./vendor/pi/packages/protocol"
+  "@earendil-works/pi-client": "file:./vendor/pi/packages/client"
