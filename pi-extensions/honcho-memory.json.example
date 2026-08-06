@@ -1,0 +1,13 @@
+{
+	"workspace": "long-horizon-context",
+	"peerName": "lee",
+	"aiPeer": "pi",
+	"recallMode": "hybrid",
+	"sessionStrategy": "per-repo",
+	"contextCadence": 2,
+	"dialecticCadence": 3,
+	"dialecticReasoningLevel": "low",
+	"dialecticMaxChars": 600,
+	"contextTokens": 2000,
+	"saveMessages": true
+}
