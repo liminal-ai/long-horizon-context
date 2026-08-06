@@ -7,6 +7,7 @@ import type { EventKind, MessageEventInput } from "lhc";
 import type {
   AgentEndEvent,
   AgentMessage,
+  AgentSettledEvent,
   AssistantMessage,
   ContentPart,
   MessageEndEvent,
@@ -169,6 +170,10 @@ export function makeMessageEnd(message: AgentMessage, _entryId?: string, _positi
 
 export function makeAgentEnd(messages: AgentMessage[]): AgentEndEvent {
   return { type: "agent_end", messages };
+}
+
+export function makeAgentSettled(): AgentSettledEvent {
+  return { type: "agent_settled" };
 }
 
 export function makeModelSelect(

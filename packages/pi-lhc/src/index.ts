@@ -62,6 +62,7 @@ import type {
   PiHookHandler,
   PiHookName,
   PiVoidHookHandler,
+  PiVoidHookName,
   ReplacedSessionContext,
   SessionEntry,
 } from "./pi/types.js";
@@ -157,6 +158,10 @@ export const EPIC_1_HOOKS = [
 /** Compact hooks for LHC smart compact (Story 1). */
 export const COMPACT_HOOKS = ["session_before_compact", "session_compact"] as const satisfies readonly PiHookName[];
 
+/** Trigger hooks: the per-model auto-compact trigger runs at agent_settled —
+ *  the boundary after PI's own retry/compaction machinery has finished. */
+export const TRIGGER_HOOKS = ["agent_settled"] as const satisfies readonly PiHookName[];
+
 /** Guard hooks: registered to protect the linear LHC record, not to capture. */
 export const GUARD_HOOKS = ["session_before_tree"] as const satisfies readonly PiHookName[];
 
@@ -165,6 +170,7 @@ export const CONNECTOR_HOOKS = [
   ...EPIC_1_HOOKS,
   ...COMPACT_HOOKS,
   ...GUARD_HOOKS,
+  ...TRIGGER_HOOKS,
 ] as const satisfies readonly PiHookName[];
 
 export type CompactHook = (typeof COMPACT_HOOKS)[number];
@@ -229,6 +235,9 @@ export interface Connector {
     session_before_compact: PiHookHandler<"session_before_compact">;
     session_compact: PiVoidHookHandler<"session_compact">;
   }>;
+  /** The agent_settled handler (auto-compact trigger boundary) — exposed so
+   *  tests can drive it with synthetic ctx/events without a live PI. */
+  readonly settledHandler: PiVoidHookHandler<"agent_settled">;
   /** Compact cancel diagnostics accumulated this PI session; cleared on session boundary and successful `session_compact`. */
   getCompactDiagnostics(): readonly CompactDiagnostic[];
   /** Most recent compact cancel diagnostic, if any. */
@@ -377,6 +386,11 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // (e.g. capture_incomplete) every turn at the same context size.
   let autoCompactInFlight = false;
   let autoCompactLastAttemptTokens: number | null = null;
+  // Set by session_compact (any reason, any initiator). Skips exactly one
+  // trigger evaluation: right after a compaction, ctx.getContextUsage() can
+  // still report stale pre-compact usage (PI guards the same staleness
+  // internally), and triggering on it would immediately re-compact.
+  let compactedSinceSettleCheck = false;
   // Production defaults resolve under ~/.pi-lhc (or PI_LHC_HOME). Tests inject
   // temp registry/thread paths via deps so optional registryPath plumbing stays.
   const registryPath = deps.registryPath ?? defaultRegistryPath();
@@ -424,6 +438,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     compactDiagnostics.clear();
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
+    compactedSinceSettleCheck = false;
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       lastDiagnostic = diag("instance_not_configured", config.error.reason);
@@ -884,13 +899,12 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
       }
     }
-    maybeTriggerAutoCompact(ctx);
   };
 
   // Contain every handler: an observe-only hook must never throw back into PI
   // (a thrown hook breaks the user's session). A caught error becomes a
   // plain-data diagnostic; it is never rethrown.
-  const guard = (name: Epic1Hook, body: PiVoidHookHandler<Epic1Hook>): PiVoidHookHandler<Epic1Hook> => {
+  const guard = <N extends PiVoidHookName>(name: N, body: PiVoidHookHandler<N>): PiVoidHookHandler<N> => {
     return async (event, ctx): Promise<void> => {
       try {
         await body(event, ctx);
@@ -904,18 +918,28 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     };
   };
 
-  // Per-model auto-compact trigger. Runs at agent_end ONLY — never per model
-  // turn: ctx.compact() routes through PI's MANUAL compact path, which aborts
-  // any in-flight agent run first. Between runs the abort is a no-op, and the full
+  // Per-model auto-compact trigger. Runs at agent_settled ONLY — after PI's
+  // own post-run machinery (auto-retry, native threshold/overflow compaction,
+  // queued continuations) has finished. Any earlier boundary races that
+  // machinery: at agent_end PI's own compaction check has not run yet, so both
+  // sides compact and the loser errors with "Already compacted" — and
+  // ctx.compact() routes through PI's MANUAL compact path, which aborts any
+  // in-flight run first. At agent_settled the abort is a no-op, and the full
   // session_before_compact preflight (capture gate, mapping) still runs.
   // Mid-run growth stays covered by PI's native machinery: its own threshold
   // check (contextWindow − reserve) and overflow recovery are loop-integrated
   // and safe to fire between model turns.
   const maybeTriggerAutoCompact = (ctx: ExtensionContext): void => {
+    // A compaction (any initiator) landed since the last check — usage may be
+    // stale pre-compact numbers. Skip once; the next settle re-evaluates.
+    if (compactedSinceSettleCheck) {
+      compactedSinceSettleCheck = false;
+      return;
+    }
     if (state === null || instance === null) return;
     if (ctx.compact === undefined) return;
     // Queued follow-ups start a new run immediately; compacting now would race
-    // it. The next agent_end re-checks.
+    // it. The next agent_settled re-checks.
     if (ctx.hasPendingMessages?.() === true) return;
     const settings = resolveModelCompactSettings(ctx.model?.id, modelCompactSettings);
     const usage = ctx.getContextUsage?.();
@@ -1022,6 +1046,13 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     compactDiagnostics.clear();
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
+    compactedSinceSettleCheck = true;
+  };
+
+  // agent_settled is the trigger boundary — see maybeTriggerAutoCompact for
+  // why no earlier hook is safe.
+  const onAgentSettled: PiVoidHookHandler<"agent_settled"> = (_event, ctx) => {
+    maybeTriggerAutoCompact(ctx);
   };
 
   // /tree navigation switches the PI session's active branch. The LHC record
@@ -1063,6 +1094,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   const handlers = {} as Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>;
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
+  const settledHandler = guard("agent_settled", onAgentSettled);
 
   const onRehydrate: PiCommandHandler = async (_args, ctx) => {
     if (state === null) {
@@ -1138,6 +1170,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   return {
     handlers,
     compactHandlers,
+    settledHandler,
     treeHandler: onBeforeTree,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
@@ -1168,6 +1201,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           }),
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
+      pi.on("agent_settled", settledHandler);
       for (const name of COMPACT_HOOKS) {
         if (name === "session_before_compact") {
           pi.on(name, compactHandlers.session_before_compact);

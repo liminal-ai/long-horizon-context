@@ -18,7 +18,12 @@ describe("resolveModelCompactSettings", () => {
     });
     expect(resolveModelCompactSettings("GLM-5.2")).toMatchObject({ triggerTokens: 350_000, lowerBound: 140_000 });
     expect(resolveModelCompactSettings("grok-4.5")).toMatchObject({ triggerTokens: 300_000, lowerBound: 100_000 });
-    expect(resolveModelCompactSettings("gpt-5.6-sol")).toMatchObject({ triggerTokens: 255_000, lowerBound: 120_000 });
+    // sol ships without a connector trigger: PI's native threshold
+    // (272k − 16,384 ≈ 255.6k) already sits at the intended trigger point,
+    // and a connector trigger at the same point double-fires and races it.
+    const sol = resolveModelCompactSettings("gpt-5.6-sol");
+    expect(sol.triggerTokens).toBeUndefined();
+    expect(sol.lowerBound).toBe(120_000);
   });
 
   it("falls back to the default profile with no trigger for unmatched or missing models", () => {

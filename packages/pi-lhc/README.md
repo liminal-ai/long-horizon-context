@@ -91,13 +91,14 @@ PI calls `activate(pi)`, which creates a connector and registers:
 | `message_end` | Queue the PI message for deferred capture (PI entry id not yet available) | void |
 | `turn_end` | No-op. PI's per-step turn_end is explicitly ignored as an LHC boundary. | void |
 | `agent_end` | Flush pending messages, emit `turn_end` to close the LHC turn | void |
+| `agent_settled` | Evaluate the per-model auto-compact trigger — after PI's own retry/compaction machinery has finished | void |
 | `model_select` | Flush pending, capture a `model_change` event | void |
 | `thinking_level_select` | Flush pending, capture a `thinking_level_change` event | void |
 | `session_before_fork` | Flush pending, record the fork point (source thread + entry id) for the next `session_start` | void |
 | `session_before_switch` | Flush pending, dispose instance (await drain settled) | void |
 | `session_shutdown` | Flush pending, dispose instance (skip settle on headless quit) | void |
 | `session_before_compact` | Run LHC smart compact preflight chain, return compaction result or cancel | `SessionBeforeCompactResult` |
-| `session_compact` | Clear compact diagnostics buffer | void |
+| `session_compact` | Clear compact diagnostics buffer; arm a one-settle skip of the auto-compact trigger (post-compact usage can be stale) | void |
 
 Every Epic 1 hook is wrapped in a `guard` that catches all exceptions and converts them to a plain-data diagnostic. **No throw ever reaches PI.**
 

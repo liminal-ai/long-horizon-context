@@ -14,6 +14,7 @@ export type PiHookName =
   | "message_end"
   | "turn_end"
   | "agent_end"
+  | "agent_settled"
   | "model_select"
   | "thinking_level_select"
   | "session_before_fork"
@@ -48,6 +49,12 @@ export interface TurnEndEvent {
 export interface AgentEndEvent {
   type: "agent_end";
   messages: AgentMessage[];
+}
+/** Fired after an agent run has fully settled: PI's own retry, native
+ *  threshold/overflow compaction, and queued continuations have all run.
+ *  The safe boundary for connector-initiated compaction. */
+export interface AgentSettledEvent {
+  type: "agent_settled";
 }
 export interface ModelSelectEvent {
   type: "model_select";
@@ -155,6 +162,7 @@ export interface PiHookEventMap {
   message_end: MessageEndEvent;
   turn_end: TurnEndEvent;
   agent_end: AgentEndEvent;
+  agent_settled: AgentSettledEvent;
   model_select: ModelSelectEvent;
   thinking_level_select: ThinkingLevelSelectEvent;
   session_before_fork: SessionBeforeForkEvent;
