@@ -1,5 +1,13 @@
 # Agent instructions
 
+## Issue tracking
+
+This project uses bd (beads) for issue tracking — all LHC-related work (SDK, ports, hosts) is tracked here, not in markdown TODO lists.
+
+- Run `bd prime` for workflow context and command guidance.
+- Use `bd ready`, `bd show <id>`, `bd update <id> --claim`, and `bd close <id>`.
+- The Dolt database is machine-local; `.beads/issues.jsonl` is the git-visible auto-export.
+
 ## Persistent memory
 
 You have a persistent file-based memory at `memory/` in this repo. It works exactly like the Claude Code memory system you are trained on, relocated here because this harness does not provide one.
