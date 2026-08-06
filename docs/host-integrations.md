@@ -69,6 +69,28 @@ Per-fork SOPs: `/srv/work/codex/FORK.md`, `/srv/work/grok-build/FORK.md`,
 sync drill, recovery drill, and sync record; those files are canonical for
 their fork.
 
+## Quick status assessment (start here when returning cold)
+
+How far behind is each fork, and is anything stranded locally:
+
+```bash
+for d in /srv/work/codex /srv/work/grok-build /srv/work/hermes-agent; do
+  git -C $d fetch upstream -q
+  echo "$d: behind=$(git -C $d rev-list --count HEAD..upstream/main) \
+       unpushed=$(git -C $d log --oneline @{u}.. | wc -l) \
+       dirty=$(git -C $d status --porcelain | wc -l)"
+done
+cd /srv/work/long-horizon-context/vendor/pi && git fetch origin -q && \
+  echo "vendor/pi: behind=$(git rev-list --count HEAD..origin/main)"
+```
+
+Then: if a fork needs a sync, open its `FORK.md` and execute its **Sync
+drill** section verbatim — do not improvise the steps from memory; the drills
+encode failure modes already paid for (BASE advancement, expected conflicts,
+test invocation quirks, the smoke procedures). After any `lhc-rs`/`lhc-py`
+change, the vendored pins in the Rust forks are bumped as part of a sync,
+never casually.
+
 ## codex (native fork)
 
 Adapter crate `codex-rs/lhc/codex-lhc-host` plus vendored `lhc-rs` submodule
