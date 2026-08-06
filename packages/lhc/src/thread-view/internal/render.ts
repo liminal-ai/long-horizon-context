@@ -105,8 +105,11 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): Asse
 // signature. An empty-text, unsigned block carries nothing a model can use,
 // and the two serving exits rendered it divergently (standalone [thinking]
 // husk vs empty adjacent part). Skip such rows at serve time only — capture
-// and derivations keep them. Signed blocks are served once signature capture
-// lands; the predicate already honors them.
+// and derivations keep them.
+//
+// Signed empty-text blocks ARE useful on the session-view (PI resume) path,
+// where thinkingSignature can be round-tripped to the provider. They are NOT
+// useful on the text LLM-request path, which can only emit [thinking] fences.
 export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   if (message.kind !== "assistant_thinking") return false;
   const content = message.blocks[0]?.content ?? {};
@@ -115,6 +118,13 @@ export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   const signature = content["signature"] ?? content["thinkingSignature"];
   const hasSignature = typeof signature === "string" && signature !== "";
   return !hasText && !hasSignature;
+}
+
+/** True when thinking has non-empty text (the only form the text LLM path can render). */
+export function hasThinkingText(message: TailMessageRow): boolean {
+  if (message.kind !== "assistant_thinking") return false;
+  const text = message.blocks[0]?.content?.["text"];
+  return typeof text === "string" && text.trim() !== "";
 }
 
 // One tail message → one assembled message per the mapping table. Each kind is its

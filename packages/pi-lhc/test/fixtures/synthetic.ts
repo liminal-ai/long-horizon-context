@@ -97,6 +97,8 @@ export interface AssistantToolCall {
 
 export interface MakeAssistantMessageOpts {
   thinking?: string;
+  /** Opaque provider token on the thinking part (PI thinkingSignature). */
+  thinkingSignature?: string;
   text?: string;
   toolCalls?: AssistantToolCall[];
   stopReason?: PiStopReason;
@@ -113,7 +115,14 @@ export interface MakeAssistantMessageOpts {
  *  stopReason, provider, model, usage) so typed tests match the real wire. */
 export function makeAssistantMessage(opts: MakeAssistantMessageOpts = {}): AssistantMessage {
   const content: ContentPart[] = [];
-  if (opts.thinking !== undefined) content.push({ type: "thinking", thinking: opts.thinking });
+  if (opts.thinking !== undefined || opts.thinkingSignature !== undefined) {
+    const thinking: Extract<ContentPart, { type: "thinking" }> = {
+      type: "thinking",
+      thinking: opts.thinking ?? "",
+    };
+    if (opts.thinkingSignature !== undefined) thinking.thinkingSignature = opts.thinkingSignature;
+    content.push(thinking);
+  }
   if (opts.text !== undefined) content.push({ type: "text", text: opts.text });
   for (const call of opts.toolCalls ?? []) {
     content.push({ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments ?? {} });

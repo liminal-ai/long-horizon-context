@@ -27,10 +27,18 @@ export type AssistantTextPayload = {
   providerUsage?: Record<string, unknown>;
 };
 
+// Optional signature is an opaque provider token (Anthropic encrypted
+// thinking, OpenAI reasoning item id, etc.). LHC stores and returns it
+// verbatim — no interpretation (same posture as providerUsage).
+export type AssistantThinkingPayload = {
+  text: string;
+  signature?: string;
+};
+
 export type MessageEventInput =
   | BaseEvent<"user_prompt", { text: string }>
   | BaseEvent<"assistant_text", AssistantTextPayload>
-  | BaseEvent<"assistant_thinking", { text: string }>
+  | BaseEvent<"assistant_thinking", AssistantThinkingPayload>
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>

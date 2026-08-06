@@ -72,6 +72,17 @@ function thinkingOf(parts: ContentPart[]): string {
     .join("");
 }
 
+/** First non-empty provider thinking token. Multiple signed thinking parts are
+ *  rare (Anthropic sends one); first-wins keeps the opaque token intact. */
+function thinkingSignatureOf(parts: ContentPart[]): string | undefined {
+  for (const part of parts) {
+    if (part.type !== "thinking") continue;
+    const signature = part.thinkingSignature;
+    if (typeof signature === "string" && signature !== "") return signature;
+  }
+  return undefined;
+}
+
 function unsupportedOf(parts: ContentPart[]): Array<ImagePart | FileRefPart> {
   return parts.filter((p): p is ImagePart | FileRefPart => p.type === "image" || p.type === "fileRef");
 }
@@ -124,7 +135,17 @@ function textEvent(
   text: string,
   actor: string,
   key: string,
+  extra: { signature?: string } = {},
 ): MessageEventInput {
+  if (kind === "assistant_thinking" && extra.signature !== undefined) {
+    return {
+      eventKind: "assistant_thinking",
+      idempotencyKey: key,
+      actor,
+      harness: HARNESS,
+      payload: { text, signature: extra.signature },
+    };
+  }
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
 }
 
@@ -213,14 +234,22 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   const parts = partsOf(msg);
   let block = 0;
   // PI's confirmed part order: thinking → text → tool calls (research §5a).
+  // Capture thinking when any thinking part exists — including empty text with
+  // a thinkingSignature (fable/Anthropic omitted-display). Signature is stored
+  // opaquely so resume can round-trip it to the provider.
   if (parts.some((p) => p.type === "thinking")) {
     const text = thinkingOf(parts);
+    const signature = thinkingSignatureOf(parts);
     events.push(
       textEvent(
         "assistant_thinking",
         text,
         "assistant",
-        buildKey(ctx, "assistant", "assistant_thinking", block, { responseId, content: text }),
+        buildKey(ctx, "assistant", "assistant_thinking", block, {
+          responseId,
+          content: signature !== undefined ? `${text}\0${signature}` : text,
+        }),
+        signature !== undefined ? { signature } : {},
       ),
     );
     block += 1;

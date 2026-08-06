@@ -15,9 +15,12 @@ Stable daily driver — this is the harness LHC is developed inside:
 
 Known open items:
 
-- **Thinking-signature capture**: the record stores thinking text but not `thinkingSignature`, so a resumed session rebuilds history without prior signed thinking blocks — a one-time cache miss on resume for Claude lanes now that PI preserves them live. Fix queued.
-- **Token accounting understates real context**: image payloads and empty-text thinking are represented cheaply in the record, so thread token totals sit below what the live session actually costs.
+- **Token accounting understates real context for some payloads**: image payloads are still represented cheaply in the record. Thinking signatures are now captured and counted when present (fable/Anthropic resume path).
 - **Tool-result summaries are truncation-only** (`FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true`); inference-backed summaries are wired but gated off.
+
+Recently closed:
+
+- **Thinking-signature capture**: PI `thinkingSignature` is stored opaquely on `assistant_thinking.payload.signature` and round-tripped on session-view resume as `thinkingSignature`. Empty unsigned thinking husks are skipped at serve time (`bu9`).
 
 ## Launcher
 

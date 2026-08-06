@@ -33,10 +33,20 @@ function bandUserMessage(band: Band, renderedText: string): SessionThreadViewEnt
   return { role: "user", content: `[context · ${band}]\n${renderedText}`, sourceMessages: [] };
 }
 
+function thinkingSignatureOf(message: TailMessageRow): string | undefined {
+  const content = blockContent(message);
+  const signature = content["signature"] ?? content["thinkingSignature"];
+  return typeof signature === "string" && signature !== "" ? signature : undefined;
+}
+
 function assistantPartOf(message: TailMessageRow): SessionAssistantPart {
   switch (message.kind) {
-    case "assistant_thinking":
-      return { type: "thinking", thinking: textOf(message) };
+    case "assistant_thinking": {
+      const part: SessionAssistantPart = { type: "thinking", thinking: textOf(message) };
+      const signature = thinkingSignatureOf(message);
+      if (signature !== undefined) part.thinkingSignature = signature;
+      return part;
+    }
     case "assistant_text":
       return { type: "text", text: textOf(message) };
     case "tool_call": {

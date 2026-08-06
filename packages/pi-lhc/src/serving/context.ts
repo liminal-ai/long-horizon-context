@@ -40,7 +40,14 @@ function mapMessageToPiSession(message: SessionThreadViewMessage, timestamp: num
     role: "assistant",
     content: message.content.map((part) => {
       if (part.type === "thinking") {
-        return { type: "thinking" as const, thinking: part.thinking ?? "" };
+        const thinking: { type: "thinking"; thinking: string; thinkingSignature?: string } = {
+          type: "thinking",
+          thinking: part.thinking ?? "",
+        };
+        if (part.thinkingSignature !== undefined && part.thinkingSignature !== "") {
+          thinking.thinkingSignature = part.thinkingSignature;
+        }
+        return thinking;
       }
       if (part.type === "toolCall") {
         return {

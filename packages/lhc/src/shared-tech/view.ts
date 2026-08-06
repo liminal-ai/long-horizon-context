@@ -75,6 +75,8 @@ export interface SessionAssistantPart {
   type: "text" | "thinking" | "toolCall";
   text?: string;
   thinking?: string;
+  /** Opaque provider thinking token (PI `thinkingSignature`). Round-tripped only. */
+  thinkingSignature?: string;
   toolCallId?: string;
   toolName?: string;
   arguments?: Record<string, unknown>;

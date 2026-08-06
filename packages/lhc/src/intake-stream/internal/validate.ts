@@ -55,6 +55,13 @@ const AssistantTextPayloadSchema = Schema.Struct({
   text: Schema.String,
   providerUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
 });
+// signature is optional opaque provider bytes/token; empty string allowed only
+// via omission — if present it must be a string (may be empty; hosts should
+// omit rather than send "").
+const AssistantThinkingPayloadSchema = Schema.Struct({
+  text: Schema.String,
+  signature: Schema.optional(Schema.String),
+});
 const TurnEndPayloadSchema = Schema.Struct({
   outcome: Schema.optional(Schema.Literal("completed", "aborted")),
   outcomeReason: Schema.optional(Schema.String),
@@ -167,6 +174,9 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
       break;
     case "assistant_text":
       issue = decodeIssue(AssistantTextPayloadSchema, payload);
+      break;
+    case "assistant_thinking":
+      issue = decodeIssue(AssistantThinkingPayloadSchema, payload);
       break;
     case "tool_call":
       issue = decodeIssue(ToolCallPayloadSchema, payload);

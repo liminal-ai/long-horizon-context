@@ -1,6 +1,7 @@
 import { readBoundaryPosition } from "./boundary.js";
 import {
   type AssembledContextMessage,
+  hasThinkingText,
   isEmptyThinkingHusk,
   renderBandMessage,
   renderTailMessage,
@@ -40,7 +41,10 @@ export function assembleView(db: Parameters<typeof readViewSnapshot>[0]): Assemb
     }
   }
   for (const row of tailRows) {
+    // Skip true husks always; skip signature-only thinking here because the
+    // text LLM path cannot carry the opaque token (session-view still serves it).
     if (isEmptyThinkingHusk(row)) continue;
+    if (row.kind === "assistant_thinking" && !hasThinkingText(row)) continue;
     entries.push({
       message: renderTailMessage(row, renderCtx),
       entryId: row.messageId,
