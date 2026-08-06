@@ -424,7 +424,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         }
         const overview = await inspect.overview(threadRef);
         if (overview.ok) {
-          stats.derivationsPending = overview.value.derivation.pending + overview.value.derivation.retrying;
+          stats.derivationsPending = overview.value.derivation.pending;
         }
       }
     },

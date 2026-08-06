@@ -33,7 +33,7 @@ const sampleStatus: ViewStatus = {
   tailTokens: 1200,
   threshold: 8000,
   compactRecommended: false,
-  derivation: { pending: 1, retrying: 0, failed: 2, blocked: 0 },
+  derivation: { pending: 1, failed: 2, blocked: 0 },
   view: null,
   visibility: { boundaryPosition: 0, zoneTokens: 400, maxTokens: 2000 },
 };
