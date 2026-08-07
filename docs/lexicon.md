@@ -22,3 +22,8 @@ messages, notices, later memory tickles. Content here is never persisted to
 the record; it decays and vanishes unless restated into the transcript. The
 quick board is the living surface; the record is the durable one. Named
 2026-08-07 (previously "notification board").
+
+**ttl** — turns to live (not time-to-live): how many turns a quick-board
+entry survives before it vanishes. Currently counted in completed agentic
+turns; the counting unit is under active design review, the term itself is
+adopted. Adopted 2026-08-07.
