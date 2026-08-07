@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, PiToolResult } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
 import {
+  BOARD_DISABLE_ENV,
   BOARD_PULL_TOKEN_BUDGET,
   BOARD_TOKEN_BUDGET,
   type BoardState,
@@ -49,6 +50,11 @@ function requireThread(deps: BoardToolDeps): { ref: ThreadRef; instance: LhcInst
   const instance = deps.getInstance();
   if (ref === null || instance === null) throw new Error("no active LHC thread");
   return { ref, instance };
+}
+
+function requireEnabledBoard(board: BoardState): void {
+  if (board.hardDisabled) throw new Error(`board disabled by ${BOARD_DISABLE_ENV}`);
+  if (!board.enabled) throw new Error("board is off (/board on to enable)");
 }
 
 function validateIds(ids: unknown, pattern: RegExp, what: string): string[] {
@@ -109,6 +115,7 @@ export function registerBoardTools(pi: ExtensionAPI, deps: BoardToolDeps): void 
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx): Promise<PiToolResult> {
       const board = deps.getBoard();
+      requireEnabledBoard(board);
       const { ref, instance } = requireThread(deps);
       const ids = validateIds((params as { ids: unknown }).ids, /^t\d+$/, "turn");
       const result = await instance.sdk.retrieval.getTurns(ref, ids, {
@@ -147,6 +154,7 @@ export function registerBoardTools(pi: ExtensionAPI, deps: BoardToolDeps): void 
     }),
     async execute(toolCallId, params, _signal, _onUpdate, _ctx): Promise<PiToolResult> {
       const board = deps.getBoard();
+      requireEnabledBoard(board);
       const { ref, instance } = requireThread(deps);
       const ids = validateIds((params as { ids: unknown }).ids, /^m\d+$/, "message");
       const result = await instance.sdk.retrieval.getMessages(ref, ids, {

@@ -125,6 +125,14 @@ describe("get_turns", () => {
     expect(impressions.value).toHaveLength(1);
     expect(impressions.value[0]).toMatchObject({ surface: "get_turns", entityId: "t1", served: true });
   });
+
+  it("fails before retrieval while the board is off, leaving no impression side effect", async () => {
+    board.enabled = false;
+    await expect(runTool("get_turns", "call-off", { ids: ["t1"] })).rejects.toThrow(/board is off/);
+    const impressions = await retrieval.listImpressions({ filePath });
+    expect(impressions.ok).toBe(true);
+    if (impressions.ok) expect(impressions.value).toEqual([]);
+  });
 });
 
 describe("get_messages", () => {
