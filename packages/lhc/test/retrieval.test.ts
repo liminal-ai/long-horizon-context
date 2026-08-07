@@ -3,6 +3,7 @@
 // enforce a strict in-order token budget with explicit receipts and write one
 // impression row per requested id. Deterministic — no inference in any path
 // (stored renderings come from prior drains; fallback composition is pure).
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDeterministicInferenceCallbacks,
@@ -93,6 +94,29 @@ describe("getTurns", () => {
     expect(turn.source).toBe("composed");
     expect(turn.text).toContain("<t1>");
     expect(turn.text).toContain("first question");
+  });
+
+  it("composes a tagged fallback for a ready legacy rendering without turn labels", async () => {
+    await seedTwoTurns();
+    await drain();
+    const db = new DatabaseSync(filePath);
+    try {
+      db.prepare(
+        `UPDATE derivation SET content = 'legacy untagged rendering'
+         WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'turn_rendering'`,
+      ).run();
+    } finally {
+      db.close();
+    }
+
+    const result = await retrieval.getTurns({ filePath }, ["t1"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const turn = result.value.served[0]!;
+    expect(turn.source).toBe("composed");
+    expect(turn.text).toContain("<t1>");
+    expect(turn.text).toContain("<m1>");
+    expect(turn.text).not.toContain("legacy untagged rendering");
   });
 
   it("reports unknown ids as not_found without charging the budget", async () => {

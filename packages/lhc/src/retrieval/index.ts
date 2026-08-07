@@ -156,11 +156,16 @@ function turnCandidate(db: DatabaseSync, turnId: string): Candidate<RetrievedTur
     )
     .get(turnId) as { state: string; content: string | null } | undefined;
 
-  if (stored?.state === "ready" && typeof stored.content === "string" && stored.content !== "") {
-    const tokens = estimateTokens(stored.content);
+  const storedContent = stored?.state === "ready" ? stored.content : null;
+  const storedHasTurnLabel =
+    typeof storedContent === "string" &&
+    storedContent.startsWith(`<${turnId}>\n`) &&
+    storedContent.endsWith(`\n</${turnId}>`);
+  if (storedHasTurnLabel) {
+    const tokens = estimateTokens(storedContent);
     return {
       id: turnId,
-      outcome: { kind: "servable", item: { turnId, text: stored.content, tokens, source: "stored" }, tokens },
+      outcome: { kind: "servable", item: { turnId, text: storedContent, tokens, source: "stored" }, tokens },
     };
   }
 
