@@ -1,5 +1,6 @@
 // Board model: post/budget/ttl semantics, size→ttl policy, kill switches.
 // Pure state machine — every behavior fixture-testable without PI.
+import { estimateTokens } from "lhc";
 import { describe, expect, it } from "vitest";
 import {
   BOARD_DISABLE_ENV,
@@ -11,6 +12,7 @@ import {
   onRunEnd,
   postEntry,
   pullTtl,
+  renderPromptBlock,
   statusLine,
   TTL1_SIZE_THRESHOLD_TOKENS,
 } from "../../src/board/index.js";
@@ -27,6 +29,16 @@ describe("posting", () => {
     expect(first.ok && first.entry.entryId).toBe("b1");
     expect(second.ok && second.entry.entryId).toBe("b2");
     expect(boardTokens(board)).toBeGreaterThan(0);
+  });
+
+  it("charges the rendered header and entry wrappers to the board budget", () => {
+    const board = freshBoard();
+    const posted = postEntry(board, { kind: "note", ids: [], text: "x", ttl: 2, src: "dev" });
+    expect(posted.ok).toBe(true);
+    const rendered = renderPromptBlock(board);
+    expect(rendered).not.toBeNull();
+    expect(boardTokens(board)).toBe(estimateTokens(rendered!));
+    if (posted.ok) expect(boardTokens(board)).toBeGreaterThan(posted.entry.tokens);
   });
 
   it("rejects empty text and non-positive ttl", () => {
