@@ -13,6 +13,12 @@
 > layer (bead `long-horizon-context-5ez`), and Principle 8 remains
 > unimplemented. Treat this as the layer above the
 > [bad code log](bad-code-log.md): why we build, not just what we got wrong.
+> Companion founding document: the January 2026
+> [product brief](https://github.com/liminal-ai/oc-context-cleaner/blob/master/docs/product-brief.md)
+> (`oc-context-cleaner`, liminal-ai org) — the original compression-gradient
+> vision this framework constrained: band gradients, smoothing rationale,
+> tool-call truncation tiers, model-aware capacity, the pod model, and the
+> hundreds-of-millions-of-tokens horizon, written before any of it existed.
 
 ---
 
