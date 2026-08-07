@@ -1,8 +1,10 @@
 // Retrieval ops (drill-down layer): getTurns serves tagged turn renderings by
 // turn id; getMessages serves verbatim message content by message id. Both
-// enforce a strict in-order token budget with explicit receipts and write one
-// impression row per requested id. Deterministic — no inference in any path
-// (stored renderings come from prior drains; fallback composition is pure).
+// enforce an in-order token budget: the item crossing the budget is served as
+// an exact token slice with a continuation receipt (fromToken), later items
+// get explicit "budget" receipts, and every requested id writes one impression
+// row. Deterministic — no inference in any path (stored renderings come from
+// prior drains; fallback composition is pure).
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -44,6 +46,20 @@ beforeEach(async () => {
 afterEach(() => {
   store.cleanup();
 });
+
+/** One closed turn whose rendering is large enough to force slicing. The bulk
+ *  rides assistant text because renderings keep model output whole while tool
+ *  results get truncated. */
+async function seedBigTurn(): Promise<void> {
+  const bigBody = Array.from({ length: 400 }, (_, i) => `line ${i}: the quick brown fox jumps over the lazy dog`).join(
+    "\n",
+  );
+  await send([
+    validEvent("user_prompt", { payload: { text: "dump the log please" } }),
+    validEvent("assistant_text", { payload: { text: `full log follows\n${bigBody}` } }),
+    validEvent("turn_end"),
+  ]);
+}
 
 /** Two closed turns: t1 (prompt/answer) and t2 (prompt, tool run, answer). */
 async function seedTwoTurns(): Promise<void> {
@@ -129,20 +145,21 @@ describe("getTurns", () => {
     expect(result.value.served.map((turn) => turn.turnId)).toEqual(["t1"]);
   });
 
-  it("stops at the budget with an explicit partial receipt", async () => {
+  it('reports "budget" for the crossing item when too little budget remains to slice', async () => {
     await seedTwoTurns();
     await drain();
     const full = await retrieval.getTurns({ filePath }, ["t1", "t2"]);
     expect(full.ok).toBe(true);
     if (!full.ok) return;
-    // Budget fits either turn alone but not both — the blocked turn reports
-    // "budget" (it would fit an empty budget), not "exceeds_budget".
+    // Budget fits either fixture turn alone but not both; the leftover after
+    // t1 is far below RETRIEVAL_SLICE_FLOOR, so t2 is refused, not slivered.
     const t2Tokens = full.value.served[1]!.tokens;
 
     const partial = await retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: t2Tokens });
     expect(partial.ok).toBe(true);
     if (!partial.ok) return;
     expect(partial.value.served.map((turn) => turn.turnId)).toEqual(["t1"]);
+    expect(partial.value.served[0]!.slice).toBeUndefined();
     expect(partial.value.unserved).toHaveLength(1);
     const blocked = partial.value.unserved[0]!;
     expect(blocked.id).toBe("t2");
@@ -150,14 +167,69 @@ describe("getTurns", () => {
     expect(blocked.tokens).toBeGreaterThan(0);
   });
 
-  it("marks a single oversized item exceeds_budget and serves nothing for it", async () => {
-    await seedTwoTurns();
+  it("slices an oversized turn to the budget with a continuation receipt", async () => {
+    await seedBigTurn();
     await drain();
-    const result = await retrieval.getTurns({ filePath }, ["t2"], { tokenBudget: 1 });
+    const result = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 500 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.served).toEqual([]);
-    expect(result.value.unserved[0]!.reason).toBe("exceeds_budget");
+    const turn = result.value.served[0]!;
+    expect(turn.slice).toBeDefined();
+    expect(turn.slice!.fromToken).toBe(0);
+    expect(turn.slice!.toToken).toBe(500);
+    expect(turn.slice!.totalTokens).toBeGreaterThan(500);
+    expect(turn.tokens).toBe(500);
+    expect(result.value.totalTokens).toBe(500);
+  });
+
+  it("fromToken continuation slices reassemble the full text", async () => {
+    await seedBigTurn();
+    await drain();
+    const whole = await retrieval.getTurns({ filePath }, ["t1"]);
+    expect(whole.ok).toBe(true);
+    if (!whole.ok) return;
+    const fullText = whole.value.served[0]!.text;
+
+    let assembled = "";
+    let from = 0;
+    for (let hop = 0; hop < 20; hop += 1) {
+      const part = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 400, fromToken: from });
+      expect(part.ok).toBe(true);
+      if (!part.ok) return;
+      const slice = part.value.served[0]!;
+      expect(slice.slice).toBeDefined();
+      assembled += slice.text;
+      from = slice.slice!.toToken;
+      if (from >= slice.slice!.totalTokens) break;
+    }
+    expect(assembled).toBe(fullText);
+  });
+
+  it("serves the crossing item sliced and later items with budget receipts", async () => {
+    await seedBigTurn();
+    await send([
+      validEvent("user_prompt", { payload: { text: "small follow-up" } }),
+      validEvent("assistant_text", { payload: { text: "small answer" } }),
+      validEvent("turn_end"),
+    ]);
+    await drain();
+    // t1 is huge, t2 tiny. Budget 500: t1 slice fills the whole budget, t2
+    // reports "budget" with its size instead of being silently starved.
+    const result = await retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: 500 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.served).toHaveLength(1);
+    expect(result.value.served[0]!.turnId).toBe("t1");
+    expect(result.value.served[0]!.slice).toBeDefined();
+    expect(result.value.unserved).toEqual([{ id: "t2", reason: "budget", tokens: expect.any(Number) }]);
+  });
+
+  it("rejects a negative or fractional fromToken", async () => {
+    await seedTwoTurns();
+    const negative = await retrieval.getTurns({ filePath }, ["t1"], { fromToken: -1 });
+    expect(negative.ok).toBe(false);
+    const fractional = await retrieval.getTurns({ filePath }, ["t1"], { fromToken: 1.5 });
+    expect(fractional.ok).toBe(false);
   });
 
   it("collapses duplicate ids to one serve", async () => {

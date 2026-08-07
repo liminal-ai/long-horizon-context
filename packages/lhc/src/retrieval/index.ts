@@ -1,16 +1,18 @@
 // Retrieval: deterministic drill-down from band labels to full content.
 // `getTurns` serves rendered turns by turn id (`t…`); `getMessages` serves
 // verbatim message content by message id (`m…`). Both enforce a per-call token
-// budget with strict in-order serving (the first entity that does not fit stops
-// the serve), return explicit receipts naming every unserved id, and write one
-// impression row per requested id — the durable usage log that later ranking
-// work reads. Retrieval never mutates record content; the only write is the
-// impression log.
+// budget with in-order serving. Oversized content is not refused: the item
+// that crosses the budget is served as an exact token slice with a receipt
+// (`slice`) naming the window and total, so the caller can continue via
+// `fromToken`. Later ids past a spent budget get explicit "budget" receipts.
+// Every requested id writes one impression row — the durable usage log that
+// later ranking work reads. Retrieval never mutates record content; the only
+// write is the impression log.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { OpResult } from "../shared-tech/errors.js";
 import { createDbReadTransaction, createDbWriteTransaction, storageFailure } from "../shared-tech/index.js";
-import { estimateTokens } from "../shared-tech/token-counting/index.js";
+import { estimateTokens, sliceTokens, type TokenSlice } from "../shared-tech/token-counting/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { composeRenderingInput, composeStructuredTurnText } from "../turns/internal/compose.js";
 import { readMemberMessages, readMessageDerivationRows, readTurnSource } from "../turns/internal/derivations.js";
@@ -18,14 +20,30 @@ import { readMemberMessages, readMessageDerivationRows, readTurnSource } from ".
 /** Whole-item budget for one retrieval call. Callers may override per call. */
 export const DEFAULT_RETRIEVAL_TOKEN_BUDGET = 8_000;
 
+/** A partial serve only starts when at least this much budget remains — a
+ *  smaller sliver teaches nothing. Explicit `fromToken` continuations are
+ *  exempt: the caller asked for exactly that window. */
+export const RETRIEVAL_SLICE_FLOOR = 256;
+
 export interface RetrievalOptions {
   /** Per-call token budget over served item text (estimateTokens). */
   tokenBudget?: number;
+  /** Token offset into each requested item's text — continues a previous
+   *  slice. Intended for single-id continuation calls. */
+  fromToken?: number;
   /** Impression provenance: which surface asked (e.g. "get_turns" tool, "board"). */
   surface?: string;
 }
 
-export type UnservedReason = "not_found" | "deleted" | "budget" | "exceeds_budget";
+export type UnservedReason = "not_found" | "deleted" | "budget";
+
+/** Window receipt on a partially served item: `[fromToken, toToken)` of
+ *  `totalTokens` was served. Absent when the full text was served. */
+export interface SliceReceipt {
+  fromToken: number;
+  toToken: number;
+  totalTokens: number;
+}
 
 export interface UnservedEntity {
   id: string;
@@ -42,6 +60,7 @@ export interface RetrievedTurn {
   /** "stored" = ready turn_rendering derivation; "composed" = live fallback
    *  composition from current message forms (derivation not ready). */
   source: "stored" | "composed";
+  slice?: SliceReceipt;
 }
 
 export interface RetrievedMessage {
@@ -51,6 +70,7 @@ export interface RetrievedMessage {
   /** Verbatim historical content (tool args/results as recorded). */
   text: string;
   tokens: number;
+  slice?: SliceReceipt;
 }
 
 export interface RetrievalReceipt<TServed> {
@@ -101,19 +121,23 @@ interface Candidate<T> {
   outcome: { kind: "servable"; item: T; tokens: number } | { kind: "unservable"; reason: UnservedReason };
 }
 
-/** Strict in-order budget walk shared by both ops: not-found/deleted entities
- *  never charge the budget; the first servable item that does not fit stops
- *  the serve (remaining servable items report "budget" with their size). */
-function budgetWalk<T>(
+/** In-order budget walk shared by both ops. Not-found/deleted entities never
+ *  charge the budget. A servable item that fits the remaining budget is served
+ *  whole. The item that crosses the budget is served as an exact token slice
+ *  filling the remainder (if at least RETRIEVAL_SLICE_FLOOR remains), with a
+ *  slice receipt for continuation. Items past a spent budget report "budget"
+ *  with their size. `fromToken > 0` slices every requested item from that
+ *  offset — the single-id continuation contract. */
+function budgetWalk<T extends { text: string; tokens: number; slice?: SliceReceipt }>(
   candidates: readonly Candidate<T>[],
   entityKind: "turn" | "message",
   tokenBudget: number,
+  fromToken: number,
 ): { served: T[]; unserved: UnservedEntity[]; totalTokens: number; impressions: ImpressionRow[] } {
   const served: T[] = [];
   const unserved: UnservedEntity[] = [];
   const impressions: ImpressionRow[] = [];
   let totalTokens = 0;
-  let stopped = false;
   candidates.forEach((candidate, requestIdx) => {
     const base = { entityId: candidate.id, requestIdx } as const;
     if (candidate.outcome.kind === "unservable") {
@@ -122,16 +146,35 @@ function budgetWalk<T>(
       return;
     }
     const { item, tokens } = candidate.outcome;
-    if (!stopped && totalTokens + tokens <= tokenBudget) {
+    const remaining = tokenBudget - totalTokens;
+
+    // Whole serve: no offset requested and the full text fits what's left.
+    if (fromToken === 0 && tokens <= remaining) {
       served.push(item);
       totalTokens += tokens;
       impressions.push({ ...base, entityKind, served: true, tokens });
       return;
     }
-    stopped = true;
-    const reason: UnservedReason = tokens > tokenBudget ? "exceeds_budget" : "budget";
-    unserved.push({ id: candidate.id, reason, tokens });
-    impressions.push({ ...base, entityKind, served: false, reason, tokens });
+
+    // Partial serve: explicit continuation always slices; a budget-crossing
+    // item slices only when enough budget remains to be worth reading.
+    if (fromToken > 0 || remaining >= RETRIEVAL_SLICE_FLOOR) {
+      const window: TokenSlice = sliceTokens(item.text, fromToken, remaining);
+      const servedTokens = window.toToken - window.fromToken;
+      const sliced: T = {
+        ...item,
+        text: window.text,
+        tokens: servedTokens,
+        slice: { fromToken: window.fromToken, toToken: window.toToken, totalTokens: window.totalTokens },
+      };
+      served.push(sliced);
+      totalTokens += servedTokens;
+      impressions.push({ ...base, entityKind, served: true, tokens: servedTokens });
+      return;
+    }
+
+    unserved.push({ id: candidate.id, reason: "budget", tokens });
+    impressions.push({ ...base, entityKind, served: false, reason: "budget", tokens });
   });
   return { served, unserved, totalTokens, impressions };
 }
@@ -142,6 +185,14 @@ function resolveBudget(options: RetrievalOptions | undefined): number {
     throw new Error(`retrieval tokenBudget must be a positive number, got ${String(budget)}`);
   }
   return budget;
+}
+
+function resolveFromToken(options: RetrievalOptions | undefined): number {
+  const from = options?.fromToken ?? 0;
+  if (!Number.isInteger(from) || from < 0) {
+    throw new Error(`retrieval fromToken must be a non-negative integer, got ${String(from)}`);
+  }
+  return from;
 }
 
 function turnCandidate(db: DatabaseSync, turnId: string): Candidate<RetrievedTurn> {
@@ -270,7 +321,7 @@ export async function getMessages(
   return retrieve(ref, messageIds, options, "get_messages", "message", messageCandidate);
 }
 
-async function retrieve<T>(
+async function retrieve<T extends { text: string; tokens: number; slice?: SliceReceipt }>(
   ref: ThreadRef,
   ids: readonly string[],
   options: RetrievalOptions | undefined,
@@ -279,8 +330,10 @@ async function retrieve<T>(
   candidateOf: (db: DatabaseSync, id: string) => Candidate<T>,
 ): Promise<OpResult<RetrievalReceipt<T>>> {
   let tokenBudget: number;
+  let fromToken: number;
   try {
     tokenBudget = resolveBudget(options);
+    fromToken = resolveFromToken(options);
   } catch (cause) {
     return storageFailure(cause instanceof Error ? cause.message : String(cause));
   }
@@ -294,7 +347,7 @@ async function retrieve<T>(
     // impressions — the durable usage record is part of the contract.
     return await createDbWriteTransaction(ref, (transaction) => {
       const candidates = dedupe(ids).map((id) => candidateOf(transaction.db, id));
-      const walk = budgetWalk(candidates, entityKind, tokenBudget);
+      const walk = budgetWalk(candidates, entityKind, tokenBudget, fromToken);
       writeImpressions(transaction.db, callId, surface, walk.impressions);
       return {
         callId,
