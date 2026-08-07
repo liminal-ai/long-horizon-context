@@ -141,3 +141,53 @@ describe("serving round-trip for signed thinking", () => {
     expect(parts.some((part) => part.type === "thinking" && part.thinkingSignature === "enc-sig-2")).toBe(true);
   });
 });
+
+describe("assistant model identity for resume", () => {
+  it("stores provider/model/api on thinking blocks and surfaces them on session-view", async () => {
+    const captured = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "q" } }),
+      validEvent("assistant_thinking", {
+        payload: {
+          text: "",
+          signature: "enc-prov",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          api: "anthropic-messages",
+        },
+      }),
+      validEvent("assistant_text", {
+        payload: {
+          text: "a",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          api: "anthropic-messages",
+        },
+      }),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) return;
+
+    const listed = await messages.list({ filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const thinking = listed.value.find((row) => row.kind === "assistant_thinking");
+    expect(thinking!.blocks[0]?.content).toMatchObject({
+      text: "",
+      signature: "enc-prov",
+      provider: "anthropic",
+      model: "claude-fable-5",
+      api: "anthropic-messages",
+    });
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    const assistant = view.value.entries.find((entry) => "role" in entry && entry.role === "assistant") as
+      | { provider?: string; model?: string; api?: string }
+      | undefined;
+    expect(assistant?.provider).toBe("anthropic");
+    expect(assistant?.model).toBe("claude-fable-5");
+    expect(assistant?.api).toBe("anthropic-messages");
+  });
+});

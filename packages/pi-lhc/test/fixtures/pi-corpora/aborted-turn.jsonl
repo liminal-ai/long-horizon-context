@@ -1,8 +1,8 @@
 {"recordType":"pi_hook","hook":"message_end","entryId":"aborted-turn-entry-0","position":0,"message":{"role":"user","content":[{"type":"text","text":"write a long essay"}],"timestamp":1700000000000}}
 {"recordType":"expected_event","eventKind":"user_prompt","payload":{"text":"write a long essay"}}
 {"recordType":"pi_hook","hook":"message_end","entryId":"aborted-turn-entry-1","position":1,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"starting the essay"},{"type":"text","text":"Once upon a"}],"provider":"test","model":"test-model","usage":{"input":20,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":24,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"aborted","timestamp":1700000001500}}
-{"recordType":"expected_event","eventKind":"assistant_thinking","payload":{"text":"starting the essay"}}
-{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"Once upon a","providerUsage":{"input":20,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":24,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}}
-{"recordType":"expected_event","eventKind":"runtime_note","payload":{"text":"turn aborted (stopReason: aborted) — partial content preserved"}}
+{"recordType":"expected_event","eventKind":"assistant_thinking","payload":{"text":"starting the essay","provider":"test","model":"test-model"}}
+{"recordType":"expected_event","eventKind":"assistant_text","payload":{"text":"Once upon a","providerUsage":{"input":20,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":24,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"provider":"test","model":"test-model"}}
+{"recordType":"expected_event","eventKind":"runtime_note","payload":{"text":"turn aborted (stopReason: aborted) \u2014 partial content preserved"}}
 {"recordType":"pi_lifecycle","hook":"agent_end","entryId":"aborted-turn-agent-end-0","position":2}
 {"recordType":"expected_event","eventKind":"turn_end","payload":{"outcome":"aborted","outcomeReason":"aborted","startedAt":"2023-11-14T22:13:20.000Z","endedAt":"2023-11-14T22:13:21.500Z"}}

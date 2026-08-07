@@ -130,20 +130,35 @@ function responseIdOf(msg: AgentMessage): string | undefined {
 
 // Per-kind builders — explicit eventKind literals so the discriminated union
 // narrows without a cast.
+type AssistantProvenance = { provider?: string; model?: string; api?: string };
+
+function provenanceOf(msg: AssistantMessage): AssistantProvenance {
+  const out: AssistantProvenance = {};
+  if (typeof msg.provider === "string" && msg.provider !== "") out.provider = msg.provider;
+  if (typeof msg.model === "string" && msg.model !== "") out.model = msg.model;
+  if (typeof msg.api === "string" && msg.api !== "") out.api = msg.api;
+  return out;
+}
+
 function textEvent(
   kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "runtime_note",
   text: string,
   actor: string,
   key: string,
-  extra: { signature?: string } = {},
+  extra: { signature?: string } & AssistantProvenance = {},
 ): MessageEventInput {
-  if (kind === "assistant_thinking" && extra.signature !== undefined) {
+  if (kind === "assistant_thinking") {
+    const payload: Extract<MessageEventInput, { eventKind: "assistant_thinking" }>["payload"] = { text };
+    if (extra.signature !== undefined) payload.signature = extra.signature;
+    if (extra.provider !== undefined) payload.provider = extra.provider;
+    if (extra.model !== undefined) payload.model = extra.model;
+    if (extra.api !== undefined) payload.api = extra.api;
     return {
       eventKind: "assistant_thinking",
       idempotencyKey: key,
       actor,
       harness: HARNESS,
-      payload: { text, signature: extra.signature },
+      payload,
     };
   }
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
@@ -213,12 +228,20 @@ function providerUsageOf(usage: Usage | undefined): Record<string, unknown> | un
   return usage as unknown as Record<string, unknown>;
 }
 
-function assistantTextEvent(text: string, key: string, usage: Usage | undefined): MessageEventInput {
+function assistantTextEvent(
+  text: string,
+  key: string,
+  usage: Usage | undefined,
+  provenance: AssistantProvenance,
+): MessageEventInput {
   const payload: AssistantTextPayload = { text };
   const providerUsage = providerUsageOf(usage);
   if (providerUsage !== undefined) {
     payload.providerUsage = providerUsage;
   }
+  if (provenance.provider !== undefined) payload.provider = provenance.provider;
+  if (provenance.model !== undefined) payload.model = provenance.model;
+  if (provenance.api !== undefined) payload.api = provenance.api;
   return {
     eventKind: "assistant_text",
     idempotencyKey: key,
@@ -232,11 +255,13 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   const events: MessageEventInput[] = [];
   const responseId = responseIdOf(msg);
   const parts = partsOf(msg);
+  const provenance = provenanceOf(msg);
   let block = 0;
   // PI's confirmed part order: thinking → text → tool calls (research §5a).
   // Capture thinking when any thinking part exists — including empty text with
   // a thinkingSignature (fable/Anthropic omitted-display). Signature is stored
-  // opaquely so resume can round-trip it to the provider.
+  // opaquely so resume can round-trip it to the provider. provider/model/api
+  // ride the same events so PI's same-model check can keep the signature live.
   if (parts.some((p) => p.type === "thinking")) {
     const text = thinkingOf(parts);
     const signature = thinkingSignatureOf(parts);
@@ -249,7 +274,10 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
           responseId,
           content: signature !== undefined ? `${text}\0${signature}` : text,
         }),
-        signature !== undefined ? { signature } : {},
+        {
+          ...provenance,
+          ...(signature !== undefined ? { signature } : {}),
+        },
       ),
     );
     block += 1;
@@ -263,6 +291,7 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
         text,
         buildKey(ctx, "assistant", "assistant_text", block, { responseId, content: text }),
         msg.usage,
+        provenance,
       ),
     );
     block += 1;

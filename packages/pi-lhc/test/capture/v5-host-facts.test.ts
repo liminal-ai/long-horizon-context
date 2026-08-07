@@ -43,6 +43,8 @@ describe("schema v5: providerUsage on assistant_text", () => {
     expect(events[0]!.payload).toEqual({
       text: "hello",
       providerUsage: SAMPLE_USAGE,
+      provider: "test",
+      model: "test-model",
     });
   });
 
@@ -178,6 +180,8 @@ describe("schema v5: turn outcome and timing", () => {
     expect(assistantText?.payload).toEqual({
       text: "Once upon a",
       providerUsage: SAMPLE_USAGE,
+      provider: "test",
+      model: "test-model",
     });
 
     const listed = await turns.listTurns(threadRef);
@@ -317,6 +321,8 @@ describe("schema v5: idempotency keys ignore payload enrichment (R2)", () => {
     expect(landedText?.payload).toEqual({
       text: "world",
       providerUsage: zeroUsage({ input: 1, output: 1, totalTokens: 2 }),
+      provider: "test",
+      model: "test-model",
     });
     const landedEnd = read.value.find((e) => e.eventKind === "turn_end");
     expect(landedEnd?.payload).toMatchObject({ outcome: "completed" });

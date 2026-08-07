@@ -20,12 +20,21 @@ export type TurnEndPayload = {
   endedAt?: string;
 };
 
+// Host-reported model identity for one assistant message fan-out. Needed so a
+// resumed PI session can re-stamp provider/api/model and keep signed thinking
+// through PI's same-model check (transform-messages). Opaque strings.
+export type AssistantModelProvenance = {
+  provider?: string;
+  model?: string;
+  api?: string;
+};
+
 // Provider usage is the host's verbatim JSON object for one model call — no
 // fixed column set, no interpretation inside LHC (schema v5 / D1, D3).
 export type AssistantTextPayload = {
   text: string;
   providerUsage?: Record<string, unknown>;
-};
+} & AssistantModelProvenance;
 
 // Optional signature is an opaque provider token (Anthropic encrypted
 // thinking, OpenAI reasoning item id, etc.). LHC stores and returns it
@@ -33,7 +42,7 @@ export type AssistantTextPayload = {
 export type AssistantThinkingPayload = {
   text: string;
   signature?: string;
-};
+} & AssistantModelProvenance;
 
 export type MessageEventInput =
   | BaseEvent<"user_prompt", { text: string }>

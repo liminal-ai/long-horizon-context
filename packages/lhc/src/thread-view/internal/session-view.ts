@@ -39,6 +39,35 @@ function thinkingSignatureOf(message: TailMessageRow): string | undefined {
   return typeof signature === "string" && signature !== "" ? signature : undefined;
 }
 
+function stringField(content: Record<string, unknown>, key: string): string | undefined {
+  const value = content[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** First non-empty provider/model/api from grouped assistant rows (thinking or text). */
+function modelProvenanceOf(rows: readonly TailMessageRow[]): {
+  provider?: string;
+  model?: string;
+  api?: string;
+} {
+  let provider: string | undefined;
+  let model: string | undefined;
+  let api: string | undefined;
+  for (const row of rows) {
+    if (row.kind !== "assistant_thinking" && row.kind !== "assistant_text") continue;
+    const content = blockContent(row);
+    provider ??= stringField(content, "provider");
+    model ??= stringField(content, "model");
+    api ??= stringField(content, "api");
+    if (provider !== undefined && model !== undefined && api !== undefined) break;
+  }
+  return {
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(api !== undefined ? { api } : {}),
+  };
+}
+
 function assistantPartOf(message: TailMessageRow): SessionAssistantPart {
   switch (message.kind) {
     case "assistant_thinking": {
@@ -109,12 +138,20 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
   const entries: SessionThreadViewEntry[] = [];
   let assistantParts: SessionAssistantPart[] = [];
   let assistantSources: SessionThreadViewEntrySource[] = [];
+  let assistantRows: TailMessageRow[] = [];
 
   const flushAssistant = (): void => {
     if (assistantParts.length === 0) return;
-    entries.push({ role: "assistant", content: assistantParts, sourceMessages: assistantSources });
+    const provenance = modelProvenanceOf(assistantRows);
+    entries.push({
+      role: "assistant",
+      content: assistantParts,
+      sourceMessages: assistantSources,
+      ...provenance,
+    });
     assistantParts = [];
     assistantSources = [];
+    assistantRows = [];
   };
 
   for (const row of rows) {
@@ -129,6 +166,7 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
       case "tool_call":
         assistantParts.push(assistantPartOf(row));
         assistantSources.push(entrySource(row));
+        assistantRows.push(row);
         break;
       case "tool_result":
         flushAssistant();

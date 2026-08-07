@@ -16,12 +16,21 @@ describe("mapMessage thinkingSignature", () => {
         thinking: "",
         thinkingSignature: "enc-anthropic-abc",
         text: "done",
+        provider: "anthropic",
+        model: "claude-fable-5",
+        api: "anthropic-messages",
       }),
       { piSessionId: "s", entryId: "e1" },
     );
     const thinking = events.find((event) => event.eventKind === "assistant_thinking");
     expect(thinking).toBeDefined();
-    expect(thinking!.payload).toEqual({ text: "", signature: "enc-anthropic-abc" });
+    expect(thinking!.payload).toEqual({
+      text: "",
+      signature: "enc-anthropic-abc",
+      provider: "anthropic",
+      model: "claude-fable-5",
+      api: "anthropic-messages",
+    });
   });
 
   it("omits signature key when the PI part has none", () => {
@@ -30,7 +39,7 @@ describe("mapMessage thinkingSignature", () => {
       entryId: "e2",
     });
     const thinking = events.find((event) => event.eventKind === "assistant_thinking");
-    expect(thinking!.payload).toEqual({ text: "plain" });
+    expect(thinking!.payload).toEqual({ text: "plain", provider: "test", model: "test-model" });
     expect("signature" in thinking!.payload).toBe(false);
   });
 
@@ -43,7 +52,12 @@ describe("mapMessage thinkingSignature", () => {
       { piSessionId: "s", entryId: "e3" },
     );
     expect(events.map((event) => event.eventKind)).toEqual(["assistant_thinking"]);
-    expect(events[0]!.payload).toEqual({ text: "", signature: "enc-only" });
+    expect(events[0]!.payload).toEqual({
+      text: "",
+      signature: "enc-only",
+      provider: "test",
+      model: "test-model",
+    });
   });
 });
 
@@ -56,7 +70,7 @@ describe("resume round-trip restores thinkingSignature onto PI session parts", (
     store.cleanup();
   });
 
-  it("capture → getSessionThreadView → applySessionThreadView keeps the signature", async () => {
+  it("capture → getSessionThreadView → applySessionThreadView keeps signature and model identity", async () => {
     const sdk = initLhc({
       mode: "manual",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
@@ -76,6 +90,9 @@ describe("resume round-trip restores thinkingSignature onto PI session parts", (
           thinking: "",
           thinkingSignature: "enc-round-trip-99",
           text: "restored",
+          provider: "anthropic",
+          model: "claude-fable-5",
+          api: "anthropic-messages",
         }),
         { piSessionId: "s", entryId: "a1" },
       ),
@@ -116,14 +133,17 @@ describe("resume round-trip restores thinkingSignature onto PI session parts", (
 
     applySessionThreadViewToSessionManager(sessionManager as never, view.value.entries, "th_sig");
 
-    const assistant = appended.find((message) => message.role === "assistant");
+    const assistant = appended.find((message) => message.role === "assistant") as
+      | {
+          role: string;
+          content: Array<{ type: string; thinking?: string; thinkingSignature?: string; text?: string }>;
+          provider?: string;
+          model?: string;
+          api?: string;
+        }
+      | undefined;
     expect(assistant).toBeDefined();
-    const parts = assistant!.content as Array<{
-      type: string;
-      thinking?: string;
-      thinkingSignature?: string;
-      text?: string;
-    }>;
+    const parts = assistant!.content;
     const thinking = parts.find((part) => part.type === "thinking");
     expect(thinking).toEqual({
       type: "thinking",
@@ -131,5 +151,10 @@ describe("resume round-trip restores thinkingSignature onto PI session parts", (
       thinkingSignature: "enc-round-trip-99",
     });
     expect(parts.some((part) => part.type === "text" && part.text === "restored")).toBe(true);
+    // Real identity — not the synthetic lhc/thread-view fallback — so PI's
+    // same-model check can keep the signature on the live provider path.
+    expect(assistant!.provider).toBe("anthropic");
+    expect(assistant!.model).toBe("claude-fable-5");
+    expect(assistant!.api).toBe("anthropic-messages");
   });
 });

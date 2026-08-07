@@ -14,16 +14,28 @@ export interface ProjectedMessage {
 export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
   switch (event.eventKind) {
     case "user_prompt":
-    case "assistant_text":
     case "runtime_note":
       return {
         blocks: [{ blockType: "text", content: { text: event.payload.text } }],
         tokenEstimate: estimateTokens(event.payload.text),
       };
+    case "assistant_text": {
+      const content: Record<string, unknown> = { text: event.payload.text };
+      if (event.payload.provider !== undefined) content.provider = event.payload.provider;
+      if (event.payload.model !== undefined) content.model = event.payload.model;
+      if (event.payload.api !== undefined) content.api = event.payload.api;
+      return {
+        blocks: [{ blockType: "text", content }],
+        tokenEstimate: estimateTokens(event.payload.text),
+      };
+    }
     case "assistant_thinking": {
-      // Verbatim payload copy: text always, signature only when the host sent it.
-      const content: { text: string; signature?: string } = { text: event.payload.text };
+      // Verbatim payload copy: text always; signature + model identity when sent.
+      const content: Record<string, unknown> = { text: event.payload.text };
       if (event.payload.signature !== undefined) content.signature = event.payload.signature;
+      if (event.payload.provider !== undefined) content.provider = event.payload.provider;
+      if (event.payload.model !== undefined) content.model = event.payload.model;
+      if (event.payload.api !== undefined) content.api = event.payload.api;
       // Count signature bytes too — when served back to the provider they sit in
       // the live context window (the fable live-vs-LHC token gap).
       const estimateSource =

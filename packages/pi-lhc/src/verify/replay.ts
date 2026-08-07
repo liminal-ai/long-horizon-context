@@ -238,10 +238,23 @@ function expectedMessageRecords(expected: readonly MessageEventInput[]): Compara
 function expectedBlocks(event: MessageEventInput): MessageRecord["blocks"] {
   switch (event.eventKind) {
     case "user_prompt":
-    case "assistant_text":
-    case "assistant_thinking":
     case "runtime_note":
       return [{ blockType: "text", content: { text: event.payload.text } }];
+    case "assistant_text": {
+      const content: Record<string, unknown> = { text: event.payload.text };
+      if (event.payload.provider !== undefined) content.provider = event.payload.provider;
+      if (event.payload.model !== undefined) content.model = event.payload.model;
+      if (event.payload.api !== undefined) content.api = event.payload.api;
+      return [{ blockType: "text", content }];
+    }
+    case "assistant_thinking": {
+      const content: Record<string, unknown> = { text: event.payload.text };
+      if (event.payload.signature !== undefined) content.signature = event.payload.signature;
+      if (event.payload.provider !== undefined) content.provider = event.payload.provider;
+      if (event.payload.model !== undefined) content.model = event.payload.model;
+      if (event.payload.api !== undefined) content.api = event.payload.api;
+      return [{ blockType: "text", content }];
+    }
     case "model_change":
       return [{ blockType: "model_change", content: event.payload }];
     case "thinking_level_change":

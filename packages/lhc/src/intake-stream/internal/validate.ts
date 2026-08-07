@@ -54,13 +54,20 @@ const TextPayloadSchema = Schema.Struct({ text: Schema.String });
 const AssistantTextPayloadSchema = Schema.Struct({
   text: Schema.String,
   providerUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  provider: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  api: Schema.optional(Schema.String),
 });
 // signature is optional opaque provider bytes/token; empty string allowed only
 // via omission — if present it must be a string (may be empty; hosts should
-// omit rather than send "").
+// omit rather than send ""). provider/model/api are optional host identity
+// for resume (PI same-model signature keep).
 const AssistantThinkingPayloadSchema = Schema.Struct({
   text: Schema.String,
   signature: Schema.optional(Schema.String),
+  provider: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  api: Schema.optional(Schema.String),
 });
 const TurnEndPayloadSchema = Schema.Struct({
   outcome: Schema.optional(Schema.Literal("completed", "aborted")),

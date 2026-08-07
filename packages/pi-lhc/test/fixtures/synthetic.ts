@@ -107,6 +107,8 @@ export interface MakeAssistantMessageOpts {
   timestamp?: number;
   provider?: string;
   model?: string;
+  /** PI wire api id (e.g. anthropic-messages). */
+  api?: string;
   responseId?: string;
 }
 
@@ -136,6 +138,7 @@ export function makeAssistantMessage(opts: MakeAssistantMessageOpts = {}): Assis
     stopReason: opts.stopReason ?? "stop",
     timestamp: opts.timestamp ?? FIXTURE_TIMESTAMP_MS,
   };
+  if (opts.api !== undefined) msg.api = opts.api;
   if (opts.errorMessage !== undefined) msg.errorMessage = opts.errorMessage;
   if (opts.responseId !== undefined) msg.responseId = opts.responseId;
   return msg;

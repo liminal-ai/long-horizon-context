@@ -98,6 +98,10 @@ export interface SessionAssistantMessage {
   content: SessionAssistantPart[];
   /** One row per grouped LHC message, in part order. */
   sourceMessages: SessionThreadViewEntrySource[];
+  /** Host-captured model identity for PI same-model signature replay. */
+  provider?: string;
+  model?: string;
+  api?: string;
 }
 
 export interface SessionToolResultMessage {

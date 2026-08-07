@@ -36,6 +36,12 @@ function mapMessageToPiSession(message: SessionThreadViewMessage, timestamp: num
       timestamp,
     };
   }
+  // Prefer host-captured identity so PI's same-model check keeps thinking
+  // signatures on the live provider path. Fall back only for pre-provenance rows.
+  const provider = typeof message.provider === "string" && message.provider !== "" ? message.provider : "lhc";
+  const model = typeof message.model === "string" && message.model !== "" ? message.model : "thread-view";
+  const api = typeof message.api === "string" && message.api !== "" ? message.api : ("openai-responses" as const);
+
   return {
     role: "assistant",
     content: message.content.map((part) => {
@@ -59,9 +65,9 @@ function mapMessageToPiSession(message: SessionThreadViewMessage, timestamp: num
       }
       return { type: "text" as const, text: part.text ?? "" };
     }),
-    api: "openai-responses",
-    provider: "lhc",
-    model: "thread-view",
+    api,
+    provider,
+    model,
     usage: {
       input: 0,
       output: 0,
