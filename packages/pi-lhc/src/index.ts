@@ -6,6 +6,9 @@
 
 import type { BatchResult, MessageEventInput, OpResult, SdkConfig, ThreadRef } from "lhc";
 import { threads } from "lhc";
+import { type BoardState, createBoardState, onRunEnd } from "./board/index.js";
+import { injectBoard } from "./board/inject.js";
+import { registerBoardTools } from "./board/tools.js";
 import { capture, captureGap } from "./capture/converter.js";
 import { type MapCtx, mapMessage } from "./capture/map-message.js";
 import { mapModelSelect, mapThinkingLevelSelect } from "./capture/runtime-changes.js";
@@ -16,6 +19,7 @@ import { handleExportThreadview, LHC_EXPORT_THREADVIEW_COMMAND } from "./command
 export { LHC_EXPORT_PI_SESSION_COMMAND } from "./commands/export-pi-session.js";
 export { LHC_EXPORT_THREADVIEW_COMMAND } from "./commands/export-threadview.js";
 
+import { handleBoardCommand, LHC_BOARD_COMMAND } from "./commands/board.js";
 import { handleToolPrune, LHC_TOOL_PRUNE_COMMAND } from "./commands/tool-prune.js";
 import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/diagnostics.js";
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
@@ -165,12 +169,18 @@ export const TRIGGER_HOOKS = ["agent_settled"] as const satisfies readonly PiHoo
 /** Guard hooks: registered to protect the linear LHC record, not to capture. */
 export const GUARD_HOOKS = ["session_before_tree"] as const satisfies readonly PiHookName[];
 
-/** Hooks registered by the connector. Context is loaded via SessionManager seeding, not the context hook. */
+/** Board hooks: serve-time notification-board injection only. History is
+ *  still loaded via SessionManager seeding — the context hook never carries
+ *  thread history, only transient board content per provider request. */
+export const BOARD_HOOKS = ["context"] as const satisfies readonly PiHookName[];
+
+/** Hooks registered by the connector. */
 export const CONNECTOR_HOOKS = [
   ...EPIC_1_HOOKS,
   ...COMPACT_HOOKS,
   ...GUARD_HOOKS,
   ...TRIGGER_HOOKS,
+  ...BOARD_HOOKS,
 ] as const satisfies readonly PiHookName[];
 
 export type CompactHook = (typeof COMPACT_HOOKS)[number];
@@ -370,6 +380,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // none survives the connector — reload re-resolves from the registry.
   let state: SessionState | null = null;
   let instance: LhcInstance | null = null;
+  // Serve-time notification board. Session-scoped, never persisted — restart
+  // clears it by construction. Reset on session_start.
+  let board: BoardState = createBoardState();
   let lastDiagnostic: CaptureFailureDiagnostic | null = null;
   let captureSession: CaptureSession | null = null;
   let pendingFork: PendingFork | null = null;
@@ -439,6 +452,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
     compactedSinceSettleCheck = false;
+    board = createBoardState();
     const config = buildSdkConfig(ctx);
     if (!config.ok) {
       lastDiagnostic = diag("instance_not_configured", config.error.reason);
@@ -899,6 +913,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
       }
     }
+    // Board run boundary: age entries, drop the expired. After capture so the
+    // recorded turn never depends on board state.
+    onRunEnd(board);
   };
 
   // Contain every handler: an observe-only hook must never throw back into PI
@@ -1192,6 +1209,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         description: "Write the live PI SessionManager entries to a timestamped text file in the working directory",
         handler: async (_args, ctx) => handleExportPiSession(ctx),
       });
+      pi.registerCommand(LHC_BOARD_COMMAND, {
+        description: "Notification board: status | on | off | clear | post [ttl] <text>",
+        handler: (args, ctx) => handleBoardCommand(ctx, args, board),
+      });
       pi.registerCommand(LHC_TOOL_PRUNE_COMMAND, {
         description:
           "Advance the LHC visibility boundary so older tool results render truncated — relieves context pressure without a compact. Optional arg: target tokens (default 32k).",
@@ -1202,6 +1223,22 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
       pi.on("agent_settled", settledHandler);
+      // Serve-time board injection. Contained like every handler: a board
+      // failure must never break the provider request — on error the request
+      // goes out untouched.
+      pi.on("context", (event) => {
+        try {
+          const next = injectBoard(board, event.messages);
+          return next === undefined ? undefined : { messages: next };
+        } catch {
+          return undefined;
+        }
+      });
+      registerBoardTools(pi, {
+        getBoard: () => board,
+        getThreadRef: () => state?.threadRef ?? null,
+        getInstance: () => instance,
+      });
       for (const name of COMPACT_HOOKS) {
         if (name === "session_before_compact") {
           pi.on(name, compactHandlers.session_before_compact);

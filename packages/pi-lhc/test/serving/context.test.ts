@@ -40,7 +40,7 @@ function recordingPi(): { pi: ExtensionAPI; registered: string[] } {
 }
 
 describe("connector hook rail", () => {
-  it("registers Epic 1 capture hooks and compact hooks without the context hook", () => {
+  it("registers Epic 1 capture hooks, compact hooks, and the board context hook", () => {
     const { pi, registered } = recordingPi();
     createConnector({
       registryPath: store.registryPath,
@@ -51,7 +51,9 @@ describe("connector hook rail", () => {
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
-    expect(registered).not.toContain("context");
+    // The context hook carries board injection only — history stays
+    // SessionManager-seeded (see BOARD_HOOKS).
+    expect(registered).toContain("context");
   });
 });
 

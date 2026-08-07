@@ -71,15 +71,21 @@ function syntheticCtx(marker: string): ExtensionContext {
 }
 
 describe("extension load + hook rail", () => {
-  it("registers Epic 1 capture hooks without the context hook", () => {
+  it("registers the connector hook rail — context only for board injection, never history", () => {
     const { pi, registered, commands, tools } = recordingPi();
     activate(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
-    expect(registered).not.toContain("context");
-    expect(commands).toEqual(["lhc-rehydrate", "lhc-export-threadview", "lhc-export-pi-session", "lhc-tool-prune"]);
-    expect(tools).toEqual([]);
+    expect(registered).toContain("context");
+    expect(commands).toEqual([
+      "lhc-rehydrate",
+      "lhc-export-threadview",
+      "lhc-export-pi-session",
+      "board",
+      "lhc-tool-prune",
+    ]);
+    expect(tools).toEqual(["get_turns", "get_messages", "board_post"]);
   });
 
   it("registers explicit LHC launch flags for PI help and getFlag", () => {

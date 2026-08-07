@@ -210,12 +210,27 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
   sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): Promise<void>;
 }
 
+/** Mirror of PI's ToolDefinition (extensions/types.ts) — the fields we use.
+ *  `parameters` is a TypeBox schema (plain JSON-schema object at runtime). */
+export interface PiToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  details?: unknown;
+  isError?: boolean;
+}
 export interface PiToolSpec {
   name: string;
-  description?: string;
+  label: string;
+  description: string;
   promptSnippet?: string;
-  promptGuidelines?: string;
-  run: (input: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>;
+  promptGuidelines?: string[];
+  parameters: unknown;
+  execute(
+    toolCallId: string,
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    ctx: ExtensionContext,
+  ): Promise<PiToolResult>;
 }
 
 /** The factory-time API. Hook registration and command/tool registration take

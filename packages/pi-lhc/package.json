@@ -2,7 +2,7 @@
   "name": "pi-lhc",
   "version": "0.0.0",
   "private": true,
-  "description": "PI ↔ LHC connector extension (Epic 1: Connector Core, observe-only).",
+  "description": "PI \u2194 LHC connector extension (Epic 1: Connector Core, observe-only).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -38,7 +38,8 @@
     "@earendil-works/pi-agent-core": "file:../../vendor/pi/packages/agent",
     "@earendil-works/pi-ai": "file:../../vendor/pi/packages/ai",
     "@earendil-works/pi-coding-agent": "file:../../vendor/pi/packages/coding-agent",
-    "lhc": "workspace:*"
+    "lhc": "workspace:*",
+    "typebox": "1.3.7"
   },
   "devDependencies": {
     "@types/node": "^24.12.4",
