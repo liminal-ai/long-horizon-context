@@ -1,6 +1,7 @@
 export * as inspect from "./inspect/index.js";
 export * as intakeStream from "./intake-stream/index.js";
 export * as messages from "./messages/index.js";
+export * as retrieval from "./retrieval/index.js";
 export * as logging from "./shared-tech/logging/index.js";
 export * as threadView from "./thread-view/index.js";
 export * as threads from "./threads/index.js";
@@ -11,6 +12,7 @@ import * as intakeStreamDomain from "./intake-stream/index.js";
 import * as messagesDomain from "./messages/index.js";
 import { dispatchMessageDeriveWork } from "./messages/internal/derive.js";
 import { messageWorkHandlers } from "./messages/internal/handlers.js";
+import * as retrievalDomain from "./retrieval/index.js";
 import type {
   CompactReceipt,
   ErrorResult,
@@ -286,6 +288,7 @@ export interface Lhc {
   threads: typeof threadsDomain;
   intakeStream: IntakeStreamSurface;
   messages: typeof messagesDomain;
+  retrieval: typeof retrievalDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
   // Read-only report surface. Scoped through the instance seam like every other
@@ -688,6 +691,7 @@ export function initLhc(config: SdkConfig): Lhc {
     threads: threadsDomain,
     intakeStream: scopeSurface(intakeStreamSurface, seam),
     messages: scopeSurface(messagesDomain, seam),
+    retrieval: scopeSurface(retrievalDomain, seam),
     turns: scopeSurface(turnsDomain, seam),
     threadView: scopeSurface<ThreadViewSurface>(
       {

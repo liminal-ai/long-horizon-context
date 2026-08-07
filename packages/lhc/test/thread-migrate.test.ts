@@ -6,7 +6,7 @@ import {
   THREAD_SCHEMA_VERSION_1,
   THREAD_SCHEMA_VERSION_2,
   THREAD_SCHEMA_VERSION_4,
-  THREAD_SCHEMA_VERSION_5,
+  THREAD_SCHEMA_VERSION_6,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -238,9 +238,12 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
+      ).toBeDefined();
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
       ).toBeDefined();
       const metadata = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get() as
         | { thread_id: string }
@@ -267,7 +270,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -338,7 +341,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -542,7 +545,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_5);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
 
       const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
       const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(

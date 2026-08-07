@@ -6,11 +6,34 @@ export const THREAD_SCHEMA_VERSION_2 = 2;
 export const THREAD_SCHEMA_VERSION_3 = 3;
 export const THREAD_SCHEMA_VERSION_4 = 4;
 export const THREAD_SCHEMA_VERSION_5 = 5;
+export const THREAD_SCHEMA_VERSION_6 = 6;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
 const OLD_PROMPT_NAME = "smooth-turn-compression-v1";
 const NEW_PROMPT_NAME = "detailed-turn-compression-v1";
+
+/** Schema v6: retrieval impression log — one row per requested entity per
+ *  retrieval call (get_turns / get_messages). Idempotent statements shared by
+ *  fresh create and the 5→6 migration. */
+export function retrievalImpressionSchemaStatements(): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS retrieval_impression (
+      impression_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id TEXT NOT NULL,
+      surface TEXT NOT NULL,
+      entity_kind TEXT NOT NULL CHECK (entity_kind IN ('turn','message')),
+      entity_id TEXT NOT NULL,
+      request_idx INTEGER NOT NULL,
+      served INTEGER NOT NULL CHECK (served IN (0,1)),
+      reason TEXT,
+      tokens INTEGER,
+      recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_retrieval_impression_entity ON retrieval_impression (entity_kind, entity_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_retrieval_impression_call ON retrieval_impression (call_id);`,
+  ];
+}
 
 export function derivationLogSchemaStatements(): string[] {
   return [
@@ -214,6 +237,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_4) {
       migrateTurnHostFacts(db);
       version = THREAD_SCHEMA_VERSION_5;
+    }
+    if (version === THREAD_SCHEMA_VERSION_5) {
+      for (const statement of retrievalImpressionSchemaStatements()) db.exec(statement);
+      version = THREAD_SCHEMA_VERSION_6;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

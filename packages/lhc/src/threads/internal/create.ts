@@ -8,6 +8,7 @@ import {
   derivationLogSchemaStatements,
   isSupportedThreadSchemaVersion,
   migrateThreadSchema,
+  retrievalImpressionSchemaStatements,
   THREAD_SCHEMA_VERSION_1,
 } from "../../shared-tech/thread-migrate.js";
 import { TOKEN_ESTIMATOR_ID } from "../../shared-tech/token-counting/index.js";
@@ -149,6 +150,7 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
     `CREATE INDEX idx_log_subject_id ON log (subject_id);`,
     `CREATE INDEX idx_log_reason ON log (reason);`,
     ...derivationLogSchemaStatements(),
+    ...retrievalImpressionSchemaStatements(),
     `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
      VALUES ('t1', 1, 'open', 0);`,
     `PRAGMA user_version = ${CURRENT_THREAD_SCHEMA_VERSION};`,
