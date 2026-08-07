@@ -906,16 +906,20 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Final assistant stopReason on event.messages governs turn outcome (schema
   // v5); hard-kill never reaches here and leaves the turn open with NULL facts.
   const onAgentEnd: PiHookHandler<"agent_end"> = async (event, ctx) => {
-    if (instance !== null && captureSession !== null) {
-      await flushPendingMessages(ctx);
-      const turnEnd = captureSession.accumulator.onAgentEnd({ messages: event.messages });
-      if (turnEnd.length !== 0) {
-        recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
+    try {
+      if (instance !== null && captureSession !== null) {
+        await flushPendingMessages(ctx);
+        const turnEnd = captureSession.accumulator.onAgentEnd({ messages: event.messages });
+        if (turnEnd.length !== 0) {
+          recordCaptureOutcome(await capture(turnEnd, instance), turnEnd);
+        }
       }
+    } finally {
+      // Board run boundary is independent of capture health. Age after the
+      // capture attempt, but do not let a thrown capture path pin entries past
+      // their ttl.
+      onRunEnd(board);
     }
-    // Board run boundary: age entries, drop the expired. After capture so the
-    // recorded turn never depends on board state.
-    onRunEnd(board);
   };
 
   // Contain every handler: an observe-only hook must never throw back into PI

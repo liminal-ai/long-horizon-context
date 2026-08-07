@@ -9,8 +9,14 @@ import {
   registerLhcFlags,
 } from "../../src/index.js";
 import { createSessionState } from "../../src/lifecycle/state.js";
-import type { ExtensionAPI, ExtensionContext, PiHookName } from "../../src/pi/types.js";
-import { makeAgentEnd, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
+import type { ExtensionAPI, ExtensionContext, PiHookName, PiToolSpec } from "../../src/pi/types.js";
+import {
+  makeAgentEnd,
+  makeMessageEnd,
+  makeSessionStart,
+  makeToolResult,
+  makeUserMessage,
+} from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
@@ -28,11 +34,13 @@ function recordingPi(): {
   handlers: Partial<Record<PiHookName, (...args: unknown[]) => unknown>>;
   commands: string[];
   tools: string[];
+  toolSpecs: Map<string, PiToolSpec>;
 } {
   const registered: PiHookName[] = [];
   const handlers: Partial<Record<PiHookName, (...args: unknown[]) => unknown>> = {};
   const commands: string[] = [];
   const tools: string[] = [];
+  const toolSpecs = new Map<string, PiToolSpec>();
   const pi = {
     on(name: PiHookName, handler: (...args: unknown[]) => unknown) {
       registered.push(name);
@@ -41,8 +49,9 @@ function recordingPi(): {
     registerCommand(name: string) {
       commands.push(name);
     },
-    registerTool(tool: { name: string }) {
+    registerTool(tool: PiToolSpec) {
       tools.push(tool.name);
+      toolSpecs.set(tool.name, tool);
     },
     registerFlag: () => {},
     getFlag: () => undefined,
@@ -51,7 +60,7 @@ function recordingPi(): {
     setThinkingLevel: () => {},
     setModel: async () => true,
   } as ExtensionAPI;
-  return { pi, registered, handlers, commands, tools };
+  return { pi, registered, handlers, commands, tools, toolSpecs };
 }
 
 // A synthetic per-hook ctx carrying METHODS (not plain data) and a unique
@@ -153,6 +162,38 @@ describe("extension load + hook rail", () => {
     // retained state is plain data: structuredClone throws on a stored PI ctx (it
     // has methods); the live LhcInstance is held but excluded from the snapshot.
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
+  });
+
+  it("ages the board at agent_end even when pending-message capture throws", async () => {
+    const registered = recordingPi();
+    const connector = createConnector({
+      registryPath: store.registryPath,
+      newThreadFilePath: () => store.threadPath(),
+      readLaunchFlags: () => ({ ok: true, value: {} }),
+      startupValidationReporter: () => {},
+    });
+    connector.register(registered.pi);
+    const ctx = syntheticCtx("board-capture-failure");
+    await connector.handlers.session_start(makeSessionStart("startup"), ctx);
+
+    const post = registered.toolSpecs.get("board_post")!;
+    await post.execute("call-board", { text: "ttl one", ttl: 1 }, undefined, undefined, ctx);
+    const contextHook = registered.handlers.context!;
+    const request = [makeUserMessage("live"), makeToolResult({ id: "call-board", content: "posted" })];
+    expect(await contextHook({ type: "context", messages: request }, ctx)).toBeDefined();
+
+    await connector.handlers.message_end(makeMessageEnd(makeUserMessage("pending capture")), ctx);
+    const brokenCtx: ExtensionContext = {
+      ...ctx,
+      sessionManager: {
+        getEntries() {
+          throw new Error("session read failed");
+        },
+      },
+    };
+    await connector.handlers.agent_end(makeAgentEnd([]), brokenCtx);
+
+    expect(await contextHook({ type: "context", messages: request }, ctx)).toBeUndefined();
   });
 
   it("keeps SessionState plain-data-only — it survives structuredClone with every field populated", () => {
