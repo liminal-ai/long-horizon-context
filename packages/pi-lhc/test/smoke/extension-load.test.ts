@@ -14,7 +14,6 @@ import {
   makeAgentEnd,
   makeMessageEnd,
   makeSessionStart,
-  makeToolResult,
   makeUserMessage,
 } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
@@ -80,21 +79,15 @@ function syntheticCtx(marker: string): ExtensionContext {
 }
 
 describe("extension load + hook rail", () => {
-  it("registers the connector hook rail — context only for board injection, never history", () => {
+  it("registers the connector hook rail — no context hook, history stays SessionManager-seeded", () => {
     const { pi, registered, commands, tools } = recordingPi();
     activate(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
-    expect(registered).toContain("context");
-    expect(commands).toEqual([
-      "lhc-rehydrate",
-      "lhc-export-threadview",
-      "lhc-export-pi-session",
-      "board",
-      "lhc-tool-prune",
-    ]);
-    expect(tools).toEqual(["get_turns", "get_messages", "board_post"]);
+    expect(registered).not.toContain("context");
+    expect(commands).toEqual(["lhc-rehydrate", "lhc-export-threadview", "lhc-export-pi-session", "lhc-tool-prune"]);
+    expect(tools).toEqual(["get_turns", "get_messages"]);
   });
 
   it("registers explicit LHC launch flags for PI help and getFlag", () => {
@@ -164,7 +157,7 @@ describe("extension load + hook rail", () => {
     expect(() => structuredClone(connector.snapshot())).not.toThrow();
   });
 
-  it("ages the board at agent_end even when pending-message capture throws", async () => {
+  it("agent_end tolerates a throwing session read without throwing into PI", async () => {
     const registered = recordingPi();
     const connector = createConnector({
       registryPath: store.registryPath,
@@ -173,14 +166,8 @@ describe("extension load + hook rail", () => {
       startupValidationReporter: () => {},
     });
     connector.register(registered.pi);
-    const ctx = syntheticCtx("board-capture-failure");
+    const ctx = syntheticCtx("capture-failure");
     await connector.handlers.session_start(makeSessionStart("startup"), ctx);
-
-    const post = registered.toolSpecs.get("board_post")!;
-    await post.execute("call-board", { text: "ttl one", ttl: 1 }, undefined, undefined, ctx);
-    const contextHook = registered.handlers.context!;
-    const request = [makeUserMessage("live"), makeToolResult({ id: "call-board", content: "posted" })];
-    expect(await contextHook({ type: "context", messages: request }, ctx)).toBeDefined();
 
     await connector.handlers.message_end(makeMessageEnd(makeUserMessage("pending capture")), ctx);
     const brokenCtx: ExtensionContext = {
@@ -192,8 +179,6 @@ describe("extension load + hook rail", () => {
       },
     };
     await connector.handlers.agent_end(makeAgentEnd([]), brokenCtx);
-
-    expect(await contextHook({ type: "context", messages: request }, ctx)).toBeUndefined();
   });
 
   it("keeps SessionState plain-data-only — it survives structuredClone with every field populated", () => {
