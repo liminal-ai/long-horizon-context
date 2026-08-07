@@ -2,6 +2,8 @@
 
 Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
+The ethical layer above this doc is [00-ethical-framework](00-ethical-framework.md) — the constraints, written before LHC v2 existed, that shaped this architecture (archive immutability, the partial-persistence danger zone, relational memory). Read it before designing memory, salience, compression policy, or agent-identity surfaces.
+
 Long Horizon Context (LHC) is an SDK for managing an agentic harness's context and history. It keeps the full message history of a conversation as a durable record, and from that record builds shorter, summarized views that a harness can load and work from.
 
 ## Basics
