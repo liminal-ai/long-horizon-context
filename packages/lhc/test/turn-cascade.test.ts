@@ -345,6 +345,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       validEvent("tool_result", { payload: { toolCallId: "call", content, isError: false } }),
       validEvent("turn_end"),
     ]);
+    execSql(filePath, `UPDATE message SET token_estimate = 1073 WHERE message_id = 'm3'`);
     execSql(
       filePath,
       `UPDATE derivation
@@ -365,8 +366,11 @@ describe("Story 3: turn construction recovery cascade", () => {
     });
     expect(floored?.content).toContain("large-result-token");
     expect(floored?.content?.length).toBeLessThan(content.length);
-    expect(renderingContent(filePath)).toContain(floored?.content ?? "");
-    expect(renderingContent(filePath)).toContain("[fallback; outcome: succeeded]");
+    const rendering = renderingContent(filePath);
+    expect(rendering).toContain("large-result-token");
+    expect(rendering).toContain("[truncated — 1073 tok total]");
+    expect(rendering).not.toContain("chars]");
+    expect(rendering).toContain("[fallback; outcome: succeeded]");
   });
 
   it("floors failed tool-result summaries during turn construction without re-running classification inference", async () => {
@@ -384,6 +388,7 @@ describe("Story 3: turn construction recovery cascade", () => {
       validEvent("tool_result", { payload: { toolCallId: "call", content, isError: true } }),
       validEvent("turn_end"),
     ]);
+    execSql(filePath, `UPDATE message SET token_estimate = 2049 WHERE message_id = 'm3'`);
     deleteWorkItem(filePath, "w-m3-tool_result_summary-v1");
     const callsBeforeTurn = captured.length;
 
@@ -396,8 +401,11 @@ describe("Story 3: turn construction recovery cascade", () => {
     });
     expect(floored?.content).toContain("search-hit");
     expect(floored?.content?.length).toBeLessThan(content.length);
-    expect(renderingContent(filePath)).toContain(floored?.content ?? "");
-    expect(renderingContent(filePath)).toContain("[fallback; outcome: failed]");
+    const rendering = renderingContent(filePath);
+    expect(rendering).toContain("search-hit");
+    expect(rendering).toContain("[truncated — 2049 tok total]");
+    expect(rendering).not.toContain("chars]");
+    expect(rendering).toContain("[fallback; outcome: failed]");
   });
 
   it("recovers over-cap prompts with deterministic cleaned text and no smoothing model call", async () => {

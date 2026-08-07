@@ -18,13 +18,14 @@ import type {
   RenderingPartKind,
   ToolOutcome,
 } from "../../shared-tech/index.js";
-import { truncateForFallback } from "../../shared-tech/index.js";
+import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 
 // The member message as the composer sees it: kind plus projected blocks,
 // verbatim from the record (already deleted-filtered by the caller's read).
 export interface ComposeMessage {
   messageId: string;
   kind: RenderingPartKind;
+  tokenEstimate: number;
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
@@ -87,6 +88,11 @@ function promptFallbackText(message: ComposeMessage): string {
   return floor.length === 0 && original.length > 0 ? original : floor;
 }
 
+function truncateForRendering(text: string, tokenEstimate: number): string {
+  if (text.length <= FALLBACK_TRUNCATION_LIMIT) return text;
+  return `${text.slice(0, FALLBACK_TRUNCATION_LIMIT)}… [truncated — ${tokenEstimate} tok total]`;
+}
+
 // Mechanical outcome from the record alone: a tool call's outcome comes from
 // its paired result among the turn's messages.
 function recordOutcomes(messages: readonly ComposeMessage[]): Map<string, boolean> {
@@ -126,17 +132,26 @@ const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
       const toolName = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
-      return truncateForFallback(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`);
+      return truncateForRendering(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`, message.tokenEstimate);
     },
   },
   tool_result: {
     derivation: "tool_result_summary",
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
-      return truncateForFallback(typeof block["content"] === "string" ? block["content"] : "");
+      return truncateForRendering(typeof block["content"] === "string" ? block["content"] : "", message.tokenEstimate);
     },
   },
 };
+
+function readyText(message: ComposeMessage, derivedText: string): string {
+  if (message.kind !== "tool_result") return derivedText;
+  const block = message.blocks[0]?.content ?? {};
+  const rawText = typeof block["content"] === "string" ? block["content"] : "";
+  return derivedText === truncateForFallback(rawText)
+    ? truncateForRendering(rawText, message.tokenEstimate)
+    : derivedText;
+}
 
 // One per-message atom before grouping: its composed part plus the structural
 // facts the run-grouping reads. Tool atoms fold into runs; prompts and
@@ -174,7 +189,7 @@ function buildAtom(
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text: ready ? (derivation.content as string) : plan.fallbackText(message),
+    text: ready ? readyText(message, derivation.content as string) : plan.fallbackText(message),
     fallback: plan.derivation !== undefined && !ready,
   };
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {

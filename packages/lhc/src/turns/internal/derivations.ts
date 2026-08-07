@@ -40,10 +40,10 @@ export function readTurnSource(db: DatabaseSync, turnId: string): TurnSource | u
 export function readMemberMessages(db: DatabaseSync, turnId: string): ComposeMessage[] {
   const messages = db
     .prepare(
-      `SELECT message_id, kind FROM message
+      `SELECT message_id, kind, token_estimate FROM message
        WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order`,
     )
-    .all(turnId) as unknown as Array<{ message_id: string; kind: string }>;
+    .all(turnId) as unknown as Array<{ message_id: string; kind: string; token_estimate: number | bigint }>;
   const blockStmt = db.prepare(
     `SELECT block_type, content FROM message_block
      WHERE message_id = ? ORDER BY block_index`,
@@ -56,6 +56,7 @@ export function readMemberMessages(db: DatabaseSync, turnId: string): ComposeMes
     return {
       messageId: message.message_id,
       kind: message.kind as RenderingPartKind,
+      tokenEstimate: Number(message.token_estimate),
       blocks: blocks.map((block) => ({
         blockType: block.block_type,
         content: JSON.parse(block.content) as Record<string, unknown>,

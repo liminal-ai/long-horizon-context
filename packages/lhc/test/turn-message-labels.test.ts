@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { renderArrangementEntry } from "../src/thread-view/internal/render.js";
 import {
   type ComposeMessage,
+  composeDerivationKey,
   composePreDetailedAssembly,
   composeRenderingInput,
   composeStructuredTurnText,
@@ -12,8 +13,13 @@ import {
   wrapEntityXml,
 } from "../src/turns/internal/compose.js";
 
-function msg(messageId: string, kind: ComposeMessage["kind"], content: Record<string, unknown>): ComposeMessage {
-  return { messageId, kind, blocks: [{ blockType: kind, content }] };
+function msg(
+  messageId: string,
+  kind: ComposeMessage["kind"],
+  content: Record<string, unknown>,
+  tokenEstimate = 1,
+): ComposeMessage {
+  return { messageId, kind, tokenEstimate, blocks: [{ blockType: kind, content }] };
 }
 
 describe("wrapEntityXml", () => {
@@ -67,6 +73,42 @@ describe("composeStructuredTurnText labels", () => {
     expect(text).toContain("<t9>");
     // Run body is not double-wrapped in the lead message id.
     expect(text).not.toMatch(/<m2>\n\[tool run/);
+  });
+});
+
+describe("composeRenderingInput truncation markers", () => {
+  it("shows each truncated message's full stored token estimate", () => {
+    const result = "r".repeat(700);
+    const messages = [
+      msg("m1", "tool_call", { toolCallId: "c1", toolName: "exec", arguments: { cmd: "x".repeat(700) } }, 1073),
+      msg("m2", "tool_result", { toolCallId: "c1", content: result, isError: false }, 2049),
+    ];
+    const derivations = new Map([
+      [
+        composeDerivationKey("m2", "tool_result_summary"),
+        {
+          state: "ready" as const,
+          content: `${result.slice(0, 500)}… [truncated 200 chars]`,
+          sourceVersion: 1,
+        },
+      ],
+    ]);
+
+    const { parts } = composeRenderingInput(messages, derivations);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.text).toContain("… [truncated — 1073 tok total]");
+    expect(parts[0]?.text).toContain("… [truncated — 2049 tok total]");
+    expect(parts[0]?.text).not.toContain("chars]");
+  });
+
+  it("does not annotate untruncated tool messages", () => {
+    const messages = [
+      msg("m1", "tool_call", { toolCallId: "c1", toolName: "exec", arguments: { cmd: "true" } }, 12),
+      msg("m2", "tool_result", { toolCallId: "c1", content: "passed", isError: false }, 3),
+    ];
+
+    const { parts } = composeRenderingInput(messages, new Map());
+    expect(parts[0]?.text).not.toContain("truncated");
   });
 });
 
