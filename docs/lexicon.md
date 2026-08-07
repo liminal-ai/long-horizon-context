@@ -1,9 +1,10 @@
-# Lexicon
+# Lexicon — staging ledger
 
-Canonical project vocabulary. Terms enter here when they are decided, not
-while they are in transit. Reference this during design, code, and doc work;
-if a needed term is missing, propose it — don't coin silently. (Alignment
-work: bead `long-horizon-context-7gu`.)
+Newly decided vocabulary lands here at decision time. The durable lexicon is
+[onboard/01-core-concepts](onboard/01-core-concepts.md) — terms fold into it
+as their designs become full, and leave here. Terms enter when decided, not
+while in transit. If a needed term is missing, propose it — don't coin
+silently. (Alignment work: bead `long-horizon-context-7gu`.)
 
 ## Terms
 
