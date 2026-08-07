@@ -41,6 +41,27 @@ describe("prompt block", () => {
     expect(liveText).toContain("</notification-board>");
   });
 
+  it("wraps array-valued user content, including images, before the board block", () => {
+    const board = freshBoard();
+    postEntry(board, { kind: "note", ids: [], text: "recalled text", ttl: 2, src: "dev" });
+    const live: AgentMessage = {
+      role: "user",
+      content: [
+        { type: "text", text: "inspect this" },
+        { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
+      ],
+      timestamp: 1,
+    };
+
+    const injected = injectBoard(board, [live])!;
+    const content = injected[0]!.content as Array<{ type: string; text?: string }>;
+    expect(content.map((part) => part.type)).toEqual(["text", "text", "image", "text", "text"]);
+    expect(content[0]!.text).toBe("<user-prompt>\n");
+    expect(content[1]!.text).toBe("inspect this");
+    expect(content[3]!.text).toBe("\n</user-prompt>\n\n");
+    expect(content[4]!.text).toContain(BOARD_HEADER);
+  });
+
   it("returns undefined when the board is empty or off", () => {
     const board = freshBoard();
     expect(injectBoard(board, [user("hi")])).toBeUndefined();

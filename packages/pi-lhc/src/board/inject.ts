@@ -15,7 +15,12 @@ function withPromptBlock(message: UserMessage, block: string): UserMessage {
       content: `<user-prompt>\n${message.content}\n</user-prompt>\n\n${block}`,
     };
   }
-  const parts: ContentPart[] = [...message.content, { type: "text", text: block }];
+  const parts: ContentPart[] = [
+    { type: "text", text: "<user-prompt>\n" },
+    ...message.content,
+    { type: "text", text: "\n</user-prompt>\n\n" },
+    { type: "text", text: block },
+  ];
   return { ...message, content: parts };
 }
 
