@@ -10,12 +10,7 @@ import {
 } from "../../src/index.js";
 import { createSessionState } from "../../src/lifecycle/state.js";
 import type { ExtensionAPI, ExtensionContext, PiHookName, PiToolSpec } from "../../src/pi/types.js";
-import {
-  makeAgentEnd,
-  makeMessageEnd,
-  makeSessionStart,
-  makeUserMessage,
-} from "../fixtures/synthetic.js";
+import { makeAgentEnd, makeMessageEnd, makeSessionStart, makeUserMessage } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
 
 let store: TempStore;
