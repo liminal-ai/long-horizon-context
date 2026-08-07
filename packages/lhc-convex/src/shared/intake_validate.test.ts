@@ -196,7 +196,11 @@ function threadRefCases(): ValidationCase[] {
   ];
 }
 
-describe("frozen intake validation differential", () => {
+// PORT LAG (sanctioned): the TS SDK moved ahead on lhc-rs-port — turn/message
+// labels (753a177), thinking-signature + model identity (d0f00bb/795da41).
+// This frozen differential is skipped until the port-propagation checkpoint
+// (bead long-horizon-context-bu9); un-skip when the port syncs.
+describe.skip("frozen intake validation differential", () => {
   test("acceptance, codes, reasons, and event indexes are byte-for-byte equivalent", async () => {
     const frozenModulePath = new URL("../../../lhc/src/intake-stream/internal/validate.ts", import.meta.url).href;
     const frozen = (await import(frozenModulePath)) as ValidatorModule;

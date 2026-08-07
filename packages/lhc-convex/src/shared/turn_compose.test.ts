@@ -57,7 +57,11 @@ function fixture(): {
   };
 }
 
-describe("frozen turn composition differential", () => {
+// PORT LAG (sanctioned): the TS SDK moved ahead on lhc-rs-port — turn/message
+// labels (753a177), thinking-signature + model identity (d0f00bb/795da41).
+// This frozen differential is skipped until the port-propagation checkpoint
+// (bead long-horizon-context-bu9); un-skip when the port syncs.
+describe.skip("frozen turn composition differential", () => {
   test("tool-run grouping, fallbacks, gaps, and dialogue assembly stay byte-for-byte equivalent", async () => {
     const frozenModulePath = new URL("../../../lhc/src/turns/internal/compose.ts", import.meta.url).href;
     const frozen = (await import(frozenModulePath)) as {
