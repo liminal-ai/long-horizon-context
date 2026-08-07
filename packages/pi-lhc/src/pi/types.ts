@@ -223,6 +223,8 @@ export interface PiToolSpec {
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters: unknown;
+  /** "sequential" serializes this tool against other tool calls. */
+  executionMode?: "sequential" | "parallel";
   execute(
     toolCallId: string,
     params: unknown,

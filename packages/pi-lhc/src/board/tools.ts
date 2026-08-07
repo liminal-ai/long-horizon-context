@@ -111,6 +111,7 @@ export function registerBoardTools(pi: ExtensionAPI, deps: BoardToolDeps): void 
       "until the token budget is spent; the receipt lists any ids that did not fit.",
     promptSnippet: "Pull full past turns onto the notification board by <tNNN> id",
     promptGuidelines: HISTORY_LABEL_GUIDELINES,
+    executionMode: "sequential",
     parameters: Type.Object({
       ids: Type.Array(Type.String({ description: "Turn ids, e.g. t211" }), { minItems: 1 }),
     }),
@@ -150,6 +151,7 @@ export function registerBoardTools(pi: ExtensionAPI, deps: BoardToolDeps): void 
       "only a receipt. Served in order under a token budget; the receipt lists any ids that " +
       "did not fit.",
     promptSnippet: "Pull verbatim past messages onto the notification board by <mNNN> id",
+    executionMode: "sequential",
     parameters: Type.Object({
       ids: Type.Array(Type.String({ description: "Message ids, e.g. m3177" }), { minItems: 1 }),
     }),
@@ -184,6 +186,7 @@ export function registerBoardTools(pi: ExtensionAPI, deps: BoardToolDeps): void 
     description:
       "Dev/testing rig: post arbitrary text onto the transient notification board with a ttl " +
       "(turns until it disappears). Use for probing board behavior; not a memory store.",
+    executionMode: "sequential",
     parameters: Type.Object({
       text: Type.String({ description: "Entry text" }),
       ttl: Type.Optional(

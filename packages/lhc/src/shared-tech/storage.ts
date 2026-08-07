@@ -7,9 +7,12 @@ const databasePaths = new WeakMap<DatabaseSync, string>();
 export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   databasePaths.set(db, path);
+  // busy_timeout FIRST: journal_mode=WAL takes a brief write lock on open, and
+  // without a timeout a concurrent opener gets an instant SQLITE_BUSY
+  // (observed live: two parallel retrieval tools racing at open).
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
-  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA synchronous = NORMAL;");
   return db;
 }
