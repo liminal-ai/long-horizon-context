@@ -6,6 +6,7 @@ import {
   THREAD_SCHEMA_VERSION_1,
   THREAD_SCHEMA_VERSION_2,
   THREAD_SCHEMA_VERSION_4,
+  THREAD_SCHEMA_VERSION_5,
   THREAD_SCHEMA_VERSION_6,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
@@ -588,6 +589,46 @@ describe("thread schema migration", () => {
         .prepare(`SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0`)
         .get() as { content: string };
       expect(JSON.parse(prompt.content)).toEqual({ text: "v4 migration prompt" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a genuine v5 file by creating the retrieval impression table and indexes", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const old = new DatabaseSync(filePath);
+    try {
+      old.exec("DROP TABLE retrieval_impression;");
+      old.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_5};`);
+      expect(
+        old.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
+      ).toBeUndefined();
+    } finally {
+      old.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
+      ).toBeDefined();
+      const indexes = (
+        db
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index' AND name LIKE 'idx_retrieval_impression_%' ORDER BY name`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(indexes).toEqual(["idx_retrieval_impression_call", "idx_retrieval_impression_entity"]);
     } finally {
       db.close();
     }
