@@ -153,9 +153,7 @@ describe("board_post", () => {
 
   it("surfaces board-off as a tool error, not a silent drop", async () => {
     board.enabled = false;
-    const result = await runTool("board_post", "call-8", { text: "x" });
-    expect(result.isError).toBe(true);
-    expect(receiptText(result)).toContain("board is off");
+    await expect(runTool("board_post", "call-8", { text: "x" })).rejects.toThrow(/board is off/);
   });
 });
 

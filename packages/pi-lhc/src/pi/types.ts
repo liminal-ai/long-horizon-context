@@ -214,8 +214,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
  *  `parameters` is a TypeBox schema (plain JSON-schema object at runtime). */
 export interface PiToolResult {
   content: Array<{ type: "text"; text: string }>;
-  details?: unknown;
-  isError?: boolean;
+  details: unknown;
 }
 export interface PiToolSpec {
   name: string;
