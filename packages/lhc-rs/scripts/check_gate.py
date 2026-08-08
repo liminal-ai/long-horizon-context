@@ -12,7 +12,7 @@ Rust-adapted):
              final mode (crate-wide real todo count == 0): every non-ignored
              cargo ok is a pass. A nonempty allowlist in final mode is a
              GATE FAIL (transitional list retired). Target then is exactly
-             568 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
+             573 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
   ignored    #[ignore] tests, reported for the ledger
   suspicious transitional: cargo ok not on the exact-name allowlist
 
@@ -811,7 +811,14 @@ def classify() -> int:
             binary = f"doctest_{m.group(1)}"
             pending_trybuild = None
             continue
-        m = re.match(r"test (\S+) \.\.\. (ok|FAILED|ignored)\b", line)
+        # Cargo prints should_panic cases as:
+        #   test path::name - should panic ... ok
+        # Optional " - should panic" must be accepted or lib totals drift by 1
+        # (R6 closing: assemble_result section-cap should_panic).
+        m = re.match(
+            r"test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)\b",
+            line,
+        )
         if m:
             # trybuild prints nested `test tests/ui/foo.rs ... ok` lines that
             # are not cargo test cases — ignore path-shaped names so totals
@@ -823,7 +830,7 @@ def classify() -> int:
             pending_trybuild = None
             section = None
             continue
-        m = re.match(r"test (\S+) \.\.\.(?:\s|$)", line)
+        m = re.match(r"test (\S+)(?: - should panic)? \.\.\.(?:\s|$)", line)
         if m:
             case = m.group(1)
             if "/" in case or case.endswith(".rs"):
@@ -904,10 +911,11 @@ def classify() -> int:
         return 1
     if final_mode:
         # Explicit reconciled target — do not replace the transitional list
-        # with 568 names or a broad/prefix wildcard.
-        # 568 = 565 (R6 id cap) + 3 hardening legs (exact-cap, invalid-id clamp, budget ceiling).
+        # with 573 names or a broad/prefix wildcard.
+        # 573 = 568 (R6 hardening) + 2 format (section-cap reject, maximal-output bound)
+        # + 3 id-cap rigor (budget-slice proof, digit-boundary, UTF-16 echo clamp).
         if (
-            len(buckets["passed"]) != 568
+            len(buckets["passed"]) != 573
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -915,7 +923,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=568 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=573 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

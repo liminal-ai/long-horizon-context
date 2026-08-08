@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::shared_tech::errors::{OpResult, storage_failure};
-use crate::shared_tech::js_json::{js_json_stringify, js_json_stringify_pretty};
+use crate::shared_tech::js_json::{js_json_stringify, js_json_stringify_pretty, js_len, js_slice};
 use crate::shared_tech::persist::{create_db_read_transaction, create_db_write_transaction};
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::shared_tech::token_counting::{estimate_tokens, slice_tokens};
@@ -50,6 +50,12 @@ pub const MAX_RETRIEVAL_IDS_PER_CALL: usize = 32;
 /// impression rows, so shape validation is also a length bound (validator
 /// P0, 2026-08-08 / TS `RETRIEVAL_ID_PATTERN`).
 pub const RETRIEVAL_ID_PATTERN: &str = r"^[tm]\d{1,12}$";
+
+/// Documented upper bound on a **maximal** model-visible retrieval assembly
+/// (32 sections, all sliced, clamped invalid echoes, all footers). Proven by
+/// a static worst-case test — **not** enforced by runtime truncation (TS
+/// parity / Fable R6 closing).
+pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 10_500;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,14 +89,13 @@ impl UnservedReason {
 }
 
 /// Echo bound for invalid ids in receipts/impressions (TS `clampIdEcho`).
-fn clamp_id_echo(id: &str) -> String {
-    if id.chars().count() <= 32 {
+/// Counts **UTF-16 code units** so non-ASCII echoes are byte-identical with
+/// TS `id.slice(0, 32) + "…"`.
+pub fn clamp_id_echo(id: &str) -> String {
+    if js_len(id) <= 32 {
         id.to_string()
     } else {
-        // TS: id.slice(0, 32) is UTF-16 code units; for ASCII ids this matches.
-        // Use char-based clamp for safety on non-ASCII, then ellipsis.
-        let prefix: String = id.chars().take(32).collect();
-        format!("{prefix}…")
+        format!("{}…", js_slice(id, 0, Some(32)))
     }
 }
 

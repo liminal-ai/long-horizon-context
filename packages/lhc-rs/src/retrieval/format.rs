@@ -93,12 +93,31 @@ pub fn unserved_line(tool: &str, missed: &UnservedEntity) -> String {
 /// - Slice footers (continuation / end / nothing-at-offset) and unserved
 ///   receipts are **live guidance** and render **after** `</recalled-history>`
 ///   (validator contract: recalled content inside, live guidance outside).
+/// - Section count is hard-capped at [`crate::retrieval::MAX_RETRIEVAL_IDS_PER_CALL`]
+///   (mirrors the id cap — closes the arbitrary-sections hole). Over-cap is a
+///   panic/reject, not silent truncation.
 pub fn assemble_result(
     tool: &str,
     served_sections: &[String],
     slice_footers: &[String],
     unserved: &[UnservedEntity],
 ) -> String {
+    use crate::retrieval::MAX_RETRIEVAL_IDS_PER_CALL;
+    assert!(
+        served_sections.len() <= MAX_RETRIEVAL_IDS_PER_CALL,
+        "retrieval assemble_result: too many sections — {} requested, cap is {MAX_RETRIEVAL_IDS_PER_CALL} (mirrors id cap)",
+        served_sections.len()
+    );
+    assert!(
+        slice_footers.len() <= MAX_RETRIEVAL_IDS_PER_CALL,
+        "retrieval assemble_result: too many slice footers — {} requested, cap is {MAX_RETRIEVAL_IDS_PER_CALL}",
+        slice_footers.len()
+    );
+    assert!(
+        unserved.len() <= MAX_RETRIEVAL_IDS_PER_CALL,
+        "retrieval assemble_result: too many unserved rows — {} requested, cap is {MAX_RETRIEVAL_IDS_PER_CALL}",
+        unserved.len()
+    );
     let mut parts: Vec<String> = Vec::new();
     if !served_sections.is_empty() {
         let mut body = Vec::with_capacity(served_sections.len() + 2);
@@ -313,5 +332,64 @@ mod tests {
             "continuation instruction must not appear inside the envelope"
         );
         assert!(got.contains(r#"get_turns({"ids":["t1"],"from":500})"#));
+    }
+
+    #[test]
+    #[should_panic(expected = "too many sections")]
+    fn assemble_result_rejects_more_than_id_cap_sections() {
+        use crate::retrieval::MAX_RETRIEVAL_IDS_PER_CALL;
+        let sections: Vec<String> = (0..=MAX_RETRIEVAL_IDS_PER_CALL)
+            .map(|i| format!("section-{i}"))
+            .collect();
+        let _ = assemble_result("get_turns", &sections, &[], &[]);
+    }
+
+    /// Static worst-case assembly under the documented
+    /// [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`] bound (proven, not
+    /// runtime-truncated). 32 body sections + 32 slice footers + 32 invalid
+    /// unserved rows with max-length clamped echoes.
+    #[test]
+    fn maximal_pull_assembly_under_output_token_bound() {
+        use crate::retrieval::{
+            MAX_RETRIEVAL_IDS_PER_CALL, MAX_RETRIEVAL_OUTPUT_TOKENS, clamp_id_echo,
+        };
+        use crate::shared_tech::token_counting::estimate_tokens;
+
+        let n = MAX_RETRIEVAL_IDS_PER_CALL;
+        // Body ~250 tokens of text each (far under 8000; worst case is many
+        // footers/receipts, not full-budget bodies — see bound docs).
+        let body_line = "word ".repeat(50);
+        let sections: Vec<String> = (0..n)
+            .map(|i| turn_section(&format!("<t{i}>\n{body_line}</t{i}>")))
+            .collect();
+        let slice = SliceReceipt {
+            from_token: 0,
+            to_token: 8000,
+            total_tokens: 12_000,
+        };
+        let footers: Vec<String> = (0..n)
+            .map(|i| slice_footer("get_turns", &format!("t{i}"), &slice))
+            .collect();
+        // Invalid echoes: long non-ASCII so UTF-16 clamp is exercised; each
+        // becomes 32 code units + ellipsis after clamp_id_echo.
+        let long_invalid = format!("x{}", "🚀".repeat(40));
+        let echo = clamp_id_echo(&long_invalid);
+        let unserved: Vec<UnservedEntity> = (0..n)
+            .map(|_| UnservedEntity {
+                id: echo.clone(),
+                reason: UnservedReason::Invalid,
+                tokens: None,
+            })
+            .collect();
+
+        let assembled = assemble_result("get_turns", &sections, &footers, &unserved);
+        let tokens = estimate_tokens(&assembled);
+        assert!(
+            tokens <= MAX_RETRIEVAL_OUTPUT_TOKENS,
+            "maximal assembly {tokens} tok must be ≤ {MAX_RETRIEVAL_OUTPUT_TOKENS}"
+        );
+        assert_eq!(sections.len(), n);
+        assert_eq!(footers.len(), n);
+        assert_eq!(unserved.len(), n);
     }
 }

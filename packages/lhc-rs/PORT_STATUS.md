@@ -2675,3 +2675,13 @@ refuse per-id as `invalid` with 32-char echo clamp (+ellipsis) in unserved
 and impression rows; `tokenBudget` clamps to
 `DEFAULT_RETRIEVAL_TOKEN_BUDGET` (8000) ceiling; exact-32 unique ids pass.
 +3 tests → passed **568**, classified **583**, binaries **67**.
+
+## 2026-08-08 — R6 closing — bounded-output contract + validation rigor
+
+Fable final: (a) budget ceiling proves real >8000-body slice at 8000; (b)
+40k-id exact 32-unit prefix + ellipsis + receipt/impression echo equality;
+(c) 12-digit valid / 13-digit invalid; (d) UTF-16 clamp via `js_slice`/`js_len`.
+Contractual: `assemble_result` rejects >32 sections/footers/unserved;
+`MAX_RETRIEVAL_OUTPUT_TOKENS = 10_500` documented + static worst-case assembly
+under bound (no runtime truncation). +5 tests → passed **573**, classified
+**588**, binaries **67**.

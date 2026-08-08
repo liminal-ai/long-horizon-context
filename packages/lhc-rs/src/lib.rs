@@ -60,7 +60,7 @@ pub use sdk::{
 // Retrieval domain types (TS `export * as retrieval` + named shapes used by hosts/tests).
 pub use sdk::{
     DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, MAX_RETRIEVAL_IDS_PER_CALL,
-    RETRIEVAL_SLICE_FLOOR, RetrievalOptions,
-    RetrievalReceipt, RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt,
-    TokenSlice, UnservedEntity, UnservedReason, slice_tokens,
+    MAX_RETRIEVAL_OUTPUT_TOKENS, RETRIEVAL_SLICE_FLOOR, RetrievalOptions, RetrievalReceipt,
+    RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt, TokenSlice,
+    UnservedEntity, UnservedReason, clamp_id_echo, slice_tokens,
 };
