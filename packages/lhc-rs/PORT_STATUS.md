@@ -2682,6 +2682,14 @@ Fable final: (a) budget ceiling proves real >8000-body slice at 8000; (b)
 40k-id exact 32-unit prefix + ellipsis + receipt/impression echo equality;
 (c) 12-digit valid / 13-digit invalid; (d) UTF-16 clamp via `js_slice`/`js_len`.
 Contractual: `assemble_result` rejects >32 sections/footers/unserved;
-`MAX_RETRIEVAL_OUTPUT_TOKENS = 10_500` documented + static worst-case assembly
-under bound (no runtime truncation). +5 tests → passed **573**, classified
-**588**, binaries **67**.
+`MAX_RETRIEVAL_OUTPUT_TOKENS` documented + static worst-case assembly under
+bound (no runtime truncation). +5 tests → passed **573**, classified **588**,
+binaries **67**.
+
+## 2026-08-08 — R6 final — honest worst-case bound (12k)
+
+Validator failed the soft ~4.4k worst-case proof; real maximal class measured
+11_318. Fable set `MAX_RETRIEVAL_OUTPUT_TOKENS = 12_000`. Fixture rebuilt from
+maximals (~8k body aggregate + 32 max footers + 32 budget unserved); measured
+**11605** tok ≤ 12_000. +2 should_panic (footer-cap, unserved-cap) → passed
+**575**, classified **590**, binaries **67**.

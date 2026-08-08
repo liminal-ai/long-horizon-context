@@ -344,49 +344,145 @@ mod tests {
         let _ = assemble_result("get_turns", &sections, &[], &[]);
     }
 
-    /// Static worst-case assembly under the documented
-    /// [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`] bound (proven, not
-    /// runtime-truncated). 32 body sections + 32 slice footers + 32 invalid
-    /// unserved rows with max-length clamped echoes.
+    #[test]
+    #[should_panic(expected = "too many slice footers")]
+    fn assemble_result_rejects_more_than_id_cap_footers() {
+        use crate::retrieval::MAX_RETRIEVAL_IDS_PER_CALL;
+        let footers: Vec<String> = (0..=MAX_RETRIEVAL_IDS_PER_CALL)
+            .map(|i| format!("footer-{i}"))
+            .collect();
+        // One section so assembly is otherwise valid; footers alone over-cap.
+        let _ = assemble_result("get_turns", &["body".into()], &footers, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "too many unserved rows")]
+    fn assemble_result_rejects_more_than_id_cap_unserved() {
+        use crate::retrieval::MAX_RETRIEVAL_IDS_PER_CALL;
+        let unserved: Vec<UnservedEntity> = (0..=MAX_RETRIEVAL_IDS_PER_CALL)
+            .map(|i| UnservedEntity {
+                id: format!("t{i}"),
+                reason: UnservedReason::NotFound,
+                tokens: None,
+            })
+            .collect();
+        let _ = assemble_result("get_turns", &[], &[], &unserved);
+    }
+
+    /// Static worst-case under [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`]
+    /// (12_000). Built from **maximal permitted** values:
+    /// - body aggregate = DEFAULT_RETRIEVAL_TOKEN_BUDGET (8000) of *inner*
+    ///   section text across 32 independently padded slices (byte-splitting a
+    ///   single 8k string under-counts BPE)
+    /// - 32 footers with maximal valid ids (`t` + 12 digits) + full
+    ///   continuation receipts (to=8000, total=16000)
+    /// - 32 unserved budget receipts with 33-char clamped echoes (32 UTF-16
+    ///   units + ellipsis) and large token fields (longest unserved_line form)
+    ///
+    /// Measured assembly (estimate_tokens): **11605** tok for this fixture
+    /// (envelope + ~8k body aggregate + 32 max footers + 32 budget unserved
+    /// with 33-char clamped echoes). Validator's earlier independent class
+    /// measured 11_318; Fable set the contract ceiling at **12_000** with
+    /// headroom. Soft ~4.4k bodies are rejected by requiring body aggregate
+    /// ~8k. Proven only — no runtime truncation.
     #[test]
     fn maximal_pull_assembly_under_output_token_bound() {
         use crate::retrieval::{
-            MAX_RETRIEVAL_IDS_PER_CALL, MAX_RETRIEVAL_OUTPUT_TOKENS, clamp_id_echo,
+            DEFAULT_RETRIEVAL_TOKEN_BUDGET, MAX_RETRIEVAL_IDS_PER_CALL,
+            MAX_RETRIEVAL_OUTPUT_TOKENS, clamp_id_echo,
         };
         use crate::shared_tech::token_counting::estimate_tokens;
 
         let n = MAX_RETRIEVAL_IDS_PER_CALL;
-        // Body ~250 tokens of text each (far under 8000; worst case is many
-        // footers/receipts, not full-budget bodies — see bound docs).
-        let body_line = "word ".repeat(50);
+        let budget = DEFAULT_RETRIEVAL_TOKEN_BUDGET;
+        // Per-section share of the 8k budget (last section absorbs remainder).
+        let per = (budget as usize) / n;
+        let last = (budget as usize) - per * (n - 1);
+
+        fn pad_to_tokens(target: i64) -> String {
+            let unit = " the quick brown fox jumps over the lazy dog";
+            let mut s = String::new();
+            while estimate_tokens(&s) < target {
+                s.push_str(unit);
+            }
+            while estimate_tokens(&s) > target && !s.is_empty() {
+                s.pop();
+            }
+            while estimate_tokens(&s) < target {
+                s.push('x');
+            }
+            if estimate_tokens(&s) > target {
+                while estimate_tokens(&s) > target {
+                    s.pop();
+                }
+            }
+            s
+        }
+
+        let mut body_tok_sum = 0i64;
         let sections: Vec<String> = (0..n)
-            .map(|i| turn_section(&format!("<t{i}>\n{body_line}</t{i}>")))
+            .map(|i| {
+                let target = if i + 1 == n { last as i64 } else { per as i64 };
+                let inner = pad_to_tokens(target);
+                body_tok_sum += estimate_tokens(&inner);
+                // Maximal valid id: t + 12 digits.
+                let id = format!("t{:012}", i);
+                turn_section(&format!("<{id}>\n{inner}\n</{id}>"))
+            })
             .collect();
+        assert!(
+            body_tok_sum >= budget - 32 && body_tok_sum <= budget + 32,
+            "inner body aggregate should be ~{budget} tok, got {body_tok_sum}"
+        );
+        // Soft ~4.4k-body fixtures fail this body-aggregate check.
+
+        // Full continuation footers on every section (max remaining / next-call).
         let slice = SliceReceipt {
             from_token: 0,
-            to_token: 8000,
-            total_tokens: 12_000,
+            to_token: budget,
+            total_tokens: budget * 2,
         };
         let footers: Vec<String> = (0..n)
-            .map(|i| slice_footer("get_turns", &format!("t{i}"), &slice))
+            .map(|i| {
+                let id = format!("t{:012}", i);
+                slice_footer("get_turns", &id, &slice)
+            })
             .collect();
-        // Invalid echoes: long non-ASCII so UTF-16 clamp is exercised; each
-        // becomes 32 code units + ellipsis after clamp_id_echo.
-        let long_invalid = format!("x{}", "🚀".repeat(40));
+
+        // Longest unserved form: budget receipt with 33-char clamped echo + size.
+        let long_invalid = format!("t{}", "9".repeat(40_000));
         let echo = clamp_id_echo(&long_invalid);
+        assert_eq!(
+            crate::shared_tech::js_json::js_len(&echo[..echo.len() - "…".len()]),
+            32,
+            "clamped echo prefix must be 32 UTF-16 units"
+        );
+        assert!(echo.ends_with('…'));
         let unserved: Vec<UnservedEntity> = (0..n)
             .map(|_| UnservedEntity {
                 id: echo.clone(),
-                reason: UnservedReason::Invalid,
-                tokens: None,
+                reason: UnservedReason::Budget,
+                // Large size field maximizes the budget-receipt line.
+                tokens: Some(i64::from(DEFAULT_RETRIEVAL_TOKEN_BUDGET) * 100),
             })
             .collect();
 
         let assembled = assemble_result("get_turns", &sections, &footers, &unserved);
         let tokens = estimate_tokens(&assembled);
+        // Soft body-only fixtures were ~4.4k; this maximal class measures 11605.
+        // Bound is 12_000. Reject under-fill and over-bound.
         assert!(
             tokens <= MAX_RETRIEVAL_OUTPUT_TOKENS,
             "maximal assembly {tokens} tok must be ≤ {MAX_RETRIEVAL_OUTPUT_TOKENS}"
+        );
+        assert!(
+            tokens >= 10_000,
+            "fixture under-filled ({tokens} tok); body aggregate must be ~8k + maximals"
+        );
+        // Pin measured figure (honest worst-case under real maximals).
+        assert_eq!(
+            tokens, 11_605,
+            "measured figure drifted ({tokens}); update comment + pin if format changed"
         );
         assert_eq!(sections.len(), n);
         assert_eq!(footers.len(), n);

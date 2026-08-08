@@ -52,10 +52,12 @@ pub const MAX_RETRIEVAL_IDS_PER_CALL: usize = 32;
 pub const RETRIEVAL_ID_PATTERN: &str = r"^[tm]\d{1,12}$";
 
 /// Documented upper bound on a **maximal** model-visible retrieval assembly
-/// (32 sections, all sliced, clamped invalid echoes, all footers). Proven by
-/// a static worst-case test — **not** enforced by runtime truncation (TS
-/// parity / Fable R6 closing).
-pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 10_500;
+/// (≤8000-token sliced body aggregate + 32 max-id footers + 32 max-echo
+/// unserved + envelope). Proven by a static worst-case test at ~11.3k tokens
+/// under real maximals (validator measured 11_318) — Fable set the contract
+/// ceiling at **12_000** with headroom. **Not** enforced by runtime truncation
+/// (TS parity / Fable R6 final).
+pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
