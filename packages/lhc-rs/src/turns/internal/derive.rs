@@ -170,6 +170,11 @@ fn rendering_part_label(kind: RenderingPartKind) -> &'static str {
 fn compose_structured_turn_text(parts: &[RenderingPart]) -> String {
     parts
         .iter()
+        // Empty thinking has no usable representation in a text band. Leaving it
+        // here bypasses the serving-exit tail filters once the turn is compacted.
+        .filter(|part| {
+            part.kind != RenderingPartKind::AssistantThinking || !part.text.trim().is_empty()
+        })
         .map(|part| {
             let mut annotations: Vec<String> = Vec::new();
             if part.fallback {

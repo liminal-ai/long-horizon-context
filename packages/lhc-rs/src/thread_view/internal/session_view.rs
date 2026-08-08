@@ -3,7 +3,9 @@
 use serde_json::{Map, Value};
 
 use super::boundary::read_boundary_position;
-use super::render::{TailRenderContext, tool_names_by_call_id, tool_result_session_content};
+use super::render::{
+    TailRenderContext, is_empty_thinking_husk, tool_names_by_call_id, tool_result_session_content,
+};
 use super::snapshot::{
     TailMessageRow, read_tail_messages, read_thread_metadata, read_view_snapshot,
 };
@@ -211,6 +213,9 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
     let mut assistant_sources: Vec<SessionThreadViewEntrySource> = Vec::new();
 
     for row in rows {
+        if is_empty_thinking_husk(row) {
+            continue;
+        }
         match row.kind {
             RenderingPartKind::UserPrompt => {
                 flush_assistant(&mut assistant_parts, &mut assistant_sources, &mut entries);

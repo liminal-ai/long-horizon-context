@@ -2,9 +2,10 @@
 
 use super::boundary::read_boundary_position;
 use super::render::{
-    AssembledContextMessage, TailRenderContext, render_band_message, render_tail_message,
-    tool_names_by_call_id,
+    AssembledContextMessage, TailRenderContext, has_thinking_text, is_empty_thinking_husk,
+    render_band_message, render_tail_message, tool_names_by_call_id,
 };
+use crate::shared_tech::derivation::RenderingPartKind;
 use super::snapshot::{ViewSnapshot, read_tail_messages, read_view_snapshot};
 use crate::shared_tech::storage::Db;
 
@@ -42,6 +43,14 @@ pub fn assemble_view(db: &Db) -> AssembledView {
         }
     }
     for row in &tail_rows {
+        // Skip true husks always; skip signature-only thinking here because the
+        // text LLM path cannot carry the opaque token (session-view still serves it).
+        if is_empty_thinking_husk(row) {
+            continue;
+        }
+        if row.kind == RenderingPartKind::AssistantThinking && !has_thinking_text(row) {
+            continue;
+        }
         entries.push(AssembledViewEntry {
             message: render_tail_message(row, &render_ctx),
             entry_id: row.message_id.clone(),

@@ -152,6 +152,47 @@ fn text_of(message: &TailMessageRow) -> String {
     }
 }
 
+// Anthropic models running with omitted thinking display emit thinking blocks
+// whose text is empty, with the encrypted reasoning carried (if at all) in a
+// signature. An empty-text, unsigned block carries nothing a model can use,
+// and the two serving exits rendered it divergently (standalone [thinking]
+// husk vs empty adjacent part). Skip such rows at serve time only — capture
+// and derivations keep them.
+//
+// Signed empty-text blocks ARE useful on the session-view (PI resume) path,
+// where thinkingSignature can be round-tripped to the provider. They are NOT
+// useful on the text LLM-request path, which can only emit [thinking] fences.
+/// True when `assistant_thinking` has empty/whitespace text and no signature.
+pub fn is_empty_thinking_husk(message: &TailMessageRow) -> bool {
+    if message.kind != RenderingPartKind::AssistantThinking {
+        return false;
+    }
+    let content = block_content(message);
+    let has_text = match content.get("text") {
+        Some(Value::String(s)) => !s.trim().is_empty(),
+        _ => false,
+    };
+    let signature = content
+        .get("signature")
+        .or_else(|| content.get("thinkingSignature"));
+    let has_signature = match signature {
+        Some(Value::String(s)) => !s.is_empty(),
+        _ => false,
+    };
+    !has_text && !has_signature
+}
+
+/// True when thinking has non-empty text (the only form the text LLM path can render).
+pub fn has_thinking_text(message: &TailMessageRow) -> bool {
+    if message.kind != RenderingPartKind::AssistantThinking {
+        return false;
+    }
+    match block_content(message).get("text") {
+        Some(Value::String(s)) => !s.trim().is_empty(),
+        _ => false,
+    }
+}
+
 /// What the tail renderer needs beyond the message itself: the boundary
 /// position (short/full selection) and the call-id → tool-name pairing
 /// (results carry only their call id).

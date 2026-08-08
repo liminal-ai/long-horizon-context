@@ -2574,3 +2574,12 @@ Gate live state before the R1–R6 propagation slices: exact-todo 0, classified
 baseline for the wave: `packages/lhc-rs` content at branch tip `35dde3a`;
 last substantive rs port commit `a3deafd` (later `caffbf2` touched config
 only). README gate block synchronized to these figures this date.
+
+## 2026-08-08 — R1 husk skip at serving exits
+
+Slice R1 (`aa56b8b`, `f1f6323`): `is_empty_thinking_husk` + `has_thinking_text`
+at session export, tail/band assembly (signature-only skip), and stored
+`turn_rendering` composition. Capture untouched. Tests: +12
+(`tests/empty_thinking_husk.rs`). Gate arithmetic: classified **523**
+(cargo-reported 523, binaries 61), passed **508** (+12), notimpl 0, ignored
+**15**, wrong 0, suspicious 0.
