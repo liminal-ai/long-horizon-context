@@ -7,7 +7,10 @@ let encoder: Tiktoken | null = null;
 
 export function estimateTokens(text: string): number {
   if (encoder === null) encoder = new Tiktoken(o200kBase);
-  return encoder.encode(text).length;
+  // Allow all special tokens: captured text is data, and a literal
+  // "<|endoftext|>" in a transcript must count, never throw — counting is
+  // on the capture path and capture must be total.
+  return encoder.encode(text, "all").length;
 }
 
 export interface TokenSlice {
@@ -22,7 +25,7 @@ export interface TokenSlice {
  *  requested offset, so the caller's receipt can name what was actually asked. */
 export function sliceTokens(text: string, fromToken: number, maxTokens: number): TokenSlice {
   if (encoder === null) encoder = new Tiktoken(o200kBase);
-  const tokens = encoder.encode(text);
+  const tokens = encoder.encode(text, "all");
   const totalTokens = tokens.length;
   const from = Math.max(0, Math.floor(fromToken));
   const to = from >= totalTokens ? from : Math.min(from + Math.floor(maxTokens), totalTokens);

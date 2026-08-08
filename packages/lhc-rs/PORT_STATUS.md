@@ -2603,3 +2603,15 @@ chunk-band serve prefixes `<turns>…</turns>` (including gap entries);
 (`tests/turn_message_labels.rs`). Gate arithmetic: classified **541**
 (cargo-reported 541, binaries 63), passed **526** (+10), notimpl 0, ignored
 **15**, wrong 0, suspicious 0.
+
+## 2026-08-08 — capture-totality hotfix (token counting)
+
+`estimate_tokens` panicked on text containing literal special-token strings
+(`<|endoftext|>`), faithfully porting the identical latent throw in TS
+`estimateTokens`. Found live: the grok fork's capture thread panicked and
+core-dumped mid-wave. Both sides fixed to allow-all specials (TS
+`encode(text, "all")`, rs `encode_with_special_tokens`) — counting sits on
+the capture path and capture must be total. +2 tests
+(`token_counting_special.rs`): passed 526→528, classified 541→543,
+binaries 63→64. Propagation note: lhc-py (tiktoken raises on specials) and
+lhc-convex need the same fix in their waves.
