@@ -2565,3 +2565,12 @@ Ruled, recorded, deliberately not repaired now:
 - P4 follow-up worth doing in Phase 3: one committed tokenizer corpus fixture
   (CJK/ZWJ/lone-surrogate/digit-runs) js-tiktoken vs tiktoken-rs; the
   conformance run's unicode content already exercised parity on real paths.
+
+## 2026-08-08 — pre-propagation baseline (pi-window wave)
+
+Gate live state before the R1–R6 propagation slices: exact-todo 0, classified
+**511** (cargo-reported 511, binaries 60), passed **496**, notimpl 0, ignored
+**15**, wrong 0, suspicious 0 — GATE PASS. Thread schema **v5**. Source
+baseline for the wave: `packages/lhc-rs` content at branch tip `35dde3a`;
+last substantive rs port commit `a3deafd` (later `caffbf2` touched config
+only). README gate block synchronized to these figures this date.
