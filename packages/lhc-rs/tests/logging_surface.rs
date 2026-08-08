@@ -117,9 +117,7 @@ async fn send_turn(target: &Lhc, file_path: &str) {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer text".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer text")),
                     ..Default::default()
                 },
             ),

@@ -283,9 +283,7 @@ async fn near_no_op_one_small_brief_band_compact_point_9_at_turn_t3_close() {
         batch.push(valid_event(
             kind::ASSISTANT_TEXT,
             AssistantTextOverrides {
-                payload: Some(AssistantTextPayload {
-                    text: format!("ok {turn}"),
-                }),
+                payload: Some(AssistantTextPayload::new(format!("ok {turn}"))),
                 ..Default::default()
             },
         ));
@@ -623,9 +621,7 @@ async fn near_no_op_with_one_small_brief_entry_still_reports_would_produce_bands
         batch.push(valid_event(
             kind::ASSISTANT_TEXT,
             AssistantTextOverrides {
-                payload: Some(AssistantTextPayload {
-                    text: format!("ok {turn}"),
-                }),
+                payload: Some(AssistantTextPayload::new(format!("ok {turn}"))),
                 ..Default::default()
             },
         ));
@@ -723,9 +719,7 @@ async fn latest_open_turn_with_a_dangling_tool_call_previews_ok_and_stays_after_
                     valid_event(
                         kind::ASSISTANT_TEXT,
                         AssistantTextOverrides {
-                            payload: Some(AssistantTextPayload {
-                                text: format!("closed answer {turn}"),
-                            }),
+                            payload: Some(AssistantTextPayload::new(format!("closed answer {turn}"))),
                             ..Default::default()
                         },
                     ),
@@ -766,9 +760,7 @@ async fn latest_open_turn_with_a_dangling_tool_call_previews_ok_and_stays_after_
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "Lint passed. Now let me serve it.".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("Lint passed. Now let me serve it.")),
                         ..Default::default()
                     },
                 ),

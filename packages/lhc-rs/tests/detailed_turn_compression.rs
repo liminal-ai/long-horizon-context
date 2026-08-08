@@ -120,9 +120,7 @@ async fn send_turn(sdk: &Lhc, file_path: &str, prompt: &str, answer: &str) {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: answer.into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new(answer)),
                     ..Default::default()
                 },
             ),
@@ -269,18 +267,14 @@ async fn composes_pre_detailed_assembly_from_dialog_only_in_user_assistant_secti
             valid_event(
                 kind::ASSISTANT_THINKING,
                 AssistantThinkingOverrides {
-                    payload: Some(AssistantThinkingPayload {
-                        text: "planning the read".into(),
-                    }),
+                    payload: Some(AssistantThinkingPayload::new("planning the read")),
                     ..Default::default()
                 },
             ),
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "I will inspect it".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("I will inspect it")),
                     ..Default::default()
                 },
             ),
@@ -427,9 +421,7 @@ async fn renders_structured_turn_text_with_message_kind_markers_in_record_order(
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "I will inspect it".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("I will inspect it")),
                     ..Default::default()
                 },
             ),

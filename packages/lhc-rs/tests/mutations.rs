@@ -151,9 +151,7 @@ async fn ready_turn_thread(sdk: &Lhc, store: &TempStore) -> String {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "the original answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("the original answer")),
                     ..Default::default()
                 },
             ),
@@ -350,9 +348,7 @@ async fn clears_exactly_the_edited_messages_chain_the_second_chunks_forms_are_by
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
@@ -376,9 +372,7 @@ async fn clears_exactly_the_edited_messages_chain_the_second_chunks_forms_are_by
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -491,9 +485,7 @@ async fn clears_to_pending_with_version_scoped_replacement_ids_and_a_second_edit
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "the answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("the answer")),
                     ..Default::default()
                 },
             ),
@@ -899,9 +891,7 @@ async fn the_cascades_enqueue_pokes_ride_the_commit_rebuilds_run_with_no_further
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "the answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("the answer")),
                     ..Default::default()
                 },
             ),

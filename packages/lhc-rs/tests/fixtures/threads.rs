@@ -417,9 +417,7 @@ pub async fn gapped_rendering_thread(
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "gapped answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("gapped answer")),
                     ..Default::default()
                 },
             ),
@@ -513,9 +511,7 @@ pub async fn multi_state_thread(store: &TempStore) -> MultiStateThreadResult {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "working on it".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("working on it")),
                     ..Default::default()
                 },
             ),
@@ -696,9 +692,7 @@ pub async fn thread_with_closed_turns(store: &TempStore, n: usize) -> ThreadWith
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: format!("answer for turn {i}"),
-                        }),
+                        payload: Some(AssistantTextPayload::new(format!("answer for turn {i}"))),
                         ..Default::default()
                     },
                 ),

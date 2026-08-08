@@ -74,11 +74,69 @@ fn band_user_message(band: Band, rendered_text: &str) -> SessionThreadViewEntry 
     }))
 }
 
+fn thinking_signature_of(message: &TailMessageRow) -> Option<String> {
+    let content = block_content(message);
+    let signature = content
+        .get("signature")
+        .or_else(|| content.get("thinkingSignature"));
+    match signature {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn string_field(content: &Map<String, Value>, key: &str) -> Option<String> {
+    match content.get(key) {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ModelProvenance {
+    provider: Option<String>,
+    model: Option<String>,
+    api: Option<String>,
+}
+
+/// First non-empty provider/model/api from grouped assistant rows (thinking or text).
+fn model_provenance_of(rows: &[TailMessageRow]) -> ModelProvenance {
+    let mut provider = None;
+    let mut model = None;
+    let mut api = None;
+    for row in rows {
+        if row.kind != RenderingPartKind::AssistantThinking
+            && row.kind != RenderingPartKind::AssistantText
+        {
+            continue;
+        }
+        let content = block_content(row);
+        if provider.is_none() {
+            provider = string_field(&content, "provider");
+        }
+        if model.is_none() {
+            model = string_field(&content, "model");
+        }
+        if api.is_none() {
+            api = string_field(&content, "api");
+        }
+        if provider.is_some() && model.is_some() && api.is_some() {
+            break;
+        }
+    }
+    ModelProvenance {
+        provider,
+        model,
+        api,
+    }
+}
+
 fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
     match message.kind {
         RenderingPartKind::AssistantThinking => SessionAssistantPart {
             type_: SessionAssistantPartType::Thinking,
             thinking: Some(text_of(message)),
+            thinking_signature: thinking_signature_of(message),
             text: None,
             tool_call_id: None,
             tool_name: None,
@@ -88,6 +146,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
             type_: SessionAssistantPartType::Text,
             text: Some(text_of(message)),
             thinking: None,
+            thinking_signature: None,
             tool_call_id: None,
             tool_name: None,
             arguments: None,
@@ -114,6 +173,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
                 arguments: Some(arguments),
                 text: None,
                 thinking: None,
+                thinking_signature: None,
             }
         }
         // Remaining closed kinds are never passed into assistant_part_of by the
@@ -126,6 +186,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
             type_: SessionAssistantPartType::Text,
             text: Some(String::new()),
             thinking: None,
+            thinking_signature: None,
             tool_call_id: None,
             tool_name: None,
             arguments: None,
@@ -190,17 +251,23 @@ fn thinking_level_change_of(message: &TailMessageRow) -> SessionThreadViewEntry 
 fn flush_assistant(
     pending: &mut Vec<SessionAssistantPart>,
     pending_sources: &mut Vec<SessionThreadViewEntrySource>,
+    pending_rows: &mut Vec<TailMessageRow>,
     entries: &mut Vec<SessionThreadViewEntry>,
 ) {
     if pending.is_empty() {
         return;
     }
+    let provenance = model_provenance_of(pending_rows);
     entries.push(SessionThreadViewEntry::Message(
         SessionThreadViewMessage::Assistant(SessionAssistantMessage {
             content: std::mem::take(pending),
             source_messages: std::mem::take(pending_sources),
+            provider: provenance.provider,
+            model: provenance.model,
+            api: provenance.api,
         }),
     ));
+    pending_rows.clear();
 }
 
 fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<SessionThreadViewEntry> {
@@ -211,6 +278,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
     let mut entries: Vec<SessionThreadViewEntry> = Vec::new();
     let mut assistant_parts: Vec<SessionAssistantPart> = Vec::new();
     let mut assistant_sources: Vec<SessionThreadViewEntrySource> = Vec::new();
+    let mut assistant_rows: Vec<TailMessageRow> = Vec::new();
 
     for row in rows {
         if is_empty_thinking_husk(row) {
@@ -218,7 +286,12 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
         }
         match row.kind {
             RenderingPartKind::UserPrompt => {
-                flush_assistant(&mut assistant_parts, &mut assistant_sources, &mut entries);
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut entries,
+                );
                 entries.push(SessionThreadViewEntry::Message(
                     SessionThreadViewMessage::User(SessionUserMessage {
                         content: text_of(row),
@@ -231,9 +304,15 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
             | RenderingPartKind::ToolCall => {
                 assistant_parts.push(assistant_part_of(row));
                 assistant_sources.push(entry_source(row));
+                assistant_rows.push(row.clone());
             }
             RenderingPartKind::ToolResult => {
-                flush_assistant(&mut assistant_parts, &mut assistant_sources, &mut entries);
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut entries,
+                );
                 entries.push(tool_result_of(row, &render_ctx));
             }
             RenderingPartKind::ModelChange => {
@@ -246,7 +325,12 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
             }
             RenderingPartKind::RuntimeNote => {
                 // Same rendering as getLlmRequestContext: a labeled user line.
-                flush_assistant(&mut assistant_parts, &mut assistant_sources, &mut entries);
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut entries,
+                );
                 entries.push(SessionThreadViewEntry::Message(
                     SessionThreadViewMessage::User(SessionUserMessage {
                         content: format!("{LITERAL_RUNTIME_NOTE_PREFIX}{}", text_of(row)),
@@ -256,7 +340,12 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
             }
         }
     }
-    flush_assistant(&mut assistant_parts, &mut assistant_sources, &mut entries);
+    flush_assistant(
+        &mut assistant_parts,
+        &mut assistant_sources,
+        &mut assistant_rows,
+        &mut entries,
+    );
     entries
 }
 

@@ -20,9 +20,7 @@ pub struct ProjectedMessage {
 /// turn_end is recorded in the event order but produces no message.
 pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
     match event {
-        EventRecord::UserPrompt { payload, .. }
-        | EventRecord::AssistantThinking { payload, .. }
-        | EventRecord::RuntimeNote { payload, .. } => {
+        EventRecord::UserPrompt { payload, .. } | EventRecord::RuntimeNote { payload, .. } => {
             let mut content = Map::new();
             content.insert("text".into(), json!(payload.text.clone()));
             Some(ProjectedMessage {
@@ -34,16 +32,56 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
             })
         }
         // providerUsage rides the event payload and is stored as a message
-        // column (not a block) — projection leaves only text in the block.
+        // column (not a block) — projection leaves text + optional provenance
+        // in the block.
         EventRecord::AssistantText { payload, .. } => {
             let mut content = Map::new();
             content.insert("text".into(), json!(payload.text.clone()));
+            if let Some(ref provider) = payload.provider {
+                content.insert("provider".into(), json!(provider.clone()));
+            }
+            if let Some(ref model) = payload.model {
+                content.insert("model".into(), json!(model.clone()));
+            }
+            if let Some(ref api) = payload.api {
+                content.insert("api".into(), json!(api.clone()));
+            }
             Some(ProjectedMessage {
                 blocks: vec![Block {
                     block_type: BlockType::Text,
                     content,
                 }],
                 token_estimate: estimate_tokens(&payload.text),
+            })
+        }
+        EventRecord::AssistantThinking { payload, .. } => {
+            // Verbatim payload copy: text always; signature + model identity when sent.
+            let mut content = Map::new();
+            content.insert("text".into(), json!(payload.text.clone()));
+            if let Some(ref signature) = payload.signature {
+                content.insert("signature".into(), json!(signature.clone()));
+            }
+            if let Some(ref provider) = payload.provider {
+                content.insert("provider".into(), json!(provider.clone()));
+            }
+            if let Some(ref model) = payload.model {
+                content.insert("model".into(), json!(model.clone()));
+            }
+            if let Some(ref api) = payload.api {
+                content.insert("api".into(), json!(api.clone()));
+            }
+            // Count signature bytes too — when served back to the provider they sit in
+            // the live context window (the fable live-vs-LHC token gap).
+            let estimate_source = match payload.signature.as_deref() {
+                Some(sig) if !sig.is_empty() => format!("{}{}", payload.text, sig),
+                _ => payload.text.clone(),
+            };
+            Some(ProjectedMessage {
+                blocks: vec![Block {
+                    block_type: BlockType::Text,
+                    content,
+                }],
+                token_estimate: estimate_tokens(&estimate_source),
             })
         }
         EventRecord::ModelChange { payload, .. } => {

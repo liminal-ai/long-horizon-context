@@ -133,9 +133,7 @@ async fn fixture_poisoned_turn_derivation_work_item(file_path: &str, opts: Poiso
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "migration answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("migration answer")),
                     ..Default::default()
                 },
             ),
@@ -782,9 +780,7 @@ async fn migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backf
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "v4 migration answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("v4 migration answer")),
                     ..Default::default()
                 },
             ),

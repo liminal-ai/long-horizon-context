@@ -178,14 +178,43 @@ pub struct BatchResult {
 
 // ── EventRecord payloads (kind-exact, closed) ──────────────────────
 
-/// TS `{ text: string }` — user_prompt / assistant_thinking / runtime_note.
+/// TS `{ text: string }` — user_prompt / runtime_note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextPayload {
     pub text: String,
 }
 
-/// TS `AssistantTextPayload` — text plus optional verbatim provider usage (schema v5 / D1, D3).
+/// Host-captured model identity for resume (PI same-model signature keep).
+/// Opaque strings; SDK stores and exports verbatim — no identity matching here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantModelProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+}
+
+/// TS `AssistantThinkingPayload` — text, optional opaque signature, optional provenance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantThinkingPayload {
+    pub text: String,
+    /// Opaque provider thinking token (Anthropic encrypted thinking, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
+}
+
+/// TS `AssistantTextPayload` — text, optional provider usage (schema v5), optional provenance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssistantTextPayload {
@@ -194,6 +223,12 @@ pub struct AssistantTextPayload {
     /// no fixed column set, no interpretation inside LHC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_usage: Option<Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
 }
 
 /// TS `{ previousModel; newModel }`.
@@ -294,7 +329,7 @@ pub enum EventRecord {
         idempotency_key: String,
         actor: String,
         harness: String,
-        payload: TextPayload,
+        payload: AssistantThinkingPayload,
         event_order: i64,
         recorded_at: String,
     },
@@ -461,10 +496,25 @@ impl EventRecord {
     // must fail compilation here and force a mapping decision (brief rule 6).
     pub fn text_payload(&self) -> Option<&TextPayload> {
         match self {
-            EventRecord::UserPrompt { payload, .. }
-            | EventRecord::AssistantThinking { payload, .. }
-            | EventRecord::RuntimeNote { payload, .. } => Some(payload),
+            EventRecord::UserPrompt { payload, .. } | EventRecord::RuntimeNote { payload, .. } => {
+                Some(payload)
+            }
             EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::TurnEnd { .. } => None,
+        }
+    }
+
+    pub fn assistant_thinking_payload(&self) -> Option<&AssistantThinkingPayload> {
+        match self {
+            EventRecord::AssistantThinking { payload, .. } => Some(payload),
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::RuntimeNote { .. }
             | EventRecord::ModelChange { .. }
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }

@@ -350,9 +350,7 @@ async fn prompt_call_result_call_result_text_call_result_exactly_two_run_parts_s
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "mid-turn note".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("mid-turn note")),
                         ..Default::default()
                     },
                 ),

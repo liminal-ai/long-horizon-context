@@ -2583,3 +2583,13 @@ at session export, tail/band assembly (signature-only skip), and stored
 (`tests/empty_thinking_husk.rs`). Gate arithmetic: classified **523**
 (cargo-reported 523, binaries 61), passed **508** (+12), notimpl 0, ignored
 **15**, wrong 0, suspicious 0.
+
+## 2026-08-08 — R2 thinking-signature capture + provenance
+
+Slice R2 (`d0f00bb`, `795da41`): optional `assistant_thinking.signature`;
+optional `provider`/`model`/`api` on thinking + assistant_text at intake;
+project onto blocks; session export emits `thinkingSignature` + message
+provenance verbatim. No identity-match suppression (host work). Tests: +8
+(`tests/thinking_signature.rs`). Gate arithmetic: classified **531**
+(cargo-reported 531, binaries 62), passed **516** (+8), notimpl 0, ignored
+**15**, wrong 0, suspicious 0.

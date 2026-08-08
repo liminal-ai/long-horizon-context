@@ -183,9 +183,7 @@ async fn seed_four_closed_turns(sdk: &Lhc, file_path: &str) {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: format!("answer {i}"),
-                        }),
+                        payload: Some(AssistantTextPayload::new(format!("answer {i}"))),
                         ..Default::default()
                     },
                 ),

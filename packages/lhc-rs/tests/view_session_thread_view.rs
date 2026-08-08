@@ -156,6 +156,9 @@ async fn returns_user_and_assistant_messages_for_a_simple_turn() {
         SessionThreadViewMessage::Assistant(SessionAssistantMessage {
             content,
             source_messages,
+            provider: _,
+            model: _,
+            api: _,
         }) => {
             assert_eq!(content.len(), 1);
             // TS toEqual — full SessionAssistantPart including every optional as None.
@@ -165,6 +168,7 @@ async fn returns_user_and_assistant_messages_for_a_simple_turn() {
                     type_: SessionAssistantPartType::Text,
                     text: Some("here is what I found".into()),
                     thinking: None,
+                    thinking_signature: None,
                     tool_call_id: None,
                     tool_name: None,
                     arguments: None,
@@ -211,6 +215,9 @@ async fn groups_assistant_thinking_text_and_tool_calls_into_one_assistant_messag
     let SessionThreadViewMessage::Assistant(SessionAssistantMessage {
         content,
         source_messages,
+        provider: _,
+        model: _,
+        api: _,
     }) = assistant
     else {
         panic!("expected assistant");
@@ -606,9 +613,7 @@ async fn renders_runtime_notes_as_labeled_user_entries_in_tail_order() {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "picked up the notification".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("picked up the notification")),
                         ..Default::default()
                     },
                 ),

@@ -126,9 +126,7 @@ async fn send_closed_turn(sdk: &Lhc, file_path: &str, text: &str) {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "answer".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("answer")),
                         ..Default::default()
                     },
                 ),

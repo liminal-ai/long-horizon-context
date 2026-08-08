@@ -204,9 +204,7 @@ async fn places_typed_runtime_change_blocks_verbatim_in_constructed_turns_in_str
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "answer".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("answer")),
                         ..Default::default()
                     },
                 ),

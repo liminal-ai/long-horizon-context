@@ -451,9 +451,7 @@ async fn chunk_summaries_report_under_the_turns_owner_never_under_messages() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "chunk one answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("chunk one answer")),
                     ..Default::default()
                 },
             ),
@@ -483,9 +481,7 @@ async fn chunk_summaries_report_under_the_turns_owner_never_under_messages() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "chunk two answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("chunk two answer")),
                     ..Default::default()
                 },
             ),

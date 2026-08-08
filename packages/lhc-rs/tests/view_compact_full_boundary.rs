@@ -183,9 +183,7 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "done".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("done")),
                         ..Default::default()
                     },
                 ),
@@ -202,9 +200,7 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "oversized ".repeat(1_000),
-                        }),
+                        payload: Some(AssistantTextPayload::new("oversized ".repeat(1_000))),
                         ..Default::default()
                     },
                 ),
@@ -408,9 +404,7 @@ async fn runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "done".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("done")),
                         ..Default::default()
                     },
                 ),
@@ -427,9 +421,7 @@ async fn runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "oversized ".repeat(1_000),
-                        }),
+                        payload: Some(AssistantTextPayload::new("oversized ".repeat(1_000))),
                         ..Default::default()
                     },
                 ),

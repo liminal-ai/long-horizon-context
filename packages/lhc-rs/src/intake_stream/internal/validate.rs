@@ -104,7 +104,8 @@ struct EventEnvelopeSchema {
 // are not expressed by structs alone — `deny_unknown_fields` covers excess keys.
 // turn_end may be empty or carry only the optional host-observed outcome/timing
 // fields (D1). assistant_text may carry optional providerUsage as a verbatim
-// JSON object (no inner shape).
+// JSON object (no inner shape). assistant_thinking may carry optional
+// signature + provider/model/api; assistant_text may also carry provenance.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -120,6 +121,31 @@ struct AssistantTextPayloadSchema {
     text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_usage: Option<Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api: Option<String>,
+}
+
+// signature is optional opaque provider bytes/token; empty string allowed only
+// via omission — if present it must be a string (may be empty; hosts should
+// omit rather than send ""). provider/model/api are optional host identity
+// for resume (PI same-model signature keep).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct AssistantThinkingPayloadSchema {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -179,6 +205,7 @@ enum DecodeSchema {
     EventEnvelope,
     TextPayload,
     AssistantTextPayload,
+    AssistantThinkingPayload,
     TurnEndPayload,
     ModelChangePayload,
     ThinkingLevelChangePayload,
@@ -417,7 +444,23 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
         DecodeSchema::TextPayload => struct_issue(value, &[("text", "string", false)]),
         DecodeSchema::AssistantTextPayload => struct_issue(
             value,
-            &[("text", "string", false), ("providerUsage", "record", true)],
+            &[
+                ("text", "string", false),
+                ("providerUsage", "record", true),
+                ("provider", "string", true),
+                ("model", "string", true),
+                ("api", "string", true),
+            ],
+        ),
+        DecodeSchema::AssistantThinkingPayload => struct_issue(
+            value,
+            &[
+                ("text", "string", false),
+                ("signature", "string", true),
+                ("provider", "string", true),
+                ("model", "string", true),
+                ("api", "string", true),
+            ],
         ),
         DecodeSchema::TurnEndPayload => struct_issue(
             value,
@@ -563,6 +606,7 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
     let payload_schema = match kind {
         Some("turn_end") => DecodeSchema::TurnEndPayload,
         Some("assistant_text") => DecodeSchema::AssistantTextPayload,
+        Some("assistant_thinking") => DecodeSchema::AssistantThinkingPayload,
         Some("tool_call") => DecodeSchema::ToolCallPayload,
         Some("tool_result") => DecodeSchema::ToolResultPayload,
         Some("model_change") => DecodeSchema::ModelChangePayload,

@@ -306,9 +306,7 @@ async fn carries_threadid_and_both_intake_rounds_in_record_order() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
@@ -361,9 +359,7 @@ async fn carries_threadid_and_both_intake_rounds_in_record_order() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -469,9 +465,7 @@ async fn tail_mapping_fixture(store: &TempStore) -> TailMappingFixture {
             valid_event(
                 kind::ASSISTANT_THINKING,
                 AssistantThinkingOverrides {
-                    payload: Some(AssistantThinkingPayload {
-                        text: "mapping thought".into(),
-                    }),
+                    payload: Some(AssistantThinkingPayload::new("mapping thought")),
                     ..Default::default()
                 },
             ),
@@ -509,9 +503,7 @@ async fn tail_mapping_fixture(store: &TempStore) -> TailMappingFixture {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "mapping answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("mapping answer")),
                     ..Default::default()
                 },
             ),
@@ -695,9 +687,7 @@ async fn renders_deterministic_tool_result_floors_behind_the_boundary_and_full_c
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload {
-                            text: format!("boundary thought {turn}"),
-                        }),
+                        payload: Some(AssistantThinkingPayload::new(format!("boundary thought {turn}"))),
                         ..Default::default()
                     },
                 ),
@@ -726,9 +716,7 @@ async fn renders_deterministic_tool_result_floors_behind_the_boundary_and_full_c
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: format!("boundary answer {turn}"),
-                        }),
+                        payload: Some(AssistantTextPayload::new(format!("boundary answer {turn}"))),
                         ..Default::default()
                     },
                 ),
@@ -991,9 +979,7 @@ async fn after_more_intake_the_tail_grew_still_no_compact_without_invocation() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "one more answer for the heavy thread".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("one more answer for the heavy thread")),
                     ..Default::default()
                 },
             ),
@@ -1063,9 +1049,7 @@ async fn schedules_no_catch_up_drain_work_rows_derivation_states_inference_callb
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "background answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("background answer")),
                     ..Default::default()
                 },
             ),

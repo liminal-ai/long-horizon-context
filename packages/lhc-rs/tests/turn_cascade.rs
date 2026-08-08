@@ -190,9 +190,7 @@ async fn uses_ready_derivations_directly_and_writes_no_fallback_log() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -252,9 +250,7 @@ async fn falls_pending_derivations_to_deterministic_floors_when_re_derivation_do
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -334,9 +330,7 @@ async fn falls_back_to_original_prompt_source_when_the_deterministic_floor_is_un
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -381,9 +375,7 @@ async fn falls_failed_derivations_through_the_same_floor_path_when_re_derivation
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -437,9 +429,7 @@ async fn uses_deterministic_floors_for_failed_message_derivations_without_callin
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -522,9 +512,7 @@ async fn does_not_overwrite_an_already_ready_message_derivation_when_composing_t
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -582,18 +570,14 @@ async fn renders_assistant_text_thinking_and_runtime_notes_verbatim_in_record_or
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
             valid_event(
                 kind::ASSISTANT_THINKING,
                 AssistantThinkingOverrides {
-                    payload: Some(AssistantThinkingPayload {
-                        text: "thinking exactly".into(),
-                    }),
+                    payload: Some(AssistantThinkingPayload::new("thinking exactly")),
                     ..Default::default()
                 },
             ),
@@ -609,9 +593,7 @@ async fn renders_assistant_text_thinking_and_runtime_notes_verbatim_in_record_or
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -835,9 +817,7 @@ async fn recovers_over_cap_prompts_with_deterministic_cleaned_text_and_no_smooth
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -959,9 +939,7 @@ async fn constructs_a_turn_with_every_component_present_when_multiple_derivation
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer after tool".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer after tool")),
                     ..Default::default()
                 },
             ),
@@ -1012,9 +990,7 @@ async fn leaves_derivation_rows_untouched_when_live_work_exists_but_still_render
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),

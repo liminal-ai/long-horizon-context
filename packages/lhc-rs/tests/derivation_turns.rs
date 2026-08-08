@@ -116,9 +116,7 @@ async fn send_turn(sdk: &Lhc, file_path: &str, prompt: &str, answer: &str) {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: answer.into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new(answer)),
                     ..Default::default()
                 },
             ),
@@ -431,9 +429,7 @@ async fn does_not_re_run_message_inference_for_pending_or_failed_message_derivat
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer text".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer text")),
                     ..Default::default()
                 },
             ),

@@ -708,9 +708,7 @@ async fn sync_derive_queued_behind_an_older_head_wakes_the_background_scheduler(
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
@@ -727,9 +725,7 @@ async fn sync_derive_queued_behind_an_older_head_wakes_the_background_scheduler(
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -1977,9 +1973,7 @@ async fn turns_derive_turn_refuses_an_abandoned_later_turn_while_older_turn_deri
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
@@ -1996,9 +1990,7 @@ async fn turns_derive_turn_refuses_an_abandoned_later_turn_while_older_turn_deri
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -2103,9 +2095,7 @@ async fn turns_derive_turn_refuses_an_exact_head_when_one_of_its_two_derivations
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -2361,9 +2351,7 @@ async fn two_concurrent_turns_derive_turn_calls_share_the_durable_claim() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),

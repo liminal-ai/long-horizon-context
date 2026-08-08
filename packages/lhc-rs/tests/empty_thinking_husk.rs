@@ -158,18 +158,14 @@ async fn seed_turn_with_thinking(sdk: &Lhc, file_path: &str, thinking_text: &str
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload {
-                            text: thinking_text.into(),
-                        }),
+                        payload: Some(AssistantThinkingPayload::new(thinking_text)),
                         ..Default::default()
                     },
                 ),
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "The file holds three entries.".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("The file holds three entries.")),
                         ..Default::default()
                     },
                 ),
@@ -337,7 +333,7 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload { text: "".into() }),
+                        payload: Some(AssistantThinkingPayload::new("")),
                         idempotency_key: Some("think-husk".into()),
                         ..Default::default()
                     },
@@ -346,7 +342,7 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload { text: "".into() }),
+                        payload: Some(AssistantThinkingPayload::new("")),
                         idempotency_key: Some("think-sig-only".into()),
                         ..Default::default()
                     },
@@ -355,9 +351,7 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload {
-                            text: "visible signed reasoning".into(),
-                        }),
+                        payload: Some(AssistantThinkingPayload::new("visible signed reasoning")),
                         idempotency_key: Some("think-signed-text".into()),
                         ..Default::default()
                     },
@@ -365,9 +359,7 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "final answer".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("final answer")),
                         ..Default::default()
                     },
                 ),

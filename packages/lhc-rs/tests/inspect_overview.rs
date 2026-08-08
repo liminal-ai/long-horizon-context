@@ -108,9 +108,7 @@ async fn two_turn_thread(store: &TempStore) -> SmallThread {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "reading it now".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("reading it now")),
                     ..Default::default()
                 },
             ),
@@ -154,9 +152,7 @@ async fn two_turn_thread(store: &TempStore) -> SmallThread {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "here is the summary".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("here is the summary")),
                     ..Default::default()
                 },
             ),
@@ -312,9 +308,7 @@ async fn mid_first_turn_open_turn_queued_derivation_no_view_full_shape() {
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload {
-                            text: "thinking about it".into(),
-                        }),
+                        payload: Some(AssistantThinkingPayload::new("thinking about it")),
                         ..Default::default()
                     },
                 ),

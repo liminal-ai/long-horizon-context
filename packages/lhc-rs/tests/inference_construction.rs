@@ -244,9 +244,7 @@ async fn constructs_and_a_seeded_drain_lands_a_form_ready_with_the_hosts_text() 
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "constructing".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("constructing")),
                         ..Default::default()
                     },
                 ),

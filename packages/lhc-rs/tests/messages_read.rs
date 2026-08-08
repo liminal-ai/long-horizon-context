@@ -99,9 +99,7 @@ async fn read_fixture(store: &TempStore) -> ReadFixture {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "reading it now".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("reading it now")),
                     ..Default::default()
                 },
             ),
@@ -142,9 +140,7 @@ async fn read_fixture(store: &TempStore) -> ReadFixture {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "here is the summary".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("here is the summary")),
                     ..Default::default()
                 },
             ),
@@ -289,9 +285,7 @@ async fn pending_work_thread(store: &TempStore) -> String {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "background answer".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("background answer")),
                         ..Default::default()
                     },
                 ),

@@ -158,9 +158,7 @@ async fn tool_run_thread(sdk: &Lhc, store: &TempStore) -> String {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "tool run done".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("tool run done")),
                     ..Default::default()
                 },
             ),
@@ -282,9 +280,7 @@ async fn the_deleted_messages_forms_are_gone_its_turn_and_chunk_re_queue_chunk_2
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "first answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("first answer")),
                     ..Default::default()
                 },
             ),
@@ -308,9 +304,7 @@ async fn the_deleted_messages_forms_are_gone_its_turn_and_chunk_re_queue_chunk_2
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "second answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("second answer")),
                     ..Default::default()
                 },
             ),
@@ -461,9 +455,7 @@ async fn open_turn_target_bogus_id_and_a_second_delete_of_the_same_id_refuse_wit
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "closed answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("closed answer")),
                     ..Default::default()
                 },
             ),

@@ -108,9 +108,7 @@ async fn seed_seven_kinds(sdk: &Lhc, store: &TempStore) -> String {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "the fixture file holds fixture text".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("the fixture file holds fixture text")),
                         ..Default::default()
                     },
                 ),
@@ -127,9 +125,7 @@ async fn seed_seven_kinds(sdk: &Lhc, store: &TempStore) -> String {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload {
-                            text: "summarized".into(),
-                        }),
+                        payload: Some(AssistantTextPayload::new("summarized")),
                         ..Default::default()
                     },
                 ),

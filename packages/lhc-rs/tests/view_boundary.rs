@@ -374,9 +374,7 @@ async fn renders_deterministic_tool_result_floors_even_when_a_ready_summary_exis
     batch.push(valid_event(
         kind::ASSISTANT_TEXT,
         AssistantTextOverrides {
-            payload: Some(AssistantTextPayload {
-                text: "interleaved assistant text".into(),
-            }),
+            payload: Some(AssistantTextPayload::new("interleaved assistant text")),
             ..Default::default()
         },
     ));

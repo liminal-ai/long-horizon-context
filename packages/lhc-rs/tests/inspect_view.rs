@@ -300,9 +300,7 @@ async fn never_compacted_thread(store: &TempStore) -> (String, Lhc) {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "reading it now".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("reading it now")),
                     ..Default::default()
                 },
             ),
@@ -346,9 +344,7 @@ async fn never_compacted_thread(store: &TempStore) -> (String, Lhc) {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "here is the summary".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("here is the summary")),
                     ..Default::default()
                 },
             ),
@@ -557,9 +553,7 @@ async fn tail_costs_short_forms_short_and_total_equals_an_independent_context_re
                     valid_event(
                         kind::ASSISTANT_TEXT,
                         AssistantTextOverrides {
-                            payload: Some(AssistantTextPayload {
-                                text: format!("findings for area {turn}"),
-                            }),
+                            payload: Some(AssistantTextPayload::new(format!("findings for area {turn}"))),
                             ..Default::default()
                         },
                     ),

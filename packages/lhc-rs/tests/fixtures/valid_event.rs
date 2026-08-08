@@ -21,14 +21,39 @@ pub struct UserPromptPayload {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AssistantTextPayload {
     pub text: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub api: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl AssistantTextPayload {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AssistantThinkingPayload {
     pub text: String,
+    pub signature: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub api: Option<String>,
+}
+
+impl AssistantThinkingPayload {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,13 +219,38 @@ impl_kind_overrides!(
     |p: AssistantTextPayload| {
         // providerUsage is attached by mutating MessageEventInput.payload in
         // host-facts tests (optional schema v5 field; most fixtures omit it).
-        json!({"text": p.text}).as_object().expect("object").clone()
+        let mut obj = json!({"text": p.text}).as_object().expect("object").clone();
+        if let Some(provider) = p.provider {
+            obj.insert("provider".into(), json!(provider));
+        }
+        if let Some(model) = p.model {
+            obj.insert("model".into(), json!(model));
+        }
+        if let Some(api) = p.api {
+            obj.insert("api".into(), json!(api));
+        }
+        obj
     }
 );
 impl_kind_overrides!(
     AssistantThinkingOverrides,
     AssistantThinking,
-    |p: AssistantThinkingPayload| { json!({"text": p.text}).as_object().expect("object").clone() }
+    |p: AssistantThinkingPayload| {
+        let mut obj = json!({"text": p.text}).as_object().expect("object").clone();
+        if let Some(signature) = p.signature {
+            obj.insert("signature".into(), json!(signature));
+        }
+        if let Some(provider) = p.provider {
+            obj.insert("provider".into(), json!(provider));
+        }
+        if let Some(model) = p.model {
+            obj.insert("model".into(), json!(model));
+        }
+        if let Some(api) = p.api {
+            obj.insert("api".into(), json!(api));
+        }
+        obj
+    }
 );
 impl_kind_overrides!(
     RuntimeNoteOverrides,

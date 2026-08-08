@@ -393,9 +393,7 @@ async fn pending_smoothing_uses_a_composition_floor_without_re_running_message_i
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),
@@ -451,9 +449,7 @@ async fn smoothing_failure_lands_failed_with_reason_then_turn_composition_consum
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload {
-                        text: "answer".into(),
-                    }),
+                    payload: Some(AssistantTextPayload::new("answer")),
                     ..Default::default()
                 },
             ),

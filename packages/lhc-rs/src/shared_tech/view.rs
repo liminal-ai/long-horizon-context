@@ -238,6 +238,9 @@ pub struct SessionAssistantPart {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Opaque provider thinking token (PI `thinkingSignature`). Round-tripped only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,6 +271,13 @@ pub struct SessionAssistantMessage {
     pub content: Vec<SessionAssistantPart>,
     /// One row per grouped LHC message, in part order.
     pub source_messages: Vec<SessionThreadViewEntrySource>,
+    /// Host-captured model identity for PI same-model signature replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
 }
 
 /// TS `SessionToolResultMessage`.
