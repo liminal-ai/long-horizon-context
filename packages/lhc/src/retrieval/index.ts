@@ -40,7 +40,18 @@ export interface RetrievalOptions {
   surface?: string;
 }
 
-export type UnservedReason = "not_found" | "deleted" | "budget";
+export type UnservedReason = "not_found" | "deleted" | "budget" | "invalid";
+
+/** Valid retrieval id shape: `t` or `m` followed by 1–12 digits. Anything
+ *  else is refused per-id as "invalid" — ids are echoed into receipts and
+ *  impression rows, so shape validation is also a length bound (validator
+ *  P0, 2026-08-08). */
+export const RETRIEVAL_ID_PATTERN = /^[tm]\d{1,12}$/;
+
+/** Echo bound for invalid ids in receipts/impressions. */
+function clampIdEcho(id: string): string {
+  return id.length <= 32 ? id : `${id.slice(0, 32)}…`;
+}
 
 /** Window receipt on a partially served item: `[fromToken, toToken)` of
  *  `totalTokens` was served. Absent when the full text was served. */
@@ -189,7 +200,9 @@ function resolveBudget(options: RetrievalOptions | undefined): number {
   if (!Number.isFinite(budget) || budget <= 0) {
     throw new Error(`retrieval tokenBudget must be a positive number, got ${String(budget)}`);
   }
-  return budget;
+  // The default is also the ceiling: callers cannot raise the model-visible
+  // bound above what the serving contract promises (validator P0).
+  return Math.min(budget, DEFAULT_RETRIEVAL_TOKEN_BUDGET);
 }
 
 function resolveFromToken(options: RetrievalOptions | undefined): number {
@@ -359,7 +372,11 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
     // Write transaction: the serve itself is a read, but every call logs
     // impressions — the durable usage record is part of the contract.
     return await createDbWriteTransaction(ref, (transaction) => {
-      const candidates = dedupe(ids).map((id) => candidateOf(transaction.db, id));
+      const candidates = dedupe(ids).map((id) =>
+        RETRIEVAL_ID_PATTERN.test(id)
+          ? candidateOf(transaction.db, id)
+          : { id: clampIdEcho(id), outcome: { kind: "unservable", reason: "invalid" } as const },
+      );
       const walk = budgetWalk(candidates, entityKind, tokenBudget, fromToken);
       writeImpressions(transaction.db, callId, surface, walk.impressions);
       return {

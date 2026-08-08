@@ -2,13 +2,7 @@
 // model-visible result is unbounded — arbitrarily many missing ids would
 // each earn a receipt despite the body budget (validator P0, 2026-08-08).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  intakeStream,
-  type Lhc,
-  retrieval,
-} from "../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "../src/index.js";
 import { MAX_RETRIEVAL_IDS_PER_CALL } from "../src/retrieval/index.js";
 import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
@@ -45,6 +39,30 @@ describe("retrieval id cap", () => {
       expect(result.error.reason).toMatch(/too many ids/);
       expect(result.error.reason).toContain(String(MAX_RETRIEVAL_IDS_PER_CALL));
     }
+  });
+
+  it("accepts exactly the cap of unique ids", async () => {
+    const ids = Array.from({ length: MAX_RETRIEVAL_IDS_PER_CALL }, (_, i) => `t${i + 1}`);
+    const result = await retrieval.getTurns({ filePath }, ids);
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses oversized ids per-id as invalid, with the echo clamped", async () => {
+    const monster = `t${"9".repeat(40_000)}`;
+    const result = await retrieval.getTurns({ filePath }, [monster, "t1"]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const invalid = result.value.unserved.find((u) => u.reason === "invalid");
+      expect(invalid).toBeDefined();
+      expect(invalid!.id.length).toBeLessThanOrEqual(33);
+      expect(result.value.served.length).toBe(1);
+    }
+  });
+
+  it("clamps caller tokenBudget to the contract ceiling", async () => {
+    const result = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 10_000_000 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.tokenBudget).toBeLessThanOrEqual(8_000);
   });
 
   it("counts deduped ids, not raw ids", async () => {
