@@ -686,10 +686,75 @@ async fn splits_assistant_group_at_identity_boundary() {
     );
 }
 
-/// Provider-only identity conflicts split too, and model_change entries land
-/// AFTER the assistant group they interrupt (history order preserved).
+/// ADJACENT rows differing only by provider split on conflict detection
+/// alone — no change event between them (one would flush the group anyway).
 #[tokio::test]
-async fn provider_only_conflict_splits_and_change_entries_stay_ordered() {
+async fn provider_only_conflict_splits_adjacent_rows() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+
+    let captured = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload { text: "hi".into() }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan a",
+                            Some("SIG_A"),
+                            Some("openai"),
+                            Some("m"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan b",
+                            Some("SIG_B"),
+                            Some("other"),
+                            Some("m"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(captured.is_ok());
+
+    let view = sdk
+        .thread_view
+        .get_session_thread_view(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: view } = view else {
+        panic!("view failed");
+    };
+    let assistants = assistant_entries(&view.entries);
+    assert_eq!(assistants.len(), 2, "provider-only conflict must split");
+    assert_eq!(assistants[0].provider.as_deref(), Some("openai"));
+    assert_eq!(assistants[1].provider.as_deref(), Some("other"));
+}
+
+/// model_change entries land AFTER the assistant group they interrupt
+/// (history order preserved).
+#[tokio::test]
+async fn change_entries_stay_ordered_after_flushed_group() {
     let store = temp_store();
     let sdk = manual_sdk();
     let file_path = new_thread(&sdk, &store).await;
