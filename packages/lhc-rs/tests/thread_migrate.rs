@@ -12,8 +12,7 @@ use lhc::shared_tech::scheduler::DrainDisposition;
 use lhc::shared_tech::storage::{Db, SqlParam, get_schema_version};
 use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
-    THREAD_SCHEMA_VERSION_5,
-    THREAD_SCHEMA_VERSION_6,
+    THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
@@ -959,7 +958,6 @@ async fn migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backf
     store.cleanup();
 }
 
-
 #[tokio::test]
 async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_and_indexes() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1039,7 +1037,11 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
                 "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0",
             )
             .get()
-            .and_then(|r| r.get("content").and_then(|v| v.as_str()).map(str::to_string))
+            .and_then(|r| {
+                r.get("content")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
             .expect("prompt block");
 
         old.exec("DROP TABLE retrieval_impression;");
@@ -1076,11 +1078,7 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
         )
         .all(&[])
         .into_iter()
-        .filter_map(|row| {
-            row.get("name")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
         .collect();
     assert_eq!(
         indexes,
@@ -1113,11 +1111,13 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
         turn_count
     );
     let after_prompt = db
-        .prepare(
-            "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0",
-        )
+        .prepare("SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0")
         .get()
-        .and_then(|r| r.get("content").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|r| {
+            r.get("content")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
         .expect("prompt block after migrate");
     assert_eq!(after_prompt, prompt_text);
     assert!(prompt_text.contains("v5 migrate seed prompt"));

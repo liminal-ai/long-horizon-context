@@ -246,8 +246,16 @@ async fn get_session_thread_view_serves_no_empty_thinking_part() {
         panic!("serve failed");
     };
     let parts = assistant_parts(&value.entries);
-    assert!(!parts.iter().any(|p| p.type_ == SessionAssistantPartType::Thinking));
-    assert!(parts.iter().any(|p| p.type_ == SessionAssistantPartType::Text));
+    assert!(
+        !parts
+            .iter()
+            .any(|p| p.type_ == SessionAssistantPartType::Thinking)
+    );
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.type_ == SessionAssistantPartType::Text)
+    );
 }
 
 #[tokio::test]
@@ -298,7 +306,10 @@ async fn the_record_keeps_the_husk_row_capture_untouched() {
     let file_path = new_thread(&sdk, &store).await;
     seed_turn_with_thinking(&sdk, &file_path, "").await;
 
-    let detail = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let detail = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value } = detail else {
         panic!("list failed");
     };
@@ -428,7 +439,11 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
         2,
         "export must show signature-only + signed-with-text, not the true husk"
     );
-    assert!(thinking_parts.iter().any(|p| p.thinking.as_deref() == Some("")));
+    assert!(
+        thinking_parts
+            .iter()
+            .any(|p| p.thinking.as_deref() == Some(""))
+    );
     assert!(
         thinking_parts
             .iter()
@@ -454,10 +469,7 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
                 .join("\n")
         })
         .collect();
-    let thinking_msgs: Vec<_> = texts
-        .iter()
-        .filter(|t| t.contains("[thinking]"))
-        .collect();
+    let thinking_msgs: Vec<_> = texts.iter().filter(|t| t.contains("[thinking]")).collect();
     assert_eq!(
         thinking_msgs.len(),
         1,
@@ -471,7 +483,10 @@ async fn export_keeps_signature_only_assembly_skips_it_both_keep_signed_text() {
         || (t.contains("[thinking]") && !t.contains("visible signed reasoning"))));
 
     // Record retains all three thinking rows.
-    let detail = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let detail = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value: detail } = detail else {
         panic!("list failed");
     };
@@ -491,10 +506,7 @@ async fn does_not_reintroduce_husks_through_compacted_smooth_band_rendering() {
         seed_turn_with_thinking(&sdk, &file_path, "").await;
     }
 
-    let drained = sdk
-        .work
-        .drain(ThreadRef::file_path(&file_path), None)
-        .await;
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
     assert!(drained.is_ok(), "drain failed");
 
     let compacted = sdk

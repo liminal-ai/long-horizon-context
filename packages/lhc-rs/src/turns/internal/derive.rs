@@ -25,8 +25,8 @@ use crate::shared_tech::context::resolve_instance_poke;
 use crate::shared_tech::derivation::{
     BoxFuture, BriefTargets, Clock, CompletionTx, CompressDetailedTurnInput, CompressionTargets,
     DerivationMetadata, DerivationState, HandlerDerivationWrite, HandlerOutcome, HandlerRunContext,
-    InferenceResult, ResolvedSdkConfig, SizeDisposition,
-    SubjectKind, SummarizeChunkBriefInput, WorkHandler, WorkItemRef,
+    InferenceResult, ResolvedSdkConfig, SizeDisposition, SubjectKind, SummarizeChunkBriefInput,
+    WorkHandler, WorkItemRef,
 };
 use crate::shared_tech::durable_work::{
     ApplyDerivationSuccessDisposition, ApplyDerivationTerminalDisposition, DerivationAttempt,

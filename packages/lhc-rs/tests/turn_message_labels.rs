@@ -20,9 +20,7 @@ use lhc::shared_tech::derivation::{
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::view::ViewSubjectKind;
-use lhc::thread_view::internal::render::{
-    ResolvedRepresentation, render_arrangement_entry,
-};
+use lhc::thread_view::internal::render::{ResolvedRepresentation, render_arrangement_entry};
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::turns::internal::compose::{
     ComposeBlock, ComposeDerivationRow, ComposeMessage, compose_derivation_key,
@@ -75,11 +73,7 @@ fn compose_structured_turn_text_wraps_the_turn_and_each_non_run_message() {
             RenderingPartKind::UserPrompt,
             text_content("please read"),
         ),
-        msg1(
-            "m2",
-            RenderingPartKind::AssistantText,
-            text_content("done"),
-        ),
+        msg1("m2", RenderingPartKind::AssistantText, text_content("done")),
     ];
     let composition = compose_rendering_input(&messages, &IndexMap::new());
     let text = compose_structured_turn_text(&composition.parts, "t1");
@@ -133,7 +127,6 @@ fn compose_structured_turn_text_tags_each_tool_run_member_line() {
     assert!(!text.contains("<m2>\n[tool run"));
 }
 
-
 #[test]
 fn compose_rendering_input_shows_truncated_message_token_estimates() {
     let result = "r".repeat(700);
@@ -156,7 +149,10 @@ fn compose_rendering_input_shows_truncated_message_token_estimates() {
     // composition retranslates it to a token-total marker.
     use lhc::shared_tech::tool_result_rendering::truncate_for_fallback;
     let legacy = truncate_for_fallback(&result);
-    assert!(legacy.contains("chars]"), "precondition: legacy floor uses char marker");
+    assert!(
+        legacy.contains("chars]"),
+        "precondition: legacy floor uses char marker"
+    );
     let mut derivations = IndexMap::new();
     derivations.insert(
         compose_derivation_key("m2", "tool_result_summary"),
@@ -180,7 +176,10 @@ fn compose_rendering_input_shows_truncated_message_token_estimates() {
         text.contains("… [truncated — 2049 tok total]"),
         "legacy tool_result floor retranslates to token total: {text}"
     );
-    assert!(!text.contains("chars]"), "char markers must not survive: {text}");
+    assert!(
+        !text.contains("chars]"),
+        "char markers must not survive: {text}"
+    );
 }
 
 #[test]
@@ -244,11 +243,7 @@ fn pre_detailed_assembly_stays_untagged() {
             RenderingPartKind::UserPrompt,
             text_content("please read"),
         ),
-        msg1(
-            "m2",
-            RenderingPartKind::AssistantText,
-            text_content("done"),
-        ),
+        msg1("m2", RenderingPartKind::AssistantText, text_content("done")),
     ];
     let assembly = compose_pre_detailed_assembly(&messages, &IndexMap::new());
     assert!(!assembly.text.contains("<m"));
@@ -296,10 +291,7 @@ fn stored_rendering_has_turn_label_detects_legacy_unlabeled() {
         "legacy untagged rendering",
         "t1"
     ));
-    assert!(!stored_rendering_has_turn_label(
-        "<t2>\nbody\n</t2>",
-        "t1"
-    ));
+    assert!(!stored_rendering_has_turn_label("<t2>\nbody\n</t2>", "t1"));
 }
 
 // ── integration: stored rendering + id stability + legacy fallback ─
@@ -368,10 +360,7 @@ async fn stored_turn_rendering_carries_turn_and_message_labels() {
         .await;
     assert!(captured.is_ok());
 
-    let drained = sdk
-        .work
-        .drain(ThreadRef::file_path(&file_path), None)
-        .await;
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
     assert!(drained.is_ok());
 
     let forms = read_derived_forms(&file_path);
@@ -426,10 +415,7 @@ async fn labels_stable_across_re_derivation() {
         )
         .await;
     assert!(captured.is_ok());
-    let drained = sdk
-        .work
-        .drain(ThreadRef::file_path(&file_path), None)
-        .await;
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
     assert!(drained.is_ok());
 
     let before = read_derived_forms(&file_path)
@@ -536,10 +522,7 @@ async fn legacy_unlabeled_stored_rendering_recomposes_when_labels_required() {
         )
         .await;
     assert!(captured.is_ok());
-    let drained = sdk
-        .work
-        .drain(ThreadRef::file_path(&file_path), None)
-        .await;
+    let drained = sdk.work.drain(ThreadRef::file_path(&file_path), None).await;
     assert!(drained.is_ok());
 
     {

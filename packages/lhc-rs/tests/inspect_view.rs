@@ -553,7 +553,9 @@ async fn tail_costs_short_forms_short_and_total_equals_an_independent_context_re
                     valid_event(
                         kind::ASSISTANT_TEXT,
                         AssistantTextOverrides {
-                            payload: Some(AssistantTextPayload::new(format!("findings for area {turn}"))),
+                            payload: Some(AssistantTextPayload::new(format!(
+                                "findings for area {turn}"
+                            ))),
                             ..Default::default()
                         },
                     ),

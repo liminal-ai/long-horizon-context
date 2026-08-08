@@ -23,7 +23,7 @@ use crate::shared_tech::errors::{OpResult, storage_failure};
 use crate::shared_tech::js_json::{js_json_stringify, js_json_stringify_pretty, js_len, js_slice};
 use crate::shared_tech::persist::{create_db_read_transaction, create_db_write_transaction};
 use crate::shared_tech::storage::{Db, SqlParam};
-use crate::shared_tech::token_counting::{estimate_tokens, slice_tokens};
+use crate::shared_tech::token_counting::{estimate_tokens, slice_tokens, slice_tokens_byte_capped};
 use crate::threads::ThreadRef;
 use crate::turns::internal::compose::{
     compose_rendering_input, compose_structured_turn_text, stored_rendering_has_turn_label,
@@ -63,6 +63,13 @@ pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 22_000;
 pub struct RetrievalOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<f64>,
+    /// Optional per-call BYTE budget over served item text (UTF-8). Hosts
+    /// whose runtimes enforce output limits in bytes (codex core truncates
+    /// FunctionCallOutput at bytes/4-per-token approximations) pass their
+    /// allowance here; serving slices to fit both budgets, so receipts and
+    /// impressions describe exactly what the model can see (TS parity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_budget: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,19 +260,16 @@ fn budget_walk<T: Clone>(
     candidates: &[Candidate<T>],
     entity_kind: &'static str,
     token_budget: i64,
+    byte_budget: Option<usize>,
     from_token: i64,
     text_of: impl Fn(&T) -> &str,
     with_slice: impl Fn(T, String, i64, SliceReceipt) -> T,
-) -> (
-    Vec<T>,
-    Vec<UnservedEntity>,
-    i64,
-    Vec<ImpressionRow>,
-) {
+) -> (Vec<T>, Vec<UnservedEntity>, i64, Vec<ImpressionRow>) {
     let mut served = Vec::new();
     let mut unserved = Vec::new();
     let mut impressions = Vec::new();
     let mut total_tokens = 0i64;
+    let mut total_bytes = 0usize;
 
     for (request_idx, candidate) in candidates.iter().enumerate() {
         let request_idx = request_idx as i64;
@@ -287,11 +291,17 @@ fn budget_walk<T: Clone>(
             }
             CandidateOutcome::Servable { item, tokens } => {
                 let remaining = token_budget - total_tokens;
+                let remaining_bytes = byte_budget.map(|budget| budget.saturating_sub(total_bytes));
 
-                // Whole serve: no offset requested and the full text fits.
-                if from_token == 0 && *tokens <= remaining {
+                // Whole serve: no offset requested and the full text fits
+                // BOTH budgets.
+                if from_token == 0
+                    && *tokens <= remaining
+                    && remaining_bytes.is_none_or(|b| text_of(item).len() <= b)
+                {
                     served.push(item.clone());
                     total_tokens += tokens;
+                    total_bytes += text_of(item).len();
                     impressions.push(ImpressionRow {
                         entity_kind,
                         entity_id: candidate.id.clone(),
@@ -306,13 +316,45 @@ fn budget_walk<T: Clone>(
                 // Partial serve: explicit continuation always slices; a
                 // budget-crossing item slices only when enough budget remains.
                 if from_token > 0 || remaining >= RETRIEVAL_SLICE_FLOOR {
-                    let window = slice_tokens(text_of(item), from_token, remaining);
+                    let window = match remaining_bytes {
+                        Some(max_bytes) => slice_tokens_byte_capped(
+                            text_of(item),
+                            from_token,
+                            remaining,
+                            max_bytes,
+                        ),
+                        None => slice_tokens(text_of(item), from_token, remaining),
+                    };
                     let served_tokens = window.to_token - window.from_token;
+                    // Byte-shrunk slivers mirror the token floor: a budget-
+                    // crossing serve below RETRIEVAL_SLICE_FLOOR teaches
+                    // nothing — report "budget" so the model re-pulls alone.
+                    // Explicit continuations serve whatever fits, including
+                    // the empty past-the-end slice (its receipt IS the answer).
+                    let sliver =
+                        from_token == 0 && served_tokens < RETRIEVAL_SLICE_FLOOR.min(*tokens);
+                    if sliver {
+                        unserved.push(UnservedEntity {
+                            id: candidate.id.clone(),
+                            reason: UnservedReason::Budget,
+                            tokens: Some(*tokens),
+                        });
+                        impressions.push(ImpressionRow {
+                            entity_kind,
+                            entity_id: candidate.id.clone(),
+                            request_idx,
+                            served: false,
+                            reason: Some(UnservedReason::Budget),
+                            tokens: Some(*tokens),
+                        });
+                        continue;
+                    }
                     let receipt = SliceReceipt {
                         from_token: window.from_token,
                         to_token: window.to_token,
                         total_tokens: window.total_tokens,
                     };
+                    total_bytes += window.text.len();
                     let sliced = with_slice(item.clone(), window.text, served_tokens, receipt);
                     served.push(sliced);
                     total_tokens += served_tokens;
@@ -359,6 +401,21 @@ fn resolve_budget(options: Option<&RetrievalOptions>) -> Result<i64, String> {
     // The default is also the ceiling: callers cannot raise the model-visible
     // bound above what the serving contract promises (validator P0).
     Ok((budget as i64).min(DEFAULT_RETRIEVAL_TOKEN_BUDGET))
+}
+
+fn resolve_byte_budget(options: Option<&RetrievalOptions>) -> Result<Option<usize>, String> {
+    let Some(budget) = options.and_then(|o| o.byte_budget) else {
+        return Ok(None);
+    };
+    if budget.is_nan() || budget <= 0.0 {
+        return Err(format!(
+            "retrieval byteBudget must be a positive number, got {budget}"
+        ));
+    }
+    if budget.is_infinite() {
+        return Ok(None);
+    }
+    Ok(Some(budget as usize))
 }
 
 fn resolve_from_token(options: Option<&RetrievalOptions>) -> Result<i64, String> {
@@ -512,9 +569,7 @@ fn verbatim_text(blocks: &[(String, Map<String, Value>)]) -> String {
 
 fn message_candidate(db: &Db, message_id: &str) -> Candidate<RetrievedMessage> {
     let row = db
-        .prepare(
-            "SELECT message_id, turn_id, kind, deleted_at FROM message WHERE message_id = ?",
-        )
+        .prepare("SELECT message_id, turn_id, kind, deleted_at FROM message WHERE message_id = ?")
         .get_params(&[SqlParam::from(message_id)]);
     let Some(row) = row else {
         return Candidate {
@@ -555,10 +610,7 @@ fn message_candidate(db: &Db, message_id: &str) -> Candidate<RetrievedMessage> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let content_raw = br
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("{}");
+        let content_raw = br.get("content").and_then(|v| v.as_str()).unwrap_or("{}");
         let content_value: Value =
             serde_json::from_str(content_raw).unwrap_or_else(|err| panic!("{err}"));
         let content = match content_value {
@@ -595,11 +647,22 @@ fn generate_call_id() -> String {
     // UUID v4-ish hex with dashes (format not load-bearing; uniqueness is).
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        (bytes[6] & 0x0f) | 0x40, bytes[7],
-        (bytes[8] & 0x3f) | 0x80, bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        (bytes[6] & 0x0f) | 0x40,
+        bytes[7],
+        (bytes[8] & 0x3f) | 0x80,
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }
 
@@ -614,6 +677,10 @@ async fn retrieve<T: Clone + Send + 'static>(
     with_slice: fn(T, String, i64, SliceReceipt) -> T,
 ) -> OpResult<RetrievalReceipt<T>> {
     let token_budget = match resolve_budget(options.as_ref()) {
+        Ok(b) => b,
+        Err(msg) => return storage_failure(&msg),
+    };
+    let byte_budget = match resolve_byte_budget(options.as_ref()) {
         Ok(b) => b,
         Err(msg) => return storage_failure(&msg),
     };
@@ -663,6 +730,7 @@ async fn retrieve<T: Clone + Send + 'static>(
                     &candidates,
                     entity_kind,
                     token_budget,
+                    byte_budget,
                     from_token,
                     text_of,
                     with_slice,

@@ -118,7 +118,9 @@ fn turn_events(turn: i64) -> Vec<MessageEventInput> {
             kind::ASSISTANT_THINKING,
             AssistantThinkingOverrides {
                 idempotency_key: Some(key()),
-                payload: Some(AssistantThinkingPayload::new(format!("considering what area {turn} contains"))),
+                payload: Some(AssistantThinkingPayload::new(format!(
+                    "considering what area {turn} contains"
+                ))),
                 ..Default::default()
             },
         ),
@@ -163,7 +165,9 @@ fn turn_events(turn: i64) -> Vec<MessageEventInput> {
         kind::ASSISTANT_TEXT,
         AssistantTextOverrides {
             idempotency_key: Some(key()),
-            payload: Some(AssistantTextPayload::new(format!("findings for area {turn}"))),
+            payload: Some(AssistantTextPayload::new(format!(
+                "findings for area {turn}"
+            ))),
             ..Default::default()
         },
     ));

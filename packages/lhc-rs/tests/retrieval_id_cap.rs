@@ -6,8 +6,8 @@
 mod fixtures;
 
 use fixtures::{
-    AssistantTextOverrides, AssistantTextPayload, TempStore, TurnEndOverrides,
-    UserPromptOverrides, UserPromptPayload, kind, temp_store, valid_event,
+    AssistantTextOverrides, AssistantTextPayload, TempStore, TurnEndOverrides, UserPromptOverrides,
+    UserPromptPayload, kind, temp_store, valid_event,
 };
 use lhc::retrieval::{MAX_RETRIEVAL_IDS_PER_CALL, UnservedReason};
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
@@ -104,7 +104,9 @@ async fn refuses_over_cap_calls_whole_naming_the_cap() {
             error.reason
         );
         assert!(
-            error.reason.contains(&MAX_RETRIEVAL_IDS_PER_CALL.to_string()),
+            error
+                .reason
+                .contains(&MAX_RETRIEVAL_IDS_PER_CALL.to_string()),
             "reason must name the cap: {}",
             error.reason
         );
@@ -129,8 +131,8 @@ async fn counts_deduped_ids_not_raw_ids() {
     seed_one_turn(&sdk, &file_path).await;
 
     // MAX+10 raw copies of t1 → one deduped id; must not trip the cap.
-    let ids: Vec<String> = std::iter::repeat_n("t1".to_string(), MAX_RETRIEVAL_IDS_PER_CALL + 10)
-        .collect();
+    let ids: Vec<String> =
+        std::iter::repeat_n("t1".to_string(), MAX_RETRIEVAL_IDS_PER_CALL + 10).collect();
     let result = sdk
         .retrieval
         .get_turns(ThreadRef::file_path(&file_path), &ids, None)
@@ -173,7 +175,10 @@ async fn refuses_oversized_ids_per_id_as_invalid_with_echo_clamped() {
     let monster = format!("t{}", "9".repeat(40_000));
     let expected_echo = clamp_id_echo(&monster);
     // Exact 32 UTF-16 code units + ellipsis (ASCII here: 32 chars + …).
-    assert_eq!(js_len(&expected_echo[..expected_echo.len() - "…".len()]), 32);
+    assert_eq!(
+        js_len(&expected_echo[..expected_echo.len() - "…".len()]),
+        32
+    );
     assert!(expected_echo.ends_with('…'));
     assert_eq!(
         &expected_echo[..32],
@@ -229,9 +234,7 @@ async fn budget_ceiling_actually_slices_oversized_body_at_default() {
 
     // Body well above 8000 tokens (not just a tiny turn with a high request).
     let big_body: String = (0..2000)
-        .map(|i| {
-            format!("line {i}: the quick brown fox jumps over the lazy dog and pads tokens")
-        })
+        .map(|i| format!("line {i}: the quick brown fox jumps over the lazy dog and pads tokens"))
         .collect::<Vec<_>>()
         .join("\n");
     let raw_tokens = estimate_tokens(&big_body);
@@ -278,6 +281,7 @@ async fn budget_ceiling_actually_slices_oversized_body_at_default() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(10_000_000.0),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -346,7 +350,10 @@ async fn digit_boundary_12_valid_13_invalid() {
         receipt.unserved
     );
     assert!(
-        receipt.unserved.iter().any(|u| u.id == id12 && u.reason == UnservedReason::NotFound)
+        receipt
+            .unserved
+            .iter()
+            .any(|u| u.id == id12 && u.reason == UnservedReason::NotFound)
             || receipt.served.iter().any(|t| t.turn_id == id12),
         "12-digit id should resolve as not_found or served, not invalid"
     );
@@ -412,6 +419,7 @@ async fn clamps_caller_token_budget_to_the_contract_ceiling() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(10_000_000.0),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),

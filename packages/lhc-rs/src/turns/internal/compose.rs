@@ -17,9 +17,7 @@ use crate::shared_tech::derivation::{
     RenderingPartKind, SubjectKind, ToolOutcome,
 };
 use crate::shared_tech::js_json::{js_json_stringify, js_len, js_slice};
-use crate::shared_tech::tool_result_rendering::{
-    FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback,
-};
+use crate::shared_tech::tool_result_rendering::{FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback};
 
 /// TS `ComposeMessage` block element.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

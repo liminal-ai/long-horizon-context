@@ -11,9 +11,7 @@ use fixtures::{
     UserPromptPayload, kind, open_raw, temp_store, valid_event,
 };
 use lhc::messages::MessageKind;
-use lhc::retrieval::{
-    RetrievedTurnSource, UnservedReason,
-};
+use lhc::retrieval::{RetrievedTurnSource, UnservedReason};
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::SqlParam;
@@ -189,7 +187,11 @@ async fn get_turns_serves_stored_tagged_renderings_after_drain_in_request_order(
         panic!("get_turns failed");
     };
     assert_eq!(
-        receipt.served.iter().map(|t| t.turn_id.as_str()).collect::<Vec<_>>(),
+        receipt
+            .served
+            .iter()
+            .map(|t| t.turn_id.as_str())
+            .collect::<Vec<_>>(),
         ["t2", "t1"]
     );
     assert!(receipt.unserved.is_empty());
@@ -279,7 +281,11 @@ async fn get_turns_reports_unknown_ids_as_not_found_without_charging_budget() {
     assert_eq!(receipt.unserved[0].id, "t99");
     assert_eq!(receipt.unserved[0].reason, UnservedReason::NotFound);
     assert_eq!(
-        receipt.served.iter().map(|t| t.turn_id.as_str()).collect::<Vec<_>>(),
+        receipt
+            .served
+            .iter()
+            .map(|t| t.turn_id.as_str())
+            .collect::<Vec<_>>(),
         ["t1"]
     );
 }
@@ -312,6 +318,7 @@ async fn get_turns_reports_budget_when_too_little_remains_to_slice() {
             &["t1".into(), "t2".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(t2_tokens as f64),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -321,7 +328,11 @@ async fn get_turns_reports_budget_when_too_little_remains_to_slice() {
         panic!("partial failed");
     };
     assert_eq!(
-        partial.served.iter().map(|t| t.turn_id.as_str()).collect::<Vec<_>>(),
+        partial
+            .served
+            .iter()
+            .map(|t| t.turn_id.as_str())
+            .collect::<Vec<_>>(),
         ["t1"]
     );
     assert!(partial.served[0].slice.is_none());
@@ -346,6 +357,7 @@ async fn get_turns_slices_oversized_turn_to_budget_with_continuation_receipt() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(500.0),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -390,6 +402,7 @@ async fn get_turns_from_token_continuation_slices_reassemble_full_text() {
                 &["t1".into()],
                 Some(lhc::RetrievalOptions {
                     token_budget: Some(400.0),
+                    byte_budget: None,
                     from_token: Some(from as f64),
                     surface: None,
                 }),
@@ -448,6 +461,7 @@ async fn get_turns_serves_crossing_item_sliced_and_later_items_with_budget_recei
             &["t1".into(), "t2".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(500.0),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -479,6 +493,7 @@ async fn get_turns_rejects_negative_or_fractional_from_token() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: None,
+                byte_budget: None,
                 from_token: Some(-1.0),
                 surface: None,
             }),
@@ -492,6 +507,7 @@ async fn get_turns_rejects_negative_or_fractional_from_token() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: None,
+                byte_budget: None,
                 from_token: Some(1.5),
                 surface: None,
             }),
@@ -558,6 +574,7 @@ async fn get_turns_rejects_empty_id_list_and_non_positive_budget() {
             &["t1".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(0.0),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -608,7 +625,10 @@ async fn get_messages_serves_verbatim_text_tool_calls_and_results() {
     assert_eq!(receipt.served[0].kind, "user_prompt");
     assert_eq!(receipt.served[0].turn_id, "t1");
     assert!(receipt.served[1].text.contains("[tool_call read call-1]"));
-    assert!(receipt.served[1].text.contains("\"path\": \"notes.txt\"") || receipt.served[1].text.contains("\"path\":\"notes.txt\""));
+    assert!(
+        receipt.served[1].text.contains("\"path\": \"notes.txt\"")
+            || receipt.served[1].text.contains("\"path\":\"notes.txt\"")
+    );
     assert!(receipt.served[2].text.contains("[tool_result call-1]"));
     assert!(receipt.served[2].text.contains("the file says hello"));
 }
@@ -661,6 +681,7 @@ async fn get_messages_enforces_token_budget_across_messages_in_order() {
             &prompts,
             Some(lhc::RetrievalOptions {
                 token_budget: Some(budget as f64),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -715,6 +736,7 @@ async fn impression_log_writes_one_row_per_requested_id() {
             &[prompt_id.clone()],
             Some(lhc::RetrievalOptions {
                 token_budget: None,
+                byte_budget: None,
                 from_token: None,
                 surface: Some("board".into()),
             }),
@@ -787,13 +809,12 @@ async fn impression_log_persists_deleted_and_budget_outcomes() {
 
     let deleted_call = sdk
         .retrieval
-        .get_messages(
-            ThreadRef::file_path(&file_path),
-            &[prompt_id.clone()],
-            None,
-        )
+        .get_messages(ThreadRef::file_path(&file_path), &[prompt_id.clone()], None)
         .await;
-    let OpResult::Ok { value: deleted_call } = deleted_call else {
+    let OpResult::Ok {
+        value: deleted_call,
+    } = deleted_call
+    else {
         panic!("get_messages failed");
     };
     assert!(deleted_call.served.is_empty());
@@ -820,6 +841,7 @@ async fn impression_log_persists_deleted_and_budget_outcomes() {
             &["t1".into(), "t2".into()],
             Some(lhc::RetrievalOptions {
                 token_budget: Some(t2_tokens as f64),
+                byte_budget: None,
                 from_token: None,
                 surface: None,
             }),
@@ -925,6 +947,7 @@ async fn from_token_slices_every_requested_id_from_offset() {
             Some(lhc::RetrievalOptions {
                 // Enough for two 200-token windows after shared fromToken.
                 token_budget: Some((window * 2) as f64),
+                byte_budget: None,
                 from_token: Some(from as f64),
                 surface: None,
             }),
@@ -945,7 +968,10 @@ async fn from_token_slices_every_requested_id_from_offset() {
     // min(window_budget_remaining, rest_of_text); second uses what is left.
     let mut remaining = window * 2;
     for (served, full) in multi.served.iter().zip([&full_t1, &full_t2]) {
-        let slice = served.slice.as_ref().expect("every item must carry a slice");
+        let slice = served
+            .slice
+            .as_ref()
+            .expect("every item must carry a slice");
         assert_eq!(
             slice.from_token, from,
             "every requested id is sliced from fromToken (not only the first)"
@@ -1021,4 +1047,184 @@ async fn retrieval_writes_nothing_to_record_tables() {
     let _ = retrieval::DEFAULT_RETRIEVAL_TOKEN_BUDGET;
     let _ = SqlParam::from("");
     let _ = Value::Null;
+}
+
+// ── byteBudget (TS parity: retrieval.test.ts "byteBudget") ─────────
+
+fn dense_lines(count: usize) -> String {
+    format!("{}\n", "=".repeat(80)).repeat(count)
+}
+
+async fn seed_dense(sdk: &Lhc, file_path: &str, texts: &[&str]) -> Vec<String> {
+    let mut events = vec![valid_event(
+        kind::USER_PROMPT,
+        UserPromptOverrides {
+            payload: Some(UserPromptPayload {
+                text: "dump".into(),
+            }),
+            ..Default::default()
+        },
+    )];
+    for text in texts {
+        events.push(valid_event(
+            kind::ASSISTANT_TEXT,
+            AssistantTextOverrides {
+                payload: Some(AssistantTextPayload::new(*text)),
+                ..Default::default()
+            },
+        ));
+    }
+    events.push(valid_event(kind::TURN_END, TurnEndOverrides::default()));
+    send(sdk, file_path, &events).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(file_path), None)
+        .await;
+    let OpResult::Ok { value: listed } = listed else {
+        panic!("list failed");
+    };
+    listed
+        .iter()
+        .filter(|r| r.kind == MessageKind::AssistantText)
+        .map(|r| r.message_id.clone())
+        .collect()
+}
+
+fn byte_options(byte_budget: f64, from_token: Option<f64>) -> Option<lhc::RetrievalOptions> {
+    Some(lhc::RetrievalOptions {
+        token_budget: None,
+        byte_budget: Some(byte_budget),
+        from_token,
+        surface: None,
+    })
+}
+
+/// Token-cheap byte-heavy content slices to fit the byte allowance, and the
+/// token-denominated receipt continues correctly, still byte-fit.
+#[tokio::test]
+async fn byte_budget_slices_byte_heavy_content() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    let dense = dense_lines(1_500);
+    let ids = seed_dense(&sdk, &file_path, &[&dense]).await;
+
+    let byte_budget = 12_000usize;
+    let result = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &ids,
+            byte_options(byte_budget as f64, None),
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = result else {
+        panic!("get_messages failed");
+    };
+    assert_eq!(receipt.served.len(), 1);
+    let served = &receipt.served[0];
+    assert!(
+        served.text.len() <= byte_budget,
+        "bytes {}",
+        served.text.len()
+    );
+    let slice = served.slice.as_ref().expect("slice receipt");
+    assert_eq!(slice.from_token, 0);
+    assert_eq!(slice.to_token, served.tokens);
+    assert!(slice.to_token < slice.total_tokens);
+
+    let next = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &ids,
+            byte_options(byte_budget as f64, Some(slice.to_token as f64)),
+        )
+        .await;
+    let OpResult::Ok { value: next } = next else {
+        panic!("continuation failed");
+    };
+    let next_served = &next.served[0];
+    let next_slice = next_served.slice.as_ref().expect("slice receipt");
+    assert_eq!(next_slice.from_token, slice.to_token);
+    assert!(next_served.text.len() <= byte_budget);
+}
+
+/// Bytes that fit whole-serve without a slice; non-positive byteBudget is
+/// rejected as a storage failure.
+#[tokio::test]
+async fn byte_budget_whole_serve_and_validation() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_two_turns(&sdk, &file_path).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
+    let OpResult::Ok { value: listed } = listed else {
+        panic!("list failed");
+    };
+    let prompt_id = vec![
+        listed
+            .iter()
+            .find(|r| r.kind == MessageKind::UserPrompt)
+            .expect("prompt")
+            .message_id
+            .clone(),
+    ];
+
+    let whole = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &prompt_id,
+            byte_options(1_000_000.0, None),
+        )
+        .await;
+    let OpResult::Ok { value: whole } = whole else {
+        panic!("whole serve failed");
+    };
+    assert!(whole.served[0].slice.is_none());
+
+    let bad = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &prompt_id,
+            byte_options(0.0, None),
+        )
+        .await;
+    assert!(
+        matches!(bad, OpResult::Err { .. }),
+        "byteBudget 0 must fail"
+    );
+}
+
+/// A byte-spent budget serves the first item as a slice; the next item's
+/// byte-fitting window would be a sub-floor sliver, so it reports budget.
+#[tokio::test]
+async fn byte_spent_budget_marks_later_items_unserved() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    let first = dense_lines(900);
+    let second = dense_lines(40);
+    let ids = seed_dense(&sdk, &file_path, &[&first, &second]).await;
+
+    let result = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &ids,
+            byte_options(8_000.0, None),
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = result else {
+        panic!("get_messages failed");
+    };
+    assert_eq!(receipt.served.len(), 1);
+    assert_eq!(receipt.unserved[0].reason, UnservedReason::Budget);
+    let served_bytes: usize = receipt.served.iter().map(|s| s.text.len()).sum();
+    assert!(served_bytes <= 8_000, "served {served_bytes} bytes");
 }

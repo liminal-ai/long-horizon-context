@@ -165,7 +165,9 @@ async fn seed_all_seven_kinds(sdk: &Lhc, store: &TempStore) -> String {
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload::new("the fixture file holds fixture text")),
+                        payload: Some(AssistantTextPayload::new(
+                            "the fixture file holds fixture text",
+                        )),
                         ..Default::default()
                     },
                 ),

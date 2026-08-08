@@ -687,7 +687,9 @@ async fn renders_deterministic_tool_result_floors_behind_the_boundary_and_full_c
                 valid_event(
                     kind::ASSISTANT_THINKING,
                     AssistantThinkingOverrides {
-                        payload: Some(AssistantThinkingPayload::new(format!("boundary thought {turn}"))),
+                        payload: Some(AssistantThinkingPayload::new(format!(
+                            "boundary thought {turn}"
+                        ))),
                         ..Default::default()
                     },
                 ),
@@ -979,7 +981,9 @@ async fn after_more_intake_the_tail_grew_still_no_compact_without_invocation() {
             valid_event(
                 kind::ASSISTANT_TEXT,
                 AssistantTextOverrides {
-                    payload: Some(AssistantTextPayload::new("one more answer for the heavy thread")),
+                    payload: Some(AssistantTextPayload::new(
+                        "one more answer for the heavy thread",
+                    )),
                     ..Default::default()
                 },
             ),

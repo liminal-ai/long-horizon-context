@@ -5,8 +5,8 @@ use super::render::{
     AssembledContextMessage, TailRenderContext, has_thinking_text, is_empty_thinking_husk,
     render_band_message, render_tail_message, tool_names_by_call_id,
 };
-use crate::shared_tech::derivation::RenderingPartKind;
 use super::snapshot::{ViewSnapshot, read_tail_messages, read_view_snapshot};
+use crate::shared_tech::derivation::RenderingPartKind;
 use crate::shared_tech::storage::Db;
 
 #[derive(Debug, Clone, PartialEq)]

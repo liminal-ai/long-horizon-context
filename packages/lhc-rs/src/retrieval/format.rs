@@ -75,11 +75,7 @@ pub fn slice_footer(tool: &str, id: &str, slice: &SliceReceipt) -> String {
     }
     format!(
         "[{id}: served tok {}–{} of {} — {} tok remain. Next slice: {tool}({{\"ids\":[\"{id}\"],\"from\":{}}})]",
-        slice.from_token,
-        slice.to_token,
-        slice.total_tokens,
-        remaining,
-        slice.to_token
+        slice.from_token, slice.to_token, slice.total_tokens, remaining, slice.to_token
     )
 }
 
@@ -265,7 +261,10 @@ mod tests {
             reason: UnservedReason::NotFound,
             tokens: None,
         };
-        assert_eq!(unserved_line("get_turns", &missed), "not served: t99 (not_found)");
+        assert_eq!(
+            unserved_line("get_turns", &missed),
+            "not served: t99 (not_found)"
+        );
     }
 
     #[test]

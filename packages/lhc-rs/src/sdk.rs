@@ -9,6 +9,12 @@ pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEvent
 pub use crate::messages::{
     Block, BlockType, MessageDetail, MessageListOptions, MessageRecord, MutationResult,
 };
+pub use crate::retrieval::{
+    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, MAX_RETRIEVAL_IDS_PER_CALL,
+    MAX_RETRIEVAL_OUTPUT_TOKENS, RETRIEVAL_SLICE_FLOOR, RetrievalOptions, RetrievalReceipt,
+    RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt, UnservedEntity,
+    UnservedReason, clamp_id_echo,
+};
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{
     CompletionTx, DependencyGap, Derivation, DerivationMetadata, DerivationReportEntry,
@@ -41,13 +47,9 @@ pub use crate::shared_tech::persist::{
 };
 pub use crate::shared_tech::prompts::{DEFAULT_PROMPT_NAMES, PROMPT_NAMES};
 pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
-pub use crate::retrieval::{
-    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, MAX_RETRIEVAL_IDS_PER_CALL,
-    MAX_RETRIEVAL_OUTPUT_TOKENS, RETRIEVAL_SLICE_FLOOR, RetrievalOptions, RetrievalReceipt,
-    RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt, UnservedEntity,
-    UnservedReason, clamp_id_echo,
+pub use crate::shared_tech::token_counting::{
+    TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens,
 };
-pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens};
 pub use crate::shared_tech::view::{
     Band, CompactReceipt, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
     PreviewCompactOutcome, PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SdkViewConfig,
@@ -700,10 +702,7 @@ impl RetrievalSurface {
         .await
     }
 
-    pub async fn list_impressions(
-        &self,
-        ref_: ThreadRef,
-    ) -> OpResult<Vec<ImpressionRecord>> {
+    pub async fn list_impressions(&self, ref_: ThreadRef) -> OpResult<Vec<ImpressionRecord>> {
         let seam = Arc::clone(&self.seam);
         run_with_instance_seam(seam, async move {
             crate::retrieval::list_impressions(ref_).await

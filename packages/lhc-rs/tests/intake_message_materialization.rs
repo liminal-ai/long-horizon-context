@@ -83,14 +83,18 @@ async fn tc_2_2_one_of_each_kind_materializes_six_messages_with_kind_appropriate
         valid_event(
             kind::ASSISTANT_TEXT,
             AssistantTextOverrides {
-                payload: Some(AssistantTextPayload::new("the file describes turn handling")),
+                payload: Some(AssistantTextPayload::new(
+                    "the file describes turn handling",
+                )),
                 ..Default::default()
             },
         ),
         valid_event(
             kind::ASSISTANT_THINKING,
             AssistantThinkingOverrides {
-                payload: Some(AssistantThinkingPayload::new("the request needs the file first")),
+                payload: Some(AssistantThinkingPayload::new(
+                    "the request needs the file first",
+                )),
                 ..Default::default()
             },
         ),

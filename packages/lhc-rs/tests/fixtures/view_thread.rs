@@ -78,7 +78,9 @@ fn turn_events(turn: i64) -> Vec<MessageEventInput> {
         valid_event(
             kind::ASSISTANT_THINKING,
             AssistantThinkingOverrides {
-                payload: Some(AssistantThinkingPayload::new(format!("considering what area {turn} contains"))),
+                payload: Some(AssistantThinkingPayload::new(format!(
+                    "considering what area {turn} contains"
+                ))),
                 ..Default::default()
             },
         ),
@@ -122,7 +124,9 @@ fn turn_events(turn: i64) -> Vec<MessageEventInput> {
     events.push(valid_event(
         kind::ASSISTANT_TEXT,
         AssistantTextOverrides {
-            payload: Some(AssistantTextPayload::new(format!("findings for area {turn}"))),
+            payload: Some(AssistantTextPayload::new(format!(
+                "findings for area {turn}"
+            ))),
             ..Default::default()
         },
     ));

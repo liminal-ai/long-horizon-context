@@ -719,7 +719,9 @@ async fn latest_open_turn_with_a_dangling_tool_call_previews_ok_and_stays_after_
                     valid_event(
                         kind::ASSISTANT_TEXT,
                         AssistantTextOverrides {
-                            payload: Some(AssistantTextPayload::new(format!("closed answer {turn}"))),
+                            payload: Some(AssistantTextPayload::new(format!(
+                                "closed answer {turn}"
+                            ))),
                             ..Default::default()
                         },
                     ),
@@ -760,7 +762,9 @@ async fn latest_open_turn_with_a_dangling_tool_call_previews_ok_and_stays_after_
                 valid_event(
                     kind::ASSISTANT_TEXT,
                     AssistantTextOverrides {
-                        payload: Some(AssistantTextPayload::new("Lint passed. Now let me serve it.")),
+                        payload: Some(AssistantTextPayload::new(
+                            "Lint passed. Now let me serve it.",
+                        )),
                         ..Default::default()
                     },
                 ),

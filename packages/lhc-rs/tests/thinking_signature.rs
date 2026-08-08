@@ -114,9 +114,7 @@ async fn accepts_optional_signature_and_materializes_it_on_the_message_block() {
                 valid_event(
                     kind::USER_PROMPT,
                     UserPromptOverrides {
-                        payload: Some(UserPromptPayload {
-                            text: "hi".into(),
-                        }),
+                        payload: Some(UserPromptPayload { text: "hi".into() }),
                         ..Default::default()
                     },
                 ),
@@ -140,7 +138,10 @@ async fn accepts_optional_signature_and_materializes_it_on_the_message_block() {
         .await;
     assert!(captured.is_ok());
 
-    let listed = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value } = listed else {
         panic!("list failed");
     };
@@ -149,10 +150,7 @@ async fn accepts_optional_signature_and_materializes_it_on_the_message_block() {
         .find(|row| row.kind == MessageKind::AssistantThinking)
         .expect("thinking row");
     let expected = json!({"text": "", "signature": "enc-sig-abc"});
-    assert_eq!(
-        Value::Object(thinking.blocks[0].content.clone()),
-        expected
-    );
+    assert_eq!(Value::Object(thinking.blocks[0].content.clone()), expected);
 }
 
 #[tokio::test]
@@ -212,7 +210,10 @@ async fn omitted_signature_stays_omitted_on_the_block() {
         .await;
     assert!(captured.is_ok());
 
-    let listed = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value } = listed else {
         panic!("list failed");
     };
@@ -324,11 +325,7 @@ async fn get_llm_request_context_skips_signature_only_thinking() {
         })
         .collect();
     assert!(!texts.iter().any(|t| t.contains("[thinking]")));
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("Three files changed."))
-    );
+    assert!(texts.iter().any(|t| t.contains("Three files changed.")));
 }
 
 #[tokio::test]
@@ -465,7 +462,10 @@ async fn stores_provider_model_api_on_thinking_blocks_and_surfaces_them_on_sessi
         .await;
     assert!(captured.is_ok());
 
-    let listed = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value } = listed else {
         panic!("list failed");
     };
@@ -570,7 +570,10 @@ async fn synthetic_or_mismatched_identity_still_exports_verbatim() {
     );
 
     // Also verify assistant_text block retained provenance in the record.
-    let listed = sdk.messages.list(ThreadRef::file_path(&file_path), None).await;
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
     let OpResult::Ok { value } = listed else {
         panic!("list failed");
     };
