@@ -405,6 +405,53 @@ async fn emits_model_change_and_thinking_level_change_entries_for_runtime_change
     }
 }
 
+/// TS parity: "orders a thinking_level_change between the flushed assistant
+/// group and the next" — the change entry must flush the open assistant
+/// group and precede the following one.
+#[tokio::test]
+async fn thinking_level_change_flushes_open_assistant_group() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+
+    let captured = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(kind::USER_PROMPT, UserPromptOverrides::default()),
+                valid_event(kind::ASSISTANT_TEXT, AssistantTextOverrides::default()),
+                valid_event(
+                    kind::THINKING_LEVEL_CHANGE,
+                    ThinkingLevelChangeOverrides {
+                        payload: Some(ThinkingLevelChangePayload {
+                            previous_level: "low".into(),
+                            new_level: "high".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::ASSISTANT_TEXT, AssistantTextOverrides::default()),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(captured.is_ok());
+
+    let view = sdk
+        .thread_view
+        .get_session_thread_view(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: view } = view else {
+        panic!("view failed");
+    };
+
+    assert_eq!(
+        entry_kinds(&view.entries),
+        ["user", "assistant", "thinking_level_change", "assistant"]
+    );
+}
+
 #[tokio::test]
 async fn serves_full_tool_result_content_before_compact_even_when_zone_exceeds_max() {
     let store = temp_store();

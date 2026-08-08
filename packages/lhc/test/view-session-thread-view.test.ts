@@ -169,6 +169,23 @@ describe("threadView.getSessionThreadView", () => {
     });
   });
 
+  it("orders a thinking_level_change between the flushed assistant group and the next", async () => {
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+      validEvent("thinking_level_change", { payload: { previousLevel: "low", newLevel: "high" } }),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    expect(entryKinds(view.value.entries)).toEqual(["user", "assistant", "thinking_level_change", "assistant"]);
+  });
+
   it("splits assistant groups at identity boundaries so signatures keep their own provenance", async () => {
     // Two thinking rows with different capture identities inside one
     // assistant run (model changed mid-turn). Message-level provenance
