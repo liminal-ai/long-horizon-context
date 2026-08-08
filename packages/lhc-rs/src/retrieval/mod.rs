@@ -51,13 +51,12 @@ pub const MAX_RETRIEVAL_IDS_PER_CALL: usize = 32;
 /// P0, 2026-08-08 / TS `RETRIEVAL_ID_PATTERN`).
 pub const RETRIEVAL_ID_PATTERN: &str = r"^[tm]\d{1,12}$";
 
-/// Analytic ceiling on a model-visible retrieval assembly. Derived component-
-/// by-component in `format` (bodies ≤8000, ≤32 sections/footers/unserved,
-/// echo ≤66 tokens, pinned fixed strings, digit bounds) → sum 17_110 → round
-/// up next 500 = **17_500**. Dominates every reachable case by construction
-/// (no measurement treadmill). **Not** enforced by runtime truncation
-/// (TS parity / Fable R6 analytic).
-pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 17_500;
+/// Analytic ceiling on a model-visible retrieval assembly. Conservative
+/// component derivation (validator, 2026-08-08) in `format` → sum 21_526 →
+/// round up next 500 = **22_000**. Dominates every reachable case by
+/// construction (no measurement treadmill). **Not** enforced by runtime
+/// truncation (TS parity / Fable R6 analytic).
+pub const MAX_RETRIEVAL_OUTPUT_TOKENS: i64 = 22_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

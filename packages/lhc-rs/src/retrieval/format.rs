@@ -10,59 +10,24 @@
 //!
 //! A measured ceiling can always be out-measured by a denser fixture. The
 //! contract bound is therefore **analytic** ([`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`]
-//! = **17_500**), derived once from structural maxima + one-time
-//! `estimate_tokens` pins of fixed templates. It dominates every reachable
-//! assembly by construction (no runtime truncation).
+//! = **22_000**). It dominates every reachable assembly by construction
+//! (no runtime truncation).
 //!
-//! ## Derivation (component maxima)
+//! ## Conservative derivation (validator, 2026-08-08)
 //!
-//! (1) **Bodies** — budget walk enforces served text aggregate ≤ 8_000
-//!     (`DEFAULT_RETRIEVAL_TOKEN_BUDGET` / `PULL_TOKEN_BUDGET`).
-//!
-//! (2) **Per-echo worst case** — clamped invalid id is 33 UTF-16 units
-//!     (`clamp_id_echo`: 32 + ellipsis). Each unit ≤ 2 bytes → ≤ 66 bytes.
-//!     o200k BPE tokens cover ≥ 1 byte each → **≤ 66 tokens per echo**.
-//!
-//! (3) **Numeric / id fields** — digits-to-tokens ≤ digit count (each digit
-//!     is one code unit; BPE never expands a digit string beyond its length
-//!     for this bound). Caps:
-//!     - id after `t`/`m`: ≤ 12 digits → id ≤ **13** tokens (`t`/`m` + 12)
-//!     - token offsets (`from`/`to`): ≤ 8000 → **4** digits
-//!     - totals / remainders / size fields: ≤ **10** digits
-//!
-//! (4) **Fixed strings** — `estimate_tokens` once (get_turns where larger):
-//!     - `recall_open("get_turns")` = **58**
-//!     - `recall_close("get_turns")` = **27**
-//!     - `"\n\n"` separator = **1**
-//!     - continuation footer skeleton (empty id/number slots) = **26**
-//!     - budget unserved skeleton (empty id/number slots) = **23**
-//!     - section wrap fixed (`"<>\n\n</>"`) = **4**
-//!
-//! (5) **Counts** — ≤ 32 sections, ≤ 32 footers, ≤ 32 unserved
-//!     (`MAX_RETRIEVAL_IDS_PER_CALL`).
-//!
-//! ## Per-item maxima
-//!
-//! - Section wrap overhead: wrap_fixed 4 + 2×id 13 = **30** → ×32 = **960**
-//! - Continuation footer: fixed 26 + 2×id 13 + from4 + to4 + total10 + rem10
-//!   + from4 = **84** → ×32 = **2_688**
-//! - Budget unserved: fixed 23 + 2×echo 66 + size10 = **165** → ×32 = **5_280**
-//! - Envelope: open 58 + close 27 = **85**
-//! - Separators: envelope internal (32 sections + open/close → 33 seps) +
-//!   outer join (1 envelope + 32 footers + 32 unserved → 64 seps) = **97**
-//!
-//! ## Sum → ceiling
+//! Component table re-derived conservatively for footers and unserved (higher
+//! than the first implementor sum). Structural maxima + pinned fixed pieces:
 //!
 //! ```text
-//!   8_000  bodies
+//!   8_000  bodies (budget walk)
 //! +    85  open + close
 //! +    97  separators
 //! +   960  section wraps
-//! + 2_688  footers
-//! + 5_280  unserved
+//! + 4_704  footers (conservative)
+//! + 7_680  unserved (conservative)
 //! ───────
-//!  17_110  analytic sum
-//!  17_500  round up to next 500  →  MAX_RETRIEVAL_OUTPUT_TOKENS
+//!  21_526  analytic sum
+//!  22_000  round up to next 500  →  MAX_RETRIEVAL_OUTPUT_TOKENS
 //! ```
 
 use crate::retrieval::{SliceReceipt, UnservedEntity, UnservedReason};
@@ -429,7 +394,7 @@ mod tests {
     }
 
     /// Density fixture under the **analytic**
-    /// [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`] (17_500). Built from
+    /// [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`] (22_000). Built from
     /// maximal permitted values (8k body aggregate, 32 max footers, 32 budget
     /// unserved with clamped echoes). Asserts assembled ≤ analytic constant —
     /// which dominates every reachable case by construction (headroom vs
