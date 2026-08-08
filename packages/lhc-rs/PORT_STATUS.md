@@ -2615,3 +2615,14 @@ the capture path and capture must be total. +2 tests
 (`token_counting_special.rs`): passed 526→528, classified 541→543,
 binaries 63→64. Propagation note: lhc-py (tiktoken raises on specials) and
 lhc-convex need the same fix in their waves.
+
+## 2026-08-08 — R4 retrieval domain + impressions (schema 5→6)
+
+Slice R4 (`32468e0`, `fb721fb`, `af09d63`, `80c1743`): `get_turns` /
+`get_messages` with budget walk (whole / slice ≥256 / budget receipts /
+`fromToken` continuation), `retrieval_impression` via migration 5→6
+(fresh-create + upgrade), dedupe first-occurrence-wins, legacy unlabeled
+stored rendering recompose on `get_turns` (R3 carry-over). Tests: +16
+(`tests/retrieval.rs`) +1 migrate leg. Gate arithmetic: classified **560**
+(cargo-reported 560, binaries 65), passed **545** (+17), notimpl 0, ignored
+**15**, wrong 0, suspicious 0.

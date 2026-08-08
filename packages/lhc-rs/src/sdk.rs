@@ -41,7 +41,12 @@ pub use crate::shared_tech::persist::{
 };
 pub use crate::shared_tech::prompts::{DEFAULT_PROMPT_NAMES, PROMPT_NAMES};
 pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
-pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, estimate_tokens};
+pub use crate::retrieval::{
+    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, RETRIEVAL_SLICE_FLOOR, RetrievalOptions,
+    RetrievalReceipt, RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt,
+    UnservedEntity, UnservedReason,
+};
+pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens};
 pub use crate::shared_tech::view::{
     Band, CompactReceipt, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
     PreviewCompactOutcome, PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SdkViewConfig,
@@ -655,6 +660,57 @@ impl LhcTurns {
     }
 }
 
+/// TS `typeof retrievalDomain` — opaque carrier; methods forward to [`crate::retrieval`].
+#[derive(Clone)]
+pub struct RetrievalSurface {
+    seam: Arc<InstanceSeam>,
+}
+
+impl RetrievalSurface {
+    fn new(seam: Arc<InstanceSeam>) -> Self {
+        Self { seam }
+    }
+
+    pub async fn get_turns(
+        &self,
+        ref_: ThreadRef,
+        turn_ids: &[String],
+        options: Option<RetrievalOptions>,
+    ) -> OpResult<RetrievalReceipt<RetrievedTurn>> {
+        let seam = Arc::clone(&self.seam);
+        let turn_ids = turn_ids.to_vec();
+        run_with_instance_seam(seam, async move {
+            crate::retrieval::get_turns(ref_, &turn_ids, options).await
+        })
+        .await
+    }
+
+    pub async fn get_messages(
+        &self,
+        ref_: ThreadRef,
+        message_ids: &[String],
+        options: Option<RetrievalOptions>,
+    ) -> OpResult<RetrievalReceipt<RetrievedMessage>> {
+        let seam = Arc::clone(&self.seam);
+        let message_ids = message_ids.to_vec();
+        run_with_instance_seam(seam, async move {
+            crate::retrieval::get_messages(ref_, &message_ids, options).await
+        })
+        .await
+    }
+
+    pub async fn list_impressions(
+        &self,
+        ref_: ThreadRef,
+    ) -> OpResult<Vec<ImpressionRecord>> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            crate::retrieval::list_impressions(ref_).await
+        })
+        .await
+    }
+}
+
 /// TS `Lhc`.
 pub struct Lhc {
     pub threads: LhcThreads,
@@ -664,6 +720,7 @@ pub struct Lhc {
     pub thread_view: ThreadViewSurface,
     pub inspect: InspectSurface,
     pub logging: LoggingSurface,
+    pub retrieval: RetrievalSurface,
     pub config: ResolvedSdkConfig,
     pub scheduler: Scheduler,
     pub work: WorkSurface,
@@ -1281,6 +1338,7 @@ pub fn init_lhc(config: SdkConfig) -> Lhc {
         thread_view: scope_surface(ThreadViewSurface::new(Arc::clone(&seam)), Arc::clone(&seam)),
         inspect: scope_surface(InspectSurface::new(Arc::clone(&seam)), Arc::clone(&seam)),
         logging,
+        retrieval: scope_surface(RetrievalSurface::new(Arc::clone(&seam)), Arc::clone(&seam)),
         config: resolved,
         scheduler,
         work,

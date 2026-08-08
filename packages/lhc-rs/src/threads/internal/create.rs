@@ -11,7 +11,7 @@ use crate::shared_tech::storage::{
 };
 use crate::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, derivation_log_schema_statements, is_supported_thread_schema_version,
-    migrate_thread_schema,
+    migrate_thread_schema, retrieval_impression_schema_statements,
 };
 use crate::shared_tech::token_counting::TOKEN_ESTIMATOR_ID;
 
@@ -171,6 +171,9 @@ fn thread_schema_statements(thread_id: &str, created_at: &str) -> Vec<String> {
     for template in THREAD_SCHEMA_STATEMENT_TEMPLATES {
         if template.starts_with("INSERT INTO turns") {
             for stmt in derivation_log_schema_statements() {
+                statements.push(stmt.to_string());
+            }
+            for stmt in retrieval_impression_schema_statements() {
                 statements.push(stmt.to_string());
             }
         }

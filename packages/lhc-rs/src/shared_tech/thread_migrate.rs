@@ -15,6 +15,7 @@ pub const THREAD_SCHEMA_VERSION_2: i64 = 2;
 pub const THREAD_SCHEMA_VERSION_3: i64 = 3;
 pub const THREAD_SCHEMA_VERSION_4: i64 = 4;
 pub const THREAD_SCHEMA_VERSION_5: i64 = 5;
+pub const THREAD_SCHEMA_VERSION_6: i64 = 6;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -46,6 +47,30 @@ const DERIVATION_LOG_SCHEMA_STATEMENTS: &[&str] = &[
 
 pub fn derivation_log_schema_statements() -> Vec<&'static str> {
     DERIVATION_LOG_SCHEMA_STATEMENTS.to_vec()
+}
+
+/// Schema v6: retrieval impression log — one row per requested entity per
+/// retrieval call (get_turns / get_messages). Idempotent statements shared by
+/// fresh create and the 5→6 migration.
+const RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS: &[&str] = &[
+    r#"CREATE TABLE IF NOT EXISTS retrieval_impression (
+  impression_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id TEXT NOT NULL,
+  surface TEXT NOT NULL,
+  entity_kind TEXT NOT NULL CHECK (entity_kind IN ('turn','message')),
+  entity_id TEXT NOT NULL,
+  request_idx INTEGER NOT NULL,
+  served INTEGER NOT NULL CHECK (served IN (0,1)),
+  reason TEXT,
+  tokens INTEGER,
+  recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);"#,
+    "CREATE INDEX IF NOT EXISTS idx_retrieval_impression_entity ON retrieval_impression (entity_kind, entity_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieval_impression_call ON retrieval_impression (call_id);",
+];
+
+pub fn retrieval_impression_schema_statements() -> Vec<&'static str> {
+    RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS.to_vec()
 }
 
 fn migrate_detailed_turn_compression_rename(db: &Db) {
@@ -397,6 +422,12 @@ pub fn migrate_thread_schema(db: &Db) {
         if version == THREAD_SCHEMA_VERSION_4 {
             migrate_turn_host_facts(db);
             version = THREAD_SCHEMA_VERSION_5;
+        }
+        if version == THREAD_SCHEMA_VERSION_5 {
+            for statement in retrieval_impression_schema_statements() {
+                db.exec(statement);
+            }
+            version = THREAD_SCHEMA_VERSION_6;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

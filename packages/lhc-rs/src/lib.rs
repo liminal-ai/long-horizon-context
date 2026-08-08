@@ -19,6 +19,7 @@
 pub mod inspect;
 pub mod intake_stream;
 pub mod messages;
+pub mod retrieval;
 pub mod sdk;
 pub mod shared_tech;
 pub mod thread_view;
@@ -54,4 +55,11 @@ pub use sdk::{
     enqueue, estimate_tokens, init_lhc, lookup_work_dispatcher, lookup_work_handler,
     map_work_q_handlers, query_log, queue_detail, register_testing_work, set_scheduler_poke,
     set_thread_touch, supersede_queued, work_kind_registry, write_log,
+};
+
+// Retrieval domain types (TS `export * as retrieval` + named shapes used by hosts/tests).
+pub use sdk::{
+    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, RETRIEVAL_SLICE_FLOOR, RetrievalOptions,
+    RetrievalReceipt, RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt,
+    TokenSlice, UnservedEntity, UnservedReason, slice_tokens,
 };
