@@ -593,3 +593,95 @@ async fn synthetic_or_mismatched_identity_still_exports_verbatim() {
 
     let _ = Map::<String, Value>::new();
 }
+
+// ── identity-boundary split (TS session-view parity) ────────────────
+
+/// Two thinking rows captured under DIFFERENT identities in one assistant run
+/// must serve as two assistant entries, each with its own provenance —
+/// message-level provenance covers every signature in a group, so grouping
+/// them would hand the second ciphertext to the wrong identity gate.
+#[tokio::test]
+async fn splits_assistant_group_at_identity_boundary() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+
+    let captured = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload { text: "hi".into() }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan a",
+                            Some("SIG_A"),
+                            Some("openai"),
+                            Some("gpt-a"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan b",
+                            Some("SIG_B"),
+                            Some("openai"),
+                            Some("gpt-b"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(text_payload("done", None, None, None)),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(captured.is_ok());
+
+    let view = sdk
+        .thread_view
+        .get_session_thread_view(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: view } = view else {
+        panic!("view failed");
+    };
+
+    let assistants = assistant_entries(&view.entries);
+    assert_eq!(assistants.len(), 2, "identity change must split the group");
+    assert_eq!(assistants[0].model.as_deref(), Some("gpt-a"));
+    assert_eq!(assistants[1].model.as_deref(), Some("gpt-b"));
+    assert_eq!(
+        assistants[0].content[0].thinking_signature.as_deref(),
+        Some("SIG_A")
+    );
+    assert_eq!(
+        assistants[1].content[0].thinking_signature.as_deref(),
+        Some("SIG_B")
+    );
+    // Trailing no-provenance text inherits the open (second) group.
+    assert!(
+        assistants[1]
+            .content
+            .iter()
+            .any(|p| p.type_ == SessionAssistantPartType::Text)
+    );
+}

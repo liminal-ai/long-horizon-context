@@ -169,6 +169,56 @@ describe("threadView.getSessionThreadView", () => {
     });
   });
 
+  it("splits assistant groups at identity boundaries so signatures keep their own provenance", async () => {
+    // Two thinking rows with different capture identities inside one
+    // assistant run (model changed mid-turn). Message-level provenance
+    // covers every signature in a group, so the group must split — otherwise
+    // the second signature would serve under the first identity and the
+    // host's identity gate would re-emit the wrong ciphertext.
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_thinking", {
+        payload: {
+          text: "plan a",
+          signature: "SIG_A",
+          provider: "openai",
+          model: "gpt-a",
+          api: "responses",
+        },
+      }),
+      validEvent("assistant_thinking", {
+        payload: {
+          text: "plan b",
+          signature: "SIG_B",
+          provider: "openai",
+          model: "gpt-b",
+          api: "responses",
+        },
+      }),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    const assistants = view.value.entries.filter(
+      (entry): entry is SessionThreadViewMessage & { role: "assistant" } =>
+        isMessageEntry(entry) && entry.role === "assistant",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]?.model).toBe("gpt-a");
+    expect(assistants[1]?.model).toBe("gpt-b");
+    const first = assistants[0]?.content[0];
+    const second = assistants[1]?.content[0];
+    expect(first?.type === "thinking" && first.thinkingSignature).toBe("SIG_A");
+    expect(second?.type === "thinking" && second.thinkingSignature).toBe("SIG_B");
+    // The trailing plain text (no provenance) inherits the open group.
+    expect(assistants[1]?.content.some((part) => part.type === "text")).toBe(true);
+  });
+
   it("serves full tool-result content before compact even when the zone exceeds visibility max", async () => {
     const sdkWithBudgets = initLhc({
       mode: "manual",

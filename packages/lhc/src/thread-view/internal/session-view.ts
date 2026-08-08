@@ -44,6 +44,36 @@ function stringField(content: Record<string, unknown>, key: string): string | un
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+interface RowProvenance {
+  provider?: string;
+  model?: string;
+  api?: string;
+}
+
+/** Provider/model/api carried by one assistant row (thinking or text only). */
+function rowProvenanceOf(row: TailMessageRow): RowProvenance {
+  if (row.kind !== "assistant_thinking" && row.kind !== "assistant_text") return {};
+  const content = blockContent(row);
+  const provider = stringField(content, "provider");
+  const model = stringField(content, "model");
+  const api = stringField(content, "api");
+  return {
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(api !== undefined ? { api } : {}),
+  };
+}
+
+/** True when both sides state a field and disagree — rows with no provenance
+ *  never conflict (they inherit the group's). */
+function provenanceConflicts(a: RowProvenance, b: RowProvenance): boolean {
+  return (
+    (a.provider !== undefined && b.provider !== undefined && a.provider !== b.provider) ||
+    (a.model !== undefined && b.model !== undefined && a.model !== b.model) ||
+    (a.api !== undefined && b.api !== undefined && a.api !== b.api)
+  );
+}
+
 /** First non-empty provider/model/api from grouped assistant rows (thinking or text). */
 function modelProvenanceOf(rows: readonly TailMessageRow[]): {
   provider?: string;
@@ -139,6 +169,7 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
   let assistantParts: SessionAssistantPart[] = [];
   let assistantSources: SessionThreadViewEntrySource[] = [];
   let assistantRows: TailMessageRow[] = [];
+  let assistantProvenance: RowProvenance = {};
 
   const flushAssistant = (): void => {
     if (assistantParts.length === 0) return;
@@ -152,6 +183,7 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
     assistantParts = [];
     assistantSources = [];
     assistantRows = [];
+    assistantProvenance = {};
   };
 
   for (const row of rows) {
@@ -163,11 +195,28 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
         break;
       case "assistant_thinking":
       case "assistant_text":
-      case "tool_call":
+      case "tool_call": {
+        // Identity boundary: message-level provenance covers every signature
+        // in the group, so rows captured under a different model/provider
+        // must start a new assistant entry — otherwise the identity gate
+        // would re-emit (or suppress) the wrong ciphertext on resume.
+        const rp = rowProvenanceOf(row);
+        if (provenanceConflicts(assistantProvenance, rp)) flushAssistant();
+        const merged = {
+          provider: assistantProvenance.provider ?? rp.provider,
+          model: assistantProvenance.model ?? rp.model,
+          api: assistantProvenance.api ?? rp.api,
+        };
+        assistantProvenance = {
+          ...(merged.provider !== undefined ? { provider: merged.provider } : {}),
+          ...(merged.model !== undefined ? { model: merged.model } : {}),
+          ...(merged.api !== undefined ? { api: merged.api } : {}),
+        };
         assistantParts.push(assistantPartOf(row));
         assistantSources.push(entrySource(row));
         assistantRows.push(row);
         break;
+      }
       case "tool_result":
         flushAssistant();
         entries.push(toolResultOf(row, renderCtx));

@@ -99,6 +99,30 @@ struct ModelProvenance {
     api: Option<String>,
 }
 
+/// Provider/model/api carried by ONE assistant row (thinking or text only).
+fn row_provenance_of(row: &TailMessageRow) -> ModelProvenance {
+    if row.kind != RenderingPartKind::AssistantThinking
+        && row.kind != RenderingPartKind::AssistantText
+    {
+        return ModelProvenance::default();
+    }
+    let content = block_content(row);
+    ModelProvenance {
+        provider: string_field(&content, "provider"),
+        model: string_field(&content, "model"),
+        api: string_field(&content, "api"),
+    }
+}
+
+/// True when both sides state a field and disagree — rows without provenance
+/// never conflict (they inherit the group's).
+fn provenance_conflicts(a: &ModelProvenance, b: &ModelProvenance) -> bool {
+    fn differs(a: &Option<String>, b: &Option<String>) -> bool {
+        matches!((a, b), (Some(x), Some(y)) if x != y)
+    }
+    differs(&a.provider, &b.provider) || differs(&a.model, &b.model) || differs(&a.api, &b.api)
+}
+
 /// First non-empty provider/model/api from grouped assistant rows (thinking or text).
 fn model_provenance_of(rows: &[TailMessageRow]) -> ModelProvenance {
     let mut provider = None;
@@ -252,8 +276,10 @@ fn flush_assistant(
     pending: &mut Vec<SessionAssistantPart>,
     pending_sources: &mut Vec<SessionThreadViewEntrySource>,
     pending_rows: &mut Vec<TailMessageRow>,
+    pending_provenance: &mut ModelProvenance,
     entries: &mut Vec<SessionThreadViewEntry>,
 ) {
+    *pending_provenance = ModelProvenance::default();
     if pending.is_empty() {
         return;
     }
@@ -279,6 +305,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
     let mut assistant_parts: Vec<SessionAssistantPart> = Vec::new();
     let mut assistant_sources: Vec<SessionThreadViewEntrySource> = Vec::new();
     let mut assistant_rows: Vec<TailMessageRow> = Vec::new();
+    let mut assistant_provenance = ModelProvenance::default();
 
     for row in rows {
         if is_empty_thinking_husk(row) {
@@ -290,6 +317,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                     &mut assistant_parts,
                     &mut assistant_sources,
                     &mut assistant_rows,
+                    &mut assistant_provenance,
                     &mut entries,
                 );
                 entries.push(SessionThreadViewEntry::Message(
@@ -302,6 +330,30 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
             RenderingPartKind::AssistantThinking
             | RenderingPartKind::AssistantText
             | RenderingPartKind::ToolCall => {
+                // Identity boundary: message-level provenance covers every
+                // signature in the group, so rows captured under a different
+                // model/provider start a new assistant entry — otherwise the
+                // host identity gate would re-emit the wrong ciphertext (TS
+                // session-view parity).
+                let rp = row_provenance_of(row);
+                if provenance_conflicts(&assistant_provenance, &rp) {
+                    flush_assistant(
+                        &mut assistant_parts,
+                        &mut assistant_sources,
+                        &mut assistant_rows,
+                        &mut assistant_provenance,
+                        &mut entries,
+                    );
+                }
+                if assistant_provenance.provider.is_none() {
+                    assistant_provenance.provider = rp.provider;
+                }
+                if assistant_provenance.model.is_none() {
+                    assistant_provenance.model = rp.model;
+                }
+                if assistant_provenance.api.is_none() {
+                    assistant_provenance.api = rp.api;
+                }
                 assistant_parts.push(assistant_part_of(row));
                 assistant_sources.push(entry_source(row));
                 assistant_rows.push(row.clone());
@@ -311,6 +363,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                     &mut assistant_parts,
                     &mut assistant_sources,
                     &mut assistant_rows,
+                    &mut assistant_provenance,
                     &mut entries,
                 );
                 entries.push(tool_result_of(row, &render_ctx));
@@ -329,6 +382,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                     &mut assistant_parts,
                     &mut assistant_sources,
                     &mut assistant_rows,
+                    &mut assistant_provenance,
                     &mut entries,
                 );
                 entries.push(SessionThreadViewEntry::Message(
@@ -344,6 +398,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
         &mut assistant_parts,
         &mut assistant_sources,
         &mut assistant_rows,
+        &mut assistant_provenance,
         &mut entries,
     );
     entries
