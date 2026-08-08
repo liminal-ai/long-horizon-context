@@ -87,11 +87,16 @@ pub fn unserved_line(tool: &str, missed: &UnservedEntity) -> String {
     }
 }
 
-/// Assemble one tool result: served content inside the historical envelope,
-/// receipts and instructions outside it.
+/// Assemble one tool result.
+///
+/// - Recalled bodies go **inside** the historical envelope.
+/// - Slice footers (continuation / end / nothing-at-offset) and unserved
+///   receipts are **live guidance** and render **after** `</recalled-history>`
+///   (validator contract: recalled content inside, live guidance outside).
 pub fn assemble_result(
     tool: &str,
     served_sections: &[String],
+    slice_footers: &[String],
     unserved: &[UnservedEntity],
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -102,33 +107,31 @@ pub fn assemble_result(
         body.push(recall_close(tool));
         parts.push(body.join("\n\n"));
     }
+    for footer in slice_footers {
+        parts.push(footer.clone());
+    }
     for missed in unserved {
         parts.push(unserved_line(tool, missed));
     }
     parts.join("\n\n")
 }
 
-/// Wrap a turn body with an optional slice footer (TS get_turns section shape).
-pub fn turn_section(tool: &str, turn_id: &str, text: &str, slice: Option<&SliceReceipt>) -> String {
-    match slice {
-        None => text.to_string(),
-        Some(s) => format!("{text}\n{}", slice_footer(tool, turn_id, s)),
-    }
+/// Recalled turn body only (no footer). Footers are emitted outside the
+/// envelope by [`assemble_result`].
+pub fn turn_section(text: &str) -> String {
+    text.to_string()
 }
 
-/// Wrap a message body as `<mN>…</mN>` with optional slice footer
-/// (TS get_messages section shape).
-pub fn message_section(
-    tool: &str,
-    message_id: &str,
-    text: &str,
-    slice: Option<&SliceReceipt>,
-) -> String {
-    let body = format!("<{message_id}>\n{text}\n</{message_id}>");
-    match slice {
-        None => body,
-        Some(s) => format!("{body}\n{}", slice_footer(tool, message_id, s)),
-    }
+/// Recalled message body only, wrapped as `<mN>…</mN>`. Footers are emitted
+/// outside the envelope by [`assemble_result`].
+pub fn message_section(message_id: &str, text: &str) -> String {
+    format!("<{message_id}>\n{text}\n</{message_id}>")
+}
+
+/// Optional slice footer for a served turn/message — empty when no slice.
+/// Hosts collect these and pass them to [`assemble_result`] as `slice_footers`.
+pub fn section_footer(tool: &str, id: &str, slice: Option<&SliceReceipt>) -> Option<String> {
+    slice.map(|s| slice_footer(tool, id, s))
 }
 
 #[cfg(test)]
@@ -230,7 +233,7 @@ mod tests {
             reason: UnservedReason::Budget,
             tokens: Some(100),
         }];
-        let got = assemble_result("get_turns", &sections, &unserved);
+        let got = assemble_result("get_turns", &sections, &[], &unserved);
         let open = recall_open("get_turns");
         let close = recall_close("get_turns");
         let expected = format!(
@@ -252,23 +255,63 @@ mod tests {
             reason: UnservedReason::Deleted,
             tokens: None,
         }];
-        let got = assemble_result("get_messages", &[], &unserved);
+        let got = assemble_result("get_messages", &[], &[], &unserved);
         assert_eq!(got, "not served: m1 (deleted)");
         assert!(!got.contains("recalled-history"));
     }
 
     #[test]
     fn turn_and_message_section_shapes() {
+        let t = turn_section("body");
+        assert_eq!(t, "body");
+        let m = message_section("m7", "verbatim");
+        assert_eq!(m, "<m7>\nverbatim\n</m7>");
         let slice = SliceReceipt {
             from_token: 0,
             to_token: 10,
             total_tokens: 50,
         };
-        let t = turn_section("get_turns", "t1", "body", Some(&slice));
-        assert!(t.starts_with("body\n[t1: served tok"));
-        assert!(t.contains(r#"get_turns({"ids":["t1"],"from":10})"#));
+        let footer = section_footer("get_turns", "t1", Some(&slice)).expect("footer");
+        assert!(footer.contains(r#"get_turns({"ids":["t1"],"from":10})"#));
+        assert!(section_footer("get_turns", "t1", None).is_none());
+    }
 
-        let m = message_section("get_messages", "m7", "verbatim", None);
-        assert_eq!(m, "<m7>\nverbatim\n</m7>");
+    /// Full partial-serve assembly: recalled body inside envelope; continuation
+    /// footer after `</recalled-history>` (validator contract / R6 fix-up).
+    #[test]
+    fn assemble_partial_slice_footer_after_envelope_byte_stable() {
+        let tool = "get_turns";
+        let body = "<t1>\npartial recalled turn text\n</t1>";
+        let slice = SliceReceipt {
+            from_token: 0,
+            to_token: 500,
+            total_tokens: 1200,
+        };
+        let sections = vec![turn_section(body)];
+        let footers: Vec<String> = section_footer(tool, "t1", Some(&slice))
+            .into_iter()
+            .collect();
+        let got = assemble_result(tool, &sections, &footers, &[]);
+
+        let open = recall_open(tool);
+        let close = recall_close(tool);
+        let footer = slice_footer(tool, "t1", &slice);
+        let expected = format!("{open}\n\n{body}\n\n{close}\n\n{footer}");
+        assert_eq!(got, expected);
+
+        // Placement: footer is live guidance and must not sit inside the tag.
+        let close_idx = got
+            .find("</recalled-history>")
+            .expect("envelope closer present");
+        let footer_idx = got.find(&footer).expect("footer present");
+        assert!(
+            footer_idx > close_idx,
+            "slice footer must render after </recalled-history>"
+        );
+        assert!(
+            !got[..close_idx].contains("Next slice:"),
+            "continuation instruction must not appear inside the envelope"
+        );
+        assert!(got.contains(r#"get_turns({"ids":["t1"],"from":500})"#));
     }
 }

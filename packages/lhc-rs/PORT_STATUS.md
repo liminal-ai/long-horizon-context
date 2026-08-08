@@ -2652,3 +2652,11 @@ and out-of-envelope slice/budget receipts + JIT next-call text
 (`tool({"ids":[…],"from":N})`). No tool registration (host half). Tests +12
 (10 format goldens + 2 race/order legs) → passed **562**, classified **577**,
 binaries **66**.
+
+## 2026-08-08 — R6 fix-up — footers outside envelope
+
+Validator: partial-slice continuation footers must render after
+`</recalled-history>` (recalled content inside, live guidance outside).
+`assemble_result` takes separate `slice_footers`; section helpers return
+bodies only. +1 assembled partial-serve byte golden → passed **563**,
+classified **578**.
