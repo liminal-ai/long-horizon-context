@@ -25,6 +25,14 @@ MARKER = ("[removed by repair] LHC compacted-band output that was "
           "mis-captured as a user prompt; see capture fix d005bc8")
 
 
+def inference_config():
+    """Hermes' own derivation lane, imported rather than reimplemented so a
+    repair drain uses the same models and prompts a session would."""
+    sys.path.insert(0, "/srv/work/hermes-agent/plugins/context_engine/lhc")
+    from inference import inference_config
+    return inference_config()
+
+
 def find_targets(path):
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     rows = c.execute("""
@@ -46,7 +54,10 @@ async def repair(path, targets):
     sys.path.insert(0, "/srv/work/long-horizon-context/packages/lhc-py/src")
     from lhc.sdk import init_lhc
     from lhc.messages import EditInput
-    sdk = init_lhc({"mode": "manual"})
+    # Edits need no inference, but the same SDK handle drains afterwards.
+    # Initialising without the lane would fail every derivation to its
+    # deterministic floor — reproducing the degradation this repairs.
+    sdk = init_lhc({"inference": inference_config(), "mode": "manual"})
     ref = {"filePath": path}
     ok = failed = 0
     for mid, turn, status, size in targets:
@@ -87,14 +98,20 @@ def main():
             print(f"   ... and {len(closed)-5} more")
         return
 
+    # Transient shells match the pgrep and can exit mid-scan, and a process
+    # owned by another user is not inspectable — neither can be holding a
+    # thread under this user's home, so both are skipped rather than fatal.
     for p in os.popen("pgrep -f 'hermes --profile' 2>/dev/null").read().split():
-        if os.path.exists(f"/proc/{p}/fd"):
-            for fd in os.listdir(f"/proc/{p}/fd"):
-                try:
-                    if os.path.basename(a.thread) in os.readlink(f"/proc/{p}/fd/{fd}"):
-                        sys.exit(f"REFUSING: pid {p} holds this thread open. Stop it first.")
-                except OSError:
-                    pass
+        try:
+            fds = os.listdir(f"/proc/{p}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.path.basename(a.thread) in os.readlink(f"/proc/{p}/fd/{fd}"):
+                    sys.exit(f"REFUSING: pid {p} holds this thread open. Stop it first.")
+            except OSError:
+                pass
 
     ok, failed = asyncio.run(repair(a.thread, closed))
     print(f"\nedited {ok}, failed {failed}. Derivations rebuild in the background drain.")
