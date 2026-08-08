@@ -337,6 +337,69 @@ describe("byteBudget", () => {
     expect(Buffer.byteLength(nextServed.text, "utf8")).toBeLessThanOrEqual(byteBudget);
   });
 
+  it("multi-byte content never splits a char at the slice tail", async () => {
+    // Each crab is 4 UTF-8 bytes and >1 token; byte caps that land inside a
+    // char must shrink to the clean boundary — no U+FFFD, no mid-char
+    // continuation offset (round-5 finding 1).
+    const crabs = `${"\u{1F980}".repeat(20)}\n`.repeat(200);
+    await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "dump" } }),
+      validEvent("assistant_text", { payload: { text: crabs } }),
+      validEvent("turn_end"),
+    ]);
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error("list failed");
+    const crabId = listed.value.find((r) => r.kind === "assistant_text")!.messageId;
+
+    let from = 0;
+    let reassembled = "";
+    for (let i = 0; i < 40 && reassembled.length < crabs.length; i += 1) {
+      const page = await retrieval.getMessages({ filePath }, [crabId], {
+        byteBudget: 1_001,
+        fromToken: from,
+      });
+      expect(page.ok).toBe(true);
+      if (!page.ok) return;
+      const served = page.value.served[0]!;
+      expect(served.text).not.toContain("\uFFFD");
+      expect(Buffer.byteLength(served.text, "utf8")).toBeLessThanOrEqual(1_001);
+      if (served.slice === undefined || served.slice.toToken === served.slice.totalTokens) {
+        reassembled += served.text;
+        break;
+      }
+      expect(served.slice.toToken).toBeGreaterThan(from);
+      reassembled += served.text;
+      from = served.slice.toToken;
+    }
+    expect(reassembled.startsWith("\u{1F980}")).toBe(true);
+    expect(reassembled).not.toContain("\uFFFD");
+  });
+
+  it("byte-dense content stays retrievable when bytes bind below the token floor", async () => {
+    // 400k '=' is thousands of bytes but few o200k tokens: the byte-fit
+    // window sits under the 256-token floor. Byte-bound serves must not be
+    // refused as slivers — that would make the content permanently
+    // unretrievable (round-5 finding 2).
+    const dense = `${"=".repeat(80)}\n`.repeat(900);
+    await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "dump" } }),
+      validEvent("assistant_text", { payload: { text: dense } }),
+      validEvent("turn_end"),
+    ]);
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error("list failed");
+    const denseId = listed.value.find((r) => r.kind === "assistant_text")!.messageId;
+
+    const result = await retrieval.getMessages({ filePath }, [denseId], { byteBudget: 8_000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.served).toHaveLength(1);
+    const served = result.value.served[0]!;
+    expect(Buffer.byteLength(served.text, "utf8")).toBeLessThanOrEqual(8_000);
+    expect(served.slice).toBeDefined();
+    expect(served.slice!.toToken).toBeGreaterThan(0);
+  });
+
   it("whole-serves when bytes fit and rejects non-positive byteBudget", async () => {
     await seedTwoTurns();
     const listed = await sdk.messages.list({ filePath });
@@ -367,10 +430,12 @@ describe("byteBudget", () => {
     const result = await retrieval.getMessages({ filePath }, ids, { byteBudget: 8_000 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // First item consumed the byte allowance as a slice; the second's
-    // byte-fitting window would be a sub-floor sliver, so it reports budget.
-    expect(result.value.served).toHaveLength(1);
-    expect(result.value.unserved[0]!.reason).toBe("budget");
+    // The first item consumes most of the byte allowance as a slice; the
+    // second gets the byte-bound remainder — small, but served with a
+    // continuation receipt (byte-bound serves are exempt from the sliver
+    // floor: re-pulling alone cannot yield more bytes).
+    expect(result.value.served).toHaveLength(2);
+    expect(result.value.served[1]!.slice).toBeDefined();
     const servedBytes = result.value.served.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0);
     expect(servedBytes).toBeLessThanOrEqual(8_000);
   });

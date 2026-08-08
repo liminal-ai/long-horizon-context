@@ -29,7 +29,30 @@ export function sliceTokens(text: string, fromToken: number, maxTokens: number):
   const totalTokens = tokens.length;
   const from = Math.max(0, Math.floor(fromToken));
   const to = from >= totalTokens ? from : Math.min(from + Math.floor(maxTokens), totalTokens);
-  return { text: encoder.decode(tokens.slice(from, to)), fromToken: from, toToken: to, totalTokens };
+  const window = cleanTailWindow(tokens, from, to - from, totalTokens === to);
+  return { text: window.text, fromToken: from, toToken: from + window.count, totalTokens };
+}
+
+/** Decode `tokens[from, from + count)` and shrink `count` until the decoded
+ *  tail lands on a clean char boundary — BPE token boundaries can split a
+ *  multi-byte char, and a split tail would corrupt verbatim text (U+FFFD)
+ *  and leave the continuation offset pointing inside a char. `atEnd` windows
+ *  reach the text's end and cannot have a split tail. Receipts built from
+ *  the returned count always continue at a clean boundary. */
+function cleanTailWindow(
+  tokens: number[],
+  from: number,
+  count: number,
+  atEnd: boolean,
+): { text: string; count: number } {
+  let k = Math.max(0, count);
+  let text = encoder!.decode(tokens.slice(from, from + k));
+  if (atEnd) return { text, count: k };
+  while (k > 0 && text.endsWith("\uFFFD")) {
+    k -= 1;
+    text = encoder!.decode(tokens.slice(from, from + k));
+  }
+  return { text, count: k };
 }
 
 /** `sliceTokens` that also fits a UTF-8 byte allowance: encode ONCE, take the
@@ -49,18 +72,18 @@ export function sliceTokensByteCapped(
   const totalTokens = tokens.length;
   const from = Math.max(0, Math.floor(fromToken));
   const to = from >= totalTokens ? from : Math.min(from + Math.floor(maxTokens), totalTokens);
-  const decodeRange = (end: number) => encoder!.decode(tokens.slice(from, end));
-  let sliceText = decodeRange(to);
-  if (Buffer.byteLength(sliceText, "utf8") <= maxBytes) {
-    return { text: sliceText, fromToken: from, toToken: to, totalTokens };
+  const fits = (end: number) => Buffer.byteLength(encoder!.decode(tokens.slice(from, end)), "utf8") <= maxBytes;
+  let count = to - from;
+  if (!fits(to)) {
+    let low = 0;
+    let high = count;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (fits(from + mid)) low = mid;
+      else high = mid - 1;
+    }
+    count = low;
   }
-  let low = 0;
-  let high = to - from;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(decodeRange(from + mid), "utf8") <= maxBytes) low = mid;
-    else high = mid - 1;
-  }
-  sliceText = decodeRange(from + low);
-  return { text: sliceText, fromToken: from, toToken: from + low, totalTokens };
+  const window = cleanTailWindow(tokens, from, count, from + count === totalTokens);
+  return { text: window.text, fromToken: from, toToken: from + window.count, totalTokens };
 }

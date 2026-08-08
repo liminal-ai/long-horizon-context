@@ -199,11 +199,15 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
         ? sliceTokensByteCapped(item.text, fromToken, remaining, remainingBytes)
         : sliceTokens(item.text, fromToken, remaining);
       const servedTokens = window.toToken - window.fromToken;
-      // Byte-shrunk slivers mirror the token floor: a budget-crossing serve
-      // below RETRIEVAL_SLICE_FLOOR teaches nothing — report "budget" so the
-      // model re-pulls alone. Explicit continuations serve whatever fits,
+      // Sub-floor serves under TOKEN pressure teach nothing — report
+      // "budget" so the model re-pulls alone. But when the BYTE budget is
+      // what bound the window, re-pulling alone cannot yield more: serve
+      // the byte-fit slice, however small — it is the only way through
+      // byte-dense content. Explicit continuations serve whatever fits,
       // including the empty past-the-end slice (its receipt IS the answer).
-      const sliver = fromToken === 0 && servedTokens < Math.min(RETRIEVAL_SLICE_FLOOR, tokens);
+      const tokenWindow = Math.min(remaining, Math.max(0, window.totalTokens - window.fromToken));
+      const byteBound = Number.isFinite(byteBudget) && servedTokens < tokenWindow;
+      const sliver = !byteBound && fromToken === 0 && servedTokens < Math.min(RETRIEVAL_SLICE_FLOOR, tokens);
       if (sliver) {
         unserved.push({ id: candidate.id, reason: "budget", tokens });
         impressions.push({ ...base, entityKind, served: false, reason: "budget", tokens });
