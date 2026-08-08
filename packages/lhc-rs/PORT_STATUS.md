@@ -2634,3 +2634,11 @@ leg seeds real rows + asserts data preservation and CHECK enforcement;
 dedupe proves one impression row; impression rows for `deleted`/`budget`;
 `fromToken>0` multi-id slices every item. Tests +2 → passed **547**,
 classified **562**.
+
+## 2026-08-08 — R5 direct-return pulls + token totals
+
+Slice R5 (`96915c1`, `90890ee`, `4443cdd`): composition truncation markers
+`[truncated — N tok total]` from stored `token_estimate`; legacy char floors
+retranslate at compose time; genuine inference summaries pass through;
+untruncated messages unannotated. No board machinery. Tests +3 → passed
+**550**, classified **565**.

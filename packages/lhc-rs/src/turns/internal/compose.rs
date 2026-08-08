@@ -16,8 +16,10 @@ use crate::shared_tech::derivation::{
     DependencyGap, DerivationMetadata, DerivationState, RenderingPart, RenderingPartBlock,
     RenderingPartKind, SubjectKind, ToolOutcome,
 };
-use crate::shared_tech::js_json::js_json_stringify;
-use crate::shared_tech::tool_result_rendering::truncate_for_fallback;
+use crate::shared_tech::js_json::{js_json_stringify, js_len, js_slice};
+use crate::shared_tech::tool_result_rendering::{
+    FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback,
+};
 
 /// TS `ComposeMessage` block element.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +35,8 @@ pub struct ComposeBlock {
 pub struct ComposeMessage {
     pub message_id: String,
     pub kind: RenderingPartKind,
+    /// Stored `message.token_estimate` — used for truncation markers.
+    pub token_estimate: i64,
     pub blocks: Vec<ComposeBlock>,
 }
 
@@ -191,6 +195,18 @@ struct PartPlan {
     fallback_text: fn(&ComposeMessage) -> String,
 }
 
+/// Token-total truncation marker for composed tool floors / legacy char floors.
+/// Prefix is a UTF-16 code-unit slice of length FALLBACK_TRUNCATION_LIMIT.
+fn truncate_for_rendering(text: &str, token_estimate: i64) -> String {
+    if js_len(text) <= FALLBACK_TRUNCATION_LIMIT {
+        return text.to_string();
+    }
+    format!(
+        "{}… [truncated — {token_estimate} tok total]",
+        js_slice(text, 0, Some(FALLBACK_TRUNCATION_LIMIT as i64)),
+    )
+}
+
 fn tool_call_fallback_text(message: &ComposeMessage) -> String {
     let block = first_block_content(message);
     let tool_name = match block.get("toolName") {
@@ -207,7 +223,10 @@ fn tool_call_fallback_text(message: &ComposeMessage) -> String {
     } else {
         arguments
     };
-    truncate_for_fallback(&format!("{tool_name}({})", js_json_stringify(&arguments)))
+    truncate_for_rendering(
+        &format!("{tool_name}({})", js_json_stringify(&arguments)),
+        message.token_estimate,
+    )
 }
 
 fn tool_result_fallback_text(message: &ComposeMessage) -> String {
@@ -216,7 +235,25 @@ fn tool_result_fallback_text(message: &ComposeMessage) -> String {
         Some(Value::String(s)) => s.as_str(),
         _ => "",
     };
-    truncate_for_fallback(content)
+    truncate_for_rendering(content, message.token_estimate)
+}
+
+/// Ready tool_result_summary: legacy char-based floors retranslate to token
+/// markers; genuine inference summaries pass through verbatim.
+fn ready_text(message: &ComposeMessage, derived_text: &str) -> String {
+    if message.kind != RenderingPartKind::ToolResult {
+        return derived_text.to_string();
+    }
+    let block = first_block_content(message);
+    let raw_text = match block.get("content") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    if derived_text == truncate_for_fallback(raw_text) {
+        truncate_for_rendering(raw_text, message.token_estimate)
+    } else {
+        derived_text.to_string()
+    }
 }
 
 /// TS `const PART_PLANS: Record<RenderingPartKind, PartPlan>` — closed Record →
@@ -316,9 +353,10 @@ fn build_atom(
     );
     let block = first_block_content(message);
     let text = if ready {
-        derivation
+        let derived = derivation
             .and_then(|d| d.content.clone())
-            .expect("ready implies content")
+            .expect("ready implies content");
+        ready_text(message, &derived)
     } else {
         (plan.fallback_text)(message)
     };

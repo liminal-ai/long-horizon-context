@@ -21,7 +21,7 @@ use super::compose::{ComposeBlock, ComposeDerivationRow, ComposeMessage, compose
 const SQL_READ_TURN_SOURCE: &str = r#"SELECT status, deleted_at FROM turns WHERE turn_id = ?"#;
 
 #[allow(dead_code)]
-const SQL_READ_MEMBER_MESSAGES: &str = r#"SELECT message_id, kind FROM message
+const SQL_READ_MEMBER_MESSAGES: &str = r#"SELECT message_id, kind, token_estimate FROM message
        WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order"#;
 
 #[allow(dead_code)]
@@ -262,6 +262,7 @@ pub fn read_member_messages(db: &Db, turn_id: &str) -> Vec<ComposeMessage> {
             ComposeMessage {
                 message_id,
                 kind,
+                token_estimate: map_required_i64(&message, "token_estimate"),
                 blocks,
             }
         })

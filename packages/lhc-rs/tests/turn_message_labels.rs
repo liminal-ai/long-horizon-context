@@ -15,7 +15,7 @@ use fixtures::{
 };
 use indexmap::IndexMap;
 use lhc::shared_tech::derivation::{
-    RenderingPartKind, SdkConfig, SdkMode, SubjectKind,
+    DerivationState, RenderingPartKind, SdkConfig, SdkMode, SubjectKind,
 };
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::SqlParam;
@@ -25,22 +25,32 @@ use lhc::thread_view::internal::render::{
 };
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::turns::internal::compose::{
-    ComposeBlock, ComposeMessage, compose_pre_detailed_assembly, compose_rendering_input,
-    compose_structured_turn_text, format_turn_range_header, stored_rendering_has_turn_label,
-    wrap_entity_xml,
+    ComposeBlock, ComposeDerivationRow, ComposeMessage, compose_derivation_key,
+    compose_pre_detailed_assembly, compose_rendering_input, compose_structured_turn_text,
+    format_turn_range_header, stored_rendering_has_turn_label, wrap_entity_xml,
 };
 use lhc::{Lhc, create_deterministic_inference_callbacks, init_lhc};
 use serde_json::{Map, Value, json};
 
-fn msg(message_id: &str, kind: RenderingPartKind, content: Map<String, Value>) -> ComposeMessage {
+fn msg(
+    message_id: &str,
+    kind: RenderingPartKind,
+    content: Map<String, Value>,
+    token_estimate: i64,
+) -> ComposeMessage {
     ComposeMessage {
         message_id: message_id.into(),
         kind,
+        token_estimate,
         blocks: vec![ComposeBlock {
             block_type: kind.as_str().into(),
             content,
         }],
     }
+}
+
+fn msg1(message_id: &str, kind: RenderingPartKind, content: Map<String, Value>) -> ComposeMessage {
+    msg(message_id, kind, content, 1)
 }
 
 fn text_content(text: &str) -> Map<String, Value> {
@@ -60,12 +70,12 @@ fn wrap_entity_xml_uses_the_id_as_the_tag_name() {
 #[test]
 fn compose_structured_turn_text_wraps_the_turn_and_each_non_run_message() {
     let messages = [
-        msg(
+        msg1(
             "m1",
             RenderingPartKind::UserPrompt,
             text_content("please read"),
         ),
-        msg(
+        msg1(
             "m2",
             RenderingPartKind::AssistantText,
             text_content("done"),
@@ -97,10 +107,10 @@ fn compose_structured_turn_text_tags_each_tool_run_member_line() {
     result.insert("isError".into(), json!(false));
 
     let messages = [
-        msg("m1", RenderingPartKind::UserPrompt, text_content("go")),
-        msg("m2", RenderingPartKind::ToolCall, call),
-        msg("m3", RenderingPartKind::ToolResult, result),
-        msg("m4", RenderingPartKind::AssistantText, text_content("ok")),
+        msg1("m1", RenderingPartKind::UserPrompt, text_content("go")),
+        msg1("m2", RenderingPartKind::ToolCall, call),
+        msg1("m3", RenderingPartKind::ToolResult, result),
+        msg1("m4", RenderingPartKind::AssistantText, text_content("ok")),
     ];
     let composition = compose_rendering_input(&messages, &IndexMap::new());
     let run = composition
@@ -123,15 +133,118 @@ fn compose_structured_turn_text_tags_each_tool_run_member_line() {
     assert!(!text.contains("<m2>\n[tool run"));
 }
 
+
+#[test]
+fn compose_rendering_input_shows_truncated_message_token_estimates() {
+    let result = "r".repeat(700);
+    let mut call_args = Map::new();
+    call_args.insert("cmd".into(), json!("x".repeat(700)));
+    let mut call = Map::new();
+    call.insert("toolCallId".into(), json!("c1"));
+    call.insert("toolName".into(), json!("exec"));
+    call.insert("arguments".into(), Value::Object(call_args));
+    let mut tool_result = Map::new();
+    tool_result.insert("toolCallId".into(), json!("c1"));
+    tool_result.insert("content".into(), json!(result.clone()));
+    tool_result.insert("isError".into(), json!(false));
+
+    let messages = [
+        msg("m1", RenderingPartKind::ToolCall, call, 1073),
+        msg("m2", RenderingPartKind::ToolResult, tool_result, 2049),
+    ];
+    // Legacy char-based stored summary (deterministic floor shape) —
+    // composition retranslates it to a token-total marker.
+    use lhc::shared_tech::tool_result_rendering::truncate_for_fallback;
+    let legacy = truncate_for_fallback(&result);
+    assert!(legacy.contains("chars]"), "precondition: legacy floor uses char marker");
+    let mut derivations = IndexMap::new();
+    derivations.insert(
+        compose_derivation_key("m2", "tool_result_summary"),
+        ComposeDerivationRow {
+            state: DerivationState::Ready,
+            content: Some(legacy),
+            metadata: None,
+            reason: None,
+            source_version: 1,
+        },
+    );
+
+    let composition = compose_rendering_input(&messages, &derivations);
+    assert_eq!(composition.parts.len(), 1);
+    let text = &composition.parts[0].text;
+    assert!(
+        text.contains("… [truncated — 1073 tok total]"),
+        "tool_call floor should use stored token_estimate: {text}"
+    );
+    assert!(
+        text.contains("… [truncated — 2049 tok total]"),
+        "legacy tool_result floor retranslates to token total: {text}"
+    );
+    assert!(!text.contains("chars]"), "char markers must not survive: {text}");
+}
+
+#[test]
+fn compose_rendering_input_does_not_annotate_untruncated_tool_messages() {
+    let mut call = Map::new();
+    call.insert("toolCallId".into(), json!("c1"));
+    call.insert("toolName".into(), json!("exec"));
+    let mut args = Map::new();
+    args.insert("cmd".into(), json!("true"));
+    call.insert("arguments".into(), Value::Object(args));
+    let mut tool_result = Map::new();
+    tool_result.insert("toolCallId".into(), json!("c1"));
+    tool_result.insert("content".into(), json!("passed"));
+    tool_result.insert("isError".into(), json!(false));
+
+    let messages = [
+        msg("m1", RenderingPartKind::ToolCall, call, 12),
+        msg("m2", RenderingPartKind::ToolResult, tool_result, 3),
+    ];
+    let composition = compose_rendering_input(&messages, &IndexMap::new());
+    assert!(!composition.parts[0].text.contains("truncated"));
+}
+
+#[test]
+fn compose_rendering_input_passes_genuine_inference_summaries_verbatim() {
+    let mut tool_result = Map::new();
+    tool_result.insert("toolCallId".into(), json!("c1"));
+    tool_result.insert("content".into(), json!("x".repeat(700)));
+    tool_result.insert("isError".into(), json!(false));
+    let mut call = Map::new();
+    call.insert("toolCallId".into(), json!("c1"));
+    call.insert("toolName".into(), json!("exec"));
+    call.insert("arguments".into(), Value::Object(Map::new()));
+
+    let messages = [
+        msg("m1", RenderingPartKind::ToolCall, call, 50),
+        msg("m2", RenderingPartKind::ToolResult, tool_result, 900),
+    ];
+    let summary = "model wrote a short summary of the large tool output".to_string();
+    let mut derivations = IndexMap::new();
+    derivations.insert(
+        compose_derivation_key("m2", "tool_result_summary"),
+        ComposeDerivationRow {
+            state: DerivationState::Ready,
+            content: Some(summary.clone()),
+            metadata: None,
+            reason: None,
+            source_version: 1,
+        },
+    );
+    let composition = compose_rendering_input(&messages, &derivations);
+    assert!(composition.parts[0].text.contains(&summary));
+    assert!(!composition.parts[0].text.contains("truncated"));
+}
+
 #[test]
 fn pre_detailed_assembly_stays_untagged() {
     let messages = [
-        msg(
+        msg1(
             "m1",
             RenderingPartKind::UserPrompt,
             text_content("please read"),
         ),
-        msg(
+        msg1(
             "m2",
             RenderingPartKind::AssistantText,
             text_content("done"),
@@ -351,12 +464,12 @@ async fn labels_stable_across_re_derivation() {
     if !rederived.is_ok() {
         // Manual compose golden: message ids m1/m2 and turn t1 are stable.
         let members = [
-            msg(
+            msg1(
                 "m1",
                 RenderingPartKind::UserPrompt,
                 text_content("stability check"),
             ),
-            msg(
+            msg1(
                 "m2",
                 RenderingPartKind::AssistantText,
                 text_content("stable answer"),
@@ -448,12 +561,12 @@ async fn legacy_unlabeled_stored_rendering_recomposes_when_labels_required() {
 
     // Live composition fallback (same pure path retrieval will use).
     let members = [
-        msg(
+        msg1(
             "m1",
             RenderingPartKind::UserPrompt,
             text_content("first question"),
         ),
-        msg(
+        msg1(
             "m2",
             RenderingPartKind::AssistantText,
             text_content("first answer"),

@@ -766,6 +766,11 @@ async fn floors_over_large_failed_tool_result_summaries_with_deterministic_trunc
     .await;
     exec_sql(
         &file_path,
+        "UPDATE message SET token_estimate = 1073 WHERE message_id = 'm3'",
+        &[],
+    );
+    exec_sql(
+        &file_path,
         "UPDATE derivation
          SET state = 'failed', content = NULL, reason = 'scripted failure'
          WHERE subject_kind = 'message'
@@ -792,7 +797,10 @@ async fn floors_over_large_failed_tool_result_summaries_with_deterministic_trunc
     assert!(floored_content.contains("large-result-token"));
     assert!(floored_content.len() < content.len());
     let rendering = rendering_content(&file_path);
-    assert!(rendering.contains(floored_content.as_str()));
+    // Composition translates char floors to token-total markers.
+    assert!(rendering.contains("large-result-token"));
+    assert!(rendering.contains("[truncated — 1073 tok total]"));
+    assert!(!rendering.contains("chars]"));
     assert!(rendering.contains("[fallback; outcome: succeeded]"));
 }
 
@@ -827,6 +835,11 @@ async fn floors_failed_tool_result_summaries_during_turn_construction_without_re
         ],
     )
     .await;
+    exec_sql(
+        &file_path,
+        "UPDATE message SET token_estimate = 2049 WHERE message_id = 'm3'",
+        &[],
+    );
     delete_work_item(&file_path, "w-m3-tool_result_summary-v1");
     let calls_before_turn = captured.len();
     drain(&sdk, &file_path, None).await;
@@ -846,7 +859,9 @@ async fn floors_failed_tool_result_summaries_during_turn_construction_without_re
     assert!(floored_content.contains("search-hit"));
     assert!(floored_content.len() < content.len());
     let rendering = rendering_content(&file_path);
-    assert!(rendering.contains(floored_content.as_str()));
+    assert!(rendering.contains("search-hit"));
+    assert!(rendering.contains("[truncated — 2049 tok total]"));
+    assert!(!rendering.contains("chars]"));
     assert!(rendering.contains("[fallback; outcome: failed]"));
 }
 
