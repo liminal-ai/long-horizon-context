@@ -219,6 +219,38 @@ describe("threadView.getSessionThreadView", () => {
     expect(assistants[1]?.content.some((part) => part.type === "text")).toBe(true);
   });
 
+  it("splits on provider-only identity conflicts and orders change entries after the flushed group", async () => {
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan a", signature: "SIG_A", provider: "openai", model: "m", api: "responses" },
+      }),
+      validEvent("model_change", {
+        payload: { previousModel: "openai/m", newModel: "other/m" },
+      }),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan b", signature: "SIG_B", provider: "other", model: "m", api: "responses" },
+      }),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    // History order preserved: assistant(A) BEFORE the model_change marker,
+    // then assistant(B) — and the provider-only difference alone must split.
+    const shapes = view.value.entries.map((entry) => (isMessageEntry(entry) ? entry.role : entry.kind));
+    expect(shapes).toEqual(["user", "assistant", "model_change", "assistant"]);
+    const assistants = view.value.entries.filter(
+      (entry): entry is SessionThreadViewMessage & { role: "assistant" } =>
+        isMessageEntry(entry) && entry.role === "assistant",
+    );
+    expect(assistants[0]?.provider).toBe("openai");
+    expect(assistants[1]?.provider).toBe("other");
+  });
+
   it("serves full tool-result content before compact even when the zone exceeds visibility max", async () => {
     const sdkWithBudgets = initLhc({
       mode: "manual",

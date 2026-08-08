@@ -222,11 +222,15 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
         entries.push(toolResultOf(row, renderCtx));
         break;
       case "model_change": {
+        // Flush first: the change marks a boundary in time, so it must not
+        // appear BEFORE assistant output that preceded it.
+        flushAssistant();
         const modelChange = modelChangeOf(row);
         if (modelChange !== null) entries.push(modelChange);
         break;
       }
       case "thinking_level_change":
+        flushAssistant();
         entries.push(thinkingLevelChangeOf(row));
         break;
       case "runtime_note":

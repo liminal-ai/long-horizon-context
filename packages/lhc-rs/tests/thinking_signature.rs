@@ -12,8 +12,8 @@ mod fixtures;
 
 use fixtures::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
-    AssistantThinkingPayload, TempStore, TurnEndOverrides, UserPromptOverrides, UserPromptPayload,
-    kind, temp_store, valid_event,
+    AssistantThinkingPayload, ModelChangeOverrides, ModelChangePayload, TempStore,
+    TurnEndOverrides, UserPromptOverrides, UserPromptPayload, kind, temp_store, valid_event,
 };
 use lhc::messages::MessageKind;
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
@@ -684,4 +684,101 @@ async fn splits_assistant_group_at_identity_boundary() {
             .iter()
             .any(|p| p.type_ == SessionAssistantPartType::Text)
     );
+}
+
+/// Provider-only identity conflicts split too, and model_change entries land
+/// AFTER the assistant group they interrupt (history order preserved).
+#[tokio::test]
+async fn provider_only_conflict_splits_and_change_entries_stay_ordered() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+
+    let captured = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload { text: "hi".into() }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan a",
+                            Some("SIG_A"),
+                            Some("openai"),
+                            Some("m"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::MODEL_CHANGE,
+                    ModelChangeOverrides {
+                        payload: Some(ModelChangePayload {
+                            previous_model: "openai/m".into(),
+                            new_model: "other/m".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_THINKING,
+                    AssistantThinkingOverrides {
+                        payload: Some(thinking_payload(
+                            "plan b",
+                            Some("SIG_B"),
+                            Some("other"),
+                            Some("m"),
+                            Some("responses"),
+                        )),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(captured.is_ok());
+
+    let view = sdk
+        .thread_view
+        .get_session_thread_view(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: view } = view else {
+        panic!("view failed");
+    };
+
+    let shapes: Vec<&str> = view
+        .entries
+        .iter()
+        .map(|e| match e {
+            SessionThreadViewEntry::Message(SessionThreadViewMessage::User(_)) => "user",
+            SessionThreadViewEntry::Message(SessionThreadViewMessage::Assistant(_)) => "assistant",
+            SessionThreadViewEntry::Message(SessionThreadViewMessage::ToolResult(_)) => {
+                "tool_result"
+            }
+            SessionThreadViewEntry::Runtime(
+                lhc::shared_tech::view::SessionThreadViewRuntimeEntry::ModelChange(_),
+            ) => "model_change",
+            SessionThreadViewEntry::Runtime(
+                lhc::shared_tech::view::SessionThreadViewRuntimeEntry::ThinkingLevelChange(_),
+            ) => "thinking_level_change",
+        })
+        .collect();
+    assert_eq!(
+        shapes,
+        vec!["user", "assistant", "model_change", "assistant"],
+        "assistant(A) must precede the model_change marker"
+    );
+    let assistants = assistant_entries(&view.entries);
+    assert_eq!(assistants[0].provider.as_deref(), Some("openai"));
+    assert_eq!(assistants[1].provider.as_deref(), Some("other"));
 }

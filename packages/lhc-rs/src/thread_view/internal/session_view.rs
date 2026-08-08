@@ -369,11 +369,27 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                 entries.push(tool_result_of(row, &render_ctx));
             }
             RenderingPartKind::ModelChange => {
+                // Flush first: the change marks a boundary in time, so it
+                // must not appear BEFORE assistant output that preceded it.
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut assistant_provenance,
+                    &mut entries,
+                );
                 if let Some(model_change) = model_change_of(row) {
                     entries.push(model_change);
                 }
             }
             RenderingPartKind::ThinkingLevelChange => {
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut assistant_provenance,
+                    &mut entries,
+                );
                 entries.push(thinking_level_change_of(row));
             }
             RenderingPartKind::RuntimeNote => {
