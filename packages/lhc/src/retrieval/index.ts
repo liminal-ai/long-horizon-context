@@ -25,6 +25,11 @@ export const DEFAULT_RETRIEVAL_TOKEN_BUDGET = 8_000;
  *  exempt: the caller asked for exactly that window. */
 export const RETRIEVAL_SLICE_FLOOR = 256;
 
+/** Hard cap on deduped ids per retrieval call. Bodies are token-budgeted,
+ *  but per-id receipts are not — this bounds the whole model-visible
+ *  result (validator P0, 2026-08-08). */
+export const MAX_RETRIEVAL_IDS_PER_CALL = 32;
+
 export interface RetrievalOptions {
   /** Per-call token budget over served item text (estimateTokens). */
   tokenBudget?: number;
@@ -339,6 +344,14 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
   }
   if (ids.length === 0) {
     return storageFailure(`${defaultSurface}: at least one id is required`);
+  }
+  // Hard bound on the whole model-visible result: bodies are budgeted, but
+  // receipts/footers scale with id count — unbounded ids means unbounded
+  // output. Refuse over-cap calls whole with a receipt naming the cap.
+  if (dedupe(ids).length > MAX_RETRIEVAL_IDS_PER_CALL) {
+    return storageFailure(
+      `${defaultSurface}: too many ids — ${dedupe(ids).length} requested, cap is ${MAX_RETRIEVAL_IDS_PER_CALL} per call; split the request`,
+    );
   }
   const surface = options?.surface ?? defaultSurface;
   const callId = randomUUID();
