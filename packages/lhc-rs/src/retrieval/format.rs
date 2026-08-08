@@ -5,6 +5,65 @@
 //! `packages/pi-lhc/src/serving/retrieval-tools.ts` so both forks produce
 //! identical envelope bytes. Tool registration is host work — this module is
 //! pure formatting only.
+//!
+//! # Analytic model-visible output bound
+//!
+//! A measured ceiling can always be out-measured by a denser fixture. The
+//! contract bound is therefore **analytic** ([`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`]
+//! = **17_500**), derived once from structural maxima + one-time
+//! `estimate_tokens` pins of fixed templates. It dominates every reachable
+//! assembly by construction (no runtime truncation).
+//!
+//! ## Derivation (component maxima)
+//!
+//! (1) **Bodies** — budget walk enforces served text aggregate ≤ 8_000
+//!     (`DEFAULT_RETRIEVAL_TOKEN_BUDGET` / `PULL_TOKEN_BUDGET`).
+//!
+//! (2) **Per-echo worst case** — clamped invalid id is 33 UTF-16 units
+//!     (`clamp_id_echo`: 32 + ellipsis). Each unit ≤ 2 bytes → ≤ 66 bytes.
+//!     o200k BPE tokens cover ≥ 1 byte each → **≤ 66 tokens per echo**.
+//!
+//! (3) **Numeric / id fields** — digits-to-tokens ≤ digit count (each digit
+//!     is one code unit; BPE never expands a digit string beyond its length
+//!     for this bound). Caps:
+//!     - id after `t`/`m`: ≤ 12 digits → id ≤ **13** tokens (`t`/`m` + 12)
+//!     - token offsets (`from`/`to`): ≤ 8000 → **4** digits
+//!     - totals / remainders / size fields: ≤ **10** digits
+//!
+//! (4) **Fixed strings** — `estimate_tokens` once (get_turns where larger):
+//!     - `recall_open("get_turns")` = **58**
+//!     - `recall_close("get_turns")` = **27**
+//!     - `"\n\n"` separator = **1**
+//!     - continuation footer skeleton (empty id/number slots) = **26**
+//!     - budget unserved skeleton (empty id/number slots) = **23**
+//!     - section wrap fixed (`"<>\n\n</>"`) = **4**
+//!
+//! (5) **Counts** — ≤ 32 sections, ≤ 32 footers, ≤ 32 unserved
+//!     (`MAX_RETRIEVAL_IDS_PER_CALL`).
+//!
+//! ## Per-item maxima
+//!
+//! - Section wrap overhead: wrap_fixed 4 + 2×id 13 = **30** → ×32 = **960**
+//! - Continuation footer: fixed 26 + 2×id 13 + from4 + to4 + total10 + rem10
+//!   + from4 = **84** → ×32 = **2_688**
+//! - Budget unserved: fixed 23 + 2×echo 66 + size10 = **165** → ×32 = **5_280**
+//! - Envelope: open 58 + close 27 = **85**
+//! - Separators: envelope internal (32 sections + open/close → 33 seps) +
+//!   outer join (1 envelope + 32 footers + 32 unserved → 64 seps) = **97**
+//!
+//! ## Sum → ceiling
+//!
+//! ```text
+//!   8_000  bodies
+//! +    85  open + close
+//! +    97  separators
+//! +   960  section wraps
+//! + 2_688  footers
+//! + 5_280  unserved
+//! ───────
+//!  17_110  analytic sum
+//!  17_500  round up to next 500  →  MAX_RETRIEVAL_OUTPUT_TOKENS
+//! ```
 
 use crate::retrieval::{SliceReceipt, UnservedEntity, UnservedReason};
 
@@ -369,22 +428,13 @@ mod tests {
         let _ = assemble_result("get_turns", &[], &[], &unserved);
     }
 
-    /// Static worst-case under [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`]
-    /// (12_000). Built from **maximal permitted** values:
-    /// - body aggregate = DEFAULT_RETRIEVAL_TOKEN_BUDGET (8000) of *inner*
-    ///   section text across 32 independently padded slices (byte-splitting a
-    ///   single 8k string under-counts BPE)
-    /// - 32 footers with maximal valid ids (`t` + 12 digits) + full
-    ///   continuation receipts (to=8000, total=16000)
-    /// - 32 unserved budget receipts with 33-char clamped echoes (32 UTF-16
-    ///   units + ellipsis) and large token fields (longest unserved_line form)
-    ///
-    /// Measured assembly (estimate_tokens): **11605** tok for this fixture
-    /// (envelope + ~8k body aggregate + 32 max footers + 32 budget unserved
-    /// with 33-char clamped echoes). Validator's earlier independent class
-    /// measured 11_318; Fable set the contract ceiling at **12_000** with
-    /// headroom. Soft ~4.4k bodies are rejected by requiring body aggregate
-    /// ~8k. Proven only — no runtime truncation.
+    /// Density fixture under the **analytic**
+    /// [`crate::retrieval::MAX_RETRIEVAL_OUTPUT_TOKENS`] (17_500). Built from
+    /// maximal permitted values (8k body aggregate, 32 max footers, 32 budget
+    /// unserved with clamped echoes). Asserts assembled ≤ analytic constant —
+    /// which dominates every reachable case by construction (headroom vs
+    /// measured ~11.6k). Soft ~4.4k bodies fail the body-aggregate check.
+    /// No runtime truncation.
     #[test]
     fn maximal_pull_assembly_under_output_token_bound() {
         use crate::retrieval::{
@@ -469,20 +519,15 @@ mod tests {
 
         let assembled = assemble_result("get_turns", &sections, &footers, &unserved);
         let tokens = estimate_tokens(&assembled);
-        // Soft body-only fixtures were ~4.4k; this maximal class measures 11605.
-        // Bound is 12_000. Reject under-fill and over-bound.
+        // Analytic bound dominates every reachable case (incl. this density
+        // fixture ~11.6k). Reject soft under-fill (~4.4k) and over-bound.
         assert!(
             tokens <= MAX_RETRIEVAL_OUTPUT_TOKENS,
-            "maximal assembly {tokens} tok must be ≤ {MAX_RETRIEVAL_OUTPUT_TOKENS}"
+            "maximal assembly {tokens} tok must be ≤ analytic {MAX_RETRIEVAL_OUTPUT_TOKENS}"
         );
         assert!(
             tokens >= 10_000,
             "fixture under-filled ({tokens} tok); body aggregate must be ~8k + maximals"
-        );
-        // Pin measured figure (honest worst-case under real maximals).
-        assert_eq!(
-            tokens, 11_605,
-            "measured figure drifted ({tokens}); update comment + pin if format changed"
         );
         assert_eq!(sections.len(), n);
         assert_eq!(footers.len(), n);
