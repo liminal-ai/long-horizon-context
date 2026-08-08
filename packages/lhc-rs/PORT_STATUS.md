@@ -2693,3 +2693,16 @@ Validator failed the soft ~4.4k worst-case proof; real maximal class measured
 maximals (~8k body aggregate + 32 max footers + 32 budget unserved); measured
 **11605** tok ≤ 12_000. +2 should_panic (footer-cap, unserved-cap) → passed
 **575**, classified **590**, binaries **67**.
+
+## 2026-08-08 — R1–R6 propagation wave COMPLETE (Fable sign-off)
+
+All six ledger slices landed on lhc-rs-port and validated by the codex
+steward (gpt-5.6-sol) per the accepted protocol; Fable final pass ran the
+gates independently (GATE PASS 590/575/15), byte-checked envelope parity
+against pi-lhc, and spot-verified husk/DDL/id-pattern/budget-clamp/
+signature-export contracts. Wave also produced two cross-port hardening
+fixes discovered live: capture-totality token counting (f274cea + vendor
+hotfix c136899 pinned by both forks) and bounded retrieval output
+(id cap 32, id shape ^[tm]\d{1,12}$, budget ceiling 8000, analytic
+output bound 22k). Schema now v6. Next: fork wave A (codex) per ledger —
+pre-req FORK.md drift repair, then vendor bump + tool wiring.
