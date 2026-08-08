@@ -45,6 +45,12 @@ pub const RETRIEVAL_SLICE_FLOOR: i64 = 256;
 /// result (validator P0, 2026-08-08 / TS `MAX_RETRIEVAL_IDS_PER_CALL`).
 pub const MAX_RETRIEVAL_IDS_PER_CALL: usize = 32;
 
+/// Valid retrieval id shape: `t` or `m` followed by 1–12 digits. Anything
+/// else is refused per-id as `"invalid"` — ids are echoed into receipts and
+/// impression rows, so shape validation is also a length bound (validator
+/// P0, 2026-08-08 / TS `RETRIEVAL_ID_PATTERN`).
+pub const RETRIEVAL_ID_PATTERN: &str = r"^[tm]\d{1,12}$";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrievalOptions {
@@ -62,6 +68,7 @@ pub enum UnservedReason {
     NotFound,
     Deleted,
     Budget,
+    Invalid,
 }
 
 impl UnservedReason {
@@ -70,8 +77,38 @@ impl UnservedReason {
             UnservedReason::NotFound => "not_found",
             UnservedReason::Deleted => "deleted",
             UnservedReason::Budget => "budget",
+            UnservedReason::Invalid => "invalid",
         }
     }
+}
+
+/// Echo bound for invalid ids in receipts/impressions (TS `clampIdEcho`).
+fn clamp_id_echo(id: &str) -> String {
+    if id.chars().count() <= 32 {
+        id.to_string()
+    } else {
+        // TS: id.slice(0, 32) is UTF-16 code units; for ASCII ids this matches.
+        // Use char-based clamp for safety on non-ASCII, then ellipsis.
+        let prefix: String = id.chars().take(32).collect();
+        format!("{prefix}…")
+    }
+}
+
+fn is_valid_retrieval_id(id: &str) -> bool {
+    // ^[tm]\d{1,12}$ without a regex crate dependency.
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes.len() > 13 {
+        return false;
+    }
+    let first = bytes[0];
+    if first != b't' && first != b'm' {
+        return false;
+    }
+    let digits = &bytes[1..];
+    if digits.is_empty() || digits.len() > 12 {
+        return false;
+    }
+    digits.iter().all(|b| b.is_ascii_digit())
 }
 
 /// Window receipt on a partially served item: `[from_token, to_token)` of
@@ -313,7 +350,9 @@ fn resolve_budget(options: Option<&RetrievalOptions>) -> Result<i64, String> {
             "retrieval tokenBudget must be a positive number, got {budget}"
         ));
     }
-    Ok(budget as i64)
+    // The default is also the ceiling: callers cannot raise the model-visible
+    // bound above what the serving contract promises (validator P0).
+    Ok((budget as i64).min(DEFAULT_RETRIEVAL_TOKEN_BUDGET))
 }
 
 fn resolve_from_token(options: Option<&RetrievalOptions>) -> Result<i64, String> {
@@ -601,7 +640,18 @@ async fn retrieve<T: Clone + Send + 'static>(
             Box::pin(async move {
                 let candidates: Vec<Candidate<T>> = dedupe(&ids)
                     .into_iter()
-                    .map(|id| candidate_of(transaction.db, &id))
+                    .map(|id| {
+                        if is_valid_retrieval_id(&id) {
+                            candidate_of(transaction.db, &id)
+                        } else {
+                            Candidate {
+                                id: clamp_id_echo(&id),
+                                outcome: CandidateOutcome::Unservable {
+                                    reason: UnservedReason::Invalid,
+                                },
+                            }
+                        }
+                    })
                     .collect();
                 let (served, unserved, total_tokens, impressions) = budget_walk(
                     &candidates,

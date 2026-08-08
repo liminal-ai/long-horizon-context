@@ -9,11 +9,13 @@ use fixtures::{
     AssistantTextOverrides, AssistantTextPayload, TempStore, TurnEndOverrides,
     UserPromptOverrides, UserPromptPayload, kind, temp_store, valid_event,
 };
-use lhc::retrieval::MAX_RETRIEVAL_IDS_PER_CALL;
+use lhc::retrieval::{MAX_RETRIEVAL_IDS_PER_CALL, UnservedReason};
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
 use lhc::shared_tech::errors::OpResult;
 use lhc::threads::{NewThreadInput, ThreadRef};
-use lhc::{Lhc, create_deterministic_inference_callbacks, init_lhc};
+use lhc::{
+    DEFAULT_RETRIEVAL_TOKEN_BUDGET, Lhc, create_deterministic_inference_callbacks, init_lhc,
+};
 
 async fn new_thread(sdk: &Lhc, store: &TempStore) -> String {
     let path = store.thread_path(None).to_string_lossy().into_owned();
@@ -135,4 +137,111 @@ async fn counts_deduped_ids_not_raw_ids() {
         "dedupe before count must not trip cap: {:?}",
         result
     );
+}
+
+#[tokio::test]
+async fn accepts_exactly_the_cap_of_unique_ids() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_one_turn(&sdk, &file_path).await;
+
+    let ids: Vec<String> = (0..MAX_RETRIEVAL_IDS_PER_CALL)
+        .map(|i| format!("t{}", i + 1))
+        .collect();
+    let result = sdk
+        .retrieval
+        .get_turns(ThreadRef::file_path(&file_path), &ids, None)
+        .await;
+    assert!(
+        result.is_ok(),
+        "exactly {MAX_RETRIEVAL_IDS_PER_CALL} unique ids must pass: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn refuses_oversized_ids_per_id_as_invalid_with_echo_clamped() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_one_turn(&sdk, &file_path).await;
+
+    // 40k-digit tail: fails ^[tm]\d{1,12}$; echo into receipts/impressions clamped.
+    let monster = format!("t{}", "9".repeat(40_000));
+    let result = sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&file_path),
+            &[monster, "t1".into()],
+            None,
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = result else {
+        panic!("call must succeed with per-id invalid: {result:?}");
+    };
+    let invalid = receipt
+        .unserved
+        .iter()
+        .find(|u| u.reason == UnservedReason::Invalid)
+        .expect("invalid unserved row");
+    assert!(
+        invalid.id.chars().count() <= 33,
+        "clamped echo including ellipsis must be ≤33 chars, got {}",
+        invalid.id.chars().count()
+    );
+    assert!(
+        invalid.id.ends_with('…') || invalid.id.len() <= 32,
+        "oversized echo must use ellipsis: {}",
+        invalid.id
+    );
+    assert_eq!(receipt.served.len(), 1);
+
+    let impressions = sdk
+        .retrieval
+        .list_impressions(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: impressions } = impressions else {
+        panic!("list_impressions failed");
+    };
+    let inv_row = impressions
+        .iter()
+        .find(|r| r.reason.as_deref() == Some("invalid"))
+        .expect("invalid impression");
+    assert!(
+        inv_row.entity_id.chars().count() <= 33,
+        "impression entity_id must also be clamped: {}",
+        inv_row.entity_id
+    );
+    assert!(!inv_row.served);
+}
+
+#[tokio::test]
+async fn clamps_caller_token_budget_to_the_contract_ceiling() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_one_turn(&sdk, &file_path).await;
+
+    let result = sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&file_path),
+            &["t1".into()],
+            Some(lhc::RetrievalOptions {
+                token_budget: Some(10_000_000.0),
+                from_token: None,
+                surface: None,
+            }),
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = result else {
+        panic!("get_turns failed: {result:?}");
+    };
+    assert!(
+        receipt.token_budget <= DEFAULT_RETRIEVAL_TOKEN_BUDGET,
+        "token_budget must clamp to DEFAULT ({}), got {}",
+        DEFAULT_RETRIEVAL_TOKEN_BUDGET,
+        receipt.token_budget
+    );
+    assert_eq!(receipt.token_budget, DEFAULT_RETRIEVAL_TOKEN_BUDGET);
 }

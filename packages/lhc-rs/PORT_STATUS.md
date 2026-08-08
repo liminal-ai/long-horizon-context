@@ -2667,3 +2667,11 @@ Mirror TS `575de9c`: `MAX_RETRIEVAL_IDS_PER_CALL = 32`; refuse whole call when
 deduped id count exceeds the cap (receipt names cap + split guidance);
 dedupe before counting so raw duplicates do not trip. +2 tests → passed
 **565**, classified **580**, binaries **67**.
+
+## 2026-08-08 — R6 hardening — id shape validation + budget ceiling
+
+Mirror TS `10cc482`: `RETRIEVAL_ID_PATTERN` `^[tm]\d{1,12}$`; invalid ids
+refuse per-id as `invalid` with 32-char echo clamp (+ellipsis) in unserved
+and impression rows; `tokenBudget` clamps to
+`DEFAULT_RETRIEVAL_TOKEN_BUDGET` (8000) ceiling; exact-32 unique ids pass.
++3 tests → passed **568**, classified **583**, binaries **67**.
