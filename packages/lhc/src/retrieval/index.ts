@@ -30,6 +30,14 @@ export const RETRIEVAL_SLICE_FLOOR = 256;
  *  result (validator P0, 2026-08-08). */
 export const MAX_RETRIEVAL_IDS_PER_CALL = 32;
 
+/** Documented worst case for one call's whole model-visible result:
+ *  bodies ≤ 8,000 (budget ceiling) + ≤32 sections/footers/receipts with
+ *  clamped echoes. Conservative analytic derivation (2026-08-08, rs R6):
+ *  8,000 + 85 + 97 + 960 + 4,704 + 7,680 = 21,526. Constant matches the
+ *  rs port (`MAX_RETRIEVAL_OUTPUT_TOKENS`); the static proof lives in
+ *  lhc-rs retrieval::format tests. Documentation, not runtime enforcement. */
+export const MAX_RETRIEVAL_OUTPUT_TOKENS = 22_000;
+
 export interface RetrievalOptions {
   /** Per-call token budget over served item text (estimateTokens). */
   tokenBudget?: number;
