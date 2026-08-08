@@ -301,9 +301,13 @@ pub fn open_database(path: &str) -> OpResult<Db> {
                 conn: std::sync::Mutex::new(conn),
                 path: path.to_string(),
             };
+            // busy_timeout FIRST: journal_mode=WAL takes a brief write lock on
+            // open, and without a timeout a concurrent opener gets an instant
+            // SQLITE_BUSY (observed live: two parallel retrieval tools racing
+            // at open — TS 1687d4d / R6).
+            db.exec("PRAGMA busy_timeout = 5000;");
             db.exec("PRAGMA journal_mode = WAL;");
             db.exec("PRAGMA foreign_keys = ON;");
-            db.exec("PRAGMA busy_timeout = 5000;");
             db.exec("PRAGMA synchronous = NORMAL;");
             OpResult::Ok { value: db }
         }

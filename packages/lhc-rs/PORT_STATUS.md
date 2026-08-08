@@ -2642,3 +2642,13 @@ Slice R5 (`96915c1`, `90890ee`, `4443cdd`): composition truncation markers
 retranslate at compose time; genuine inference summaries pass through;
 untruncated messages unannotated. No board machinery. Tests +3 → passed
 **550**, classified **565**.
+
+## 2026-08-08 — R6 pull ergonomics — SDK half
+
+Slice R6 SDK half (`80c1743`, `1687d4d`): `open_database` sets
+`busy_timeout` before `journal_mode=WAL` (parallel-open race fix); host-
+agnostic `retrieval::format` with byte-stable `<recalled-history>` envelope
+and out-of-envelope slice/budget receipts + JIT next-call text
+(`tool({"ids":[…],"from":N})`). No tool registration (host half). Tests +12
+(10 format goldens + 2 race/order legs) → passed **562**, classified **577**,
+binaries **66**.

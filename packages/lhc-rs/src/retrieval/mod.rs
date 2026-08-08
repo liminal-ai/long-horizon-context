@@ -10,6 +10,11 @@
 //! Every requested id writes one impression row — the durable usage log that
 //! later ranking work reads. Retrieval never mutates record content; the only
 //! write is the impression log.
+//!
+//! Host-facing tool result framing lives in [`format`] (R6): byte-stable
+//! `<recalled-history>` envelope + out-of-envelope receipts / next-call text.
+
+pub mod format;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
