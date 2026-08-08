@@ -25,7 +25,7 @@ use crate::shared_tech::context::resolve_instance_poke;
 use crate::shared_tech::derivation::{
     BoxFuture, BriefTargets, Clock, CompletionTx, CompressDetailedTurnInput, CompressionTargets,
     DerivationMetadata, DerivationState, HandlerDerivationWrite, HandlerOutcome, HandlerRunContext,
-    InferenceResult, RenderingPart, RenderingPartKind, ResolvedSdkConfig, SizeDisposition,
+    InferenceResult, ResolvedSdkConfig, SizeDisposition,
     SubjectKind, SummarizeChunkBriefInput, WorkHandler, WorkItemRef,
 };
 use crate::shared_tech::durable_work::{
@@ -56,7 +56,10 @@ use crate::turns::TurnStatus;
 use crate::turns::internal::chunks::ChunkPolicy;
 
 use super::chunks::{enqueue_chunk_summaries, place_turn};
-use super::compose::{RecoveryReason, compose_pre_detailed_assembly, compose_rendering_input};
+use super::compose::{
+    RecoveryReason, compose_pre_detailed_assembly, compose_rendering_input,
+    compose_structured_turn_text,
+};
 use super::derivations::{
     TurnOwnedSubjectKind, chunk_exists, read_chunk_summary_derivation, read_member_messages,
     read_member_projections, read_message_derivation_rows, read_turn_derivation_row,
@@ -151,52 +154,6 @@ fn dependency_not_ready(reason: &str) -> NonOkHandlerOutcome {
     NonOkHandlerOutcome::Failed {
         reason: reason.to_string(),
     }
-}
-
-/// TS `renderingPartLabel` — closed vocab → exhaustive match (no wildcard).
-fn rendering_part_label(kind: RenderingPartKind) -> &'static str {
-    match kind {
-        RenderingPartKind::UserPrompt => "User prompt",
-        RenderingPartKind::AssistantText => "Assistant response",
-        RenderingPartKind::AssistantThinking => "Assistant thinking",
-        RenderingPartKind::RuntimeNote => "Runtime note",
-        RenderingPartKind::ModelChange => "Model change",
-        RenderingPartKind::ThinkingLevelChange => "Thinking level change",
-        RenderingPartKind::ToolCall => "Tool call",
-        RenderingPartKind::ToolResult => "Tool result",
-    }
-}
-
-fn compose_structured_turn_text(parts: &[RenderingPart]) -> String {
-    parts
-        .iter()
-        // Empty thinking has no usable representation in a text band. Leaving it
-        // here bypasses the serving-exit tail filters once the turn is compacted.
-        .filter(|part| {
-            part.kind != RenderingPartKind::AssistantThinking || !part.text.trim().is_empty()
-        })
-        .map(|part| {
-            let mut annotations: Vec<String> = Vec::new();
-            if part.fallback {
-                annotations.push("fallback".to_string());
-            }
-            if let Some(outcome) = part.outcome {
-                annotations.push(format!("outcome: {}", outcome.as_str()));
-            }
-            let suffix = if annotations.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", annotations.join("; "))
-            };
-            format!(
-                "{}{}\n{}",
-                rendering_part_label(part.kind),
-                suffix,
-                part.text
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 fn compose_detailed_chunk_summary(member_projections: &[String]) -> String {
@@ -482,7 +439,7 @@ async fn turn_derivation_handler(run: HandlerRunContext, item: WorkItemRef) -> H
         );
     }
 
-    let rendering_text = compose_structured_turn_text(&composition.parts);
+    let rendering_text = compose_structured_turn_text(&composition.parts, &turn_id);
     let assembly_text = assembly.text;
     let projected_tokens = estimate_tokens(&assembly_text);
     let thread_id = run.thread_id.clone();
@@ -1745,7 +1702,6 @@ pub async fn dispatch_turn_owned_work(
 }
 
 // Keep REAL exhaustive label table + factory/handler seams referenced.
-const _: fn(RenderingPartKind) -> &'static str = rendering_part_label;
 const _: fn() -> WorkHandler = chunk_detailed_handler;
 const _: fn() -> WorkHandler = chunk_brief_handler;
 const _: fn(LogFallbackReason) -> &'static str = LogFallbackReason::as_str;

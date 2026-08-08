@@ -108,10 +108,77 @@ fn rendering_content(file_path: &str) -> String {
         .unwrap_or_default()
 }
 
+fn strip_entity_xml(body: &str) -> String {
+    // Block wrap: <mN>\n…\n</mN>. Tool-run lines: <mN>…</mN> on each line.
+    if let Some(rest) = body.strip_prefix('<') {
+        if let Some((tag, after_open)) = rest.split_once('>') {
+            if tag.starts_with('m') && tag[1..].chars().all(|c| c.is_ascii_digit()) {
+                let close = format!("</{tag}>");
+                if let Some(inner) = after_open.strip_prefix('\n') {
+                    if let Some(inner) = inner.strip_suffix(&close) {
+                        return inner.strip_suffix('\n').unwrap_or(inner).to_string();
+                    }
+                }
+            }
+        }
+    }
+    // Strip inline <mN>…</mN> tags (tool-run member lines).
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let after_lt = &rest[lt + 1..];
+        let Some(gt) = after_lt.find('>') else {
+            out.push_str(&rest[lt..]);
+            return out;
+        };
+        let tag = &after_lt[..gt];
+        let after_gt = &after_lt[gt + 1..];
+        if tag.starts_with('m') && tag[1..].chars().all(|c| c.is_ascii_digit()) {
+            let close = format!("</{tag}>");
+            if let Some(close_at) = after_gt.find(&close) {
+                out.push_str(&after_gt[..close_at]);
+                rest = &after_gt[close_at + close.len()..];
+                continue;
+            }
+        }
+        out.push('<');
+        out.push_str(tag);
+        out.push('>');
+        rest = after_gt;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_outer_turn_xml(content: &str) -> String {
+    let Some(rest) = content.strip_prefix('<') else {
+        return content.to_string();
+    };
+    let Some((tag, after_open)) = rest.split_once('>') else {
+        return content.to_string();
+    };
+    if !(tag.starts_with('t') && tag[1..].chars().all(|c| c.is_ascii_digit())) {
+        return content.to_string();
+    }
+    let close = format!("</{tag}>");
+    let Some(inner) = after_open.strip_prefix('\n') else {
+        return content.to_string();
+    };
+    let Some(inner) = inner.strip_suffix(&close) else {
+        return content.to_string();
+    };
+    inner.strip_suffix('\n').unwrap_or(inner).to_string()
+}
+
 fn rendering_bodies(file_path: &str) -> Vec<String> {
-    rendering_content(file_path)
+    let content = strip_outer_turn_xml(&rendering_content(file_path));
+    content
         .split("\n\n")
-        .map(|part| part.split('\n').skip(1).collect::<Vec<_>>().join("\n"))
+        .map(|part| {
+            let body = part.split('\n').skip(1).collect::<Vec<_>>().join("\n");
+            strip_entity_xml(&body)
+        })
         .collect()
 }
 

@@ -154,38 +154,8 @@ fn assembly_tokens(prompt: &str, answer: &str) -> i64 {
     estimate_tokens(&dialogue_assembly_text(prompt, answer))
 }
 
-fn structured_rendering(parts: &[RenderingPart]) -> String {
-    let label = |kind: RenderingPartKind| -> &'static str {
-        match kind {
-            RenderingPartKind::UserPrompt => "User prompt",
-            RenderingPartKind::AssistantText => "Assistant response",
-            RenderingPartKind::AssistantThinking => "Assistant thinking",
-            RenderingPartKind::RuntimeNote => "Runtime note",
-            RenderingPartKind::ModelChange => "Model change",
-            RenderingPartKind::ThinkingLevelChange => "Thinking level change",
-            RenderingPartKind::ToolCall => "Tool call",
-            RenderingPartKind::ToolResult => "Tool result",
-        }
-    };
-    parts
-        .iter()
-        .map(|part| {
-            let mut annotations = Vec::new();
-            if part.fallback {
-                annotations.push("fallback".to_string());
-            }
-            if let Some(outcome) = part.outcome {
-                annotations.push(format!("outcome: {}", outcome.as_str()));
-            }
-            let suffix = if annotations.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", annotations.join("; "))
-            };
-            format!("{}{}\n{}", label(part.kind), suffix, part.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+fn structured_rendering(parts: &[RenderingPart], turn_id: &str) -> String {
+    lhc::turns::internal::compose::compose_structured_turn_text(parts, turn_id)
 }
 
 async fn requeue_direct(file_path: &str, input: EnqueueInput) {
@@ -279,6 +249,7 @@ async fn all_message_forms_ready_both_turn_forms_ready_composed_from_the_forms_e
             fallback: false,
             blocks: None,
             outcome: None,
+            member_message_ids: None,
         },
         RenderingPart {
             message_id: "m2".into(),
@@ -287,9 +258,10 @@ async fn all_message_forms_ready_both_turn_forms_ready_composed_from_the_forms_e
             fallback: false,
             blocks: None,
             outcome: None,
+            member_message_ids: None,
         },
     ];
-    let rendering_text = structured_rendering(&parts);
+    let rendering_text = structured_rendering(&parts, "t1");
     let assembly_text = dialogue_assembly_text(&smoothed, answer);
     let input_tokens = estimate_tokens(&assembly_text);
     let compression_input = CompressDetailedTurnInput {

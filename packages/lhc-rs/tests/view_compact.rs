@@ -816,11 +816,12 @@ async fn actuals_near_shares_with_whole_entry_deviations_zero_model_calls_record
     let attributable = (actual.tokens as f64) <= share_brief || actual.entries == 1;
     assert!(attributable);
 
+    // Token count includes the <turns>…</turns> member-turn header on chunk bands.
     assert_eq!(
         value.bands.brief,
         CompactBandStats {
             entries: 1,
-            tokens: 27
+            tokens: 41
         }
     );
     assert_eq!(value.bands.detailed.entries, 2);

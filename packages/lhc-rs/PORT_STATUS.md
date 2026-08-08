@@ -2593,3 +2593,13 @@ provenance verbatim. No identity-match suppression (host work). Tests: +8
 (`tests/thinking_signature.rs`). Gate arithmetic: classified **531**
 (cargo-reported 531, binaries 62), passed **516** (+8), notimpl 0, ignored
 **15**, wrong 0, suspicious 0.
+
+## 2026-08-08 — R3 turn/message labels in smooth history
+
+Slice R3 (`753a177`, `9317f0f`): stored smooth `turn_rendering` carries
+`<tN>`/`<mN>`/per-line tool tags; `pre_detailed_assembly` stays untagged;
+chunk-band serve prefixes `<turns>…</turns>` (including gap entries);
+`stored_rendering_has_turn_label` for legacy unlabeled recompose. Tests: +10
+(`tests/turn_message_labels.rs`). Gate arithmetic: classified **541**
+(cargo-reported 541, binaries 63), passed **526** (+10), notimpl 0, ignored
+**15**, wrong 0, suspicious 0.

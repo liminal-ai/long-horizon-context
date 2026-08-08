@@ -330,6 +330,7 @@ fn build_atom(
         fallback,
         blocks: None,
         outcome: None,
+        member_message_ids: None,
     };
     if matches!(
         message.kind,
@@ -504,6 +505,80 @@ fn run_tally_text(counts: &IndexMap<ToolOutcome, i64>) -> String {
     }
 }
 
+/// Short XML wrap: tag name is the entity id (`m12`, `t3`).
+pub fn wrap_entity_xml(entity_id: &str, body: &str) -> String {
+    format!("<{entity_id}>\n{body}\n</{entity_id}>")
+}
+
+fn wrap_message_line_xml(message_id: &str, line: &str) -> String {
+    format!("<{message_id}>{line}</{message_id}>")
+}
+
+/// Chunk band header: member turn ids the model can request later.
+pub fn format_turn_range_header(turn_ids: &[String]) -> String {
+    if turn_ids.is_empty() {
+        return String::new();
+    }
+    format!("<turns>{}</turns>", turn_ids.join(" "))
+}
+
+/// TS `renderingPartLabel` — closed vocab → exhaustive match (no wildcard).
+fn rendering_part_label(kind: RenderingPartKind) -> &'static str {
+    match kind {
+        RenderingPartKind::UserPrompt => "User prompt",
+        RenderingPartKind::AssistantText => "Assistant response",
+        RenderingPartKind::AssistantThinking => "Assistant thinking",
+        RenderingPartKind::RuntimeNote => "Runtime note",
+        RenderingPartKind::ModelChange => "Model change",
+        RenderingPartKind::ThinkingLevelChange => "Thinking level change",
+        RenderingPartKind::ToolCall => "Tool call",
+        RenderingPartKind::ToolResult => "Tool result",
+    }
+}
+
+/// Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
+/// pre_detailed_assembly (compression stays untagged).
+pub fn compose_structured_turn_text(parts: &[RenderingPart], turn_id: &str) -> String {
+    let inner = parts
+        .iter()
+        // Empty thinking has no usable representation in a text band. Leaving it
+        // here bypasses the serving-exit tail filters once the turn is compacted.
+        .filter(|part| {
+            part.kind != RenderingPartKind::AssistantThinking || !part.text.trim().is_empty()
+        })
+        .map(|part| {
+            let mut annotations: Vec<String> = Vec::new();
+            if part.fallback {
+                annotations.push("fallback".to_string());
+            }
+            if let Some(outcome) = part.outcome {
+                annotations.push(format!("outcome: {}", outcome.as_str()));
+            }
+            let suffix = if annotations.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", annotations.join("; "))
+            };
+            let header = format!("{}{}", rendering_part_label(part.kind), suffix);
+            // Tool runs already tag each member line; other parts wrap the whole body.
+            let body = match &part.member_message_ids {
+                Some(ids) if !ids.is_empty() => part.text.clone(),
+                _ => wrap_entity_xml(&part.message_id, &part.text),
+            };
+            format!("{header}\n{body}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    wrap_entity_xml(turn_id, &inner)
+}
+
+/// True when stored turn_rendering already carries the outer turn label wrap.
+/// Used by retrieval (R4+) to decide live re-composition for legacy unlabeled
+/// rows; available here so R3 can unit-test the contract without retrieval.
+pub fn stored_rendering_has_turn_label(content: &str, turn_id: &str) -> bool {
+    content.starts_with(&format!("<{turn_id}>\n")) && content.ends_with(&format!("\n</{turn_id}>"))
+}
+
 fn compose_run(members: &[ComposeAtom]) -> RenderingPart {
     let RunTally {
         counts,
@@ -521,10 +596,11 @@ fn compose_run(members: &[ComposeAtom]) -> RenderingPart {
         "tool run · {tools} · {call_count} call{plural} · {}",
         run_tally_text(&counts)
     );
+    // Each member line is tagged with its message id so smooth history can address it.
     let detail = members
         .iter()
         .map(|m| {
-            if m.is_tool {
+            let line = if m.is_tool {
                 format!(
                     "{} ⇒ {}",
                     m.part.text,
@@ -532,7 +608,8 @@ fn compose_run(members: &[ComposeAtom]) -> RenderingPart {
                 )
             } else {
                 m.part.text.clone()
-            }
+            };
+            wrap_message_line_xml(&m.part.message_id, &line)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -547,6 +624,7 @@ fn compose_run(members: &[ComposeAtom]) -> RenderingPart {
         fallback: members.iter().any(|m| m.is_tool && m.part.fallback),
         blocks: None,
         outcome: Some(outcome),
+        member_message_ids: Some(members.iter().map(|m| m.part.message_id.clone()).collect()),
     }
 }
 

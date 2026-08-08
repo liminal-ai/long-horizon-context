@@ -683,16 +683,25 @@ pub fn excerpt_line(kind: &str, blocks: &[ExcerptBlock]) -> String {
 /// the representation body, [degraded: …] when a fallback rung rendered, or the
 /// gap line as the last rung. select.ts prices exactly this text in the fill
 /// walk; the band stores exactly this text.
+///
+/// Chunk entries may carry `member_turn_ids` so detailed/brief bands show which
+/// turns the chunk covers (smooth turn bodies already wrap themselves in `<t…>`).
+/// Headers are applied at serve time for both ready and unavailable/gap entries.
 pub fn render_arrangement_entry(
     subject_kind: ViewSubjectKind,
     _subject_id: &str,
     rep: &ResolvedRepresentation,
     note_texts: &[String],
+    member_turn_ids: &[String],
 ) -> String {
     let mut lines: Vec<String> = note_texts
         .iter()
         .map(|text| format!("{LITERAL_INTER_TURN_NOTE_PREFIX}{text}"))
         .collect();
+    if subject_kind == ViewSubjectKind::Chunk && !member_turn_ids.is_empty() {
+        // Keep format identical to format_turn_range_header in turns/compose.
+        lines.push(format!("<turns>{}</turns>", member_turn_ids.join(" ")));
+    }
     if rep.gap {
         lines.push(format!(
             "{LITERAL_GAP_OPEN}{}{LITERAL_GAP_UNAVAILABLE_MID}{}{LITERAL_TOOL_RESULT_CLOSE}",

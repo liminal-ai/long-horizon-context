@@ -723,6 +723,10 @@ pub struct RenderingPart {
     /// tool activity only
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<ToolOutcome>,
+    /// Tool-run parts: every member message id, in record order. Text already
+    /// carries per-member `<m…>` tags when this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_message_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

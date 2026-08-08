@@ -726,7 +726,8 @@ fn build_turn_entry(
         )
     };
     let rep = resolve_smooth_representation(turn.turn_id.as_str(), lookup, excerpt.as_deref());
-    let text = render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[]);
+    let text =
+        render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[], &[]);
     ArrangementEntry {
         band: Band::Smooth,
         subject_kind: ViewSubjectKind::Turn,
@@ -763,7 +764,13 @@ fn build_chunk_entry(
             material,
         ),
     };
-    let text = render_arrangement_entry(ViewSubjectKind::Chunk, chunk.chunk_id.as_str(), &rep, &[]);
+    let text = render_arrangement_entry(
+        ViewSubjectKind::Chunk,
+        chunk.chunk_id.as_str(),
+        &rep,
+        &[],
+        &chunk.member_turn_ids,
+    );
     // Signature has no messages_by_turn; without live messages the start falls
     // back to each member's open boundary (same as empty-message turnStartOrder).
     // select_arrangement overwrites start_order with the message-aware minimum.
@@ -944,7 +951,8 @@ fn build_coverage_entry(
             )),
         }
     };
-    let text = render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[]);
+    let text =
+        render_arrangement_entry(ViewSubjectKind::Turn, turn.turn_id.as_str(), &rep, &[], &[]);
     ArrangementEntry {
         band: Band::Detailed,
         subject_kind: ViewSubjectKind::Turn,
