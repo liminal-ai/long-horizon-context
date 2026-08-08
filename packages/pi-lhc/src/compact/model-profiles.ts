@@ -35,7 +35,10 @@ const DEFAULT_PERCENTAGES: CompactPercentages = { ...DEFAULT_COMPACT_PROFILE.per
 
 /** Shipped per-model settings (first match wins). */
 export const DEFAULT_MODEL_COMPACT_SETTINGS: readonly ModelCompactSettings[] = [
-  { match: "fable", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
+  // fable: widened 2026-08-08 (was 350k/140k) — coordination workloads want a
+  // higher floor (more full/smooth survives a compact) and headroom for long
+  // monitoring turns. Watch for high-fill dullness cycling with the band.
+  { match: "fable", triggerTokens: 500_000, lowerBound: 240_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "glm", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "grok", triggerTokens: 300_000, lowerBound: 100_000, percentages: { ...DEFAULT_PERCENTAGES } },
   // sol: no connector trigger. Its 272k window puts PI's native threshold at
