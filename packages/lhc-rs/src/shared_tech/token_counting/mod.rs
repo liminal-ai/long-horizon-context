@@ -48,18 +48,52 @@ pub fn slice_tokens(text: &str, from_token: i64, max_tokens: i64) -> TokenSlice 
     } else {
         (from + max_tokens.max(0)).min(total_tokens)
     };
-    let from_usize = from as usize;
-    let to_usize = to as usize;
-    let slice = &tokens[from_usize.min(tokens.len())..to_usize.min(tokens.len())];
-    let text = bpe
-        .decode(slice)
-        .unwrap_or_else(|err| panic!("slice_tokens decode: {err}"));
+    let from_usize = (from as usize).min(tokens.len());
+    let window = clean_tail_window(
+        bpe,
+        &tokens,
+        from_usize,
+        (to - from).max(0) as usize,
+        to == total_tokens,
+    );
     TokenSlice {
-        text,
+        text: window.0,
         from_token: from,
-        to_token: to,
+        to_token: from + window.1 as i64,
         total_tokens,
     }
+}
+
+/// Decode `tokens[from, from + count)` leniently and shrink `count` until
+/// the decoded tail lands on a clean char boundary (TS `cleanTailWindow`
+/// parity: lossy decode, step down while the text ends with U+FFFD). BPE
+/// token boundaries can split a multi-byte char; a split tail would corrupt
+/// verbatim text and leave the continuation offset pointing inside a char.
+/// Windows reaching the text's end (`at_end`) cannot have a split tail.
+fn clean_tail_window(
+    bpe: &tiktoken_rs::CoreBPE,
+    tokens: &[u32],
+    from: usize,
+    count: usize,
+    at_end: bool,
+) -> (String, usize) {
+    let decode = |k: usize| -> String {
+        let end = (from + k).min(tokens.len());
+        let bytes = bpe
+            .decode_bytes(&tokens[from..end])
+            .unwrap_or_else(|err| panic!("slice decode_bytes: {err}"));
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let mut k = count;
+    let mut text = decode(k);
+    if at_end {
+        return (text, k);
+    }
+    while k > 0 && text.ends_with('\u{FFFD}') {
+        k -= 1;
+        text = decode(k);
+    }
+    (text, k)
 }
 
 /// `slice_tokens` that also fits a UTF-8 byte allowance: encode ONCE, take
@@ -86,33 +120,39 @@ pub fn slice_tokens_byte_capped(
         (from + max_tokens.max(0)).min(total_tokens)
     };
     let from_usize = (from as usize).min(tokens.len());
-    let decode_to = |end: usize| -> String {
-        bpe.decode(&tokens[from_usize..end.min(tokens.len())])
-            .unwrap_or_else(|err| panic!("slice_tokens_byte_capped decode: {err}"))
+    let decode_to = |k: usize| -> String {
+        let end = (from_usize + k).min(tokens.len());
+        let bytes = bpe
+            .decode_bytes(&tokens[from_usize..end])
+            .unwrap_or_else(|err| panic!("slice_tokens_byte_capped decode: {err}"));
+        String::from_utf8_lossy(&bytes).into_owned()
     };
-    let text_full = decode_to(to as usize);
-    if text_full.len() <= max_bytes {
-        return TokenSlice {
-            text: text_full,
-            from_token: from,
-            to_token: to,
-            total_tokens,
-        };
-    }
-    let mut low: usize = 0;
-    let mut high: usize = (to - from) as usize;
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        if decode_to(from_usize + mid).len() <= max_bytes {
-            low = mid;
-        } else {
-            high = mid - 1;
+    let full_count = (to - from).max(0) as usize;
+    let mut count = full_count;
+    if decode_to(count).len() > max_bytes {
+        let mut low: usize = 0;
+        let mut high: usize = count;
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if decode_to(mid).len() <= max_bytes {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
         }
+        count = low;
     }
+    let window = clean_tail_window(
+        bpe,
+        &tokens,
+        from_usize,
+        count,
+        from + count as i64 == total_tokens,
+    );
     TokenSlice {
-        text: decode_to(from_usize + low),
+        text: window.0,
         from_token: from,
-        to_token: from + low as i64,
+        to_token: from + window.1 as i64,
         total_tokens,
     }
 }

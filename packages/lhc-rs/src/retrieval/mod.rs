@@ -326,13 +326,19 @@ fn budget_walk<T: Clone>(
                         None => slice_tokens(text_of(item), from_token, remaining),
                     };
                     let served_tokens = window.to_token - window.from_token;
-                    // Byte-shrunk slivers mirror the token floor: a budget-
-                    // crossing serve below RETRIEVAL_SLICE_FLOOR teaches
-                    // nothing — report "budget" so the model re-pulls alone.
-                    // Explicit continuations serve whatever fits, including
-                    // the empty past-the-end slice (its receipt IS the answer).
-                    let sliver =
-                        from_token == 0 && served_tokens < RETRIEVAL_SLICE_FLOOR.min(*tokens);
+                    // Sub-floor serves under TOKEN pressure teach nothing —
+                    // report "budget" so the model re-pulls alone. But when
+                    // the BYTE budget bound the window, re-pulling alone
+                    // cannot yield more: serve the byte-fit slice, however
+                    // small. Explicit continuations serve whatever fits,
+                    // including the empty past-the-end slice (its receipt IS
+                    // the answer). (TS parity, A3 round-5 findings 1-2.)
+                    let token_window =
+                        remaining.min((window.total_tokens - window.from_token).max(0));
+                    let byte_bound = remaining_bytes.is_some() && served_tokens < token_window;
+                    let sliver = !byte_bound
+                        && from_token == 0
+                        && served_tokens < RETRIEVAL_SLICE_FLOOR.min(*tokens);
                     if sliver {
                         unserved.push(UnservedEntity {
                             id: candidate.id.clone(),

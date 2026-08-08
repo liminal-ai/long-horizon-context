@@ -1201,10 +1201,11 @@ async fn byte_budget_whole_serve_and_validation() {
     );
 }
 
-/// A byte-spent budget serves the first item as a slice; the next item's
-/// byte-fitting window would be a sub-floor sliver, so it reports budget.
+/// A byte-spent budget serves later items as byte-bound slices, never
+/// refusals (byte-bound serves are exempt from the sliver floor:
+/// re-pulling alone cannot yield more bytes).
 #[tokio::test]
-async fn byte_spent_budget_marks_later_items_unserved() {
+async fn byte_spent_budget_serves_byte_bound_slices() {
     let store = temp_store();
     let sdk = manual_sdk();
     let file_path = new_thread(&sdk, &store).await;
@@ -1223,8 +1224,85 @@ async fn byte_spent_budget_marks_later_items_unserved() {
     let OpResult::Ok { value: receipt } = result else {
         panic!("get_messages failed");
     };
-    assert_eq!(receipt.served.len(), 1);
-    assert_eq!(receipt.unserved[0].reason, UnservedReason::Budget);
+    assert_eq!(receipt.served.len(), 2);
+    assert!(
+        receipt.served[1].slice.is_some(),
+        "second item byte-bound slice"
+    );
     let served_bytes: usize = receipt.served.iter().map(|s| s.text.len()).sum();
     assert!(served_bytes <= 8_000, "served {served_bytes} bytes");
+}
+
+/// Multi-byte content never splits a char at the slice tail: byte caps that
+/// land inside a char shrink to the clean boundary — no U+FFFD, no mid-char
+/// continuation offset (A3 round-5 finding 1).
+#[tokio::test]
+async fn multi_byte_content_never_splits_a_char() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    let crabs = format!("{}\n", "\u{1F980}".repeat(20)).repeat(200);
+    let ids = seed_dense(&sdk, &file_path, &[&crabs]).await;
+
+    let mut from: i64 = 0;
+    let mut reassembled = String::new();
+    for _ in 0..40 {
+        let page = sdk
+            .retrieval
+            .get_messages(
+                ThreadRef::file_path(&file_path),
+                &ids,
+                byte_options(1_001.0, if from == 0 { None } else { Some(from as f64) }),
+            )
+            .await;
+        let OpResult::Ok { value: page } = page else {
+            panic!("page failed");
+        };
+        let served = &page.served[0];
+        assert!(!served.text.contains('\u{FFFD}'), "replacement char served");
+        assert!(
+            served.text.len() <= 1_001,
+            "page bytes {}",
+            served.text.len()
+        );
+        reassembled.push_str(&served.text);
+        match &served.slice {
+            Some(slice) if slice.to_token < slice.total_tokens => {
+                assert!(slice.to_token > from, "no progress");
+                from = slice.to_token;
+            }
+            _ => break,
+        }
+    }
+    assert!(reassembled.starts_with('\u{1F980}'));
+    assert!(!reassembled.contains('\u{FFFD}'));
+}
+
+/// Byte-dense content stays retrievable when bytes bind below the token
+/// floor (A3 round-5 finding 2): the byte-fit window serves with a
+/// continuation receipt instead of an unprogressable budget refusal.
+#[tokio::test]
+async fn byte_dense_single_id_stays_retrievable() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    let dense = dense_lines(900);
+    let ids = seed_dense(&sdk, &file_path, &[&dense]).await;
+
+    let result = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &ids,
+            byte_options(8_000.0, None),
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = result else {
+        panic!("get_messages failed");
+    };
+    assert_eq!(receipt.served.len(), 1);
+    let served = &receipt.served[0];
+    assert!(served.text.len() <= 8_000);
+    let slice = served.slice.as_ref().expect("continuation receipt");
+    assert!(slice.to_token > 0, "must make progress");
 }
