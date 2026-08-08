@@ -2626,3 +2626,11 @@ stored rendering recompose on `get_turns` (R3 carry-over). Tests: +16
 (`tests/retrieval.rs`) +1 migrate leg. Gate arithmetic: classified **560**
 (cargo-reported 560, binaries 65), passed **545** (+17), notimpl 0, ignored
 **15**, wrong 0, suspicious 0.
+
+## 2026-08-08 — R4 validation-coverage fix-up
+
+Validator coverage gaps closed (implementation already correct): v5→v6 migrate
+leg seeds real rows + asserts data preservation and CHECK enforcement;
+dedupe proves one impression row; impression rows for `deleted`/`budget`;
+`fromToken>0` multi-id slices every item. Tests +2 → passed **547**,
+classified **562**.

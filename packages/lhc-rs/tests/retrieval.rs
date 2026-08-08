@@ -520,6 +520,24 @@ async fn get_turns_collapses_duplicate_ids_to_one_serve() {
         panic!("get_turns failed");
     };
     assert_eq!(receipt.served.len(), 1);
+
+    // Dedupe is first-occurrence-wins for impressions too: exactly one row.
+    let impressions = sdk
+        .retrieval
+        .list_impressions(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: impressions } = impressions else {
+        panic!("list_impressions failed");
+    };
+    assert_eq!(
+        impressions.len(),
+        1,
+        "duplicate request ids must write exactly one impression"
+    );
+    assert_eq!(impressions[0].entity_id, "t1");
+    assert_eq!(impressions[0].request_idx, 0);
+    assert!(impressions[0].served);
+    assert_eq!(impressions[0].call_id, receipt.call_id);
 }
 
 #[tokio::test]
@@ -732,6 +750,230 @@ async fn impression_log_writes_one_row_per_requested_id() {
     assert_eq!(impressions[2].entity_kind, "message");
     assert_eq!(impressions[2].entity_id, prompt_id);
     assert!(impressions[2].served);
+}
+
+#[tokio::test]
+async fn impression_log_persists_deleted_and_budget_outcomes() {
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_two_turns(&sdk, &file_path).await;
+    drain(&sdk, &file_path).await;
+
+    // Soft-delete a closed-turn message so get_messages reports "deleted".
+    let listed = sdk
+        .messages
+        .list(ThreadRef::file_path(&file_path), None)
+        .await;
+    let OpResult::Ok { value: listed } = listed else {
+        panic!("list failed");
+    };
+    let prompt_id = listed
+        .iter()
+        .find(|r| r.kind == MessageKind::UserPrompt)
+        .map(|r| r.message_id.clone())
+        .expect("prompt");
+    // Soft-delete via SQL (same seam as mutations tests) — closed-turn
+    // messages can be deleted; retrieval must report "deleted" from the row.
+    {
+        let db = open_raw(&file_path);
+        db.prepare("UPDATE message SET deleted_at = ? WHERE message_id = ?")
+            .run(&[
+                SqlParam::from("2026-08-08T00:00:00.000Z"),
+                SqlParam::from(prompt_id.as_str()),
+            ]);
+        db.close();
+    }
+
+    let deleted_call = sdk
+        .retrieval
+        .get_messages(
+            ThreadRef::file_path(&file_path),
+            &[prompt_id.clone()],
+            None,
+        )
+        .await;
+    let OpResult::Ok { value: deleted_call } = deleted_call else {
+        panic!("get_messages failed");
+    };
+    assert!(deleted_call.served.is_empty());
+    assert_eq!(deleted_call.unserved.len(), 1);
+    assert_eq!(deleted_call.unserved[0].reason, UnservedReason::Deleted);
+
+    // Budget outcome: two turns, budget only fits the first (leftover << slice floor).
+    let full = sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&file_path),
+            &["t1".into(), "t2".into()],
+            None,
+        )
+        .await;
+    let OpResult::Ok { value: full } = full else {
+        panic!("full get_turns failed");
+    };
+    let t2_tokens = full.served[1].tokens;
+    let budget_call = sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&file_path),
+            &["t1".into(), "t2".into()],
+            Some(lhc::RetrievalOptions {
+                token_budget: Some(t2_tokens as f64),
+                from_token: None,
+                surface: None,
+            }),
+        )
+        .await;
+    let OpResult::Ok { value: budget_call } = budget_call else {
+        panic!("budget get_turns failed");
+    };
+    assert_eq!(budget_call.unserved.len(), 1);
+    assert_eq!(budget_call.unserved[0].reason, UnservedReason::Budget);
+
+    let impressions = sdk
+        .retrieval
+        .list_impressions(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: impressions } = impressions else {
+        panic!("list_impressions failed");
+    };
+
+    let deleted_row = impressions
+        .iter()
+        .find(|r| r.call_id == deleted_call.call_id && r.entity_id == prompt_id)
+        .expect("deleted impression");
+    assert!(!deleted_row.served);
+    assert_eq!(deleted_row.reason.as_deref(), Some("deleted"));
+    assert_eq!(deleted_row.entity_kind, "message");
+
+    let budget_row = impressions
+        .iter()
+        .find(|r| r.call_id == budget_call.call_id && r.entity_id == "t2")
+        .expect("budget impression");
+    assert!(!budget_row.served);
+    assert_eq!(budget_row.reason.as_deref(), Some("budget"));
+    assert_eq!(budget_row.entity_kind, "turn");
+    assert!(budget_row.tokens.unwrap_or(0) > 0);
+}
+
+#[tokio::test]
+async fn from_token_slices_every_requested_id_from_offset() {
+    // fromToken > 0 is the single-id continuation contract applied to EVERY
+    // requested item — not only the first.
+    let store = temp_store();
+    let sdk = manual_sdk();
+    let file_path = new_thread(&sdk, &store).await;
+    seed_big_turn(&sdk, &file_path).await;
+    send(
+        &sdk,
+        &file_path,
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "second dump".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::ASSISTANT_TEXT,
+                AssistantTextOverrides {
+                    payload: Some(AssistantTextPayload::new(
+                        (0..400)
+                            .map(|i| format!("t2 line {i}: lorem ipsum dolor sit amet"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    drain(&sdk, &file_path).await;
+
+    let whole_t1 = sdk
+        .retrieval
+        .get_turns(ThreadRef::file_path(&file_path), &["t1".into()], None)
+        .await;
+    let OpResult::Ok { value: whole_t1 } = whole_t1 else {
+        panic!("whole t1");
+    };
+    let whole_t2 = sdk
+        .retrieval
+        .get_turns(ThreadRef::file_path(&file_path), &["t2".into()], None)
+        .await;
+    let OpResult::Ok { value: whole_t2 } = whole_t2 else {
+        panic!("whole t2");
+    };
+    let full_t1 = whole_t1.served[0].text.clone();
+    let full_t2 = whole_t2.served[0].text.clone();
+
+    let from = 50i64;
+    // Cap each window so both multi-id items serve under a shared budget while
+    // still proving every id is sliced from the same fromToken offset.
+    let window = 200i64;
+    let multi = sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&file_path),
+            &["t1".into(), "t2".into()],
+            Some(lhc::RetrievalOptions {
+                // Enough for two 200-token windows after shared fromToken.
+                token_budget: Some((window * 2) as f64),
+                from_token: Some(from as f64),
+                surface: None,
+            }),
+        )
+        .await;
+    let OpResult::Ok { value: multi } = multi else {
+        panic!("multi fromToken failed");
+    };
+    assert_eq!(
+        multi.served.len(),
+        2,
+        "both ids must be served (fromToken path does not stop at the first)"
+    );
+    assert_eq!(multi.served[0].turn_id, "t1");
+    assert_eq!(multi.served[1].turn_id, "t2");
+
+    // Walk remaining budget the same way budget_walk does: first item takes
+    // min(window_budget_remaining, rest_of_text); second uses what is left.
+    let mut remaining = window * 2;
+    for (served, full) in multi.served.iter().zip([&full_t1, &full_t2]) {
+        let slice = served.slice.as_ref().expect("every item must carry a slice");
+        assert_eq!(
+            slice.from_token, from,
+            "every requested id is sliced from fromToken (not only the first)"
+        );
+        assert!(slice.total_tokens > from);
+        let expected = lhc::slice_tokens(full, from, remaining);
+        assert_eq!(slice.to_token, expected.to_token);
+        assert_eq!(served.text, expected.text);
+        assert_eq!(served.tokens, expected.to_token - expected.from_token);
+        remaining -= served.tokens;
+    }
+    assert!(remaining >= 0);
+
+    let impressions = sdk
+        .retrieval
+        .list_impressions(ThreadRef::file_path(&file_path))
+        .await;
+    let OpResult::Ok { value: impressions } = impressions else {
+        panic!("impressions");
+    };
+    let multi_rows: Vec<_> = impressions
+        .iter()
+        .filter(|r| r.call_id == multi.call_id)
+        .collect();
+    assert_eq!(multi_rows.len(), 2);
+    assert!(multi_rows.iter().all(|r| r.served));
+    assert_eq!(multi_rows[0].entity_id, "t1");
+    assert_eq!(multi_rows[1].entity_id, "t2");
 }
 
 #[tokio::test]

@@ -962,6 +962,8 @@ async fn migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backf
 
 #[tokio::test]
 async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_and_indexes() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     let store = temp_store();
     let file_path = store.thread_path(None).to_string_lossy().into_owned();
     let sdk = init_lhc(SdkConfig {
@@ -986,9 +988,62 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
         .await;
     assert!(created.is_ok());
 
-    {
+    // Seed real v5-era rows (messages / turns / events) before stripping the
+    // impression table — migration must preserve them.
+    let intake = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "v5 migrate seed prompt".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload::new("v5 migrate seed answer")),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+            ],
+        )
+        .await;
+    assert!(intake.is_ok());
+
+    let (event_count, message_count, turn_count, prompt_text) = {
         let old = open_raw(&file_path);
+        let event_count = old
+            .prepare("SELECT COUNT(*) AS c FROM event")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1);
+        let message_count = old
+            .prepare("SELECT COUNT(*) AS c FROM message")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1);
+        let turn_count = old
+            .prepare("SELECT COUNT(*) AS c FROM turns")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1);
+        let prompt_text = old
+            .prepare(
+                "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0",
+            )
+            .get()
+            .and_then(|r| r.get("content").and_then(|v| v.as_str()).map(str::to_string))
+            .expect("prompt block");
+
         old.exec("DROP TABLE retrieval_impression;");
+        // Drop indexes may already be gone with the table; user_version back to 5.
         old.exec(&format!("PRAGMA user_version = {THREAD_SCHEMA_VERSION_5};"));
         let missing = old
             .prepare(
@@ -996,8 +1051,12 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
             )
             .get();
         assert!(missing.is_none());
+        assert!(event_count >= 3);
+        assert!(message_count >= 2);
+        assert!(turn_count >= 1);
         old.close();
-    }
+        (event_count, message_count, turn_count, prompt_text)
+    };
 
     let opened = open_thread_database(&file_path);
     let OpResult::Ok { value: db } = opened else {
@@ -1030,5 +1089,85 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
             "idx_retrieval_impression_entity".to_string(),
         ]
     );
+
+    // Data preservation: seed rows survive the 5→6 upgrade.
+    assert_eq!(
+        db.prepare("SELECT COUNT(*) AS c FROM event")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1),
+        event_count
+    );
+    assert_eq!(
+        db.prepare("SELECT COUNT(*) AS c FROM message")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1),
+        message_count
+    );
+    assert_eq!(
+        db.prepare("SELECT COUNT(*) AS c FROM turns")
+            .get()
+            .and_then(|r| r.get("c").and_then(|v| v.as_i64()))
+            .unwrap_or(-1),
+        turn_count
+    );
+    let after_prompt = db
+        .prepare(
+            "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0",
+        )
+        .get()
+        .and_then(|r| r.get("content").and_then(|v| v.as_str()).map(str::to_string))
+        .expect("prompt block after migrate");
+    assert_eq!(after_prompt, prompt_text);
+    assert!(prompt_text.contains("v5 migrate seed prompt"));
+
+    // CHECK constraints: bad entity_kind and bad served must be rejected.
+    let bad_kind = catch_unwind(AssertUnwindSafe(|| {
+        db.prepare(
+            r#"INSERT INTO retrieval_impression
+               (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+               VALUES ('c1', 'test', 'bogus', 't1', 0, 1, NULL, 1)"#,
+        )
+        .run(&[]);
+    }));
+    assert!(
+        bad_kind.is_err(),
+        "entity_kind CHECK must reject values outside turn|message"
+    );
+
+    let bad_served = catch_unwind(AssertUnwindSafe(|| {
+        db.prepare(
+            r#"INSERT INTO retrieval_impression
+               (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+               VALUES ('c2', 'test', 'turn', 't1', 0, 2, NULL, 1)"#,
+        )
+        .run(&[]);
+    }));
+    assert!(
+        bad_served.is_err(),
+        "served CHECK must reject values outside 0|1"
+    );
+
+    // Valid insert still works after the rejected attempts.
+    db.prepare(
+        r#"INSERT INTO retrieval_impression
+           (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+           VALUES ('c3', 'test', 'turn', 't1', 0, 1, NULL, 7)"#,
+    )
+    .run(&[]);
+    let ok_row = db
+        .prepare(
+            "SELECT entity_kind, served, tokens FROM retrieval_impression WHERE call_id = 'c3'",
+        )
+        .get()
+        .expect("valid impression row");
+    assert_eq!(
+        ok_row.get("entity_kind").and_then(|v| v.as_str()),
+        Some("turn")
+    );
+    assert_eq!(ok_row.get("served").and_then(|v| v.as_i64()), Some(1));
+    assert_eq!(ok_row.get("tokens").and_then(|v| v.as_i64()), Some(7));
+
     db.close();
 }

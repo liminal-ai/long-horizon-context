@@ -8,8 +8,8 @@ across the full project).** The host-agnostic Cargo library meets the final
 Phase 2 gate:
 
 ```text
-classified=560 cargo-reported=560 (binaries: 65)
-passed=545 notimpl=0 ignored=15
+classified=562 cargo-reported=562 (binaries: 65)
+passed=547 notimpl=0 ignored=15
 wrong=0 suspicious=0
 ```
 
@@ -33,7 +33,7 @@ The governing handoff is
 - Profile `lowerBound` / band percentages are Amendment I `f64` (not `i64`);
   visibility budgets remain `f64` per Wave 6 rulings.
 - Gate: `python3 scripts/check_gate.py` — final mode (zero real Phase-2
-  todos) requires exact `545/0/15/0/0` (passed/notimpl/ignored/wrong/
+  todos) requires exact `547/0/15/0/0` (passed/notimpl/ignored/wrong/
   suspicious) with the transitional name allowlist retired
   (`scripts/gate_allowlist.txt` deleted). The gate hardcodes the expected
   passed count; slices that add tests must update `scripts/check_gate.py`
