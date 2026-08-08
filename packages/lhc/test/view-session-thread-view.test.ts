@@ -219,7 +219,33 @@ describe("threadView.getSessionThreadView", () => {
     expect(assistants[1]?.content.some((part) => part.type === "text")).toBe(true);
   });
 
-  it("splits on provider-only identity conflicts and orders change entries after the flushed group", async () => {
+  it("splits ADJACENT rows on a provider-only conflict — no change event between them", async () => {
+    // No model_change here: the split must come from provenance conflict
+    // detection alone (a change event would flush the group anyway).
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan a", signature: "SIG_A", provider: "openai", model: "m", api: "responses" },
+      }),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan b", signature: "SIG_B", provider: "other", model: "m", api: "responses" },
+      }),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    const assistants = view.value.entries.filter(
+      (entry): entry is SessionThreadViewMessage & { role: "assistant" } =>
+        isMessageEntry(entry) && entry.role === "assistant",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]?.provider).toBe("openai");
+    expect(assistants[1]?.provider).toBe("other");
+  });
+
+  it("orders change entries after the flushed group", async () => {
     const captured = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt"),
       validEvent("assistant_thinking", {
