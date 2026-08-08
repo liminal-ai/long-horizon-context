@@ -298,6 +298,84 @@ describe("getMessages", () => {
   });
 });
 
+describe("byteBudget", () => {
+  it("slices token-cheap byte-heavy content to fit the byte allowance", async () => {
+    // Long '=' runs: BPE packs many bytes per token, so a token budget alone
+    // cannot bound bytes — the codex-core truncation hazard.
+    const dense = `${"=".repeat(80)}\n`.repeat(1_500);
+    await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "dump" } }),
+      validEvent("assistant_text", { payload: { text: dense } }),
+      validEvent("turn_end"),
+    ]);
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error("list failed");
+    const denseId = listed.value.find((r) => r.kind === "assistant_text")!.messageId;
+
+    const byteBudget = 12_000;
+    const result = await retrieval.getMessages({ filePath }, [denseId], { byteBudget });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.served).toHaveLength(1);
+    const served = result.value.served[0]!;
+    expect(Buffer.byteLength(served.text, "utf8")).toBeLessThanOrEqual(byteBudget);
+    // Receipt stays token-denominated and continues correctly.
+    expect(served.slice).toBeDefined();
+    expect(served.slice!.fromToken).toBe(0);
+    expect(served.slice!.toToken).toBe(served.tokens);
+    expect(served.slice!.toToken).toBeLessThan(served.slice!.totalTokens);
+
+    // Continuation from the receipt serves the NEXT window, still byte-fit.
+    const next = await retrieval.getMessages({ filePath }, [denseId], {
+      byteBudget,
+      fromToken: served.slice!.toToken,
+    });
+    expect(next.ok).toBe(true);
+    if (!next.ok) return;
+    const nextServed = next.value.served[0]!;
+    expect(nextServed.slice!.fromToken).toBe(served.slice!.toToken);
+    expect(Buffer.byteLength(nextServed.text, "utf8")).toBeLessThanOrEqual(byteBudget);
+  });
+
+  it("whole-serves when bytes fit and rejects non-positive byteBudget", async () => {
+    await seedTwoTurns();
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error("list failed");
+    const promptId = listed.value.find((r) => r.kind === "user_prompt")!.messageId;
+
+    const whole = await retrieval.getMessages({ filePath }, [promptId], { byteBudget: 1_000_000 });
+    expect(whole.ok).toBe(true);
+    if (!whole.ok) return;
+    expect(whole.value.served[0]!.slice).toBeUndefined();
+
+    const bad = await retrieval.getMessages({ filePath }, [promptId], { byteBudget: 0 });
+    expect(bad.ok).toBe(false);
+  });
+
+  it("byte-spent budget marks later items unserved as budget", async () => {
+    const dense = `${"=".repeat(80)}\n`.repeat(900);
+    await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "dump" } }),
+      validEvent("assistant_text", { payload: { text: dense } }),
+      validEvent("assistant_text", { payload: { text: `${"=".repeat(80)}\n`.repeat(40) } }),
+      validEvent("turn_end"),
+    ]);
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error("list failed");
+    const ids = listed.value.filter((r) => r.kind === "assistant_text").map((r) => r.messageId);
+
+    const result = await retrieval.getMessages({ filePath }, ids, { byteBudget: 8_000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // First item consumed the byte allowance as a slice; the second's
+    // byte-fitting window would be a sub-floor sliver, so it reports budget.
+    expect(result.value.served).toHaveLength(1);
+    expect(result.value.unserved[0]!.reason).toBe("budget");
+    const servedBytes = result.value.served.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0);
+    expect(servedBytes).toBeLessThanOrEqual(8_000);
+  });
+});
+
 describe("impression log", () => {
   it("writes one row per requested id with served flags, sizes, and call correlation", async () => {
     await seedTwoTurns();

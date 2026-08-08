@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { OpResult } from "../shared-tech/errors.js";
 import { createDbReadTransaction, createDbWriteTransaction, storageFailure } from "../shared-tech/index.js";
-import { estimateTokens, sliceTokens, type TokenSlice } from "../shared-tech/token-counting/index.js";
+import { estimateTokens, sliceTokens, sliceTokensByteCapped } from "../shared-tech/token-counting/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { composeRenderingInput, composeStructuredTurnText } from "../turns/internal/compose.js";
 import { readMemberMessages, readMessageDerivationRows, readTurnSource } from "../turns/internal/derivations.js";
@@ -41,6 +41,13 @@ export const MAX_RETRIEVAL_OUTPUT_TOKENS = 22_000;
 export interface RetrievalOptions {
   /** Per-call token budget over served item text (estimateTokens). */
   tokenBudget?: number;
+  /** Optional per-call BYTE budget over served item text (UTF-8). Hosts
+   *  whose runtimes enforce output limits in bytes (codex core truncates
+   *  FunctionCallOutput at bytes/4-per-token approximations) pass their
+   *  allowance here; serving then slices to fit both budgets, so receipts
+   *  and impressions describe exactly what the model can see. Token-cheap
+   *  byte-heavy content (BPE-packed runs) is the case this bounds. */
+  byteBudget?: number;
   /** Token offset into each requested item's text — continues a previous
    *  slice. Intended for single-id continuation calls. */
   fromToken?: number;
@@ -156,12 +163,14 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
   candidates: readonly Candidate<T>[],
   entityKind: "turn" | "message",
   tokenBudget: number,
+  byteBudget: number,
   fromToken: number,
 ): { served: T[]; unserved: UnservedEntity[]; totalTokens: number; impressions: ImpressionRow[] } {
   const served: T[] = [];
   const unserved: UnservedEntity[] = [];
   const impressions: ImpressionRow[] = [];
   let totalTokens = 0;
+  let totalBytes = 0;
   candidates.forEach((candidate, requestIdx) => {
     const base = { entityId: candidate.id, requestIdx } as const;
     if (candidate.outcome.kind === "unservable") {
@@ -171,11 +180,14 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
     }
     const { item, tokens } = candidate.outcome;
     const remaining = tokenBudget - totalTokens;
+    const remainingBytes = byteBudget - totalBytes;
 
-    // Whole serve: no offset requested and the full text fits what's left.
-    if (fromToken === 0 && tokens <= remaining) {
+    // Whole serve: no offset requested and the full text fits what's left
+    // in BOTH budgets.
+    if (fromToken === 0 && tokens <= remaining && utf8Bytes(item.text) <= remainingBytes) {
       served.push(item);
       totalTokens += tokens;
+      totalBytes += utf8Bytes(item.text);
       impressions.push({ ...base, entityKind, served: true, tokens });
       return;
     }
@@ -183,8 +195,20 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
     // Partial serve: explicit continuation always slices; a budget-crossing
     // item slices only when enough budget remains to be worth reading.
     if (fromToken > 0 || remaining >= RETRIEVAL_SLICE_FLOOR) {
-      const window: TokenSlice = sliceTokens(item.text, fromToken, remaining);
+      const window = Number.isFinite(byteBudget)
+        ? sliceTokensByteCapped(item.text, fromToken, remaining, remainingBytes)
+        : sliceTokens(item.text, fromToken, remaining);
       const servedTokens = window.toToken - window.fromToken;
+      // Byte-shrunk slivers mirror the token floor: a budget-crossing serve
+      // below RETRIEVAL_SLICE_FLOOR teaches nothing — report "budget" so the
+      // model re-pulls alone. Explicit continuations serve whatever fits,
+      // including the empty past-the-end slice (its receipt IS the answer).
+      const sliver = fromToken === 0 && servedTokens < Math.min(RETRIEVAL_SLICE_FLOOR, tokens);
+      if (sliver) {
+        unserved.push({ id: candidate.id, reason: "budget", tokens });
+        impressions.push({ ...base, entityKind, served: false, reason: "budget", tokens });
+        return;
+      }
       const sliced: T = {
         ...item,
         text: window.text,
@@ -193,6 +217,7 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
       };
       served.push(sliced);
       totalTokens += servedTokens;
+      totalBytes += utf8Bytes(window.text);
       impressions.push({ ...base, entityKind, served: true, tokens: servedTokens });
       return;
     }
@@ -203,6 +228,10 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
   return { served, unserved, totalTokens, impressions };
 }
 
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
 function resolveBudget(options: RetrievalOptions | undefined): number {
   const budget = options?.tokenBudget ?? DEFAULT_RETRIEVAL_TOKEN_BUDGET;
   if (!Number.isFinite(budget) || budget <= 0) {
@@ -211,6 +240,14 @@ function resolveBudget(options: RetrievalOptions | undefined): number {
   // The default is also the ceiling: callers cannot raise the model-visible
   // bound above what the serving contract promises (validator P0).
   return Math.min(budget, DEFAULT_RETRIEVAL_TOKEN_BUDGET);
+}
+
+function resolveByteBudget(options: RetrievalOptions | undefined): number {
+  const budget = options?.byteBudget ?? Number.POSITIVE_INFINITY;
+  if (Number.isNaN(budget) || budget <= 0) {
+    throw new Error(`retrieval byteBudget must be a positive number, got ${String(budget)}`);
+  }
+  return budget;
 }
 
 function resolveFromToken(options: RetrievalOptions | undefined): number {
@@ -356,9 +393,11 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
   candidateOf: (db: DatabaseSync, id: string) => Candidate<T>,
 ): Promise<OpResult<RetrievalReceipt<T>>> {
   let tokenBudget: number;
+  let byteBudget: number;
   let fromToken: number;
   try {
     tokenBudget = resolveBudget(options);
+    byteBudget = resolveByteBudget(options);
     fromToken = resolveFromToken(options);
   } catch (cause) {
     return storageFailure(cause instanceof Error ? cause.message : String(cause));
@@ -385,7 +424,7 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
           ? candidateOf(transaction.db, id)
           : { id: clampIdEcho(id), outcome: { kind: "unservable", reason: "invalid" } as const },
       );
-      const walk = budgetWalk(candidates, entityKind, tokenBudget, fromToken);
+      const walk = budgetWalk(candidates, entityKind, tokenBudget, byteBudget, fromToken);
       writeImpressions(transaction.db, callId, surface, walk.impressions);
       return {
         callId,
