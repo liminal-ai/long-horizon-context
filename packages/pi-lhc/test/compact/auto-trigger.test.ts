@@ -64,7 +64,7 @@ async function startedConnector(): Promise<{ connector: Connector; ctx: AutoComp
       value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" },
     }),
   });
-  const ctx = makeCtx({ tokens: 400_000 });
+  const ctx = makeCtx({ tokens: 550_000 });
   await connector.handlers.session_start(makeSessionStart("startup"), ctx);
   expect(connector.getState()).not.toBeNull();
   return { connector, ctx };
@@ -94,7 +94,7 @@ describe("per-model auto-compact trigger", () => {
     for (const ctx of [
       makeCtx({ tokens: 200_000 }),
       makeCtx({ tokens: null }),
-      makeCtx({ tokens: 400_000, modelId: "some-unknown-model" }),
+      makeCtx({ tokens: 550_000, modelId: "some-unknown-model" }),
     ]) {
       await connector.settledHandler(makeAgentSettled(), ctx);
       expect(ctx.compactSpy).not.toHaveBeenCalled();
@@ -103,21 +103,21 @@ describe("per-model auto-compact trigger", () => {
 
   it("has no connector-side trigger for sol — PI's native threshold is the sole trigger", async () => {
     const { connector } = await startedConnector();
-    const ctx = makeCtx({ tokens: 400_000, modelId: "gpt-5.6-sol" });
+    const ctx = makeCtx({ tokens: 550_000, modelId: "gpt-5.6-sol" });
     await connector.settledHandler(makeAgentSettled(), ctx);
     expect(ctx.compactSpy).not.toHaveBeenCalled();
   });
 
   it("defers when follow-up messages are queued", async () => {
     const { connector } = await startedConnector();
-    const ctx = makeCtx({ tokens: 400_000, pending: true });
+    const ctx = makeCtx({ tokens: 550_000, pending: true });
     await connector.settledHandler(makeAgentSettled(), ctx);
     expect(ctx.compactSpy).not.toHaveBeenCalled();
   });
 
   it("does not re-fire while a triggered compact is still in flight", async () => {
     const { connector } = await startedConnector();
-    const ctx = makeCtx({ tokens: 400_000, compactOutcome: "hang" });
+    const ctx = makeCtx({ tokens: 550_000, compactOutcome: "hang" });
     await connector.settledHandler(makeAgentSettled(), ctx);
     await connector.settledHandler(makeAgentSettled(), ctx);
     expect(ctx.compactSpy).toHaveBeenCalledTimes(1);
@@ -128,28 +128,28 @@ describe("per-model auto-compact trigger", () => {
     // PI's native threshold compacted (any reason/initiator lands here).
     await connector.compactHandlers.session_compact(
       { type: "session_compact", compactionEntry: {} as never, fromExtension: true, reason: "threshold" },
-      makeCtx({ tokens: 400_000 }),
+      makeCtx({ tokens: 550_000 }),
     );
-    const staleCtx = makeCtx({ tokens: 400_000 });
+    const staleCtx = makeCtx({ tokens: 550_000 });
     await connector.settledHandler(makeAgentSettled(), staleCtx);
     expect(staleCtx.compactSpy).not.toHaveBeenCalled();
 
-    const freshCtx = makeCtx({ tokens: 400_000 });
+    const freshCtx = makeCtx({ tokens: 550_000 });
     await connector.settledHandler(makeAgentSettled(), freshCtx);
     expect(freshCtx.compactSpy).toHaveBeenCalledTimes(1);
   });
 
   it("after a cancelled attempt, re-fires only once usage grows by the retry margin", async () => {
     const { connector } = await startedConnector();
-    const cancelled = makeCtx({ tokens: 400_000, compactOutcome: "error" });
+    const cancelled = makeCtx({ tokens: 550_000, compactOutcome: "error" });
     await connector.settledHandler(makeAgentSettled(), cancelled);
     expect(cancelled.compactSpy).toHaveBeenCalledTimes(1);
 
-    const sameSize = makeCtx({ tokens: 410_000 });
+    const sameSize = makeCtx({ tokens: 560_000 });
     await connector.settledHandler(makeAgentSettled(), sameSize);
     expect(sameSize.compactSpy).not.toHaveBeenCalled();
 
-    const grown = makeCtx({ tokens: 430_000 });
+    const grown = makeCtx({ tokens: 580_000 });
     await connector.settledHandler(makeAgentSettled(), grown);
     expect(grown.compactSpy).toHaveBeenCalledTimes(1);
   });
