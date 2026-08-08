@@ -42,9 +42,9 @@ pub use crate::shared_tech::persist::{
 pub use crate::shared_tech::prompts::{DEFAULT_PROMPT_NAMES, PROMPT_NAMES};
 pub use crate::shared_tech::scheduler::{DrainReport, Scheduler, SchedulerMode};
 pub use crate::retrieval::{
-    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, RETRIEVAL_SLICE_FLOOR, RetrievalOptions,
-    RetrievalReceipt, RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt,
-    UnservedEntity, UnservedReason,
+    DEFAULT_RETRIEVAL_TOKEN_BUDGET, ImpressionRecord, MAX_RETRIEVAL_IDS_PER_CALL,
+    RETRIEVAL_SLICE_FLOOR, RetrievalOptions, RetrievalReceipt, RetrievedMessage, RetrievedTurn,
+    RetrievedTurnSource, SliceReceipt, UnservedEntity, UnservedReason,
 };
 pub use crate::shared_tech::token_counting::{TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens};
 pub use crate::shared_tech::view::{

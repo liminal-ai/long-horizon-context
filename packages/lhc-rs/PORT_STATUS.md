@@ -2660,3 +2660,10 @@ Validator: partial-slice continuation footers must render after
 `assemble_result` takes separate `slice_footers`; section helpers return
 bodies only. +1 assembled partial-serve byte golden → passed **563**,
 classified **578**.
+
+## 2026-08-08 — R6 id cap — bound model-visible output
+
+Mirror TS `575de9c`: `MAX_RETRIEVAL_IDS_PER_CALL = 32`; refuse whole call when
+deduped id count exceeds the cap (receipt names cap + split guidance);
+dedupe before counting so raw duplicates do not trip. +2 tests → passed
+**565**, classified **580**, binaries **67**.

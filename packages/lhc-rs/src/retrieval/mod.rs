@@ -40,6 +40,11 @@ pub const DEFAULT_RETRIEVAL_TOKEN_BUDGET: i64 = 8_000;
 /// exempt: the caller asked for exactly that window.
 pub const RETRIEVAL_SLICE_FLOOR: i64 = 256;
 
+/// Hard cap on deduped ids per retrieval call. Bodies are token-budgeted,
+/// but per-id receipts are not — this bounds the whole model-visible
+/// result (validator P0, 2026-08-08 / TS `MAX_RETRIEVAL_IDS_PER_CALL`).
+pub const MAX_RETRIEVAL_IDS_PER_CALL: usize = 32;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrievalOptions {
@@ -573,6 +578,15 @@ async fn retrieve<T: Clone + Send + 'static>(
     };
     if ids.is_empty() {
         return storage_failure(&format!("{default_surface}: at least one id is required"));
+    }
+    // Hard bound on the whole model-visible result: bodies are budgeted, but
+    // receipts/footers scale with id count — unbounded ids means unbounded
+    // output. Refuse over-cap calls whole with a receipt naming the cap.
+    let deduped_len = dedupe(ids).len();
+    if deduped_len > MAX_RETRIEVAL_IDS_PER_CALL {
+        return storage_failure(&format!(
+            "{default_surface}: too many ids — {deduped_len} requested, cap is {MAX_RETRIEVAL_IDS_PER_CALL} per call; split the request"
+        ));
     }
     let surface = options
         .as_ref()
