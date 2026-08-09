@@ -1,30 +1,21 @@
-"""Pytest configuration + the Phase 1 port gate classifier.
+"""Pytest configuration + the final-state port gate classifier.
 
-The gate (see docs/lhc-py-port-phase1-brief.md): during the skeleton phase,
-every runtime failure/error must root in NotImplementedError. This plugin
-classifies each test outcome and prints a PORT-GATE summary block that
-scripts/check_gate.py parses:
+The gate (``scripts/check_gate.py``) requires collection success, full pytest
+success, ``wrong=0``, and ``notimpl=0``. This plugin classifies every test
+outcome and prints a PORT-GATE summary that the gate parses:
 
+  - passed  : test passed
+  - skipped : intentional skips (vitest ``it.skip`` mirrors); listed with reason
   - notimpl : failure/error whose exception chain roots in NotImplementedError
-              (expected Phase 1 state — skeletons reached)
-  - passed  : test passed (legit only if it exercises constants/types alone;
-              listed for inspection)
-  - skipped : intentional skips (vitest it.skip mirrors + wave deferrals);
-              counted so the bucket totals reconcile against collection
-  - WRONG   : failure NOT rooted in NotImplementedError — a shape defect
-              (bad signature, misnamed field, broken fixture). Fix immediately.
+              (final-state forbids these — diagnostic only)
+  - WRONG   : failure NOT rooted in NotImplementedError — a real defect
 
-Classification rules: the exception chain is walked through `__cause__` AND
-`__context__` — deliberately including suppressed context. Rationale: the
-common Phase 1 pattern `pytest.raises(Exception, match="<validation msg>")`
-catches the skeleton's NotImplementedError and re-raises a match-failure
-AssertionError with context suppressed; that is expected skeleton state, not
-a shape defect. The cost is that a hypothetical `raise X from None` that
-deliberately swallowed an NIE also reads as notimpl — acceptable, since
-Phase 2 flips every NIE to real behavior and retires this classifier anyway.
-Exception groups are searched recursively (NIE inside a TaskGroup counts).
-Each test lands in exactly one bucket (worst phase wins: wrong > notimpl >
-passed).
+Classification rules: the exception chain is walked through ``__cause__`` AND
+``__context__`` — deliberately including suppressed context — so a
+``pytest.raises(...)`` match failure that wraps an unexpected
+``NotImplementedError`` still classifies as notimpl for diagnosis.
+Exception groups are searched recursively. Each test lands in exactly one
+bucket (worst outcome wins: wrong > notimpl > passed/skipped).
 """
 
 from __future__ import annotations
@@ -36,7 +27,8 @@ _gate: dict[str, dict[str, str]] = {"passed": {}, "notimpl": {}, "wrong": {}, "s
 _RANK = {"passed": 0, "skipped": 0, "notimpl": 1, "wrong": 2}
 
 
-def _roots_in_not_implemented(exc: BaseException | None) -> bool:
+def roots_in_not_implemented(exc: BaseException | None) -> bool:
+    """True when ``exc`` or any linked cause/context/group member is NIE."""
     seen: set[int] = set()
     stack = [exc]
     while stack:
@@ -56,13 +48,53 @@ def _roots_in_not_implemented(exc: BaseException | None) -> bool:
     return False
 
 
-def _classify(nodeid: str, bucket: str, detail: str) -> None:
-    # One bucket per test: keep the worst outcome across setup/call/teardown.
-    for name, entries in _gate.items():
-        if nodeid in entries and _RANK[name] >= _RANK[bucket]:
+def classify_outcome(
+    gate: dict[str, dict[str, str]],
+    nodeid: str,
+    bucket: str,
+    detail: str,
+    rank: dict[str, int] | None = None,
+) -> None:
+    """Place ``nodeid`` in ``bucket``, keeping the worst outcome across phases."""
+    ranking = rank if rank is not None else _RANK
+    for name, entries in gate.items():
+        if nodeid in entries and ranking[name] >= ranking[bucket]:
             return
         entries.pop(nodeid, None)
-    _gate[bucket][nodeid] = detail
+    gate[bucket][nodeid] = detail
+
+
+def skip_reason_from_report(
+    report: pytest.TestReport,
+    call: pytest.CallInfo[None],
+) -> str:
+    """Extract a human skip reason from a skipped test report."""
+    if call.excinfo is not None:
+        value = call.excinfo.value
+        # pytest.skip raises Skipped with the reason as the message.
+        msg = getattr(value, "msg", None)
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+        text = str(value).strip()
+        if text:
+            return text
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple) and len(longrepr) >= 3:
+        reason = str(longrepr[2]).strip()
+        # pytest often prefixes with "Skipped: "
+        if reason.lower().startswith("skipped:"):
+            reason = reason.split(":", 1)[1].strip()
+        if reason:
+            return reason
+    if longrepr is not None:
+        text = str(longrepr).strip()
+        if text:
+            return text
+    return report.when or "skipped"
+
+
+def _classify(nodeid: str, bucket: str, detail: str) -> None:
+    classify_outcome(_gate, nodeid, bucket, detail)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -70,12 +102,12 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
     outcome = yield
     report = outcome.get_result()
     if report.skipped:
-        _classify(item.nodeid, "skipped", report.when or "")
+        _classify(item.nodeid, "skipped", skip_reason_from_report(report, call))
     elif report.when == "call" and report.passed:
         _classify(item.nodeid, "passed", "call")
     elif report.failed:
         exc = call.excinfo.value if call.excinfo is not None else None
-        bucket = "notimpl" if _roots_in_not_implemented(exc) else "wrong"
+        bucket = "notimpl" if roots_in_not_implemented(exc) else "wrong"
         _classify(item.nodeid, bucket, report.when or "")
 
 
@@ -88,7 +120,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
     tr.write_line(f"PORT-GATE skipped={len(_gate['skipped'])}")
     tr.write_line(f"PORT-GATE wrong={len(_gate['wrong'])}")
     tr.write_line(f"PORT-GATE classified={total}")
-    for nodeid in _gate["passed"]:
-        tr.write_line(f"PORT-GATE inspect-pass: {nodeid}")
-    for nodeid, when in _gate["wrong"].items():
+    for nodeid, reason in sorted(_gate["skipped"].items()):
+        tr.write_line(f"PORT-GATE skip: {nodeid} :: {reason}")
+    for nodeid in sorted(_gate["notimpl"]):
+        tr.write_line(f"PORT-GATE notimpl: {nodeid}")
+    for nodeid, when in sorted(_gate["wrong"].items()):
         tr.write_line(f"PORT-GATE WRONG: {nodeid} [{when}]")
