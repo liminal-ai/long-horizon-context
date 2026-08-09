@@ -74,10 +74,80 @@ def _band_user_message(band: Band, rendered_text: str) -> SessionThreadViewEntry
     )
 
 
+def _thinking_signature_of(message: TailMessageRow) -> str | None:
+    content = _block_content(message)
+    signature = content.get("signature")
+    if signature is None:
+        signature = content.get("thinkingSignature")
+    return signature if isinstance(signature, str) and signature != "" else None
+
+
+def _string_field(content: dict[str, object], key: str) -> str | None:
+    value = content.get(key)
+    return value if isinstance(value, str) and value != "" else None
+
+
+@dataclass(frozen=True, slots=True)
+class _RowProvenance:
+    provider: str | None = None
+    model: str | None = None
+    api: str | None = None
+
+
+def _row_provenance_of(row: TailMessageRow) -> _RowProvenance:
+    """Provider/model/api carried by one assistant row (thinking or text only)."""
+    if row.kind not in ("assistant_thinking", "assistant_text"):
+        return _RowProvenance()
+    content = _block_content(row)
+    return _RowProvenance(
+        provider=_string_field(content, "provider"),
+        model=_string_field(content, "model"),
+        api=_string_field(content, "api"),
+    )
+
+
+def _provenance_conflicts(a: _RowProvenance, b: _RowProvenance) -> bool:
+    """True when both sides state a field and disagree — rows with no provenance
+    never conflict (they inherit the group's)."""
+    return (
+        (
+            a.provider is not None
+            and b.provider is not None
+            and a.provider != b.provider
+        )
+        or (a.model is not None and b.model is not None and a.model != b.model)
+        or (a.api is not None and b.api is not None and a.api != b.api)
+    )
+
+
+def _model_provenance_of(rows: Sequence[TailMessageRow]) -> _RowProvenance:
+    """First non-empty provider/model/api from grouped assistant rows (thinking or text)."""
+    provider: str | None = None
+    model: str | None = None
+    api: str | None = None
+    for row in rows:
+        if row.kind not in ("assistant_thinking", "assistant_text"):
+            continue
+        content = _block_content(row)
+        if provider is None:
+            provider = _string_field(content, "provider")
+        if model is None:
+            model = _string_field(content, "model")
+        if api is None:
+            api = _string_field(content, "api")
+        if provider is not None and model is not None and api is not None:
+            break
+    return _RowProvenance(provider=provider, model=model, api=api)
+
+
 def _assistant_part_of(message: TailMessageRow) -> SessionAssistantPart:
     kind = message.kind
     if kind == "assistant_thinking":
-        return SessionAssistantPart(type="thinking", thinking=_text_of(message))
+        part = SessionAssistantPart(type="thinking", thinking=_text_of(message))
+        signature = _thinking_signature_of(message)
+        if signature is not None:
+            return replace(part, thinking_signature=signature)
+        return part
     if kind == "assistant_text":
         return SessionAssistantPart(type="text", text=_text_of(message))
     if kind == "tool_call":
@@ -148,19 +218,28 @@ def _tail_entries_of(rows: Sequence[TailMessageRow], boundary_position: int) -> 
     entries: list[SessionThreadViewEntry] = []
     assistant_parts: list[SessionAssistantPart] = []
     assistant_sources: list[SessionThreadViewEntrySource] = []
+    assistant_rows: list[TailMessageRow] = []
+    assistant_provenance = _RowProvenance()
 
     def flush_assistant() -> None:
-        nonlocal assistant_parts, assistant_sources
+        nonlocal assistant_parts, assistant_sources, assistant_rows, assistant_provenance
         if len(assistant_parts) == 0:
+            assistant_provenance = _RowProvenance()
             return
+        provenance = _model_provenance_of(assistant_rows)
         entries.append(
             SessionAssistantMessage(
                 content=assistant_parts,
                 source_messages=assistant_sources,
+                provider=provenance.provider,
+                model=provenance.model,
+                api=provenance.api,
             )
         )
         assistant_parts = []
         assistant_sources = []
+        assistant_rows = []
+        assistant_provenance = _RowProvenance()
 
     for row in rows:
         if is_empty_thinking_husk(row):
@@ -175,16 +254,39 @@ def _tail_entries_of(rows: Sequence[TailMessageRow], boundary_position: int) -> 
                 )
             )
         elif kind in ("assistant_thinking", "assistant_text", "tool_call"):
+            # Identity boundary: message-level provenance covers every signature
+            # in the group, so rows captured under a different model/provider
+            # must start a new assistant entry — otherwise the identity gate
+            # would re-emit (or suppress) the wrong ciphertext on resume.
+            rp = _row_provenance_of(row)
+            if _provenance_conflicts(assistant_provenance, rp):
+                flush_assistant()
+            assistant_provenance = _RowProvenance(
+                provider=assistant_provenance.provider
+                if assistant_provenance.provider is not None
+                else rp.provider,
+                model=assistant_provenance.model
+                if assistant_provenance.model is not None
+                else rp.model,
+                api=assistant_provenance.api
+                if assistant_provenance.api is not None
+                else rp.api,
+            )
             assistant_parts.append(_assistant_part_of(row))
             assistant_sources.append(_entry_source(row))
+            assistant_rows.append(row)
         elif kind == "tool_result":
             flush_assistant()
             entries.append(_tool_result_of(row, render_ctx))
         elif kind == "model_change":
+            # Flush first: the change marks a boundary in time, so it must not
+            # appear BEFORE assistant output that preceded it.
+            flush_assistant()
             model_change = _model_change_of(row)
             if model_change is not None:
                 entries.append(model_change)
         elif kind == "thinking_level_change":
+            flush_assistant()
             entries.append(_thinking_level_change_of(row))
         elif kind == "runtime_note":
             # Same rendering as getLlmRequestContext: a labeled user line. Hosts

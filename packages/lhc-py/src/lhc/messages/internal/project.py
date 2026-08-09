@@ -25,20 +25,57 @@ class ProjectedMessage:
     token_estimate: int
 
 
+def _copy_optional_string(
+    content: dict[str, object], payload: object, key: str
+) -> None:
+    """Verbatim optional string: present only when the payload key is set."""
+    if not isinstance(payload, dict) or key not in payload:
+        return
+    value = payload[key]
+    if value is not None:
+        content[key] = value
+
+
 # turn_end is recorded in the event order but produces no message.
 def project_event(event: RecordedEvent) -> ProjectedMessage | None:
     kind = event["eventKind"]
     payload = event["payload"]
-    if kind in (
-        "user_prompt",
-        "assistant_text",
-        "assistant_thinking",
-        "runtime_note",
-    ):
+    if kind in ("user_prompt", "runtime_note"):
         text = payload["text"]
         return ProjectedMessage(
             blocks=[Block(block_type="text", content={"text": text})],
             token_estimate=estimate_tokens(text),
+        )
+    if kind == "assistant_text":
+        # providerUsage rides the event payload and is stored as a message
+        # column (not a block) — projection leaves text + optional provenance.
+        text = payload["text"]
+        content: dict[str, object] = {"text": text}
+        _copy_optional_string(content, payload, "provider")
+        _copy_optional_string(content, payload, "model")
+        _copy_optional_string(content, payload, "api")
+        return ProjectedMessage(
+            blocks=[Block(block_type="text", content=content)],
+            token_estimate=estimate_tokens(text),
+        )
+    if kind == "assistant_thinking":
+        # Verbatim payload copy: text always; signature + model identity when sent.
+        text = payload["text"]
+        content = {"text": text}
+        _copy_optional_string(content, payload, "signature")
+        _copy_optional_string(content, payload, "provider")
+        _copy_optional_string(content, payload, "model")
+        _copy_optional_string(content, payload, "api")
+        # Count signature bytes too — when served back to the provider they sit in
+        # the live context window (the fable live-vs-LHC token gap).
+        signature = content.get("signature")
+        if isinstance(signature, str) and signature != "":
+            estimate_source = f"{text}{signature}"
+        else:
+            estimate_source = text
+        return ProjectedMessage(
+            blocks=[Block(block_type="text", content=content)],
+            token_estimate=estimate_tokens(estimate_source),
         )
     if kind == "model_change":
         previous_model = payload["previousModel"]

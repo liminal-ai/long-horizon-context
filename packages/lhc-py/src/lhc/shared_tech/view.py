@@ -131,6 +131,8 @@ class SessionAssistantPart:
     type: Literal["text", "thinking", "toolCall"]
     text: str | None = None
     thinking: str | None = None
+    # Opaque provider thinking token (PI `thinkingSignature`). Round-tripped only.
+    thinking_signature: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     arguments: dict[str, object] | None = None
@@ -155,6 +157,12 @@ class SessionAssistantMessage:
     """One row per grouped LHC message, in part order."""
     source_messages: list[SessionThreadViewEntrySource]
     role: Literal["assistant"] = "assistant"
+    # Host-captured model identity for PI same-model signature replay.
+    # Omitted fields stay None (export omission semantics); SDK does not
+    # suppress or rewrite — replay policy is host work.
+    provider: str | None = None
+    model: str | None = None
+    api: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

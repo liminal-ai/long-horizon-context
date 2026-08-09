@@ -19,11 +19,36 @@ class TextPayload(TypedDict):
     text: str
 
 
+# Host-reported model identity for one assistant message fan-out. Needed so a
+# resumed PI session can re-stamp provider/api/model and keep signed thinking
+# through PI's same-model check (transform-messages). Opaque strings.
+# Replay-policy-neutral: SDK accepts/stores/projects/exports verbatim; exact
+# identity match / suppression is host work (Hermes leg 2).
+class AssistantModelProvenance(TypedDict, total=False):
+    provider: str
+    model: str
+    api: str
+
+
 # Provider usage is the host's verbatim JSON object for one model call — no
 # fixed column set, no interpretation inside LHC (schema v5 / D1, D3).
 class AssistantTextPayload(TypedDict):
     text: str
     providerUsage: NotRequired[dict[str, object]]
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    api: NotRequired[str]
+
+
+# Optional signature is an opaque provider token (Anthropic encrypted
+# thinking, OpenAI reasoning item id, etc.). LHC stores and returns it
+# verbatim — no interpretation (same posture as providerUsage).
+class AssistantThinkingPayload(TypedDict):
+    text: str
+    signature: NotRequired[str]
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    api: NotRequired[str]
 
 
 class ModelChangePayload(TypedDict):
@@ -78,7 +103,7 @@ class AssistantThinkingEvent(TypedDict):
     idempotencyKey: str
     actor: str
     harness: str
-    payload: TextPayload
+    payload: AssistantThinkingPayload
 
 
 class RuntimeNoteEvent(TypedDict):
@@ -224,7 +249,7 @@ class AssistantThinkingEventRecord(TypedDict):
     idempotencyKey: str
     actor: str
     harness: str
-    payload: TextPayload
+    payload: AssistantThinkingPayload
     eventOrder: int
     recordedAt: str
 

@@ -94,7 +94,8 @@ class _EventEnvelopeSchema(TypedDict):
 # are not expressed by TypedDict alone.
 # turn_end may be empty or carry only the optional host-observed outcome/timing
 # fields (D1). assistant_text may carry optional providerUsage as a verbatim
-# JSON object (no inner shape).
+# JSON object (no inner shape) plus optional host model identity.
+# assistant_thinking may carry optional opaque signature and the same identity.
 
 
 class _TextPayloadSchema(TypedDict):
@@ -104,6 +105,21 @@ class _TextPayloadSchema(TypedDict):
 class _AssistantTextPayloadSchema(TypedDict):
     text: str
     providerUsage: NotRequired[dict[str, object]]
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    api: NotRequired[str]
+
+
+# signature is optional opaque provider bytes/token; empty string allowed only
+# via omission in practice — if present it must be a string (may be empty;
+# hosts should omit rather than send ""). provider/model/api are optional host
+# identity for resume (PI same-model signature keep).
+class _AssistantThinkingPayloadSchema(TypedDict):
+    text: str
+    signature: NotRequired[str]
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    api: NotRequired[str]
 
 
 class _TurnEndPayloadSchema(TypedDict, total=False):
@@ -258,6 +274,7 @@ def _decode_issue(
         | type[_EventEnvelopeSchema]
         | type[_TextPayloadSchema]
         | type[_AssistantTextPayloadSchema]
+        | type[_AssistantThinkingPayloadSchema]
         | type[_TurnEndPayloadSchema]
         | type[_ModelChangePayloadSchema]
         | type[_ThinkingLevelChangePayloadSchema]
@@ -291,7 +308,24 @@ def _decode_issue(
     elif schema is _AssistantTextPayloadSchema:
         issue = _struct_issue(
             value,
-            (("text", "string", False), ("providerUsage", "record", True)),
+            (
+                ("text", "string", False),
+                ("providerUsage", "record", True),
+                ("provider", "string", True),
+                ("model", "string", True),
+                ("api", "string", True),
+            ),
+        )
+    elif schema is _AssistantThinkingPayloadSchema:
+        issue = _struct_issue(
+            value,
+            (
+                ("text", "string", False),
+                ("signature", "string", True),
+                ("provider", "string", True),
+                ("model", "string", True),
+                ("api", "string", True),
+            ),
         )
     elif schema is _TurnEndPayloadSchema:
         issue = _struct_issue(
@@ -401,6 +435,7 @@ def _validate_one_event(event: object, index: int) -> ErrorResult | None:
     payload_schema: type[
         _TextPayloadSchema
         | _AssistantTextPayloadSchema
+        | _AssistantThinkingPayloadSchema
         | _TurnEndPayloadSchema
         | _ModelChangePayloadSchema
         | _ThinkingLevelChangePayloadSchema
@@ -411,6 +446,8 @@ def _validate_one_event(event: object, index: int) -> ErrorResult | None:
         payload_schema = _TurnEndPayloadSchema
     elif kind == "assistant_text":
         payload_schema = _AssistantTextPayloadSchema
+    elif kind == "assistant_thinking":
+        payload_schema = _AssistantThinkingPayloadSchema
     elif kind == "tool_call":
         payload_schema = _ToolCallPayloadSchema
     elif kind == "tool_result":
