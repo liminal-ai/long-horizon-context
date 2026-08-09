@@ -1,18 +1,41 @@
-# Liminal Context (LHC)
+# Long Horizon Context (LHC)
 
-Long Horizon Context is a durable context-management system for AI coding agents. It solves the problem that long-running agent sessions produce conversation threads exceeding LLM context windows. LHC records every event in a session to SQLite, derives compressed and summarized forms through an inference pipeline, and serves **smart compact** views — intelligently compressed conversation histories that fit within token budgets while preserving what the agent needs to keep working effectively.
+Long Horizon Context (LHC) is a durable context-management system for AI coding agents. Long-running sessions outgrow any context window; the usual answer — summarize the past and drop the originals — compounds into a cliff, where everything before the last compact is one lossy paragraph with no way back.
 
-The system is designed as an SDK consumed by host harnesses. The primary integration is with [PI](https://github.com/earendil-works/pi), Earendil Works' coding agent, via the `pi-lhc` connector extension. PI itself is vendored into this repo as a git submodule (see [Vendored PI](#vendored-pi-submodule)).
+LHC keeps the **full record**: every session event is captured durably into a per-thread SQLite file, append-only, as the source of truth. What the model sees is a **rendering** of that record — a fidelity **ramp**, not a cliff: recent work verbatim, then progressively compressed bands (smooth, detailed, brief) reaching back through the whole history. Because the record is never destroyed, every view is rebuildable at any fidelity, at any time.
+
+Compressed history stays **addressable**: every turn and message carries a stable id (`<t211>`, `<m3177>`) visible in the served view, and retrieval operations (`getTurns` / `getMessages`) pull any of them back at full fidelity on demand — with token budgets, slice/continuation receipts, and a durable impression log of what was recalled.
+
+The system is an SDK consumed by host harnesses. The **TypeScript core is the contract source**; certified ports exist in **Rust**, **Python**, and **Convex**, and host integrations exist for multiple harnesses (below).
+
+## Hosts
+
+| Host | Integration |
+|---|---|
+| [PI](https://github.com/earendil-works/pi) (Earendil Works) | `pi-lhc` extension — the reference integration; PI is vendored here as a submodule |
+| Codex CLI (OpenAI) | [maintained fork](https://github.com/liminal-ai/codex-lhc), native Rust integration via the vendored `lhc-rs` port |
+| Grok Build (xAI) | [maintained fork](https://github.com/liminal-ai/grok-build-lhc), native Rust integration via the vendored `lhc-rs` port |
+| Claude Code (Anthropic) | `cc-lhc` wrapper — closed host; PTY passthrough + rollout observation (next-generation design converged, see `docs/worklog/`) |
+| t3code | `t3code-lhc` host package for the t3code web harness |
+
+Maintenance patterns for all of these (fork sync drills, wrapper patterns) are in `docs/host-integrations.md`.
 
 ## Packages
 
 ```
 packages/
-├── lhc/       Core SDK — event storage, derivation pipeline, smart compact, thread views
-├── pi-lhc/    PI extension — captures PI events into LHC, bridges compact, serves context
-└── cc-lhc/    Claude Code wrapper (POC) — PTY passthrough, rollout capture into LHC intake,
-               ctrl-] leader-key command modal, claude -p inference lane, prune/compact via
-               rollout rebuild + in-app /resume swap. State in ~/.cc-lhc/
+├── lhc/         Core SDK (TypeScript, contract source) — event storage, derivation
+│                pipeline, smart compact, thread views, retrieval
+├── lhc-rs/      Rust port — certified against the TS contract (exact-count test gate);
+│                vendored by the codex and grok forks
+├── lhc-py/      Python port — certified against the TS contract
+├── lhc-convex/  Convex port — certified against the TS contract
+├── pi-lhc/      PI extension — captures PI events into LHC, bridges compact, serves
+│                context, registers retrieval tools
+├── cc-lhc/      Claude Code wrapper — PTY passthrough, rollout capture into LHC intake,
+│                ctrl-] leader-key command modal, claude -p inference lane, prune/compact
+│                via rollout rebuild + in-app /resume swap. State in ~/.cc-lhc/
+└── t3code-lhc/  t3code host — provider-conversation capture, operator-driven context swap
 ```
 
 ### `lhc` — The Core SDK
@@ -161,6 +184,21 @@ Three built-in view profiles control the budget allocation:
 
 A **visibility boundary** controls tool-result rendering: results behind the boundary render short, saving tokens while the canonical record retains full content.
 
+### Stable Addressing and Retrieval
+
+Served history is **addressable**. Turn renderings wrap each turn in `<tN>…</tN>` tags with `<mN>…</mN>` tags on each message; chunk summaries carry a `<turns>t10 t11</turns>` span header at serve time, so even brief-band history exposes the ids it covers. Ids are stable addresses into the record.
+
+The `retrieval` domain resolves them back to content:
+
+- **`retrieval.getTurns(ids)`** — the smoothed turn rendering, labels included.
+- **`retrieval.getMessages(ids)`** — verbatim original message content.
+
+Both operations enforce a per-call token budget with an in-order budget walk: items that fit are served whole; the item that crosses the budget is served as an exact token slice with a continuation receipt (`fromToken` resumes it); items past a spent budget get explicit refusal receipts naming their size. An optional `byteBudget` produces byte-fitting slices for hosts whose machinery truncates tool output by bytes. Slices never split a multi-byte character.
+
+Every requested id writes one row to the thread's **impression log** (schema v6) — a durable record of what was recalled, when, by which surface, and whether it was served — the evidence base for future salience work. Hosts expose the operations to the model as tools (`get_turns` / `get_messages`), with output wrapped in an explicit historical envelope so recalled prompts read as records, not live instructions.
+
+Capture also preserves **thinking signatures and model identity**: `assistant_thinking` events carry an optional opaque provider signature, and assistant messages record the provider/model/API identity that produced them — frozen at request preparation, replayed only under exact identity match, so provider-signed reasoning survives resume without ever being replayed across a model boundary.
+
 ### Inference Adapter
 
 LHC never calls an LLM directly. The host provides a `ModelCall` function that LHC's inference adapter wraps with:
@@ -265,9 +303,9 @@ pnpm build           # Build all packages
 
 ```bash
 # Fast tests (no real LLM calls)
-pnpm --filter lhc test         # ~52 test files, ~450 tests
-pnpm --filter pi-lhc test      # ~43 test files, ~275 tests
-pnpm --filter cc-lhc test      # ~17 test files, ~135 tests
+pnpm --filter lhc test         # ~60 test files, ~520 tests
+pnpm --filter pi-lhc test      # ~53 test files, ~380 tests
+pnpm --filter cc-lhc test      # ~17 test files, ~250 tests
 
 # Integration tests (requires OPENROUTER_API_KEY)
 pnpm --filter lhc test:integration
@@ -386,6 +424,7 @@ packages/pi-lhc/src/
 - `docs/onboard/01-core-concepts.md` — vocabulary and the record/derivation model
 - `docs/onboard/02-domain-design.md` — per-domain design detail
 - `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
+- `docs/lexicon.md` — project vocabulary staging (terms enter once decided)
 - `docs/onboard/04-host-pi-lhc.md` — the PI connector host: capture, seeding, compact bridge, known debt
 - `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, leader-key modal, rollout capture, in-app resume flow
 - `docs/host-integrations.md` — all maintained hosts: the fork/patch process (codex, grok, hermes) and the non-fork patterns (pi extension, claude code wrapper)

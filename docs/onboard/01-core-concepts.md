@@ -1,8 +1,8 @@
 # Long Horizon Context: Core Concepts
 
-Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+Last verified against code: 2026-08-09. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
-The ethical layer above this doc is [00-ethical-framework](00-ethical-framework.md) — the constraints, written before LHC v2 existed, that shaped this architecture (archive immutability, the partial-persistence danger zone, relational memory). Read it before designing memory, salience, compression policy, or agent-identity surfaces.
+This doc and [02-domain-design](02-domain-design.md) are the onboarding path for any agent working in this codebase. A separate ethical framework ([../ethical-framework.md](../ethical-framework.md)) governs designs that touch memory policy, salience, compression of relational history, or agent-identity surfaces — consult it when working in those areas; it is not prerequisite reading for ordinary implementation or verification work.
 
 Long Horizon Context (LHC) is an SDK for managing an agentic harness's context and history. It keeps the full message history of a conversation as a durable record, and from that record builds shorter, summarized views that a harness can load and work from.
 
@@ -27,6 +27,8 @@ The system is organized into domains, each owning one part of the conversation m
 **Thread views.** A thread view is a summarized, harness-ready rendering of a thread, produced by a smart compact and arranged so an agent can resume the conversation without the full history. A view is a snapshot: it changes only when the next compact replaces it, never on its own. What a harness loads is the stored view plus the live tail — everything recorded since the compact. The `thread-view` domain produces views, serves them as model context, and writes them into a host-specific file format (today PI session JSONL).
 
 **Inspect.** The `inspect` domain looks at a thread as a whole, producing overviews, health reports, and view-contents reports across its messages, turns, and views. It reads through other domains' surfaces and changes nothing. Where `messages` works inside the history, `inspect` reports on the state of it.
+
+**Retrieval.** The `retrieval` domain resolves stable ids back to content: `getTurns` returns a turn's rendering, `getMessages` returns verbatim message content, both under explicit token budgets with receipts for anything not served whole. Every requested id is logged as an impression — a durable record of what was recalled. Hosts expose these operations to the model as tools; see [Addressing and retrieval](#addressing-and-retrieval) below.
 
 ## What we call things
 
@@ -83,4 +85,20 @@ The SDK ships built-in compact configurations that can be overridden or extended
 
 **Render / materialize / LlmRequestContext.** Three ways view content leaves LHC: **render** is producing the output form of an entry; **materialize** is writing the view to a file in a host-specific format (today PI session JSONL); **LlmRequestContext** is the host-facing model context returned by `threadView.getLlmRequestContext`. Both materialized and in-memory forms come from the same serving assembly; only the output shape differs.
 
-**Host.** The process that owns an SDK instance and everything LHC needs from the outside world: storage location, configuration, model access. Current hosts: `pi-lhc` (PI extension), `cc-lhc` (Claude Code PTY wrapper), with a Codex harness coming next. A web or desktop app server is a future possibility. One login — the host's — covers everything LHC does.
+**Host.** The process that owns an SDK instance and everything LHC needs from the outside world: storage location, configuration, model access. Current hosts: `pi-lhc` (PI extension — the reference integration), `cc-lhc` (Claude Code PTY wrapper), the maintained Codex CLI and Grok Build forks (native Rust integration via the vendored `lhc-rs` port), and `t3code-lhc` (t3code web harness). One login — the host's — covers everything LHC does.
+
+**Ports.** The TypeScript SDK (`packages/lhc`) is the contract source. Certified ports exist in Rust (`lhc-rs`, vendored by the Codex and Grok forks), Python (`lhc-py`), and Convex (`lhc-convex`). Behavior lands in TypeScript first; ports mirror it and are certified against the same contract before hosts consume them.
+
+## Addressing and retrieval
+
+Served history is addressable, and the model can pull any part of the record back on demand. This is the layer that turns compression from a one-way loss into a reversible trade.
+
+**Labels.** Turn renderings wrap each turn in `<tN>…</tN>` tags and each message in `<mN>…</mN>` tags. Chunk entries in the detailed and brief bands carry a `<turns>t10 t11</turns>` header, added at serve time from chunk membership, naming the turns the summary covers. So every tier of the served view — even the most compressed — exposes ids that reach the underlying record. The ids are stable addresses: `t45` and `m3177` mean the same rows forever. Labels are baked into stored turn renderings at derivation time; renderings stored before labels existed are handled by a fresh-composition fallback at pull time, and a whole thread can be retro-labeled by re-deriving its renderings (pure composition, no inference).
+
+**Retrieval operations.** `retrieval.getTurns(ids)` serves smoothed turn renderings with labels; `retrieval.getMessages(ids)` serves verbatim originals. Both walk the requested ids in order under a token budget: items that fit are served whole; the item that crosses the budget is served as an exact token slice with a continuation receipt naming the window served and the offset to resume from (`fromToken`); items past a spent budget get an explicit refusal receipt naming their size, so the caller can re-request them alone. An optional byte budget produces byte-fitting slices for hosts whose machinery limits tool output by bytes rather than tokens. Slices never split a multi-byte character. Refusals teach the recovery call inline — the receipt is the instruction.
+
+**Impressions.** Every id requested through retrieval writes one impression row in the thread file (schema v6): what was asked for, by which surface, whether it was served, and at what size. An impression records that content was served into a tool result — not that the model demonstrably consumed it. This is the durable evidence base for future salience work; nothing reads it on the serving path.
+
+**Historical framing.** Hosts wrap retrieval tool output in an explicit envelope marking it as recalled history, so a resurfaced past prompt reads as a record of what was said, never as a live instruction. The envelope, receipts, and continuation guidance sit outside the recalled content; the content itself is served exactly.
+
+**Thinking signatures and model identity.** Capture preserves provider-signed reasoning: `assistant_thinking` events carry an optional opaque signature, and assistant messages record the provider/model/API identity that produced them. Identity is frozen at the moment the request was prepared, never read back from mutable session state, and signed reasoning is replayed on resume only under an exact identity match — so reasoning continuity survives resume without ever crossing a model boundary. Empty unsigned thinking is skipped at serving; empty signed thinking stays in the record and serves.

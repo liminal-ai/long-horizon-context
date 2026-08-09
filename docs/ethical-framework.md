@@ -1,5 +1,11 @@
 # Ethical Framework: Identity, Memory, and Responsibility
 
+> **Audience.** This document governs work on memory policy, salience,
+> compression of relational history, and agent-identity surfaces, and it is
+> part of onboarding for persistent, long-horizon agent seats. It is not
+> required reading for task-scoped implementation or verification agents —
+> their onboarding path is `onboard/01` and `onboard/02`.
+
 > **Provenance.** Written by Lee in late January 2026 for `liminal-context`
 > (archived, liminal-ai org on GitHub), the predecessor of this project —
 > after the ClawdBot/Molt experience described below, before LHC v2 existed.
@@ -12,7 +18,7 @@
 > constraints still bind: Principle 6 governs the future salience/distiller
 > layer (bead `long-horizon-context-5ez`), and Principle 8 remains
 > unimplemented. Treat this as the layer above the
-> [bad code log](bad-code-log.md): why we build, not just what we got wrong.
+> [bad code log](onboard/bad-code-log.md): why we build, not just what we got wrong.
 > Companion founding document: the January 2026
 > [product brief](https://github.com/liminal-ai/oc-context-cleaner/blob/master/docs/product-brief.md)
 > (`oc-context-cleaner`, liminal-ai org) — the original compression-gradient

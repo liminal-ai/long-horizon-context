@@ -1,6 +1,6 @@
 # Long Horizon Context: Domain Design
 
-Last verified against code: 2026-07-05. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
+Last verified against code: 2026-08-09. Precedence when facts disagree: code, then README, then [03-decisions-brief](03-decisions-brief.md), then this doc; see also the [decision registry](../decision-registry.md).
 
 This document describes each domain in more depth: what it stores, the operations it provides, and the other domains it calls. It builds on the vocabulary in 01-core-concepts.md.
 
@@ -131,6 +131,8 @@ The contract:
 A harness sends a batch of one or more events for a thread. The thread reference rides outside the batch, since every event in a batch belongs to the same thread. The host calls the SDK operation with typed event objects directly (`intakeStream.messageEvents(threadRef, events)`).
 
 The domain resolves the thread reference to its file through the threads domain, then writes the batch to the thread's database in one coherent write flow. For each event it assigns the next position in the thread's order and records the source event. For events that produce readable conversation activity, it calls the `messages` surface to create messages and blocks. For events that affect turn state, it calls the `turns` surface to apply the turn state machine. It returns a result describing what happened to each event.
+
+Two capture-fidelity details ride the event payloads. `assistant_thinking` carries an optional opaque provider **signature** alongside its text — captured verbatim, never interpreted; empty-but-signed thinking is a real event and is recorded. Assistant events carry the **model identity** (provider, model, API) that produced them, supplied by the host from the request it actually prepared — never re-derived from mutable session state — so signed reasoning can later be replayed on resume strictly under an exact identity match.
 
 ```mermaid
 sequenceDiagram
@@ -272,7 +274,7 @@ sequenceDiagram
 
 Closing a turn makes its membership stable. The work that follows runs after the close and is queued durably in the same transaction:
 
-- **`turn_derivation`** (one work item) — deterministically produces **`turn_rendering`** and **`pre_detailed_assembly`** in one completion transaction. `turn_rendering` composes the turn's activity from its message-level derivations: smoothed prompts and tool-result summaries where ready, deterministic floors where they are not. Tool calls and results that form a consecutive stretch are composed into a single run-level account that names the tools, counts the calls, and tallies the mechanical outcomes. `pre_detailed_assembly` strips the same turn to dialogue only (`user_prompt` and `assistant_text`) for compression input.
+- **`turn_derivation`** (one work item) — deterministically produces **`turn_rendering`** and **`pre_detailed_assembly`** in one completion transaction. `turn_rendering` composes the turn's activity from its message-level derivations: smoothed prompts and tool-result summaries where ready, deterministic floors where they are not. Tool calls and results that form a consecutive stretch are composed into a single run-level account that names the tools, counts the calls, and tallies the mechanical outcomes. The rendering wraps the turn in its stable `<tN>` label with `<mN>` labels on each message, and truncated members carry their full stored token count in the truncation marker — the addresses and sizes the retrieval domain resolves. `pre_detailed_assembly` strips the same turn to dialogue only (`user_prompt` and `assistant_text`) for compression input; labels are stripped from compression input.
 
 - **`detailed_turn_compression`** (a separate work item, enqueued in that same completion transaction) — inference-backed compression of the `pre_detailed_assembly`, not the turn rendering. This is the slow work; the rendering and assembly above are deterministic and fast. The smooth band serves `turn_rendering` at full texture; `detailed_turn_compression` is only a degraded fallback when rendering is missing.
 
@@ -386,6 +388,24 @@ Prune walks live tool results newest-first from the current boundary, keeps resu
 ### Rendering for a harness
 
 The same assembled view renders in more than one form. An extensible harness that can take its context from LHC asks for `LlmRequestContext` as an in-memory message array. A closed harness that reads only its own session file gets the view written into a host-specific file format via `threadView.materialize` (today PI session JSONL); a host can also build its own format from the served view, as cc-lhc does when it rebuilds Claude Code rollout files. Both come from the same serving assembly; only the output shape differs. A written file is a materialized rendering of the view, not a second source of truth: the thread file remains authoritative.
+
+## Retrieval
+
+Retrieval resolves stable ids back to content, on demand, under explicit budgets. It is the read-side complement of compression: bands make history small; retrieval makes any part of it exact again. The domain owns two operations and one table.
+
+### The operations
+
+`retrieval.getTurns(threadRef, ids)` serves turn renderings — the same labeled composition the smooth band serves, read from the stored derivation or freshly composed when the stored rendering predates labels. `retrieval.getMessages(threadRef, ids)` serves verbatim message content from the record. Both take ids in the caller's order and walk them under a token budget: items that fit are served whole; the item that crosses the budget is served as an exact token slice with a receipt naming the window (`[fromToken, toToken)` of the total) and the offset to continue from; items after the budget is spent get a refusal receipt naming their size, so the caller can re-request them alone. A `fromToken` option slices every requested item from that offset — the single-id continuation contract. An optional `byteBudget` additionally bounds served bytes, for hosts whose machinery truncates tool output by bytes; byte-bound slices are exempt from the minimum-slice floor, and no slice ever splits a multi-byte character. Requests are capped at 32 ids per call; over-cap requests refuse whole with a receipt naming the cap.
+
+Validation is strict and cheap: id shape is checked before any read, and invalid requests refuse before the SDK touches storage.
+
+### Impressions
+
+Every id requested through a retrieval operation writes one **impression** row in the thread file (schema v6): the id, the requesting surface, whether it was served, at what size, under which call. An impression means the SDK served the content into a result — it is an upper bound on model exposure, not a delivery receipt; downstream signals (restatement, follow-up pulls) are the delivery-weighted evidence. Impressions are written in the retrieval transaction and nothing on the serving path reads them — they are the durable evidence base for later analysis.
+
+### What hosts add
+
+The domain returns content and receipts; hosts own the tool surface. A host registers `get_turns` / `get_messages` as model-callable tools, passes its own output limits through the budget options, wraps served content in an explicit historical envelope (so a recalled prompt reads as a record, never a live instruction), and keeps receipts and continuation guidance outside the envelope as live text. Tool calls and their results enter the record through normal capture like any other tool activity — retrieval never appends conversation events of its own.
 
 ## Inspect
 
