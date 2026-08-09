@@ -57,29 +57,47 @@ function classifyUserLine(item: RolloutLineItem): TurnSignal {
 }
 
 /**
- * CONTENT first, stop_reason as refinement: 2.1.202 stamps stop_reason on
- * every assistant line ("tool_use" mid-loop, "end_turn"/"stop_sequence" at
- * close — verified live), but 2.1.201 writes assistant lines with NO
- * stop_reason at all (see test/fixtures/rollout-samples.jsonl). A
- * stop_reason-only fold sticks OPEN forever on those rollouts and the gate
- * refuses indefinitely.
+ * CONTENT first, stop_reason as refinement.
+ *
+ * Claude 2.1.2xx often stamps the same stop_reason (including "end_turn") on
+ * every split assistant line of one API message. Thinking-only prefixes must
+ * stay neutral even when stop_reason says end_turn — otherwise lifecycle
+ * emits multiple turn_settled facts for one response.
+ *
+ * Terminal close: non-empty text (or string content) without tool_use.
+ * Tool_use: opens (turn continues for tool results).
  */
 function classifyAssistantLine(item: RolloutLineItem): TurnSignal {
   const content = item.message?.content;
   const blocks = contentBlocks(content);
-  // A tool_use block means claude has more to do, whatever the line says.
   if (blocks.some((block) => block.type === "tool_use")) return "opens";
 
-  const stop = item.message?.stop_reason;
-  if (typeof stop === "string") return stop === "tool_use" ? "opens" : "closes";
-
-  // No stop_reason (2.1.201 shape): a text-bearing line without tool calls is
-  // the turn's final response. Thinking-only/empty lines stay neutral —
-  // closing on them could end the fold mid-turn.
   const hasText =
     (typeof content === "string" && content !== "") ||
     blocks.some((block) => block.type === "text" && typeof block.text === "string" && block.text !== "");
-  return hasText ? "closes" : "neutral";
+  if (hasText) {
+    const stop = item.message?.stop_reason;
+    if (stop === "tool_use") return "opens";
+    return "closes";
+  }
+
+  // Thinking-only / empty content: never terminal solely from stop_reason.
+  return "neutral";
+}
+
+/**
+ * True when this assistant line completes a sampling attempt for lifecycle
+ * aggregation (has text or tool_use content). Thinking-only prefixes hold.
+ */
+export function isAssistantSamplingComplete(item: RolloutLineItem): boolean {
+  if (!isAssistantLine(item) || item.isSidechain === true) return false;
+  const content = item.message?.content;
+  const blocks = contentBlocks(content);
+  if (blocks.some((block) => block.type === "tool_use")) return true;
+  if (typeof content === "string" && content !== "") return true;
+  return blocks.some(
+    (block) => block.type === "text" && typeof block.text === "string" && block.text !== "",
+  );
 }
 
 /** What one rollout line says about claude's turn state; fold in order. */

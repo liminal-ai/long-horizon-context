@@ -1,25 +1,34 @@
-function isArgvFlagToken(arg: string): boolean {
+/** UUID v4-ish shape used for Claude session ids and --session-id. */
+export const SESSION_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isSessionUuid(value: string): boolean {
+  return SESSION_UUID_RE.test(value);
+}
+
+export function isArgvFlagToken(arg: string): boolean {
   return arg.startsWith("-");
 }
 
-/** Parse `--resume <sessionId>` or `--resume=<sessionId>` from the child argv passed to Claude Code. */
-export function parseResumeSessionId(argv: readonly string[]): string | undefined {
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index]!;
-    if (arg.startsWith("--resume=")) {
-      const value = arg.slice("--resume=".length);
-      return value !== "" ? value : undefined;
-    }
-    if (arg === "--resume") {
-      if (index + 1 >= argv.length) return undefined;
-      const next = argv[index + 1]!;
-      if (isArgvFlagToken(next)) return undefined;
-      return next !== "" ? next : undefined;
-    }
+/**
+ * Session/cwd-changing flags inventory for Claude Code 2.1.226.
+ * Capture-enabled launch refuses these unless an explicit attribution model exists.
+ */
+export const UNSUPPORTED_SESSION_CHANGING_FLAGS = [
+  "--teleport",
+  "--worktree",
+  "-w",
+  "--from-pr",
+  "--cloud",
+  "--remote-control",
+  "--tmux",
+] as const;
+
+export type UnsupportedSessionFlag = (typeof UNSUPPORTED_SESSION_CHANGING_FLAGS)[number];
+
+export function isUnsupportedSessionChangingFlag(arg: string): UnsupportedSessionFlag | undefined {
+  for (const flag of UNSUPPORTED_SESSION_CHANGING_FLAGS) {
+    if (arg === flag || arg.startsWith(`${flag}=`)) return flag;
   }
   return undefined;
-}
-
-export function hasContinueFlag(argv: readonly string[]): boolean {
-  return argv.includes("--continue");
 }

@@ -1,28 +1,78 @@
 import { describe, expect, it } from "vitest";
 
-import { hasContinueFlag, parseResumeSessionId } from "../../src/intake/argv.js";
+import { isSessionUuid, isUnsupportedSessionChangingFlag } from "../../src/intake/argv.js";
+import {
+  hasContinueFlag,
+  isBareResume,
+  normalizeLaunchArgv,
+  parseResumeSessionId,
+  parseSessionIdFlag,
+} from "../../src/intake/launch-session.js";
 
-describe("parseResumeSessionId", () => {
-  it("returns the session id after --resume", () => {
-    expect(parseResumeSessionId(["claude", "--resume", "abc-123"])).toBe("abc-123");
+describe("parseResumeSessionId (post-normalization helper)", () => {
+  it("parses --resume <uuid>", () => {
+    expect(parseResumeSessionId(["claude", "--resume", "abc-123"])).toBeUndefined();
+    expect(parseResumeSessionId(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])).toBe(
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    );
   });
 
-  it("returns the session id from --resume=<id>", () => {
-    expect(parseResumeSessionId(["claude", "--resume=abc-123"])).toBe("abc-123");
+  it("parses --resume=<uuid>", () => {
+    expect(parseResumeSessionId(["--resume=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])).toBe(
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    );
   });
 
-  it("returns undefined when --resume is absent", () => {
+  it("returns undefined when absent", () => {
     expect(parseResumeSessionId(["claude"])).toBeUndefined();
-  });
-
-  it("treats bare --resume followed by another flag as picker mode", () => {
-    expect(parseResumeSessionId(["claude", "--resume", "--continue"])).toBeUndefined();
   });
 });
 
 describe("hasContinueFlag", () => {
-  it("detects --continue", () => {
-    expect(hasContinueFlag(["claude", "--continue"])).toBe(true);
-    expect(hasContinueFlag(["claude"])).toBe(false);
+  it("treats -c as boolean continue even with a following positional prompt", () => {
+    expect(hasContinueFlag(["-c", "please help"])).toBe(true);
+    expect(hasContinueFlag(["--continue"])).toBe(true);
+  });
+});
+
+describe("isBareResume", () => {
+  it("detects bare --resume", () => {
+    expect(isBareResume(["--resume"])).toBe(true);
+    expect(isBareResume(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])).toBe(false);
+  });
+});
+
+describe("parseSessionIdFlag", () => {
+  it("parses --session-id UUID", () => {
+    expect(parseSessionIdFlag(["--session-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])).toBe(
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    );
+  });
+});
+
+describe("normalizeLaunchArgv", () => {
+  it("respects -- passthrough boundary", () => {
+    const n = normalizeLaunchArgv(["--model", "sonnet", "--", "--resume", "not-a-selector"]);
+    expect(n.selectors).toEqual([]);
+    expect(n.passthrough).toEqual(["--", "--resume", "not-a-selector"]);
+  });
+
+  it("records continue even with positional after -c", () => {
+    const n = normalizeLaunchArgv(["-c", "hello world"]);
+    expect(n.selectors).toEqual([{ kind: "continue" }]);
+    expect(n.rest).toEqual(["hello world"]);
+  });
+});
+
+describe("isSessionUuid / unsupported flags", () => {
+  it("validates session UUIDs", () => {
+    expect(isSessionUuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")).toBe(true);
+    expect(isSessionUuid("not-a-uuid")).toBe(false);
+  });
+
+  it("detects unsupported session/cwd flags", () => {
+    expect(isUnsupportedSessionChangingFlag("--teleport")).toBe("--teleport");
+    expect(isUnsupportedSessionChangingFlag("--worktree")).toBe("--worktree");
+    expect(isUnsupportedSessionChangingFlag("--model")).toBeUndefined();
   });
 });

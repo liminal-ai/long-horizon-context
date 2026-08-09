@@ -1,7 +1,21 @@
 import type { Lhc, PruneReceipt, ThreadRef } from "lhc";
+import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
 import { statRolloutFile } from "../rollout/stat-file.js";
 import { writeRebuiltRollout } from "../rollout/write-rebuilt.js";
-import { type DispatchOutcome, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
+import {
+  CAPTURE_DEGRADED_REFUSAL,
+  CAPTURE_PARTIAL_VIEW_MUTATION,
+  type DispatchOutcome,
+  type LhcCommandRuntime,
+  TURN_OPEN_REFUSAL,
+} from "./dispatch.js";
+import {
+  formatRebuildRelaunchGuidance,
+  LINEAGE_REGISTRATION_FAILED,
+  REBUILD_PARTIAL_AFTER_LINEAGE,
+  registerRebuiltSessionLineage,
+  threadIdFromRef,
+} from "./rebuild-receipt.js";
 
 function formatPruneReceipt(receipt: PruneReceipt): string {
   return [
@@ -25,17 +39,39 @@ function notReady(runtime: LhcCommandRuntime): DispatchOutcome | null {
   return null;
 }
 
+function mutationFence(runtime: LhcCommandRuntime, leaseGeneration: number): string | null {
+  if (runtime.isTurnOpen?.() === true) return TURN_OPEN_REFUSAL;
+  if (runtime.isCaptureReady?.() === false) {
+    if (runtime.capturePhase === "binding") return CAPTURE_NOT_READY_REFUSAL;
+    return CAPTURE_DEGRADED_REFUSAL;
+  }
+  if (runtime.isCaptureHealthy?.() === false || runtime.captureDegraded === true) {
+    return CAPTURE_DEGRADED_REFUSAL;
+  }
+  const currentGen = runtime.getCaptureGeneration?.() ?? runtime.captureGeneration;
+  if (currentGen !== undefined && currentGen !== leaseGeneration) {
+    return CAPTURE_DEGRADED_REFUSAL;
+  }
+  return null;
+}
+
 export async function runPruneCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const blocked = notReady(runtime);
   if (blocked !== null) return blocked;
-  // Refuse, don't defer: pruning under an open turn would rebuild from a view
-  // that is mid-mutation and swap a session claude is actively appending to.
-  if (runtime.isTurnOpen?.() === true) return { messages: [TURN_OPEN_REFUSAL] };
+
+  const leaseGeneration = runtime.getCaptureGeneration?.() ?? runtime.captureGeneration ?? 0;
+  const fenced = mutationFence(runtime, leaseGeneration);
+  if (fenced !== null) return { messages: [fenced] };
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
+  const threadId = threadIdFromRef(threadRef);
   const targetTokens = parseTargetTokens(commandLine);
   const pruneResult = await sdk.threadView.prune(threadRef, targetTokens === undefined ? {} : { targetTokens });
+  const afterPrune = mutationFence(runtime, leaseGeneration);
+  if (afterPrune !== null) {
+    return { messages: [CAPTURE_PARTIAL_VIEW_MUTATION] };
+  }
   if (!pruneResult.ok) return { messages: [`prune error: ${pruneResult.error.reason}`] };
 
   const receipt = pruneResult.value;
@@ -43,29 +79,77 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
   if (receipt.noOp) return { messages: lines };
 
   const view = await sdk.threadView.getSessionThreadView(threadRef);
+  const afterView = mutationFence(runtime, leaseGeneration);
+  if (afterView !== null) return { messages: [...lines, CAPTURE_PARTIAL_VIEW_MUTATION] };
   if (!view.ok) return { messages: [...lines, `view error: ${view.error.reason}`] };
 
   try {
-    const oldStat = runtime.sourceRolloutPath === undefined ? null : await statRolloutFile(runtime.sourceRolloutPath);
+    const afterStat = mutationFence(runtime, leaseGeneration);
+    if (afterStat !== null) return { messages: [...lines, CAPTURE_PARTIAL_VIEW_MUTATION] };
+    if (runtime.sourceRolloutPath !== undefined) {
+      await statRolloutFile(runtime.sourceRolloutPath);
+    }
+
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
       swapReceipt: { oldSessionId: runtime.sourceSessionId ?? "unknown" },
     });
-    lines.push("resuming session in-place...");
+    const afterRebuild = mutationFence(runtime, leaseGeneration);
+    if (afterRebuild !== null) {
+      return {
+        messages: [
+          ...lines,
+          CAPTURE_PARTIAL_VIEW_MUTATION,
+          "rebuild discarded from operator-ready state — live session unchanged",
+        ],
+      };
+    }
+
+    const lineage = await registerRebuiltSessionLineage({
+      newSessionId: rebuilt.sessionId,
+      threadId,
+      prefixBoundary: rebuilt.prefixBoundary,
+      replayedPrefixLines: rebuilt.replayedPrefixLines,
+      ...(runtime.lineageDbPath === undefined ? {} : { lineageDbPath: runtime.lineageDbPath }),
+      ...(runtime.lineageDeps === undefined ? {} : { lineageDeps: runtime.lineageDeps }),
+      ...(runtime.logLineageError === undefined ? {} : { logError: runtime.logLineageError }),
+    });
+    if (!lineage.ok) {
+      return {
+        messages: [
+          ...lines,
+          `rebuild wrote ${rebuilt.sessionId} at ${rebuilt.rolloutPath}`,
+          LINEAGE_REGISTRATION_FAILED,
+          lineage.reason,
+        ],
+      };
+    }
+
+    const afterLineage = mutationFence(runtime, leaseGeneration);
+    if (afterLineage !== null) {
+      return {
+        messages: [
+          ...lines,
+          `rebuild wrote ${rebuilt.sessionId} at ${rebuilt.rolloutPath}`,
+          `lineage registered (thread ${threadId || "unknown"}, prefix=verified lines=${rebuilt.prefixBoundary.lineCount} bytes=${rebuilt.prefixBoundary.byteLength})`,
+          CAPTURE_PARTIAL_VIEW_MUTATION,
+          REBUILD_PARTIAL_AFTER_LINEAGE,
+        ],
+      };
+    }
+
     return {
-      messages: lines,
-      restart: {
-        oldSessionId: runtime.sourceSessionId ?? "unknown",
-        newSessionId: rebuilt.sessionId,
-        rolloutPath: rebuilt.rolloutPath,
-        rebuiltLineCount: rebuilt.lineCount,
-        expectedReintakeLines: rebuilt.expectedReintakeLines,
-        replayedPrefixLines: rebuilt.replayedPrefixLines,
-        ...(runtime.sourceRolloutPath === undefined ? {} : { oldRolloutPath: runtime.sourceRolloutPath }),
-        ...(oldStat === null ? {} : { oldRolloutSizeAtRebuild: oldStat.size }),
-      },
+      messages: [
+        ...lines,
+        ...formatRebuildRelaunchGuidance({
+          operation: "prune",
+          oldSessionId: runtime.sourceSessionId ?? "unknown",
+          newSessionId: rebuilt.sessionId,
+          threadId,
+        }),
+      ],
     };
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);

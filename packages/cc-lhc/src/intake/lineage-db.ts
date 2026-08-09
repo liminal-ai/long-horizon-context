@@ -7,11 +7,42 @@ import type { OpResult, ThreadRef } from "lhc";
 
 import { encodeProjectPath } from "../rollout/discover.js";
 import { captureThreadRef, defaultLineageDbPath, defaultRegistryPath } from "./paths.js";
+import {
+  type PrefixBoundary,
+  isCanonicalNoneRow,
+  parseStoredVerifiedPrefix,
+  prefixBoundaryNone,
+  prefixBoundaryUnknown,
+} from "./prefix-boundary.js";
 import { createReplayDedupeState, MAX_THREAD_SIGNATURES, type ReplayDedupeState } from "./replay-dedupe.js";
 
 export interface LineageSessionEntry {
   threadId: string;
   updatedAt: string;
+  /**
+   * Content-verifiable rebuilt-prefix fence (or explicit none/unknown).
+   * `unknown` must not be treated as known-zero skip.
+   */
+  prefix: PrefixBoundary;
+  /**
+   * Convenience: verified line count, else 0. Callers that need skip semantics
+   * must inspect `prefix.kind` — do not treat this alone as a trust decision.
+   */
+  replayedPrefixLines: number;
+}
+
+export interface RecordSessionThreadOptions {
+  /**
+   * When set, persist (or overwrite) the prefix provenance/boundary.
+   * When omitted on update, an existing boundary is preserved so ordinary
+   * re-binds after resume do not clear a rebuilt-session fence.
+   */
+  prefix?: PrefixBoundary;
+  /**
+   * @deprecated Use `prefix: { kind: "verified", ... }` from writeRebuiltRollout.
+   * Count-only registration is rejected for skip trust; prefer full boundary.
+   */
+  replayedPrefixLines?: number;
 }
 
 export interface LineageDbDeps {
@@ -77,15 +108,63 @@ async function safeLineageReadAsync<T>(
   }
 }
 
+function tableHasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
+}
+
+/**
+ * Schema notes (correction 5):
+ * - `prefix_provenance`: none | unknown | verified
+ * - Known-none is distinct from unknown legacy state
+ * - Migrating pre-c5 DBs marks existing rows `unknown` so a DEFAULT 0 line
+ *   count is never silently trusted as "no synthetic prefix"; capture refuses
+ *   unknown until reconciliation establishes `none` or `verified`
+ */
 function initLineageSchema(db: DatabaseSync): void {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS cc_session_lineage (
       rollout_session_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      prefix_provenance TEXT NOT NULL DEFAULT 'unknown',
+      replayed_prefix_lines INTEGER,
+      replayed_prefix_bytes INTEGER,
+      replayed_prefix_sha256 TEXT
     )
   `);
+
+  // Pre-review-3: only thread_id/updated_at
+  if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_lines")) {
+    db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_lines INTEGER");
+  }
+  if (!tableHasColumn(db, "cc_session_lineage", "prefix_provenance")) {
+    // Existing rows become unknown — even if replayed_prefix_lines was 0 under
+    // the old NOT NULL DEFAULT 0 migration (that erased the none/unknown split).
+    db.exec(
+      "ALTER TABLE cc_session_lineage ADD COLUMN prefix_provenance TEXT NOT NULL DEFAULT 'unknown'",
+    );
+  }
+  if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_bytes")) {
+    db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_bytes INTEGER");
+  }
+  if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_sha256")) {
+    db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_sha256 TEXT");
+  }
+
+  // Rows that only have a line count (no digest) cannot be verified — force unknown.
+  db.exec(`
+    UPDATE cc_session_lineage
+    SET prefix_provenance = 'unknown',
+        replayed_prefix_lines = NULL,
+        replayed_prefix_bytes = NULL,
+        replayed_prefix_sha256 = NULL
+    WHERE prefix_provenance = 'verified'
+      AND (replayed_prefix_sha256 IS NULL OR replayed_prefix_sha256 = ''
+           OR replayed_prefix_bytes IS NULL)
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS cc_thread_signatures (
       thread_id TEXT NOT NULL,
@@ -150,17 +229,23 @@ function withLineageDb(dbPath: string, deps: LineageDbDeps, run: (db: DatabaseSy
   }
 }
 
+export type LineageOutcome = { ok: true } | { ok: false; reason: string };
+
 export async function safeRecordSessionThread(
   dbPath: string,
   sessionId: string,
   threadId: string,
   logError: (message: string) => void,
   deps: LineageDbDeps = {},
-): Promise<void> {
+  options: RecordSessionThreadOptions = {},
+): Promise<LineageOutcome> {
   try {
-    recordSessionThread(dbPath, sessionId, threadId, deps);
+    recordSessionThread(dbPath, sessionId, threadId, deps, options);
+    return { ok: true };
   } catch (cause) {
-    logError(lineageWriteFailureMessage(cause));
+    const reason = lineageWriteFailureMessage(cause);
+    logError(reason);
+    return { ok: false, reason: `lineage_write:${detailCause(cause)}` };
   }
 }
 
@@ -170,12 +255,109 @@ export async function safeAppendThreadSignatures(
   added: readonly string[],
   logError: (message: string) => void,
   deps: LineageDbDeps = {},
-): Promise<void> {
+): Promise<LineageOutcome> {
   try {
     appendThreadSignatures(dbPath, threadId, added, deps);
+    return { ok: true };
   } catch (cause) {
-    logError(lineageWriteFailureMessage(cause));
+    const reason = lineageWriteFailureMessage(cause);
+    logError(reason);
+    return { ok: false, reason: `lineage_signature_write:${detailCause(cause)}` };
   }
+}
+
+function detailCause(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function rowToEntry(row: {
+  thread_id: string;
+  updated_at: string;
+  prefix_provenance?: string | null;
+  replayed_prefix_lines?: number | null;
+  replayed_prefix_bytes?: number | null;
+  replayed_prefix_sha256?: string | null;
+}): LineageSessionEntry {
+  const prefix = prefixFromRow(row);
+  return {
+    threadId: row.thread_id,
+    updatedAt: row.updated_at,
+    prefix,
+    replayedPrefixLines: prefix.kind === "verified" ? prefix.lineCount : 0,
+  };
+}
+
+function prefixFromRow(row: {
+  prefix_provenance?: string | null;
+  replayed_prefix_lines?: number | null;
+  replayed_prefix_bytes?: number | null;
+  replayed_prefix_sha256?: string | null;
+}): PrefixBoundary {
+  const prov = row.prefix_provenance ?? "unknown";
+  if (prov === "none") {
+    // Strict: contradictory none rows become unknown.
+    return isCanonicalNoneRow(row) ? prefixBoundaryNone() : prefixBoundaryUnknown();
+  }
+  if (prov === "verified") {
+    // Strict: no clamp/floor/normalize of forged negatives or fractional values.
+    const parsed = parseStoredVerifiedPrefix(
+      row.replayed_prefix_lines,
+      row.replayed_prefix_bytes,
+      row.replayed_prefix_sha256,
+    );
+    if (parsed === null) return prefixBoundaryUnknown();
+    return parsed;
+  }
+  return prefixBoundaryUnknown();
+}
+
+function prefixToColumns(prefix: PrefixBoundary): {
+  provenance: string;
+  lines: number | null;
+  bytes: number | null;
+  sha256: string | null;
+} {
+  if (prefix.kind === "none") {
+    return { provenance: "none", lines: 0, bytes: 0, sha256: null };
+  }
+  if (prefix.kind === "verified") {
+    return {
+      provenance: "verified",
+      lines: prefix.lineCount,
+      bytes: prefix.byteLength,
+      sha256: prefix.sha256,
+    };
+  }
+  return { provenance: "unknown", lines: null, bytes: null, sha256: null };
+}
+
+/** Full lineage entry for a rollout session id (thread + prefix provenance). */
+export function lookupSessionLineage(
+  dbPath: string,
+  sessionId: string,
+  deps: LineageDbDeps = {},
+): LineageSessionEntry | undefined {
+  let entry: LineageSessionEntry | undefined;
+  withLineageDb(dbPath, deps, (db) => {
+    const row = db
+      .prepare(
+        `SELECT thread_id, updated_at, prefix_provenance,
+                replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
+         FROM cc_session_lineage WHERE rollout_session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          thread_id: string;
+          updated_at: string;
+          prefix_provenance: string;
+          replayed_prefix_lines: number | null;
+          replayed_prefix_bytes: number | null;
+          replayed_prefix_sha256: string | null;
+        }
+      | undefined;
+    if (row !== undefined) entry = rowToEntry(row);
+  });
+  return entry;
 }
 
 export function lookupThreadForSession(
@@ -183,14 +365,7 @@ export function lookupThreadForSession(
   sessionId: string,
   deps: LineageDbDeps = {},
 ): string | undefined {
-  let threadId: string | undefined;
-  withLineageDb(dbPath, deps, (db) => {
-    const row = db.prepare("SELECT thread_id FROM cc_session_lineage WHERE rollout_session_id = ?").get(sessionId) as
-      | { thread_id: string }
-      | undefined;
-    threadId = row?.thread_id;
-  });
-  return threadId;
+  return lookupSessionLineage(dbPath, sessionId, deps)?.threadId;
 }
 
 export function newestSessionEntry(
@@ -201,11 +376,26 @@ export function newestSessionEntry(
   withLineageDb(dbPath, deps, (db) => {
     const row = db
       .prepare(
-        "SELECT rollout_session_id, thread_id, updated_at FROM cc_session_lineage ORDER BY updated_at DESC LIMIT 1",
+        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance,
+                replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
+         FROM cc_session_lineage ORDER BY updated_at DESC LIMIT 1`,
       )
-      .get() as { rollout_session_id: string; thread_id: string; updated_at: string } | undefined;
+      .get() as
+      | {
+          rollout_session_id: string;
+          thread_id: string;
+          updated_at: string;
+          prefix_provenance: string;
+          replayed_prefix_lines: number | null;
+          replayed_prefix_bytes: number | null;
+          replayed_prefix_sha256: string | null;
+        }
+      | undefined;
     if (row === undefined) return;
-    best = { sessionId: row.rollout_session_id, entry: { threadId: row.thread_id, updatedAt: row.updated_at } };
+    best = {
+      sessionId: row.rollout_session_id,
+      entry: rowToEntry(row),
+    };
   });
   return best;
 }
@@ -260,14 +450,71 @@ export function recordSessionThread(
   sessionId: string,
   threadId: string,
   deps: LineageDbDeps = {},
+  options: RecordSessionThreadOptions = {},
 ): void {
   const { nowFn } = { ...defaultDeps(), ...deps };
+  // Prefer explicit PrefixBoundary; count-only is stored as unknown (not trusted skip).
+  let setPrefix = false;
+  let cols = prefixToColumns(prefixBoundaryNone());
+  if (options.prefix !== undefined) {
+    setPrefix = true;
+    cols = prefixToColumns(options.prefix);
+  } else if (options.replayedPrefixLines !== undefined) {
+    // Deprecated path: never promote count-only to verified.
+    setPrefix = true;
+    cols =
+      options.replayedPrefixLines > 0
+        ? prefixToColumns(prefixBoundaryUnknown())
+        : prefixToColumns(prefixBoundaryNone());
+  }
+
   withLineageDb(dbPath, deps, (db) => {
     db.exec("BEGIN");
     try {
-      db.prepare(
-        "INSERT INTO cc_session_lineage (rollout_session_id, thread_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(rollout_session_id) DO UPDATE SET thread_id = excluded.thread_id, updated_at = excluded.updated_at",
-      ).run(sessionId, threadId, nowFn().toISOString());
+      // On conflict: always refresh thread binding; only overwrite prefix when
+      // the caller explicitly supplied one (rebuild registration / fresh none).
+      // Ordinary resume re-binds must not clear a stored verified fence.
+      if (setPrefix) {
+        db.prepare(
+          `INSERT INTO cc_session_lineage (
+             rollout_session_id, thread_id, updated_at,
+             prefix_provenance, replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(rollout_session_id) DO UPDATE SET
+             thread_id = excluded.thread_id,
+             updated_at = excluded.updated_at,
+             prefix_provenance = excluded.prefix_provenance,
+             replayed_prefix_lines = excluded.replayed_prefix_lines,
+             replayed_prefix_bytes = excluded.replayed_prefix_bytes,
+             replayed_prefix_sha256 = excluded.replayed_prefix_sha256`,
+        ).run(
+          sessionId,
+          threadId,
+          nowFn().toISOString(),
+          cols.provenance,
+          cols.lines,
+          cols.bytes,
+          cols.sha256,
+        );
+      } else {
+        // Ordinary rebind: update an existing row's thread binding only.
+        // Do NOT insert a missing target as known-none (that poisons later resume).
+        const updated = db
+          .prepare(
+            `UPDATE cc_session_lineage
+             SET thread_id = ?, updated_at = ?
+             WHERE rollout_session_id = ?`,
+          )
+          .run(threadId, nowFn().toISOString(), sessionId);
+        const changes =
+          typeof updated === "object" && updated !== null && "changes" in updated
+            ? Number((updated as { changes: number }).changes)
+            : 0;
+        if (changes === 0) {
+          // No row: leave absent. Callers that need a new row must pass explicit
+          // prefix (fresh none or verified rebuild).
+        }
+      }
       db.exec("COMMIT");
     } catch (cause) {
       db.exec("ROLLBACK");
@@ -335,13 +582,33 @@ export function safeLoadThreadSignatures(
   threadId: string,
   logError: (message: string) => void,
   deps: LineageDbDeps = {},
-): string[] {
-  return safeLineageRead(logError, () => loadThreadSignatures(dbPath, threadId, deps), []);
+): { signatures: string[]; outcome: LineageOutcome } {
+  try {
+    return { signatures: loadThreadSignatures(dbPath, threadId, deps), outcome: { ok: true } };
+  } catch (cause) {
+    logError(lineageReadFailureMessage(cause));
+    return {
+      signatures: [],
+      outcome: { ok: false, reason: `lineage_signature_read:${detailCause(cause)}` },
+    };
+  }
 }
+
+/**
+ * Launch class for provenance decisions.
+ * - fresh: wrapper-created genuinely new session (fresh / explicit_new only)
+ * - existing: resume, continue, fork, rebuilt handoff, or any pre-existing id
+ */
+export type LaunchClass = "fresh" | "existing";
 
 export interface ResolveCaptureThreadInput {
   sessionId: string;
   cwd: string;
+  /**
+   * Whether this launch is allowed to establish known-none on a new thread.
+   * Defaults to `existing` (fail closed) when omitted.
+   */
+  launchClass?: LaunchClass;
   resumeSessionId?: string;
   continueFlag?: boolean;
   registryPath?: string;
@@ -349,6 +616,8 @@ export interface ResolveCaptureThreadInput {
   projectsRoot?: string;
   log?: (message: string) => void;
   logError?: (message: string) => void;
+  /** Structured lineage failure (not log substring). */
+  onLineageFailure?: (reason: string) => void;
   lineageDeps?: LineageDbDeps;
   createThreadFn: (cwd: string, registryPath: string) => Promise<OpResult<ThreadRef>>;
 }
@@ -356,8 +625,16 @@ export interface ResolveCaptureThreadInput {
 export interface ResolveCaptureThreadResult {
   threadRef: ThreadRef;
   isExistingThread: boolean;
+  /**
+   * Prefix provenance for **input.sessionId** (the session being bound).
+   * Loaded from durable lineage so external resume after process exit can
+   * content-verify before skipping served projection.
+   */
+  prefix: PrefixBoundary;
+  /** @deprecated Prefer `prefix`; verified line count only when kind=verified. */
+  replayedPrefixLines: number;
   dedupeState: ReplayDedupeState;
-  persistSignatures: (signatures: string[]) => Promise<void>;
+  persistSignatures: (signatures: string[]) => Promise<LineageOutcome>;
 }
 
 export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Promise<ResolveCaptureThreadResult> {
@@ -365,49 +642,108 @@ export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Pr
   const registryPath = input.registryPath ?? defaultRegistryPath();
   const log = input.log ?? (() => {});
   const logError = input.logError ?? (() => {});
+  const onLineageFailure = input.onLineageFailure ?? (() => {});
+  // Default existing: never establish known-none without an explicit fresh launch.
+  const launchClass: LaunchClass = input.launchClass ?? "existing";
 
-  let threadId: string | undefined = safeLineageRead(
-    logError,
-    () => lookupThreadForSession(dbPath, input.sessionId, input.lineageDeps),
-    undefined,
-  );
+  let lineageReadFailed = false;
+  /** Target-session row found with positive stored provenance. */
+  let targetRowFound = false;
+  /** Prefix for the target session id only (never copied from resume source). */
+  let targetPrefix: PrefixBoundary = prefixBoundaryUnknown();
+  let threadId: string | undefined;
+  try {
+    const direct = lookupSessionLineage(dbPath, input.sessionId, input.lineageDeps);
+    if (direct !== undefined) {
+      threadId = direct.threadId;
+      targetPrefix = direct.prefix;
+      targetRowFound = true;
+    }
+  } catch (cause) {
+    lineageReadFailed = true;
+    logError(lineageReadFailureMessage(cause));
+    onLineageFailure(`lineage_read:${detailCause(cause)}`);
+  }
   let isExistingThread = threadId !== undefined;
 
   if (threadId === undefined && input.resumeSessionId !== undefined) {
-    const fromResume = safeLineageRead(
-      logError,
-      () => lookupThreadForSession(dbPath, input.resumeSessionId!, input.lineageDeps),
-      undefined,
-    );
-    if (fromResume !== undefined) {
-      threadId = fromResume;
-      isExistingThread = true;
+    try {
+      const fromResume = lookupSessionLineage(dbPath, input.resumeSessionId, input.lineageDeps);
+      if (fromResume !== undefined) {
+        threadId = fromResume.threadId;
+        isExistingThread = true;
+        // Target has no own row: provenance remains unknown (not source prefix,
+        // not known-none). Capture will refuse until reconciliation.
+      }
+    } catch (cause) {
+      lineageReadFailed = true;
+      logError(lineageReadFailureMessage(cause));
+      onLineageFailure(`lineage_read:${detailCause(cause)}`);
     }
   }
 
   if (threadId === undefined && input.continueFlag === true && input.projectsRoot !== undefined) {
-    const continued = await safeLineageReadAsync(
-      logError,
-      () => tryContinueThreadFromNewestSession(dbPath, input.cwd, input.projectsRoot!, input.lineageDeps),
-      undefined,
-    );
-    if (continued !== undefined) {
-      threadId = continued.threadId;
-      isExistingThread = true;
+    try {
+      const continued = await tryContinueThreadFromNewestSession(
+        dbPath,
+        input.cwd,
+        input.projectsRoot,
+        input.lineageDeps,
+      );
+      if (continued !== undefined) {
+        threadId = continued.threadId;
+        isExistingThread = true;
+      }
+    } catch (cause) {
+      lineageReadFailed = true;
+      logError(lineageReadFailureMessage(cause));
+      onLineageFailure(`lineage_read:${detailCause(cause)}`);
     }
   }
 
+  /**
+   * Provenance decision:
+   * - any lineage read failure → unknown
+   * - target row present → use stored prefix (may itself be unknown/verified/none)
+   * - no target row + fresh launch creating/using new binding → none only when
+   *   creating a brand-new thread below
+   * - no target row + existing launch → unknown
+   */
+  const prefixForExistingBinding = (): PrefixBoundary => {
+    if (lineageReadFailed) return prefixBoundaryUnknown();
+    if (targetRowFound) return targetPrefix;
+    // Existing/resumed/forked without a target row: ambiguous.
+    if (launchClass === "existing") return prefixBoundaryUnknown();
+    // Fresh launch that found a thread via unexpected path still needs a row;
+    // without target row treat as unknown.
+    return prefixBoundaryUnknown();
+  };
+
   if (threadId !== undefined) {
-    log(`cc-lhc: continuing thread ${threadId} for session ${input.sessionId}`);
-    await safeRecordSessionThread(dbPath, input.sessionId, threadId, logError, input.lineageDeps);
-    const signatures = safeLoadThreadSignatures(dbPath, threadId, logError, input.lineageDeps);
+    const prefix = prefixForExistingBinding();
+    const prefixNote =
+      prefix.kind === "verified"
+        ? ` (prefix=verified lines=${prefix.lineCount} bytes=${prefix.byteLength})`
+        : prefix.kind === "unknown"
+          ? " (prefix=unknown)"
+          : " (prefix=none)";
+    log(`cc-lhc: continuing thread ${threadId} for session ${input.sessionId}${prefixNote}`);
+    // Re-bind thread only — do not clear a stored rebuilt-prefix fence.
+    const recorded = await safeRecordSessionThread(dbPath, input.sessionId, threadId, logError, input.lineageDeps);
+    if (!recorded.ok) onLineageFailure(recorded.reason);
+    const loaded = safeLoadThreadSignatures(dbPath, threadId, logError, input.lineageDeps);
+    if (!loaded.outcome.ok) onLineageFailure(loaded.outcome.reason);
     const threadRef = captureThreadRef(threadId, registryPath);
     return {
       threadRef,
       isExistingThread,
-      dedupeState: createReplayDedupeState(isExistingThread, signatures),
+      prefix,
+      replayedPrefixLines: prefix.kind === "verified" ? prefix.lineCount : 0,
+      dedupeState: createReplayDedupeState(isExistingThread, loaded.signatures),
       persistSignatures: async (added) => {
-        await safeAppendThreadSignatures(dbPath, threadId!, added, logError, input.lineageDeps);
+        const outcome = await safeAppendThreadSignatures(dbPath, threadId!, added, logError, input.lineageDeps);
+        if (!outcome.ok) onLineageFailure(outcome.reason);
+        return outcome;
       },
     };
   }
@@ -420,13 +756,38 @@ export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Pr
   if (newThreadId === "") {
     throw new Error("cc-lhc thread create failed: missing threadId");
   }
-  await safeRecordSessionThread(dbPath, input.sessionId, newThreadId, logError, input.lineageDeps);
+
+  // Known-none only for wrapper-created genuinely fresh launches with healthy
+  // lineage I/O. Lineage read failure or existing-class launch → unknown.
+  const establishNone = launchClass === "fresh" && !lineageReadFailed;
+  const newPrefix = establishNone ? prefixBoundaryNone() : prefixBoundaryUnknown();
+  const recorded = await safeRecordSessionThread(
+    dbPath,
+    input.sessionId,
+    newThreadId,
+    logError,
+    input.lineageDeps,
+    { prefix: newPrefix },
+  );
+  if (!recorded.ok) onLineageFailure(recorded.reason);
+  if (establishNone) {
+    log(`cc-lhc: new thread ${newThreadId} for fresh session ${input.sessionId} (prefix=none)`);
+  } else {
+    log(
+      `cc-lhc: new thread ${newThreadId} for session ${input.sessionId} (prefix=unknown; ` +
+        `launchClass=${launchClass}, lineageReadFailed=${lineageReadFailed})`,
+    );
+  }
   return {
     threadRef: captureThreadRef(newThreadId, registryPath),
     isExistingThread: false,
+    prefix: newPrefix,
+    replayedPrefixLines: 0,
     dedupeState: createReplayDedupeState(false, []),
     persistSignatures: async (added) => {
-      await safeAppendThreadSignatures(dbPath, newThreadId, added, logError, input.lineageDeps);
+      const outcome = await safeAppendThreadSignatures(dbPath, newThreadId, added, logError, input.lineageDeps);
+      if (!outcome.ok) onLineageFailure(outcome.reason);
+      return outcome;
     },
   };
 }

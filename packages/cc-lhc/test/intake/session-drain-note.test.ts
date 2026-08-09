@@ -60,6 +60,7 @@ describe("drain-not-settled at capture stop", () => {
     const logged: string[] = [];
     let sdkBuilt = false;
     const session = startCaptureSession({
+      expectedSession: { sessionId: "session", source: "fresh" },
       cwd,
       startedAt: new Date(Date.now() - 60_000),
       discoverDeps: { projectsRoot, pollMs: 20 },

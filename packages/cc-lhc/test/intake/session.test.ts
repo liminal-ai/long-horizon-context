@@ -40,11 +40,19 @@ describe("startCaptureSession stop()", () => {
     const flushedBatches: number[] = [];
     let flushCalls = 0;
 
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-stop-"));
     const session = startCaptureSession({
+      expectedSession: { sessionId: "session", source: "fresh" },
       cwd,
       startedAt,
       noInference: true,
       discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath: join(home, "cc-lhc.sqlite"),
+      registryPath: join(home, "registry.sqlite"),
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId: "th_stop", registryPath: join(home, "registry.sqlite") } as ThreadRef,
+      }),
       log: () => {},
       logError: () => {},
       flushBatchFn: async (_sdk, _threadRef, items: RolloutLineItem[]) => {
@@ -82,6 +90,7 @@ describe("startCaptureSession stop()", () => {
 
     let pollCount = 0;
     const session = startCaptureSession({
+      expectedSession: { sessionId: "session", source: "fresh" },
       cwd,
       startedAt: new Date(),
       noInference: true,
@@ -126,10 +135,18 @@ describe("startCaptureSession stop()", () => {
       drainAfterBatch = batchFlushed;
     };
 
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-drain-"));
     const session = startCaptureSession({
+      expectedSession: { sessionId: "session", source: "fresh" },
       cwd,
       startedAt,
       discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath: join(home, "cc-lhc.sqlite"),
+      registryPath: join(home, "registry.sqlite"),
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId: "th_drain", registryPath: join(home, "registry.sqlite") } as ThreadRef,
+      }),
       log: () => {},
       logError: () => {},
       flushBatchFn: async () => {
@@ -169,6 +186,7 @@ describe("startCaptureSession stop()", () => {
 
     const errors: string[] = [];
     const session = startCaptureSession({
+      expectedSession: { sessionId: "session", source: "fresh" },
       cwd,
       startedAt,
       discoverDeps: { projectsRoot, pollMs: 20 },
@@ -207,11 +225,14 @@ describe("resume handoff capture", () => {
     stats.threadId = "th_known";
     const flushedItems: RolloutLineItem[] = [];
     const session = startCaptureSession({
+      expectedSession: { sessionId: "rebuilt-session", source: "fresh" },
       cwd: "/work/known-path",
       startedAt: new Date(),
       noInference: true,
       lineageDbPath: join(home, "cc-lhc.sqlite"),
       knownRolloutPath: rolloutPath,
+      // Explicit none: this unit only proves knownRolloutPath bind, not lineage.
+      prefixBoundary: { kind: "none" },
       continueCapture: {
         threadRef: { threadId: "th_known", registryPath: join(home, "registry.sqlite") },
         sdk: { drainSettled: async () => {} } as unknown as Lhc,
@@ -240,22 +261,24 @@ describe("resume handoff capture", () => {
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-prefix.jsonl");
     // Two replayed-prefix lines that map to unknown skips (no events).
-    writeFileSync(
-      rolloutPath,
-      `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`,
-    );
+    const prefix =
+      `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`;
+    writeFileSync(rolloutPath, prefix);
+    const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
+    const prefixBoundary = computeVerifiedPrefixBoundary(prefix, 2);
 
     const stats = emptyCaptureStats();
     stats.threadId = "th_prefix";
     stats.linesSeen = 10;
     stats.skippedUnknown = 5;
     const session = startCaptureSession({
+      expectedSession: { sessionId: "rebuilt-prefix", source: "fresh" },
       cwd: "/work/prefix-stats",
       startedAt: new Date(),
       noInference: true,
       lineageDbPath: join(home, "cc-lhc.sqlite"),
       knownRolloutPath: rolloutPath,
-      replayedPrefixLines: 2,
+      prefixBoundary,
       continueCapture: {
         threadRef: { threadId: "th_prefix", registryPath: join(home, "registry.sqlite") },
         sdk: { drainSettled: async () => {} } as unknown as Lhc,
@@ -279,7 +302,8 @@ describe("resume handoff capture", () => {
       await sleep(50);
     }
     expect(session.stats.linesSeen).toBe(11);
-    expect(session.stats.skippedUnknown).toBe(6);
+    // mode/system are meta (not unknown) after Slice 1 correction.
+    expect(session.stats.skippedUnknown).toBe(5);
     expect(session.stats.replayedPrefixLines).toBe(2);
     await session.stop();
   });
@@ -305,7 +329,10 @@ describe("resume handoff capture", () => {
       uuid: "prefix-synthetic",
       message: { role: "user", content: "[history summary] earlier work compressed to a band summary" },
     } as RolloutLineItem;
-    writeFileSync(rolloutPath, `${JSON.stringify(userLine)}\n${JSON.stringify(syntheticLine)}\n`);
+    const prefix = `${JSON.stringify(userLine)}\n${JSON.stringify(syntheticLine)}\n`;
+    writeFileSync(rolloutPath, prefix);
+    const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
+    const prefixBoundary = computeVerifiedPrefixBoundary(prefix, 2);
 
     // Persist only the first line's signature as already-seen — the state a
     // real handoff inherits for verbatim tail content. The synthetic line
@@ -324,12 +351,13 @@ describe("resume handoff capture", () => {
     stats.eventsSent = 8;
     const intakeCalls: number[] = [];
     const session = startCaptureSession({
+      expectedSession: { sessionId: "rebuilt-events", source: "fresh" },
       cwd: "/work/prefix-event-stats",
       startedAt: new Date(),
       noInference: true,
       lineageDbPath: dbPath,
       knownRolloutPath: rolloutPath,
-      replayedPrefixLines: 2,
+      prefixBoundary,
       continueCapture: {
         threadRef: { threadId: "th_prefix_events", registryPath: join(home, "registry.sqlite") },
         sdk: {
@@ -414,11 +442,12 @@ describe("lineage wiring", () => {
     );
 
     const { recordSessionThread } = await import("../../src/intake/lineage-db.js");
-    recordSessionThread(dbPath, sessionId, "th_mapped");
+    recordSessionThread(dbPath, sessionId, "th_mapped", {}, { prefix: { kind: "none" } });
 
     let created = 0;
     const logs: string[] = [];
     const session = startCaptureSession({
+      expectedSession: { sessionId: "mapped-session", source: "fresh" },
       cwd,
       startedAt,
       noInference: true,
@@ -469,6 +498,7 @@ describe("lineage wiring", () => {
     let flushed = false;
     let dbOpens = 0;
     const session = startCaptureSession({
+      expectedSession: { sessionId: "write-fail-session", source: "fresh" },
       cwd,
       startedAt,
       noInference: true,
@@ -500,7 +530,7 @@ describe("lineage wiring", () => {
     await session.stop();
   });
 
-  it("starts capture with a new thread when lineage read fails", async () => {
+  it("lineage read failure yields unknown provenance and refuses intake (no band capture)", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-read-"));
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-read-fail-"));
     const dbPath = join(home, "cc-lhc.sqlite");
@@ -512,12 +542,13 @@ describe("lineage wiring", () => {
     const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
     const startedAt = new Date(Date.now() - 60_000);
 
+    // Band-looking content must not reach intake under lineage failure.
     writeFileSync(
       rolloutPath,
       `${JSON.stringify({
         type: "user",
         uuid: "line-1",
-        message: { role: "user", content: "hello" },
+        message: { role: "user", content: "[context · smooth]\nband-under-lineage-fail" },
       })}\n`,
     );
 
@@ -525,6 +556,7 @@ describe("lineage wiring", () => {
     let created = 0;
     let flushed = false;
     const session = startCaptureSession({
+      expectedSession: { sessionId: "read-fail-session", source: "fresh" },
       cwd,
       startedAt,
       noInference: true,
@@ -547,18 +579,21 @@ describe("lineage wiring", () => {
       },
     });
 
-    for (let attempt = 0; attempt < 50 && !flushed; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && session.getCaptureHealth().phase !== "degraded"; attempt += 1) {
       await sleep(50);
     }
 
     expect(created).toBe(1);
     expect(session.stats.threadId).toBe("th_read_fail");
-    expect(flushed).toBe(true);
+    expect(session.isCaptureReady()).toBe(false);
+    expect(session.getCaptureHealth().phase).toBe("degraded");
+    expect(session.getCaptureHealth().reasons).toContain("prefix_boundary:unknown_provenance");
+    expect(flushed).toBe(false);
     expect(errors.some((line) => line.includes("lineage read failed (continuing)"))).toBe(true);
     await session.stop();
   });
 
-  it("continues restart capture when lineage signature read fails", async () => {
+  it("continueCapture with lineage read failure refuses intake (unknown provenance)", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-restart-cont-"));
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-restart-cont-"));
     const dbPath = join(home, "cc-lhc.sqlite");
@@ -587,6 +622,7 @@ describe("lineage wiring", () => {
     const sdk = { drainSettled: async () => {} } as unknown as Lhc;
 
     const session = startCaptureSession({
+      expectedSession: { sessionId: "restart-cont-session", source: "fresh" },
       cwd,
       startedAt,
       noInference: true,
@@ -606,13 +642,14 @@ describe("lineage wiring", () => {
       },
     });
 
-    for (let attempt = 0; attempt < 50 && !flushed; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && session.getCaptureHealth().phase !== "degraded"; attempt += 1) {
       await sleep(50);
     }
 
     expect(session.stats.threadId).toBe("th_restart");
-    expect(flushed).toBe(true);
-    expect(errors.some((line) => line.includes("lineage read failed (continuing)"))).toBe(true);
+    expect(session.isCaptureReady()).toBe(false);
+    expect(session.getCaptureHealth().reasons).toContain("prefix_boundary:unknown_provenance");
+    expect(flushed).toBe(false);
     await session.stop();
   });
 });

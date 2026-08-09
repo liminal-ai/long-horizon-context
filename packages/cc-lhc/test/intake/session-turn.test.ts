@@ -42,12 +42,25 @@ async function waitFor(condition: () => boolean, label: string): Promise<void> {
 
 function hermeticSession(
   tmp: string,
-  rolloutOptions: { knownRolloutPath?: string; replayedPrefixLines?: number; cwd: string; projectsRoot: string },
+  rolloutOptions: {
+    knownRolloutPath?: string;
+    prefixBoundary?: import("../../src/intake/prefix-boundary.js").PrefixBoundary;
+    cwd: string;
+    projectsRoot: string;
+  },
 ): CaptureSession {
+  const sessionId =
+    rolloutOptions.knownRolloutPath !== undefined
+      ? rolloutOptions.knownRolloutPath.replace(/\.jsonl$/, "").split("/").pop()!
+      : "session";
   return startCaptureSession({
     cwd: rolloutOptions.cwd,
     startedAt: new Date(Date.now() - 60_000),
     noInference: true,
+    expectedSession: {
+      sessionId,
+      source: rolloutOptions.knownRolloutPath !== undefined ? "rebuilt_handoff" : "fresh",
+    },
     discoverDeps: { projectsRoot: rolloutOptions.projectsRoot, pollMs: 20 },
     lineageDbPath: join(tmp, "lineage.sqlite"),
     registryPath: join(tmp, "registry.sqlite"),
@@ -60,9 +73,7 @@ function hermeticSession(
     initSdkFn: () => ({}) as Lhc,
     flushBatchFn: async () => {},
     ...(rolloutOptions.knownRolloutPath === undefined ? {} : { knownRolloutPath: rolloutOptions.knownRolloutPath }),
-    ...(rolloutOptions.replayedPrefixLines === undefined
-      ? {}
-      : { replayedPrefixLines: rolloutOptions.replayedPrefixLines }),
+    ...(rolloutOptions.prefixBoundary === undefined ? {} : { prefixBoundary: rolloutOptions.prefixBoundary }),
   });
 }
 
@@ -101,9 +112,17 @@ describe("capture session turn-state fold", () => {
     mkdirSync(projectDir, { recursive: true });
     const rolloutPath = join(projectDir, "rebuilt.jsonl");
     // A rebuilt rollout whose served history would read "open" if folded.
-    writeFileSync(rolloutPath, USER_PROMPT + USER_PROMPT);
+    const prefix = USER_PROMPT + USER_PROMPT;
+    writeFileSync(rolloutPath, prefix);
+    const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
+    const prefixBoundary = computeVerifiedPrefixBoundary(prefix, 2);
 
-    const session = hermeticSession(tmp, { cwd, projectsRoot, knownRolloutPath: rolloutPath, replayedPrefixLines: 2 });
+    const session = hermeticSession(tmp, {
+      cwd,
+      projectsRoot,
+      knownRolloutPath: rolloutPath,
+      prefixBoundary,
+    });
     try {
       await waitFor(() => session.stats.replayedPrefixLines === 2, "prefix lines to be tallied");
       expect(session.isTurnOpen()).toBe(false);

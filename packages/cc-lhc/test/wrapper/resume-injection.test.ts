@@ -160,7 +160,7 @@ describe("executeResumeInjection", () => {
       },
       logResume: (message) => {
         order.push("log");
-        expect(message).toContain(`resuming in-place as ${NEW_ID}`);
+        expect(message).toContain(`/resume ${NEW_ID}`);
       },
       recordLineage,
       windowMs: 5,
@@ -539,11 +539,12 @@ describe("executeResumeInjection", () => {
 });
 
 describe("receipt formatting", () => {
-  it("success receipt has no restart language and carries the reintake estimate", () => {
+  it("success receipt points at external relaunch and carries the reintake estimate", () => {
     const message = formatResumeSuccess(PLAN);
-    expect(message).toContain(`resumed in-place as ${NEW_ID}`);
-    expect(message).toContain("~4 replayed lines");
-    expect(message).not.toMatch(/restart/i);
+    expect(message).toContain(`LHC view rebuilt as ${NEW_ID}`);
+    expect(message).toContain(`cc-lhc --resume ${NEW_ID}`);
+    expect(message).toContain("~4 lines");
+    expect(message).not.toMatch(/resuming in-place/i);
   });
 
   it("turn-open abort receipt tells the truth about the partial state", () => {

@@ -1,6 +1,12 @@
 import type { EventKind, MessageEventInput } from "lhc";
 
-import type { ContentBlock, RolloutLineItem, ToolResultBlock, ToolUseBlock } from "../rollout/types.js";
+import type {
+  ContentBlock,
+  ConversationMessage,
+  RolloutLineItem,
+  ToolResultBlock,
+  ToolUseBlock,
+} from "../rollout/types.js";
 
 const HARNESS = "cc";
 const IMAGE_PLACEHOLDER = "[image content not captured]";
@@ -90,8 +96,30 @@ function textEvent(
   text: string,
   actor: string,
   key: string,
+  extra: Record<string, unknown> = {},
 ): MessageEventInput {
-  return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text } };
+  return {
+    eventKind: kind,
+    idempotencyKey: key,
+    actor,
+    harness: HARNESS,
+    payload: { text, ...extra },
+  } as MessageEventInput;
+}
+
+function messageModel(message: { model?: string } | undefined): string | undefined {
+  const model = message?.model;
+  return typeof model === "string" && model !== "" ? model : undefined;
+}
+
+/** Verbatim provider usage object from an assistant message, if present. Never invent. */
+export function messageProviderUsage(message: ConversationMessage | undefined): Record<string, unknown> | undefined {
+  if (message === undefined) return undefined;
+  const usage = (message as Record<string, unknown>).usage;
+  if (usage === undefined || usage === null || typeof usage !== "object" || Array.isArray(usage)) {
+    return undefined;
+  }
+  return usage as Record<string, unknown>;
 }
 
 /** Canonical runtime-note text, or null when the text is a regular prompt. */
@@ -161,49 +189,58 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
   const uuid = recordUuid(item, lineIndex);
   const blocks = contentBlocks(message.content);
   const events: MessageEventInput[] = [];
-  let blockIndex = 0;
+  const model = messageModel(message);
+  const providerUsage = messageProviderUsage(message);
+  // Single pass preserves native content-block order. Idempotency keys use the
+  // native block index so capturing a previously skipped block cannot renumber
+  // later events on replay. Empty unsigned thinking is preserved canonically
+  // (SDK skips at serving only).
 
-  for (const block of blocks) {
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const block = blocks[blockIndex]!;
     if (block.type === "thinking") {
       const thinking = typeof block.thinking === "string" ? block.thinking : "";
-      if (thinking !== "") {
-        events.push(
-          textEvent(
-            "assistant_thinking",
-            thinking,
-            "assistant",
-            idempotencyKey(uuid, blockIndex, "assistant_thinking"),
-          ),
-        );
-        blockIndex += 1;
-      }
+      const signature = typeof block.signature === "string" ? block.signature : "";
+      const extra: Record<string, unknown> = {};
+      if (signature !== "") extra.signature = signature;
+      if (model !== undefined) extra.model = model;
+      events.push(
+        textEvent(
+          "assistant_thinking",
+          thinking,
+          "assistant",
+          idempotencyKey(uuid, blockIndex, "assistant_thinking"),
+          extra,
+        ),
+      );
+      continue;
     }
-  }
-
-  for (const block of blocks) {
     if (block.type === "text") {
       const text = typeof block.text === "string" ? block.text : "";
-      if (text !== "") {
-        events.push(textEvent("assistant_text", text, "assistant", idempotencyKey(uuid, blockIndex, "assistant_text")));
-        blockIndex += 1;
-      }
+      // Empty text blocks carry no record content — skip without consuming a
+      // different index scheme (index is still the native position above).
+      if (text === "") continue;
+      const extra: Record<string, unknown> = {};
+      if (model !== undefined) extra.model = model;
+      if (providerUsage !== undefined) extra.providerUsage = providerUsage;
+      events.push(
+        textEvent("assistant_text", text, "assistant", idempotencyKey(uuid, blockIndex, "assistant_text"), extra),
+      );
+      continue;
     }
-  }
-
-  for (const block of blocks) {
-    if (block.type !== "tool_use") continue;
-    const toolBlock = block as ToolUseBlock;
-    const toolCallId = toolBlock.id;
-    const toolName = toolBlock.name;
-    const args = isRecord(toolBlock.input) ? toolBlock.input : {};
-    events.push({
-      eventKind: "tool_call",
-      idempotencyKey: idempotencyKey(uuid, blockIndex, "tool_call"),
-      actor: "assistant",
-      harness: HARNESS,
-      payload: { toolCallId, toolName, arguments: args },
-    });
-    blockIndex += 1;
+    if (block.type === "tool_use") {
+      const toolBlock = block as ToolUseBlock;
+      const toolCallId = toolBlock.id;
+      const toolName = toolBlock.name;
+      const args = isRecord(toolBlock.input) ? toolBlock.input : {};
+      events.push({
+        eventKind: "tool_call",
+        idempotencyKey: idempotencyKey(uuid, blockIndex, "tool_call"),
+        actor: "assistant",
+        harness: HARNESS,
+        payload: { toolCallId, toolName, arguments: args },
+      });
+    }
   }
 
   return events;
@@ -232,6 +269,9 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 // via the user record; attachment records are tool/agent/skill listing deltas
 // injected by the runtime; ai-title and last-prompt are session metadata.
 // Counted as meta so skipped_unknown stays a meaningful drift gauge.
+// Known housekeeping record types from the supported Claude Code corpus
+// (2.1.215–2.1.226 census). Counted as meta so skipped_unknown remains a
+// meaningful drift gauge for truly unrecognized shapes.
 const META_LINE_TYPES = new Set([
   "summary",
   "file-history-snapshot",
@@ -239,12 +279,19 @@ const META_LINE_TYPES = new Set([
   "attachment",
   "ai-title",
   "last-prompt",
+  "mode",
+  "permission-mode",
+  "file-history-delta",
+  "agent-name",
 ]);
 
 function isMetaLineType(item: RolloutLineItem): boolean {
   if (typeof item.type === "string" && META_LINE_TYPES.has(item.type)) return true;
   // Older Claude Code versions write attachment records without a top-level type.
-  return item.attachment !== undefined;
+  if (item.attachment !== undefined) return true;
+  // system / system+turn_duration and similar system records are harness chrome.
+  if (item.type === "system") return true;
+  return false;
 }
 
 export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult {

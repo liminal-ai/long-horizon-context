@@ -1,8 +1,14 @@
-// In-app session swap: after prune/compact writes a rebuilt rollout, the
-// wrapper injects `/resume <newSessionId>\r` into the live pty instead of
-// killing and respawning the child. Claude Code hot-swaps the session in-place
-// (~1-2s) and keeps appending to the rebuilt rollout file under the same
-// session id, so capture hands off to a new session tailing that known path.
+// COMPATIBILITY MODULE — not used by the default compact/prune path on Claude
+// Code 2.1.226. Retained for unit coverage of the historical injection design
+// and any future experiment after a proven in-app resume surface exists.
+//
+// Installed-binary exhibit 2026-08-09: in-app `/resume` of a session file
+// created after TUI startup returns "No conversations found to resume".
+// Slice 1 interim: operator exits and relaunches via `cc-lhc --resume`.
+// Slice 4: wrapper-owned child respawn with external `--resume`.
+//
+// Historical behavior: after prune/compact writes a rebuilt rollout, inject
+// `/resume <newSessionId>\r` into the live pty instead of killing/respawning.
 //
 // Outcome detection has two layers. The fast layer is a tripwire scoped to
 // this swap's failure line — `Session <newSessionId> was not found.` — scanned
@@ -188,6 +194,9 @@ export interface ResumeInjectionInput {
   logLineageError?: (message: string) => void;
   /** Last-instant turn recheck; an open turn aborts before anything is injected. */
   isTurnOpen?: () => boolean;
+  /** Last-instant capture health / generation lease recheck before /resume. */
+  isCaptureHealthy?: () => boolean;
+  getCaptureGeneration?: () => number;
   /** Called after rebuild is on disk, immediately before `/resume` is written to the pty. */
   onBeforeInject?: () => void;
   windowMs?: number;
@@ -199,7 +208,7 @@ export interface ResumeInjectionInput {
 
 export type ResumeInjectionResult =
   | { ok: true; captureSession: CaptureSession }
-  | { ok: false; reason: "turn_open" | "no_swap_evidence" };
+  | { ok: false; reason: "turn_open" | "no_swap_evidence" | "capture_unhealthy" };
 
 /**
  * Silent swap-collision check: the old rollout growing past its
@@ -241,6 +250,16 @@ export async function executeResumeInjection(input: ResumeInjectionInput): Promi
   // before touching the pty — the rebuilt file stays on disk unused.
   if (input.isTurnOpen?.() === true) {
     return { ok: false, reason: "turn_open" };
+  }
+  if (input.isCaptureHealthy?.() === false) {
+    return { ok: false, reason: "capture_unhealthy" };
+  }
+  if (
+    input.plan.captureGeneration !== undefined &&
+    input.getCaptureGeneration !== undefined &&
+    input.getCaptureGeneration() !== input.plan.captureGeneration
+  ) {
+    return { ok: false, reason: "capture_unhealthy" };
   }
 
   input.logResume(formatSessionResumeLog(input.plan));

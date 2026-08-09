@@ -11,6 +11,10 @@ export interface CaptureCommandContext {
   stats: CaptureStats;
   sdk: Lhc | undefined;
   threadRef: ThreadRef | undefined;
+  /** Sticky generation-scoped degradation — mutation unsafe when true. */
+  captureDegraded?: boolean;
+  captureGeneration?: number;
+  capturePhase?: "binding" | "ready" | "degraded" | "closed";
 }
 
 export interface LhcCommandRuntime extends CaptureCommandContext {
@@ -19,31 +23,56 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   sourceSessionId: string | undefined;
   /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
   isTurnOpen?: () => boolean;
+  /** Capture health gate for compact/prune (ready and not degraded). */
+  isCaptureHealthy?: () => boolean;
+  /** False while binding or degraded. */
+  isCaptureReady?: () => boolean;
+  getCaptureGeneration?: () => number;
+  /** Optional lineage paths for rebuilt-session registration (tests). */
+  lineageDbPath?: string;
+  lineageDeps?: import("../intake/lineage-db.js").LineageDbDeps;
+  logLineageError?: (message: string) => void;
   /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
   warnings?: { count: number; logPath: string };
 }
 
+/**
+ * @deprecated In-app /resume injection is retired on Claude Code 2.1.226.
+ * Retained type only for the non-default compatibility module `resume-injection.ts`.
+ * Manual compact/prune never return a restart plan.
+ */
 export interface SessionRestartPlan {
   oldSessionId: string;
   newSessionId: string;
   rolloutPath: string;
   rebuiltLineCount: number;
   expectedReintakeLines: number;
-  /** Prefix lines the handoff capture hard-skips; excludes a trailing swap receipt. */
   replayedPrefixLines: number;
-  /** Source rollout path + its size when the rebuild snapshotted it — the swap-collision cutoff. */
+  captureGeneration?: number;
   oldRolloutPath?: string;
   oldRolloutSizeAtRebuild?: number;
 }
 
 export interface DispatchOutcome {
   messages: string[];
+  /**
+   * Never set by default compact/prune (Slice 1 interim). Slice 4 may use a
+   * different handoff shape for wrapper-owned child respawn.
+   */
   restart?: SessionRestartPlan;
 }
 
 export const CAPTURE_DISABLED_MESSAGE = "capture disabled";
 export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try help";
 export const TURN_OPEN_REFUSAL = "turn in progress — rerun when idle";
+export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until reconciliation";
+/**
+ * Post-SDK-mutation fence failure: LHC view may have committed; live Claude
+ * session was not swapped. Operator must reconcile and re-run compact/prune.
+ */
+export const CAPTURE_PARTIAL_VIEW_MUTATION =
+  "capture degraded after LHC view mutation — live Claude session unchanged; " +
+  "LHC view may already be compacted/pruned; restart capture and re-run compact/prune after reconciliation";
 
 type CommandHandler = (commandLine: string, runtime: LhcCommandRuntime) => Promise<DispatchOutcome>;
 
@@ -97,8 +126,8 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
       [
         "status — thread-view status + capture stats",
         "stats — capture stats line",
-        "compact — compact thread view and resume in-place (refused mid-turn)",
-        "prune [targetTokens] — prune visibility zone and resume in-place (refused mid-turn)",
+        "compact — compact LHC view + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
+        "prune [targetTokens] — prune zone + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
         "export — write canonical transcript dumps (rollout + thread view) to cwd",
         "help — this list",
       ].join("\n"),
@@ -145,6 +174,7 @@ export function formatCommandOutput(text: string): string {
   return `\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, "\r\n\x1b[2K[cc-lhc] ")}`;
 }
 
+/** Compatibility log line for the non-default injection module only. */
 export function formatSessionResumeLog(plan: SessionRestartPlan): string {
-  return `[cc-lhc] session ${plan.oldSessionId} preserved; resuming in-place as ${plan.newSessionId} via ${plan.rolloutPath} (expect ~${plan.expectedReintakeLines} replayed lines to re-intake)`;
+  return `[cc-lhc] (compat) session ${plan.oldSessionId} preserved; would inject /resume ${plan.newSessionId} via ${plan.rolloutPath} (disabled on 2.1.226 default path)`;
 }

@@ -5,6 +5,7 @@ import {
   initLhc,
   inspect,
   type Lhc,
+  type MessageEventInput,
   type OpResult,
   type SdkConfig,
   type ThreadRef,
@@ -13,27 +14,60 @@ import {
 import type { CaptureCommandContext } from "../commands/dispatch.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
-import { type DiscoverDeps, discoverSessionFile } from "../rollout/discover.js";
+import {
+  applyCaptureDegraded,
+  canMutateCapture,
+  createCaptureGeneration,
+  isCaptureHealthy,
+  markCaptureClosed,
+  markCaptureReady,
+  type CaptureGenerationState,
+  type CapturePhase,
+} from "../observation/degradation.js";
+import { createTurnFoldState, observeWatcherEmission } from "../observation/observe.js";
+import { createSamplingDedupeState, type SamplingDedupeState } from "../observation/sampling.js";
+import type { LifecycleSignal } from "../observation/types.js";
+import { classifyTurnSignal } from "./turn-signal.js";
+import {
+  assertRolloutMatchesExpectedSession,
+  type DiscoverDeps,
+  discoverExpectedSessionFile,
+  SessionAttributionError,
+} from "../rollout/discover.js";
+import type { ExpectedSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
 import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
   defaultLineageDbPath,
+  type LaunchClass,
   type LineageDbDeps,
   lineageWriteFailureMessage,
+  lookupSessionLineage,
   resolveCaptureThread,
   safeAppendThreadSignatures,
   safeLoadThreadSignatures,
   safeRecordSessionThread,
+  type LineageOutcome,
 } from "./lineage-db.js";
-import { mapRolloutLine } from "./map.js";
 import { captureThreadRef, defaultRegistryPath, defaultThreadFilePath } from "./paths.js";
+import {
+  type ContinuityHandle,
+  type PrefixBoundary,
+  type PrefixBoundaryVerified,
+  openContinuityHandle,
+  prefixBoundaryNone,
+  prefixBoundaryUnknown,
+  readFdRange,
+  verifyPrefixBoundaryOnHandle,
+} from "./prefix-boundary.js";
 import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
-import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
 export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
 export const DRAIN_NOT_SETTLED_MESSAGE = "cc-lhc: drain not settled at exit, work remains pending";
+export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until restart/reconciliation";
+export const CAPTURE_NOT_READY_REFUSAL = "capture not ready — binding incomplete";
 
 export function isInferenceDisabled(): boolean {
   return process.env.CC_LHC_NO_INFERENCE === "1";
@@ -83,6 +117,11 @@ export interface ContinueCapture {
   threadRef: ThreadRef;
   sdk: Lhc;
   stats: CaptureStats;
+  /**
+   * During handoff the SDK continues but binding restarts for the new rollout.
+   * Health from the prior generation is not auto-carried as ready.
+   */
+  priorGeneration?: number;
 }
 
 export interface CaptureSessionDeps {
@@ -94,28 +133,35 @@ export interface CaptureSessionDeps {
   continueCapture?: ContinueCapture;
   resumeSessionId?: string;
   continueFlag?: boolean;
-  /** Skip discovery and tail this rollout file directly (in-app resume handoff). */
+  expectedSession?: ExpectedSession;
   knownRolloutPath?: string;
   /**
-   * First N tailed lines are a replayed prefix (the rebuilt rollout after an
-   * in-app resume): tally them under stats.replayedPrefixLines instead of
-   * linesSeen and keep them out of the mapper skip counters, so cross-restart
-   * totals stay honest as a version-drift instrument. Their EVENTS still flow
-   * through replay dedupe, which owns the event-unit skippedReplay counter.
+   * Explicit content-verifiable prefix fence (tests / in-process handoff).
+   * When omitted, lineage supplies provenance after resolve.
    */
+  prefixBoundary?: PrefixBoundary;
+  /** @deprecated Prefer prefixBoundary; count-only is not content-verifiable. */
   replayedPrefixLines?: number;
   lineageDbPath?: string;
   lineageDeps?: LineageDbDeps;
   log?: (message: string) => void;
   logError?: (message: string) => void;
-  /** Test hook: replace intake flush to observe batch ordering. */
   flushBatchFn?: typeof flushBatch;
-  /** Test hook: substitute SDK construction. */
   initSdkFn?: (config: SdkConfig) => Lhc;
-  /** Test hook: cap for drainSettled at stop (default 30s). */
   drainSettledCapMs?: number;
-  /** Test hook: substitute thread creation. */
   createThreadFn?: typeof createCaptureThread;
+  onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
+  /** Generation id seed (tests / restart counters). */
+  generationSeed?: number;
+  /** Test seam: injectable watcher I/O (fstat/read failures). */
+  watcherIo?: Partial<import("../rollout/watcher.js").WatcherIo>;
+  /** Test seam: substitute watchRolloutFile. */
+  watchRolloutFileFn?: typeof watchRolloutFile;
+  /**
+   * Test seam: delay during bind before/around lineage resolution so stop()
+   * can win ownership. Resolves when the test releases it.
+   */
+  bindHold?: Promise<void>;
 }
 
 export interface RolloutCaptureInfo {
@@ -123,23 +169,32 @@ export interface RolloutCaptureInfo {
   sessionId: string | undefined;
 }
 
+export interface CaptureCommandContextExtended extends CaptureCommandContext {
+  captureDegraded: boolean;
+  captureGeneration: number;
+  capturePhase: CapturePhase;
+}
+
 export interface CaptureSession {
   stats: CaptureStats;
-  getCommandContext(): CaptureCommandContext;
+  getCommandContext(): CaptureCommandContextExtended;
   getRolloutInfo(): RolloutCaptureInfo;
-  /**
-   * Whether the tailed rollout says a claude turn is open (fold over
-   * classifyTurnSignal). Replayed-prefix lines after a swap are excluded —
-   * they are served history, not live state. Lags the file by at most one
-   * watcher poll; the last-instant resume recheck and the swap-collision log
-   * cover the remaining race.
-   */
   isTurnOpen(): boolean;
+  /** True only when phase is ready (bound + not degraded). */
+  isCaptureHealthy(): boolean;
+  /** True when phase is ready (mutation allowed). Binding reports false. */
+  isCaptureReady(): boolean;
+  getCaptureHealth(): CaptureGenerationState;
+  getCaptureGeneration(): number;
   stop(): Promise<void>;
 }
 
 function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function launchClassOf(source: ExpectedSession["source"]): LaunchClass {
+  return source === "fresh" || source === "explicit_new" ? "fresh" : "existing";
 }
 
 function normalizeThreadRef(threadRef: ThreadRef, registryPath: string): ThreadRef {
@@ -157,33 +212,14 @@ async function flushBatch(
   sdk: Lhc,
   threadRef: ThreadRef,
   items: RolloutLineItem[],
+  events: MessageEventInput[],
   stats: CaptureStats,
   log: (message: string) => void,
   logError: (message: string) => void,
-  lineOffset: number,
   dedupeState: ReplayDedupeState | undefined,
-  persistSignatures: ((signatures: string[]) => Promise<void>) | undefined,
-  replayedPrefixItems = 0,
+  persistSignatures: ((signatures: string[]) => Promise<LineageOutcome>) | undefined,
+  onIntakeFailure: (reason: string) => void,
 ): Promise<void> {
-  const events = [];
-  for (const [index, item] of items.entries()) {
-    // Replayed-prefix lines are the rebuilt rollout's own bytes — content we
-    // wrote from the thread's served view. The thread already holds the real
-    // history behind them, so they must never re-enter intake as events:
-    // rebuilt lines are mostly synthetic (band summaries, re-rendered tail),
-    // signature dedupe cannot match them against the original capture, and
-    // mapping them re-records the served view as fresh messages (observed
-    // live: compact fire leaked ~40 duplicate messages per swap). Their
-    // count is already tallied under stats.replayedPrefixLines; their skips
-    // stay out of the drift instrument.
-    if (index < replayedPrefixItems) continue;
-    const mapped = mapRolloutLine(item, lineOffset + index);
-    stats.skippedSidechain += mapped.stats.sidechain;
-    stats.skippedUnknown += mapped.stats.unknown;
-    stats.skippedMeta += mapped.stats.meta;
-    stats.skippedImage += mapped.stats.image;
-    events.push(...mapped.events);
-  }
   if (events.length === 0) return;
 
   const filtered =
@@ -201,6 +237,7 @@ async function flushBatch(
     const result = await sdk.intakeStream.messageEvents(threadRef, filtered.toSend);
     if (!result.ok) {
       logError(`cc-lhc intake error: ${result.error.code} ${result.error.reason}`);
+      onIntakeFailure(`intake_error:${result.error.code}`);
       return;
     }
     const recorded = result.value.events.filter((entry) => entry.outcome === "recorded").length;
@@ -212,16 +249,17 @@ async function flushBatch(
         dedupeState.seen.add(signature);
       }
       if (persistSignatures !== undefined) {
-        try {
-          await persistSignatures(filtered.signaturesToAdd);
-        } catch (cause) {
-          logError(lineageWriteFailureMessage(cause));
+        const outcome = await persistSignatures(filtered.signaturesToAdd);
+        if (!outcome.ok) {
+          onIntakeFailure(outcome.reason);
         }
       }
     }
   } catch (cause) {
     logError(`cc-lhc intake threw: ${detail(cause)}`);
+    onIntakeFailure(`intake_threw:${detail(cause)}`);
   }
+  void items;
 }
 
 export async function awaitDrainSettled(
@@ -245,7 +283,6 @@ export async function awaitDrainSettled(
 /** Start capture synchronously; `stop()` is always safe even before discovery resolves. */
 export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSession {
   const cwd = deps.cwd ?? process.cwd();
-  const startedAt = deps.startedAt ?? new Date();
   const log = deps.log ?? (() => {});
   const logError =
     deps.logError ??
@@ -258,6 +295,28 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const lineageDbPath = deps.lineageDbPath ?? defaultLineageDbPath();
   const stats = emptyCaptureStats();
   const abort = new AbortController();
+  const samplingDedupe: SamplingDedupeState = createSamplingDedupeState();
+  const turnFold = createTurnFoldState();
+  const userOnLifecycle = deps.onLifecycle;
+  /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
+  let resolvedPrefix: PrefixBoundary =
+    deps.prefixBoundary ??
+    (deps.replayedPrefixLines !== undefined && deps.replayedPrefixLines > 0
+      ? // Count-only without digest is unknown — never trusted skip.
+        { kind: "unknown" as const }
+      : prefixBoundaryNone());
+  const hadExplicitBoundary = deps.prefixBoundary !== undefined;
+
+  let expectedSession: ExpectedSession | undefined = deps.expectedSession;
+  if (expectedSession === undefined && deps.knownRolloutPath !== undefined) {
+    expectedSession = {
+      sessionId: basename(deps.knownRolloutPath, ".jsonl"),
+      source: "rebuilt_handoff",
+    };
+  }
+  if (expectedSession === undefined && deps.resumeSessionId !== undefined) {
+    expectedSession = { sessionId: deps.resumeSessionId, source: "explicit_resume" };
+  }
 
   let sdk: Lhc | undefined;
   let threadRef: ThreadRef | undefined;
@@ -265,44 +324,199 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let rolloutFilePath: string | undefined;
   let rolloutSessionId: string | undefined;
   let stopped = false;
+  /** After truncate/rewrite or failed prefix: never feed intake. */
+  let intakeHalted = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
   let turnOpen = false;
-  let prefixRemaining = deps.replayedPrefixLines ?? 0;
   let dedupeState: ReplayDedupeState | undefined;
-  let persistSignatures: ((signatures: string[]) => Promise<void>) | undefined;
+  let persistSignatures: ((signatures: string[]) => Promise<LineageOutcome>) | undefined;
+  const genSeed =
+    deps.generationSeed ??
+    (deps.continueCapture?.priorGeneration !== undefined ? deps.continueCapture.priorGeneration + 1 : 1);
+  let captureHealth: CaptureGenerationState = createCaptureGeneration(genSeed);
 
-  const enqueueEmissions = (emissions: WatcherEmission[]): void => {
-    batchQueue = batchQueue.then(async () => {
-      if (stopped && emissions.length === 0) return;
-      const items: RolloutLineItem[] = [];
-      let prefixItems = 0;
-      for (const emission of emissions) {
-        const isPrefixLine = prefixRemaining > 0;
-        if (isPrefixLine) {
-          prefixRemaining -= 1;
-          stats.replayedPrefixLines += 1;
-        } else {
-          stats.linesSeen += 1;
-        }
-        if (emission.kind === "parse_error") {
-          stats.parseFailures += 1;
-          logError(`cc-lhc parse fail: ${emission.error}`);
-          continue;
-        }
-        if (isPrefixLine) prefixItems += 1;
-        else {
-          const signal = classifyTurnSignal(emission.item);
-          if (signal === "opens") turnOpen = true;
-          else if (signal === "closes") turnOpen = false;
-        }
-        items.push(emission.item);
+  const publishLifecycle = (signals: readonly LifecycleSignal[]): void => {
+    if (userOnLifecycle === undefined || signals.length === 0) return;
+    try {
+      userOnLifecycle(signals);
+    } catch (cause) {
+      // Lifecycle consumer failure must not poison capture queue or intake.
+      logError(`cc-lhc lifecycle subscriber threw: ${detail(cause)}`);
+      const applied = applyCaptureDegraded(captureHealth, `lifecycle_subscriber:${detail(cause)}`);
+      captureHealth = applied.state;
+      if (applied.isFirstForKey) {
+        logError(`cc-lhc capture degraded (gen ${captureHealth.generation}): lifecycle_subscriber`);
       }
-      if (items.length === 0 || sdk === undefined || threadRef === undefined) return;
-      const lineOffset = lineCounter;
-      lineCounter += items.length;
-      await flush(sdk, threadRef, items, stats, log, logError, lineOffset, dedupeState, persistSignatures, prefixItems);
-    });
+    }
+  };
+
+  /** Latch degradation; log only on first occurrence of the stored key. */
+  const degradeQuiet = (reason: string): void => {
+    const applied = applyCaptureDegraded(captureHealth, reason);
+    captureHealth = applied.state;
+    if (applied.isFirstForKey) {
+      logError(`cc-lhc capture degraded (gen ${captureHealth.generation}): ${applied.countKey}`);
+    }
+  };
+
+  /**
+   * Latch degradation and emit capture_degraded only on first occurrence of the
+   * stored key (including a single reasons_capped transition after the cap).
+   */
+  const degradeAndEmit = (reason: string): void => {
+    const applied = applyCaptureDegraded(captureHealth, reason);
+    captureHealth = applied.state;
+    if (applied.isFirstForKey) {
+      logError(`cc-lhc capture degraded (gen ${captureHealth.generation}): ${applied.countKey}`);
+      publishLifecycle([
+        {
+          kind: "capture_degraded",
+          reason: applied.countKey,
+          generation: captureHealth.generation,
+        },
+      ]);
+    }
+  };
+
+  const enqueueEmissions = (emissions: WatcherEmission[]): Promise<void> => {
+    batchQueue = batchQueue
+      .then(async () => {
+        // After stop settles closed, do not process further (closed is terminal).
+        if (captureHealth.phase === "closed") return;
+        if (intakeHalted) return;
+        if (stopped && emissions.length === 0) return;
+        const items: RolloutLineItem[] = [];
+        const intakeEvents: MessageEventInput[] = [];
+        for (const emission of emissions) {
+          stats.linesSeen += 1;
+
+          const lineIndex = lineCounter;
+          lineCounter += 1;
+
+          // Live suffix only: full folds + runtime lifecycle. Prefix was
+          // validated separately without mutating these folds.
+          const observeOpts: Parameters<typeof observeWatcherEmission>[2] = {
+            samplingDedupe,
+            generation: captureHealth.generation,
+            turnFold,
+          };
+          if (expectedSession !== undefined) {
+            observeOpts.expectedSessionId = expectedSession.sessionId;
+          }
+          const observed = observeWatcherEmission(emission, lineIndex, observeOpts);
+
+          // Mutation fence turn state folds classifyTurnSignal directly so
+          // assistant tool_use state-maintenance keeps isTurnOpen true even
+          // when lifecycle does not re-emit turn_opened.
+          if (emission.kind === "line") {
+            const turnSignal = classifyTurnSignal(emission.item);
+            if (turnSignal === "opens") turnOpen = true;
+            if (turnSignal === "closes") turnOpen = false;
+          }
+
+          for (const signal of observed.lifecycle) {
+            if (signal.kind === "capture_degraded") {
+              degradeQuiet(signal.reason);
+            } else if (signal.kind === "session_mismatch_observed") {
+              degradeQuiet(`session_mismatch:${signal.observed}`);
+            }
+          }
+          publishLifecycle(observed.lifecycle);
+
+          if (emission.kind === "parse_error") {
+            stats.parseFailures += 1;
+            logError(`cc-lhc parse fail: ${emission.error}`);
+            continue;
+          }
+
+          stats.skippedSidechain += observed.stats.sidechain;
+          stats.skippedUnknown += observed.stats.unknown;
+          stats.skippedMeta += observed.stats.meta;
+          stats.skippedImage += observed.stats.image;
+          intakeEvents.push(...observed.events);
+          items.push(emission.item);
+        }
+
+        if (intakeEvents.length === 0 || sdk === undefined || threadRef === undefined) return;
+        await flush(
+          sdk,
+          threadRef,
+          items,
+          intakeEvents,
+          stats,
+          log,
+          logError,
+          dedupeState,
+          persistSignatures,
+          (reason) => degradeAndEmit(reason),
+        );
+      })
+      .catch((cause: unknown) => {
+        logError(`cc-lhc batch queue error: ${detail(cause)}`);
+        degradeAndEmit(`batch_queue:${detail(cause)}`);
+      });
+    return batchQueue;
+  };
+
+  /**
+   * Content-verify a rebuilt prefix on a held continuity handle (no path
+   * re-open), parse for attribution only, then hand the same handle to the
+   * watcher so proof and watch share file identity.
+   */
+  const establishVerifiedPrefix = (
+    handle: ContinuityHandle,
+    boundary: PrefixBoundaryVerified,
+  ): { ok: true; startOffset: number } | { ok: false; reason: string } => {
+    const verified = verifyPrefixBoundaryOnHandle(handle, boundary);
+    if (!verified.ok) return verified;
+
+    let prefixRaw: string;
+    try {
+      prefixRaw = readFdRange(handle.fd, 0, boundary.byteLength).toString("utf8");
+    } catch (cause) {
+      return { ok: false, reason: `prefix_boundary:validate_read:${detail(cause)}` };
+    }
+    if (boundary.byteLength > 0 && prefixRaw.length === 0 && boundary.lineCount > 0) {
+      return { ok: false, reason: "prefix_boundary:validate_read:empty" };
+    }
+    const lines =
+      boundary.byteLength === 0
+        ? []
+        : prefixRaw.endsWith("\n")
+          ? prefixRaw.slice(0, -1).split("\n")
+          : prefixRaw.split("\n");
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = lines[i]!;
+      let emission: WatcherEmission;
+      try {
+        emission = { kind: "line", item: JSON.parse(raw) as RolloutLineItem, raw };
+      } catch (cause) {
+        return {
+          ok: false,
+          reason: `prefix_boundary:malformed_line:${detail(cause)}`,
+        };
+      }
+      const observed = observeWatcherEmission(emission, i, {
+        generation: captureHealth.generation,
+        suppressRuntimeLifecycle: true,
+        ...(expectedSession !== undefined ? { expectedSessionId: expectedSession.sessionId } : {}),
+      });
+      for (const signal of observed.lifecycle) {
+        if (signal.kind === "capture_degraded") {
+          return { ok: false, reason: `prefix_boundary:degraded:${signal.reason}` };
+        }
+        if (signal.kind === "session_mismatch_observed") {
+          return {
+            ok: false,
+            reason: `prefix_boundary:session_mismatch:${signal.observed}`,
+          };
+        }
+      }
+    }
+    stats.replayedPrefixLines = boundary.lineCount;
+    lineCounter = boundary.lineCount;
+    return { ok: true, startOffset: boundary.byteLength };
   };
 
   if (deps.continueCapture !== undefined) {
@@ -310,30 +524,71 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     sdk = deps.continueCapture.sdk;
     Object.assign(stats, deps.continueCapture.stats);
     stats.threadId = threadIdFromRef(threadRef) || stats.threadId;
+    // Handoff continues SDK but remains binding until new rollout is attributed.
+    captureHealth = createCaptureGeneration(genSeed);
   }
 
   void (async () => {
     try {
-      const filePath =
-        deps.knownRolloutPath ??
-        (await discoverSessionFile(cwd, startedAt, { ...deps.discoverDeps, signal: abort.signal }));
+      if (expectedSession === undefined) {
+        degradeAndEmit("discovery_conflict:missing_expected_session");
+        logError("cc-lhc: expectedSession required for capture bind — capture degraded");
+        return;
+      }
+
+      let filePath: string;
+      if (deps.knownRolloutPath !== undefined) {
+        const assertDeps =
+          deps.discoverDeps?.readFileFn !== undefined
+            ? { readFileFn: deps.discoverDeps.readFileFn }
+            : {};
+        await assertRolloutMatchesExpectedSession(
+          deps.knownRolloutPath,
+          expectedSession.sessionId,
+          assertDeps,
+        );
+        filePath = deps.knownRolloutPath;
+      } else {
+        filePath = await discoverExpectedSessionFile(cwd, expectedSession.sessionId, {
+          ...deps.discoverDeps,
+          signal: abort.signal,
+        });
+      }
       if (stopped) return;
 
+      if (basename(filePath, ".jsonl") !== expectedSession.sessionId) {
+        throw new SessionAttributionError(
+          "conflict",
+          `bound path ${filePath} does not match expected ${expectedSession.sessionId}`,
+        );
+      }
+
       rolloutFilePath = filePath;
-      rolloutSessionId = basename(filePath, ".jsonl");
-      log(`cc-lhc rollout: ${filePath}`);
+      rolloutSessionId = expectedSession.sessionId;
+      log(`cc-lhc rollout: ${filePath} (expected session ${expectedSession.sessionId})`);
+
+      // Single ownership gate for initial and continued bind: stop during this
+      // await wins before SDK init, lineage writes, continuity open, or watcher.
+      if (deps.bindHold !== undefined) {
+        await deps.bindHold;
+        if (stopped) return;
+      }
 
       if (threadRef === undefined || sdk === undefined) {
         const resolution = await resolveCaptureThread({
           sessionId: rolloutSessionId,
           cwd,
+          launchClass: launchClassOf(expectedSession.source),
           ...(deps.resumeSessionId === undefined ? {} : { resumeSessionId: deps.resumeSessionId }),
           ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
           registryPath,
           lineageDbPath,
-          ...(deps.discoverDeps?.projectsRoot === undefined ? {} : { projectsRoot: deps.discoverDeps.projectsRoot }),
+          ...(deps.discoverDeps?.projectsRoot === undefined
+            ? {}
+            : { projectsRoot: deps.discoverDeps.projectsRoot }),
           log,
           logError,
+          onLineageFailure: (reason) => degradeAndEmit(reason),
           ...(deps.lineageDeps === undefined ? {} : { lineageDeps: deps.lineageDeps }),
           createThreadFn: createThread,
         });
@@ -342,45 +597,200 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         threadRef = resolution.threadRef;
         dedupeState = resolution.dedupeState;
         persistSignatures = resolution.persistSignatures;
+        // Durable prefix provenance from lineage when caller did not pass one
+        // (external process-exit resume of a rebuilt session).
+        if (!hadExplicitBoundary) {
+          resolvedPrefix = resolution.prefix;
+        }
         stats.threadId = threadIdFromRef(threadRef) || null;
+        if (stopped) return;
         sdk = (deps.initSdkFn ?? initLhc)(captureSdkConfig(deps.noInference === true ? { noInference: true } : {}));
       } else {
         const continuedThreadId = threadIdFromRef(threadRef);
         if (continuedThreadId !== "") {
-          await safeRecordSessionThread(lineageDbPath, rolloutSessionId, continuedThreadId, logError, deps.lineageDeps);
-          dedupeState = createReplayDedupeState(
-            true,
-            safeLoadThreadSignatures(lineageDbPath, continuedThreadId, logError, deps.lineageDeps),
+          const recorded = await safeRecordSessionThread(
+            lineageDbPath,
+            rolloutSessionId,
+            continuedThreadId,
+            logError,
+            deps.lineageDeps,
           );
+          if (stopped) return;
+          if (!recorded.ok) degradeAndEmit(recorded.reason);
+          const loaded = safeLoadThreadSignatures(
+            lineageDbPath,
+            continuedThreadId,
+            logError,
+            deps.lineageDeps,
+          );
+          if (stopped) return;
+          if (!loaded.outcome.ok) degradeAndEmit(loaded.outcome.reason);
+          dedupeState = createReplayDedupeState(true, loaded.signatures);
           persistSignatures = async (added) => {
-            await safeAppendThreadSignatures(lineageDbPath, continuedThreadId, added, logError, deps.lineageDeps);
+            const outcome = await safeAppendThreadSignatures(
+              lineageDbPath,
+              continuedThreadId,
+              added,
+              logError,
+              deps.lineageDeps,
+            );
+            if (!outcome.ok) degradeAndEmit(outcome.reason);
+            return outcome;
           };
           log(`cc-lhc: continuing thread ${continuedThreadId} for session ${rolloutSessionId}`);
+          if (!hadExplicitBoundary) {
+            try {
+              const entry = lookupSessionLineage(lineageDbPath, rolloutSessionId, deps.lineageDeps);
+              if (entry !== undefined) {
+                resolvedPrefix = entry.prefix;
+              } else {
+                // Continue path without a target row: always unknown for
+                // non-explicit provenance (do not invent none).
+                resolvedPrefix = prefixBoundaryUnknown();
+              }
+            } catch {
+              resolvedPrefix = prefixBoundaryUnknown();
+            }
+          }
         }
       }
+      if (stopped) return;
 
-      watcher = watchRolloutFile(filePath, {
-        onBatch: (emissions) => {
-          enqueueEmissions(emissions);
-        },
-        onBufferCap: (message) => {
-          logError(`cc-lhc watcher: ${message}`);
-        },
-      });
+      // --- Prefix provenance gate (before any skip / watcher start) ---
+      let watcherStartOffset = 0;
+      if (resolvedPrefix.kind === "unknown") {
+        degradeAndEmit("prefix_boundary:unknown_provenance");
+        logError(
+          "cc-lhc: unknown prefix provenance — capture refused; " +
+            "reconcile by re-running compact/prune (verified boundary) or " +
+            "explicitly establishing known-none for a native session",
+        );
+        return;
+      }
+
+      let continuity: ContinuityHandle | undefined;
+      try {
+        if (stopped) return;
+        continuity = openContinuityHandle(filePath);
+      } catch (cause) {
+        degradeAndEmit(`prefix_boundary:open_failed:${detail(cause)}`);
+        return;
+      }
+      if (stopped) {
+        continuity.close();
+        return;
+      }
+
+      if (resolvedPrefix.kind === "verified") {
+        log(
+          `cc-lhc: verifying rebuilt-prefix fence lines=${resolvedPrefix.lineCount} ` +
+            `bytes=${resolvedPrefix.byteLength} for ${rolloutSessionId}`,
+        );
+        const established = establishVerifiedPrefix(continuity, resolvedPrefix);
+        if (!established.ok) {
+          continuity.close();
+          degradeAndEmit(established.reason);
+          return;
+        }
+        if (stopped) {
+          continuity.close();
+          return;
+        }
+        watcherStartOffset = established.startOffset;
+        log(
+          `cc-lhc: prefix verified; watcher starts at byte ${watcherStartOffset} ` +
+            `(skipped ${resolvedPrefix.lineCount} line(s))`,
+        );
+      }
+
+      if (stopped) {
+        continuity.close();
+        return;
+      }
+
+      // Ownership transfer: only assign watcher after construction succeeds.
+      // Continuity handle is owned by the watcher thereafter.
+      // Verified prefix: transfer the already-proven persisted digest — watcher
+      // must not re-read [0, startOffset) to invent a new baseline.
+      const watchFn = deps.watchRolloutFileFn ?? watchRolloutFile;
+      let constructed: RolloutWatcher;
+      try {
+        constructed = watchFn({
+          continuity,
+          startOffset: watcherStartOffset,
+          ...(watcherStartOffset > 0 && resolvedPrefix.kind === "verified"
+            ? { expectedConsumedDigest: resolvedPrefix.sha256 }
+            : {}),
+          ...(deps.watcherIo === undefined ? {} : { io: deps.watcherIo }),
+          onBatch: (emissions) => enqueueEmissions(emissions),
+          onBufferCap: (message) => {
+            logError(`cc-lhc watcher: ${message}`);
+            degradeAndEmit(`buffer_cap:${message}`);
+          },
+          onInitialFailure: (message) => {
+            logError(`cc-lhc watcher initial: ${message}`);
+          },
+          onFileShrink: (message) => {
+            intakeHalted = true;
+            degradeAndEmit(`file_shrink:${message}`);
+          },
+          onContinuityFailure: (message) => {
+            intakeHalted = true;
+            degradeAndEmit(`file_continuity:${message}`);
+          },
+          onRuntimeFailure: (message) => {
+            intakeHalted = true;
+            degradeAndEmit(`watcher_runtime:${message}`);
+          },
+        });
+      } catch (cause) {
+        continuity.close();
+        degradeAndEmit(`watcher_construct:${detail(cause)}`);
+        return;
+      }
+      if (stopped) {
+        constructed.stop();
+        return;
+      }
+      watcher = constructed;
+
+      try {
+        await watcher.initialCatchUp;
+      } catch (cause) {
+        if (stopped) return;
+        degradeAndEmit(`initial_catchup:${detail(cause)}`);
+        return;
+      }
+      await batchQueue;
+      if (stopped) return;
+      if (intakeHalted) return;
+      if (captureHealth.phase === "binding") {
+        captureHealth = markCaptureReady(captureHealth, lineCounter);
+        publishLifecycle([{ kind: "session_bound", sessionId: expectedSession.sessionId }]);
+        log(`cc-lhc capture ready (gen ${captureHealth.generation}, durableLine=${lineCounter})`);
+      }
     } catch (cause) {
       if (abort.signal.aborted) return;
+      if (cause instanceof SessionAttributionError) {
+        degradeAndEmit(`discovery_conflict:${cause.code}:${cause.message}`);
+      } else {
+        degradeAndEmit(`discover_failed:${detail(cause)}`);
+      }
       logError(`cc-lhc discover failed: ${detail(cause)}`);
     }
   })();
 
   return {
     stats,
-    getCommandContext(): CaptureCommandContext {
+    getCommandContext(): CaptureCommandContextExtended {
       return {
         captureDisabled: false,
         stats,
         sdk,
         threadRef,
+        captureDegraded: captureHealth.phase === "degraded",
+        captureGeneration: captureHealth.generation,
+        capturePhase: captureHealth.phase,
       };
     },
     getRolloutInfo(): RolloutCaptureInfo {
@@ -389,10 +799,26 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     isTurnOpen(): boolean {
       return turnOpen;
     },
+    isCaptureHealthy(): boolean {
+      return isCaptureHealthy(captureHealth);
+    },
+    isCaptureReady(): boolean {
+      return canMutateCapture(captureHealth);
+    },
+    getCaptureHealth(): CaptureGenerationState {
+      return {
+        ...captureHealth,
+        reasons: [...captureHealth.reasons],
+      };
+    },
+    getCaptureGeneration(): number {
+      return captureHealth.generation;
+    },
     stop: async () => {
       stopped = true;
       abort.abort();
       if (watcher !== undefined) watcher.stop();
+      // Final flush and queue settlement may still degrade; closed is applied last.
       await batchQueue;
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
         let drainTimedOut = false;
@@ -404,10 +830,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           },
         });
         if (drainTimedOut) {
-          // Record-worthy: pending derivation work at capture stop means
-          // inference may be incomplete for this stretch. The note lives in
-          // the thread record (queryable, re-served on rebuild); it must
-          // NEVER go to the terminal — the child owns the screen.
           try {
             await sdk.intakeStream.messageEvents(threadRef, [
               {
@@ -419,7 +841,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               },
             ]);
           } catch {
-            // Best-effort: the log line above already carries the event.
+            // Best-effort
           }
         }
         const overview = await inspect.overview(threadRef);
@@ -427,6 +849,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           stats.derivationsPending = overview.value.derivation.pending;
         }
       }
+      // Terminal: no further phase transitions after stop() resolves.
+      captureHealth = markCaptureClosed(captureHealth);
     },
   };
 }

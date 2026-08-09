@@ -1,0 +1,20 @@
+{
+  "date": "2026-08-09",
+  "claudeVersion": "2.1.226",
+  "claudePath": "/home/leemoore/.local/bin/claude",
+  "selectedThinkingRebuildArm": "omit",
+  "notes": "Sanitized structure only; signatures are placeholders.",
+  "dominantShape": {
+    "thinking": "",
+    "signaturePresent": true,
+    "signatureSanitizedPrefix": "SANITIZED_SIG_",
+    "modelField": "message.model",
+    "providerFieldOnRollout": false,
+    "apiFieldOnRollout": false,
+    "usageRepeatedOnSplitLines": true,
+    "samplingIdentity": "message.id"
+  },
+  "nativeCompactSummaryTypeObserved": false,
+  "arm1SignedVerbatimExhibit": false,
+  "arm2UnsignedVisibleExhibit": false
+}

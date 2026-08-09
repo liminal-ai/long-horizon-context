@@ -99,11 +99,78 @@ describe("rebuild faithfulness invariant", () => {
     // itself. Any lossy rendering (bracket labels, dropped ids, flattened
     // blocks) in rebuild breaks this equality.
     const view: SessionThreadView = { threadId: "th", entries: toolHeavyEntries };
+    // Faithfulness of native text/tool re-emission uses unsigned_visible so
+    // non-empty thinking is retained for the dump comparison. Production
+    // SELECTED arm is omit (see thinking-ladder + signature-ladder-evidence).
     const rebuilt = buildRolloutLines({
       entries: view.entries,
       newSessionId: "sid",
       envelope: { cwd: "/w", assistantModel: "claude-opus-4-6" },
+      thinkingRebuildArm: "unsigned_visible",
     });
     expect(dumpRolloutLines(rebuilt.map((entry) => entry.line))).toBe(dumpSessionThreadView(view));
+
+    const omitted = buildRolloutLines({
+      entries: view.entries,
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "claude-opus-4-6" },
+      thinkingRebuildArm: "omit",
+    });
+    expect(dumpRolloutLines(omitted.map((entry) => entry.line))).not.toContain("[assistant thinking]");
+
+    // Production-omit expected projection: pure signed-empty entry alone yields no lines;
+    // adjacent text/tool/result retained with parent chain integrity.
+    const pureSignedEmpty = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "", thinkingSignature: "ONLY_SIG" }],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "claude-opus-4-6" },
+      thinkingRebuildArm: "omit",
+    });
+    expect(pureSignedEmpty).toHaveLength(0);
+
+    const projected = buildRolloutLines({
+      entries: [
+        { role: "user", content: "go", sourceMessages: [] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "", thinkingSignature: "SIG_EMPTY" },
+            { type: "text", text: "running" },
+            { type: "toolCall", toolCallId: "t1", toolName: "Bash", arguments: { command: "ls" } },
+          ],
+          sourceMessages: [],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "t1",
+          toolName: "Bash",
+          content: "ok",
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "claude-opus-4-6", dualSessionIdFields: true },
+      thinkingRebuildArm: "omit",
+    });
+    expect(projected).toHaveLength(4);
+    expect(projected[0]?.line.message?.content).toBe("go");
+    expect(projected[1]?.line.message?.content).toEqual([{ type: "text", text: "running" }]);
+    expect(projected[2]?.line.message?.content).toEqual([
+      { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+    ]);
+    expect(projected[3]?.line.message?.content).toEqual([
+      { type: "tool_result", tool_use_id: "t1", content: "ok", is_error: false },
+    ]);
+    expect(projected[1]?.line.parentUuid).toBe(projected[0]?.line.uuid);
+    expect(projected[2]?.line.parentUuid).toBe(projected[1]?.line.uuid);
+    expect(projected[3]?.line.parentUuid).toBe(projected[2]?.line.uuid);
+    expect(JSON.stringify(projected)).not.toMatch(/"type":"thinking"/);
+    expect(JSON.stringify(projected)).not.toMatch(/"signature":""/);
   });
 });

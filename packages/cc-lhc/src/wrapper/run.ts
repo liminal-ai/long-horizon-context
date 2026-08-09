@@ -1,16 +1,12 @@
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
-import {
-  type DispatchOutcome,
-  dispatchLhcCommand,
-  type LhcCommandRuntime,
-  type SessionRestartPlan,
-} from "../commands/dispatch.js";
+import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
-import { hasContinueFlag, parseResumeSessionId } from "../intake/argv.js";
-import { defaultLineageDbPath, safeRecordSessionThread } from "../intake/lineage-db.js";
+import { LaunchGrammarError, resolveLaunchSession } from "../intake/launch-session.js";
+import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
+import type { ExpectedSession } from "../rollout/expected-session.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
@@ -26,7 +22,6 @@ import {
 } from "./modal.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
-import { executeResumeInjection, formatResumeAbortTurnOpen, formatResumeFailure } from "./resume-injection.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
@@ -50,19 +45,12 @@ export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entr
 export const PENDING_ESC_RESOLVE_MS = 50;
 
 /**
- * What the panel shows when a command settles. null means AUTO-DISMISS: a
- * CONFIRMED swap already carries its receipt as a runtime note rendered
- * natively in the resumed transcript, so the panel closes itself and the
- * user watches the session repaint. Refusals, errors, no-ops, and
- * status/stats keep the stay-until-dismissed rhythm.
+ * What the panel shows when a command settles. Compact/prune no longer
+ * auto-dismiss via in-app swap (retired on 2.1.226); receipts always stay
+ * until the operator dismisses so relaunch guidance is visible.
  */
-export function settleReceipts(
-  outcomeMessages: string[],
-  resume: { swapped: boolean; receipts: string[] } | null,
-): string[] | null {
-  if (resume === null) return outcomeMessages;
-  if (resume.swapped) return null;
-  return [...outcomeMessages, ...resume.receipts];
+export function settleReceipts(outcomeMessages: string[]): string[] {
+  return outcomeMessages;
 }
 
 export type PtySpawn = typeof defaultSpawn;
@@ -79,10 +67,6 @@ export type RunOptions = {
   wrapperLog?: WrapperLog;
   /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
   outputHoldCapBytes?: number;
-  /** Test hook: shorten the resume tripwire window (defaults to 3s). */
-  resumeWindowMs?: number;
-  /** Test hook: shorten post-tripwire growth polling (defaults to 5s). */
-  resumeConfirmExtraMs?: number;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -109,7 +93,7 @@ function restoreTerminal(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream): 
   }
 }
 
-export function run(argv: string[], options: RunOptions = {}): Promise<number> {
+export async function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const claudeBin = options.claudeBin ?? resolveClaudeBin();
   const spawnPty = options.spawnPty ?? defaultSpawn;
   const stdin = options.stdin ?? process.stdin;
@@ -117,14 +101,42 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const stderr = options.stderr ?? process.stderr;
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
-  const resumeSessionId = parseResumeSessionId(argv);
-  const continueFlag = hasContinueFlag(argv);
   const commandGuard = new CommandInFlightGuard();
+
+  // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
+  // While the child owns the terminal, diagnostics go to the wrapper log
+  // (surface (c)); `status` reports the warning count so nothing is lost.
+  const wrapperLog = options.wrapperLog ?? createWrapperLog();
+
+  let expectedSession: ExpectedSession | undefined;
+  let resumeSessionIdForLineage: string | undefined;
+  let childArgv = argv;
+  if (!noCapture) {
+    try {
+      const plan = await resolveLaunchSession(argv, {
+        cwd: process.cwd(),
+        stdin,
+        stdout,
+        stderr,
+      });
+      expectedSession = plan.expected;
+      childArgv = plan.childArgv;
+      resumeSessionIdForLineage = plan.resumeSessionIdForLineage;
+      wrapperLog.info(
+        `cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`,
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof LaunchGrammarError || cause instanceof Error ? cause.message : String(cause);
+      stderr.write(`${message}\n`);
+      return 2;
+    }
+  }
 
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
 
-  const ptyProcess = spawnPty(claudeBin, argv, {
+  const ptyProcess = spawnPty(claudeBin, childArgv, {
     name: TERM_NAME,
     cols,
     rows,
@@ -135,11 +147,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   let exited = false;
   let captureSession: CaptureSession | undefined;
   const startedAt = new Date();
-
-  // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
-  // While the child owns the terminal, diagnostics go to the wrapper log
-  // (surface (c)); `status` reports the warning count so nothing is lost.
-  const wrapperLog = options.wrapperLog ?? createWrapperLog();
 
   // Alt-screen truth for every exit path, normal or not: the process-exit
   // hook, signal handlers, and stdin loss all leave through this guard, so a
@@ -161,12 +168,14 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
     wrapperLog.info(formatCaptureStatsLine(captureSession.stats));
   };
 
-  if (!noCapture) {
+  if (!noCapture && expectedSession !== undefined) {
     captureSession = startCaptureSession({
       startedAt,
       noInference,
-      ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
-      ...(continueFlag ? { continueFlag: true } : {}),
+      expectedSession,
+      ...(resumeSessionIdForLineage !== undefined
+        ? { resumeSessionId: resumeSessionIdForLineage }
+        : {}),
       lineageDbPath: defaultLineageDbPath(),
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
@@ -185,10 +194,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
   if (stdin.isTTY) {
     stdin.setRawMode(true);
   }
-
-  // The resume tripwire taps forwarded output for the duration of its watch
-  // window; it must keep seeing data even while the modal holds output.
-  let outputTap: ((data: string) => void) | null = null;
 
   const leaderByte = resolveLeaderByte(process.env.CC_LHC_LEADER, (message) => {
     wrapperLog.warn(message);
@@ -214,7 +219,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
 
   const forwardOutput = (data: string): void => {
     outputHold.feed(data);
-    outputTap?.(data);
   };
 
   const commandRuntime = (): LhcCommandRuntime => {
@@ -237,6 +241,14 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
       isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
+      isCaptureHealthy: () => captureSession?.isCaptureHealthy() ?? false,
+      isCaptureReady: () => captureSession?.isCaptureReady() ?? false,
+      getCaptureGeneration: () => captureSession?.getCaptureGeneration() ?? 0,
+      captureDegraded: captureSession?.getCaptureHealth().phase === "degraded",
+      captureGeneration: captureSession?.getCaptureGeneration(),
+      capturePhase: captureSession?.getCaptureHealth().phase,
+      lineageDbPath: defaultLineageDbPath(),
+      logLineageError: (message) => wrapperLog.warn(message),
       warnings: { count: wrapperLog.warningCount(), logPath: wrapperLog.path },
     };
   };
@@ -329,91 +341,6 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
       resolve(exitCode);
     };
 
-    /** Runs the injection; swapped=true means the panel should auto-dismiss. */
-    const performResumeInjection = async (
-      plan: SessionRestartPlan,
-      outcomeMessages: string[],
-    ): Promise<{
-      swapped: boolean;
-      receipts: string[];
-      failurePanelShown?: boolean;
-      failureSettled?: boolean;
-    }> => {
-      if (noCapture || captureSession === undefined) return { swapped: false, receipts: [] };
-      let dismissedForSwap = false;
-      let dismissedModalGeneration = modalGeneration;
-      const result = await executeResumeInjection({
-        plan,
-        captureSession,
-        writeToPty: (data) => {
-          ptyProcess.write(data);
-        },
-        onBeforeInject: () => {
-          dismissedForSwap = true;
-          dismissedModalGeneration = modalGeneration;
-          inputState = finishExecuting(inputState);
-          altScreen.leave();
-          outputHold.flush();
-        },
-        onOutput: (listener) => {
-          outputTap = listener;
-          return () => {
-            outputTap = null;
-          };
-        },
-        startCapture: (injectedAt, continueCapture, rolloutPath) =>
-          startCaptureSession({
-            startedAt: injectedAt,
-            noInference,
-            continueCapture,
-            lineageDbPath: defaultLineageDbPath(),
-            knownRolloutPath: rolloutPath,
-            replayedPrefixLines: plan.replayedPrefixLines,
-            log: (message) => wrapperLog.info(message),
-            logError: (message) => wrapperLog.warn(message),
-          }),
-        recordLineage: async ({ sessionId, threadId }) => {
-          await safeRecordSessionThread(defaultLineageDbPath(), sessionId, threadId, (message) => {
-            wrapperLog.warn(message);
-          });
-        },
-        isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
-        logResume: (message) => {
-          wrapperLog.info(message);
-        },
-        logHandoffError: (message) => {
-          wrapperLog.warn(message);
-        },
-        ...(options.resumeWindowMs === undefined ? {} : { windowMs: options.resumeWindowMs }),
-        ...(options.resumeConfirmExtraMs === undefined ? {} : { confirmExtraMs: options.resumeConfirmExtraMs }),
-      });
-      if (result.ok) {
-        // No panel receipt on success: the swap receipt is a trailing
-        // runtime-note line in the rebuilt rollout, rendered natively in the
-        // resumed transcript.
-        captureSession = result.captureSession;
-        return { swapped: true, receipts: [] };
-      }
-      const failureReceipt =
-        result.reason === "turn_open" ? formatResumeAbortTurnOpen(plan) : formatResumeFailure(plan);
-      if (dismissedForSwap) {
-        const idlePassthrough = inputState.mode === "passthrough" && modalGeneration === dismissedModalGeneration;
-        if (!idlePassthrough) {
-          wrapperLog.warn(`swap failed after panel dismissal (user panel active): ${failureReceipt}`);
-          return { swapped: false, receipts: [], failureSettled: true };
-        }
-        outputHold.hold();
-        altScreen.enter();
-        inputState = showReceipts({ ...createInputState(inputState.leaderByte), inPaste: inputState.inPaste }, [
-          ...outcomeMessages,
-          failureReceipt,
-        ]);
-        renderModalPanel();
-        return { swapped: false, receipts: [], failurePanelShown: true };
-      }
-      return { swapped: false, receipts: [failureReceipt] };
-    };
-
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
 
     // A modal-executed command settles here. Receipts go into the alt-screen
@@ -473,18 +400,10 @@ export function run(argv: string[], options: RunOptions = {}): Promise<number> {
         return;
       }
       void dispatched
-        .then(async (outcome) => {
-          const resume =
-            outcome.restart === undefined ? null : await performResumeInjection(outcome.restart, outcome.messages);
-          if (resume?.failurePanelShown === true || resume?.failureSettled === true) return;
-          const receipts = settleReceipts(outcome.messages, resume);
-          if (receipts === null) {
-            // Confirmed swap: auto-dismiss — panel already left at injection;
-            // settleCommand([]) is a no-op safety (alt-screen leave is idempotent).
-            settleCommand([], label);
-            return;
-          }
-          settleCommand(receipts, label);
+        .then((outcome) => {
+          // No in-app /resume injection (retired 2.1.226). Compact/prune receipts
+          // always stay modal until dismissed so relaunch guidance is visible.
+          settleCommand(settleReceipts(outcome.messages), label);
         })
         .catch((cause: unknown) => {
           const message = cause instanceof Error ? cause.message : String(cause);

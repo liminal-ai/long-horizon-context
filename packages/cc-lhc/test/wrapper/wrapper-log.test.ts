@@ -79,22 +79,11 @@ describe("createWrapperLog", () => {
 });
 
 describe("settleReceipts (panel settle decision)", () => {
-  it("auto-dismisses (null) ONLY on a confirmed swap", () => {
-    expect(settleReceipts(["compact view=v4", "resuming session in-place..."], { swapped: true, receipts: [] })).toBe(
-      null,
-    );
-  });
-
-  it("keeps the panel for refusals, errors, no-ops, and status/stats", () => {
-    // refusal / no-op / status: no restart attempted
-    expect(settleReceipts(["turn in progress — rerun when idle"], null)).toEqual([
-      "turn in progress — rerun when idle",
-    ]);
-    expect(settleReceipts(["prune boundary 0 -> 0", "no-op"], null)).toEqual(["prune boundary 0 -> 0", "no-op"]);
-    // swap attempted but failed: outcome receipt + failure receipt stay visible
-    expect(settleReceipts(["compact view=v4"], { swapped: false, receipts: ["resume did not take"] })).toEqual([
+  it("always keeps messages visible (no in-app swap auto-dismiss)", () => {
+    expect(settleReceipts(["compact view=v4", "Exit Claude, then relaunch with: cc-lhc --resume new"])).toEqual([
       "compact view=v4",
-      "resume did not take",
+      "Exit Claude, then relaunch with: cc-lhc --resume new",
     ]);
+    expect(settleReceipts(["turn in progress — rerun when idle"])).toEqual(["turn in progress — rerun when idle"]);
   });
 });

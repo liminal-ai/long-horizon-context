@@ -1,11 +1,16 @@
 import type { Dirent } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { encodeProjectPath, findSessionFileOnce } from "../../src/rollout/discover.js";
+import {
+  encodeProjectPath,
+  findExpectedSessionFileOnce,
+  SessionAttributionError,
+  resolveContinueSessionId,
+} from "../../src/rollout/discover.js";
 
 function fakeDirent(name: string, isFile = true): Dirent {
   return {
@@ -37,64 +42,88 @@ describe("encodeProjectPath", () => {
   });
 });
 
-describe("findSessionFileOnce", () => {
-  it("picks the newest jsonl active since wrapper start", async () => {
+describe("findExpectedSessionFileOnce", () => {
+  it("binds only the expected session id file, not the newest peer", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-discover-"));
     const cwd = "/work/project";
     const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-    const startedAt = new Date("2026-07-03T10:00:00.000Z");
-    const oldPath = join(projectDir, "old.jsonl");
-    const newPath = join(projectDir, "new.jsonl");
+    mkdirSync(projectDir, { recursive: true });
+    const expectedId = "expected-session-id";
+    const expectedPath = join(projectDir, `${expectedId}.jsonl`);
+    const newerPath = join(projectDir, "newer-session-id.jsonl");
+    writeFileSync(expectedPath, "{}\n");
+    writeFileSync(newerPath, "{}\n");
 
-    const statsByPath = new Map<string, { birthtimeMs: number; mtimeMs: number }>([
-      [
-        oldPath,
-        {
-          birthtimeMs: Date.parse("2026-07-03T09:00:00.000Z"),
-          mtimeMs: Date.parse("2026-07-03T09:30:00.000Z"),
-        },
-      ],
-      [
-        newPath,
-        {
-          birthtimeMs: Date.parse("2026-07-03T10:05:00.000Z"),
-          mtimeMs: Date.parse("2026-07-03T10:06:00.000Z"),
-        },
-      ],
-    ]);
-
-    const found = await findSessionFileOnce(cwd, startedAt, {
+    const found = await findExpectedSessionFileOnce(cwd, expectedId, {
       projectsRoot,
-      readdirFn: async (dir) => {
-        expect(dir).toBe(projectDir);
-        return [fakeDirent("old.jsonl"), fakeDirent("new.jsonl"), fakeDirent("notes.txt", false)];
-      },
+      readdirFn: async () => [fakeDirent("expected-session-id.jsonl"), fakeDirent("newer-session-id.jsonl")],
       statFn: async (path) => {
-        const stat = statsByPath.get(path);
-        if (stat === undefined) throw new Error(`unexpected path: ${path}`);
-        return stat;
+        if (path === expectedPath) {
+          return { birthtimeMs: 1, mtimeMs: 1 };
+        }
+        if (path === newerPath) {
+          return { birthtimeMs: 9, mtimeMs: 9 };
+        }
+        throw new Error(`unexpected path ${path}`);
       },
     });
 
-    expect(found).toBe(newPath);
+    expect(found).toBe(expectedPath);
   });
 
-  it("accepts existing files touched after wrapper start (resume case)", async () => {
-    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-discover-"));
-    const cwd = "/work/resume";
-    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-    const startedAt = new Date("2026-07-03T12:00:00.000Z");
-    const resumedPath = join(projectDir, "continued.jsonl");
-
-    const found = await findSessionFileOnce(cwd, startedAt, {
+  it("returns null when the expected file is missing (no recency fallback)", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-discover-miss-"));
+    const cwd = "/work/missing";
+    const found = await findExpectedSessionFileOnce(cwd, "no-such-session", {
       projectsRoot,
-      readdirFn: async () => [fakeDirent("continued.jsonl")],
-      statFn: async () => ({
-        birthtimeMs: Date.parse("2026-07-02T08:00:00.000Z"),
-        mtimeMs: Date.parse("2026-07-03T12:01:00.000Z"),
-      }),
+      readdirFn: async () => [fakeDirent("other.jsonl")],
+      statFn: async () => {
+        throw Object.assign(new Error("enoent"), { code: "ENOENT" });
+      },
     });
+    expect(found).toBeNull();
+  });
 
-    expect(found).toBe(resumedPath);
+  it("two expected ids in one cwd bind independently", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-discover-two-"));
+    const cwd = "/work/dual";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    mkdirSync(projectDir, { recursive: true });
+    const a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    writeFileSync(join(projectDir, `${a}.jsonl`), "{}\n");
+    writeFileSync(join(projectDir, `${b}.jsonl`), "{}\n");
+
+    const foundA = await findExpectedSessionFileOnce(cwd, a, { projectsRoot });
+    const foundB = await findExpectedSessionFileOnce(cwd, b, { projectsRoot });
+    expect(foundA).toBe(join(projectDir, `${a}.jsonl`));
+    expect(foundB).toBe(join(projectDir, `${b}.jsonl`));
+    expect(foundA).not.toBe(foundB);
+  });
+});
+
+describe("resolveContinueSessionId", () => {
+  it("resolves newest jsonl id for pre-launch continue rewrite only", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-continue-"));
+    const cwd = "/work/cont";
+    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
+    const oldPath = join(projectDir, "old.jsonl");
+    const newPath = join(projectDir, "new.jsonl");
+    const id = await resolveContinueSessionId(cwd, {
+      projectsRoot,
+      readdirFn: async () => [fakeDirent("old.jsonl"), fakeDirent("new.jsonl")],
+      statFn: async (path) => {
+        if (path === oldPath) return { birthtimeMs: 1, mtimeMs: 1 };
+        if (path === newPath) return { birthtimeMs: 2, mtimeMs: 99 };
+        throw new Error("bad path");
+      },
+    });
+    expect(id).toBe("new");
+  });
+});
+
+describe("SessionAttributionError", () => {
+  it("is thrown for empty expected id", async () => {
+    await expect(findExpectedSessionFileOnce("/w", "", {})).rejects.toBeInstanceOf(SessionAttributionError);
   });
 });

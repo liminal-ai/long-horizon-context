@@ -5,6 +5,10 @@ import { join } from "node:path";
 
 import type { SessionThreadView } from "lhc";
 
+import {
+  computeVerifiedPrefixBoundary,
+  type PrefixBoundaryVerified,
+} from "../intake/prefix-boundary.js";
 import { encodeProjectPath } from "./discover.js";
 import {
   buildRolloutLines,
@@ -49,6 +53,8 @@ export interface WriteRebuiltRolloutResult {
    * re-serve it.
    */
   replayedPrefixLines: number;
+  /** Content-verifiable fence over the exact serialized prefix bytes. */
+  prefixBoundary: PrefixBoundaryVerified;
 }
 
 export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Promise<WriteRebuiltRolloutResult> {
@@ -72,10 +78,16 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     newSessionId,
     envelope,
   };
-  const lines = buildRolloutLines(rebuildInput);
-  const replayedPrefixLines = lines.length;
+  const prefixLines = buildRolloutLines(rebuildInput);
+  // Prefix fence covers served projection/band lines only. Serialize prefix
+  // alone so the content boundary matches the leading file bytes before any
+  // trailing runtime receipt.
+  const prefixSerialized = serializeRolloutLines(prefixLines);
+  const replayedPrefixLines = prefixLines.length;
+  const prefixBoundary = computeVerifiedPrefixBoundary(prefixSerialized, replayedPrefixLines);
+
+  const lines = [...prefixLines];
   if (input.swapReceipt !== undefined) {
-    // The receipt line itself replays on re-intake, so the count includes it.
     const receipt = formatSwapReceipt(input.swapReceipt.oldSessionId, newSessionId, lines.length + 1);
     const lastUuid = lines.length > 0 ? lines[lines.length - 1]!.line.uuid : null;
     lines.push(runtimeNoteRolloutLine(receipt, newSessionId, envelope, typeof lastUuid === "string" ? lastUuid : null));
@@ -102,5 +114,6 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     lineCount: lines.length,
     expectedReintakeLines: lines.length,
     replayedPrefixLines,
+    prefixBoundary,
   };
 }

@@ -116,27 +116,66 @@ describe("watchRolloutFile", () => {
     expect(uuids).toContain("final-b");
   });
 
-  it("resets offset on file truncation", async () => {
+  it("does not re-ingest from byte zero on file truncation (fail closed)", async () => {
     dir = mkdtempSync(join(tmpdir(), "cc-lhc-watcher-"));
     filePath = join(dir, "session.jsonl");
-    writeFileSync(filePath, '{"type":"user","uuid":"old","message":{"role":"user","content":"old"}}\n');
+    // Long enough first line so a shorter rewrite shrinks below offset.
+    writeFileSync(
+      filePath,
+      '{"type":"user","uuid":"old","message":{"role":"user","content":"old-content-long-enough"}}\n',
+    );
 
-    const collected = collectBatches(filePath);
-    watcher = collected.watcher;
-    await sleep(150);
-    watcher.stop();
-    watcher = undefined;
+    const shrinks: string[] = [];
+    const batches: WatcherEmission[][] = [];
+    watcher = watchRolloutFile(filePath, {
+      pollMs: 50,
+      onBatch: (emissions) => {
+        batches.push(emissions);
+      },
+      onFileShrink: (m) => shrinks.push(m),
+    });
+    await watcher.initialCatchUp;
+    const before = batches
+      .flat()
+      .filter((e): e is Extract<WatcherEmission, { kind: "line" }> => e.kind === "line")
+      .map((e) => e.item.uuid);
+    expect(before).toContain("old");
 
-    const collected2 = collectBatches(filePath, 50);
-    watcher = collected2.watcher;
+    // Truncate/rewrite shorter than current offset.
     writeFileSync(filePath, '{"type":"user","uuid":"new"}\n');
     await sleep(200);
     watcher.stop();
 
-    const uuids = collected2.batches
+    expect(shrinks.length).toBeGreaterThanOrEqual(1);
+    const after = batches
       .flat()
-      .filter((entry): entry is Extract<WatcherEmission, { kind: "line" }> => entry.kind === "line")
-      .map((entry) => entry.item.uuid);
-    expect(uuids).toContain("new");
+      .filter((e): e is Extract<WatcherEmission, { kind: "line" }> => e.kind === "line")
+      .map((e) => e.item.uuid);
+    // Must not re-deliver rewritten content from byte zero after shrink.
+    expect(after).not.toContain("new");
+  });
+
+  it("rejects initialCatchUp on missing file (stat failure), not empty success", async () => {
+    dir = mkdtempSync(join(tmpdir(), "cc-lhc-watcher-miss-"));
+    filePath = join(dir, "missing.jsonl");
+    const failures: string[] = [];
+    watcher = watchRolloutFile(filePath, {
+      pollMs: 50,
+      onBatch: () => {},
+      onInitialFailure: (m) => failures.push(m),
+    });
+    await expect(watcher.initialCatchUp).rejects.toThrow(/initial open failed/);
+    expect(failures.some((m) => m.includes("initial open failed"))).toBe(true);
+  });
+
+  it("resolves initialCatchUp successfully for a genuinely empty file", async () => {
+    dir = mkdtempSync(join(tmpdir(), "cc-lhc-watcher-empty-"));
+    filePath = join(dir, "empty.jsonl");
+    writeFileSync(filePath, "");
+    watcher = watchRolloutFile(filePath, {
+      pollMs: 50,
+      onBatch: () => {},
+    });
+    await expect(watcher.initialCatchUp).resolves.toBeUndefined();
   });
 });

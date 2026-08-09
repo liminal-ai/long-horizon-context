@@ -55,12 +55,12 @@ describe("buildRolloutLines", () => {
       },
     });
 
-    // assistant entry expands to one line per part: [user, thinking, text, toolResult]
-    expect(lines).toHaveLength(4);
+    // Selected thinking rebuild arm is omit: [user, text, toolResult] — no thinking line,
+    // and never invent signature:"".
+    expect(lines).toHaveLength(3);
     expect(lines[0]?.line.parentUuid).toBeNull();
     expect(lines[1]?.line.parentUuid).toBe(lines[0]?.line.uuid);
     expect(lines[2]?.line.parentUuid).toBe(lines[1]?.line.uuid);
-    expect(lines[3]?.line.parentUuid).toBe(lines[2]?.line.uuid);
     for (const entry of lines) {
       expect(entry.line.sessionId).toBe(sessionId);
       expect(entry.line.session_id).toBe(sessionId);
@@ -71,28 +71,133 @@ describe("buildRolloutLines", () => {
     expect(lines[0]?.line.type).toBe("user");
     expect(lines[0]?.line.message?.content).toBe("hello");
 
-    // native per-block assistant lines: thinking then text, no bracket labels
+    // native per-block assistant lines: text only under omit arm
     expect(lines[1]?.line.type).toBe("assistant");
     expect(lines[1]?.line.message).toMatchObject({
       role: "assistant",
       type: "message",
       model: "claude-opus-4-6",
       stop_reason: "end_turn",
-      content: [{ type: "thinking", thinking: "hmm", signature: "" }],
-    });
-    expect(lines[2]?.line.type).toBe("assistant");
-    expect(lines[2]?.line.message).toMatchObject({
       content: [{ type: "text", text: "hi there" }],
     });
-    // both lines of the entry share one synthetic API message id
+    expect(JSON.stringify(lines)).not.toContain('"type":"thinking"');
+    expect(JSON.stringify(lines)).not.toContain('signature":""');
     expect(String(lines[1]?.line.message?.id)).toMatch(/^msg_/);
-    expect(lines[2]?.line.message?.id).toBe(lines[1]?.line.message?.id);
 
     // tool result is a native tool_result block paired by tool_use_id
-    expect(lines[3]?.line.type).toBe("user");
-    expect(lines[3]?.line.message?.content).toEqual([
+    expect(lines[2]?.line.type).toBe("user");
+    expect(lines[2]?.line.message?.content).toEqual([
       { type: "tool_result", tool_use_id: "tool-1", content: "output", is_error: false },
     ]);
+  });
+
+  it("signed_verbatim arm emits captured signature and never invents empty signature", () => {
+    const lines = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "", thinkingSignature: "OPAQUE_SIG" },
+            { type: "text", text: "hi" },
+          ],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "claude-opus-4-6" },
+      thinkingRebuildArm: "signed_verbatim",
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.line.message?.content).toEqual([
+      { type: "thinking", thinking: "", signature: "OPAQUE_SIG" },
+    ]);
+  });
+
+  it("production omit projection: signed-empty and non-empty thinking omitted; text/tools/parent chain exact", () => {
+    const entries: SessionThreadViewEntry[] = [
+      { role: "user", content: "list files", sourceMessages: [] },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "", thinkingSignature: "OPAQUE_EMPTY_SIGNED" },
+          { type: "thinking", thinking: "I should run ls", thinkingSignature: "OPAQUE_NONEMPTY" },
+          { type: "text", text: "Listing." },
+          { type: "toolCall", toolCallId: "toolu_01XX", toolName: "Bash", arguments: { command: "ls" } },
+        ],
+        sourceMessages: [],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "toolu_01XX",
+        toolName: "Bash",
+        content: "a.txt",
+        sourceMessages: [],
+      },
+    ];
+    const lines = buildRolloutLines({
+      entries,
+      newSessionId: "omit-sid",
+      envelope: { cwd: "/w", assistantModel: "claude-sonnet-5", dualSessionIdFields: true },
+      // production selected arm
+    });
+    // user + text + tool_use + tool_result (both thinking blocks omitted)
+    expect(lines).toHaveLength(4);
+    expect(lines.map((l) => l.rolloutType)).toEqual(["user", "assistant", "assistant", "user"]);
+    expect(lines[0]?.line.message?.content).toBe("list files");
+    expect(lines[1]?.line.message?.content).toEqual([{ type: "text", text: "Listing." }]);
+    expect(lines[2]?.line.message?.content).toEqual([
+      { type: "tool_use", id: "toolu_01XX", name: "Bash", input: { command: "ls" } },
+    ]);
+    expect(lines[3]?.line.message?.content).toEqual([
+      { type: "tool_result", tool_use_id: "toolu_01XX", content: "a.txt", is_error: false },
+    ]);
+    // parent chain
+    expect(lines[0]?.line.parentUuid).toBeNull();
+    expect(lines[1]?.line.parentUuid).toBe(lines[0]?.line.uuid);
+    expect(lines[2]?.line.parentUuid).toBe(lines[1]?.line.uuid);
+    expect(lines[3]?.line.parentUuid).toBe(lines[2]?.line.uuid);
+    // shared message id across assistant parts
+    expect(lines[1]?.line.message?.id).toBe(lines[2]?.line.message?.id);
+    const raw = JSON.stringify(lines);
+    expect(raw).not.toMatch(/"type":"thinking"/);
+    expect(raw).not.toMatch(/"signature":""/);
+    expect(raw).not.toContain("OPAQUE_EMPTY_SIGNED");
+    expect(raw).not.toContain("OPAQUE_NONEMPTY");
+  });
+
+  it("unsigned_visible arm retains non-empty thinking without inventing signature (uncertified alternate)", () => {
+    const lines = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "visible", thinkingSignature: "SHOULD_NOT_EMIT_WHEN_UNSIGNED_ARM" },
+            { type: "text", text: "ok" },
+          ],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "m" },
+      thinkingRebuildArm: "unsigned_visible",
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.line.message?.content).toEqual([{ type: "thinking", thinking: "visible" }]);
+    expect(JSON.stringify(lines[0]?.line.message?.content)).not.toContain("signature");
+    // empty thinking omitted under unsigned_visible
+    const emptyOnly = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "", thinkingSignature: "SIG" }],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w" },
+      thinkingRebuildArm: "unsigned_visible",
+    });
+    expect(emptyOnly).toHaveLength(0);
   });
 
   it("emits native tool_use blocks with verbatim id/name/input and stop_reason tool_use", () => {
@@ -275,15 +380,15 @@ describe("writeRebuiltRollout", () => {
     });
 
     expect(existsSync(result.rolloutPath)).toBe(true);
-    // native per-block assistant lines: [user, thinking, text, toolResult]
-    expect(result.lineCount).toBe(4);
+    // omit arm: [user, text, toolResult]
+    expect(result.lineCount).toBe(3);
 
     const index = await readSessionsIndex(projectDir);
     const entry = index.entries.find((item) => item.sessionId === "rebuilt-session");
     expect(entry).toMatchObject({
       sessionId: "rebuilt-session",
+      messageCount: 3,
       fullPath: result.rolloutPath,
-      messageCount: 4,
       projectPath: "/work/project",
       isSidechain: false,
     });
@@ -312,12 +417,12 @@ describe("writeRebuiltRollout", () => {
       swapReceipt: { oldSessionId: "old-session" },
     });
 
-    // The receipt line is part of the rebuilt file, so it counts as a replayed line.
-    expect(result.lineCount).toBe(5);
-    expect(result.expectedReintakeLines).toBe(5);
+    // omit arm: 3 content lines + receipt = 4. Receipt is NEW history (not prefix).
+    expect(result.lineCount).toBe(4);
+    expect(result.expectedReintakeLines).toBe(4);
     // ...but it is NEW history, not served-view replay: the handoff capture
     // must map it (as runtime_note) instead of hard-skipping it as prefix.
-    expect(result.replayedPrefixLines).toBe(4);
+    expect(result.replayedPrefixLines).toBe(3);
 
     const lines = readFileSync(result.rolloutPath, "utf8")
       .trim()
@@ -331,18 +436,18 @@ describe("writeRebuiltRollout", () => {
             message?: { content?: unknown };
           },
       );
-    expect(lines).toHaveLength(5);
-    const receipt = lines[4]!;
+    expect(lines).toHaveLength(4);
+    const receipt = lines[3]!;
     expect(receipt.type).toBe("user");
-    expect(receipt.parentUuid).toBe(lines[3]!.uuid);
+    expect(receipt.parentUuid).toBe(lines[2]!.uuid);
     expect(receipt.message?.content).toBe(
-      "[runtime note] session old-session preserved; resumed in-place as rebuilt-session (expect ~5 replayed lines to re-intake)",
+      "[runtime note] session old-session preserved; LHC view rebuilt as rebuilt-session (expect ~4 lines); relaunch with cc-lhc --resume rebuilt-session",
     );
 
     // First prompt shown in the sessions index stays the conversation opener, not the receipt.
     const index = await readSessionsIndex(projectDir);
     const entry = index.entries.find((item) => item.sessionId === "rebuilt-session");
-    expect(entry).toMatchObject({ messageCount: 5, firstPrompt: "hello" });
+    expect(entry).toMatchObject({ messageCount: 4, firstPrompt: "hello" });
   });
 
   it("does not write rollout when sessions-index is unreadable", async () => {

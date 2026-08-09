@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import type { SessionAssistantPart, SessionThreadViewEntry, SessionThreadViewMessage } from "lhc";
 
+import {
+  SELECTED_THINKING_REBUILD_ARM,
+  type ThinkingRebuildArm,
+} from "./thinking-ladder.js";
 import type { ContentBlock, RolloutLineItem } from "./types.js";
 
 export interface RolloutEnvelope {
@@ -19,6 +23,8 @@ export interface RebuildRolloutInput {
   entries: readonly SessionThreadViewEntry[];
   newSessionId: string;
   envelope: RolloutEnvelope;
+  /** Override only for tests of alternate ladder arms. Production uses SELECTED. */
+  thinkingRebuildArm?: ThinkingRebuildArm;
 }
 
 export interface RebuiltRolloutLine {
@@ -31,28 +37,41 @@ function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadVi
 }
 
 /**
- * Native content block for one assistant part, or null for an empty part.
+ * Native content block for one assistant part, or null for an empty/omitted part.
  *
  * The tail of a rebuilt rollout must be NATIVE blocks, never bracket-labelled
- * text: text renderings of tool activity taught the model to emit "[tool …]"
- * markers before real tool calls (pi-lhc's "echo failure mode"), which the
- * harness then passed through as user-facing prose, and non-native lines can
- * never be cache- or diff-stable against what Claude Code itself writes.
- * Bracket renderings belong only to the compacted bands (already lossy
- * summaries, served as user text) — the fidelity line pi-lhc drew.
+ * text. Tool ids re-emit verbatim (`toolCallId` ↔ `tool_use_id`).
  *
- * Thinking signatures are not carried by the thread record, so rebuilt
- * thinking blocks ship `signature: ""` (a shape real rollout files exhibit) —
- * the pi-lhc-documented cost is a one-time cache miss, not a format break.
- * Tool ids re-emit verbatim (`toolCallId` ↔ `tool_use_id`) so calls and
- * results stay paired exactly as captured.
+ * Thinking rebuild follows the certified empirical ladder (thinking-ladder.ts).
+ * Selected arm: omit — no thinking blocks in rebuilt Claude rollouts until a
+ * retained native compact/reload exhibit certifies signed_verbatim or
+ * unsigned_visible. Canonical LHC always retains the original signed block.
+ * Never invent `signature: ""` merely to fit an assumed shape.
  */
-function assistantPartBlock(part: SessionAssistantPart): ContentBlock | null {
+function assistantPartBlock(
+  part: SessionAssistantPart,
+  arm: ThinkingRebuildArm = SELECTED_THINKING_REBUILD_ARM,
+): ContentBlock | null {
   if (part.type === "text" && part.text !== undefined && part.text !== "") {
     return { type: "text", text: part.text };
   }
-  if (part.type === "thinking" && part.thinking !== undefined && part.thinking !== "") {
-    return { type: "thinking", thinking: part.thinking, signature: "" };
+  if (part.type === "thinking") {
+    const thinking = part.thinking ?? "";
+    const signature =
+      typeof part.thinkingSignature === "string" && part.thinkingSignature !== ""
+        ? part.thinkingSignature
+        : undefined;
+    if (arm === "omit") return null;
+    if (arm === "unsigned_visible") {
+      if (thinking === "") return null;
+      return { type: "thinking", thinking };
+    }
+    // signed_verbatim
+    if (signature !== undefined) {
+      return { type: "thinking", thinking, signature };
+    }
+    // No signature to preserve — omit rather than invent empty signature.
+    return null;
   }
   if (part.type === "toolCall") {
     return {
@@ -127,7 +146,10 @@ function assistantMessageContent(
  * status-line region and are wiped by the post-swap repaint.
  */
 export function formatSwapReceipt(oldSessionId: string, newSessionId: string, expectedReintakeLines: number): string {
-  return `session ${oldSessionId} preserved; resumed in-place as ${newSessionId} (expect ~${expectedReintakeLines} replayed lines to re-intake)`;
+  return (
+    `session ${oldSessionId} preserved; LHC view rebuilt as ${newSessionId} ` +
+    `(expect ~${expectedReintakeLines} lines); relaunch with cc-lhc --resume ${newSessionId}`
+  );
 }
 
 /**
@@ -161,6 +183,7 @@ export function runtimeNoteRolloutLine(
  */
 export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLine[] {
   const { entries, newSessionId, envelope } = input;
+  const thinkingArm = input.thinkingRebuildArm ?? SELECTED_THINKING_REBUILD_ARM;
   const rebuilt: RebuiltRolloutLine[] = [];
   let parentUuid: string | null = null;
   const timestamp = new Date().toISOString();
@@ -203,7 +226,9 @@ export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLin
     }
 
     if (entry.role === "assistant") {
-      const blocks = entry.content.map(assistantPartBlock).filter((block): block is ContentBlock => block !== null);
+      const blocks = entry.content
+        .map((part) => assistantPartBlock(part, thinkingArm))
+        .filter((block): block is ContentBlock => block !== null);
       if (blocks.length === 0) continue;
       // One API message across the entry: shared synthetic id, and the
       // native stop_reason ("tool_use" when the message issues tool calls).

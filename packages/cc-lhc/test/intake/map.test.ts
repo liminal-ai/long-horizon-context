@@ -42,7 +42,10 @@ describe("mapRolloutLine", () => {
     const item = fixtureByUuid(fixtures, "asst-text-uuid");
     const result = mapRolloutLine(item);
     expect(result.events.map((event) => event.eventKind)).toEqual(["assistant_text"]);
-    expect(result.events[0]?.payload).toEqual({ text: "Hey Lee, doing well — ready to work whenever you are." });
+    expect(result.events[0]?.payload).toEqual({
+      text: "Hey Lee, doing well — ready to work whenever you are.",
+      model: "claude-opus-4-6",
+    });
   });
 
   it("maps assistant thinking blocks", () => {
@@ -50,6 +53,45 @@ describe("mapRolloutLine", () => {
     const result = mapRolloutLine(item);
     expect(result.events.map((event) => event.eventKind)).toEqual(["assistant_thinking"]);
     expect(result.events[0]?.idempotencyKey).toBe(idempotencyKey("think-uuid", 0, "assistant_thinking"));
+  });
+
+  it("maps empty-but-signed thinking and preserves empty unsigned thinking canonically", () => {
+    const signed: RolloutLineItem = {
+      type: "assistant",
+      uuid: "empty-signed",
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content: [
+          {
+            type: "thinking",
+            thinking: "",
+            signature: "SANITIZED_SIG_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          },
+        ],
+      },
+    };
+    const result = mapRolloutLine(signed);
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]?.eventKind).toBe("assistant_thinking");
+    if (result.events[0]?.eventKind === "assistant_thinking") {
+      expect(result.events[0].payload.text).toBe("");
+      expect(result.events[0].payload.signature).toContain("SANITIZED_SIG_");
+      expect(result.events[0].payload.model).toBe("claude-sonnet-5");
+    }
+
+    const husk: RolloutLineItem = {
+      type: "assistant",
+      uuid: "empty-unsigned",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "" }] },
+    };
+    const huskMapped = mapRolloutLine(husk);
+    expect(huskMapped.events).toHaveLength(1);
+    expect(huskMapped.events[0]?.eventKind).toBe("assistant_thinking");
+    if (huskMapped.events[0]?.eventKind === "assistant_thinking") {
+      expect(huskMapped.events[0].payload.text).toBe("");
+      expect(huskMapped.events[0].payload.signature).toBeUndefined();
+    }
   });
 
   it("maps assistant tool_use to tool_call", () => {
@@ -115,14 +157,17 @@ describe("mapRolloutLine", () => {
     }
   });
 
-  it("skips genuinely unknown record types (mode, system)", () => {
-    const unknowns = fixtures.filter((item) => item.type === "mode" || item.type === "system");
-    expect(unknowns.length).toBeGreaterThanOrEqual(2);
-    for (const item of unknowns) {
+  it("classifies mode/system as meta; unknown types stay unknown", () => {
+    const known = fixtures.filter((item) => item.type === "mode" || item.type === "system");
+    expect(known.length).toBeGreaterThanOrEqual(2);
+    for (const item of known) {
       const result = mapRolloutLine(item);
       expect(result.events).toHaveLength(0);
-      expect(result.stats.unknown).toBe(1);
+      expect(result.stats.meta).toBe(1);
+      expect(result.stats.unknown).toBe(0);
     }
+    const weird = mapRolloutLine({ type: "brand-new-unknown-shape" } as RolloutLineItem);
+    expect(weird.stats.unknown).toBe(1);
   });
 
   it("preserves rollout ordering across a batch", () => {
@@ -299,10 +344,6 @@ describe("mapRolloutLine", () => {
   });
 
   it("uses line index in synthetic idempotency keys for uuid-less lines", () => {
-    const lineA = { type: "mode", sessionId: "sess-1" } as RolloutLineItem;
-    const lineB = { type: "mode", sessionId: "sess-1" } as RolloutLineItem;
-    expect(mapRolloutLine(lineA, 0).stats.unknown).toBe(1);
-    expect(mapRolloutLine(lineB, 1).stats.unknown).toBe(1);
     // Exercised via user lines without uuid in batch mapping — keys differ by line index.
     const noUuidA = {
       type: "user",
