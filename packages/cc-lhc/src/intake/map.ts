@@ -31,6 +31,43 @@ const RUNTIME_NOTE_LABEL = "[runtime note]";
 const SYNTHETIC_MODEL = "<synthetic>";
 const SYNTHETIC_NO_RESPONSE_TEXT = "No response requested.";
 
+/**
+ * Claude Code 2.1.226 production fingerprint: a standalone assistant content
+ * block that is only harness/provider transition metadata —
+ * exactly `{type:"fallback", from:{model}, to:{model}}` (outer keys only).
+ * Observed after Fable→Opus refusal fallback (see model_refusal_fallback system
+ * notice). Not dialogue. Fail closed on any extra/missing field or identity
+ * mismatch — do not treat every future `fallback` variant as safe.
+ */
+export function isProductionAssistantFallbackOnly(item: RolloutLineItem): boolean {
+  if (!isAssistantLine(item)) return false;
+  const message = item.message;
+  if (message === undefined) return false;
+  const blocks = contentBlocks(message.content);
+  if (blocks.length !== 1) return false;
+  const block = blocks[0]!;
+  if (!isRecord(block)) return false;
+  // Exact outer keys: type, from, to — any extra (e.g. user-visible text) = drift.
+  const outerKeys = Object.keys(block).sort();
+  if (outerKeys.length !== 3) return false;
+  if (outerKeys[0] !== "from" || outerKeys[1] !== "to" || outerKeys[2] !== "type") return false;
+  if (block.type !== "fallback") return false;
+  const from = block.from;
+  const to = block.to;
+  if (!isRecord(from) || !isRecord(to)) return false;
+  // Nested from/to: only nonempty model.
+  const fromKeys = Object.keys(from);
+  const toKeys = Object.keys(to);
+  if (fromKeys.length !== 1 || fromKeys[0] !== "model") return false;
+  if (toKeys.length !== 1 || toKeys[0] !== "model") return false;
+  if (typeof from.model !== "string" || from.model === "") return false;
+  if (typeof to.model !== "string" || to.model === "") return false;
+  // Response identity must match the transition target.
+  if (typeof message.model !== "string" || message.model === "") return false;
+  if (message.model !== to.model) return false;
+  return true;
+}
+
 export interface MapStats {
   sidechain: number;
   unknown: number;
@@ -353,8 +390,14 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
       stats.meta += 1;
       return { events: [], stats };
     }
+    // Standalone production fallback transition block — meta only, no dialogue.
+    if (isProductionAssistantFallbackOnly(item)) {
+      stats.meta += 1;
+      return { events: [], stats };
+    }
     const events = mapAssistant(item, lineIndex);
     if (events.length === 0) {
+      // Unknown/unsupported assistant content (including non-production fallback shapes).
       stats.unknown += 1;
     }
     return { events, stats };

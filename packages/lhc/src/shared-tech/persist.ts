@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { ThreadRef } from "../threads/index.js";
 import { openThreadDatabase } from "../threads/internal/create.js";
@@ -172,6 +172,91 @@ export async function createDbReadTransaction<T>(
   });
 }
 
+/**
+ * Per-thread-file async write mutex, keyed by current file identity (dev+ino)
+ * so symlink/hardlink aliases share one queue.
+ *
+ * node:sqlite `DatabaseSync` busy-wait is synchronous and blocks the event
+ * loop; concurrent same-process writers must be serialized in JS.
+ * Cross-process concurrency still uses PRAGMA busy_timeout + WAL.
+ */
+const writeChains = new Map<string, Promise<unknown>>();
+
+/** Narrow test seam — not a public policy export. */
+export function __writeLockMapSizeForTests(): number {
+  return writeChains.size;
+}
+
+/**
+ * Optional test-only stat override (ESM cannot spy on node:fs bindings).
+ * Production always uses the real statSync.
+ */
+let statSyncForTests:
+  | ((filePath: string) => { dev: number | bigint; ino: number | bigint })
+  | undefined;
+/** Narrow test seam — not a public policy export. */
+export function __setStatSyncForTests(
+  fn: ((filePath: string) => { dev: number | bigint; ino: number | bigint }) | undefined,
+): void {
+  statSyncForTests = fn;
+}
+
+/**
+ * Resolve identity key for an existing path.
+ * Returns null when current file identity cannot be established — callers must
+ * refuse the write (no raw-path fallback that splits symlink aliases).
+ */
+export function threadWriteLockKey(filePath: string): string | null {
+  try {
+    // stat follows symlinks → same inode as the target.
+    // Hard links share dev+ino by definition.
+    const st = (statSyncForTests ?? statSync)(filePath);
+    if (st === undefined || st === null) return null;
+    return `ino:${String(st.dev)}:${String(st.ino)}`;
+  } catch {
+    return null;
+  }
+}
+
+async function withThreadWriteLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const prev = writeChains.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Our map entry is the chain that ends at this gate (FIFO).
+  const chained: Promise<unknown> = prev.then(
+    () => gate,
+    () => gate,
+  );
+  writeChains.set(key, chained);
+  await prev.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    return await run();
+  } finally {
+    release();
+    // Last releaser whose chained promise is still the map tail deletes the entry.
+    if (writeChains.get(key) === chained) {
+      writeChains.delete(key);
+    }
+  }
+}
+
+/** Test seam: run under the same mutex used by write transactions. */
+export async function __runUnderThreadWriteLockForTests<T>(
+  filePath: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = threadWriteLockKey(filePath);
+  if (key === null) {
+    throw new Error(`could not establish current file identity for write lock: ${filePath}`);
+  }
+  return withThreadWriteLock(key, run);
+}
+
 export async function createDbWriteTransaction<T>(
   threadRef: ThreadRef,
   operation: (transaction: DbWriteTransaction) => T | Promise<T>,
@@ -181,41 +266,51 @@ export async function createDbWriteTransaction<T>(
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
   if (!existsSync(filePath)) return fileNotFound(filePath);
-  const opened = openThreadDatabase(filePath);
-  if (!opened.ok) return opened;
-  const db = opened.value;
-  const postCommitHook = createPostCommitHookSet();
-  try {
-    const threadId = readThreadId(db, filePath);
-    if (!threadId.ok) return threadId;
-    db.exec("BEGIN IMMEDIATE;");
-    let value: T;
-    try {
-      value = await operation({
-        db,
-        filePath,
-        threadId: threadId.value,
-        clock,
-        postCommitHook,
-        poke: resolveInstancePoke(),
-      });
-      db.exec("COMMIT;");
-    } catch (cause) {
-      try {
-        db.exec("ROLLBACK;");
-      } catch {
-        // The handle may have been closed by an induced-failure seam; SQLite
-        // has already discarded the open transaction in that case.
-      }
-      throw cause;
-    }
-    postCommitHook.flush();
-    return { ok: true, value };
-  } finally {
-    try {
-      db.close();
-    } catch {
-      // Already closed by an induced-failure seam.
-    }
+
+  const lockKey = threadWriteLockKey(filePath);
+  if (lockKey === null) {
+    return storageFailure(
+      `could not establish current file identity for write lock: ${filePath}`,
+    );
   }
+
+  return withThreadWriteLock(lockKey, async () => {
+    const opened = openThreadDatabase(filePath);
+    if (!opened.ok) return opened;
+    const db = opened.value;
+    const postCommitHook = createPostCommitHookSet();
+    try {
+      const threadId = readThreadId(db, filePath);
+      if (!threadId.ok) return threadId;
+      db.exec("BEGIN IMMEDIATE;");
+      let value: T;
+      try {
+        value = await operation({
+          db,
+          filePath,
+          threadId: threadId.value,
+          clock,
+          postCommitHook,
+          poke: resolveInstancePoke(),
+        });
+        db.exec("COMMIT;");
+      } catch (cause) {
+        try {
+          db.exec("ROLLBACK;");
+        } catch {
+          // The handle may have been closed by an induced-failure seam; SQLite
+          // has already discarded the open transaction in that case.
+        }
+        throw cause;
+      }
+      postCommitHook.flush();
+      return { ok: true, value };
+    } finally {
+      try {
+        db.close();
+      } catch {
+        // Already closed by an induced-failure seam.
+      }
+    }
+  });
 }

@@ -4,7 +4,23 @@ import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { LaunchGrammarError, resolveLaunchSession } from "../intake/launch-session.js";
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
+import { defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+import type { LifecycleSignal } from "../observation/types.js";
+import { injectRetrievalGuidance } from "../retrieval/guidance.js";
+import {
+  closeAndRemove,
+  createOpeningDescriptor,
+  type DescriptorIo,
+  markDegraded,
+  markReady,
+  newDescriptorPath,
+  revokeCapability,
+  revokeDescriptor,
+  RUNTIME_DESCRIPTOR_ENV,
+  type RevocationResult,
+  type RuntimeDescriptorV1,
+} from "../runtime/descriptor.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
@@ -55,6 +71,12 @@ export function settleReceipts(outcomeMessages: string[]): string[] {
 
 export type PtySpawn = typeof defaultSpawn;
 
+/**
+ * Production default: terminate the wrapper process so OS process-identity
+ * invalidates any unproven ready descriptor. Tests inject a no-op/recording seam.
+ */
+export type ForceWrapperExit = (code: number) => void;
+
 export type RunOptions = {
   claudeBin?: string;
   spawnPty?: PtySpawn;
@@ -67,6 +89,16 @@ export type RunOptions = {
   wrapperLog?: WrapperLog;
   /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
   outputHoldCapBytes?: number;
+  /**
+   * Injected wrapper-process termination. Default schedules `process.exit(code)`.
+   * Tests must inject a non-exiting seam.
+   */
+  forceWrapperExit?: ForceWrapperExit;
+  /**
+   * Test hook: substitute descriptor filesystem/identity IO (publish, unlink, owner check).
+   * Production uses the real defaultDescriptorIo.
+   */
+  descriptorIo?: DescriptorIo;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -102,6 +134,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
   const commandGuard = new CommandInFlightGuard();
+  const forceWrapperExit: ForceWrapperExit =
+    options.forceWrapperExit ??
+    ((code: number) => {
+      // Schedule after the current stack so cleanup can finish; really terminates.
+      setImmediate(() => {
+        process.exit(code);
+      });
+    });
+  const descriptorIo = options.descriptorIo;
 
   // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
   // While the child owns the terminal, diagnostics go to the wrapper log
@@ -133,20 +174,119 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   }
 
+  // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
+  // selection for retrieval comes exclusively from this file.
+  // Undefined descriptorIo uses each API's defaultDescriptorIo (production path).
+  let runtimeDescriptorPath: string | undefined;
+  let runtimeDescriptor: RuntimeDescriptorV1 | undefined;
+  if (!noCapture) {
+    try {
+      runtimeDescriptorPath = newDescriptorPath(undefined, descriptorIo);
+      runtimeDescriptor = createOpeningDescriptor(runtimeDescriptorPath, descriptorIo);
+      const guided = injectRetrievalGuidance(childArgv);
+      if (!guided.ok) {
+        const rev = closeAndRemove(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
+        runtimeDescriptorPath = undefined;
+        runtimeDescriptor = undefined;
+        if (!rev.ok) {
+          stderr.write(`cc-lhc: descriptor revoke failed: ${rev.reason}\n`);
+        }
+        stderr.write(`cc-lhc: ${guided.reason}\n`);
+        return 2;
+      }
+      childArgv = guided.argv;
+      wrapperLog.info(`cc-lhc runtime descriptor: ${runtimeDescriptorPath}`);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
+      if (runtimeDescriptorPath !== undefined) {
+        const rev = revokeDescriptor(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
+        if (!rev.ok) {
+          wrapperLog.warn(`cc-lhc: descriptor revoke failed after create error: ${rev.reason}`);
+        }
+      }
+      runtimeDescriptorPath = undefined;
+      runtimeDescriptor = undefined;
+    }
+  }
+
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
 
-  const ptyProcess = spawnPty(claudeBin, childArgv, {
-    name: TERM_NAME,
-    cols,
-    rows,
-    cwd: process.cwd(),
-    env: process.env as Record<string, string>,
-  });
+  const childEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+  if (runtimeDescriptorPath !== undefined) {
+    childEnv[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
+  }
+
+  let ptyProcess: IPty;
+  try {
+    ptyProcess = spawnPty(claudeBin, childArgv, {
+      name: TERM_NAME,
+      cols,
+      rows,
+      cwd: process.cwd(),
+      env: childEnv,
+    });
+  } catch (cause) {
+    // Spawn failed after descriptor create → revoke opening descriptor.
+    if (runtimeDescriptorPath !== undefined) {
+      const rev = closeAndRemove(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
+      if (!rev.ok) {
+        wrapperLog.warn(`cc-lhc: spawn-failure descriptor revoke unproven: ${rev.reason}`);
+      }
+      runtimeDescriptorPath = undefined;
+      runtimeDescriptor = undefined;
+    }
+    throw cause;
+  }
 
   let exited = false;
   let captureSession: CaptureSession | undefined;
   const startedAt = new Date();
+  /** When true, skip long drain — owner identity must go stale promptly. */
+  let fatalRevocationExit = false;
+  /** After first successful degrade revoke, later reasons are sticky diagnostics only. */
+  let descriptorCapabilityRevoked = false;
+  let resolveRun: ((code: number) => void) | undefined;
+
+  const triggerFatalRevocation = (reason: string): void => {
+    if (fatalRevocationExit && exited) return;
+    fatalRevocationExit = true;
+    wrapperLog.warn(`cc-lhc capture/retrieval FATAL: ${reason}`);
+    // 1–3: stop input, restore terminal, best-effort kill children.
+    try {
+      if (stdin.isTTY) stdin.setRawMode(false);
+    } catch {
+      // best effort
+    }
+    try {
+      stdin.removeAllListeners("data");
+    } catch {
+      // best effort
+    }
+    try {
+      ptyProcess.kill("SIGKILL");
+    } catch {
+      // kill may throw; still exit the owner process
+    }
+    killAllInferenceChildren();
+    try {
+      altScreen.leave();
+    } catch {
+      // best effort
+    }
+    try {
+      restoreTerminal(stdin, stdout);
+    } catch {
+      // best effort
+    }
+    // 4: do not await capture drain — schedule wrapper process exit.
+    forceWrapperExit(1);
+    if (!exited) {
+      exited = true;
+      resolveRun?.(1);
+    }
+  };
 
   // Alt-screen truth for every exit path, normal or not: the process-exit
   // hook, signal handlers, and stdin loss all leave through this guard, so a
@@ -168,6 +308,122 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     wrapperLog.info(formatCaptureStatsLine(captureSession.stats));
   };
 
+  const publishDescriptorFromCapture = (): void => {
+    if (runtimeDescriptorPath === undefined || runtimeDescriptor === undefined) return;
+    if (captureSession === undefined) return;
+    if (runtimeDescriptor.state === "closed") return;
+    try {
+      if (!captureSession.isCaptureReady()) {
+        if (captureSession.getCaptureHealth().phase === "degraded" && runtimeDescriptor.state !== "degraded") {
+          const reasons = captureSession.getCaptureHealth().reasons;
+          runtimeDescriptor = markDegraded(
+            runtimeDescriptorPath,
+            runtimeDescriptor,
+            reasons[0] ?? "capture_degraded",
+            descriptorIo,
+          );
+        }
+        return;
+      }
+      const ctx = captureSession.getCommandContext();
+      const rollout = captureSession.getRolloutInfo();
+      const threadRef = ctx.threadRef;
+      const threadId =
+        threadRef !== undefined && "threadId" in threadRef ? threadRef.threadId : "";
+      const registryPath =
+        threadRef !== undefined && "registryPath" in threadRef && threadRef.registryPath !== undefined
+          ? threadRef.registryPath
+          : defaultRegistryPath();
+      if (
+        threadId === "" ||
+        rollout.path === undefined ||
+        rollout.path === "" ||
+        rollout.sessionId === undefined ||
+        rollout.sessionId === ""
+      ) {
+        return;
+      }
+      runtimeDescriptor = markReady(
+        runtimeDescriptorPath,
+        runtimeDescriptor,
+        {
+          threadId,
+          registryPath,
+          sessionId: rollout.sessionId,
+          rolloutPath: rollout.path,
+        },
+        descriptorIo,
+      );
+      wrapperLog.info(
+        `cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`,
+      );
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc runtime descriptor update failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
+
+  const onCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
+    for (const signal of signals) {
+      if (signal.kind === "session_bound") {
+        publishDescriptorFromCapture();
+      } else if (signal.kind === "capture_degraded") {
+        // Slice 1 latches multiple distinct reasons per generation. After the
+        // descriptor capability is already non-ready/absent, further reasons are
+        // diagnostics only — never re-publish or treat as fatal re-transition.
+        wrapperLog.warn(`cc-lhc capture degraded: ${signal.reason}`);
+        if (descriptorCapabilityRevoked || runtimeDescriptorPath === undefined) {
+          continue;
+        }
+        if (
+          runtimeDescriptor !== undefined &&
+          (runtimeDescriptor.state === "degraded" || runtimeDescriptor.state === "closed")
+        ) {
+          descriptorCapabilityRevoked = true;
+          continue;
+        }
+        if (runtimeDescriptor === undefined) {
+          descriptorCapabilityRevoked = true;
+          continue;
+        }
+        try {
+          const rev = revokeCapability(
+            runtimeDescriptorPath,
+            runtimeDescriptor,
+            "degraded",
+            signal.reason,
+            descriptorIo,
+          );
+          if (!rev.ok) {
+            runtimeDescriptor = undefined;
+            runtimeDescriptorPath = undefined;
+            descriptorCapabilityRevoked = true;
+            triggerFatalRevocation(`descriptor revoke failed: ${rev.reason}`);
+            continue;
+          }
+          descriptorCapabilityRevoked = true;
+          if (rev.kind === "absent") {
+            runtimeDescriptorPath = undefined;
+            runtimeDescriptor = undefined;
+          } else {
+            runtimeDescriptor = {
+              ...runtimeDescriptor,
+              state: rev.state,
+              degradeReason: signal.reason,
+            };
+          }
+        } catch (cause) {
+          const msg = cause instanceof Error ? cause.message : String(cause);
+          runtimeDescriptor = undefined;
+          runtimeDescriptorPath = undefined;
+          descriptorCapabilityRevoked = true;
+          triggerFatalRevocation(`descriptor revoke failed: ${msg}`);
+        }
+      }
+    }
+  };
+
   if (!noCapture && expectedSession !== undefined) {
     captureSession = startCaptureSession({
       startedAt,
@@ -179,14 +435,47 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       lineageDbPath: defaultLineageDbPath(),
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
+      onLifecycle: onCaptureLifecycle,
     });
     process.on("SIGUSR1", onSigusr1);
   }
+
+  /**
+   * Revoke retrieval capability before long drain. Fatal if still ready.
+   */
+  const revokeDescriptorNow = (): RevocationResult => {
+    if (runtimeDescriptorPath === undefined) {
+      return { ok: true, kind: "absent" };
+    }
+    const path = runtimeDescriptorPath;
+    const current = runtimeDescriptor;
+    runtimeDescriptorPath = undefined;
+    runtimeDescriptor = undefined;
+    const rev = revokeCapability(path, current, "closed", undefined, descriptorIo);
+    if (!rev.ok) {
+      wrapperLog.warn(
+        `cc-lhc capture/retrieval FATAL: child-exit revoke unproven: ${rev.reason}`,
+      );
+      fatalRevocationExit = true;
+    }
+    return rev;
+  };
+
+  const cleanupDescriptor = (): void => {
+    if (runtimeDescriptorPath === undefined) return;
+    const rev = closeAndRemove(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
+    if (!rev.ok) {
+      wrapperLog.warn(`cc-lhc: cleanup descriptor revoke unproven: ${rev.reason}`);
+    }
+    runtimeDescriptorPath = undefined;
+    runtimeDescriptor = undefined;
+  };
 
   const cleanup = (): void => {
     altScreen.leave();
     restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
+    cleanupDescriptor();
   };
 
   process.on("exit", cleanup);
@@ -314,6 +603,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   process.on("SIGHUP", forwardSignal);
 
   return new Promise((resolve) => {
+    resolveRun = resolve;
     const teardownAndExit = async (exitCode: number): Promise<void> => {
       if (exited) return;
       exited = true;
@@ -332,6 +622,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       process.removeListener("SIGHUP", forwardSignal);
       altScreen.leave();
       outputHold.flush();
+      // Child is gone: revoke ready capability BEFORE awaited flush/drain.
+      const rev = revokeDescriptorNow();
+      if (fatalRevocationExit || !rev.ok) {
+        // Owner must die even if child kill fails — invalidate OS identity.
+        try {
+          ptyProcess.kill("SIGKILL");
+        } catch {
+          // already dead or kill throws
+        }
+        killAllInferenceChildren();
+        cleanup();
+        forceWrapperExit(1);
+        resolve(1);
+        return;
+      }
       if (captureSession !== undefined) {
         await captureSession.stop().catch(() => {});
         printExitStats();

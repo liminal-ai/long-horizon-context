@@ -3,7 +3,12 @@ import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fireThreadTouch } from "../../shared-tech/context.js";
 import { type ErrorResult, type OpResult, storageFailure } from "../../shared-tech/errors.js";
-import { CURRENT_THREAD_SCHEMA_VERSION, getSchemaVersion, openDatabase } from "../../shared-tech/storage.js";
+import {
+  CURRENT_THREAD_SCHEMA_VERSION,
+  getSchemaVersion,
+  openDatabase,
+  SQLITE_BUSY_TIMEOUT_MS,
+} from "../../shared-tech/storage.js";
 import {
   derivationLogSchemaStatements,
   isSupportedThreadSchemaVersion,
@@ -179,7 +184,15 @@ function errorDetail(cause: unknown): string {
 function validateThreadFile(filePath: string): { ok: true } | { ok: false; error: ErrorResult } {
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(filePath, { readOnly: true });
+    // Must share the same busy timeout as writers: read-only probes under WAL
+    // still wait briefly when a cross-process writer holds a reserved lock.
+    // Default DatabaseSync timeout is 0 → instant "database is locked".
+    db = new DatabaseSync(filePath, { readOnly: true, timeout: SQLITE_BUSY_TIMEOUT_MS });
+    try {
+      db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
+    } catch {
+      // read-only may reject some pragmas; constructor timeout still applies
+    }
     const schemaVersion = getSchemaVersion(db);
     if (schemaVersion === 0) {
       return notAThreadFile(filePath, "no lhc schema version");

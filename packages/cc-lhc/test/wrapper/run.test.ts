@@ -385,23 +385,48 @@ describe("run", () => {
     const stdin = fakeStdin();
     const passthroughWrites: string[] = [];
     let modalOpen = false;
-    const isChildTick = (chunk: string): boolean => /^(tick\d+\r\n)+$/.test(chunk);
+    // PTY may fragment `tickN\r\n` across chunks; reassemble for recognition
+    // while still rejecting wrapper diagnostics mixed into the stream.
+    let passthroughReassembly = "";
+    const childTickStreamOk = (accumulated: string): boolean => {
+      // Only complete/partial tick lines (LF or CRLF), no other wrapper text.
+      return /^(tick\d+\r?\n)*(tick\d*)?(\r)?$/.test(accumulated);
+    };
     const isAllowedPassthroughWrite = (chunk: string): boolean => {
       if (chunk.includes(ENTER_ALT_SCREEN) || chunk.includes(LEAVE_ALT_SCREEN)) return true;
       if (chunk.includes("\x0c") || chunk.includes("^L")) return true;
       const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
       if (stripped.length === 0) return true;
-      return isChildTick(stripped);
+      // Probe with reassembly including this chunk
+      return childTickStreamOk(passthroughReassembly + stripped);
     };
 
     const trackPassthrough = (chunk: string): void => {
       if (chunk.includes(ENTER_ALT_SCREEN)) modalOpen = true;
       if (chunk.includes(LEAVE_ALT_SCREEN)) modalOpen = false;
-      if (!modalOpen) passthroughWrites.push(chunk);
+      if (!modalOpen) {
+        passthroughWrites.push(chunk);
+        const stripped = chunk
+          .replaceAll(ENTER_ALT_SCREEN, "")
+          .replaceAll(LEAVE_ALT_SCREEN, "")
+          .replaceAll("\x0c", "");
+        if (stripped.length > 0) {
+          passthroughReassembly += stripped;
+          // Drop completed tick lines so buffer stays bounded
+          passthroughReassembly = passthroughReassembly.replace(/^(tick\d+\r?\n)+/, "");
+        }
+      }
     };
 
     const wrapperPassthroughWrites = (): string[] =>
-      passthroughWrites.filter((chunk) => !isAllowedPassthroughWrite(chunk));
+      passthroughWrites.filter((chunk) => {
+        if (chunk.includes(ENTER_ALT_SCREEN) || chunk.includes(LEAVE_ALT_SCREEN)) return false;
+        if (chunk.includes("\x0c") || chunk.includes("^L")) return false;
+        const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
+        if (stripped.length === 0) return false;
+        // Reject if this chunk could never be part of a tick stream
+        return !/^[\r\ntick0-9]*$/.test(stripped);
+      });
 
     const stdoutWrite = vi.spyOn(stdout, "write").mockImplementation((chunk, ...args) => {
       trackPassthrough(String(chunk));

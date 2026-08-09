@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isRetrievalArgv, runRetrievalCli } from "./retrieval/service.js";
 import { run } from "./wrapper/run.js";
 
 function stripCcLhcFlags(argv: string[]): {
@@ -29,15 +30,30 @@ function stripCcLhcFlags(argv: string[]): {
   return { argv: out, noCapture, noInference };
 }
 
-const parsed = stripCcLhcFlags(process.argv.slice(2));
+const rawArgv = process.argv.slice(2);
 
-const exitCode = await run(parsed.argv, {
-  noCapture: parsed.noCapture,
-  noInference: parsed.noInference,
-}).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Error: ${message}`);
-  return 1;
-});
+// Model-callable retrieval ops: bound descriptor selects the archive.
+// These never open the PTY wrapper. Do not process.exit here — set exitCode
+// so Node can drain stdout after the awaited flush-safe write.
+if (isRetrievalArgv(rawArgv)) {
+  const exitCode = await runRetrievalCli(rawArgv).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error: ${message}`);
+    return 1;
+  });
+  process.exitCode = exitCode;
+} else {
+  const parsed = stripCcLhcFlags(rawArgv);
 
-process.exit(exitCode);
+  const exitCode = await run(parsed.argv, {
+    noCapture: parsed.noCapture,
+    noInference: parsed.noInference,
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error: ${message}`);
+    return 1;
+  });
+
+  // Wrapper path may need force-exit for PTY lifecycle; retrieval does not.
+  process.exit(exitCode);
+}

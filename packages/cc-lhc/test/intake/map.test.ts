@@ -301,6 +301,148 @@ describe("mapRolloutLine", () => {
     expect(dedupe.replayWindowActive).toBe(true);
   });
 
+  it("classifies Claude 2.1.226 standalone model-fallback assistant block as meta", () => {
+    const fallbackPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "fixtures",
+      "claude-2.1.226-model-fallback-sequence.jsonl",
+    );
+    const seq = readFileSync(fallbackPath, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as RolloutLineItem);
+    // [0]=user, [1]=fallback-only assistant, [2]=opus text, [3]=system notice
+    const fallbackOnly = seq[1]!;
+    const opusText = seq[2]!;
+    const systemNotice = seq[3]!;
+
+    const fb = mapRolloutLine(fallbackOnly);
+    expect(fb.events).toEqual([]);
+    expect(fb.stats.meta).toBe(1);
+    expect(fb.stats.unknown).toBe(0);
+
+    const text = mapRolloutLine(opusText);
+    expect(text.stats.unknown).toBe(0);
+    expect(text.stats.meta).toBe(0);
+    expect(text.events).toHaveLength(1);
+    expect(text.events[0]?.eventKind).toBe("assistant_text");
+    const payload = text.events[0]?.payload as {
+      text?: string;
+      model?: string;
+      providerUsage?: Record<string, unknown>;
+    };
+    expect(payload.model).toBe("claude-opus-4-8");
+    expect(payload.text).toContain("MIGRATION_TAIL_SENTENCE_UNIQUE_C3_7721");
+    expect(payload.providerUsage).toBeDefined();
+    expect(payload.providerUsage?.output_tokens).toBe(77);
+
+    const sys = mapRolloutLine(systemNotice);
+    expect(sys.events).toEqual([]);
+    expect(sys.stats.meta).toBe(1);
+    expect(sys.stats.unknown).toBe(0);
+
+    // Whole sequence: one user + one assistant_text; fallback+system are meta
+    const batch = mapRolloutLines(seq);
+    expect(batch.stats.unknown).toBe(0);
+    expect(batch.stats.meta).toBe(2);
+    const kinds = batch.events.map((e) => e.eventKind);
+    expect(kinds).toEqual(["user_prompt", "assistant_text"]);
+    // Exactly one assistant_text (no empty synthetic for the fallback block)
+    expect(kinds.filter((k) => k === "assistant_text")).toHaveLength(1);
+  });
+
+  it("unknown assistant content blocks still degrade (unknown), not meta", () => {
+    const weird = mapRolloutLine({
+      type: "assistant",
+      uuid: "weird-block",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [{ type: "brand_new_block_shape", data: true }],
+      },
+    } as RolloutLineItem);
+    expect(weird.events).toEqual([]);
+    expect(weird.stats.unknown).toBe(1);
+    expect(weird.stats.meta).toBe(0);
+
+    // Malformed fallback (missing to.model) is NOT the production fingerprint
+    const badFallback = mapRolloutLine({
+      type: "assistant",
+      uuid: "bad-fallback",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [{ type: "fallback", from: { model: "x" }, to: {} }],
+      },
+    } as RolloutLineItem);
+    expect(badFallback.stats.unknown).toBe(1);
+    expect(badFallback.stats.meta).toBe(0);
+  });
+
+  it("fallback with extra outer text field is unknown (not meta)", () => {
+    const withText = mapRolloutLine({
+      type: "assistant",
+      uuid: "fallback-plus-text",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [
+          {
+            type: "fallback",
+            from: { model: "claude-fable-5" },
+            to: { model: "claude-opus-4-8" },
+            text: "user-visible smuggled text",
+          },
+        ],
+      },
+    } as RolloutLineItem);
+    expect(withText.events).toEqual([]);
+    expect(withText.stats.unknown).toBe(1);
+    expect(withText.stats.meta).toBe(0);
+  });
+
+  it("fallback identity mismatch (message.model !== to.model) is unknown", () => {
+    const mismatch = mapRolloutLine({
+      type: "assistant",
+      uuid: "fallback-mismatch",
+      message: {
+        role: "assistant",
+        model: "claude-other-model",
+        content: [
+          {
+            type: "fallback",
+            from: { model: "claude-fable-5" },
+            to: { model: "claude-opus-4-8" },
+          },
+        ],
+      },
+    } as RolloutLineItem);
+    expect(mismatch.stats.unknown).toBe(1);
+    expect(mismatch.stats.meta).toBe(0);
+  });
+
+  it("fallback with extra nested from key is unknown", () => {
+    const extra = mapRolloutLine({
+      type: "assistant",
+      uuid: "fallback-extra-from",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [
+          {
+            type: "fallback",
+            from: { model: "claude-fable-5", reason: "x" },
+            to: { model: "claude-opus-4-8" },
+          },
+        ],
+      },
+    } as RolloutLineItem);
+    expect(extra.stats.unknown).toBe(1);
+    expect(extra.stats.meta).toBe(0);
+  });
+
   it("skips Claude Code's synthetic 'No response requested.' resume filler as meta", () => {
     // Appended by claude 2.1.202 (zero usage, no API call) when resuming a
     // session whose last line is a user message — every swap-receipt rollout
