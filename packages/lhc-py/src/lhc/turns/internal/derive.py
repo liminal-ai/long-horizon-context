@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import math
 from typing import Literal, Union
 
+from ...shared_tech._jsstr import js_trim
 from ...shared_tech.derivation import (
     BriefTargets,
     CompressionTargets,
@@ -139,6 +140,11 @@ def _rendering_part_label(kind: RenderingPartKind) -> str:
 def _compose_structured_turn_text(parts: Sequence[RenderingPart]) -> str:
     sections: list[str] = []
     for part in parts:
+        # Empty thinking has no usable representation in a text band. Leaving it
+        # here bypasses the serving-exit tail filters once the turn is compacted.
+        # JS String.prototype.trim (not Python str.strip): U+FEFF is empty, U+0085 is not.
+        if part.kind == "assistant_thinking" and js_trim(part.text) == "":
+            continue
         annotations: list[str] = []
         if part.fallback:
             annotations.append("fallback")

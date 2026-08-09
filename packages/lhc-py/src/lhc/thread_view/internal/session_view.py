@@ -20,7 +20,12 @@ from ...shared_tech.view import (
     SessionUserMessage,
 )
 from .boundary import read_boundary_position
-from .render import TailRenderContext, tool_names_by_call_id, tool_result_session_content
+from .render import (
+    TailRenderContext,
+    is_empty_thinking_husk,
+    tool_names_by_call_id,
+    tool_result_session_content,
+)
 from .snapshot import (
     TailMessageRow,
     read_tail_messages,
@@ -158,6 +163,8 @@ def _tail_entries_of(rows: Sequence[TailMessageRow], boundary_position: int) -> 
         assistant_sources = []
 
     for row in rows:
+        if is_empty_thinking_husk(row):
+            continue
         kind = row.kind
         if kind == "user_prompt":
             flush_assistant()

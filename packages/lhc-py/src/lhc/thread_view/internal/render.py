@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Union
 
-from ...shared_tech._jsstr import js_json_dumps, js_len, js_slice
+from ...shared_tech._jsstr import js_json_dumps, js_len, js_slice, js_trim
 from ...shared_tech.token_counting import estimate_tokens
 from ...shared_tech.tool_result_rendering import FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback
 from ...shared_tech.view import Band
@@ -54,6 +54,38 @@ def _block_content(message: TailMessageRow) -> dict[str, object]:
 def _text_of(message: TailMessageRow) -> str:
     text = _block_content(message).get("text")
     return text if isinstance(text, str) else ""
+
+
+# Anthropic models running with omitted thinking display emit thinking blocks
+# whose text is empty, with the encrypted reasoning carried (if at all) in a
+# signature. An empty-text, unsigned block carries nothing a model can use,
+# and the two serving exits rendered it divergently (standalone [thinking]
+# husk vs empty adjacent part). Skip such rows at serve time only — capture
+# and derivations keep them.
+#
+# Signed empty-text blocks ARE useful on the session-view (PI resume) path,
+# where thinkingSignature can be round-tripped to the provider. They are NOT
+# useful on the text LLM-request path, which can only emit [thinking] fences.
+def is_empty_thinking_husk(message: TailMessageRow) -> bool:
+    if message.kind != "assistant_thinking":
+        return False
+    content = _block_content(message)
+    text = content.get("text")
+    # JS String.prototype.trim (not Python str.strip): U+FEFF is empty, U+0085 is not.
+    has_text = isinstance(text, str) and js_trim(text) != ""
+    signature = content.get("signature")
+    if signature is None:
+        signature = content.get("thinkingSignature")
+    has_signature = isinstance(signature, str) and signature != ""
+    return not has_text and not has_signature
+
+
+def has_thinking_text(message: TailMessageRow) -> bool:
+    """True when thinking has non-empty text (the only form the text LLM path can render)."""
+    if message.kind != "assistant_thinking":
+        return False
+    text = _block_content(message).get("text")
+    return isinstance(text, str) and js_trim(text) != ""
 
 
 # What the tail renderer needs beyond the message itself: the boundary

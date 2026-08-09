@@ -42,6 +42,59 @@ def js_len(s: str) -> int:
     return n
 
 
+# ECMAScript WhiteSpace + LineTerminator + BOM for String.prototype.trim.
+# Deliberately excludes U+0085 NEL (JS does not trim it; Python str.strip does)
+# and includes U+FEFF (JS trims it; Python str.strip does not).
+_JS_TRIM_CHARS = frozenset(
+    {
+        "\u0009",  # TAB
+        "\u000b",  # VT
+        "\u000c",  # FF
+        "\u0020",  # SP
+        "\u00a0",  # NBSP
+        "\ufeff",  # BOM / ZWNBSP
+        "\u000a",  # LF
+        "\u000d",  # CR
+        "\u2028",  # LS
+        "\u2029",  # PS
+        "\u1680",  # OGHAM SPACE MARK
+        "\u2000",  # EN QUAD … HAIR SPACE
+        "\u2001",
+        "\u2002",
+        "\u2003",
+        "\u2004",
+        "\u2005",
+        "\u2006",
+        "\u2007",
+        "\u2008",
+        "\u2009",
+        "\u200a",
+        "\u202f",  # NARROW NO-BREAK SPACE
+        "\u205f",  # MEDIUM MATHEMATICAL SPACE
+        "\u3000",  # IDEOGRAPHIC SPACE
+    }
+)
+
+
+def _is_js_trim_char(ch: str) -> bool:
+    return ch in _JS_TRIM_CHARS
+
+
+def js_trim(s: str) -> str:
+    """JS `String.prototype.trim` — WhiteSpace + LineTerminator + BOM (U+FEFF).
+
+    Use wherever a Wave body translates JS `.trim()`. Do not substitute
+    Python `str.strip()`: U+FEFF and U+0085 disagree between the two.
+    """
+    start = 0
+    end = len(s)
+    while start < end and _is_js_trim_char(s[start]):
+        start += 1
+    while end > start and _is_js_trim_char(s[end - 1]):
+        end -= 1
+    return s[start:end]
+
+
 def _decode_utf16_units(units: list[int]) -> str:
     """Reassemble UTF-16 units into a Python str.
 

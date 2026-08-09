@@ -10,6 +10,8 @@ from .boundary import read_boundary_position
 from .render import (
     AssembledContextMessage,
     TailRenderContext,
+    has_thinking_text,
+    is_empty_thinking_husk,
     render_band_message,
     render_tail_message,
     tool_names_by_call_id,
@@ -51,6 +53,12 @@ def assemble_view(db: Database) -> AssembledView:
                 )
             )
     for row in tail_rows:
+        # Skip true husks always; skip signature-only thinking here because the
+        # text LLM path cannot carry the opaque token (session-view still serves it).
+        if is_empty_thinking_husk(row):
+            continue
+        if row.kind == "assistant_thinking" and not has_thinking_text(row):
+            continue
         entries.append(
             AssembledViewEntry(
                 message=render_tail_message(row, render_ctx),
