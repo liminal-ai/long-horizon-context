@@ -15,4 +15,9 @@ _encoder = tiktoken.get_encoding("o200k_base")
 
 
 def estimate_tokens(text: str) -> int:
-    return len(_encoder.encode(text))
+    # Allow all special tokens: captured text is data, and a literal
+    # "<|endoftext|>" in a transcript must count, not raise (parity with
+    # TS `encoder.encode(text, "all")`; without this, capture of any
+    # conversation that merely quotes a special token fails and rolls
+    # back the whole event batch).
+    return len(_encoder.encode(text, allowed_special="all"))
