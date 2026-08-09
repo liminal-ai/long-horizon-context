@@ -13,8 +13,8 @@ import {
 describe("resolveModelCompactSettings", () => {
   it("matches shipped models by substring, case-insensitive", () => {
     expect(resolveModelCompactSettings("claude-fable-5")).toMatchObject({
-      triggerTokens: 500_000,
-      lowerBound: 240_000,
+      triggerTokens: 400_000,
+      lowerBound: 200_000,
     });
     expect(resolveModelCompactSettings("GLM-5.2")).toMatchObject({ triggerTokens: 350_000, lowerBound: 140_000 });
     expect(resolveModelCompactSettings("grok-4.5")).toMatchObject({ triggerTokens: 300_000, lowerBound: 100_000 });
@@ -47,7 +47,7 @@ describe("resolveModelCompactSettings", () => {
   it("toCompactParams carries lowerBound and percentages only", () => {
     const params = toCompactParams(resolveModelCompactSettings("claude-fable-5"));
     expect(params).toEqual({
-      lowerBound: 240_000,
+      lowerBound: 200_000,
       percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
     });
   });
@@ -98,7 +98,7 @@ describe("shouldTriggerModelCompact", () => {
 
   it("triggers at or above the threshold", () => {
     expect(shouldTriggerModelCompact({ ...base, contextTokens: 350_000 })).toBe(true);
-    expect(shouldTriggerModelCompact({ ...base, contextTokens: 500_000 })).toBe(true);
+    expect(shouldTriggerModelCompact({ ...base, contextTokens: 400_000 })).toBe(true);
   });
 
   it("does not trigger below the threshold, with unknown tokens, or without a trigger", () => {
