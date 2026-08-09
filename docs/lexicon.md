@@ -27,3 +27,16 @@ quick board is the living surface; the record is the durable one. Named
 entry survives before it vanishes. Currently counted in completed agentic
 turns; the counting unit is under active design review, the term itself is
 adopted. Adopted 2026-08-07.
+
+## stale map
+
+A problem-space assessment that outlives the landscape it was computed
+against. Not solution re-derivation (forgetting an answer): the *difficulty/
+danger/priority map itself* goes unrecalculated after a design pivot or
+circumstance change — "cc-lhc is hard" surviving the quickboard→tools pivot
+that dissolved the hardness (origin case, Lee, 2026-08-09). Verdicts are
+retained cheaply; their premises compress away, and maps are lenses, not
+objects — nothing ever tests them. Known detector: a fresh seat reasoning
+from the current landscape only doesn't share the belief; treat the
+discrepancy ("why aren't they treating X as hard?") as a signal to
+recompute X, not only to correct them. Applies to humans and models alike.
