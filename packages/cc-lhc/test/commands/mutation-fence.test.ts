@@ -193,25 +193,25 @@ describe("mutation generation lease fence", () => {
     expect(outcome.messages).toContain(CAPTURE_DEGRADED_REFUSAL);
   });
 
-  it("compact: post-lineage fence failure withholds relaunch guidance", async () => {
+  it("compact: post-rebuild fence failure discards the rebuild and withholds handoff", async () => {
     let healthy = true;
     let ready = true;
     let phase: "binding" | "ready" | "degraded" | "closed" = "ready";
     const writeRebuilt = await import("../../src/rollout/write-rebuilt.js");
-    const lineageDb = await import("../../src/intake/lineage-db.js");
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue({
-      sessionId: "ffffffff-ffff-ffff-ffff-ffffffffffff",
-      rolloutPath: "/tmp/rebuilt.jsonl",
-      lineCount: 2,
-      expectedReintakeLines: 2,
-      replayedPrefixLines: 1,
-      prefixBoundary: { kind: "verified", lineCount: 1, byteLength: 10, sha256: "cc".repeat(32) },
-    });
-    const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockImplementation(async () => {
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      // Degradation races the rebuild write itself.
       healthy = false;
       ready = false;
       phase = "degraded";
-      return { ok: true };
+      return {
+        sessionId: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        rolloutPath: "/tmp/rebuilt.jsonl",
+        lineCount: 2,
+        expectedReintakeLines: 2,
+        replayedPrefixLines: 1,
+        prefixBoundary: { kind: "verified", lineCount: 1, byteLength: 10, sha256: "cc".repeat(32) },
+      totalByteLength: 100,
+      };
     });
     const runtime = baseRuntime({
       isCaptureHealthy: () => healthy,
@@ -243,47 +243,34 @@ describe("mutation generation lease fence", () => {
     Object.defineProperty(runtime, "captureDegraded", { get: () => !healthy });
     const outcome = await runCompactCommand("compact", runtime);
     expect(outcome.messages).toContain(CAPTURE_PARTIAL_VIEW_MUTATION);
-    expect(outcome.messages.join("\n")).toMatch(/reconciliation required/);
-    expect(outcome.messages.join("\n")).not.toMatch(/relaunch with: cc-lhc --resume/);
+    expect(outcome.messages.join("\n")).toMatch(/rebuild discarded/);
+    expect(outcome.handoff).toBeUndefined();
     expect(outcome.restart).toBeUndefined();
     writeSpy.mockRestore();
-    lineageSpy.mockRestore();
   });
 
-  it("prune: post-lineage fence failure withholds relaunch guidance", async () => {
-    let healthy = true;
-    let ready = true;
+  it("prune: input arriving after the SDK mutation reports partial without handoff", async () => {
+    let epochChanged = false;
     const writeRebuilt = await import("../../src/rollout/write-rebuilt.js");
-    const lineageDb = await import("../../src/intake/lineage-db.js");
-    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue({
-      sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-      rolloutPath: "/tmp/pruned.jsonl",
-      lineCount: 2,
-      expectedReintakeLines: 2,
-      replayedPrefixLines: 1,
-      prefixBoundary: { kind: "verified", lineCount: 1, byteLength: 10, sha256: "dd".repeat(32) },
-    });
-    vi.spyOn(lineageDb, "safeRecordSessionThread").mockImplementation(async () => {
-      healthy = false;
-      ready = false;
-      return { ok: true };
-    });
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout");
     const runtime = baseRuntime({
-      isCaptureHealthy: () => healthy,
-      isCaptureReady: () => ready,
+      inputEpochChanged: () => epochChanged,
       sdk: {
         threadView: {
-          prune: vi.fn(async () => ({
-            ok: true,
-            value: {
-              previousBoundary: 0,
-              newBoundary: 1,
-              zoneTokensBefore: 10,
-              zoneTokensAfter: 5,
-              toolResultsPruned: 1,
-              noOp: false,
-            },
-          })),
+          prune: vi.fn(async () => {
+            epochChanged = true;
+            return {
+              ok: true,
+              value: {
+                previousBoundary: 0,
+                newBoundary: 1,
+                zoneTokensBefore: 10,
+                zoneTokensAfter: 5,
+                toolResultsPruned: 1,
+                noOp: false,
+              },
+            };
+          }),
           getSessionThreadView: vi.fn(async () => ({
             ok: true,
             value: { threadId: "th", entries: [{ role: "user", content: "hi", sourceMessages: [] }] },
@@ -292,8 +279,16 @@ describe("mutation generation lease fence", () => {
       } as unknown as Lhc,
     });
     const outcome = await runPruneCommand("prune", runtime);
-    expect(outcome.messages).toContain(CAPTURE_PARTIAL_VIEW_MUTATION);
-    expect(outcome.messages.join("\n")).not.toMatch(/relaunch with: cc-lhc --resume/);
-    vi.restoreAllMocks();
+    expect(outcome.messages.join("\n")).toMatch(/input arrived after LHC view mutation/);
+    expect(outcome.handoff).toBeUndefined();
+    expect(writeSpy).not.toHaveBeenCalled();
+    writeSpy.mockRestore();
+  });
+
+  it("compact: input arriving before any SDK mutation refuses cleanly", async () => {
+    const runtime = baseRuntime({ inputEpochChanged: () => true });
+    const outcome = await runCompactCommand("compact", runtime);
+    expect(outcome.messages.join("\n")).toMatch(/input arrived — context mutation cancelled/);
+    expect(outcome.handoff).toBeUndefined();
   });
 });

@@ -55,6 +55,13 @@ export interface WriteRebuiltRolloutResult {
   replayedPrefixLines: number;
   /** Content-verifiable fence over the exact serialized prefix bytes. */
   prefixBoundary: PrefixBoundaryVerified;
+  /**
+   * Exact byte length of the whole written file (prefix + trailing receipt).
+   * Diagnostic metadata: growth past it identifies genuine child appends, but
+   * it is NOT a readiness gate — a healthy resumed child renders the loaded
+   * history without appending until the next interaction.
+   */
+  totalByteLength: number;
 }
 
 export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Promise<WriteRebuiltRolloutResult> {
@@ -115,5 +122,6 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     expectedReintakeLines: lines.length,
     replayedPrefixLines,
     prefixBoundary,
+    totalByteLength: Buffer.byteLength(serialized, "utf8"),
   };
 }

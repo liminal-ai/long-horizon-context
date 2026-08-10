@@ -25,6 +25,10 @@ export interface LaunchSessionPlan {
   forkSourceSessionId?: string;
   /** When true, lineage may look up resumeSessionId for thread continuity. */
   resumeSessionIdForLineage?: string;
+  /** Non-selector tokens before `--` (user options/positionals), for respawn. */
+  rest: string[];
+  /** `--` and everything after it, verbatim, for respawn. */
+  passthrough: string[];
 }
 
 export interface LaunchSessionDeps {
@@ -361,6 +365,8 @@ export async function resolveLaunchSession(
     return {
       expected: expectedSessionFromExplicitId(id, "explicit_new"),
       childArgv: child(["--session-id", id]),
+      rest: [...rest],
+      passthrough: [...passthrough],
     };
   }
 
@@ -399,6 +405,8 @@ export async function resolveLaunchSession(
         expected: expectedSessionFromExplicitId(chosen, "wrapper_picker"),
         childArgv: child(["--resume", chosen]),
         resumeSessionIdForLineage: chosen,
+        rest: [...rest],
+        passthrough: [...passthrough],
       };
     }
     // uuid
@@ -407,6 +415,8 @@ export async function resolveLaunchSession(
       expected: expectedSessionFromExplicitId(id, "explicit_resume"),
       childArgv: child(["--resume", id]),
       resumeSessionIdForLineage: id,
+      rest: [...rest],
+      passthrough: [...passthrough],
     };
   }
 
@@ -421,6 +431,8 @@ export async function resolveLaunchSession(
       expected: expectedSessionFromExplicitId(continued, "continue_resolved"),
       childArgv: child(["--resume", continued]),
       resumeSessionIdForLineage: continued,
+      rest: [...rest],
+      passthrough: [...passthrough],
     };
   }
 
@@ -429,7 +441,185 @@ export async function resolveLaunchSession(
   return {
     expected: fresh,
     childArgv: child(["--session-id", fresh.sessionId]),
+    rest: [...rest],
+    passthrough: [...passthrough],
   };
+}
+
+/**
+ * Child argv for a wrapper-owned respawn: the user's original non-selector
+ * options and passthrough, with the session selector replaced by an external
+ * `--resume <sessionId>`. Callers must check `respawnArgvSafety` first: a
+ * positional initial prompt must never be replayed into a replacement child.
+ */
+export function respawnChildArgv(
+  rest: readonly string[],
+  passthrough: readonly string[],
+  sessionId: string,
+): string[] {
+  return assembleChildArgv(rest, ["--resume", sessionId], passthrough);
+}
+
+export type RespawnArgvSafety = { safe: true } | { safe: false; reason: string };
+
+/**
+ * Option table for the supported Claude binary, taken from the installed
+ * 2.1.226 `--help`. Only `<value>` options have a provable one-token space
+ * form. `[value]` and `<values...>` space forms are ambiguous with a
+ * positional prompt and fail closed (their `=` forms remain safe).
+ */
+const CLAUDE_ONE_VALUE_OPTIONS = new Set([
+  "--agent",
+  "--agents",
+  "--append-system-prompt",
+  "--append-system-prompt-file",
+  "--autocompact",
+  "--debug-file",
+  "--effort",
+  "--environment",
+  "--fallback-model",
+  "--input-format",
+  "--json-schema",
+  "--max-budget-usd",
+  "--model",
+  "-n",
+  "--name",
+  "--output-format",
+  "--permission-mode",
+  "--plugin-dir",
+  "--plugin-url",
+  "--remote-control-session-name-prefix",
+  "--setting-sources",
+  "--settings",
+  "--system-prompt",
+]);
+const CLAUDE_OPTIONAL_VALUE_OPTIONS = new Set([
+  "--cloud",
+  "-d",
+  "--debug",
+  "--from-pr",
+  "--prompt-suggestions",
+  "--remote-control",
+  "--teleport",
+  "--tmux",
+  "-w",
+  "--worktree",
+]);
+const CLAUDE_VARIADIC_OPTIONS = new Set([
+  "--add-dir",
+  "--allowedTools",
+  "--allowed-tools",
+  "--betas",
+  "--disallowedTools",
+  "--disallowed-tools",
+  "--file",
+  "--mcp-config",
+  "--tools",
+]);
+const CLAUDE_ZERO_ARITY_FLAGS = new Set([
+  "--allow-dangerously-skip-permissions",
+  "--ax-screen-reader",
+  "--background",
+  "--bare",
+  "--bg",
+  "--brief",
+  "--chrome",
+  "--dangerously-skip-permissions",
+  "--disable-slash-commands",
+  "--exclude-dynamic-system-prompt-sections",
+  "--forward-subagent-text",
+  "-h",
+  "--help",
+  "--ide",
+  "--include-hook-events",
+  "--include-partial-messages",
+  "--no-chrome",
+  "--no-session-persistence",
+  "-p",
+  "--print",
+  "--replay-user-messages",
+  "--safe-mode",
+  "--strict-mcp-config",
+  "-v",
+  "--verbose",
+  "--version",
+]);
+
+/**
+ * Whether the launch argv can be replayed into a respawned child without
+ * re-executing a positional initial prompt. Option values are recognized via
+ * the fixed-arity table above and preserved. Fail closed only for an actual
+ * positional prompt, prompt tokens after `--`, or an unknown option whose
+ * value boundary cannot be established. Manual recovery stays available when
+ * automatic handoff is disabled.
+ */
+export function respawnArgvSafety(
+  rest: readonly string[],
+  passthrough: readonly string[],
+): RespawnArgvSafety {
+  const afterDashDash = passthrough.filter((token) => token !== "--");
+  if (afterDashDash.length > 0) {
+    return {
+      safe: false,
+      reason:
+        "launch argv passes prompt tokens after --; a respawn must never re-send them, " +
+        "so automatic compact handoff is disabled for this launch form",
+    };
+  }
+
+  let i = 0;
+  while (i < rest.length) {
+    const token = rest[i]!;
+    if (!token.startsWith("-")) {
+      return {
+        safe: false,
+        reason:
+          `launch argv carries a positional prompt token (${JSON.stringify(token)}); ` +
+          "a respawn must never re-send it, so automatic compact handoff is disabled for this launch form",
+      };
+    }
+    if (token.includes("=")) {
+      i += 1;
+      continue;
+    }
+    if (CLAUDE_ONE_VALUE_OPTIONS.has(token)) {
+      i += 2;
+      continue;
+    }
+    if (CLAUDE_OPTIONAL_VALUE_OPTIONS.has(token) || CLAUDE_VARIADIC_OPTIONS.has(token)) {
+      // Optional-value and variadic space forms are inherently ambiguous with
+      // a following positional prompt — the wrapper cannot prove where the
+      // value list ends. Bare successors fail closed; `=` forms stay safe.
+      if (i + 1 < rest.length && !rest[i + 1]!.startsWith("-")) {
+        return {
+          safe: false,
+          reason:
+            `launch option ${JSON.stringify(token)} takes optional/variadic values and is followed by a bare token; ` +
+            "the value/prompt boundary cannot be established, so automatic compact handoff is disabled. " +
+            `Use ${token}=value form to enable it`,
+        };
+      }
+      i += 1;
+      continue;
+    }
+    if (CLAUDE_ZERO_ARITY_FLAGS.has(token)) {
+      i += 1;
+      continue;
+    }
+    // Unknown option: safe on its own or before another option, but a bare
+    // successor is ambiguous (value vs prompt) — fail closed.
+    if (i + 1 < rest.length && !rest[i + 1]!.startsWith("-")) {
+      return {
+        safe: false,
+        reason:
+          `launch argv has an option unknown to cc-lhc (${JSON.stringify(token)}) followed by a bare token; ` +
+          "the value/prompt boundary cannot be established, so automatic compact handoff is disabled. " +
+          `Use ${token}=value form to enable it`,
+      };
+    }
+    i += 1;
+  }
+  return { safe: true };
 }
 
 // Re-export legacy parse helpers used by tests that only need UUID resume extraction

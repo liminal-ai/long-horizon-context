@@ -56,6 +56,10 @@ function stripCcLhcFlags(argv: string[]): {
         contextPolicyOverrides.minRunwayTokens = Number(runway[1]);
         continue;
       }
+      if (arg === "--lhc-observe-only") {
+        contextPolicyOverrides.observeOnly = true;
+        continue;
+      }
       console.error(`Unknown cc-lhc flag: ${arg} (cc-lhc owns the --lhc-* namespace)`);
       process.exit(2);
     }

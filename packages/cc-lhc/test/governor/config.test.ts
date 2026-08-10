@@ -16,8 +16,8 @@ describe("context policy config", () => {
     expect(BUILTIN_CONTEXT_POLICY.lowerBoundTokens).toBe(240_000);
     expect(BUILTIN_CONTEXT_POLICY.upperBoundTokens).toBe(500_000);
     expect(BUILTIN_CONTEXT_POLICY.nativeBackstopTokens).toBe(1_000_000);
-    expect(BUILTIN_CONTEXT_POLICY.autoCompact).toBe(false);
-    expect(BUILTIN_CONTEXT_POLICY.observeOnly).toBe(true);
+    expect(BUILTIN_CONTEXT_POLICY.autoCompact).toBe(true);
+    expect(BUILTIN_CONTEXT_POLICY.observeOnly).toBe(false);
     expect(BUILTIN_CONTEXT_POLICY.profile).toBe("continuation");
     expect(BUILTIN_CONTEXT_POLICY.pruneEnabled).toBe(false);
   });

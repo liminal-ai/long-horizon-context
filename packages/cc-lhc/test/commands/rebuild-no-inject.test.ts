@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Lhc, ThreadRef } from "lhc";
@@ -6,10 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { runCompactCommand } from "../../src/commands/compact.js";
 import { runPruneCommand } from "../../src/commands/prune.js";
-import {
-  formatRebuildRelaunchGuidance,
-  LINEAGE_REGISTRATION_FAILED,
-} from "../../src/commands/rebuild-receipt.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
@@ -82,10 +78,8 @@ function makeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRunt
   };
 }
 
-describe("manual compact/prune: no in-app resume injection", () => {
-  it("compact registers lineage, returns relaunch guidance, never sets restart", async () => {
-    const home = mkdtempSync(join(tmpdir(), "cc-lhc-compact-lineage-"));
-    const lineageDbPath = join(home, "cc-lhc.sqlite");
+describe("manual compact/prune: wrapper-owned handoff, success-only lineage", () => {
+  it("compact returns a handoff request and writes NO lineage at rebuild time", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-compact-proj-"));
     const cwd = "/work/rebuild";
     mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
@@ -98,78 +92,94 @@ describe("manual compact/prune: no in-app resume injection", () => {
       expectedReintakeLines: 3,
       replayedPrefixLines: 2,
       prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+      totalByteLength: 100,
     });
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
-    const runtime = makeRuntime({ lineageDbPath, cwd });
+    const runtime = makeRuntime({ cwd });
     const outcome = await runCompactCommand("compact", runtime);
 
     expect(outcome.restart).toBeUndefined();
     expect(writeSpy).toHaveBeenCalledOnce();
-    expect(lineageSpy).toHaveBeenCalledWith(
-      lineageDbPath,
-      rebuiltId,
-      "th_rebuild",
-      expect.any(Function),
-      expect.anything(),
-      { prefix: expect.objectContaining({ kind: "verified", lineCount: 2 }) },
-    );
-    const guidance = formatRebuildRelaunchGuidance({
-      operation: "compact",
-      oldSessionId: "old-session-id",
-      newSessionId: rebuiltId,
-      threadId: "th_rebuild",
-    });
-    for (const line of guidance) {
-      expect(outcome.messages).toContain(line);
-    }
+    // Success-only lineage: nothing is persisted before the replacement is
+    // proven ready-after-replay (the wrapper registers it post-proof).
+    expect(lineageSpy).not.toHaveBeenCalled();
+    expect(outcome.handoff).toBeDefined();
+    expect(outcome.handoff?.operation).toBe("compact");
+    expect(outcome.handoff?.oldSessionId).toBe("old-session-id");
+    expect(outcome.handoff?.threadId).toBe("th_rebuild");
+    expect(outcome.handoff?.rebuilt.sessionId).toBe(rebuiltId);
     expect(outcome.messages.join("\n")).not.toMatch(/resuming in-place/i);
-    expect(outcome.messages.join("\n")).toContain(`cc-lhc --resume ${rebuiltId}`);
+    expect(outcome.messages.join("\n")).toContain("handing off");
 
     writeSpy.mockRestore();
     lineageSpy.mockRestore();
   });
 
-  it("compact fails closed when lineage registration fails", async () => {
-    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue({
-      sessionId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
-      rolloutPath: "/tmp/rebuilt.jsonl",
-      lineCount: 1,
-      expectedReintakeLines: 1,
-      replayedPrefixLines: 0,
-      prefixBoundary: { kind: "verified", lineCount: 0, byteLength: 0, sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
-    });
-    vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({
-      ok: false,
-      reason: "lineage_write:disk full",
-    });
+  it("compact reports partial and returns no handoff when the rebuild throws", async () => {
+    const writeSpy = vi
+      .spyOn(writeRebuilt, "writeRebuiltRollout")
+      .mockRejectedValue(new Error("disk full"));
+    const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runCompactCommand("compact", makeRuntime());
     expect(outcome.restart).toBeUndefined();
-    expect(outcome.messages).toContain(LINEAGE_REGISTRATION_FAILED);
-    expect(outcome.messages.join("\n")).not.toMatch(/relaunch with: cc-lhc --resume/);
+    expect(outcome.handoff).toBeUndefined();
+    expect(outcome.messages.join("\n")).toMatch(/rebuild failed: disk full/);
+    expect(outcome.messages.join("\n")).toMatch(/session left running unchanged/);
+    expect(lineageSpy).not.toHaveBeenCalled();
 
-    vi.restoreAllMocks();
+    writeSpy.mockRestore();
+    lineageSpy.mockRestore();
   });
 
-  it("prune registers lineage and never sets restart", async () => {
+  it("prune returns a handoff request and writes no lineage", async () => {
     const rebuiltId = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
-    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue({
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue({
       sessionId: rebuiltId,
       rolloutPath: `/tmp/${rebuiltId}.jsonl`,
       lineCount: 2,
       expectedReintakeLines: 2,
       replayedPrefixLines: 1,
       prefixBoundary: { kind: "verified", lineCount: 1, byteLength: 20, sha256: "bb".repeat(32) },
+      totalByteLength: 100,
     });
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runPruneCommand("prune", makeRuntime());
     expect(outcome.restart).toBeUndefined();
-    expect(lineageSpy).toHaveBeenCalled();
-    expect(outcome.messages.join("\n")).toContain(`cc-lhc --resume ${rebuiltId}`);
+    expect(lineageSpy).not.toHaveBeenCalled();
+    expect(outcome.handoff?.operation).toBe("prune");
+    expect(outcome.handoff?.rebuilt.sessionId).toBe(rebuiltId);
     expect(outcome.messages.join("\n")).not.toMatch(/resuming in-place/i);
 
-    vi.restoreAllMocks();
+    writeSpy.mockRestore();
+    lineageSpy.mockRestore();
+  });
+
+  it("prune no-op mutates nothing and hands nothing off", async () => {
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout");
+    const runtime = makeRuntime({
+      sdk: {
+        threadView: {
+          prune: vi.fn(async () => ({
+            ok: true,
+            value: {
+              previousBoundary: 3,
+              newBoundary: 3,
+              zoneTokensBefore: 5,
+              zoneTokensAfter: 5,
+              toolResultsPruned: 0,
+              noOp: true,
+            },
+          })),
+        },
+      } as unknown as Lhc,
+    });
+    const outcome = await runPruneCommand("prune", runtime);
+    expect(outcome.handoff).toBeUndefined();
+    expect(outcome.messages.join("\n")).toMatch(/no-op/);
+    expect(writeSpy).not.toHaveBeenCalled();
+    writeSpy.mockRestore();
   });
 });

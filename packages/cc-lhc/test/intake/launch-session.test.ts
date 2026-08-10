@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LaunchGrammarError, resolveLaunchSession } from "../../src/intake/launch-session.js";
+import { LaunchGrammarError, resolveLaunchSession, respawnArgvSafety } from "../../src/intake/launch-session.js";
 
 const UUID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const UUID_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -169,3 +169,49 @@ describe("resolveLaunchSession grammar", () => {
   });
 });
 
+
+describe("respawnArgvSafety (fixture: claude 2.1.226 --help arity table)", () => {
+  it("keeps the real supported launch form handoff-safe: --model --effort --name", () => {
+    expect(respawnArgvSafety(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"], [])).toEqual({
+      safe: true,
+    });
+  });
+
+  it("equals forms and zero-arity flags are safe", () => {
+    expect(respawnArgvSafety(["--model=opus", "--verbose", "--add-dir=/x", "--debug=api"], [])).toEqual({
+      safe: true,
+    });
+  });
+
+  it("a positional prompt fails closed", () => {
+    const r = respawnArgvSafety(["do this thing"], []);
+    expect(r.safe).toBe(false);
+    if (!r.safe) expect(r.reason).toMatch(/positional prompt/);
+  });
+
+  it("prompt tokens after -- fail closed", () => {
+    const r = respawnArgvSafety([], ["--", "do", "this"]);
+    expect(r.safe).toBe(false);
+  });
+
+  it("variadic space form with bare values fails closed (prompt boundary unprovable)", () => {
+    const r = respawnArgvSafety(["--add-dir", "/x"], []);
+    expect(r.safe).toBe(false);
+    if (!r.safe) expect(r.reason).toMatch(/optional\/variadic/);
+  });
+
+  it("prompt after a variadic list fails closed", () => {
+    const r = respawnArgvSafety(["--add-dir", "/x", "do this"], []);
+    expect(r.safe).toBe(false);
+  });
+
+  it("optional-value space form with a bare token fails closed", () => {
+    const r = respawnArgvSafety(["--debug", "filter"], []);
+    expect(r.safe).toBe(false);
+  });
+
+  it("unknown option followed by a bare token fails closed; alone it is safe", () => {
+    expect(respawnArgvSafety(["--future-opt", "val"], []).safe).toBe(false);
+    expect(respawnArgvSafety(["--future-flag", "--verbose"], []).safe).toBe(true);
+  });
+});

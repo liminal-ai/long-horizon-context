@@ -17,7 +17,11 @@ function decide(
     providerContextTotal: input.providerContext?.total ?? null,
     upperBoundTokens: input.policy.upperBoundTokens,
     lowerBoundTokens: input.policy.lowerBoundTokens,
-    wouldMutate: false,
+    wouldMutate:
+      kind === "would_compact" &&
+      input.policyArmed &&
+      input.policy.autoCompact &&
+      !input.policy.observeOnly,
   };
 }
 
@@ -31,10 +35,8 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
     return decide("policy_invalid", "context policy is invalid or failed to load", input);
   }
 
-  // Slice 3: observe-only always; autoCompact=false means intent disabled
-  // (still observe, but never would_compact).
   if (!input.policy.autoCompact) {
-    return decide("policy_disabled", "autoCompact intent is disabled", input);
+    return decide("policy_disabled", "autoCompact is disabled", input);
   }
 
   if (input.turnOpen) {
@@ -108,7 +110,9 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
 
   return decide(
     "would_compact",
-    `provider context ${total} >= upperBoundTokens ${input.policy.upperBoundTokens}; observe-only (no mutation)`,
+    input.policy.observeOnly
+      ? `provider context ${total} >= upperBoundTokens ${input.policy.upperBoundTokens}; observe-only (no mutation)`
+      : `provider context ${total} >= upperBoundTokens ${input.policy.upperBoundTokens}; automatic compact eligible`,
     input,
   );
 }

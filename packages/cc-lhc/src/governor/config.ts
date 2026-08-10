@@ -18,9 +18,9 @@ import type {
   ResolvedContextPolicy,
 } from "./types.js";
 
-/** Steward built-in defaults for the work-ready path. */
+/** Steward built-in defaults for the work-ready path (Slice 4: auto on). */
 export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
-  autoCompact: false,
+  autoCompact: true,
   lowerBoundTokens: 240_000,
   upperBoundTokens: 500_000,
   profile: "continuation",
@@ -29,7 +29,7 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   pruneEnabled: false,
   pruneThresholdTokens: null,
   pruneTargetTokens: null,
-  observeOnly: true,
+  observeOnly: false,
   retryGrowthTokens: 10_000,
   minRunwayTokens: 50_000,
 };
@@ -98,15 +98,13 @@ export function parseContextPolicyPartial(
       return;
     }
     if (key === "observeOnly") {
+      // Session-only: a persisted observe-only would silently disable automatic
+      // policy forever; the escape hatch must be explicit per launch.
       if (options.allowObserveOnly !== true) {
         errors.push(`${label}: observeOnly cannot be set in persisted config`);
         return;
       }
-      if (v !== true) {
-        errors.push(`${label}: observeOnly must be true in Slice 3`);
-        return;
-      }
-      out.observeOnly = true;
+      out.observeOnly = v;
       return;
     }
     if (key === "autoCompact") out.autoCompact = v;
@@ -195,7 +193,7 @@ function applyPartial(
   partial: ContextPolicyPartial,
   source: PolicyFieldSource,
 ): ContextPolicy {
-  const next: ContextPolicy = { ...base, observeOnly: true };
+  const next: ContextPolicy = { ...base };
   const assign = <K extends PolicyFieldKey>(key: K, value: ContextPolicy[K]): void => {
     next[key] = value;
     sources[key] = source;
@@ -216,9 +214,7 @@ function applyPartial(
   if (partial.pruneTargetTokens !== undefined) assign("pruneTargetTokens", partial.pruneTargetTokens);
   if (partial.retryGrowthTokens !== undefined) assign("retryGrowthTokens", partial.retryGrowthTokens);
   if (partial.minRunwayTokens !== undefined) assign("minRunwayTokens", partial.minRunwayTokens);
-  // observeOnly always true in Slice 3
-  next.observeOnly = true;
-  sources.observeOnly = "builtin";
+  if (partial.observeOnly !== undefined) assign("observeOnly", partial.observeOnly);
   return next;
 }
 
@@ -272,8 +268,8 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
   if (policy.nativeCompactMode !== "emergency_backstop") {
     errors.push('nativeCompactMode must be "emergency_backstop"');
   }
-  if (policy.observeOnly !== true) {
-    errors.push("observeOnly must be true in Slice 3");
+  if (typeof policy.observeOnly !== "boolean") {
+    errors.push("observeOnly must be a boolean");
   }
   if (!Number.isSafeInteger(policy.retryGrowthTokens) || policy.retryGrowthTokens <= 0) {
     errors.push("retryGrowthTokens must be a positive safe integer");
@@ -346,10 +342,6 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
     if (!parsed.ok) errors.push(...parsed.errors);
     else policy = applyPartial(policy, sources, parsed.value, "session");
   }
-
-  // Slice 3 force observe-only
-  policy = { ...policy, observeOnly: true };
-  sources.observeOnly = "builtin";
 
   const validationErrors = validateContextPolicy(policy);
   errors.push(...validationErrors);

@@ -144,6 +144,13 @@ export interface CaptureSessionDeps {
   replayedPrefixLines?: number;
   lineageDbPath?: string;
   lineageDeps?: LineageDbDeps;
+  /**
+   * In-wrapper handoff: do NOT persist the session→thread lineage row at bind.
+   * Canonical success lineage is written by the wrapper only after the
+   * generation is proven ready-after-replay; the pending capability
+   * (thread/sdk/prefix) is passed directly instead of trusted from a row.
+   */
+  suppressBindLineageRecord?: boolean;
   log?: (message: string) => void;
   logError?: (message: string) => void;
   flushBatchFn?: typeof flushBatch;
@@ -608,15 +615,17 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       } else {
         const continuedThreadId = threadIdFromRef(threadRef);
         if (continuedThreadId !== "") {
-          const recorded = await safeRecordSessionThread(
-            lineageDbPath,
-            rolloutSessionId,
-            continuedThreadId,
-            logError,
-            deps.lineageDeps,
-          );
-          if (stopped) return;
-          if (!recorded.ok) degradeAndEmit(recorded.reason);
+          if (deps.suppressBindLineageRecord !== true) {
+            const recorded = await safeRecordSessionThread(
+              lineageDbPath,
+              rolloutSessionId,
+              continuedThreadId,
+              logError,
+              deps.lineageDeps,
+            );
+            if (stopped) return;
+            if (!recorded.ok) degradeAndEmit(recorded.reason);
+          }
           const loaded = safeLoadThreadSignatures(
             lineageDbPath,
             continuedThreadId,

@@ -37,6 +37,15 @@ describe("decideGovernor", () => {
   it("would_compact at exact upper with all gates clear", () => {
     const d = decideGovernor(baseInput());
     expect(d.kind).toBe("would_compact");
+    // Slice 4: an armed, enabled, non-observe policy makes the decision executable.
+    expect(d.wouldMutate).toBe(true);
+  });
+
+  it("observeOnly keeps would_compact non-executable", () => {
+    const d = decideGovernor(
+      baseInput({ policy: { ...BUILTIN_CONTEXT_POLICY, observeOnly: true } }),
+    );
+    expect(d.kind).toBe("would_compact");
     expect(d.wouldMutate).toBe(false);
   });
 

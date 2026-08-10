@@ -21,6 +21,14 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   cwd: string;
   sourceRolloutPath: string | undefined;
   sourceSessionId: string | undefined;
+  /** Effective context policy inputs for compact construction. */
+  contextPolicy?: {
+    profile: string;
+    lowerBoundTokens: number;
+    pruneIfDue?: { thresholdTokens: number; targetTokens: number };
+  };
+  /** True when user input arrived since the operation started (cancel fence). */
+  inputEpochChanged?: () => boolean;
   /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
   isTurnOpen?: () => boolean;
   /** Capture health gate for compact/prune (ready and not degraded). */
@@ -56,10 +64,15 @@ export interface SessionRestartPlan {
 export interface DispatchOutcome {
   messages: string[];
   /**
-   * Never set by default compact/prune (Slice 1 interim). Slice 4 may use a
-   * different handoff shape for wrapper-owned child respawn.
+   * Never set by default compact/prune (Slice 1 interim). Slice 4 uses
+   * `handoff` instead for wrapper-owned child respawn.
    */
   restart?: SessionRestartPlan;
+  /**
+   * Slice 4: a rebuilt session awaiting the wrapper-owned controlled handoff.
+   * The command module never spawns/kills processes; run.ts executes this.
+   */
+  handoff?: import("./context-mutation.js").HandoffRequest;
 }
 
 export const CAPTURE_DISABLED_MESSAGE = "capture disabled";

@@ -1,11 +1,38 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
+import {
+  runContextMutation,
+  type ContextMutationPlan,
+  type HandoffRequest,
+} from "../commands/context-mutation.js";
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
+import {
+  formatRebuildRelaunchGuidance,
+  registerRebuiltSessionLineage,
+} from "../commands/rebuild-receipt.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
-import { LaunchGrammarError, resolveLaunchSession } from "../intake/launch-session.js";
+import {
+  LaunchGrammarError,
+  resolveLaunchSession,
+  respawnArgvSafety,
+  respawnChildArgv,
+} from "../intake/launch-session.js";
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
-import { defaultRegistryPath } from "../intake/paths.js";
+import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+import {
+  DEFAULT_CAPTURE_READY_TIMEOUT_MS,
+  DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
+  DEFAULT_CHILD_STABLE_WINDOW_MS,
+  executeHandoff,
+  type HandoffChild,
+  type HandoffPorts,
+  type HandoffResult,
+  type RecoveryArtifact,
+} from "./handoff.js";
 import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
@@ -15,6 +42,7 @@ import {
   policySourcesSummary,
   setGovernorCaptureHealth,
   setGovernorDescriptorReady,
+  setGovernorOperationInFlight,
   type ContextPolicyPartial,
   type GovernorRuntimeState,
   type ResolvedContextPolicy,
@@ -121,6 +149,23 @@ export type RunOptions = {
   resolvedContextPolicy?: ResolvedContextPolicy;
   /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
+  /** Test hook: observe controlled-handoff results (auto and manual). */
+  onHandoffResult?: (result: HandoffResult) => void;
+  /** Test hooks: handoff timing (SIGTERM grace, SIGKILL wait, capture-ready cap, liveness caps). */
+  handoffTimeouts?: {
+    sigtermGraceMs?: number;
+    sigkillWaitMs?: number;
+    captureReadyTimeoutMs?: number;
+    childLivenessTimeoutMs?: number;
+    childStableWindowMs?: number;
+  };
+  /** Test hook: recovery artifact directory (defaults to ~/.cc-lhc/recovery). */
+  recoveryDir?: string;
+  /**
+   * Test hook: suppress the `--autocompact <backstop>` child args (harnesses
+   * spawn a generic fake child that rejects claude-only flags).
+   */
+  disableNativeBackstopArgs?: boolean;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -190,7 +235,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     );
   } else {
     wrapperLog.info(
-      `cc-lhc context policy armed observeOnly=true autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
+      `cc-lhc context policy armed observeOnly=${resolvedContextPolicy.policy.observeOnly} autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
     );
   }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
@@ -198,6 +243,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let expectedSession: ExpectedSession | undefined;
   let resumeSessionIdForLineage: string | undefined;
   let childArgv = argv;
+  /** Non-selector user argv retained for wrapper-owned respawn. */
+  let respawnRest: string[] = [];
+  let respawnPassthrough: string[] = [];
+  /** Set when the launch form could replay a positional prompt: handoff fails closed. */
+  let respawnUnsafeReason: string | null = null;
   if (!noCapture) {
     try {
       const plan = await resolveLaunchSession(argv, {
@@ -209,15 +259,45 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       expectedSession = plan.expected;
       childArgv = plan.childArgv;
       resumeSessionIdForLineage = plan.resumeSessionIdForLineage;
+      respawnRest = plan.rest;
+      respawnPassthrough = plan.passthrough;
       wrapperLog.info(
         `cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`,
       );
+      const safety = respawnArgvSafety(respawnRest, respawnPassthrough);
+      if (!safety.safe) {
+        respawnUnsafeReason = safety.reason;
+        wrapperLog.warn(`cc-lhc handoff disabled for this launch form: ${safety.reason}`);
+      }
     } catch (cause) {
       const message =
         cause instanceof LaunchGrammarError || cause instanceof Error ? cause.message : String(cause);
       stderr.write(`${message}\n`);
       return 2;
     }
+  }
+
+  // Native Claude compact stays as the EMERGENCY BACKSTOP above the LHC upper
+  // trigger. An explicit user --autocompact choice is preserved verbatim;
+  // otherwise the child gets the configured backstop through the supported
+  // CLI surface. Applied to the initial spawn and every respawn.
+  const userChoseAutocompact = argv.some(
+    (arg, i) =>
+      argv.slice(0, i + 1).every((a) => a !== "--") &&
+      (arg === "--autocompact" || arg.startsWith("--autocompact=")),
+  );
+  const nativeBackstopArgs: string[] =
+    !noCapture &&
+    !userChoseAutocompact &&
+    resolvedContextPolicy.armed &&
+    options.disableNativeBackstopArgs !== true
+      ? ["--autocompact", String(resolvedContextPolicy.policy.nativeBackstopTokens)]
+      : [];
+  if (nativeBackstopArgs.length > 0) {
+    childArgv = [...nativeBackstopArgs, ...childArgv];
+    wrapperLog.info(
+      `cc-lhc native compact backstop: --autocompact ${resolvedContextPolicy.policy.nativeBackstopTokens}`,
+    );
   }
 
   // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
@@ -264,9 +344,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     childEnv[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
   }
 
-  let ptyProcess: IPty;
+  let currentPty: IPty;
   try {
-    ptyProcess = spawnPty(claudeBin, childArgv, {
+    currentPty = spawnPty(claudeBin, childArgv, {
       name: TERM_NAME,
       cols,
       rows,
@@ -295,6 +375,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let descriptorCapabilityRevoked = false;
   let resolveRun: ((code: number) => void) | undefined;
 
+  // ---- Slice 4 controlled-handoff state ----
+  /** Post-commit stdin bytes, in arrival order; null = normal forwarding. */
+  let inputBarrier: Buffer[] | null = null;
+  /** True from commit until the handoff settles; suppresses teardown-on-exit. */
+  let handoffInProgress = false;
+  /** The child whose exit the handoff expects (old child during termination). */
+  let expectedExitPty: IPty | null = null;
+  let expectedExitResolve: (() => void) | null = null;
+  /** Set when any child dies while a handoff is mid-flight (fast-fails ready wait). */
+  let childDiedDuringHandoff = false;
+  /** PTY output bytes from the current child (liveness signal, never parsed). */
+  let currentChildOutputBytes = 0;
+  /** One auto operation scheduled/coalesced at a time. */
+  let autoOperationScheduled = false;
+  /** Cooldown after a non-success handoff; replayed rollback lifecycle must not re-trigger. */
+  let autoBlockedUntilMs = 0;
+  /** Assigned inside the run promise where child/teardown machinery lives. */
+  let runAutoOperation: () => Promise<void> = async () => {};
+  const HANDOFF_FAILURE_COOLDOWN_MS = 120_000;
+
   const triggerFatalRevocation = (reason: string): void => {
     if (fatalRevocationExit && exited) return;
     fatalRevocationExit = true;
@@ -311,7 +411,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // best effort
     }
     try {
-      ptyProcess.kill("SIGKILL");
+      currentPty.kill("SIGKILL");
     } catch {
       // kill may throw; still exit the owner process
     }
@@ -435,6 +535,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     for (const record of observed.observes) {
       wrapperLog.info(formatGovernorObserveLogLine(record));
       options.onGovernorObserve?.(record);
+      // Slice 4: an executable would_compact starts ONE automatic operation,
+      // scheduled off the capture batch path (the handoff stops capture; doing
+      // that inline would deadlock the batch queue it runs on).
+      if (
+        record.wouldMutate === true &&
+        !exited &&
+        !handoffInProgress &&
+        !autoOperationScheduled &&
+        respawnUnsafeReason === null &&
+        Date.now() >= autoBlockedUntilMs
+      ) {
+        autoOperationScheduled = true;
+        setImmediate(() => {
+          void runAutoOperation().finally(() => {
+            autoOperationScheduled = false;
+          });
+        });
+      }
     }
 
     for (const signal of signals) {
@@ -602,11 +720,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       };
     }
     const ctx = captureSession.getCommandContext();
+    const policy = resolvedContextPolicy.policy;
     return {
       ...ctx,
       cwd: process.cwd(),
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
+      contextPolicy: {
+        profile: policy.profile,
+        lowerBoundTokens: policy.lowerBoundTokens,
+        ...(policy.pruneEnabled && policy.pruneThresholdTokens !== null && policy.pruneTargetTokens !== null
+          ? {
+              pruneIfDue: {
+                thresholdTokens: policy.pruneThresholdTokens,
+                targetTokens: policy.pruneTargetTokens,
+              },
+            }
+          : {}),
+      },
       isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
       isCaptureHealthy: () => captureSession?.isCaptureHealthy() ?? false,
       isCaptureReady: () => captureSession?.isCaptureReady() ?? false,
@@ -654,7 +785,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const handleSigwinch = (): void => {
-    onTerminalResize(ptyProcess, stdout);
+    onTerminalResize(currentPty, stdout);
     renderModalPanel();
   };
   process.on("SIGWINCH", handleSigwinch);
@@ -673,7 +804,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const forwardSignal = (signal: NodeJS.Signals): void => {
     restoreIfModal();
     if (!exited) {
-      ptyProcess.kill(signal);
+      currentPty.kill(signal);
     }
   };
   process.on("SIGINT", forwardSignal);
@@ -705,7 +836,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (fatalRevocationExit || !rev.ok) {
         // Owner must die even if child kill fails — invalidate OS identity.
         try {
-          ptyProcess.kill("SIGKILL");
+          currentPty.kill("SIGKILL");
         } catch {
           // already dead or kill throws
         }
@@ -770,12 +901,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         return;
       }
       startExecutingTicker();
+      // Manual mutating commands share the automatic path's cancel fence: any
+      // pty-bound user byte from dispatch start cancels before commit.
+      const epochAtStart = governorState.currentInputEpoch;
+      const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
       // A synchronous throw (runtime-snapshot construction, dispatch setup)
       // must not escape into the stdin data handler as an uncaught exception —
       // settle it exactly like an async failure.
       let dispatched: Promise<DispatchOutcome>;
       try {
-        dispatched = dispatchLhcCommand(commandLine, commandRuntime());
+        dispatched = dispatchLhcCommand(commandLine, {
+          ...commandRuntime(),
+          inputEpochChanged: epochChanged,
+        });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         settleCommand([`command error: ${message}`], label);
@@ -783,9 +921,57 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         return;
       }
       void dispatched
-        .then((outcome) => {
-          // No in-app /resume injection (retired 2.1.226). Compact/prune receipts
-          // always stay modal until dismissed so relaunch guidance is visible.
+        .then(async (outcome) => {
+          if (outcome.handoff !== undefined) {
+            // Wrapper-owned respawn (in-app /resume is retired on 2.1.226).
+            // The child swap owns the screen: close the modal and flush held
+            // output BEFORE commit, then run the same handoff as automatic.
+            governorState = setGovernorOperationInFlight(governorState, true);
+            stopExecutingTicker();
+            inputState = forceResetInput(inputState);
+            altScreen.leave();
+            outputHold.flush();
+            try {
+              const result = await performHandoff(outcome.handoff, epochChanged);
+              const summary =
+                result.kind === "success"
+                  ? `handoff complete — session ${result.newSessionId} live`
+                  : result.kind === "cancelled"
+                    ? `handoff cancelled: ${result.reason}`
+                    : result.kind === "rolled_back"
+                      ? `handoff rolled back to ${result.oldSessionId}: ${result.reason}`
+                      : `handoff FAILED: ${result.reason} (recovery: ${result.recoveryArtifactPath ?? "unwritten"})`;
+              const extra: string[] = [];
+              if (result.kind === "cancelled" && respawnUnsafeReason !== null) {
+                // Manual recovery for a launch form that cannot respawn: bind
+                // the rebuilt artifact so an external wrapper resume can load it
+                // (accepted Slice 1 interim path), and say exactly what to run.
+                const lineage = await registerRebuiltSessionLineage({
+                  newSessionId: outcome.handoff.rebuilt.sessionId,
+                  threadId: outcome.handoff.threadId,
+                  prefixBoundary: outcome.handoff.rebuilt.prefixBoundary,
+                  lineageDbPath: defaultLineageDbPath(),
+                  logError: (message) => wrapperLog.warn(message),
+                });
+                if (lineage.ok) {
+                  extra.push(
+                    ...formatRebuildRelaunchGuidance({
+                      operation: outcome.handoff.operation === "prune" ? "prune" : "compact",
+                      oldSessionId: outcome.handoff.oldSessionId,
+                      newSessionId: outcome.handoff.rebuilt.sessionId,
+                      threadId: outcome.handoff.threadId,
+                    }),
+                  );
+                } else {
+                  extra.push(`rebuilt artifact not registered (${lineage.reason}); re-run compact after relaunch`);
+                }
+              }
+              settleCommand([...outcome.messages, summary, ...extra], label);
+            } finally {
+              governorState = setGovernorOperationInFlight(governorState, false);
+            }
+            return;
+          }
           settleCommand(settleReceipts(outcome.messages), label);
         })
         .catch((cause: unknown) => {
@@ -832,7 +1018,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         if (resolved === null) return;
         inputState = resolved.state;
         if (resolved.toPty !== undefined && resolved.toPty.length > 0)
-          ptyProcess.write(resolved.toPty.toString("latin1"));
+          currentPty.write(resolved.toPty.toString("latin1"));
         applyActions(resolved.actions);
       }, PENDING_ESC_RESOLVE_MS);
       pendingEscTimer.unref?.();
@@ -851,6 +1037,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     const forwardInput = (data: Buffer): void => {
+      // Post-commit barrier: preserve every byte in arrival order, raw. No
+      // terminal semantics are inferred from buffered bytes.
+      if (inputBarrier !== null) {
+        inputBarrier.push(Buffer.from(data));
+        return;
+      }
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
@@ -858,20 +1050,394 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // would_compact when the operator typed during the open turn.
       if (result.toPty.length > 0) {
         governorState = noteGovernorInput(governorState);
-        ptyProcess.write(result.toPty);
+        currentPty.write(result.toPty);
       }
       applyActions(result.actions);
       renderModalPanel();
       armPendingEscTimer();
     };
 
-    const onExit = async ({ exitCode, signal }: { exitCode: number; signal?: number }): Promise<void> => {
+    /** Per-child exit routing: expected handoff exits resolve the waiter; a
+     * stale (replaced) child's exit is ignored; the live child's exit tears
+     * down — except mid-handoff, where the failure surfaces via ready-wait. */
+    const handleChildExit = (pty: IPty, exitCode: number, signal?: number): void => {
+      if (expectedExitPty === pty) {
+        expectedExitPty = null;
+        const resolveWaiter = expectedExitResolve;
+        expectedExitResolve = null;
+        resolveWaiter?.();
+        return;
+      }
+      if (pty !== currentPty) return;
+      if (handoffInProgress) {
+        childDiedDuringHandoff = true;
+        return;
+      }
       if (exited) return;
-      await teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : (exitCode ?? 1));
+      void teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : (exitCode ?? 1));
     };
 
-    ptyProcess.onData(forwardOutput);
-    ptyProcess.onExit(onExit);
+    const attachChild = (pty: IPty): void => {
+      currentPty = pty;
+      currentChildOutputBytes = 0;
+      pty.onData((data: string) => {
+        // Non-semantic liveness signal only: count bytes, never parse them.
+        if (pty === currentPty) currentChildOutputBytes += data.length;
+        forwardOutput(data);
+      });
+      pty.onExit(({ exitCode, signal }) => {
+        handleChildExit(pty, exitCode, signal);
+      });
+    };
+
+    // ---- Slice 4: controlled handoff machinery ----
+    const sigtermGraceMs = options.handoffTimeouts?.sigtermGraceMs ?? 3_000;
+    const sigkillWaitMs = options.handoffTimeouts?.sigkillWaitMs ?? 2_000;
+    const captureReadyTimeoutMs =
+      options.handoffTimeouts?.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY_TIMEOUT_MS;
+    const childLivenessTimeoutMs =
+      options.handoffTimeouts?.childLivenessTimeoutMs ?? DEFAULT_CHILD_LIVENESS_TIMEOUT_MS;
+    const childStableWindowMs =
+      options.handoffTimeouts?.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
+
+    const waitForExpectedExit = (timeoutMs: number): Promise<boolean> =>
+      new Promise<boolean>((resolveWait) => {
+        if (expectedExitPty === null) {
+          resolveWait(true);
+          return;
+        }
+        const timer = setTimeout(() => {
+          expectedExitResolve = null;
+          resolveWait(false);
+        }, timeoutMs);
+        timer.unref?.();
+        expectedExitResolve = () => {
+          clearTimeout(timer);
+          resolveWait(true);
+        };
+      });
+
+    /** Spawn a claude child for `--resume <sessionId>` with a fresh opening
+     * descriptor generation; attaches output/exit handlers. */
+    const spawnHandoffChild = (sessionId: string): HandoffChild => {
+      let respawnArgv = respawnChildArgv(respawnRest, respawnPassthrough, sessionId);
+      if (nativeBackstopArgs.length > 0) respawnArgv = [...nativeBackstopArgs, ...respawnArgv];
+      // Fresh descriptor per child generation: the old one is closed at commit;
+      // ready→ready with a different binding is an illegal transition.
+      descriptorCapabilityRevoked = false;
+      runtimeDescriptorPath = undefined;
+      runtimeDescriptor = undefined;
+      try {
+        runtimeDescriptorPath = newDescriptorPath(undefined, descriptorIo);
+        runtimeDescriptor = createOpeningDescriptor(runtimeDescriptorPath, descriptorIo);
+      } catch (cause) {
+        runtimeDescriptorPath = undefined;
+        runtimeDescriptor = undefined;
+        wrapperLog.warn(
+          `cc-lhc handoff descriptor create failed (retrieval stays unavailable): ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+      const guided = injectRetrievalGuidance(respawnArgv);
+      if (guided.ok) respawnArgv = guided.argv;
+      else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
+      const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+      if (runtimeDescriptorPath !== undefined) env[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
+      wrapperLog.info(`cc-lhc handoff spawn: ${claudeBin} ${respawnArgv.join(" ")}`);
+      const pty = spawnPty(claudeBin, respawnArgv, {
+        name: TERM_NAME,
+        cols: stdout.columns ?? DEFAULT_COLS,
+        rows: stdout.rows ?? DEFAULT_ROWS,
+        cwd: process.cwd(),
+        env,
+      });
+      attachChild(pty);
+      return { write: (data: string) => pty.write(data) };
+    };
+
+    const awaitCaptureReadyAfterReplay = async (timeoutMs: number): Promise<"ready" | "degraded" | "timeout"> => {
+      const startMs = Date.now();
+      for (;;) {
+        if (captureSession?.isCaptureReady() === true) return "ready";
+        if (captureSession?.getCaptureHealth().phase === "degraded") return "degraded";
+        if (childDiedDuringHandoff) return "degraded";
+        if (Date.now() - startMs > timeoutMs) return "timeout";
+        await new Promise((resolveTick) => {
+          const tick = setTimeout(resolveTick, 25);
+          tick.unref?.();
+        });
+      }
+    };
+
+    const writeRecoveryArtifactFile = (artifact: RecoveryArtifact): string | null => {
+      try {
+        const dir = options.recoveryDir ?? join(ccLhcHome(), "recovery");
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, `handoff-${Date.now()}-${process.pid}.json`);
+        writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+        return path;
+      } catch (cause) {
+        wrapperLog.warn(
+          `cc-lhc handoff recovery artifact write failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+        return null;
+      }
+    };
+
+    /** Execute the controlled handoff for a rebuilt session. Shared by manual
+     * compact/prune and the automatic governor path. */
+    const performHandoff = async (
+      request: HandoffRequest,
+      inputEpochChanged: () => boolean,
+    ): Promise<HandoffResult> => {
+      handoffInProgress = true;
+      childDiedDuringHandoff = false;
+      const leaseGeneration = captureSession?.getCaptureGeneration() ?? 0;
+      const oldCaptureSnapshot = captureSession;
+      const ports: HandoffPorts = {
+        preCommitGate: (): string | null => {
+          if (respawnUnsafeReason !== null) {
+            return `respawn unavailable for this launch form: ${respawnUnsafeReason}`;
+          }
+          if (exited) return "wrapper exiting";
+          if (oldCaptureSnapshot === undefined) return "capture not available";
+          if (inputEpochChanged()) return "input arrived before commit";
+          if (oldCaptureSnapshot.isTurnOpen()) return "turn opened during rebuild";
+          if (!oldCaptureSnapshot.isCaptureReady()) return "capture not ready";
+          if (oldCaptureSnapshot.getCaptureGeneration() !== leaseGeneration) {
+            return "capture generation changed";
+          }
+          if (inputState.mode !== "passthrough") return "modal/UI owns the input line";
+          return null;
+        },
+        beginInputBarrier: (): void => {
+          inputBarrier = [];
+        },
+        flushInputBarrier: (child: HandoffChild): number => {
+          const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
+          inputBarrier = null;
+          if (bytes.length > 0) child.write(bytes.toString("latin1"));
+          return bytes.length;
+        },
+        takeInputBarrierBuffer: (): Buffer => {
+          const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
+          inputBarrier = null;
+          return bytes;
+        },
+        closeOldDescriptor: (): void => {
+          if (runtimeDescriptorPath === undefined) return;
+          const path = runtimeDescriptorPath;
+          const current = runtimeDescriptor;
+          runtimeDescriptorPath = undefined;
+          runtimeDescriptor = undefined;
+          const rev = revokeCapability(path, current, "closed", undefined, descriptorIo);
+          if (!rev.ok) {
+            wrapperLog.warn(`cc-lhc handoff: old descriptor revoke unproven: ${rev.reason}`);
+          }
+        },
+        terminateOldChild: async (): Promise<{ exited: boolean; escalated: boolean }> => {
+          const pty = currentPty;
+          expectedExitPty = pty;
+          try {
+            pty.kill("SIGTERM");
+          } catch {
+            // may already be dead; the waiter resolves via onExit or timeout
+          }
+          const graceful = await waitForExpectedExit(sigtermGraceMs);
+          if (graceful) return { exited: true, escalated: false };
+          try {
+            process.kill(-pty.pid, "SIGKILL");
+          } catch {
+            try {
+              pty.kill("SIGKILL");
+            } catch {
+              // fall through to the bounded wait
+            }
+          }
+          const killed = await waitForExpectedExit(sigkillWaitMs);
+          if (!killed) expectedExitPty = null;
+          return { exited: killed, escalated: true };
+        },
+        stopCurrentCapture: async (): Promise<void> => {
+          await captureSession?.stop();
+        },
+        spawnChild: spawnHandoffChild,
+        currentChild: (): HandoffChild => ({ write: (data: string) => currentPty.write(data) }),
+        killCurrentChild: (): void => {
+          const pty = currentPty;
+          expectedExitPty = pty;
+          expectedExitResolve = null;
+          try {
+            process.kill(-pty.pid, "SIGKILL");
+          } catch {
+            try {
+              pty.kill("SIGKILL");
+            } catch {
+              // already dead
+            }
+          }
+        },
+        startRebuiltCapture: (handoffRequest: HandoffRequest): void => {
+          const ctx = oldCaptureSnapshot?.getCommandContext();
+          if (ctx?.sdk === undefined || ctx.threadRef === undefined || oldCaptureSnapshot === undefined) {
+            throw new Error("no capture context to continue");
+          }
+          childDiedDuringHandoff = false;
+          captureSession = startCaptureSession({
+            startedAt: new Date(),
+            noInference,
+            continueCapture: {
+              threadRef: ctx.threadRef,
+              sdk: ctx.sdk,
+              stats: oldCaptureSnapshot.stats,
+              priorGeneration: oldCaptureSnapshot.getCaptureGeneration(),
+            },
+            expectedSession: {
+              sessionId: handoffRequest.rebuilt.sessionId,
+              source: "rebuilt_handoff",
+            },
+            knownRolloutPath: handoffRequest.rebuilt.rolloutPath,
+            prefixBoundary: handoffRequest.rebuilt.prefixBoundary,
+            suppressBindLineageRecord: true,
+            lineageDbPath: defaultLineageDbPath(),
+            log: (message) => wrapperLog.info(message),
+            logError: (message) => wrapperLog.warn(message),
+            onLifecycle: onCaptureLifecycle,
+          });
+        },
+        startRollbackCapture: (oldSessionId: string): void => {
+          const ctx = oldCaptureSnapshot?.getCommandContext();
+          if (ctx?.sdk === undefined || ctx.threadRef === undefined || oldCaptureSnapshot === undefined) {
+            throw new Error("no capture context to continue");
+          }
+          childDiedDuringHandoff = false;
+          captureSession = startCaptureSession({
+            startedAt: new Date(),
+            noInference,
+            continueCapture: {
+              threadRef: ctx.threadRef,
+              sdk: ctx.sdk,
+              stats: oldCaptureSnapshot.stats,
+              priorGeneration: captureSession?.getCaptureGeneration() ?? leaseGeneration,
+            },
+            expectedSession: { sessionId: oldSessionId, source: "explicit_resume" },
+            resumeSessionId: oldSessionId,
+            lineageDbPath: defaultLineageDbPath(),
+            log: (message) => wrapperLog.info(message),
+            logError: (message) => wrapperLog.warn(message),
+            onLifecycle: onCaptureLifecycle,
+          });
+        },
+        awaitCaptureReady: awaitCaptureReadyAfterReplay,
+        awaitChildStabilized: async (
+          timeoutMs: number,
+          stableWindowMs: number,
+        ): Promise<"stable" | "exited" | "timeout"> => {
+          const tickWait = (): Promise<void> =>
+            new Promise((resolveTick) => {
+              const tick = setTimeout(resolveTick, 25);
+              tick.unref?.();
+            });
+          const startMs = Date.now();
+          // Phase 1: first PTY output from the replacement child.
+          for (;;) {
+            if (childDiedDuringHandoff) return "exited";
+            if (currentChildOutputBytes > 0) break;
+            if (Date.now() - startMs > timeoutMs) return "timeout";
+            await tickWait();
+          }
+          // Phase 2: bounded stabilization — the child must survive the window.
+          const stableStartMs = Date.now();
+          for (;;) {
+            if (childDiedDuringHandoff) return "exited";
+            if (Date.now() - stableStartMs >= stableWindowMs) return "stable";
+            await tickWait();
+          }
+        },
+        registerSuccessLineage: async (handoffRequest: HandoffRequest) => {
+          const outcome = await registerRebuiltSessionLineage({
+            newSessionId: handoffRequest.rebuilt.sessionId,
+            threadId: handoffRequest.threadId,
+            prefixBoundary: handoffRequest.rebuilt.prefixBoundary,
+            lineageDbPath: defaultLineageDbPath(),
+            logError: (message) => wrapperLog.warn(message),
+          });
+          return outcome.ok ? { ok: true as const } : { ok: false as const, reason: outcome.reason };
+        },
+        publishReadyDescriptor: (): boolean => {
+          publishDescriptorFromCapture();
+          return runtimeDescriptor?.state === "ready";
+        },
+        writeRecoveryArtifact: writeRecoveryArtifactFile,
+        log: (message) => wrapperLog.info(message),
+      };
+
+      try {
+        const result = await executeHandoff(request, ports, {
+          captureReadyTimeoutMs,
+          childLivenessTimeoutMs,
+          childStableWindowMs,
+        });
+        if (result.kind !== "success" && result.kind !== "cancelled") {
+          // Rollback replays the old rollout: its lifecycle re-derives the same
+          // provider pressure. Cool down so a failed handoff cannot self-retrigger.
+          autoBlockedUntilMs = Date.now() + HANDOFF_FAILURE_COOLDOWN_MS;
+        }
+        options.onHandoffResult?.(result);
+        if (result.kind === "failed" && !result.childAlive) {
+          wrapperLog.warn(
+            `cc-lhc handoff failed with no live child; exiting. old=${result.oldSessionId} rebuilt=${result.rebuiltSessionId} recovery=${result.recoveryArtifactPath ?? "UNWRITTEN"}`,
+          );
+          await teardownAndExit(1);
+        }
+        return result;
+      } finally {
+        handoffInProgress = false;
+      }
+    };
+
+    // Automatic operation: shared mutation op + shared handoff, serialized with
+    // manual commands through the same single-flight guard.
+    runAutoOperation = async (): Promise<void> => {
+      if (exited || handoffInProgress) return;
+      if (!commandGuard.tryAcquire("auto-compact", Date.now())) return;
+      governorState = setGovernorOperationInFlight(governorState, true);
+      try {
+        const epochAtStart = governorState.currentInputEpoch;
+        const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
+        const runtime = commandRuntime();
+        if (runtime.captureDisabled) return;
+        const policy = resolvedContextPolicy.policy;
+        const plan: ContextMutationPlan = {
+          operation: "auto_compact",
+          profile: policy.profile,
+          lowerBoundTokens: policy.lowerBoundTokens,
+          ...(policy.pruneEnabled && policy.pruneThresholdTokens !== null && policy.pruneTargetTokens !== null
+            ? {
+                pruneIfDue: {
+                  thresholdTokens: policy.pruneThresholdTokens,
+                  targetTokens: policy.pruneTargetTokens,
+                },
+              }
+            : {}),
+          inputEpochChanged: epochChanged,
+        };
+        const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged });
+        wrapperLog.info(
+          `cc-lhc auto-compact mutation ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
+        );
+        if (outcome.kind !== "rebuilt") return;
+        await performHandoff(outcome.handoff, epochChanged);
+      } catch (cause) {
+        wrapperLog.warn(
+          `cc-lhc auto-compact operation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      } finally {
+        governorState = setGovernorOperationInFlight(governorState, false);
+        commandGuard.release();
+      }
+    };
+
+    attachChild(currentPty);
     stdin.on("data", forwardInput);
     // stdin ending/erroring has no wrapper lifecycle of its own (the child
     // and capture run on) — but with no input left there is no keypress to

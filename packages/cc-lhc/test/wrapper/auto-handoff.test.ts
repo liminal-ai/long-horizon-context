@@ -1,0 +1,602 @@
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import type { Lhc } from "lhc";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
+import type { LifecycleSignal } from "../../src/observation/types.js";
+import { emptyCaptureStats } from "../../src/stats.js";
+import type { HandoffResult } from "../../src/wrapper/handoff.js";
+import { run } from "../../src/wrapper/run.js";
+import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+
+const mocks = vi.hoisted(() => ({
+  captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
+  registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
+}));
+
+vi.mock("../../src/intake/session.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/intake/session.js")>();
+  return {
+    ...actual,
+    startCaptureSession: (opts: CaptureSessionDeps = {}) => {
+      if (mocks.captureFactory !== null) return mocks.captureFactory(opts);
+      return actual.startCaptureSession(opts);
+    },
+  };
+});
+
+vi.mock("../../src/commands/rebuild-receipt.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/commands/rebuild-receipt.js")>();
+  return {
+    ...actual,
+    registerRebuiltSessionLineage: (...args: unknown[]) =>
+      (mocks.registerLineage as unknown as (...a: unknown[]) => unknown)(...args),
+  };
+});
+
+const REBUILT_ID = "12345678-1234-1234-1234-123456789abc";
+
+interface FakePty {
+  pid: number;
+  label: string;
+  args: string[];
+  killed: string[];
+  writes: string[];
+  fireExit(code: number, signal?: number): void;
+  onData(cb: (data: string) => void): { dispose(): void };
+  onExit(cb: (arg: { exitCode: number; signal?: number }) => void): { dispose(): void };
+  kill(signal?: string): void;
+  write(data: string): void;
+  resize(): void;
+}
+
+function makeFakePty(
+  pid: number,
+  label: string,
+  args: string[],
+  autoExitOnKill: boolean,
+  emitOutput = true,
+): FakePty {
+  const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
+  const dataCbs: Array<(data: string) => void> = [];
+  const fake: FakePty = {
+    pid,
+    label,
+    args,
+    killed: [],
+    writes: [],
+    fireExit(code: number, signal?: number) {
+      for (const cb of exitCbs) cb({ exitCode: code, ...(signal === undefined ? {} : { signal }) });
+    },
+    onData: (cb: (data: string) => void) => {
+      dataCbs.push(cb);
+      if (emitOutput) {
+        // A live child renders output shortly after spawn (liveness signal).
+        setTimeout(() => {
+          for (const dataCb of dataCbs) dataCb("render\r\n");
+        }, 30);
+      }
+      return { dispose() {} };
+    },
+    onExit: (cb) => {
+      exitCbs.push(cb);
+      return { dispose() {} };
+    },
+    kill: (signal?: string) => {
+      fake.killed.push(signal ?? "SIGTERM");
+      if (autoExitOnKill) setImmediate(() => fake.fireExit(0, signal === "SIGKILL" ? 9 : 15));
+    },
+    write: (data: string) => {
+      fake.writes.push(data);
+    },
+    resize: () => {},
+  };
+  return fake;
+}
+
+function sdkForCapture() {
+  return {
+    drainSettled: async () => {},
+    threadView: {
+      status: vi.fn(async () => ({
+        ok: true,
+        value: {
+          tailTokens: 10,
+          threshold: 100,
+          visibility: { zoneTokens: 0, maxTokens: 1000 },
+          derivation: { pending: 0, failed: 0 },
+        },
+      })),
+      previewCompact: vi.fn(async () => ({ ok: true, value: { kind: "ok" } })),
+      compact: vi.fn(async () => ({
+        ok: true,
+        value: {
+          viewId: "v1",
+          tailTokens: 5,
+          totalTokens: 9,
+          bands: {
+            smooth: { entries: 1, tokens: 4 },
+            detailed: { entries: 0, tokens: 0 },
+            brief: { entries: 0, tokens: 0 },
+          },
+        },
+      })),
+      prune: vi.fn(),
+      getSessionThreadView: vi.fn(async () => ({
+        ok: true,
+        value: { threadId: "th_auto", entries: [{ role: "user", content: "hi", sourceMessages: [] }] },
+      })),
+    },
+    intakeStream: { messageEvents: async () => ({ ok: true, value: { events: [] } }) },
+  };
+}
+
+interface ScriptedSession {
+  session: CaptureSession;
+  deps: CaptureSessionDeps;
+}
+
+function scriptedCaptureSession(
+  deps: CaptureSessionDeps,
+  sdk: unknown,
+  sessionId: string,
+  rolloutPath: string,
+  generation: number,
+): ScriptedSession {
+  const stats = { ...emptyCaptureStats(), threadId: "th_auto" };
+  const session: CaptureSession = {
+    stats,
+    getCommandContext: () => ({
+      captureDisabled: false,
+      stats,
+      sdk: sdk as Lhc,
+      threadRef: { threadId: "th_auto", registryPath: "/tmp/reg.sqlite" },
+      captureDegraded: false,
+      captureGeneration: generation,
+      capturePhase: "ready" as const,
+    }),
+    getRolloutInfo: () => ({ path: rolloutPath, sessionId }),
+    isTurnOpen: () => false,
+    isCaptureHealthy: () => true,
+    isCaptureReady: () => true,
+    getCaptureHealth: () => ({
+      generation,
+      phase: "ready" as const,
+      reasons: [],
+      reasonCounts: {},
+      durableLineOffset: 0,
+    }),
+    getCaptureGeneration: () => generation,
+    stop: vi.fn(async () => {}),
+  } as unknown as CaptureSession;
+  return { session, deps };
+}
+
+function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
+  const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
+  Object.defineProperty(stream, "isTTY", { value: false, configurable: true });
+  Object.defineProperty(stream, "columns", { value: 80, configurable: true });
+  Object.defineProperty(stream, "rows", { value: 24, configurable: true });
+  return stream;
+}
+
+async function waitFor(condition: () => boolean, label: string, capMs = 8_000): Promise<void> {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > capMs) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+const POLICY = {
+  policy: {
+    autoCompact: true,
+    lowerBoundTokens: 1_000,
+    upperBoundTokens: 5_000,
+    profile: "continuation",
+    nativeCompactMode: "emergency_backstop" as const,
+    nativeBackstopTokens: 1_000_000,
+    pruneEnabled: false,
+    pruneThresholdTokens: null,
+    pruneTargetTokens: null,
+    observeOnly: false,
+    retryGrowthTokens: 1_000,
+    minRunwayTokens: 100,
+  },
+  sources: Object.fromEntries(
+    Object.keys({
+      autoCompact: 0,
+      lowerBoundTokens: 0,
+      upperBoundTokens: 0,
+      profile: 0,
+      nativeCompactMode: 0,
+      nativeBackstopTokens: 0,
+      pruneEnabled: 0,
+      pruneThresholdTokens: 0,
+      pruneTargetTokens: 0,
+      observeOnly: 0,
+      retryGrowthTokens: 0,
+      minRunwayTokens: 0,
+    }).map((k) => [k, "session"]),
+  ) as never,
+  armed: true,
+  errors: [] as string[],
+};
+
+const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
+
+const TRIGGER_SIGNALS: LifecycleSignal[] = [
+  { kind: "turn_opened", reason: "user_prompt" },
+  {
+    kind: "sampling_observed",
+    samplingId: "req:r1",
+    providerUsage: { input_tokens: 2, cache_creation_input_tokens: 3_000, cache_read_input_tokens: 3_000 },
+  },
+  { kind: "turn_settled", reason: "end_turn" },
+];
+
+describe("run: automatic compact with wrapper-owned handoff", () => {
+  beforeEach(() => {
+    mocks.registerLineage.mockClear();
+    mocks.captureFactory = null;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+  });
+
+  it("triggers on provider pressure, respawns with external --resume, registers lineage after ready, and reports success", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    const captureCalls: CaptureSessionDeps[] = [];
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-handoff-"));
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const rebuiltContent = '{"line":1}\n{"line":2}\n{"line":3}\n';
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, rebuiltContent);
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 3,
+        expectedReintakeLines: 3,
+        replayedPrefixLines: 2,
+        prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+        totalByteLength: Buffer.byteLength(rebuiltContent),
+      };
+    });
+
+    mocks.captureFactory = (opts) => {
+      captureCalls.push(opts);
+      const generation = captureCalls.length;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        generation,
+      );
+      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    const stderr = fakeStream();
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: stderr as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    // Post-commit input: the user types while the old child is being terminated.
+    // The barrier must deliver these bytes to exactly the rebound child, in order.
+    const origKill = spawned[0]!.kill.bind(spawned[0]);
+    spawned[0]!.kill = (sig?: string) => {
+      (stdin as unknown as PassThrough).write("post-commit bytes");
+      origKill(sig);
+    };
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    const result = results[0]!;
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.newSessionId).toBe(REBUILT_ID);
+      expect(result.flushedInputBytes).toBe("post-commit bytes".length);
+    }
+    // Invariant 1: post-commit bytes reached exactly the rebound child, never the old one.
+    expect(spawned[1]!.writes.join("")).toContain("post-commit bytes");
+    expect(spawned[0]!.writes.join("")).not.toContain("post-commit bytes");
+
+    // Old child was terminated gracefully; a second child spawned with external --resume.
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0]!.killed).toContain("SIGTERM");
+    expect(spawned[1]!.args).toContain("--resume");
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+    // The respawned child carries the native backstop through the supported surface.
+    expect(spawned[1]!.args).toContain("--autocompact");
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--autocompact") + 1]).toBe("1000000");
+
+    // The SDK received the configured profile and lower bound.
+    expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "continuation",
+      params: { lowerBound: 1_000 },
+    });
+    // One materialization.
+    expect(writeSpy).toHaveBeenCalledOnce();
+
+    // The rebuilt capture generation was passed the pending capability directly.
+    expect(captureCalls).toHaveLength(2);
+    const rebuiltDeps = captureCalls[1]!;
+    expect(rebuiltDeps.suppressBindLineageRecord).toBe(true);
+    expect(rebuiltDeps.knownRolloutPath).toBe(rebuiltPath);
+    expect(rebuiltDeps.prefixBoundary).toMatchObject({ kind: "verified", lineCount: 2 });
+    expect(rebuiltDeps.expectedSession).toMatchObject({ sessionId: REBUILT_ID, source: "rebuilt_handoff" });
+    // Old capture stopped (final flush) before the replacement generation started.
+    expect(captureCalls[1]).toBeDefined();
+
+    // Success-only lineage: registered exactly once, for the rebuilt session.
+    expect(mocks.registerLineage).toHaveBeenCalledOnce();
+    expect(mocks.registerLineage.mock.calls[0]?.[0]).toMatchObject({
+      newSessionId: REBUILT_ID,
+      threadId: "th_auto",
+    });
+
+    // Wrapper stays alive on the new child; end the run by exiting it.
+    spawned[1]!.fireExit(0);
+    const code = await runPromise;
+    expect(code).toBe(0);
+    writeSpy.mockRestore();
+  });
+
+  it("stdin bytes arriving during the rebuild cancel the operation with no respawn and no termination", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      // The user types while the rebuild is being written.
+      (stdin as unknown as PassThrough).write("x");
+      await new Promise((r) => setTimeout(r, 60));
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: `/tmp/${REBUILT_ID}.jsonl`,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: { kind: "verified", lineCount: 0, byteLength: 0, sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+        totalByteLength: 0,
+      };
+    });
+
+    const wrapperLogLines: string[] = [];
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(2000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      wrapperLog: {
+        info: (m: string) => wrapperLogLines.push(m),
+        warn: (m: string) => wrapperLogLines.push(m),
+        warningCount: () => 0,
+        path: "/tmp/fake.log",
+      } as never,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(
+      () => wrapperLogLines.some((line) => line.includes("auto-compact mutation partial")),
+      "cancelled mutation log",
+    );
+    // No handoff: no second spawn, no SIGTERM to the live child, no lineage.
+    expect(results).toHaveLength(0);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.killed).toHaveLength(0);
+    expect(mocks.registerLineage).not.toHaveBeenCalled();
+    // The typed byte reached the live child (never swallowed).
+    expect(spawned[0]!.writes.join("")).toContain("x");
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
+  it("capture ready but a mute replacement child rolls back to the old session and never registers lineage", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-nogrow-"));
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const rebuiltContent = '{"line":1}\n';
+
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, rebuiltContent);
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: Buffer.byteLength(rebuiltContent),
+      };
+    });
+
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const sessionId = isRebuilt
+        ? REBUILT_ID
+        : opts.resumeSessionId !== undefined
+          ? opts.resumeSessionId
+          : "old-session";
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        sessionId,
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        opts.continueCapture?.priorGeneration !== undefined ? opts.continueCapture.priorGeneration + 1 : 1,
+      );
+      if (opts.onLifecycle !== undefined && lifecycleSink === undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        // The replacement child (--resume REBUILT_ID) emits NO output: liveness
+        // must fail. The initial and rollback children render normally.
+        const isMuteReplacement = args.includes("--resume") && args.includes(REBUILT_ID);
+        const fake = makeFakePty(3000 + spawned.length, `child${spawned.length}`, args, true, !isMuteReplacement);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 400, childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    const result = results[0]!;
+    expect(result.kind).toBe("rolled_back");
+    if (result.kind === "rolled_back") {
+      expect(result.reason).toMatch(/child liveness timeout/);
+      expect(result.oldSessionId).toBe("old-session");
+    }
+    // Replacement spawned then killed; rollback child resumed the OLD id.
+    const resumeTargets = spawned
+      .filter((f) => f.args.includes("--resume"))
+      .map((f) => f.args[f.args.indexOf("--resume") + 1]);
+    expect(resumeTargets).toEqual([REBUILT_ID, "old-session"]);
+    // The unproven replacement never advanced canonical lineage.
+    expect(mocks.registerLineage).not.toHaveBeenCalled();
+
+    spawned[spawned.length - 1]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
+  it("a positional initial prompt disables handoff: trigger causes no mutation, no respawn, no termination", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const wrapperLogLines: string[] = [];
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout");
+
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const stdin = fakeStream();
+    const runPromise = run(["fix the login bug"], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(4000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      wrapperLog: {
+        info: (m: string) => wrapperLogLines.push(m),
+        warn: (m: string) => wrapperLogLines.push(m),
+        warningCount: () => 0,
+        path: "/tmp/fake.log",
+      } as never,
+      onHandoffResult: () => {
+        throw new Error("handoff must not run for a positional-prompt launch");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    expect(wrapperLogLines.some((l) => l.includes("handoff disabled for this launch form"))).toBe(true);
+
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // The decision was logged but nothing mutated or respawned; the positional
+    // prompt was never re-sent to any replacement child.
+    expect(wrapperLogLines.some((l) => l.includes("would_compact"))).toBe(true);
+    expect(wrapperLogLines.some((l) => l.includes("auto-compact mutation"))).toBe(false);
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.killed).toHaveLength(0);
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+});

@@ -167,6 +167,7 @@ describe("run", () => {
       claudeBin: "bash",
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       noCapture: true,
     });
 
@@ -208,6 +209,7 @@ describe("run", () => {
       }) as typeof spawn,
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       wrapperLog,
       noInference: true,
     });
@@ -243,6 +245,7 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       noInference: true,
     });
     await sleep(80);
@@ -279,6 +282,7 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       noInference: true,
     });
 
@@ -318,6 +322,7 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       noInference: true,
     });
 
@@ -442,6 +447,7 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
+      disableNativeBackstopArgs: true,
       stderr,
       wrapperLog,
       noInference: true,

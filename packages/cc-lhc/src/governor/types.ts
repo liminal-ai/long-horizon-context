@@ -11,10 +11,10 @@ export type NativeCompactMode = "emergency_backstop";
 
 /**
  * Validated effective context policy.
- * `observeOnly` is always true in Slice 3 regardless of autoCompact intent.
+ * Slice 4: `observeOnly` is a real mode — true logs decisions without executing.
  */
 export interface ContextPolicy {
-  /** Intent to auto-compact when Slice 4 activates; Slice 3 never executes. */
+  /** Execute automatic compact at would_compact decisions (Slice 4 active). */
   autoCompact: boolean;
   /** LHC compact construction target (tokens). */
   lowerBoundTokens: number;
@@ -25,12 +25,16 @@ export interface ContextPolicy {
   nativeCompactMode: NativeCompactMode;
   /** Documented native backstop (1e6 for supported Claude context). */
   nativeBackstopTokens: number;
-  /** Intermediate automatic prune; off by default; never executed in Slice 3. */
+  /**
+   * Combined compact-time prune; off by default. When enabled with coherent
+   * threshold/target, an automatic or manual compact prunes first and
+   * materializes once. There is no separate intermediate-prune trigger.
+   */
   pruneEnabled: boolean;
   pruneThresholdTokens: number | null;
   pruneTargetTokens: number | null;
-  /** Always true in Slice 3. */
-  observeOnly: true;
+  /** Log decisions without executing (session-only escape hatch). */
+  observeOnly: boolean;
   /**
    * After a would_compact observation, require this much additional provider
    * context (or a new sampling generation) before another would_compact.
@@ -141,7 +145,12 @@ export interface GovernorDecision {
   providerContextTotal: number | null;
   upperBoundTokens: number;
   lowerBoundTokens: number;
-  wouldMutate: false;
+  /**
+   * True only for would_compact under an armed, enabled, non-observe policy —
+   * the wrapper's cue to start the automatic operation. The decision itself
+   * still mutates nothing.
+   */
+  wouldMutate: boolean;
 }
 
 /** Structured observe record written to the wrapper log (not PTY). */
@@ -155,8 +164,8 @@ export interface GovernorObserveRecord {
   lowerBoundTokens: number;
   profile: string;
   autoCompactIntent: boolean;
-  observeOnly: true;
-  wouldMutate: false;
+  observeOnly: boolean;
+  wouldMutate: boolean;
   policyArmed: boolean;
   policySourcesSummary: string;
   captureGeneration: number;

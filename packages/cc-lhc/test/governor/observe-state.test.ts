@@ -42,7 +42,7 @@ describe("governor observe-state fold", () => {
     expect(first.observes).toHaveLength(1);
     expect(first.observes[0]?.decision).toBe("would_compact");
     expect(first.observes[0]?.providerContextTotal).toBe(510_000);
-    expect(first.observes[0]?.wouldMutate).toBe(false);
+    expect(first.observes[0]?.wouldMutate).toBe(true);
 
     // Replay the same settle sequence number via a second settle without new open
     // — fold increments settleSequence; second settle is a new sequence but
@@ -178,6 +178,8 @@ describe("governor observe-state fold", () => {
   });
 
   it("observe mode never sets wouldMutate", () => {
+    const observeOnlyPolicy = armed(true);
+    observeOnlyPolicy.policy = { ...observeOnlyPolicy.policy, observeOnly: true };
     const state = createGovernorRuntimeState({
       captureHealthy: true,
       descriptorReady: true,
@@ -193,9 +195,10 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed(true),
+      observeOnlyPolicy,
     );
     for (const o of r.observes) {
+      expect(o.decision).toBe("would_compact");
       expect(o.wouldMutate).toBe(false);
       expect(o.observeOnly).toBe(true);
     }
