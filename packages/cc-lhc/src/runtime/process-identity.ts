@@ -1,10 +1,20 @@
 /**
  * OS-verifiable process identity for descriptor ownership.
  *
- * Linux (certified topology): boot_id + /proc/<pid>/stat starttime.
- * PID alone is not an incarnation — PIDs reuse after exit.
+ * The stored schema is pid + bootId + starttime on every platform; PID alone
+ * is not an incarnation — PIDs reuse after exit. The production identity
+ * source is the cc-lhc-native exact reader (see native-identity.ts); the
+ * /proc reader in this file is a Linux reference implementation kept for
+ * tests and parity checks only.
  *
- * If identity cannot be established, callers must fail closed (no PID-alive fallback).
+ * Liveness is a three-way result, never a nullable:
+ *   ok            → exact live identity (compare with identitiesEqual)
+ *   not_found     → the kernel proved no such process exists (stale/dead;
+ *                   callers may reclaim through their transactional fencing)
+ *   indeterminate → access denied, native/addon failure, unsupported
+ *                   platform, malformed result, or any other uncertainty.
+ *                   Callers MUST fail closed: refuse, and never delete,
+ *                   rotate, overwrite, or reclaim on this result.
  */
 
 import { readFileSync } from "node:fs";
@@ -41,9 +51,43 @@ export function parseProcStatStarttime(statContent: string): string | null {
   return starttime;
 }
 
+/**
+ * Nullable reader shape retained for the Linux /proc reference reader below.
+ * Production code paths take a ProbeProcessIdentity instead.
+ */
 export type ReadProcessIdentity = (pid: number) => ProcessIdentity | null;
 
-/** Default Linux reader. Returns null if /proc is missing or unreadable. */
+/**
+ * Three-way liveness result. `not_found` is kernel-proven absence and is the
+ * only failure that may justify reclaiming a lease; `indeterminate` covers
+ * every other failure and must fail closed.
+ */
+export type ProcessLivenessResult =
+  | { ok: true; identity: ProcessIdentity }
+  | { ok: false; code: "not_found"; message: string }
+  | { ok: false; code: "indeterminate"; message: string };
+
+export type ProbeProcessIdentity = (pid: number) => ProcessLivenessResult;
+
+/**
+ * Thrown when a caller needs its own live identity (descriptor creation,
+ * lease acquisition) and the probe cannot supply one. Wrapper startup treats
+ * this as fatal and surfaces the actionable message instead of degrading to
+ * PID-only liveness or a platform-specific fallback reader.
+ */
+export class ProcessIdentityUnavailableError extends Error {
+  constructor(context: string, detail: string) {
+    super(`${context}: ${detail}`);
+    this.name = "ProcessIdentityUnavailableError";
+  }
+}
+
+/**
+ * Linux /proc reference reader — test/parity seam only, NOT the production
+ * default (that is the cc-lhc-native exact reader). Returns null if /proc is
+ * missing or unreadable; the nullable shape cannot distinguish dead from
+ * unreadable, which is exactly why production uses ProbeProcessIdentity.
+ */
 export function readProcessIdentityLinux(pid: number): ProcessIdentity | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {

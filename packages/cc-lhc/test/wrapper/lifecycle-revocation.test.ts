@@ -2,21 +2,27 @@
  * Sticky dual-degradation (non-fatal) and fatal ready-revocation exit seam.
  */
 
-import { existsSync, mkdtempSync, readFileSync, renameSync, unlinkSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
-import {
-  loadDescriptor,
-  type DescriptorIo,
-  type RuntimeDescriptorV1,
-} from "../../src/runtime/descriptor.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
+import { type DescriptorIo, loadDescriptor } from "../../src/runtime/descriptor.js";
+import type { ProbeProcessIdentity } from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { run } from "../../src/wrapper/run.js";
+import { indeterminateResult, selfOnlyProbe } from "../helpers/identity.js";
 
 const runMocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -58,12 +64,9 @@ function fakeStreams() {
   return { stdin, stdout, stderr };
 }
 
-function baseIo(opts: {
-  failWrite?: () => boolean;
-  failUnlink?: () => boolean;
-  readIdentity?: (pid: number) => ReturnType<typeof readProcessIdentityLinux>;
-} = {}): DescriptorIo {
-  const self = readProcessIdentityLinux(process.pid)!;
+function baseIo(
+  opts: { failWrite?: () => boolean; failUnlink?: () => boolean; readIdentity?: ProbeProcessIdentity } = {},
+): DescriptorIo {
   return {
     writeFile: (p, d, m) => {
       if (opts.failWrite?.()) throw new Error("write fail");
@@ -81,8 +84,7 @@ function baseIo(opts: {
     exists: existsSync,
     mkdir: (p) => mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: chmodSync,
-    readProcessIdentity: (pid) =>
-      opts.readIdentity !== undefined ? opts.readIdentity(pid) : pid === process.pid ? self : null,
+    readProcessIdentity: opts.readIdentity ?? selfOnlyProbe(),
     nowMs: () => Date.now(),
     randomId: () => `lc-${Math.random().toString(16).slice(2, 10)}`,
     pid: process.pid,
@@ -173,41 +175,38 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     };
 
     const { stdin, stdout, stderr } = fakeStreams();
-    const runPromise = run(
-      ["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "sticky"],
-      {
-        noInference: true,
-        claudeBin: "/bin/true",
-        forceWrapperExit: forceExit,
-        descriptorIo: baseIo(),
-        spawnPty: (() =>
-          ({
-            pid: 424242,
-            write() {},
-            resize() {},
-            kill() {
-              ptyKilled = true;
-            },
-            onData(cb: (d: string) => void) {
-              onData = cb;
-            },
-            onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
-              onExit = cb;
-            },
-          }) as never) as typeof import("@lydell/node-pty").spawn,
-        stdin,
-        stdout,
-        stderr,
-        wrapperLog: {
-          path: join(home, "w.log"),
-          info() {},
-          warn(msg: string) {
-            warns.push(msg);
+    const runPromise = run(["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "sticky"], {
+      noInference: true,
+      claudeBin: "/bin/true",
+      forceWrapperExit: forceExit,
+      descriptorIo: baseIo(),
+      spawnPty: (() =>
+        ({
+          pid: 424242,
+          write() {},
+          resize() {},
+          kill() {
+            ptyKilled = true;
           },
-          warningCount: () => warns.length,
+          onData(cb: (d: string) => void) {
+            onData = cb;
+          },
+          onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
+            onExit = cb;
+          },
+        }) as never) as typeof import("@lydell/node-pty").spawn,
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog: {
+        path: join(home, "w.log"),
+        info() {},
+        warn(msg: string) {
+          warns.push(msg);
         },
+        warningCount: () => warns.length,
       },
-    );
+    });
 
     await waitFor(() => onLifecycleRef.current !== undefined, "lifecycle hook");
     // Publish ready via session_bound
@@ -218,17 +217,13 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     health.phase = "degraded";
     health.reasons = ["watcher_gap"];
     health.reasonCounts = { watcher_gap: 1 };
-    onLifecycleRef.current?.([
-      { kind: "capture_degraded", reason: "watcher_gap", generation: 1 },
-    ]);
+    onLifecycleRef.current?.([{ kind: "capture_degraded", reason: "watcher_gap", generation: 1 }]);
     await sleep(20);
 
     // Second distinct reason — must NOT fatal (was degraded→degraded throw)
     health.reasons = ["watcher_gap", "attribution_mismatch"];
     health.reasonCounts = { watcher_gap: 1, attribution_mismatch: 1 };
-    onLifecycleRef.current?.([
-      { kind: "capture_degraded", reason: "attribution_mismatch", generation: 1 },
-    ]);
+    onLifecycleRef.current?.([{ kind: "capture_degraded", reason: "attribution_mismatch", generation: 1 }]);
     await sleep(30);
 
     expect(forceExit).not.toHaveBeenCalled();
@@ -307,40 +302,37 @@ describe("wrapper sticky degradation + fatal revoke", () => {
       origSetRaw?.(v);
     };
 
-    const runPromise = run(
-      ["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "fatal"],
-      {
-        noInference: true,
-        claudeBin: "/bin/true",
-        forceWrapperExit: forceExit,
-        descriptorIo: dIo,
-        spawnPty: (() =>
-          ({
-            pid: 434343,
-            write() {},
-            resize() {},
-            kill() {
-              killThrew = true;
-              throw new Error("kill failed");
-            },
-            onData() {},
-            onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
-              onExit = cb;
-            },
-          }) as never) as typeof import("@lydell/node-pty").spawn,
-        stdin,
-        stdout,
-        stderr,
-        wrapperLog: {
-          path: join(home, "w.log"),
-          info() {},
-          warn(msg: string) {
-            warns.push(msg);
+    const runPromise = run(["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "fatal"], {
+      noInference: true,
+      claudeBin: "/bin/true",
+      forceWrapperExit: forceExit,
+      descriptorIo: dIo,
+      spawnPty: (() =>
+        ({
+          pid: 434343,
+          write() {},
+          resize() {},
+          kill() {
+            killThrew = true;
+            throw new Error("kill failed");
           },
-          warningCount: () => warns.length,
+          onData() {},
+          onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
+            onExit = cb;
+          },
+        }) as never) as typeof import("@lydell/node-pty").spawn,
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog: {
+        path: join(home, "w.log"),
+        info() {},
+        warn(msg: string) {
+          warns.push(msg);
         },
+        warningCount: () => warns.length,
       },
-    );
+    });
 
     await waitFor(() => onLifecycleRef.current !== undefined, "lifecycle");
     onLifecycleRef.current?.([{ kind: "session_bound", sessionId: "life-session" }]);
@@ -365,9 +357,7 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     health.phase = "degraded";
     health.reasons = ["fatal_test_reason"];
     const t0 = Date.now();
-    onLifecycleRef.current?.([
-      { kind: "capture_degraded", reason: "fatal_test_reason", generation: 1 },
-    ]);
+    onLifecycleRef.current?.([{ kind: "capture_degraded", reason: "fatal_test_reason", generation: 1 }]);
     await waitFor(() => forceExit.mock.calls.length > 0, "forceWrapperExit", 2_000);
     const elapsed = Date.now() - t0;
 
@@ -379,9 +369,9 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     expect(restoredRaw).toBe(true);
     expect(warns.some((w) => /FATAL/i.test(w))).toBe(true);
 
-    // Stale-owner simulation: identity unreadable → load refuses even if file remains ready
+    // Stale-owner simulation: identity unestablishable → load refuses even if file remains ready
     const deadIo = baseIo({
-      readIdentity: () => null,
+      readIdentity: () => indeterminateResult("native_error: identity source unreadable"),
     });
     const after = loadDescriptor(descPath, deadIo);
     expect(after.ok).toBe(false);
@@ -426,35 +416,32 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     };
 
     const { stdin, stdout, stderr } = fakeStreams();
-    const runPromise = run(
-      ["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "exit-fatal"],
-      {
-        noInference: true,
-        claudeBin: "/bin/true",
-        forceWrapperExit: forceExit,
-        descriptorIo: dIo,
-        spawnPty: (() =>
-          ({
-            pid: 454545,
-            write() {},
-            resize() {},
-            kill() {},
-            onData() {},
-            onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
-              onExit = cb;
-            },
-          }) as never) as typeof import("@lydell/node-pty").spawn,
-        stdin,
-        stdout,
-        stderr,
-        wrapperLog: {
-          path: join(home, "w.log"),
-          info() {},
-          warn() {},
-          warningCount: () => 0,
-        },
+    const runPromise = run(["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "exit-fatal"], {
+      noInference: true,
+      claudeBin: "/bin/true",
+      forceWrapperExit: forceExit,
+      descriptorIo: dIo,
+      spawnPty: (() =>
+        ({
+          pid: 454545,
+          write() {},
+          resize() {},
+          kill() {},
+          onData() {},
+          onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
+            onExit = cb;
+          },
+        }) as never) as typeof import("@lydell/node-pty").spawn,
+      stdin,
+      stdout,
+      stderr,
+      wrapperLog: {
+        path: join(home, "w.log"),
+        info() {},
+        warn() {},
+        warningCount: () => 0,
       },
-    );
+    });
 
     await waitFor(() => onLifecycleRef.current !== undefined, "lifecycle");
     onLifecycleRef.current?.([{ kind: "session_bound", sessionId: "life-session" }]);

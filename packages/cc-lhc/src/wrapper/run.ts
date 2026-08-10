@@ -66,6 +66,7 @@ import {
   type RevocationResult,
   type RuntimeDescriptorV1,
 } from "../runtime/descriptor.js";
+import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
 import {
   acquireSessionOwner,
   SessionOwnershipConflictError,
@@ -352,7 +353,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.info(`cc-lhc runtime descriptor: ${runtimeDescriptorPath}`);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
       if (runtimeDescriptorPath !== undefined) {
         const rev = revokeDescriptor(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
         if (!rev.ok) {
@@ -361,6 +361,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
       runtimeDescriptorPath = undefined;
       runtimeDescriptor = undefined;
+      if (cause instanceof ProcessIdentityUnavailableError) {
+        // Exact process identity is a startup invariant on supported
+        // platforms: without it, ownership and descriptor liveness cannot be
+        // proven. Fail with the actionable message rather than degrading.
+        stderr.write(`cc-lhc: ${message}\n`);
+        releaseSessionOwners();
+        return 2;
+      }
+      wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
     }
   }
 

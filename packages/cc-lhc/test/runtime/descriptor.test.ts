@@ -2,8 +2,7 @@
  * Slice 2 correction: descriptor lifecycle + OS process identity ownership.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,23 +12,19 @@ import {
   assertReadyBinding,
   closeAndRemove,
   createOpeningDescriptor,
+  type DescriptorIo,
   loadDescriptor,
   markDegraded,
   markReady,
   newDescriptorPath,
   publishAtomic,
   revokeDescriptor,
-  type DescriptorIo,
-  type RuntimeDescriptorV1,
 } from "../../src/runtime/descriptor.js";
-import type { ProcessIdentity } from "../../src/runtime/process-identity.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
+import { type ProbeProcessIdentity, ProcessIdentityUnavailableError } from "../../src/runtime/process-identity.js";
+import { aliveResult, indeterminateResult, notFoundResult, selfIdentity, selfOnlyProbe } from "../helpers/identity.js";
 
-function realIo(opts: {
-  aliveIdentity?: ProcessIdentity | null | ((pid: number) => ProcessIdentity | null);
-} = {}): DescriptorIo {
+function realIo(opts: { probe?: ProbeProcessIdentity } = {}): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
-  const self = readProcessIdentityLinux(process.pid)!;
   return {
     writeFile: (p, d, m) => fs.writeFileSync(p, d, { encoding: "utf8", mode: m }),
     readFile: (p) => fs.readFileSync(p, "utf8"),
@@ -44,13 +39,7 @@ function realIo(opts: {
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: fs.chmodSync,
-    readProcessIdentity: (pid) => {
-      if (opts.aliveIdentity === undefined) {
-        return pid === process.pid ? self : null;
-      }
-      if (typeof opts.aliveIdentity === "function") return opts.aliveIdentity(pid);
-      return opts.aliveIdentity;
-    },
+    readProcessIdentity: opts.probe ?? selfOnlyProbe(),
     nowMs: () => 1_700_000_000_000,
     randomId: () => "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     pid: process.pid,
@@ -73,13 +62,13 @@ describe("runtime descriptor identity", () => {
 
   it("PID reuse with different starttime is stale", () => {
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-reuse-"));
-    const self = readProcessIdentityLinux(process.pid)!;
-    const ioCreate = realIo({ aliveIdentity: self });
+    const self = selfIdentity();
+    const ioCreate = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, ioCreate);
     createOpeningDescriptor(path, ioCreate);
     // Same pid, different starttime (reuse)
     const ioLoad = realIo({
-      aliveIdentity: { ...self, starttime: String(Number(self.starttime) + 1) },
+      probe: () => aliveResult({ ...self, starttime: String(Number(self.starttime) + 1) }),
     });
     const loaded = loadDescriptor(path, ioLoad);
     expect(loaded.ok).toBe(false);
@@ -88,20 +77,20 @@ describe("runtime descriptor identity", () => {
 
   it("boot mismatch is stale", () => {
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-boot-"));
-    const self = readProcessIdentityLinux(process.pid)!;
-    const ioCreate = realIo({ aliveIdentity: self });
+    const self = selfIdentity();
+    const ioCreate = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, ioCreate);
     createOpeningDescriptor(path, ioCreate);
     const ioLoad = realIo({
-      aliveIdentity: { ...self, bootId: "00000000-0000-0000-0000-000000000000" },
+      probe: () => aliveResult({ ...self, bootId: "00000000-0000-0000-0000-000000000000" }),
     });
     expect(loadDescriptor(path, ioLoad).ok).toBe(false);
   });
 
   it("forged nonce/time alone does not pass without identity match", () => {
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-forge-"));
-    const self = readProcessIdentityLinux(process.pid)!;
-    const io = realIo({ aliveIdentity: self });
+    const self = selfIdentity();
+    const io = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, io);
     const desc = createOpeningDescriptor(path, io);
     // Tamper incarnation and wrapperStartedAtMs but keep processIdentity
@@ -117,23 +106,41 @@ describe("runtime descriptor identity", () => {
     expect(loadDescriptor(path, io).ok).toBe(false);
   });
 
-  it("missing/unreadable identity refuses (no PID-alive fallback)", () => {
-    const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-noid-"));
-    const self = readProcessIdentityLinux(process.pid)!;
-    const ioCreate = realIo({ aliveIdentity: self });
+  it("kernel-proven not_found owner refuses as stale", () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-dead-"));
+    const self = selfIdentity();
+    const ioCreate = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, ioCreate);
     createOpeningDescriptor(path, ioCreate);
-    const ioLoad = realIo({ aliveIdentity: null });
+    const ioLoad = realIo({ probe: (pid) => notFoundResult(pid) });
     const loaded = loadDescriptor(path, ioLoad);
     expect(loaded.ok).toBe(false);
-    if (!loaded.ok) expect(loaded.reason).toMatch(/cannot establish current OS process identity/);
+    if (!loaded.ok) expect(loaded.reason).toMatch(/stale.*not found/);
   });
 
-  it("createOpeningDescriptor throws when identity unavailable", () => {
+  it("indeterminate identity refuses without claiming stale and leaves the file (no PID-alive fallback)", () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-noid-"));
+    const self = selfIdentity();
+    const ioCreate = realIo({ probe: () => aliveResult(self) });
+    const path = newDescriptorPath(root, ioCreate);
+    createOpeningDescriptor(path, ioCreate);
+    const ioLoad = realIo({ probe: () => indeterminateResult("access_denied: kernel refused") });
+    const loaded = loadDescriptor(path, ioLoad);
+    expect(loaded.ok).toBe(false);
+    if (!loaded.ok) {
+      expect(loaded.reason).toMatch(/cannot establish current OS process identity/);
+      expect(loaded.reason).not.toMatch(/stale/);
+    }
+    // Fail closed means refuse only — the descriptor must not be touched.
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("createOpeningDescriptor throws typed error when identity unavailable", () => {
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-desc-throw-"));
-    const io = realIo({ aliveIdentity: null });
+    const io = realIo({ probe: () => indeterminateResult("addon_unavailable: no artifact") });
     const path = newDescriptorPath(root, io);
-    expect(() => createOpeningDescriptor(path, io)).toThrow(/cannot establish OS process identity/);
+    expect(() => createOpeningDescriptor(path, io)).toThrow(ProcessIdentityUnavailableError);
+    expect(() => createOpeningDescriptor(path, io)).toThrow(/cannot establish OS process identity.*no artifact/);
   });
 
   it("atomic publish leaves no partial final file on write failure", () => {

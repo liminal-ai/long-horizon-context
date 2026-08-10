@@ -19,13 +19,14 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { dirname, join } from "node:path";
 
 import { ccLhcHome } from "../intake/paths.js";
+import { probeProcessIdentityNative } from "./native-identity.js";
 import {
   identitiesEqual,
+  type ProbeProcessIdentity,
+  type ProcessIdentity,
+  ProcessIdentityUnavailableError,
   parseStoredProcessIdentity,
   processIdentityJson,
-  readProcessIdentityLinux,
-  type ProcessIdentity,
-  type ReadProcessIdentity,
 } from "./process-identity.js";
 
 export const RUNTIME_DESCRIPTOR_ENV = "CC_LHC_RUNTIME_DESCRIPTOR";
@@ -57,7 +58,11 @@ export interface DescriptorIo {
   exists: (path: string) => boolean;
   mkdir: (path: string) => void;
   chmod: (path: string, mode: number) => void;
-  readProcessIdentity: ReadProcessIdentity;
+  /**
+   * Exact liveness probe. not_found is kernel-proven dead; indeterminate
+   * must fail closed (refuse, never treat as stale).
+   */
+  readProcessIdentity: ProbeProcessIdentity;
   nowMs: () => number;
   randomId: () => string;
   pid: number;
@@ -76,7 +81,7 @@ export function defaultDescriptorIo(): DescriptorIo {
     exists: existsSync,
     mkdir: (path) => mkdirSync(path, { recursive: true, mode: 0o700 }),
     chmod: chmodSync,
-    readProcessIdentity: readProcessIdentityLinux,
+    readProcessIdentity: probeProcessIdentityNative,
     nowMs: () => Date.now(),
     randomId: () => randomUUID(),
     pid: process.pid,
@@ -92,11 +97,7 @@ export function newDescriptorPath(home: string = ccLhcHome(), io: DescriptorIo =
   return join(runtimeDir(home), `${io.randomId()}.json`);
 }
 
-export function publishAtomic(
-  path: string,
-  body: string,
-  io: DescriptorIo = defaultDescriptorIo(),
-): void {
+export function publishAtomic(path: string, body: string, io: DescriptorIo = defaultDescriptorIo()): void {
   const dir = dirname(path);
   io.mkdir(dir);
   const tmp = join(dir, `.${io.randomId()}.tmp`);
@@ -172,14 +173,15 @@ export function assertLegalTransition(
   throw new Error(`illegal descriptor transition ${from} → ${to}`);
 }
 
-export function createOpeningDescriptor(
-  path: string,
-  io: DescriptorIo = defaultDescriptorIo(),
-): RuntimeDescriptorV1 {
-  const identity = io.readProcessIdentity(io.pid);
-  if (identity === null) {
-    throw new Error("cannot establish OS process identity for runtime descriptor");
+export function createOpeningDescriptor(path: string, io: DescriptorIo = defaultDescriptorIo()): RuntimeDescriptorV1 {
+  const probed = io.readProcessIdentity(io.pid);
+  if (!probed.ok) {
+    throw new ProcessIdentityUnavailableError(
+      "cannot establish OS process identity for runtime descriptor",
+      probed.message,
+    );
   }
+  const identity = probed.identity;
   const now = io.nowMs();
   const desc: RuntimeDescriptorV1 = {
     version: DESCRIPTOR_VERSION,
@@ -207,16 +209,11 @@ export function writeDescriptor(
   publishAtomic(path, serialize(next), io);
 }
 
-export type LoadDescriptorResult =
-  | { ok: true; descriptor: RuntimeDescriptorV1 }
-  | { ok: false; reason: string };
+export type LoadDescriptorResult = { ok: true; descriptor: RuntimeDescriptorV1 } | { ok: false; reason: string };
 
 const STATES: ReadonlySet<string> = new Set(["opening", "ready", "degraded", "closed"]);
 
-export function loadDescriptor(
-  path: string,
-  io: DescriptorIo = defaultDescriptorIo(),
-): LoadDescriptorResult {
+export function loadDescriptor(path: string, io: DescriptorIo = defaultDescriptorIo()): LoadDescriptorResult {
   if (path.trim() === "") {
     return { ok: false, reason: "descriptor path empty" };
   }
@@ -277,13 +274,20 @@ export function loadDescriptor(
   // Closed is never ready for retrieval; allow inspect after owner death.
   if (obj.state === "ready" || obj.state === "opening" || obj.state === "degraded") {
     const current = io.readProcessIdentity(storedIdentity.pid);
-    if (current === null) {
+    if (!current.ok) {
+      if (current.code === "not_found") {
+        return {
+          ok: false,
+          reason: "descriptor stale: owner process not found (exited or never existed)",
+        };
+      }
+      // Indeterminate is not proof of staleness — refuse without claiming stale.
       return {
         ok: false,
-        reason: "descriptor stale: cannot establish current OS process identity",
+        reason: `descriptor refused: cannot establish current OS process identity (fail closed): ${current.message}`,
       };
     }
-    if (!identitiesEqual(storedIdentity, current)) {
+    if (!identitiesEqual(storedIdentity, current.identity)) {
       return {
         ok: false,
         reason: "descriptor stale: process identity mismatch (pid reuse or forged identity)",
@@ -329,9 +333,7 @@ export function inspectDescriptorState(
   }
 }
 
-export function assertReadyBinding(
-  desc: RuntimeDescriptorV1,
-): { ok: true } | { ok: false; reason: string } {
+export function assertReadyBinding(desc: RuntimeDescriptorV1): { ok: true } | { ok: false; reason: string } {
   if (desc.state !== "ready") {
     return { ok: false, reason: `descriptor state is ${desc.state}, need ready` };
   }

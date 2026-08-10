@@ -10,7 +10,28 @@ import {
 describe("parseProcStatStarttime", () => {
   it("parses plain comm", () => {
     // synthetic: pid (comm) state ... starttime at field 22
-    const fields = ["R", "1", "1", "1", "0", "-1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1", "0", "12345"];
+    const fields = [
+      "R",
+      "1",
+      "1",
+      "1",
+      "0",
+      "-1",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "20",
+      "0",
+      "1",
+      "0",
+      "12345",
+    ];
     const stat = `42 (bash) ${fields.join(" ")}`;
     expect(parseProcStatStarttime(stat)).toBe("12345");
   });
@@ -27,7 +48,9 @@ describe("parseProcStatStarttime", () => {
   });
 });
 
-describe("readProcessIdentityLinux", () => {
+// The /proc reference reader is Linux-only by definition; on other platforms
+// it must return null (fail closed), which is asserted separately below.
+describe.skipIf(process.platform !== "linux")("readProcessIdentityLinux (Linux reference)", () => {
   it("reads self identity", () => {
     const id = readProcessIdentityLinux(process.pid);
     expect(id).not.toBeNull();
@@ -40,7 +63,15 @@ describe("readProcessIdentityLinux", () => {
     expect(readProcessIdentityLinux(-1)).toBeNull();
     expect(readProcessIdentityLinux(2_147_000_000)).toBeNull();
   });
+});
 
+describe.skipIf(process.platform === "linux")("readProcessIdentityLinux (non-Linux)", () => {
+  it("returns null off Linux instead of guessing", () => {
+    expect(readProcessIdentityLinux(process.pid)).toBeNull();
+  });
+});
+
+describe("identity value semantics (platform neutral)", () => {
   it("identitiesEqual requires exact match", () => {
     const a = { pid: 1, bootId: "boot", starttime: "10" };
     expect(identitiesEqual(a, { ...a })).toBe(true);

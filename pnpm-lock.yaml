@@ -25,6 +25,9 @@ importers:
       '@lydell/node-pty':
         specifier: ^1.2.0-beta.12
         version: 1.2.0-beta.12
+      cc-lhc-native:
+        specifier: workspace:*
+        version: link:../cc-lhc-native
       lhc:
         specifier: workspace:*
         version: link:../lhc

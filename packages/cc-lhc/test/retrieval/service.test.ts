@@ -5,33 +5,19 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  type Lhc,
-  retrieval,
-} from "lhc";
+import { Writable } from "node:stream";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "lhc";
 import { beforeEach, describe, expect, it } from "vitest";
-
+import { checkSessionBinding, executeRetrieval, runRetrievalCli, writeAll } from "../../src/retrieval/service.js";
 import {
-  closeAndRemove,
   createOpeningDescriptor,
+  type DescriptorIo,
   markClosed,
   markDegraded,
   markReady,
   newDescriptorPath,
-  type DescriptorIo,
-  type RuntimeDescriptorV1,
 } from "../../src/runtime/descriptor.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
-import {
-  checkSessionBinding,
-  executeRetrieval,
-  runRetrievalCli,
-  writeAll,
-} from "../../src/retrieval/service.js";
-import { Writable } from "node:stream";
+import { indeterminateResult, notFoundResult, selfIdentity, selfOnlyProbe } from "../helpers/identity.js";
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "cc-lhc-ret-"));
@@ -39,7 +25,6 @@ function tempRoot(): string {
 
 function realIo(): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
-  const self = readProcessIdentityLinux(process.pid)!;
   return {
     writeFile: (p, d, m) => fs.writeFileSync(p, d, { encoding: "utf8", mode: m }),
     readFile: (p) => fs.readFileSync(p, "utf8"),
@@ -54,7 +39,7 @@ function realIo(): DescriptorIo {
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: fs.chmodSync,
-    readProcessIdentity: (pid) => (pid === process.pid ? self : null),
+    readProcessIdentity: selfOnlyProbe(),
     nowMs: () => Date.now(),
     randomId: () => `id-${Math.random().toString(16).slice(2)}`,
     pid: process.pid,
@@ -94,10 +79,7 @@ async function seedThread(sdk: Lhc, filePath: string, big = false): Promise<void
 }
 
 function writeRollout(path: string, sessionId: string): void {
-  writeFileSync(
-    path,
-    JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "hi" } }) + "\n",
-  );
+  writeFileSync(path, JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "hi" } }) + "\n");
 }
 
 describe("checkSessionBinding", () => {
@@ -108,7 +90,7 @@ describe("checkSessionBinding", () => {
       incarnation: "inc-long-enough",
       wrapperPid: process.pid,
       wrapperStartedAtMs: 1,
-      processIdentity: readProcessIdentityLinux(process.pid)!,
+      processIdentity: selfIdentity(),
       updatedAt: new Date().toISOString(),
       threadId: "th_x",
       registryPath: "/r",
@@ -130,7 +112,7 @@ describe("checkSessionBinding", () => {
       incarnation: "inc-long-enough",
       wrapperPid: process.pid,
       wrapperStartedAtMs: 1,
-      processIdentity: readProcessIdentityLinux(process.pid)!,
+      processIdentity: selfIdentity(),
       updatedAt: new Date().toISOString(),
       threadId: "th_x",
       registryPath: "/r",
@@ -138,9 +120,7 @@ describe("checkSessionBinding", () => {
       rolloutPath: path,
     };
     expect(checkSessionBinding(desc, {}).ok).toBe(true);
-    expect(
-      checkSessionBinding({ ...desc, rolloutPath: join(dir, "missing.jsonl") }, {}).ok,
-    ).toBe(false);
+    expect(checkSessionBinding({ ...desc, rolloutPath: join(dir, "missing.jsonl") }, {}).ok).toBe(false);
   });
 });
 describe("executeRetrieval", () => {
@@ -257,6 +237,56 @@ describe("executeRetrieval", () => {
         })
       ).ok,
     ).toBe(false);
+    expect(await impressions()).toBe(n0);
+  });
+
+  it("indeterminate owner liveness refuses before any SDK call or impression", async () => {
+    const n0 = await impressions();
+    let sdkInits = 0;
+    const indeterminateIo: DescriptorIo = {
+      ...realIo(),
+      readProcessIdentity: () => indeterminateResult("access_denied: kernel refused the query"),
+    };
+    const res = await executeRetrieval(["get-turns", "t1"], {
+      descriptorPath: descPath,
+      descriptorIo: indeterminateIo,
+      env: { CLAUDE_CODE_SESSION_ID: sessionId },
+      initSdk: () => {
+        sdkInits += 1;
+        return sdk;
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.exitCode).toBe(3);
+      expect(res.reason).toMatch(/cannot establish current OS process identity/);
+    }
+    expect(sdkInits).toBe(0);
+    expect(await impressions()).toBe(n0);
+  });
+
+  it("kernel-proven dead owner refuses as stale before any SDK call or impression", async () => {
+    const n0 = await impressions();
+    let sdkInits = 0;
+    const deadIo: DescriptorIo = {
+      ...realIo(),
+      readProcessIdentity: (pid) => notFoundResult(pid),
+    };
+    const res = await executeRetrieval(["get-turns", "t1"], {
+      descriptorPath: descPath,
+      descriptorIo: deadIo,
+      env: { CLAUDE_CODE_SESSION_ID: sessionId },
+      initSdk: () => {
+        sdkInits += 1;
+        return sdk;
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.exitCode).toBe(3);
+      expect(res.reason).toMatch(/stale.*not found/);
+    }
+    expect(sdkInits).toBe(0);
     expect(await impressions()).toBe(n0);
   });
 
@@ -451,11 +481,7 @@ describe("executeRetrieval", () => {
     if (!imps0.ok) throw new Error(imps0.error.reason);
     const n0 = imps0.value.length;
     // 32 unique-id reservation shape forces small body budget
-    const ids = [
-      "t1",
-      "t2",
-      ...Array.from({ length: 30 }, (_, i) => `t${String(900000 + i).padStart(12, "0")}`),
-    ];
+    const ids = ["t1", "t2", ...Array.from({ length: 30 }, (_, i) => `t${String(900000 + i).padStart(12, "0")}`)];
     const r = await executeRetrieval(["get-turns", ...ids], {
       descriptorPath: dp,
       descriptorIo: io,
@@ -541,12 +567,7 @@ describe("executeRetrieval", () => {
     if (!imps0.ok) throw new Error(imps0.error.reason);
     const n0 = imps0.value.length;
     const r = await executeRetrieval(
-      [
-        "get-messages",
-        "m1",
-        "m2",
-        ...Array.from({ length: 30 }, (_, i) => `m${String(800000 + i).padStart(12, "0")}`),
-      ],
+      ["get-messages", "m1", "m2", ...Array.from({ length: 30 }, (_, i) => `m${String(800000 + i).padStart(12, "0")}`)],
       {
         descriptorPath: dp,
         descriptorIo: io,
@@ -642,8 +663,7 @@ describe("executeRetrieval", () => {
           for (const fn of [...listeners.drain]) fn();
         }
         const fireOk = () => cb?.(null);
-        const fireErr = () =>
-          cb?.(opts.syncErr ?? new Error("SYNC_WRITE_ERR"));
+        const fireErr = () => cb?.(opts.syncErr ?? new Error("SYNC_WRITE_ERR"));
         switch (opts.callbackTiming) {
           case "sync-ok":
             fireOk();
@@ -889,11 +909,7 @@ describe("executeRetrieval", () => {
       },
     });
     stream.write = ((chunk: unknown, encodingOrCb?: unknown, maybeCb?: unknown) => {
-      const data = Buffer.isBuffer(chunk)
-        ? chunk.toString("utf8")
-        : typeof chunk === "string"
-          ? chunk
-          : String(chunk);
+      const data = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : typeof chunk === "string" ? chunk : String(chunk);
       writeCount += 1;
       chunks.push(data);
       const callback =

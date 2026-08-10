@@ -3,27 +3,23 @@
  * in-process executeRetrieval byte-for-byte when the CLI exits via exitCode.
  */
 
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-} from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc } from "lhc";
 import { describe, expect, it } from "vitest";
-
+import { executeRetrieval } from "../../src/retrieval/service.js";
 import {
   createOpeningDescriptor,
+  type DescriptorIo,
   markReady,
   newDescriptorPath,
-  type DescriptorIo,
+  RUNTIME_DESCRIPTOR_ENV,
 } from "../../src/runtime/descriptor.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
-import { executeRetrieval } from "../../src/retrieval/service.js";
-import { RUNTIME_DESCRIPTOR_ENV } from "../../src/runtime/descriptor.js";
+import { selfOnlyProbe } from "../helpers/identity.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const worker = join(here, "../fixtures/retrieval-flush-worker.ts");
@@ -31,7 +27,6 @@ const tsxBin = join(here, "../../node_modules/.bin/tsx");
 
 function realIo(): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
-  const self = readProcessIdentityLinux(process.pid)!;
   return {
     writeFile: (p, d, m) => fs.writeFileSync(p, d, { encoding: "utf8", mode: m }),
     readFile: (p) => fs.readFileSync(p, "utf8"),
@@ -46,7 +41,7 @@ function realIo(): DescriptorIo {
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: fs.chmodSync,
-    readProcessIdentity: (pid) => (pid === process.pid ? self : null),
+    readProcessIdentity: selfOnlyProbe(),
     nowMs: () => Date.now(),
     randomId: () => `id-${Math.random().toString(16).slice(2)}`,
     pid: process.pid,
@@ -97,8 +92,7 @@ describe("retrieval CLI flush subprocess", () => {
     const rp = join(root, `${sid}.jsonl`);
     writeFileSync(
       rp,
-      JSON.stringify({ type: "user", sessionId: sid, message: { role: "user", content: "hi" } }) +
-        "\n",
+      JSON.stringify({ type: "user", sessionId: sid, message: { role: "user", content: "hi" } }) + "\n",
     );
     const io = realIo();
     const dp = newDescriptorPath(root, io);
@@ -147,9 +141,7 @@ describe("retrieval CLI flush subprocess", () => {
     const stderr = Buffer.concat(errChunks).toString("utf8");
     expect(code, stderr).toBe(0);
     expect(stdout.byteLength).toBe(expectedBytes);
-    expect(stdout.toString("utf8")).toBe(
-      expected.stdout.endsWith("\n") ? expected.stdout : `${expected.stdout}\n`,
-    );
+    expect(stdout.toString("utf8")).toBe(expected.stdout.endsWith("\n") ? expected.stdout : `${expected.stdout}\n`);
     // Multibyte intact (no U+FFFD truncation artifact at end of body window)
     expect(stdout.includes(Buffer.from("運用記録", "utf8"))).toBe(true);
   }, 60_000);

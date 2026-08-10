@@ -2,7 +2,7 @@
  * Checked revocation, illegal transitions, publish+unlink double failure.
  */
 
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,20 +11,19 @@ import { describe, expect, it } from "vitest";
 import {
   assertLegalTransition,
   createOpeningDescriptor,
+  type DescriptorIo,
   loadDescriptor,
   markClosed,
   markDegraded,
   markReady,
   newDescriptorPath,
-  revokeCapability,
-  type DescriptorIo,
   type RuntimeDescriptorV1,
+  revokeCapability,
 } from "../../src/runtime/descriptor.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
+import { selfOnlyProbe } from "../helpers/identity.js";
 
 function io(opts: { failWrite?: boolean; failUnlink?: boolean } = {}): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
-  const self = readProcessIdentityLinux(process.pid)!;
   return {
     writeFile: (p, d, m) => {
       if (opts.failWrite) throw new Error("write fail");
@@ -42,7 +41,7 @@ function io(opts: { failWrite?: boolean; failUnlink?: boolean } = {}): Descripto
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: fs.chmodSync,
-    readProcessIdentity: (pid) => (pid === process.pid ? self : null),
+    readProcessIdentity: selfOnlyProbe(),
     nowMs: () => Date.now(),
     randomId: () => `r-${Math.random().toString(16).slice(2)}`,
     pid: process.pid,

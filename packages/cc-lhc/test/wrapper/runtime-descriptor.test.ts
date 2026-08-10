@@ -2,9 +2,10 @@
  * Wrapper integration: descriptor env, guidance, spawn throw, lifecycle revoke.
  */
 
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,19 +13,18 @@ import { injectRetrievalGuidance } from "../../src/retrieval/guidance.js";
 import {
   closeAndRemove,
   createOpeningDescriptor,
+  type DescriptorIo,
   loadDescriptor,
   markReady,
   newDescriptorPath,
   revokeDescriptor,
-  RUNTIME_DESCRIPTOR_ENV,
-  type DescriptorIo,
 } from "../../src/runtime/descriptor.js";
-import { readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
+import { createNativeIdentityProbe } from "../../src/runtime/native-identity.js";
 import { run } from "../../src/wrapper/run.js";
+import { selfOnlyProbe } from "../helpers/identity.js";
 
 function io(): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
-  const self = readProcessIdentityLinux(process.pid)!;
   return {
     writeFile: (p, d, m) => fs.writeFileSync(p, d, { encoding: "utf8", mode: m }),
     readFile: (p) => fs.readFileSync(p, "utf8"),
@@ -39,7 +39,7 @@ function io(): DescriptorIo {
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
     chmod: fs.chmodSync,
-    readProcessIdentity: (pid) => (pid === process.pid ? self : null),
+    readProcessIdentity: selfOnlyProbe(),
     nowMs: () => Date.now(),
     randomId: () => `w-${Math.random().toString(16).slice(2)}`,
     pid: process.pid,
@@ -123,6 +123,67 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
       const { readdirSync } = require("node:fs") as typeof import("node:fs");
       const left = readdirSync(runtimeDir).filter((n) => n.endsWith(".json"));
       expect(left).toEqual([]);
+    }
+  });
+
+  it("startup on a supported platform with no prebuild fails with an actionable error, never degrades", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-wrap-noaddon-"));
+    process.env.CC_LHC_HOME = home;
+    // Real native probe against a package root that has a valid targets
+    // manifest but no artifact; env:{} bypasses the test-suite addon stub so
+    // this is the true production loading path.
+    const bareRoot = mkdtempSync(join(tmpdir(), "cc-lhc-noartifact-"));
+    const here = dirname(fileURLToPath(import.meta.url));
+    copyFileSync(join(here, "../../../cc-lhc-native/targets.json"), join(bareRoot, "targets.json"));
+    const dIo: DescriptorIo = {
+      ...io(),
+      readProcessIdentity: createNativeIdentityProbe({ packageRoot: bareRoot, env: {} }),
+    };
+    let spawned = 0;
+    let stderrText = "";
+    const code = await run(["--session-id", "22222222-2222-2222-2222-222222222222", "-p", "x"], {
+      noCapture: false,
+      noInference: true,
+      claudeBin: "/bin/true",
+      descriptorIo: dIo,
+      spawnPty: (() => {
+        spawned += 1;
+        throw new Error("must not spawn");
+      }) as never,
+      stdin: { isTTY: false, on() {}, removeListener() {}, setRawMode() {} } as unknown as NodeJS.ReadStream,
+      stdout: {
+        isTTY: false,
+        columns: 80,
+        rows: 24,
+        write() {
+          return true;
+        },
+      } as unknown as NodeJS.WriteStream,
+      stderr: {
+        write(chunk: string) {
+          stderrText += String(chunk);
+          return true;
+        },
+      } as unknown as NodeJS.WriteStream,
+      wrapperLog: {
+        path: join(home, "w.log"),
+        info() {},
+        warn() {},
+        warningCount: () => 0,
+      },
+    });
+    expect(code).toBe(2);
+    expect(spawned).toBe(0);
+    // Actionable: names the addon problem and the remediation, no silent
+    // degradation to PID-only or Linux-only identity.
+    expect(stderrText).toMatch(/cannot establish OS process identity/);
+    expect(stderrText).toMatch(/addon_unavailable|no addon artifact/);
+    expect(stderrText).toMatch(/build:native/);
+    // No descriptor may remain claimable.
+    const runtimeDir = join(home, "runtime");
+    if (existsSync(runtimeDir)) {
+      const { readdirSync } = require("node:fs") as typeof import("node:fs");
+      expect(readdirSync(runtimeDir).filter((n) => n.endsWith(".json"))).toEqual([]);
     }
   });
 });
