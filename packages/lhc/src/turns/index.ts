@@ -4,6 +4,7 @@ import type { EventRecord, TurnEndPayload } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
+  createDbWriteTransaction,
   type DbReadTransaction,
   type DbWriteTransaction,
   type ErrorResult,
@@ -17,6 +18,10 @@ import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from
 import { type ChunkStructureRow, readChunkStructure } from "./internal/chunks.js";
 import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
+import {
+  backfillRenderingLabelsInOpenDb,
+  type RenderingLabelBackfillReceipt,
+} from "./internal/label-backfill.js";
 import {
   closeTurn,
   countTurnMembers,
@@ -255,6 +260,29 @@ function configRequired(operation: string): ResolvedSdkConfig | { error: ErrorRe
       reason: `${operation} requires an initialized LHC SDK inference configuration`,
     },
   };
+}
+
+export type { RenderingLabelBackfillReceipt };
+
+/**
+ * Explicit selected-thread label backfill: rewrite stored `turn_rendering`
+ * content that predates stable labels, via the same pure composition the
+ * retrieval fallback uses. No inference, no queued work, no canonical-record
+ * change; not a repair path — missing/failed renderings are reported, not
+ * created.
+ */
+export async function backfillRenderingLabels(
+  threadRef: ThreadRef,
+  opts?: { dryRun?: boolean },
+): Promise<OpResult<RenderingLabelBackfillReceipt>> {
+  try {
+    return await createDbWriteTransaction(threadRef, (transaction) =>
+      backfillRenderingLabelsInOpenDb(transaction.db, transaction.clock, opts?.dryRun === true),
+    );
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return storageFailure(`label backfill failed: ${reason}`);
+  }
 }
 
 export async function deriveTurn(threadRef: ThreadRef, turnId: string): Promise<OpResult<TurnDeriveResult>> {

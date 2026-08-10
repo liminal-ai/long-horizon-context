@@ -1,0 +1,86 @@
+{
+  "slice": 7,
+  "date": "2026-08-10",
+  "claudeArtifact": {
+    "path": "/home/leemoore/.local/share/claude/versions/2.1.226",
+    "version": "2.1.226 (Claude Code)",
+    "sha256": "4e9bec1177ce9690e8bd988b710ac24105e70da428dd094c5adcbbe786a55555"
+  },
+  "frozenDists": {
+    "note": "both dists contain UNCOMMITTED Slice 7 changes on top of baseCommit; the dist manifests are the binding artifact identity. Manifests refreshed 2026-08-10 after steward-directed comment/test-only source corrections (label-backfill comment wording, CLI comment wording, inference argv test env restore) — no behavior change, production evidence not rerun.",
+    "ccLhcDistManifest": "/tmp/cc-lhc-slice7-1786338139/cc-lhc-dist-manifest.sha256",
+    "ccLhcDistManifestSha256": "651cfead4f8c471e32c1905b484e0390b061662872038dce5ff56e0d3b5fa6b4",
+    "lhcDistManifest": "/tmp/cc-lhc-slice7-1786338139/lhc-dist-manifest.sha256",
+    "lhcDistManifestSha256": "822039601ec895b3f3dfdcce688be30af801fe46dcb96e1b7a563f12a333b80f"
+  },
+  "baseCommit": "1ba5dab377f6ae35bdc0f98d1cf364ca03a02c4d",
+  "uncommittedSlice7Files": [
+    "packages/lhc/src/turns/index.ts",
+    "packages/lhc/src/turns/internal/label-backfill.ts",
+    "packages/lhc/test/label-backfill.test.ts",
+    "packages/cc-lhc/src/bin.ts",
+    "packages/cc-lhc/src/commands/backfill-labels.ts",
+    "packages/cc-lhc/src/inference/claude-cli.ts",
+    "packages/cc-lhc/test/commands/backfill-labels.test.ts",
+    "packages/cc-lhc/test/inference/claude-cli.test.ts"
+  ],
+  "threadSchemaVersion": 6,
+  "effectiveConfiguration": {
+    "builtin": {
+      "autoCompact": true,
+      "lowerBoundTokens": 240000,
+      "upperBoundTokens": 500000,
+      "minRunwayTokens": 50000,
+      "nativeBackstop": 1000000,
+      "profile": "continuation"
+    },
+    "chainSessionOverridesViaModal": [
+      "bounds 2000 52000 (trigger phase)",
+      "bounds 2000 200000 (post-churn phase)"
+    ],
+    "inference": "enabled (sonnet, claude -p subprocess, --no-session-persistence)"
+  },
+  "home": "/tmp/cc-lhc-slice7-1786338139/home",
+  "sessions": {
+    "leg1Fresh": "aba29846-cec4-4db2-9607-a9c79c15882c",
+    "chain": [
+      "76f2d3cb-949d-47d2-bc71-2f6a8e765cfc",
+      "4489616b-51ac-4eee-8bc0-8af57705df4a",
+      "b267d216-4926-4ae7-b929-bb16ffa07bf3",
+      "380d94e3-f27a-4387-8edb-22bacd6d9ff2"
+    ],
+    "leg5Mismatch": "eb183932-3088-4bd8-99bd-f850b1f55e54",
+    "inAppResumeTarget": "76f2d3cb-949d-47d2-bc71-2f6a8e765cfc"
+  },
+  "threads": {
+    "launchLegs": "th_2117eff82c2faf67",
+    "chain": "th_fb1f0209b4a05350",
+    "leg5": "th_e9460e5214c9576a"
+  },
+  "evidenceRoot": "/tmp/cc-lhc-slice7-1786338139/evidence",
+  "discardedContaminatedRoot": "/tmp/cc-lhc-slice7-1786337881-DISCARDED-picker-contamination",
+  "terminalTopology": {
+    "rawPty": {
+      "method": "script(1) outer raw PTY around the frozen wrapper",
+      "evidence": [
+        "/tmp/cc-lhc-slice7-1786338139/evidence/raw-pty.typescript",
+        "/tmp/cc-lhc-slice7-1786338139/evidence/raw-pty.stdout",
+        "/tmp/cc-lhc-slice7-1786338139/evidence/raw-pty.stderr",
+        "/tmp/cc-lhc-slice7-1786338139/evidence/raw-pty.exit"
+      ],
+      "result": "exit 0, s7-raw-pty-pass, parse_fail=0, derivations_pending=0"
+    },
+    "ssh": {
+      "evidence": "/tmp/cc-lhc-slice7-1786338139/evidence/ssh-topology.txt",
+      "detail": "controlling shell is a real SSH session on lim-builder (SSH_CONNECTION 100.119.218.24:50653 -> 100.126.86.93:22, SSH_TTY=/dev/pts/0); the tmux chain ran inside it"
+    },
+    "tmux": "all interactive TUI legs ran under tmux PTYs within the SSH session",
+    "printMode": "non-TTY wrapper stdin; child always on the wrapper-owned PTY"
+  },
+  "distManifestReverification": "both frozen dist manifests reverified from their package roots after all runs: all entries OK",
+  "additionalEvidence": [
+    "/tmp/cc-lhc-slice7-1786338139/evidence/chain-retrieval-rollout-records.jsonl",
+    "/tmp/cc-lhc-slice7-1786338139/evidence/raw-pty.typescript",
+    "/tmp/cc-lhc-slice7-1786338139/evidence/ssh-topology.txt"
+  ]
+}

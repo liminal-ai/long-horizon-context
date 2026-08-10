@@ -76,6 +76,28 @@ describe("createClaudeCliModelCall", () => {
     expect(captured.model).toBe("sonnet");
   });
 
+  it("always passes --no-session-persistence so derivation calls leave no rollout", async () => {
+    const seen: string[][] = [];
+    const call = createClaudeCliModelCall({
+      binary: () => process.execPath,
+      spawnFn: ((...spawnArgs: Parameters<typeof spawn>) => {
+        seen.push([...(spawnArgs[1] ?? [])]);
+        return spawn(process.execPath, [FIXTURE_BIN, ...(spawnArgs[1] ?? [])], spawnArgs[2]);
+      }) as typeof spawn,
+    });
+    const priorMode = process.env.CC_LHC_FAKE_MODE;
+    process.env.CC_LHC_FAKE_MODE = "ok";
+    try {
+      await call(baseInput);
+    } finally {
+      if (priorMode === undefined) delete process.env.CC_LHC_FAKE_MODE;
+      else process.env.CC_LHC_FAKE_MODE = priorMode;
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("--no-session-persistence");
+    expect(seen[0]![0]).toBe("-p");
+  });
+
   it("uses default system prompt when none provided", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cli-"));
     const stdinFile = join(dir, "stdin.json");

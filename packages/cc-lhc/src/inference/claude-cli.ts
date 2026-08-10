@@ -130,7 +130,10 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
 
     const remainingMs = timeoutMs - elapsed;
     const { systemPrompt, userBody } = partitionMessages(input.messages);
-    const args = ["-p", "--model", input.model, "--system-prompt", systemPrompt];
+    // --no-session-persistence: derivation subprocess sessions must never
+    // land in the project directory as rollout files — they would pollute the
+    // wrapper resume picker and session attribution (verified in 2.1.226).
+    const args = ["-p", "--no-session-persistence", "--model", input.model, "--system-prompt", systemPrompt];
 
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
