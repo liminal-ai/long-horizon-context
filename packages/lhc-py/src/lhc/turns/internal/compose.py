@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from ...shared_tech._jsstr import js_json_dumps, js_trim
+from ...shared_tech._jsstr import js_json_dumps, js_len, js_slice, js_trim
 from ...shared_tech.derivation import (
     DependencyGap,
     DerivationMetadata,
@@ -31,7 +31,10 @@ from ...shared_tech.derivation import (
     RenderingPartBlock,
 )
 from ...messages.internal.smoothing import clean_prompt
-from ...shared_tech.tool_result_rendering import truncate_for_fallback
+from ...shared_tech.tool_result_rendering import (
+    FALLBACK_TRUNCATION_LIMIT,
+    truncate_for_fallback,
+)
 
 # PART_PLANS derivation keys are the durable message-owned derivation names
 # composition reads; fallback callables are the private helpers (Phase 2 bodies).
@@ -50,6 +53,7 @@ class ComposeBlock:
 class ComposeMessage:
     message_id: str
     kind: RenderingPartKind
+    token_estimate: int
     blocks: list[ComposeBlock]
 
 
@@ -117,6 +121,28 @@ def _prompt_fallback_text(message: ComposeMessage) -> str:
     return original if not floor and original else floor
 
 
+def _truncate_for_rendering(text: str, token_estimate: int) -> str:
+    """Token-total truncation marker for composed tool floors / legacy char floors."""
+    if js_len(text) <= FALLBACK_TRUNCATION_LIMIT:
+        return text
+    return (
+        f"{js_slice(text, 0, FALLBACK_TRUNCATION_LIMIT)}"
+        f"… [truncated — {token_estimate} tok total]"
+    )
+
+
+def _ready_text(message: ComposeMessage, derived_text: str) -> str:
+    """Ready tool_result_summary: legacy char floors retranslate; inference summaries pass."""
+    if message.kind != "tool_result":
+        return derived_text
+    block = message.blocks[0].content if message.blocks else {}
+    raw_text = block.get("content")
+    raw_text = raw_text if isinstance(raw_text, str) else ""
+    if derived_text == truncate_for_fallback(raw_text):
+        return _truncate_for_rendering(raw_text, message.token_estimate)
+    return derived_text
+
+
 # Mechanical outcome from the record alone: a tool call's outcome comes from
 # its paired result among the turn's messages.
 def _record_outcomes(messages: Sequence[ComposeMessage]) -> dict[str, bool]:
@@ -152,13 +178,16 @@ def _tool_call_fallback_text(message: ComposeMessage) -> str:
     if arguments is None:
         arguments = {}
     serialized = js_json_dumps(arguments)
-    return truncate_for_fallback(f"{tool_name}({serialized})")
+    return _truncate_for_rendering(
+        f"{tool_name}({serialized})", message.token_estimate
+    )
 
 
 def _tool_result_fallback_text(message: ComposeMessage) -> str:
     block = message.blocks[0].content if message.blocks else {}
     content = block.get("content")
-    return truncate_for_fallback(content if isinstance(content, str) else "")
+    raw = content if isinstance(content, str) else ""
+    return _truncate_for_rendering(raw, message.token_estimate)
 
 
 _PART_PLANS: dict[RenderingPartKind, _PartPlan] = {
@@ -237,10 +266,15 @@ def _build_atom(
             outcome = derivation.metadata.outcome
         if outcome is None:
             outcome = "failed" if block.get("isError") is True else "succeeded"
+    composed_text = (
+        _ready_text(message, derivation.content)
+        if ready and derivation is not None and derivation.content is not None
+        else plan.fallback_text(message)
+    )
     part = RenderingPart(
         message_id=message.message_id,
         kind=message.kind,
-        text=derivation.content if ready and derivation is not None else plan.fallback_text(message),
+        text=composed_text,
         fallback=plan.derivation is not None and not ready,
         blocks=blocks,
         outcome=outcome,

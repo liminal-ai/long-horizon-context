@@ -53,10 +53,12 @@ def _msg(
     message_id: str,
     kind: RenderingPartKind,
     content: dict[str, object],
+    token_estimate: int = 0,
 ) -> ComposeMessage:
     return ComposeMessage(
         message_id=message_id,
         kind=kind,
+        token_estimate=token_estimate,
         blocks=[ComposeBlock(block_type=kind, content=content)],
     )
 
@@ -943,11 +945,13 @@ async def test_legacy_recompose_excludes_publicly_deleted_member_with_independen
         ComposeMessage(
             message_id="m1",
             kind="user_prompt",
+            token_estimate=0,
             blocks=[ComposeBlock(block_type="user_prompt", content={"text": keep_prompt})],
         ),
         ComposeMessage(
             message_id="m3",
             kind="assistant_text",
+            token_estimate=0,
             blocks=[
                 ComposeBlock(block_type="assistant_text", content={"text": survive_text})
             ],

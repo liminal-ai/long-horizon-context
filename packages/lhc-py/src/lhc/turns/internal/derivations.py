@@ -22,7 +22,7 @@ from ...shared_tech.derivation import DerivationMetadata
 _SQL_READ_TURN_SOURCE = """SELECT status, deleted_at FROM turns WHERE turn_id = ?"""
 
 _SQL_READ_MEMBER_MESSAGES = (
-    """SELECT message_id, kind FROM message
+    """SELECT message_id, kind, token_estimate FROM message
        WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order"""
 )
 
@@ -147,6 +147,7 @@ def read_member_messages(db: Database, turn_id: str) -> list[ComposeMessage]:
             ComposeMessage(
                 message_id=str(row["message_id"]),
                 kind=str(row["kind"]),  # type: ignore[arg-type]
+                token_estimate=int(row["token_estimate"]),
                 blocks=blocks,
             )
         )

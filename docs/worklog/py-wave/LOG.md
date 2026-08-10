@@ -1306,3 +1306,134 @@ Status: **PASS — safe to commit**.
   classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
 - Verifier artifact identity matched the package venv and editable source at
   current `HEAD` `b59decf`; path-scoped status was unchanged by verification.
+
+## R5 — full stored token totals and capture-total token counting
+
+Status: **implementer complete** (working tree; pending independent verifier + path-scoped commit).
+Implementer: **Composer 2.5** (authorized R5 slice).
+Verifier: pending (fresh GPT-5.6 Sol high per PLAN).
+
+Contract pin: TypeScript SDK `81cd48c`
+(`turns/internal/compose.ts`, `messages/internal/project.ts`,
+`shared-tech/token-counting/index.ts`, `test/{turn-message-labels,turn-cascade,token-counting-special}.test.ts`).
+Rust trap map only (same pin): `tests/{turn_message_labels,turn_cascade,token_counting_special}.rs`.
+
+### Base
+
+- R4 commit `d7997ff06ad3dc71bbff536dca7714ce3fe24682`
+  (`feat(lhc-py): add schema v6 retrieval domain`) is current `HEAD`.
+- Fable hotfix `allowed_special="all"` on `estimate_tokens` remains in place;
+  R5 adds parity coverage, not a reversion.
+- R5 sits uncommitted on top of that HEAD.
+
+### What changed
+
+Token-total truncation markers and special-token capture parity only — no R6
+historical-envelope formatter goldens beyond existing R4 scaffolding.
+
+- `packages/lhc-py/src/lhc/turns/internal/compose.py`
+  - `ComposeMessage.token_estimate` (stored `message.token_estimate`).
+  - `_truncate_for_rendering` → `… [truncated — N tok total]` using full stored
+    `token_estimate`, not dropped char/token counts (UTF-16 slice via `js_len` /
+    `js_slice`).
+  - Tool call/result fallbacks use token-total markers; `truncate_for_fallback`
+    (char marker) remains for stored floors only.
+  - `_ready_text`: legacy char floors retranslate at composition; genuine
+    inference summaries pass verbatim.
+- `packages/lhc-py/src/lhc/turns/internal/derivations.py`
+  - `read_member_messages` selects and passes `token_estimate` (TS parity).
+- Tests:
+  - `tests/test_token_markers.py` (new) — legacy retranslation, untruncated
+    unannotated, genuine summary pass-through, dual truncated run markers.
+  - `tests/test_token_counting_special.py` (new) — special-token estimate/slice
+    + real `intake_stream.message_events` capture path.
+  - `tests/test_turn_cascade.py` — TS parity SQL patches on `m3.token_estimate`
+    (1073 / 2049) prove marker uses stored total, not computed slice size.
+  - `tests/test_turn_message_labels.py` — `ComposeMessage.token_estimate` on
+    helpers / independent oracle.
+
+### Invariants held
+
+- Marker form: `[truncated — N tok total]` with `N == message.token_estimate`.
+- Legacy char markers (`… [truncated N chars]`) retranslate at compose time;
+  char markers do not survive into turn_rendering.
+- Genuine inference summaries unchanged; untruncated tool messages unannotated.
+- `estimate_tokens` uses `allowed_special="all"`; literal `<|endoftext|>` on
+  the real intake path counts and materializes without rollback.
+- No R6 envelope/pull goldens added; retrieval inherits compose markers via
+  existing R4 `labeled_or_recomposed_turn_rendering` path.
+
+### Deliberately out of scope (R5)
+
+- R6 byte-bound / clean-tail / historical-envelope formatter goldens.
+- Live-tail / session-view char truncation surfaces (unchanged; not compose).
+- Unrelated dirt under `packages/cc-lhc`, `.beads`, `pnpm-lock.yaml`,
+  TypeScript `packages/lhc` working tree.
+
+### Exact commands and results
+
+```text
+# Focused R5 modules
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -B -m pytest \
+  tests/test_token_markers.py tests/test_token_counting_special.py -q
+→ 7 passed · wrong=0 notimpl=0 skipped=0
+
+# R5 + turn-cascade truncation legs
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -B -m pytest \
+  tests/test_token_markers.py tests/test_token_counting_special.py \
+  tests/test_turn_cascade.py -k "truncat or token_mark or special or floors_over_large or floors_failed_tool" -q
+→ 9 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (668 tests)
+  gate: passed=653 notimpl=0 skipped=15 wrong=0 classified=668
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `d7997ff06ad3dc71bbff536dca7714ce3fe24682` (R4 on main; uncommitted R5 on top) |
+| path-scoped porcelain | `M` compose.py, derivations.py, test_turn_cascade.py, test_turn_message_labels.py, LOG.md; `??` test_token_markers.py, test_token_counting_special.py |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R5: **7 passed** (3 markers + 4 special-token)
+- R5 cascade cluster: **9 passed** (includes 2 turn-cascade marker legs)
+- Full gate: collect **668** · passed=653 notimpl=0 skipped=15 wrong=0 classified=668 · **GATE PASS**
+- Delta vs R4 suite (661 collect / 646 pass): **+7** tests (668 / 653)
+
+### Risks / notes
+
+- Stored floors in `derivation.content` still use char markers from
+  `truncate_for_fallback`; composition retranslates at serve/turn_rendering time
+  via `_ready_text` equality check — same algorithm as pin `readyText`.
+- Turn-cascade marker proofs patch `message.token_estimate` in SQL (TS parity) to
+  show the marker names the stored total, not the truncated body size.
+- No stage/commit/push. Unrelated dirt under `cc-lhc` / `.beads` / `pnpm-lock`
+  / TS `packages/lhc` untouched. No R6+.
+
+## R5 — independent verifier final verdict
+
+Status: **PASS — safe to commit**.
+
+- Final verifier: fresh GPT-5.6 Sol high session, using the documented
+  full-access/read-only fallback after the host bwrap limitation.
+- No production-reachable finding against R5 or pinned contract `81cd48c`.
+- Focused production-path tests: **10 passed**; exact-interpreter full gate:
+  **653 passed + 15 intentional skips = 668 classified**, `wrong=0`,
+  `notimpl=0`, **GATE PASS**.
+- Public intake → drain → `get_turns` exhibit returned exact stored totals in
+  both token markers and no legacy char marker.
+- Five focused mutations each failed: stored-total propagation removal, legacy
+  translation removal, genuine-summary overwrite, special-token policy removal,
+  and forced annotation of untruncated content.
+- Artifact identity matched the package venv/editable source at `HEAD` `d7997ff`;
+  path-scoped status was unchanged by verification.

@@ -476,6 +476,7 @@ async def test_floors_over_large_failed_tool_result_summaries_with_deterministic
             valid_event("turn_end"),
         ],
     )
+    _exec_sql(file_path, "UPDATE message SET token_estimate = 1073 WHERE message_id = 'm3'")
     _exec_sql(
         file_path,
         """UPDATE derivation
@@ -499,7 +500,10 @@ async def test_floors_over_large_failed_tool_result_summaries_with_deterministic
     assert "large-result-token" in floored.content
     assert len(floored.content) < len(content)
     assert floored.content in _rendering_content(file_path)
-    assert "[fallback; outcome: succeeded]" in _rendering_content(file_path)
+    rendering = _rendering_content(file_path)
+    assert "[truncated — 1073 tok total]" in rendering
+    assert "chars]" not in rendering
+    assert "[fallback; outcome: succeeded]" in rendering
 
 
 async def test_floors_failed_tool_result_summaries_during_turn_construction_without_re_running_classification_inference(
@@ -534,6 +538,7 @@ async def test_floors_failed_tool_result_summaries_during_turn_construction_with
             valid_event("turn_end"),
         ],
     )
+    _exec_sql(file_path, "UPDATE message SET token_estimate = 2049 WHERE message_id = 'm3'")
     _delete_work_item(file_path, "w-m3-tool_result_summary-v1")
     calls_before_turn = len(captured)
 
@@ -549,7 +554,10 @@ async def test_floors_failed_tool_result_summaries_during_turn_construction_with
     assert "search-hit" in floored.content
     assert len(floored.content) < len(content)
     assert floored.content in _rendering_content(file_path)
-    assert "[fallback; outcome: failed]" in _rendering_content(file_path)
+    rendering = _rendering_content(file_path)
+    assert "[truncated — 2049 tok total]" in rendering
+    assert "chars]" not in rendering
+    assert "[fallback; outcome: failed]" in rendering
 
 
 async def test_recovers_over_cap_prompts_with_deterministic_cleaned_text_and_no_smoothing_model_call(
