@@ -697,3 +697,362 @@ Status: **PASS — safe to commit**.
 - Exact-interpreter full gate: **597 passed + 15 intentional skips = 612
   classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
 - SDK remains replay-policy-neutral; Hermes replay suppression stays in leg 2.
+
+## R3 — stable turn/message labels without contaminating derivation input
+
+Status: **implementer complete** (working tree; pending independent verifier + path-scoped commit).
+Implementer: **Grok 4.5** (authorized R3 slice; fresh disposable session).
+Verifier: pending (fresh GPT-5.6 Sol high per PLAN).
+
+Contract pin: TypeScript SDK `81cd48c`
+(`turns/internal/{compose,derive,derivations}.ts`, `shared-tech/derivation.ts`,
+`thread-view/internal/{render,select}.ts`, `test/turn-message-labels.test.ts`).
+Rust trap map only (same pin): `tests/turn_message_labels.rs` and matching modules.
+
+### Base
+
+- R2 commit `34934fedcd8c1e8783b0b77f576df0bee2ca0445` is current `HEAD`
+  (`feat(lhc-py): preserve thinking signatures and identity`).
+- R3 sits uncommitted on top of that HEAD.
+
+### What changed
+
+Labels only — no R4 retrieval/schema, no R5 truncation token totals, no R6 pull.
+
+- `packages/lhc-py/src/lhc/shared_tech/derivation.py`
+  - `RenderingPart.member_message_ids` optional list; tool-run parts set it so
+    outer compose does not double-wrap the whole run body.
+- `packages/lhc-py/src/lhc/turns/internal/compose.py`
+  - `wrap_entity_xml`, `format_turn_range_header`, `stored_rendering_has_turn_label`,
+    `compose_structured_turn_text(parts, turn_id)` (moved from derive; keeps
+    R1 `js_trim` empty-thinking filter).
+  - `_compose_run` tags each member line with `<mN>…</mN>` and records
+    `member_message_ids` in contract order.
+  - `compose_pre_detailed_assembly` remains label-free (dialog register only).
+- `packages/lhc-py/src/lhc/turns/internal/derive.py`
+  - Turn derivation stores `compose_structured_turn_text(parts, turn_id)`.
+  - Local unlabeled composer removed.
+- `packages/lhc-py/src/lhc/thread_view/internal/render.py`
+  - `render_arrangement_entry(..., member_turn_ids=())` prepends
+    `<turns>…</turns>` for chunk subjects (ready and gap/unavailable).
+- `packages/lhc-py/src/lhc/thread_view/internal/select.py`
+  - Chunk band build passes `chunk.member_turn_ids` into the renderer.
+- Tests:
+  - `tests/test_turn_message_labels.py` (new) — pure + integration parity.
+  - `tests/test_turn_cascade.py` — `_rendering_bodies` strips outer `<tN>` and
+    per-message wraps (pin helper parity).
+  - `tests/test_derivation_turns.py` — golden rendering uses
+    `compose_structured_turn_text`.
+  - `tests/test_view_compact.py` — brief band tokens `27 → 41` (pin: includes
+    `<turns>` header cost).
+
+### Invariants held
+
+- Stored smooth `turn_rendering`: outer `<tN>` + per-message `<mN>` (block wrap)
+  and per-line tool-run tags in contract order; single outer wrap (no double-label).
+- `pre_detailed_assembly`: no `<m`/`<t` retrieval markup.
+- Chunk serve: `<turns>…</turns>` on ready and unavailable/gap entries.
+- Legacy unlabeled stored content: `stored_rendering_has_turn_label` false → live
+  recompose path (R4 will wire `get_turns`; R3 owns predicate + composition).
+- Already-labeled: recompose equals stored single wrap (`count(<tN>)==1`).
+- R1 empty-thinking husk filter preserved via `js_trim` in compose path.
+- R2 signature/identity surfaces untouched.
+
+### Deliberately out of scope (R3)
+
+- R4 `get_turns`/`get_messages`, schema v6, impressions.
+- R5 truncation markers as full stored token totals / legacy char translation.
+- R6 token/byte budgets and historical envelope.
+- Unrelated dirt under `packages/cc-lhc`, `.beads`, TS `packages/lhc` working tree.
+
+### Exact commands and results
+
+```text
+# Focused R3 module
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py -q
+→ 14 passed · wrong=0 notimpl=0 skipped=0
+
+# R3 + cascade + derivation + R1 regression cluster
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py tests/test_turn_cascade.py \
+  tests/test_derivation_turns.py tests/test_empty_thinking_husk.py -q
+→ 60 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (626 tests)
+  gate: passed=611 notimpl=0 skipped=15 wrong=0 classified=626
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `34934fedcd8c1e8783b0b77f576df0bee2ca0445` (R2 on origin/main; uncommitted R3 on top) |
+| path-scoped porcelain | `M` derivation.py, render.py, select.py, compose.py, derive.py, test_derivation_turns.py, test_turn_cascade.py, test_view_compact.py; `??` tests/test_turn_message_labels.py; `M` docs/worklog/py-wave/LOG.md (this entry) |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R3: **14 passed**
+- Full gate: collect **626** · passed=611 notimpl=0 skipped=15 wrong=0 classified=626 · **GATE PASS**
+- Delta vs R2 suite (612 collect / 597 pass): **+14** focused R3 tests (626 / 611)
+
+### Risks / notes
+
+- Live tail serve format remains unlabeled (raw tool/text fences); labels live on
+  stored `turn_rendering` and therefore on compacted smooth-band snapshots. That
+  matches the pin (tail is not smooth-history retrieval markup).
+- `stored_rendering_has_turn_label` is exported for R4 retrieval fallback; R3
+  tests the pure predicate + recompose contract without a public `get_turns`.
+- Compact brief-band golden tokens rose with the `<turns>` header (27→41);
+  arrangement entry counts and shares otherwise unchanged under TARGET_PARAMS.
+- No stage/commit/push. Unrelated dirt under `cc-lhc` / `.beads` / TS
+  `packages/lhc` untouched. No R4+.
+
+## R3 — verifier round 1 (P1 select legacy fallback) + implementer fix
+
+Status: **P1 fixed; implementer re-gate green** (working tree; pending re-verify).
+Verifier round 1: production-reachable **P1** — legacy unlabeled ready
+`turn_rendering` was served/priced verbatim in select; predicate was test-only.
+Also **P2** mixed text/tool wire-format gap (exact golden/order).
+Implementer fix: **Grok 4.5**.
+
+### Verifier round-1 findings
+
+- **P1 (production-reachable):** After labels land at derivation, compact/select
+  still trusted ready `turn_rendering.content` bytes. A pre-R3 / mutated
+  unlabeled ready row would be priced and stored into smooth-band text without
+  outer `<tN>` / message labels. `stored_rendering_has_turn_label` existed only
+  for pure unit tests; it was not on the select/compact production path.
+  (Pinned TS applies the same algorithm in `retrieval/index.ts` `turnCandidate`;
+  R4 will reuse it for `get_turns`. R3 must wire it on select so compact bands
+  are correct without a retrieval API.)
+- **P2:** Mixed text/tool coverage asserted presence of tags, not exact wire
+  format / contract order (mutation-blind for member-line order and header shape).
+
+### Fix (production)
+
+Traced pin `81cd48c` `packages/lhc/src/retrieval/index.ts` `turnCandidate`:
+
+```text
+stored ready content starts with `<${turnId}>\n` and ends with `\n</${turnId}>`
+  → serve stored verbatim
+else
+  → readMemberMessages + readMessageDerivationRows
+  → composeRenderingInput + composeStructuredTurnText(parts, turnId)
+  → serve composed (no writes)
+```
+
+- `compose.py` — `labeled_or_recomposed_turn_rendering(...)` encodes that exact
+  algorithm (labeled pass-through; unlabeled/missing recompose).
+- `select.py` — `_relabel_legacy_ready_turn_renderings` runs in
+  `read_selection_inputs` after loading turn/chunk derivation snapshots:
+  only **ready** `turn_rendering` rows lacking the outer turn label are
+  rewritten in the **in-memory** snapshot (not DB). Pure select walk then
+  resolves/renders/prices the labeled body. Labeled rows untouched.
+- Non-ready ladder rungs unchanged (still fall through compression/excerpt/gap).
+- `pre_detailed_assembly` still label-free. R1 husk filter / R2 identity
+  surfaces untouched. No R4 retrieval API.
+
+### Tests
+
+`tests/test_turn_message_labels.py`:
+
+1. **P2** `test_mixed_text_tool_turn_exact_wire_format_and_contract_order` —
+   full exact-byte golden + user→run(m2,m3)→assistant order + single outer wrap.
+2. **P1 pure** — `labeled_or_recomposed_turn_rendering` pass-through and legacy
+   recompose on unlabeled stored string.
+3. **P1 production** `test_legacy_unlabeled_ready_row_recomposes_on_select_before_token_pricing`
+   — intake→drain→mutate legacy→`read_selection_inputs` snapshot == recompose
+   oracle; `resolve_smooth` + `render_arrangement_entry` entry bytes and
+   `estimate_tokens` match; **DB record still holds legacy** (serve-time only).
+4. **P1 compact** `test_legacy_unlabeled_compact_band_bytes_and_token_pricing`
+   — mutate all ready renderings legacy→compact; band has no legacy; each
+   banded turn body equals recompose oracle; receipt tokens ==
+   `estimate_tokens(band_text)`.
+5. **Pass-through** `test_labeled_ready_row_pass_through_no_double_wrap_on_select_and_compact`
+   — labeled rows survive select/compact with `count(<tN>)==1`.
+
+### Exact commands and results
+
+```text
+# Focused R3 module
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py -q
+→ 18 passed · wrong=0 notimpl=0 skipped=0
+
+# R3 + cascade + derivation + R1 + compact + R2 cluster
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py tests/test_turn_cascade.py \
+  tests/test_derivation_turns.py tests/test_empty_thinking_husk.py \
+  tests/test_view_compact.py tests/test_thinking_signature.py -q
+→ 108 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (630 tests)
+  gate: passed=615 notimpl=0 skipped=15 wrong=0 classified=630
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `cc6f2fcac2777fad157f7a74afc85a094ac9754b` (uncommitted R3 + round-1 fix) |
+| path-scoped porcelain | `M` compose.py, select.py, derive.py, derivation.py, render.py, test helpers; `??` test_turn_message_labels.py; `M` LOG.md |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R3: **18 passed** (was 14; +exact mixed golden + select recompose + compact legacy + labeled pass-through)
+- Full gate: collect **630** · passed=615 notimpl=0 skipped=15 wrong=0 classified=630 · **GATE PASS**
+
+### Risks / notes
+
+- Serve-time snapshot rewrite does **not** persist labels onto legacy rows;
+  re-open + re-select recomposes again. R4 `get_turns` should call the same
+  pure helper (`labeled_or_recomposed_turn_rendering`) rather than reimplement.
+- Only **ready** unlabeled rows are rewritten; non-ready still use the smooth
+  ladder (compression / excerpt / gap) — intentional divergence from retrieval's
+  always-compose-if-unlabeled path, which has no ladder.
+- No stage/commit/push. No R4+. Unrelated dirt under `cc-lhc` / `.beads` / TS
+  `packages/lhc` untouched.
+
+## R3 — verifier round 2 (P1 mutation-proof gaps) + implementer fix (validation budget round 3 final)
+
+Status: **P1 test-completeness fixed; implementer re-gate green** (working tree;
+final validation budget for R3 spent — round 3 of 3). **No production change.**
+Verifier round 2: two mutation-proof gaps on pass-through and deleted-member
+recompose. Implementer: **Grok 4.5** (test-only).
+
+### Verifier round-2 findings (P1 class — mutation quality)
+
+Production paths for labeled pass-through and live recompose were covered, but
+two mutant classes still green under the prior suite:
+
+1. **Pass-through coincidence** — labeled pass-through tests used stored bodies
+   that equaled canonical recompose of the same members. Disabling *both*
+   pass-through guards (always recompose in `labeled_or_recomposed_turn_rendering`
+   and always rewrite unlabeled-only in select) still produced identical bytes
+   and tokens. Not mutation-proof.
+2. **Deleted-member recompose** — no end-to-end case proved that legacy fallback
+   excludes a publicly deleted member while preserving survivor order and ready
+   message-derivation content. Oracles that call `read_member_messages` cannot
+   catch a broken production reader (shared dependency).
+
+No production mismatch found when probes ran against current R3 code.
+
+### Fix (test only)
+
+`packages/lhc-py/tests/test_turn_message_labels.py` only:
+
+1. **Replaced** weak pass-through with
+   `test_distinctive_labeled_stored_row_pass_through_kills_recompose_mutants`:
+   - Seeds valid labeled stored bodies
+     (`PASS_THROUGH_MARKER_NOT_FROM_CANONICAL_RECOMPOSE_*` + token pad) with
+     **precondition** `distinctive != canonical` and
+     `estimate_tokens(distinctive) != estimate_tokens(canonical)`.
+   - Asserts pure helper, select snapshot, resolve/render entry pricing, and
+     compact band bytes + receipt tokens all preserve distinctive verbatim.
+   - Asserts canonical seed text does **not** appear (would under always-recompose).
+   - Kills disabling either pass-through guard.
+
+2. **Added**
+   `test_legacy_recompose_excludes_publicly_deleted_member_with_independent_oracle`:
+   - Intake m1 keep / m2 delete-marker / m3 survive; drain; public
+     `messages.remove(RemoveInput(message_id="m2"))`.
+   - **Independent oracle:** pure `ComposeMessage` list for survivors only +
+     ready `smoothed_prompt` content from `messages.list` (not
+     `read_member_messages` / production recompose reader).
+   - Delete cascades clear `turn_rendering`; re-seed ready legacy unlabeled
+     content (same DB-mutation class as other R3 tests) so serve-time fallback
+     runs.
+   - Assert pure helper + select snapshot + entry pricing == independent
+     expected; `DELETE_UNIQUE_BODY_zzz` and `<m2>` absent; m1 smoothed + m3
+     survive text present in contract order.
+
+### Mutation-quality rationale
+
+| Mutant | Old pass-through / no-delete suite | New tests |
+| --- | --- | --- |
+| Always recompose in pure helper | false PASS (bytes equaled) | **FAIL** (distinctive ≠ canonical) |
+| Always rewrite snapshots in select | false PASS | **FAIL** (marker/pad lost; tokens diverge) |
+| Both guards disabled | false PASS | **FAIL** on pure + select + compact |
+| Recompose includes deleted members | untested | **FAIL** (DELETE_UNIQUE / `<m2>` present) |
+| Drop ready smoothed on survivor | untested | **FAIL** (oracle requires smoothed body) |
+| Reorder survivors | untested | **FAIL** (`<m1>` before `<m3>`) |
+
+### Exact commands and results
+
+```text
+# Focused R3 module
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py -q
+→ 19 passed · wrong=0 notimpl=0 skipped=0
+
+# R3 + cascade + derivation + R1 + compact + R2 cluster
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_turn_message_labels.py tests/test_turn_cascade.py \
+  tests/test_derivation_turns.py tests/test_empty_thinking_husk.py \
+  tests/test_view_compact.py tests/test_thinking_signature.py -q
+→ 109 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (631 tests)
+  gate: passed=616 notimpl=0 skipped=15 wrong=0 classified=631
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `cc6f2fcac2777fad157f7a74afc85a094ac9754b` (uncommitted R3 + rounds 1–3) |
+| path-scoped change this round | `tests/test_turn_message_labels.py` only (+ this LOG entry) |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R3: **19 passed** (was 18; replaced weak pass-through with distinctive
+  mutant-killing test; +1 deleted-member independent-oracle test)
+- Full gate: collect **631** · passed=616 notimpl=0 skipped=15 wrong=0 classified=631 · **GATE PASS**
+- Validation budget: round 3 of 3 for R3 (final).
+
+### Risks / notes
+
+- Public `messages.remove` cascades clear turn forms; the deleted-member case
+  re-seeds ready legacy content after the public delete so the R3 serve-time
+  fallback is exercised (record purity of the cascade itself is out of R3).
+- Independent oracle intentionally avoids `read_member_messages` so a broken
+  production reader cannot mask itself. Smoothed content is taken from the
+  public `messages.list` derivation projection before delete.
+- No production-path edits. No R4+. No stage/commit/push.
+
+## R3 — independent verifier final verdict
+
+Status: **PASS — safe to commit**.
+
+- Final verifier: fresh GPT-5.6 Sol high session, validation round 3 of 3.
+- Both named mutation regressions passed; pass-through and deleted-member
+  mutants failed as required.
+- Focused R3: **19 passed**; regression cluster: **109 passed**.
+- Exact-interpreter full gate: **616 passed + 15 intentional skips = 631
+  classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
+- R3 scope held; no R4 retrieval API or schema work entered.

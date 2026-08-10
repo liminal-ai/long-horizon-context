@@ -33,6 +33,14 @@ from ...shared_tech.storage import Database
 from ...shared_tech.token_counting import estimate_tokens
 from ...shared_tech.view import Band, ViewProfilePercentages
 from ...turns import read_turn_chunk_structure
+from ...turns.internal.compose import (
+    labeled_or_recomposed_turn_rendering,
+    stored_rendering_has_turn_label,
+)
+from ...turns.internal.derivations import (
+    read_member_messages,
+    read_message_derivation_rows,
+)
 from .render import (
     CompactChunkMaterialSnapshot,
     DerivationSnapshot,
@@ -243,6 +251,12 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
         )
         derivations[f"{row['subject_id']}/{row['derivation_type']}"] = snapshot
 
+    # R3 serve-time legacy fallback (TS retrieval turnCandidate algorithm):
+    # ready turn_rendering without the outer <turnId> wrap is recomposed from
+    # live members + message derivations before select prices/stores bands.
+    # Labeled rows pass through verbatim. No DB write — snapshot rewrite only.
+    _relabel_legacy_ready_turn_renderings(db, derivations)
+
     max_row = db.prepare(_SQL_MAX_EVENT_ORDER).get()
     assert max_row is not None
     count_rows = db.prepare(_SQL_DERIVATION_COUNTS).all()
@@ -262,6 +276,42 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
         max_event_order=int(max_row["m"]),  # type: ignore[arg-type]
         derivation_counts=derivation_counts,
     )
+
+
+def _relabel_legacy_ready_turn_renderings(
+    db: Database,
+    derivations: dict[str, DerivationSnapshot],
+) -> None:
+    """Rewrite ready unlabeled turn_rendering snapshots in place (read path).
+
+    Mirrors packages/lhc/src/retrieval/index.ts ``turnCandidate`` at pin
+    81cd48c: storedHasTurnLabel ⇒ verbatim; else composeRenderingInput +
+    composeStructuredTurnText from canonical members. Applied here so the
+    pure select walk prices and persists the labeled serve text without a
+    retrieval API (R4 owns get_turns).
+    """
+    for key, snap in list(derivations.items()):
+        if not key.endswith("/turn_rendering"):
+            continue
+        if snap.state != "ready" or not isinstance(snap.content, str):
+            continue
+        turn_id = key[: -len("/turn_rendering")]
+        if stored_rendering_has_turn_label(snap.content, turn_id):
+            continue
+        members = read_member_messages(db, turn_id)
+        message_ids = [message.message_id for message in members]
+        message_derivations = read_message_derivation_rows(db, message_ids)
+        labeled = labeled_or_recomposed_turn_rendering(
+            turn_id,
+            snap.content,
+            members,
+            message_derivations,
+        )
+        derivations[key] = DerivationSnapshot(
+            state=snap.state,
+            content=labeled,
+            reason=snap.reason,
+        )
 
 
 # ── the pure walk ─────────────────────────────────────────────────
@@ -416,7 +466,9 @@ def select_arrangement(inputs: SelectionInputs, config: SelectionConfig) -> Sele
                 chunk_material(chunk.chunk_id, "chunk_summary_brief"),
             )
         )
-        text = render_arrangement_entry("chunk", chunk.chunk_id, rep, [])
+        text = render_arrangement_entry(
+            "chunk", chunk.chunk_id, rep, [], chunk.member_turn_ids
+        )
         member_starts = [
             turn_start_order(turn)
             for turn_id in chunk.member_turn_ids

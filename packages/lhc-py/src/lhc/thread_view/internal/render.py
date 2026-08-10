@@ -479,13 +479,20 @@ def excerpt_line(kind: str, blocks: Sequence[_ExcerptBlock]) -> str:
 # the representation body, [degraded: …] when a fallback rung rendered, or the
 # gap line as the last rung. select.ts prices exactly this text in the fill
 # walk; the band stores exactly this text.
+#
+# Chunk entries may carry member_turn_ids so detailed/brief bands show which
+# turns the chunk covers (smooth turn bodies already wrap themselves in <t…>).
+# Headers are applied at serve time for both ready and unavailable/gap entries.
 def render_arrangement_entry(
     subject_kind: Literal["turn", "chunk"],
     _subject_id: str,
     rep: ResolvedRepresentation,
     note_texts: Sequence[str],
+    member_turn_ids: Sequence[str] = (),
 ) -> str:
     lines = [f"[inter-turn note] {text}" for text in note_texts]
+    if subject_kind == "chunk" and len(member_turn_ids) > 0:
+        lines.append(f"<turns>{' '.join(member_turn_ids)}</turns>")
     if rep.gap:
         reason = "unknown" if rep.reason is None else rep.reason
         lines.append(f"[{subject_kind} unavailable: {reason}]")

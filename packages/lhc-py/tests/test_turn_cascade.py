@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
 import pytest
@@ -111,10 +112,22 @@ def _rendering_content(file_path: str) -> str:
     return form.content if form is not None and form.content is not None else ""
 
 
+def _strip_entity_xml(body: str) -> str:
+    # Block wrap: <mN>\n…\n</mN>. Tool-run lines: <mN>…</mN> on each line.
+    block = re.fullmatch(r"<m\d+>\n([\s\S]*)\n</m\d+>", body)
+    if block is not None:
+        return block.group(1)
+    return re.sub(r"</?m\d+>", "", body)
+
+
 def _rendering_bodies(file_path: str) -> list[str]:
+    content = _rendering_content(file_path)
+    # Drop the outer <tN>…</tN> wrap added for addressable smooth history.
+    content = re.sub(r"^<t\d+>\n", "", content)
+    content = re.sub(r"\n</t\d+>$", "", content)
     return [
-        "\n".join(part.split("\n")[1:])
-        for part in _rendering_content(file_path).split("\n\n")
+        _strip_entity_xml("\n".join(part.split("\n")[1:]))
+        for part in content.split("\n\n")
     ]
 
 

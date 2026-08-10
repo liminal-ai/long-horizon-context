@@ -465,7 +465,8 @@ async def test_actuals_near_shares_with_whole_entry_deviations_zero_model_calls_
         attributable = actual.tokens <= shares[band] or actual.entries == 1
         assert attributable is True
 
-    assert receipt.value.bands["brief"] == CompactBandStats(entries=1, tokens=27)
+    # Token count includes the <turns>…</turns> member-turn header on chunk bands (R3).
+    assert receipt.value.bands["brief"] == CompactBandStats(entries=1, tokens=41)
     assert receipt.value.bands["detailed"].entries == 2
     assert receipt.value.bands["detailed"].tokens >= shares["detailed"]
     assert receipt.value.bands["smooth"].entries == 1

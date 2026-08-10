@@ -39,7 +39,6 @@ from lhc.shared_tech.derivation import (
     ChunkPolicyConfig,
     LeaseConfig,
     RenderingPart,
-    RenderingPartKind,
     SdkConfig,
 )
 from lhc.shared_tech.deterministic import deterministic_text
@@ -166,32 +165,11 @@ def _assembly_tokens(prompt: str, answer: str) -> int:
     return estimate_tokens(_dialogue_assembly_text(prompt, answer))
 
 
-_LABELS: dict[RenderingPartKind, str] = {
-    "user_prompt": "User prompt",
-    "assistant_text": "Assistant response",
-    "assistant_thinking": "Assistant thinking",
-    "runtime_note": "Runtime note",
-    "model_change": "Model change",
-    "thinking_level_change": "Thinking level change",
-    "tool_call": "Tool call",
-    "tool_result": "Tool result",
-}
+def _structured_rendering(parts: Sequence[RenderingPart], turn_id: str = "t1") -> str:
+    # Pin-parity: turn_rendering is composeStructuredTurnText (labels included).
+    from lhc.turns.internal.compose import compose_structured_turn_text
 
-
-def _structured_rendering(parts: Sequence[RenderingPart]) -> str:
-    segments: list[str] = []
-    for part in parts:
-        annotations = [
-            a
-            for a in [
-                "fallback" if part.fallback else None,
-                None if part.outcome is None else f"outcome: {part.outcome}",
-            ]
-            if a is not None
-        ]
-        suffix = "" if len(annotations) == 0 else f" [{'; '.join(annotations)}]"
-        segments.append(f"{_LABELS[part.kind]}{suffix}\n{part.text}")
-    return "\n\n".join(segments)
+    return compose_structured_turn_text(parts, turn_id)
 
 
 def _to_jsonable(value: Any) -> Any:

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 import math
 from typing import Literal, Union
 
-from ...shared_tech._jsstr import js_trim
 from ...shared_tech.derivation import (
     BriefTargets,
     CompressionTargets,
@@ -26,8 +25,6 @@ from ...shared_tech.derivation import (
     HandlerOk,
     HandlerDerivationWrite,
     DerivationMetadata,
-    RenderingPart,
-    RenderingPartKind,
     ResolvedSdkConfig,
     WorkHandler,
     WorkItemRef,
@@ -71,7 +68,11 @@ from ...messages.internal.derive import (
     MessageDerivationFloorRecovery,
     write_message_derivation_floor_in_thread,
 )
-from .compose import compose_pre_detailed_assembly, compose_rendering_input
+from .compose import (
+    compose_pre_detailed_assembly,
+    compose_rendering_input,
+    compose_structured_turn_text,
+)
 from .derivations import (
     chunk_exists,
     read_chunk_summary_derivation,
@@ -122,37 +123,6 @@ def _inference_failed(result: _InferenceFailedReason) -> HandlerFailed:
 
 def _dependency_not_ready(reason: str) -> HandlerFailed:
     return HandlerFailed(reason=reason)
-
-
-def _rendering_part_label(kind: RenderingPartKind) -> str:
-    return {
-        "user_prompt": "User prompt",
-        "assistant_text": "Assistant response",
-        "assistant_thinking": "Assistant thinking",
-        "runtime_note": "Runtime note",
-        "model_change": "Model change",
-        "thinking_level_change": "Thinking level change",
-        "tool_call": "Tool call",
-        "tool_result": "Tool result",
-    }[kind]
-
-
-def _compose_structured_turn_text(parts: Sequence[RenderingPart]) -> str:
-    sections: list[str] = []
-    for part in parts:
-        # Empty thinking has no usable representation in a text band. Leaving it
-        # here bypasses the serving-exit tail filters once the turn is compacted.
-        # JS String.prototype.trim (not Python str.strip): U+FEFF is empty, U+0085 is not.
-        if part.kind == "assistant_thinking" and js_trim(part.text) == "":
-            continue
-        annotations: list[str] = []
-        if part.fallback:
-            annotations.append("fallback")
-        if part.outcome is not None:
-            annotations.append(f"outcome: {part.outcome}")
-        suffix = f" [{'; '.join(annotations)}]" if annotations else ""
-        sections.append(f"{_rendering_part_label(part.kind)}{suffix}\n{part.text}")
-    return "\n\n".join(sections)
 
 
 def _compose_detailed_chunk_summary(member_projections: Sequence[str]) -> str:
@@ -298,7 +268,7 @@ async def _turn_derivation_handler(run: HandlerRunContext, item: WorkItemRef) ->
                 source_version=recovery.source_version,
             ),
         )
-    rendering_text = _compose_structured_turn_text(composition.parts)
+    rendering_text = compose_structured_turn_text(composition.parts, turn_id)
     assembly_text = assembly.text
     projected_tokens = estimate_tokens(assembly_text)
     assembly_row = read_turn_derivation_row(

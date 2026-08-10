@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from ...shared_tech._jsstr import js_json_dumps
+from ...shared_tech._jsstr import js_json_dumps, js_trim
 from ...shared_tech.derivation import (
     DependencyGap,
     DerivationMetadata,
@@ -321,8 +321,34 @@ def _run_tally_text(counts: Mapping[ToolOutcome, int]) -> str:
     return ", ".join(segments) if segments else "no outcomes"
 
 
+def wrap_entity_xml(entity_id: str, body: str) -> str:
+    """Short XML wrap: tag name is the entity id (`m12`, `t3`)."""
+    return f"<{entity_id}>\n{body}\n</{entity_id}>"
+
+
+def _wrap_message_line_xml(message_id: str, line: str) -> str:
+    return f"<{message_id}>{line}</{message_id}>"
+
+
+def format_turn_range_header(turn_ids: Sequence[str]) -> str:
+    """Chunk band header: member turn ids the model can request later."""
+    if len(turn_ids) == 0:
+        return ""
+    return f"<turns>{' '.join(turn_ids)}</turns>"
+
+
+def stored_rendering_has_turn_label(content: str, turn_id: str) -> bool:
+    """True when stored turn_rendering already carries the outer turn label wrap.
+
+    Used by retrieval (R4+) and by the smooth select/compact path (R3) to decide
+    live re-composition for legacy unlabeled rows.
+    """
+    return content.startswith(f"<{turn_id}>\n") and content.endswith(f"\n</{turn_id}>")
+
+
 # One RenderingPart for a maximal tool run: a run-level header over member
-# accounts in record order, each tool member stating its own outcome.
+# accounts in record order, each tool member stating its own outcome. Each
+# member line is tagged with its message id so smooth history can address it.
 def _compose_run(members: Sequence[_ComposeAtom]) -> RenderingPart:
     if not members:
         raise RuntimeError("composeRun: a tool run has no members")
@@ -334,9 +360,14 @@ def _compose_run(members: Sequence[_ComposeAtom]) -> RenderingPart:
         f"{_run_tally_text(tally.counts)}"
     )
     detail = "\n".join(
-        f"{member.part.text} ⇒ {member.part.outcome or 'unknown'}"
-        if member.is_tool
-        else member.part.text
+        _wrap_message_line_xml(
+            member.part.message_id,
+            (
+                f"{member.part.text} ⇒ {member.part.outcome or 'unknown'}"
+                if member.is_tool
+                else member.part.text
+            ),
+        )
         for member in members
     )
     lead = members[0]
@@ -346,6 +377,7 @@ def _compose_run(members: Sequence[_ComposeAtom]) -> RenderingPart:
         text=f"[{header}]\n{detail}",
         fallback=any(member.is_tool and member.part.fallback for member in members),
         outcome=tally.outcome,
+        member_message_ids=[member.part.message_id for member in members],
     )
 
 
@@ -403,6 +435,46 @@ def _compose_dialogue_text(parts: Sequence[RenderingPart]) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+def _rendering_part_label(kind: RenderingPartKind) -> str:
+    return {
+        "user_prompt": "User prompt",
+        "assistant_text": "Assistant response",
+        "assistant_thinking": "Assistant thinking",
+        "runtime_note": "Runtime note",
+        "model_change": "Model change",
+        "thinking_level_change": "Thinking level change",
+        "tool_call": "Tool call",
+        "tool_result": "Tool result",
+    }[kind]
+
+
+# Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
+# pre_detailed_assembly (compression stays untagged).
+def compose_structured_turn_text(parts: Sequence[RenderingPart], turn_id: str) -> str:
+    sections: list[str] = []
+    for part in parts:
+        # Empty thinking has no usable representation in a text band. Leaving it
+        # here bypasses the serving-exit tail filters once the turn is compacted.
+        # JS String.prototype.trim (not Python str.strip): U+FEFF is empty, U+0085 is not.
+        if part.kind == "assistant_thinking" and js_trim(part.text) == "":
+            continue
+        annotations: list[str] = []
+        if part.fallback:
+            annotations.append("fallback")
+        if part.outcome is not None:
+            annotations.append(f"outcome: {part.outcome}")
+        suffix = f" [{'; '.join(annotations)}]" if annotations else ""
+        header = f"{_rendering_part_label(part.kind)}{suffix}"
+        # Tool runs already tag each member line; other parts wrap the whole body.
+        if part.member_message_ids is not None and len(part.member_message_ids) > 0:
+            body = part.text
+        else:
+            body = wrap_entity_xml(part.message_id, part.text)
+        sections.append(f"{header}\n{body}")
+    inner = "\n\n".join(sections)
+    return wrap_entity_xml(turn_id, inner)
+
+
 @dataclass(frozen=True, slots=True)
 class PreDetailedAssembly:
     text: str
@@ -410,8 +482,30 @@ class PreDetailedAssembly:
     recoveries: list[RecoveryReceipt]
 
 
+def labeled_or_recomposed_turn_rendering(
+    turn_id: str,
+    stored_content: str | None,
+    messages: Sequence[ComposeMessage],
+    derivations: Mapping[str, ComposeDerivationRow],
+) -> str:
+    """TS retrieval ``turnCandidate`` body resolution (pin 81cd48c).
+
+    When a ready stored rendering already carries the outer ``<turnId>`` wrap,
+    return it verbatim (no double-label). Otherwise recompose from the live
+    member messages and their message-owned derivations — pure, no writes —
+    exactly as ``turn_derivation`` would via ``composeStructuredTurnText``.
+    """
+    if isinstance(stored_content, str) and stored_rendering_has_turn_label(
+        stored_content, turn_id
+    ):
+        return stored_content
+    composition = compose_rendering_input(messages, derivations)
+    return compose_structured_turn_text(composition.parts, turn_id)
+
+
 # Dialog-register assembly for detailed-band compression: user prompts
 # (smoothed where ready) and assistant text only, in record order.
+# Label-free by design — derivation prompts must not learn retrieval markup.
 def compose_pre_detailed_assembly(
     messages: Sequence[ComposeMessage],
     derivations: Mapping[str, ComposeDerivationRow],
