@@ -6,6 +6,19 @@ import { LaunchGrammarError, resolveLaunchSession } from "../intake/launch-sessi
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+import {
+  applyGovernorLifecycleBatch,
+  createGovernorRuntimeState,
+  formatGovernorObserveLogLine,
+  loadContextPolicy,
+  noteGovernorInput,
+  policySourcesSummary,
+  setGovernorCaptureHealth,
+  setGovernorDescriptorReady,
+  type ContextPolicyPartial,
+  type GovernorRuntimeState,
+  type ResolvedContextPolicy,
+} from "../governor/index.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import {
@@ -99,6 +112,15 @@ export type RunOptions = {
    * Production uses the real defaultDescriptorIo.
    */
   descriptorIo?: DescriptorIo;
+  /**
+   * Session-scoped context policy overrides (not persisted). Highest merge
+   * precedence after project config. Slice 3 remains observe-only regardless.
+   */
+  contextPolicyOverrides?: ContextPolicyPartial;
+  /** Test hook: substitute resolved policy (skips filesystem load). */
+  resolvedContextPolicy?: ResolvedContextPolicy;
+  /** Test hook: inspect governor runtime state after lifecycle. */
+  onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -148,6 +170,30 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // While the child owns the terminal, diagnostics go to the wrapper log
   // (surface (c)); `status` reports the warning count so nothing is lost.
   const wrapperLog = options.wrapperLog ?? createWrapperLog();
+
+  // Slice 3: load context policy (observe-only). Invalid policy does not arm
+  // automatic intent but leaves Claude/capture usable with a visible diagnostic.
+  const resolvedContextPolicy: ResolvedContextPolicy =
+    options.resolvedContextPolicy ??
+    loadContextPolicy({
+      cwd: process.cwd(),
+      ...(options.contextPolicyOverrides !== undefined
+        ? { sessionOverrides: options.contextPolicyOverrides }
+        : {}),
+    });
+  if (!resolvedContextPolicy.armed) {
+    for (const err of resolvedContextPolicy.errors) {
+      wrapperLog.warn(`cc-lhc context policy: ${err}`);
+    }
+    wrapperLog.warn(
+      "cc-lhc context policy: automatic policy not armed; observe reports policy_invalid; Claude/capture continue",
+    );
+  } else {
+    wrapperLog.info(
+      `cc-lhc context policy armed observeOnly=true autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
+    );
+  }
+  let governorState: GovernorRuntimeState = createGovernorRuntimeState();
 
   let expectedSession: ExpectedSession | undefined;
   let resumeSessionIdForLineage: string | undefined;
@@ -357,14 +403,40 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.info(
         `cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`,
       );
+      governorState = setGovernorDescriptorReady(governorState, true);
     } catch (cause) {
       wrapperLog.warn(
         `cc-lhc runtime descriptor update failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
+      governorState = setGovernorDescriptorReady(governorState, false);
     }
   };
 
   const onCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
+    // Sync capture health / generation into governor before decide (no I/O).
+    if (captureSession !== undefined) {
+      governorState = setGovernorCaptureHealth(
+        governorState,
+        captureSession.isCaptureHealthy(),
+        captureSession.getCaptureGeneration(),
+      );
+    }
+    if (runtimeDescriptor?.state === "ready" && !descriptorCapabilityRevoked) {
+      governorState = setGovernorDescriptorReady(governorState, true);
+    }
+
+    // Slice 3 observe-only: pure decide + wrapper-log record; never mutate.
+    const observed = applyGovernorLifecycleBatch(
+      governorState,
+      signals,
+      resolvedContextPolicy,
+    );
+    governorState = observed.state;
+    for (const record of observed.observes) {
+      wrapperLog.info(formatGovernorObserveLogLine(record));
+      options.onGovernorObserve?.(record);
+    }
+
     for (const signal of signals) {
       if (signal.kind === "session_bound") {
         publishDescriptorFromCapture();
@@ -373,6 +445,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // descriptor capability is already non-ready/absent, further reasons are
         // diagnostics only — never re-publish or treat as fatal re-transition.
         wrapperLog.warn(`cc-lhc capture degraded: ${signal.reason}`);
+        governorState = setGovernorCaptureHealth(
+          governorState,
+          false,
+          signal.generation,
+        );
+        governorState = setGovernorDescriptorReady(governorState, false);
         if (descriptorCapabilityRevoked || runtimeDescriptorPath === undefined) {
           continue;
         }
@@ -776,7 +854,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
-      if (result.toPty.length > 0) ptyProcess.write(result.toPty);
+      // User bytes reaching Claude bump input epoch so the governor can suppress
+      // would_compact when the operator typed during the open turn.
+      if (result.toPty.length > 0) {
+        governorState = noteGovernorInput(governorState);
+        ptyProcess.write(result.toPty);
+      }
       applyActions(result.actions);
       renderModalPanel();
       armPendingEscTimer();
