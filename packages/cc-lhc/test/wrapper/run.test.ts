@@ -175,7 +175,15 @@ describe("run", () => {
     expect(exitCode).toBe(3);
   });
 
-  it("shows compact relaunch guidance in modal without writing /resume to the PTY", async () => {
+  // The four ctx.skip(POSIX_SIGNALS_ONLY) tests below end the wrapper by
+  // self-delivering POSIX signals (SIGTERM). Windows cannot deliver these as
+  // catchable events — process.kill there terminates the vitest worker
+  // outright — so they are POSIX-only. The same wrapper logic stays covered
+  // on Windows through the fake-pty suites (modal, panel, handoff).
+  const POSIX_SIGNALS_ONLY = "self-delivered POSIX signals are not deliverable on win32";
+
+  it("shows compact relaunch guidance in modal without writing /resume to the PTY", async (ctx) => {
+    if (process.platform === "win32") ctx.skip(POSIX_SIGNALS_ONLY);
     const logDir = mkdtempSync(join(tmpdir(), "cc-lhc-run-guidance-"));
     const wrapperLog = createWrapperLog(join(logDir, "wrapper.log"));
     const ptyWrites: string[] = [];
@@ -232,7 +240,8 @@ describe("run", () => {
     await runPromise;
   }, 15_000);
 
-  it("does not inject /resume when dispatch returns no restart plan", async () => {
+  it("does not inject /resume when dispatch returns no restart plan", async (ctx) => {
+    if (process.platform === "win32") ctx.skip(POSIX_SIGNALS_ONLY);
     runMocks.dispatchLhcCommand.mockResolvedValue({
       messages: ["status ok"],
     });
@@ -299,7 +308,8 @@ describe("run", () => {
     await runPromise;
   }, 15_000);
 
-  it("names the in-flight command in busy refusals and lands its late receipt on a reopened panel", async () => {
+  it("names the in-flight command in busy refusals and lands its late receipt on a reopened panel", async (ctx) => {
+    if (process.platform === "win32") ctx.skip(POSIX_SIGNALS_ONLY);
     runMocks.captureFactory = () => makeCaptureSession();
     let resolveSlow: (outcome: { messages: string[] }) => void = () => {};
     runMocks.dispatchLhcCommand.mockImplementation(async (line: string) => {
@@ -352,7 +362,8 @@ describe("run", () => {
     await runPromise;
   }, 20_000);
 
-  it("routes passthrough diagnostics to wrapper log with zero stdout/stderr writes", async () => {
+  it("routes passthrough diagnostics to wrapper log with zero stdout/stderr writes", async (ctx) => {
+    if (process.platform === "win32") ctx.skip(POSIX_SIGNALS_ONLY);
     process.env.CC_LHC_LEADER = "invalid";
 
     const logDir = mkdtempSync(join(tmpdir(), "cc-lhc-run-doctrine-"));

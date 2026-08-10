@@ -1,8 +1,17 @@
 #!/usr/bin/env node
 // Prerequisite check for standalone setup. Exits 0 when all pass.
 // Usage: node .setup/scripts/check-prereqs.mjs [--for cc-lhc|pi-lhc] [--skip-claude-call]
-// Default --for is cc-lhc (Claude Code on PATH + auth). pi-lhc skips Claude Code checks.
-import { execFileSync } from "node:child_process";
+// Default --for is cc-lhc (native OS/arch support + Claude Code on PATH + auth).
+// pi-lhc skips the Claude Code and native-target checks.
+// Runs on native Linux, macOS, and Windows (cmd or PowerShell).
+import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { readTargetsManifestLite } from "../../packages/cc-lhc-native/scripts/asset-names.mjs";
+import { claudeAuthProbeArgs, evaluateNodeVersion, probeSpawnOptions, safeProbeToken, targetSupport } from "./lib/prereqs.mjs";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function parseFor(argv) {
   const idx = argv.indexOf("--for");
@@ -20,11 +29,17 @@ const skipClaudeCall = process.argv.includes("--skip-claude-call");
 let failures = 0;
 
 function run(cmd, args) {
-  try {
-    return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 }).trim();
-  } catch {
-    return null;
+  for (const token of [cmd, ...args]) {
+    if (!safeProbeToken(token)) throw new Error(`unsafe probe token: ${token}`);
   }
+  const result = spawnSync(cmd, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+    ...probeSpawnOptions(process.platform),
+  });
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null;
+  return result.stdout.trim();
 }
 
 function check(name, ok, detail) {
@@ -37,25 +52,35 @@ const gitV = run("git", ["--version"]);
 check("git", gitV !== null, gitV ?? "not found on PATH");
 
 // 2. node >=24.17.0 (stable node:sqlite floor; newer majors allowed but untested)
-const [maj, min] = process.versions.node.split(".").map(Number);
-const nodeOk = maj > 24 || (maj === 24 && min >= 17);
-const nodeNote =
-  maj > 24
-    ? `found v${process.versions.node} (untested major — tested floor is 24.17; report issues)`
-    : `found v${process.versions.node}`;
-check("node >=24.17.0", nodeOk, nodeNote);
+const nodeV = evaluateNodeVersion(process.versions.node);
+check("node >=24.17.0", nodeV.ok, nodeV.note);
 
 // 3. pnpm 11.x
 const pnpmV = run("pnpm", ["--version"]);
-check("pnpm 11.x", pnpmV !== null && pnpmV.startsWith("11."), pnpmV ?? "not found — try: corepack enable && corepack prepare pnpm@11.8.0 --activate");
+check(
+  "pnpm 11.x",
+  pnpmV !== null && pnpmV.startsWith("11."),
+  pnpmV ?? "not found — try: corepack enable && corepack prepare pnpm@11.8.0 --activate",
+);
 
-// 4–5. Claude Code (cc-lhc only)
+// 4. native OS/arch support (cc-lhc only; targets.json is the source of truth)
+if (target === "cc-lhc") {
+  const manifest = readTargetsManifestLite(join(repoRoot, "packages", "cc-lhc-native", "targets.json"));
+  const support = targetSupport(process.platform, process.arch, manifest.targetKeys);
+  check("os/arch supported", support.ok, support.ok ? support.key : support.detail);
+} else {
+  console.log("SKIP  os/arch supported (pi-lhc — no native addon required)");
+}
+
+// 5–6. Claude Code (cc-lhc only)
 if (target === "cc-lhc") {
   const claudeV = run("claude", ["--version"]);
   check("claude on PATH", claudeV !== null, claudeV ?? "Claude Code not found");
 
   if (claudeV !== null && !skipClaudeCall) {
-    const out = run("claude", ["-p", "reply with exactly: ok"]);
+    // Real auth probe; --no-session-persistence keeps the probe from writing
+    // a session file into this directory (it would pollute the resume picker).
+    const out = run("claude", claudeAuthProbeArgs());
     check("claude -p auth", out !== null && out.length > 0, out === null ? "call failed — check Claude Code login" : undefined);
   } else if (skipClaudeCall) {
     console.log("SKIP  claude -p auth (--skip-claude-call)");

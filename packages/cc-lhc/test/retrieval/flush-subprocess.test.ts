@@ -20,10 +20,10 @@ import {
   RUNTIME_DESCRIPTOR_ENV,
 } from "../../src/runtime/descriptor.js";
 import { selfOnlyProbe } from "../helpers/identity.js";
+import { tsxCommand } from "../helpers/tsx.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const worker = join(here, "../fixtures/retrieval-flush-worker.ts");
-const tsxBin = join(here, "../../node_modules/.bin/tsx");
 
 function realIo(): DescriptorIo {
   const fs = require("node:fs") as typeof import("node:fs");
@@ -120,7 +120,8 @@ describe("retrieval CLI flush subprocess", () => {
     expect(expectedBytes).toBeGreaterThan(8_000);
     expect(expectedBytes).toBeLessThanOrEqual(24_000);
 
-    const child = spawn(tsxBin, [worker], {
+    const tsx = tsxCommand(worker);
+    const child = spawn(tsx.command, tsx.args, {
       env: {
         ...process.env,
         [RUNTIME_DESCRIPTOR_ENV]: dp,

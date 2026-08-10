@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,7 +30,9 @@ describe("verifyDescriptorRolloutBinding", () => {
     if (!r.ok) expect(r.reason).toMatch(/basename/);
   });
 
-  it("unreadable refuses", () => {
+  // POSIX-only: chmod 0o000 cannot make a file unreadable on Windows (the
+  // mode maps to a read-only attribute), so this refusal is unprovable there.
+  it.skipIf(process.platform === "win32")("unreadable refuses", () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rb-"));
     const path = join(dir, `${SID}.jsonl`);
     writeFileSync(path, line({ type: "user", sessionId: SID }));

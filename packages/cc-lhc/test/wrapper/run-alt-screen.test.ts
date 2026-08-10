@@ -66,7 +66,11 @@ async function startModalRig(): Promise<{
   return { stdin, output, runPromise };
 }
 
-describe("process-level alt-screen safety", () => {
+// POSIX-only: every test here self-delivers SIGTERM/SIGHUP and the bash tick
+// child traps TERM/HUP. Windows cannot deliver these signals as events
+// (process.kill would terminate the vitest worker), so the signal-restore
+// contract is only provable on Linux/macOS.
+describe.skipIf(process.platform === "win32")("process-level alt-screen safety", () => {
   it("SIGTERM while modal: leave precedes the held flush; child is signalled; exactly one leave", async () => {
     const { output, runPromise } = await startModalRig();
 

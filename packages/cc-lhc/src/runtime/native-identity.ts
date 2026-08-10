@@ -29,7 +29,8 @@ const ADDON_REMEDIATION =
   "cc-lhc requires its native identity addon (cc-lhc-native) for exact process liveness " +
   "and will not fall back to PID-only checks. Reinstall cc-lhc so the release bundle's " +
   "prebuilds/<platform>-<arch>/cc_lhc_identity.node is present, or build it from source: " +
-  "pnpm --filter cc-lhc-native run build:native && pnpm --filter cc-lhc-native run stage:prebuild";
+  "pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native && " +
+  "pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild";
 
 /** Wrap any exact reader (real or injected) into the liveness-probe contract. */
 export function probeFromExactReader(read: ExactIdentityReader): ProbeProcessIdentity {

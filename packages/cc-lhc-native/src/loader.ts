@@ -5,10 +5,13 @@
  *   1. CC_LHC_IDENTITY_ADDON env override — explicit path, development/test
  *      seam only; must exist or loading fails.
  *   2. prebuilds/<platform>-<arch>/<artifact> — the released path; artifacts
- *      are produced by the CI matrix and shipped in the npm tarball so end
- *      users never need a compiler toolchain.
+ *      are produced by the CI matrix, published as GitHub release assets, and
+ *      installed here checksum-verified by .setup/scripts/fetch-prebuild.mjs
+ *      (this package is private to the workspace, never an npm tarball), so
+ *      end users never need a compiler toolchain.
  *   3. build/Release/<artifact> — the source-build/development path produced
- *      by `pnpm run build:native` (node-gyp; requires a local C toolchain).
+ *      by the `build:native` package script (node-gyp; requires a local C
+ *      toolchain).
  *
  * A platform/arch pair absent from targets.json fails explicitly with the
  * supported-target list before any filesystem probing. A supported target
@@ -125,7 +128,7 @@ export function resolveAddonArtifact(seams: LoaderSeams = {}): ResolvedAddonArti
   throw new AddonArtifactMissingError(
     `cc-lhc-native: no addon artifact for supported target ${platform}-${arch}; ` +
       `expected prebuilt at ${prebuilt} or source build at ${sourceBuild} ` +
-      `(development: pnpm --filter cc-lhc-native run build:native)`,
+      `(development: pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native)`,
   );
 }
 

@@ -61,10 +61,24 @@ XP3/XP4). It is not published to npm and makes no npm-tarball claims.
   `targets.json`. Matrix jobs validate their own target with
   `--target <platform>-<arch>`; the aggregation step validates all targets.
 
-Expected XP3 matrix-job order per target: `build` → `build:native` →
-`stage:prebuild` → `test:native` → `check:release-bundle --target <own>`,
-then one aggregation job merges every job's `prebuilds/` with `dist/` and
-metadata and runs `check:release-bundle` with no `--target`.
+The CI pipeline (`.github/workflows/native-platforms.yml`) defines a
+required job per target — it has not yet had a successful run on GitHub, and
+until it does these legs are a defined requirement, not executed evidence.
+Per target it runs:
+`build` → `build:native` → `stage:prebuild` → `test:native` →
+`check:release-bundle --target <own>`, then the cc-lhc build/typecheck/test
+with `CC_LHC_NATIVE_REQUIRE_ADDON=1`, and uploads the staged prebuild as the
+`prebuild-<target>` artifact. One aggregation job downloads all six, runs
+`scripts/assemble-release-bundle.mjs` (rejects missing/duplicate/unknown
+artifacts), validates the full contract with `check:release-bundle`, and
+uploads the bundle plus flat release-candidate assets
+(`cc_lhc_identity-<target>.node` ×6 + `SHA256SUMS`; naming contract in
+`scripts/asset-names.mjs`). End users acquire their verified prebuild with
+`.setup/scripts/fetch-prebuild.mjs`, which checks the SHA-256 before
+installing and load-probes the addon in a subprocess before replacing any
+installed copy — no compiler. Release publishing itself is Slice XP4;
+`test/workflow-consistency.test.ts` keeps workflow, manifest, and asset
+naming in lockstep.
 
 ## Developing
 
@@ -73,10 +87,12 @@ All scripts run under native Windows cmd as well as macOS/Linux shells: no
 plain Node scripts in `scripts/`).
 
 ```sh
-pnpm --filter cc-lhc-native run build:native    # node-gyp rebuild (needs a C toolchain + python3)
-pnpm --filter cc-lhc-native run stage:prebuild  # copy build output into prebuilds/<platform>-<arch>/
-pnpm --filter cc-lhc-native run verify:native   # typecheck + source build + full tests
-pnpm --filter cc-lhc-native run check:release-bundle  # validate a bundle (see --dir/--target)
+# --config.verify-deps-before-run=false avoids the open pnpm 11.8.0 pre-run
+# crash (long-horizon-context-52k).
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native    # node-gyp rebuild (needs a C toolchain + python3)
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild  # copy build output into prebuilds/<platform>-<arch>/
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run verify:native   # typecheck + source build + full tests
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run check:release-bundle  # validate a bundle (see --dir/--target)
 ```
 
 On a source checkout, `test:native`/`verify:native` is the explicit local test

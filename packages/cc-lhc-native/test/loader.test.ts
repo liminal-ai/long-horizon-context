@@ -91,7 +91,9 @@ describe("resolveAddonArtifact", () => {
     expect(caught).toBeInstanceOf(AddonArtifactMissingError);
     expect((caught as Error).message).toContain(prebuiltFor("darwin", "arm64"));
     expect((caught as Error).message).toContain(devBuild);
-    expect((caught as Error).message).toContain("build:native");
+    expect((caught as Error).message).toContain(
+      "pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native",
+    );
   });
 
   it("honors the env override and requires it to exist", () => {

@@ -12,11 +12,11 @@
     "README.md"
   ],
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "pnpm run clean && tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "test:all": "pnpm run test",
+    "test:all": "vitest run",
     "verify": "pnpm run typecheck && pnpm run test"
   },
   "engines": {

@@ -10,6 +10,16 @@ The integration was certified on 2026-08-10 against Claude Code 2.1.226. See
 [`test/fixtures/slice7-certification-evidence.md`](test/fixtures/slice7-certification-evidence.md)
 for the retained acceptance record.
 
+Supported platforms are the six native targets in
+`../cc-lhc-native/targets.json` — Linux, macOS, and Windows on x64 and arm64.
+Exact process identity (ownership/liveness) comes from the `cc-lhc-native`
+addon, delivered as prebuilt artifacts. The `native-platforms` GitHub
+workflow is required to build the addon and run this package's full suite
+with the compiled addon mandatory on every target; that workflow has not yet
+succeeded on GitHub, so non-Linux targets currently rest on its definition
+and local platform-gated tests rather than executed CI evidence. The
+whole-product interactive certification above was performed on Linux.
+
 ## Start and help
 
 ```text
@@ -159,10 +169,10 @@ not durable state. Rebuilt Claude rollouts remain under Claude's normal
 ## Verification
 
 ```text
-cd packages/cc-lhc
-./node_modules/.bin/tsc -p tsconfig.json --noEmit
-./node_modules/.bin/tsc -p tsconfig.test.json
-./node_modules/.bin/vitest run
+# --config.verify-deps-before-run=false works around the open pnpm 11.8.0
+# pre-run crash (long-horizon-context-52k); direct tsc/vitest also works.
+pnpm --config.verify-deps-before-run=false --filter cc-lhc run typecheck
+pnpm --config.verify-deps-before-run=false --filter cc-lhc run test   # CC_LHC_NATIVE_REQUIRE_ADDON=1 makes the compiled addon mandatory
 ```
 
 Certification includes the real installed artifact in SSH → tmux → PTY,

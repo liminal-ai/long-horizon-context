@@ -1,0 +1,162 @@
+# Native-platform matrix for cc-lhc (Slice XP3).
+#
+# Proves the clean-machine story on every supported target from
+# packages/cc-lhc-native/targets.json: frozen install, dependency-order build,
+# real native-addon compile + tests, staged prebuild validated against the
+# release-bundle contract, and the full cc-lhc suite with the compiled addon
+# made mandatory (CC_LHC_NATIVE_REQUIRE_ADDON=1).
+#
+# Shells are platform-native on purpose: bash on Linux/macOS, PowerShell
+# (pwsh, the runner default) on Windows — Windows evidence must not detour
+# through Git Bash. The linux-arm64 and win32-arm64 runner labels
+# (ubuntu-24.04-arm, windows-11-arm) are GitHub public-preview labels; they
+# are required jobs, not optional ones.
+#
+# The aggregate job merges all six prebuilds, enforces the full release-bundle
+# contract, and uploads release-candidate assets with SHA-256 checksums.
+# It does NOT create tags or publish a release — that is Slice XP4.
+name: native-platforms
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: native-platforms-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-15
+          - target: win32-x64
+            runner: windows-2025
+          - target: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+
+      - name: Install Node 24.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lhc
+        run: pnpm --filter lhc run build
+
+      - name: Build cc-lhc-native (TypeScript)
+        run: pnpm --filter cc-lhc-native run build
+
+      - name: Typecheck cc-lhc-native
+        run: pnpm --filter cc-lhc-native run typecheck
+
+      - name: Compile native addon (node-gyp)
+        run: pnpm --filter cc-lhc-native run build:native
+
+      - name: Stage prebuild for ${{ matrix.target }}
+        run: pnpm --filter cc-lhc-native run stage:prebuild
+
+      - name: Native addon tests (compiled addon mandatory)
+        run: pnpm --filter cc-lhc-native run test:native
+
+      - name: Validate staged prebuild against release-bundle contract
+        run: pnpm --filter cc-lhc-native run check:release-bundle --target ${{ matrix.target }}
+
+      - name: Build cc-lhc
+        run: pnpm --filter cc-lhc run build
+
+      - name: Typecheck cc-lhc
+        run: pnpm --filter cc-lhc run typecheck
+
+      - name: Test cc-lhc (compiled addon mandatory)
+        run: pnpm --filter cc-lhc run test
+        env:
+          CC_LHC_NATIVE_REQUIRE_ADDON: "1"
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
+          if-no-files-found: error
+
+  aggregate:
+    name: release-candidate assets
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+
+      - name: Install Node 24.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build cc-lhc-native (TypeScript)
+        run: pnpm --filter cc-lhc-native run build
+
+      - name: Download all prebuild artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          path: .artifacts/prebuilds
+
+      - name: Assemble release bundle and checksummed assets
+        run: >
+          node packages/cc-lhc-native/scripts/assemble-release-bundle.mjs
+          --artifacts .artifacts/prebuilds
+          --bundle-out .artifacts/release-bundle
+          --assets-out .artifacts/release-assets
+
+      - name: Validate full release-bundle contract (all six targets)
+        run: node packages/cc-lhc-native/scripts/check-release-bundle.mjs --dir .artifacts/release-bundle
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-lhc-native-release-bundle
+          path: .artifacts/release-bundle
+          if-no-files-found: error
+
+      - name: Upload release-candidate assets (six prebuilds + SHA256SUMS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-lhc-native-release-assets
+          path: .artifacts/release-assets
+          if-no-files-found: error

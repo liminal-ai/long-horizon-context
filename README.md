@@ -77,6 +77,8 @@ certification against Claude Code 2.1.226 is in
 
 ## Installing the Claude Code Harness (cc-lhc)
 
+cc-lhc targets Linux (x64, arm64), macOS (x64, arm64), and native Windows (x64, arm64) — the six targets in `packages/cc-lhc-native/targets.json`. The `native-platforms` GitHub workflow defines a required build-and-test leg for every one of the six; it has not yet had a successful run on GitHub, so until it does, Linux is the only target with executed end-to-end evidence and the other five rest on the workflow definition plus local cross-platform test gates. The native process-identity addon is delivered as checksum-verified prebuilt binaries, so a fresh install needs no compiler.
+
 To set up cc-lhc on a machine that has Claude Code (no PI needed), give an AI coding agent this instruction — or follow it yourself:
 
 ```

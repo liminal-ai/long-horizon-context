@@ -1,0 +1,5 @@
+{
+  "note": "Release source for .setup/scripts/fetch-prebuild.mjs. XP4 points this at the published release by setting tag (e.g. v0.2.0) — no script edits required. Until a release is published, pass --tag/--base-url or build from source with: pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native",
+  "repo": "liminal-ai/long-horizon-context",
+  "tag": null
+}

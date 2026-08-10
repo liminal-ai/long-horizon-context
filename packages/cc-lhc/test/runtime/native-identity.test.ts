@@ -83,7 +83,10 @@ describe("probeFromExactReader mapping (deterministic)", () => {
     expect(r).toMatchObject({ ok: false, code: "indeterminate" });
     if (!r.ok) {
       expect(r.message).toContain(code);
-      expect(r.message).toMatch(/build:native/);
+      expect(r.message).toContain("pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native");
+      expect(r.message).toContain(
+        "pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild",
+      );
       expect(r.message).toMatch(/will not fall back to PID-only/);
     }
   });
@@ -99,7 +102,7 @@ describe("createNativeIdentityProbe loader failures (real loader, seams)", () =>
     if (!r.ok) {
       expect(r.message).toContain("addon_unavailable");
       expect(r.message).toContain("prebuilds");
-      expect(r.message).toMatch(/build:native/);
+      expect(r.message).toContain("pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native");
     }
   });
 

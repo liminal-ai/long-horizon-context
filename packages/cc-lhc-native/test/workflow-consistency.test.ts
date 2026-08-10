@@ -1,0 +1,126 @@
+/**
+ * Workflow/manifest consistency: the GitHub matrix in
+ * .github/workflows/native-platforms.yml must stay in lockstep with
+ * targets.json (the single source of truth), the pinned toolchain versions,
+ * and the artifact naming the aggregation and downloader scripts expect.
+ * Deliberately string/regex-based so the gate needs no YAML dependency.
+ */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { describe, expect, it } from "vitest";
+
+import { defaultPackageRoot } from "../src/index.js";
+import { loadTargetsManifest, targetKey } from "../src/targets.js";
+
+const packageRoot = defaultPackageRoot();
+const repoRoot = join(packageRoot, "..", "..");
+const workflowPath = join(repoRoot, ".github", "workflows", "native-platforms.yml");
+const workflow = readFileSync(workflowPath, "utf8");
+const manifest = loadTargetsManifest(join(packageRoot, "targets.json"));
+const manifestKeys = manifest.targets.map(targetKey);
+const assetLib = await import(pathToFileURL(join(packageRoot, "scripts", "asset-names.mjs")).href);
+
+/** The certified runner mapping; ARM Linux/Windows labels are public preview but required. */
+const EXPECTED_RUNNERS: Record<string, string> = {
+  "linux-x64": "ubuntu-24.04",
+  "linux-arm64": "ubuntu-24.04-arm",
+  "darwin-x64": "macos-15-intel",
+  "darwin-arm64": "macos-15",
+  "win32-x64": "windows-2025",
+  "win32-arm64": "windows-11-arm",
+};
+
+function matrixEntries(): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const match of workflow.matchAll(/- target: (\S+)\n\s+runner: (\S+)/g)) {
+    expect(entries.has(match[1]!), `duplicate matrix target ${match[1]}`).toBe(false);
+    entries.set(match[1]!, match[2]!);
+  }
+  return entries;
+}
+
+describe("matrix ↔ targets.json", () => {
+  it("matrix targets are exactly the manifest targets", () => {
+    expect([...matrixEntries().keys()].sort()).toEqual([...manifestKeys].sort());
+  });
+
+  it("every target runs on its certified runner label", () => {
+    expect(Object.fromEntries(matrixEntries())).toEqual(EXPECTED_RUNNERS);
+  });
+
+  it("no target is made optional: fail-fast disabled but no continue-on-error/experimental escape", () => {
+    expect(workflow).toContain("fail-fast: false");
+    expect(workflow).not.toContain("continue-on-error");
+    expect(workflow).not.toMatch(/experimental/i);
+  });
+});
+
+describe("pinned toolchain and required steps", () => {
+  it("checks out recursive submodules in every job", () => {
+    expect(workflow.match(/submodules: recursive/g)?.length).toBe(2);
+  });
+
+  it("pins Node 24.18.0 and pnpm 11.8.0 (matching packageManager)", () => {
+    expect(workflow).toContain("node-version: 24.18.0");
+    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(2);
+    const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { packageManager?: string };
+    expect(rootPkg.packageManager).toBe("pnpm@11.8.0");
+  });
+
+  it("installs frozen and builds in dependency order before native compile", () => {
+    expect(workflow).toContain("pnpm install --frozen-lockfile");
+    const lhcBuild = workflow.indexOf("pnpm --filter lhc run build");
+    const nativeBuild = workflow.indexOf("pnpm --filter cc-lhc-native run build\n");
+    const gyp = workflow.indexOf("pnpm --filter cc-lhc-native run build:native");
+    const stage = workflow.indexOf("run stage:prebuild");
+    const nativeTest = workflow.indexOf("run test:native");
+    const bundleCheck = workflow.indexOf(`run check:release-bundle --target \${{ matrix.target }}`);
+    const ccBuild = workflow.indexOf("pnpm --filter cc-lhc run build");
+    expect(lhcBuild).toBeGreaterThan(-1);
+    expect(nativeBuild).toBeGreaterThan(lhcBuild);
+    expect(gyp).toBeGreaterThan(nativeBuild);
+    expect(stage).toBeGreaterThan(gyp);
+    expect(nativeTest).toBeGreaterThan(stage);
+    expect(bundleCheck).toBeGreaterThan(nativeTest);
+    expect(ccBuild).toBeGreaterThan(bundleCheck);
+  });
+
+  it("runs the cc-lhc suite with the compiled addon mandatory", () => {
+    expect(workflow).toContain("pnpm --filter cc-lhc run test");
+    expect(workflow).toContain('CC_LHC_NATIVE_REQUIRE_ADDON: "1"');
+  });
+
+  it("does not force a non-native shell (Windows evidence stays PowerShell)", () => {
+    expect(workflow).not.toMatch(/shell: *bash/);
+    expect(workflow).not.toMatch(/defaults:\s*\n\s*run:/);
+  });
+});
+
+describe("artifact topology", () => {
+  it("each matrix job uploads its own staged prebuild under prebuild-<target>", () => {
+    expect(workflow).toContain(`name: prebuild-\${{ matrix.target }}`);
+    expect(workflow).toContain(`path: packages/cc-lhc-native/prebuilds/\${{ matrix.target }}/${manifest.artifact}`);
+    expect(workflow).toContain("if-no-files-found: error");
+  });
+
+  it("aggregation downloads prebuild-*, assembles, validates the full contract, and uploads assets", () => {
+    expect(workflow).toContain("pattern: prebuild-*");
+    expect(workflow).toContain("assemble-release-bundle.mjs");
+    expect(workflow).toContain("check-release-bundle.mjs --dir .artifacts/release-bundle");
+    expect(workflow).toContain("name: cc-lhc-native-release-bundle");
+    expect(workflow).toContain("name: cc-lhc-native-release-assets");
+  });
+
+  it("asset names produced by aggregation are what the downloader will request", () => {
+    for (const key of manifestKeys) {
+      expect(assetLib.assetNameForTarget(manifest.artifact, key)).toBe(`cc_lhc_identity-${key}.node`);
+    }
+    expect(assetLib.CHECKSUMS_ASSET_NAME).toBe("SHA256SUMS");
+  });
+
+  it("publishes nothing: no release creation, no tag pushes", () => {
+    expect(workflow).not.toMatch(/gh release|action-gh-release|releases\/create|git tag|git push/);
+  });
+});

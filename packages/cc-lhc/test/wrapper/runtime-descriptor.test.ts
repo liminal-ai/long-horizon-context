@@ -178,7 +178,7 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
     // degradation to PID-only or Linux-only identity.
     expect(stderrText).toMatch(/cannot establish OS process identity/);
     expect(stderrText).toMatch(/addon_unavailable|no addon artifact/);
-    expect(stderrText).toMatch(/build:native/);
+    expect(stderrText).toContain("pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native");
     // No descriptor may remain claimable.
     const runtimeDir = join(home, "runtime");
     if (existsSync(runtimeDir)) {

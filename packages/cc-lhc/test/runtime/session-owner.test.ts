@@ -16,6 +16,7 @@ import {
   sessionOwnerPath,
 } from "../../src/runtime/session-owner.js";
 import { aliveResult, indeterminateResult, notFoundResult, selfIdentity, selfOnlyProbe } from "../helpers/identity.js";
+import { tsxCommand } from "../helpers/tsx.js";
 
 function storedOwnerJson(sessionId: string, token: string, identity: ProcessIdentity): string {
   return `${JSON.stringify({
@@ -275,14 +276,14 @@ describe("session owner acquisition guard (TOCTOU serialization)", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-owner-race-"));
     const here = dirname(fileURLToPath(import.meta.url));
     const worker = join(here, "../fixtures/session-owner-race-worker.ts");
-    const tsxBin = join(here, "../../node_modules/.bin/tsx");
+    const tsx = tsxCommand(worker);
     const N = 8;
 
     const children: ChildProcess[] = [];
     const outcomes = new Map<number, string>();
     const done: Array<Promise<void>> = [];
     for (let i = 0; i < N; i += 1) {
-      const child = spawn(tsxBin, [worker], {
+      const child = spawn(tsx.command, tsx.args, {
         env: { ...process.env, RACE_HOME: home, RACE_SESSION: "race-session" },
         stdio: ["ignore", "pipe", "inherit"],
       });

@@ -58,7 +58,7 @@ describe("shipped targets.json", () => {
     expect(manifest.name).toBe("cc-lhc-native");
     expect(manifest.napiVersion).toBe(8);
     const keys = manifest.targets.map(targetKey);
-    for (const required of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
+    for (const required of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"]) {
       expect(keys).toContain(required);
     }
     expect(isSupportedTarget(manifest, "linux", "x64")).toBe(true);

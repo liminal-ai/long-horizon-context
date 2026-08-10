@@ -39,6 +39,31 @@ describe("package scripts are portable to native Windows cmd", () => {
   });
 });
 
+describe("matrix-invoked scripts of dependent packages are portable too", () => {
+  // The native-platforms matrix runs these package scripts on native Windows
+  // (pwsh -> pnpm -> cmd): they must obey the same portability rules.
+  const cases: Array<[string, string[]]> = [
+    ["lhc", ["clean", "build"]],
+    ["cc-lhc", ["clean", "build", "typecheck", "test"]],
+  ];
+  for (const [pkgName, scriptNames] of cases) {
+    const pkgJson = JSON.parse(readFileSync(join(root, "..", pkgName, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    it.each(scriptNames)(`${pkgName} %s`, (scriptName) => {
+      const command = pkgJson.scripts[scriptName];
+      expect(command, `${pkgName} has no ${scriptName} script`).toBeDefined();
+      expect(command).not.toMatch(/\brm\s+-rf?\b/);
+      expect(command).not.toMatch(/^[A-Z_][A-Z0-9_]*=\S+\s/);
+      expect(command).not.toMatch(/&&\s*[A-Z_][A-Z0-9_]*=\S+\s/);
+      expect(command).not.toMatch(/\bpnpm\s+(run|exec|--filter)\b/);
+      for (const match of command!.matchAll(/node\s+(scripts\/[\w-]+\.mjs)/g)) {
+        expect(existsSync(join(root, "..", pkgName, match[1]!)), `${pkgName}/${match[1]} missing`).toBe(true);
+      }
+    });
+  }
+});
+
 describe("install never compiles", () => {
   it("binding.gyp exists but the implicit node-gyp install step is neutralized", () => {
     expect(existsSync(join(root, "binding.gyp"))).toBe(true);
