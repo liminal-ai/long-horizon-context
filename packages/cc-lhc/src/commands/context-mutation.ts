@@ -28,6 +28,20 @@ export const INPUT_ARRIVED_PARTIAL =
   "input arrived after LHC view mutation — no session handoff; live Claude session unchanged";
 
 export type ContextMutationOperation = "compact" | "prune" | "auto_compact";
+export type ContextMutationOrigin = "auto" | "manual";
+
+/** Metrics behind the durable receipt and the panel's last-action line. */
+export interface ContextMutationMetrics {
+  origin: ContextMutationOrigin;
+  /** Provider context that triggered an automatic operation (host measure). */
+  triggerContextTokens?: number;
+  /** Rebuilt LHC served-view size from the compact receipt (SDK measure). */
+  viewTokens?: number;
+  /** Configured SDK lower target. */
+  targetTokens?: number;
+  zoneTokensBefore?: number;
+  zoneTokensAfter?: number;
+}
 
 export interface HandoffRequest {
   operation: ContextMutationOperation;
@@ -36,6 +50,44 @@ export interface HandoffRequest {
   rebuilt: WriteRebuiltRolloutResult;
   /** Receipt lines describing the SDK mutation (for logs/panel). */
   receiptLines: string[];
+  /** The ONE durable runtime note appended to the rebuilt rollout. */
+  durableReceipt: string;
+  metrics: ContextMutationMetrics;
+}
+
+/** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
+ * are the same token numbers the SDK and governor report, only shortened. */
+export function formatTokensShort(tokens: number): string {
+  if (tokens >= 10_000) return `${Math.round(tokens / 1000)}k`;
+  if (tokens >= 1_000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
+/**
+ * Exactly one concise durable receipt, labeled operation:origin. "Trigger
+ * context" is Claude host context (includes system/tool overhead); "LHC view"
+ * is the SDK-served size — the receipt never implies they are the same measure.
+ */
+export function formatDurableReceipt(
+  operation: ContextMutationOperation,
+  metrics: ContextMutationMetrics,
+): string {
+  const label = operation === "prune" ? "prune" : "compact";
+  const parts: string[] = [];
+  if (metrics.triggerContextTokens !== undefined) {
+    parts.push(`trigger context ${formatTokensShort(metrics.triggerContextTokens)}`);
+  }
+  if (metrics.zoneTokensBefore !== undefined && metrics.zoneTokensAfter !== undefined) {
+    parts.push(
+      `tool-result zone ${formatTokensShort(metrics.zoneTokensBefore)} -> ${formatTokensShort(metrics.zoneTokensAfter)}`,
+    );
+  }
+  if (metrics.viewTokens !== undefined) {
+    const target =
+      metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
+    parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
+  }
+  return `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
 }
 
 export interface ContextMutationPlan {
@@ -51,6 +103,8 @@ export interface ContextMutationPlan {
   pruneIfDue?: { thresholdTokens: number; targetTokens: number };
   /** Manual prune target (operation "prune" only). */
   manualPruneTargetTokens?: number;
+  /** Provider context that triggered an automatic operation (receipt detail). */
+  triggerContextTokens?: number;
   /**
    * True when user input arrived since the operation started. Checked at every
    * fence; a pre-SDK trip refuses, a post-SDK trip reports partial (view
@@ -150,6 +204,10 @@ export async function runContextMutation(
   const threadId = threadIdFromRef(threadRef);
   const lines: string[] = [];
   let viewMutated = false;
+  const metrics: ContextMutationMetrics = {
+    origin: plan.operation === "auto_compact" ? "auto" : "manual",
+    ...(plan.triggerContextTokens === undefined ? {} : { triggerContextTokens: plan.triggerContextTokens }),
+  };
 
   const partialOrRefused = (fenceMessage: string): ContextMutationOutcome => {
     if (!viewMutated) return { kind: "refused", messages: [...lines, fenceMessage] };
@@ -167,6 +225,8 @@ export async function runContextMutation(
     const receipt = pruneResult.value;
     lines.push(formatPruneReceipt(receipt));
     if (receipt.noOp) return { kind: "noop", messages: lines };
+    metrics.zoneTokensBefore = receipt.zoneTokensBefore;
+    metrics.zoneTokensAfter = receipt.zoneTokensAfter;
     viewMutated = true;
     const afterPrune = fence();
     if (afterPrune !== null) return partialOrRefused(afterPrune);
@@ -181,7 +241,11 @@ export async function runContextMutation(
           targetTokens: plan.pruneIfDue.targetTokens,
         });
         if (pruneResult.ok) {
-          if (!pruneResult.value.noOp) viewMutated = true;
+          if (!pruneResult.value.noOp) {
+            viewMutated = true;
+            metrics.zoneTokensBefore = pruneResult.value.zoneTokensBefore;
+            metrics.zoneTokensAfter = pruneResult.value.zoneTokensAfter;
+          }
           lines.push(formatPruneReceipt(pruneResult.value));
         } else {
           // A failed due-prune does not abort the compact; it is reported.
@@ -222,6 +286,8 @@ export async function runContextMutation(
         : { kind: "refused", messages: [`compact error: ${compactResult.error.reason}`] };
     }
     viewMutated = true;
+    metrics.viewTokens = compactResult.value.totalTokens;
+    metrics.targetTokens = plan.lowerBoundTokens;
     lines.push(formatCompactReceipt(compactResult.value));
   }
 
@@ -238,11 +304,12 @@ export async function runContextMutation(
     const afterStat = fence();
     if (afterStat !== null) return partialOrRefused(afterStat);
 
+    const durableReceipt = formatDurableReceipt(plan.operation, metrics);
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
-      swapReceipt: { oldSessionId: runtime.sourceSessionId ?? "unknown" },
+      receipt: { text: durableReceipt },
     });
     const afterRebuild = fence();
     if (afterRebuild !== null) {
@@ -265,6 +332,8 @@ export async function runContextMutation(
         threadId,
         rebuilt,
         receiptLines: [...lines],
+        durableReceipt,
+        metrics,
       },
     };
   } catch (cause) {

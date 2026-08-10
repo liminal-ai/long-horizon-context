@@ -289,6 +289,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdin = fakeStream();
     const stdout = fakeStream();
     const stderr = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
 
     const runPromise = run([], {
       claudeBin: "fake-claude",
@@ -364,6 +368,17 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       newSessionId: REBUILT_ID,
       threadId: "th_auto",
     });
+
+    // Slice 5: only a CONFIRMED handoff records last action. Open the panel
+    // and read the status summary.
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => terminalOutput.includes("last action:"), "panel status rows");
+    expect(terminalOutput).toContain("LHC context management");
+    expect(terminalOutput).toMatch(/last action: compacted .*\(auto\)/);
+    expect(terminalOutput).toContain("trigger 6.0k");
+    expect(terminalOutput).toContain("view 9");
+    // Close the modal again (leader-again cancels).
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
     // Wrapper stays alive on the new child; end the run by exiting it.
     spawned[1]!.fireExit(0);
@@ -493,6 +508,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const results: HandoffResult[] = [];
     const stdin = fakeStream();
+    const runStdout = fakeStream();
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((file: string, args: string[]) => {
@@ -504,7 +520,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
         return fake as never;
       }) as never,
       stdin,
-      stdout: fakeStream() as never,
+      stdout: runStdout as never,
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
@@ -537,6 +553,18 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(resumeTargets).toEqual([REBUILT_ID, "old-session"]);
     // The unproven replacement never advanced canonical lineage.
     expect(mocks.registerLineage).not.toHaveBeenCalled();
+
+    // Slice 5: a rolled-back attempt must NOT claim a successful compact — it
+    // is visible only as last-attempt health state.
+    let terminalOutput = "";
+    (runStdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => terminalOutput.includes("last action:"), "panel after rollback");
+    expect(terminalOutput).toContain("last action: none this wrapper session");
+    expect(terminalOutput).toMatch(/last attempt: auto_compact rolled back/);
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
     spawned[spawned.length - 1]!.fireExit(0);
     await runPromise;
@@ -599,4 +627,241 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await runPromise;
     writeSpy.mockRestore();
   });
+
+  it("panel policy edits are atomic and session-scoped: rejected bounds change nothing, auto off applies live", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const observes: Array<{ decision: string; wouldMutate: boolean; upperBoundTokens: number }> = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(5000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      onGovernorObserve: (record) => {
+        observes.push({
+          decision: record.decision,
+          wouldMutate: record.wouldMutate,
+          upperBoundTokens: record.upperBoundTokens,
+        });
+      },
+      onHandoffResult: () => {
+        throw new Error("no handoff may run in this test");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+
+    // Open the panel: the status summary appears before the prompt.
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => terminalOutput.includes("LHC context management"), "panel summary");
+    expect(terminalOutput).toContain("last action: none this wrapper session");
+    expect(terminalOutput).toContain("auto on");
+    expect(terminalOutput).toContain("session-scoped");
+    expect(terminalOutput).toContain("precedence: builtin < user");
+
+    // Atomic rejection: inverted bounds change NOTHING.
+    (stdin as unknown as PassThrough).write("bounds 200 100\r");
+    await waitFor(() => terminalOutput.includes("rejected — nothing changed"), "rejected edit");
+
+    // Live valid edit: auto off (session scope).
+    (stdin as unknown as PassThrough).write("auto off\r");
+    await waitFor(() => terminalOutput.includes("auto off — applied live to this wrapper"), "applied edit");
+    expect(terminalOutput).toContain("scope: session only");
+
+    // Close the panel (leader-again), then settle a high-pressure turn: the
+    // rejected bounds left the trigger at 5k, and auto off suppresses execution.
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await waitFor(() => observes.length >= 1, "governor observe");
+    const last = observes[observes.length - 1]!;
+    expect(last.upperBoundTokens).toBe(5_000); // rejected edit really changed nothing
+    expect(last.decision).toBe("policy_disabled"); // auto off is live
+    expect(last.wouldMutate).toBe(false);
+    expect(spawned).toHaveLength(1); // no handoff, no respawn
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("freezes the receipt's trigger context at the scheduling decision even when later lifecycle updates race the mutation", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    // While the mutation runs, a NEW sampling observation arrives with a much
+    // larger total. The durable receipt must still report the trigger that
+    // scheduled the operation (6.0k), not the racing value.
+    sdk.threadView.previewCompact = vi.fn(async () => {
+      lifecycleSink!([
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:race",
+          providerUsage: { input_tokens: 999_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      ]);
+      await new Promise((r) => setTimeout(r, 50));
+      return { ok: true, value: { kind: "ok" } };
+    }) as never;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-race-"));
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async (input) => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      void input;
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        opts.continueCapture?.priorGeneration !== undefined ? opts.continueCapture.priorGeneration + 1 : 1,
+      );
+      if (opts.onLifecycle !== undefined && lifecycleSink === undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(6000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await waitFor(() => results.length === 1, "handoff result");
+    expect(results[0]!.kind).toBe("success");
+
+    const receipt = writeSpy.mock.calls[0]![0].receipt?.text ?? "";
+    expect(receipt).toContain("trigger context 6.0k");
+    expect(receipt).not.toContain("999k");
+
+    spawned[spawned.length - 1]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  }, 15_000);
+
+  it("ignores zero provider totals when learning the overhead floor, and shows refused mutations as last attempt", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    // The mutation refuses at preview: no handoff may happen, but the attempt
+    // must be visible as health state (never as a successful action).
+    sdk.threadView.previewCompact = vi.fn(async () => ({
+      ok: true,
+      value: { kind: "error", reason: "record damage" },
+    })) as never;
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((file: string, args: string[]) => {
+        const fake = makeFakePty(7000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      onHandoffResult: () => {
+        throw new Error("no handoff may run: the mutation refuses");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    // A degraded ZERO sample must not become the observed floor.
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:zero",
+        providerUsage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    // The real trigger (6.0k) fires; the mutation refuses at preview.
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await waitFor(() => terminalOutput.length >= 0 && spawned.length === 1, "no respawn", 1_000).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => terminalOutput.includes("last action:"), "panel");
+    // Floor learned from the 6.0k sample, not the zero: the warning fires.
+    expect(terminalOutput).toContain("at/below observed Claude host overhead (6.0k)");
+    // Refused mutation is last-attempt health state, never a success claim.
+    expect(terminalOutput).toContain("last action: none this wrapper session");
+    expect(terminalOutput).toMatch(/last attempt: auto compact refused/);
+    expect(spawned).toHaveLength(1);
+
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
 });

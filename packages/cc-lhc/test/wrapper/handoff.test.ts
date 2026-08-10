@@ -23,6 +23,8 @@ function request(): HandoffRequest {
       totalByteLength: 60,
     },
     receiptLines: ["compact view=v1"],
+    durableReceipt: "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).",
+    metrics: { origin: "auto", triggerContextTokens: 508_000, viewTokens: 247_000, targetTokens: 240_000 },
   };
 }
 

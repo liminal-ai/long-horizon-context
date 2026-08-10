@@ -13,7 +13,6 @@ import { encodeProjectPath } from "./discover.js";
 import {
   buildRolloutLines,
   firstUserPrompt,
-  formatSwapReceipt,
   parseRolloutEnvelopeFromContent,
   type RebuildRolloutInput,
   type RolloutEnvelope,
@@ -37,8 +36,13 @@ export interface WriteRebuiltRolloutInput {
   projectsRoot?: string;
   deps?: RolloutWriteDeps;
   readSourceFn?: (path: string) => Promise<string>;
-  /** When set, append the swap receipt as a trailing runtime-note line. */
-  swapReceipt?: { oldSessionId: string };
+  /**
+   * When set, append EXACTLY ONE durable operation receipt as a trailing
+   * runtime-note line (e.g. "[lhc compact:auto] trigger context 508k; rebuilt
+   * LHC view 247k (240k target)."). Session ids and recovery detail belong in
+   * wrapper logs/recovery artifacts, not here.
+   */
+  receipt?: { text: string };
 }
 
 export interface WriteRebuiltRolloutResult {
@@ -94,10 +98,11 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
   const prefixBoundary = computeVerifiedPrefixBoundary(prefixSerialized, replayedPrefixLines);
 
   const lines = [...prefixLines];
-  if (input.swapReceipt !== undefined) {
-    const receipt = formatSwapReceipt(input.swapReceipt.oldSessionId, newSessionId, lines.length + 1);
+  if (input.receipt !== undefined) {
     const lastUuid = lines.length > 0 ? lines[lines.length - 1]!.line.uuid : null;
-    lines.push(runtimeNoteRolloutLine(receipt, newSessionId, envelope, typeof lastUuid === "string" ? lastUuid : null));
+    lines.push(
+      runtimeNoteRolloutLine(input.receipt.text, newSessionId, envelope, typeof lastUuid === "string" ? lastUuid : null),
+    );
   }
   const serialized = serializeRolloutLines(lines);
   const rolloutPath = rolloutPathForSession(projectsRoot, input.cwd, newSessionId);

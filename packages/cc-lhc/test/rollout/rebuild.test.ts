@@ -414,7 +414,7 @@ describe("writeRebuiltRollout", () => {
       cwd: "/work/project",
       newSessionId: "rebuilt-session",
       projectsRoot,
-      swapReceipt: { oldSessionId: "old-session" },
+      receipt: { text: "[lhc compact:manual] rebuilt LHC view 1.4k (240k target)." },
     });
 
     // omit arm: 3 content lines + receipt = 4. Receipt is NEW history (not prefix).
@@ -440,8 +440,10 @@ describe("writeRebuiltRollout", () => {
     const receipt = lines[3]!;
     expect(receipt.type).toBe("user");
     expect(receipt.parentUuid).toBe(lines[2]!.uuid);
+    // Slice 5: exactly one concise labeled receipt — no session ids or recovery
+    // detail in the durable note.
     expect(receipt.message?.content).toBe(
-      "[runtime note] session old-session preserved; LHC view rebuilt as rebuilt-session (expect ~4 lines); relaunch with cc-lhc --resume rebuilt-session",
+      "[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).",
     );
 
     // First prompt shown in the sessions index stays the conversation opener, not the receipt.

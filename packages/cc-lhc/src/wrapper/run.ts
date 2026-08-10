@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
+  formatTokensShort,
   runContextMutation,
   type ContextMutationPlan,
   type HandoffRequest,
@@ -40,6 +41,9 @@ import {
   loadContextPolicy,
   noteGovernorInput,
   policySourcesSummary,
+  projectConfigPath,
+  userConfigPath,
+  validateContextPolicy,
   setGovernorCaptureHealth,
   setGovernorDescriptorReady,
   setGovernorOperationInFlight,
@@ -218,7 +222,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   // Slice 3: load context policy (observe-only). Invalid policy does not arm
   // automatic intent but leaves Claude/capture usable with a visible diagnostic.
-  const resolvedContextPolicy: ResolvedContextPolicy =
+  let resolvedContextPolicy: ResolvedContextPolicy =
     options.resolvedContextPolicy ??
     loadContextPolicy({
       cwd: process.cwd(),
@@ -387,12 +391,27 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let childDiedDuringHandoff = false;
   /** PTY output bytes from the current child (liveness signal, never parsed). */
   let currentChildOutputBytes = 0;
+  /** Recorded ONLY after a confirmed successful handoff. */
+  let lastAction: {
+    operation: string;
+    origin: string;
+    atMs: number;
+    triggerTokens?: number;
+    viewTokens?: number;
+    targetTokens?: number;
+    zoneBefore?: number;
+    zoneAfter?: number;
+  } | null = null;
+  /** Most recent non-success outcome (health visibility; never claims success). */
+  let lastAttempt: { summary: string; atMs: number } | null = null;
+  /** Smallest settled provider context seen: the observed Claude host overhead floor. */
+  let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
   let autoOperationScheduled = false;
   /** Cooldown after a non-success handoff; replayed rollback lifecycle must not re-trigger. */
   let autoBlockedUntilMs = 0;
   /** Assigned inside the run promise where child/teardown machinery lives. */
-  let runAutoOperation: () => Promise<void> = async () => {};
+  let runAutoOperation: (frozenTriggerTokens: number | null) => Promise<void> = async () => {};
   const HANDOFF_FAILURE_COOLDOWN_MS = 120_000;
 
   const triggerFatalRevocation = (reason: string): void => {
@@ -535,6 +554,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     for (const record of observed.observes) {
       wrapperLog.info(formatGovernorObserveLogLine(record));
       options.onGovernorObserve?.(record);
+      if (record.providerContextTotal !== null && record.providerContextTotal > 0) {
+        minObservedProviderTotal =
+          minObservedProviderTotal === null
+            ? record.providerContextTotal
+            : Math.min(minObservedProviderTotal, record.providerContextTotal);
+      }
       // Slice 4: an executable would_compact starts ONE automatic operation,
       // scheduled off the capture batch path (the handoff stops capture; doing
       // that inline would deadlock the batch queue it runs on).
@@ -547,8 +572,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         Date.now() >= autoBlockedUntilMs
       ) {
         autoOperationScheduled = true;
+        // Freeze the trigger at THIS decision: later lifecycle updates must not
+        // change what the durable receipt reports as the trigger context.
+        const frozenTriggerTokens = record.providerContextTotal;
         setImmediate(() => {
-          void runAutoOperation().finally(() => {
+          void runAutoOperation(frozenTriggerTokens).finally(() => {
             autoOperationScheduled = false;
           });
         });
@@ -890,8 +918,50 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
     };
 
+    /** Atomic session-scoped policy edit: validate the whole candidate with the
+     * same rules as launch; a rejected edit changes nothing. */
+    const applyPolicyEdit = (commandLine: string): string[] => {
+      const parts = commandLine.trim().split(/\s+/);
+      const current = resolvedContextPolicy.policy;
+      let candidate: typeof current;
+      let changedKeys: Array<"autoCompact" | "lowerBoundTokens" | "upperBoundTokens">;
+      let editLabel: string;
+      if (parts[0] === "/lhc-auto") {
+        const on = parts[1] === "on";
+        candidate = { ...current, autoCompact: on };
+        changedKeys = ["autoCompact"];
+        editLabel = `auto ${on ? "on" : "off"}`;
+      } else {
+        const lower = Number.parseInt(parts[1] ?? "", 10);
+        const upper = Number.parseInt(parts[2] ?? "", 10);
+        candidate = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
+        changedKeys = ["lowerBoundTokens", "upperBoundTokens"];
+        editLabel = `bounds ${lower} ${upper}`;
+      }
+      const errors = validateContextPolicy(candidate);
+      if (errors.length > 0) {
+        return [`rejected — nothing changed (${editLabel}):`, ...errors];
+      }
+      const sources = { ...resolvedContextPolicy.sources };
+      for (const key of changedKeys) sources[key] = "session";
+      resolvedContextPolicy = { policy: candidate, sources, armed: true, errors: [] };
+      wrapperLog.info(
+        `cc-lhc policy edit applied (${editLabel}) session scope: auto=${candidate.autoCompact} lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
+      );
+      return [
+        `${editLabel} — applied live to this wrapper`,
+        "scope: session only — survives child handoffs, lost at wrapper exit",
+        "persist by editing user/project config; native --autocompact is a next-launch value",
+      ];
+    };
+
     const runModalCommand = (commandLine: string): void => {
       const label = commandLine.replace(/^\/lhc-/, "");
+      if (commandLine.startsWith("/lhc-auto ") || commandLine.startsWith("/lhc-bounds ")) {
+        // Synchronous session-policy edit: no SDK, no processes, no guard needed.
+        settleCommand(applyPolicyEdit(commandLine), label);
+        return;
+      }
       if (!commandGuard.tryAcquire(label, Date.now())) {
         const inFlight = commandGuard.current();
         settleCommand(
@@ -972,6 +1042,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             }
             return;
           }
+          if (label === "compact" || label.startsWith("prune")) {
+            lastAttempt = {
+              summary: `manual ${label} did not hand off: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+              atMs: Date.now(),
+            };
+          }
           settleCommand(settleReceipts(outcome.messages), label);
         })
         .catch((cause: unknown) => {
@@ -984,12 +1060,93 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         });
     };
 
+    const formatAgo = (atMs: number): string => {
+      const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+      if (seconds < 60) return `${seconds}s ago`;
+      if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+      return `${Math.round(seconds / 3600)}h ago`;
+    };
+
+    /** Compact status summary shown above the prompt whenever the panel opens.
+     * "Trigger context" is Claude host context; "LHC view" is SDK-served size. */
+    const buildPanelStatusRows = (): string[] => {
+      const policy = resolvedContextPolicy.policy;
+      const rows: string[] = ["LHC context management"];
+
+      const capturePhase = captureSession?.getCaptureHealth().phase ?? (noCapture ? "disabled" : "starting");
+      const retrievalState =
+        runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
+      rows.push(`capture ${capturePhase} · retrieval ${retrievalState}`);
+
+      const provider = governorState.latestProviderContext;
+      const providerText =
+        provider === null ? "provider context: none observed yet" : `provider context ${formatTokensShort(provider.total)}`;
+      if (!resolvedContextPolicy.armed) {
+        rows.push(`${providerText} · policy INVALID (auto disabled)`);
+        for (const err of resolvedContextPolicy.errors.slice(0, 3)) rows.push(`  config error: ${err}`);
+      } else {
+        rows.push(
+          `${providerText} · auto ${policy.autoCompact ? "on" : "off"}${policy.observeOnly ? " (observe-only)" : ""} · ` +
+            `trigger ${formatTokensShort(policy.upperBoundTokens)} · target ${formatTokensShort(policy.lowerBoundTokens)}`,
+        );
+      }
+      rows.push(
+        `native compact backstop ${formatTokensShort(policy.nativeBackstopTokens)} (--autocompact, next-launch value)`,
+      );
+
+      const inFlight = commandGuard.current();
+      rows.push(
+        handoffInProgress
+          ? "active operation: handoff in progress"
+          : inFlight !== null
+            ? `active operation: ${inFlight.label}`
+            : "active operation: none",
+      );
+
+      if (lastAction === null) {
+        rows.push("last action: none this wrapper session");
+      } else {
+        const parts = [`${lastAction.operation === "prune" ? "pruned" : "compacted"} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`];
+        if (lastAction.triggerTokens !== undefined) parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
+        if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
+          parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
+        if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
+        rows.push(`last action: ${parts.join(" · ")}`);
+      }
+      if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
+        rows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
+      }
+
+      if (
+        resolvedContextPolicy.armed &&
+        minObservedProviderTotal !== null &&
+        policy.upperBoundTokens <= minObservedProviderTotal
+      ) {
+        rows.push(
+          `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
+            `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
+        );
+      }
+      if (respawnUnsafeReason !== null) {
+        rows.push("WARNING: automatic handoff disabled for this launch form (see wrapper log)");
+      }
+
+      rows.push(
+        "edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit",
+      );
+      rows.push(
+        `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
+      );
+      return rows;
+    };
+
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
           modalGeneration += 1;
           outputHold.hold();
           altScreen.enter();
+          inputState = { ...inputState, panelRows: buildPanelStatusRows() };
         } else if (action.kind === "exit_modal") {
           // Leave BEFORE flushing: the terminal restores CC's main screen,
           // then the held bytes land on it in order.
@@ -1377,6 +1534,32 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           childLivenessTimeoutMs,
           childStableWindowMs,
         });
+        // Last action records ONLY a confirmed handoff; anything else is a
+        // last-attempt health note and never claims a successful compact.
+        if (result.kind === "success") {
+          lastAction = {
+            operation: request.operation === "prune" ? "prune" : "compact",
+            origin: request.metrics.origin,
+            atMs: Date.now(),
+            ...(request.metrics.triggerContextTokens === undefined
+              ? {}
+              : { triggerTokens: request.metrics.triggerContextTokens }),
+            ...(request.metrics.viewTokens === undefined ? {} : { viewTokens: request.metrics.viewTokens }),
+            ...(request.metrics.targetTokens === undefined ? {} : { targetTokens: request.metrics.targetTokens }),
+            ...(request.metrics.zoneTokensBefore === undefined ? {} : { zoneBefore: request.metrics.zoneTokensBefore }),
+            ...(request.metrics.zoneTokensAfter === undefined ? {} : { zoneAfter: request.metrics.zoneTokensAfter }),
+          };
+        } else {
+          lastAttempt = {
+            summary:
+              result.kind === "cancelled"
+                ? `${request.operation} cancelled: ${result.reason}`
+                : result.kind === "rolled_back"
+                  ? `${request.operation} rolled back: ${result.reason}`
+                  : `${request.operation} FAILED: ${result.reason}`,
+            atMs: Date.now(),
+          };
+        }
         if (result.kind !== "success" && result.kind !== "cancelled") {
           // Rollback replays the old rollout: its lifecycle re-derives the same
           // provider pressure. Cool down so a failed handoff cannot self-retrigger.
@@ -1397,7 +1580,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
     // manual commands through the same single-flight guard.
-    runAutoOperation = async (): Promise<void> => {
+    runAutoOperation = async (frozenTriggerTokens: number | null): Promise<void> => {
       if (exited || handoffInProgress) return;
       if (!commandGuard.tryAcquire("auto-compact", Date.now())) return;
       governorState = setGovernorOperationInFlight(governorState, true);
@@ -1419,13 +1602,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                 },
               }
             : {}),
+          ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
           inputEpochChanged: epochChanged,
         };
         const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged });
         wrapperLog.info(
           `cc-lhc auto-compact mutation ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
         );
-        if (outcome.kind !== "rebuilt") return;
+        if (outcome.kind !== "rebuilt") {
+          // Never a successful action: a mutation that produced no handoff is
+          // health/last-attempt state only.
+          lastAttempt = {
+            summary: `auto compact ${outcome.kind}: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+            atMs: Date.now(),
+          };
+          return;
+        }
         await performHandoff(outcome.handoff, epochChanged);
       } catch (cause) {
         wrapperLog.warn(

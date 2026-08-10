@@ -94,9 +94,21 @@ export function renderPanel(state: InputState, cols: number, rows: number, elaps
   const maxWidth = safeCols - 2;
   const truncate = (text: string): string => (text.length > maxWidth ? `${text.slice(0, maxWidth - 1)}…` : text);
 
+  // Height budget: prompt/progress + blank + hint always render (3 rows), plus
+  // a separator blank when any panel rows show. Rows beyond the budget are
+  // CLIPPED — emitting more rows than the terminal has scrolls the alt screen
+  // and corrupts the layout — with one explicit continuation row.
+  const fixedRows = 3;
+  const rowBudget = Math.max(0, safeRows - fixedRows - 1);
+  let panelRows = state.panelRows;
+  if (panelRows.length > rowBudget) {
+    const shown = Math.max(0, rowBudget - 1);
+    panelRows = [...panelRows.slice(0, shown), "… more — enlarge terminal"];
+  }
+
   const lines: PanelLine[] = [];
-  for (const row of state.panelRows) lines.push({ text: truncate(row) });
-  if (state.panelRows.length > 0) lines.push({ text: "" });
+  for (const row of panelRows) lines.push({ text: truncate(row) });
+  if (panelRows.length > 0) lines.push({ text: "" });
 
   if (state.mode === "executing") {
     lines.push({ text: truncate(commandProgressLabel(state.line, elapsedSeconds)) });

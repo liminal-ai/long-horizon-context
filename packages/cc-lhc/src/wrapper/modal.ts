@@ -29,7 +29,9 @@
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
 export const MODAL_HELP_LINE =
-  "commands: status | stats | prune [targetTokens] | compact | export | help — Esc cancels";
+  "commands: status | stats | prune [targetTokens] | compact | export | auto on|off | bounds <lower> <upper> | help";
+export const MODAL_SCOPE_NOTE =
+  "auto/bounds edits are session-only (live now; survive handoffs; lost at wrapper exit) — native --autocompact is next-launch";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
 
@@ -126,6 +128,14 @@ export function mapModalCommand(line: string): string | null {
     case "prune":
       if (args.length === 0) return "/lhc-prune";
       if (args.length === 1 && /^\d+$/.test(args[0]!)) return `/lhc-prune ${args[0]}`;
+      return null;
+    case "auto":
+      if (args.length === 1 && (args[0] === "on" || args[0] === "off")) return `/lhc-auto ${args[0]}`;
+      return null;
+    case "bounds":
+      if (args.length === 2 && /^\d+$/.test(args[0]!) && /^\d+$/.test(args[1]!)) {
+        return `/lhc-bounds ${args[0]} ${args[1]}`;
+      }
       return null;
     default:
       return null;
@@ -430,7 +440,9 @@ function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
 function submitModalLine(state: InputState): StepOutcome {
   const trimmed = state.line.trim();
   if (trimmed === "") return cancelModal(state);
-  if (trimmed === "help" || trimmed === "?") return reprompt(state, [MODAL_HELP_LINE, MODAL_ASCII_NOTE]);
+  if (trimmed === "help" || trimmed === "?") {
+    return reprompt(state, [MODAL_HELP_LINE, MODAL_SCOPE_NOTE, MODAL_ASCII_NOTE]);
+  }
   const commandLine = mapModalCommand(trimmed);
   if (commandLine === null) {
     return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${trimmed}`, MODAL_HELP_LINE]);

@@ -100,7 +100,7 @@ async function buildBandedRebuilt(root: string, sessionId: string) {
     cwd,
     projectsRoot,
     newSessionId: sessionId,
-    swapReceipt: { oldSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+    receipt: { text: "[lhc compact:manual] rebuilt LHC view 1.4k (240k target)." },
   });
   return { rebuilt, projectsRoot, cwd };
 }
@@ -637,7 +637,7 @@ describe("content-verifiable rebuilt prefix fence", () => {
       cwd,
       projectsRoot,
       newSessionId: sessionId,
-      swapReceipt: { oldSessionId: "old" },
+      receipt: { text: "[lhc compact:manual] rebuilt LHC view 1.4k (240k target)." },
     });
     const lineageDbPath = join(root, "cc-lhc.sqlite");
     const registryPath = join(root, "registry.sqlite");

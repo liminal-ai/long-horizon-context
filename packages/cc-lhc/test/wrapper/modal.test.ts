@@ -9,6 +9,7 @@ import {
   type InputState,
   MODAL_ASCII_NOTE,
   MODAL_HELP_LINE,
+  MODAL_SCOPE_NOTE,
   MODAL_UNKNOWN_PREFIX,
   mapModalCommand,
   processInputChunk,
@@ -354,7 +355,7 @@ describe("modal line editor", () => {
 
   it("shows help (with the ASCII-only note) as panel rows on help/? and stays modal", () => {
     const result = feed(openModal(), "?\r");
-    expect(result.state.panelRows).toEqual([MODAL_HELP_LINE, MODAL_ASCII_NOTE]);
+    expect(result.state.panelRows).toEqual([MODAL_HELP_LINE, MODAL_SCOPE_NOTE, MODAL_ASCII_NOTE]);
     expect(result.state.mode).toBe("modal");
     const then = feed(result.state, "stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
