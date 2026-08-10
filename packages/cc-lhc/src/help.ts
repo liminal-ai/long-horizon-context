@@ -1,0 +1,41 @@
+export const CC_LHC_HELP = `cc-lhc — Long Horizon Context wrapper for Claude Code
+
+Usage:
+  cc-lhc [cc-lhc flags] [claude args...]
+  cc-lhc get-turns [--from TOKENS] <tN>...
+  cc-lhc get-messages [--from TOKENS] <mN>...
+  cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
+  cc-lhc --lhc-help
+
+Wrapper flags:
+  --lhc-no-capture                 Run Claude without LHC capture
+  --lhc-no-inference               Disable derivation model calls
+  --lhc-no-notifier                Disable lifecycle-command warnings
+  --lhc-auto-compact=on|off        Override automatic compact for this launch
+  --lhc-lower-bound-tokens=N       Override compact target for this launch
+  --lhc-upper-bound-tokens=N       Override automatic compact trigger
+  --lhc-min-runway-tokens=N        Override minimum trigger/target runway
+  --lhc-retry-growth-tokens=N      Override retry growth after a failed compact
+  --lhc-profile=NAME               Override the LHC serving profile
+  --lhc-observe-only               Report governor decisions without mutating
+
+Environment:
+  CC_LHC_HOME                      State root (default: ~/.cc-lhc)
+  CC_LHC_CLAUDE_BIN                Claude binary path
+  CC_LHC_NO_INFERENCE=1            Disable derivation model calls
+  CC_LHC_INFERENCE_CONCURRENCY=N   Derivation subprocess concurrency
+  CC_LHC_INFERENCE_TIMEOUT_MS=N    Derivation subprocess timeout
+  CC_LHC_LEADER=KEY                Control-panel key (default: ctrl-])
+  CC_LHC_INPUT_DEBUG=FILE          Append input-protocol diagnostics to FILE
+  CC_LHC_RUNTIME_DESCRIPTOR        Wrapper-owned retrieval binding; do not set manually
+
+Control panel:
+  Press ctrl-] (or CC_LHC_LEADER) while Claude is running.
+  Commands: status, stats, compact, prune [targetTokens], export,
+            auto on|off, bounds <lower> <upper>, help
+
+All non-LHC arguments, including --help, pass through to Claude unchanged.`;
+
+export function isLhcHelpArgv(argv: readonly string[]): boolean {
+  return argv.length === 1 && argv[0] === "--lhc-help";
+}

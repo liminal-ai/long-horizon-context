@@ -135,10 +135,12 @@ sessions created *after* TUI start). Then:
 
 ## Deterministic gates (this working tree)
 
-- `lhc`: tsc (src+test) clean · vitest full suite green (63 files, 539 passed,
-  15 skipped)
-- `cc-lhc`: tsc (src+test) clean · vitest full suite green (65 files,
-  600 passed)
+- `lhc`: tsc (src+test) clean · final HEAD vitest suite green (64 files,
+  543 passed, 31 skipped). Sixteen skips are keyless real-inference cases when
+  `LHC_RUN_INTEGRATION` is unset; the earlier frozen certification run excluded
+  that file and reported 539 passed / 15 skipped.
+- `cc-lhc`: tsc (src+test) clean · final HEAD vitest suite green (66 files,
+  602 passed)
 
 ## Raw PTY / tmux / SSH (production)
 
