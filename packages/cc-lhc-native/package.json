@@ -1,0 +1,38 @@
+{
+  "name": "cc-lhc-native",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Exact OS process identity for cc-lhc: ABI-stable Node-API addon with prebuilt-artifact loading.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "install": "node scripts/noop-install.mjs",
+    "clean": "node scripts/clean.mjs",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
+    "build:native": "node-gyp rebuild",
+    "stage:prebuild": "node scripts/stage-prebuild.mjs",
+    "check:release-bundle": "node scripts/check-release-bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:native": "node scripts/run-native-tests.mjs",
+    "test:all": "vitest run",
+    "verify": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && vitest run",
+    "verify:native": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && node scripts/run-native-tests.mjs"
+  },
+  "engines": {
+    "node": ">=24.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "node-gyp": "^11.4.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}
