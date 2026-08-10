@@ -135,7 +135,7 @@ function isNativeSummary(item: RolloutLineItem): boolean {
   return item.type === "summary";
 }
 
-function unknownShapeKey(item: RolloutLineItem, lineIndex: number): string {
+function unknownConversationShapeKey(item: RolloutLineItem, lineIndex: number): string {
   const type = typeof item.type === "string" && item.type !== "" ? item.type : "none";
   // Bounded key for sticky health; line index is for logs only (not in key).
   void lineIndex;
@@ -250,17 +250,26 @@ export function observeRolloutLine(
     }
   }
 
-  let unknownShape = false;
-  if (stats.unknown > 0) {
-    unknownShape = true;
+  // Unknown host chrome is diagnostic only. Claude adds top-level bookkeeping
+  // records over time; absence from our metadata census is not evidence that
+  // canonical conversation was lost. Only an unknown USER/ASSISTANT record can
+  // conceal conversational content and therefore threaten safe rebuilding.
+  const unknownConversationShape =
+    stats.unknown > 0 && (isUserLine(item) || isAssistantLine(item));
+  if (unknownConversationShape) {
     lifecycle.push({
       kind: "capture_degraded",
-      reason: unknownShapeKey(item, lineIndex),
+      reason: unknownConversationShapeKey(item, lineIndex),
       generation,
     });
   }
 
-  return { events, lifecycle, stats, ...(unknownShape ? { unknownShape: true } : {}) };
+  return {
+    events,
+    lifecycle,
+    stats,
+    ...(unknownConversationShape ? { unknownShape: true } : {}),
+  };
 }
 
 export function observeWatcherEmission(

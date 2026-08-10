@@ -359,12 +359,13 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   };
 
   /** Latch degradation; log only on first occurrence of the stored key. */
-  const degradeQuiet = (reason: string): void => {
+  const degradeQuiet = (reason: string): boolean => {
     const applied = applyCaptureDegraded(captureHealth, reason);
     captureHealth = applied.state;
     if (applied.isFirstForKey) {
       logError(`cc-lhc capture degraded (gen ${captureHealth.generation}): ${applied.countKey}`);
     }
+    return applied.isFirstForKey;
   };
 
   /**
@@ -422,14 +423,23 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             if (turnSignal === "closes") turnOpen = false;
           }
 
+          const lifecycleToPublish: LifecycleSignal[] = [];
+          const pendingMismatches: LifecycleSignal[] = [];
           for (const signal of observed.lifecycle) {
             if (signal.kind === "capture_degraded") {
-              degradeQuiet(signal.reason);
+              if (degradeQuiet(signal.reason)) {
+                lifecycleToPublish.push(...pendingMismatches, signal);
+              }
+              pendingMismatches.length = 0;
             } else if (signal.kind === "session_mismatch_observed") {
-              degradeQuiet(`session_mismatch:${signal.observed}`);
+              // Observation emits this immediately before its paired
+              // capture_degraded. Publish both only when that reason is new.
+              pendingMismatches.push(signal);
+            } else {
+              lifecycleToPublish.push(signal);
             }
           }
-          publishLifecycle(observed.lifecycle);
+          publishLifecycle(lifecycleToPublish);
 
           if (emission.kind === "parse_error") {
             stats.parseFailures += 1;

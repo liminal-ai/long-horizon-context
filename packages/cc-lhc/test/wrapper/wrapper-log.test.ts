@@ -43,7 +43,7 @@ describe("createWrapperLog", () => {
     expect(log.warningCount()).toBe(0);
   });
 
-  it("derives warning count from the log file so a fresh instance still reports them", async () => {
+  it("reports warnings from this wrapper run, not the shared log lifetime", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-wlog-durable-"));
     const path = join(dir, "wrapper.log");
     const writer = createWrapperLog(path);
@@ -52,7 +52,7 @@ describe("createWrapperLog", () => {
     expect(writer.warningCount()).toBe(1);
 
     const relaunched = createWrapperLog(path);
-    expect(relaunched.warningCount()).toBe(1);
+    expect(relaunched.warningCount()).toBe(0);
     expect(countWarnLinesInLog(path)).toBe(1);
   });
 

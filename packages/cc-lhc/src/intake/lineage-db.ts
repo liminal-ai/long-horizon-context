@@ -76,6 +76,16 @@ function isENOENT(cause: unknown): boolean {
   return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "ENOENT";
 }
 
+/** Only proven on-disk corruption authorizes quarantine. Busy/locked/schema
+ * errors leave the original file untouched and propagate to the caller. */
+function isProvenSqliteCorruption(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const record = cause as { code?: unknown; message?: unknown };
+  if (record.code === "ERR_SQLITE_CORRUPT" || record.code === "ERR_SQLITE_NOTADB") return true;
+  const message = typeof record.message === "string" ? record.message.toLowerCase() : "";
+  return message.includes("database disk image is malformed") || message.includes("file is not a database");
+}
+
 export function lineageWriteFailureMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);
   return `[cc-lhc] lineage write failed (continuing): ${message}`;
@@ -196,7 +206,8 @@ export function openLineageDatabase(dbPath: string, deps: LineageDbDeps = {}): D
 
   try {
     return tryOpen();
-  } catch {
+  } catch (cause) {
+    if (!isProvenSqliteCorruption(cause)) throw cause;
     if (merged.existsFn?.(dbPath) === true) {
       try {
         merged.renameFn?.(dbPath, `${dbPath}.corrupt-${String(Date.now())}`);

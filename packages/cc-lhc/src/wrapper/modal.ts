@@ -77,7 +77,27 @@ export type EscapeTracking =
   | { kind: "string_term_esc" }
   | { kind: "legacy_mouse"; remaining: number };
 
-export type InputMode = "passthrough" | "modal" | "executing";
+export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
+
+/**
+ * Hazardous native lifecycle commands verified in Claude Code 2.1.226 that
+ * invalidate cc-lhc's session binding when run in-app. `/rewind` and `/branch`
+ * are deliberately NOT listed: no live fixture proves the supported binary
+ * exposes them as binding-invalidating straight-line commands.
+ */
+export const HAZARDOUS_COMMANDS = ["/resume", "/clear", "/compact"] as const;
+
+/** Straight-line match only: the typed line IS the command (optional args). */
+export function matchHazardousCommand(line: string): string | null {
+  const trimmed = line.trim();
+  for (const command of HAZARDOUS_COMMANDS) {
+    if (trimmed === command || trimmed.startsWith(`${command} `)) return command;
+  }
+  return null;
+}
+
+/** Cap on tracked line length; an over-long line is not a slash command. */
+const HAZARD_LINE_CAP = 200;
 
 export interface InputState {
   mode: InputMode;
@@ -92,9 +112,31 @@ export interface InputState {
   heldSeq: number[];
   /** Receipt/notice lines the panel shows above the prompt (help, unknown, command receipts). */
   panelRows: string[];
+  /** Notifier: straight-line shadow of the current typed line (never edited). */
+  hazardLine: string;
+  /**
+   * Notifier: editing/cursor/history/paste/non-ASCII/escape activity seen this
+   * line — the line is no longer provably straight, so Enter passes through.
+   * Clears at the next line boundary (forwarded Enter or ctrl-C).
+   */
+  hazardPoisoned: boolean;
+  /** Notifier feature switch (off: zero recognition, pure passthrough). */
+  notifierEnabled: boolean;
+  /** Exact Enter bytes held while the notifier overlay is up (raw \r or kitty CSI). */
+  heldEnter: number[];
+  /** The recognized command shown in the overlay. */
+  notifierCommand: string;
 }
 
-export type InputAction = { kind: "enter_modal" } | { kind: "exit_modal" } | { kind: "execute"; commandLine: string };
+export type InputAction =
+  | { kind: "enter_modal" }
+  | { kind: "exit_modal" }
+  | { kind: "execute"; commandLine: string }
+  | { kind: "notifier_open"; command: string }
+  /** Forward the exact held Enter bytes once; the overlay closes. */
+  | { kind: "notifier_continue"; enterBytes: number[] }
+  /** Forward nothing; Claude's typed input line is untouched. */
+  | { kind: "notifier_return" };
 
 export interface InputResult {
   state: InputState;
@@ -102,7 +144,10 @@ export interface InputResult {
   actions: InputAction[];
 }
 
-export function createInputState(leaderByte: number = DEFAULT_LEADER_BYTE): InputState {
+export function createInputState(
+  leaderByte: number = DEFAULT_LEADER_BYTE,
+  options: { notifierEnabled?: boolean } = {},
+): InputState {
   return {
     mode: "passthrough",
     leaderByte,
@@ -111,6 +156,11 @@ export function createInputState(leaderByte: number = DEFAULT_LEADER_BYTE): Inpu
     line: "",
     heldSeq: [],
     panelRows: [],
+    hazardLine: "",
+    hazardPoisoned: false,
+    notifierEnabled: options.notifierEnabled ?? true,
+    heldEnter: [],
+    notifierCommand: "",
   };
 }
 
@@ -147,7 +197,10 @@ export function mapModalCommand(line: string): string | null {
  * then leaves the alt screen and flushes the held pty output.
  */
 export function finishExecuting(state: InputState): InputState {
-  return { ...createInputState(state.leaderByte), inPaste: state.inPaste };
+  return {
+    ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
+    inPaste: state.inPaste,
+  };
 }
 
 /**
@@ -354,22 +407,27 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
         return { state: { ...state, escape: { kind: "csi_candidate", params: "" }, heldSeq: held } };
       }
       if (isStringTermIntroducer(byte)) {
-        return { state: { ...state, escape: { kind: "string_term" }, heldSeq: [] }, toPty: Buffer.from(held) };
+        // OSC/DCS/PM/APC on stdin is a terminal response in flight — protocol,
+        // not editing: the hazard shadow stays clean.
+        return {
+          state: { ...state, escape: { kind: "string_term" }, heldSeq: [] },
+          toPty: Buffer.from(held),
+        };
       }
       if (byte === 0x4d) {
         return {
-          state: { ...state, escape: { kind: "legacy_mouse", remaining: 3 }, heldSeq: [] },
+          state: hazardPoison({ ...state, escape: { kind: "legacy_mouse", remaining: 3 }, heldSeq: [] }),
           toPty: Buffer.from(held),
         };
       }
       if (byte === 0x1b) {
         // The held ESC (if still held — a timer flush may have sent it
         // already) was a bare keypress: forward it; hold the new one.
-        return { state: { ...state, heldSeq: [0x1b] }, toPty: Buffer.from(state.heldSeq) };
+        return { state: hazardPoison({ ...state, heldSeq: [0x1b] }), toPty: Buffer.from(state.heldSeq) };
       }
       // Bare Esc keypress followed by a normal byte: forward both. A leader
       // here stays suppressed for this chunk (leader-again recovers).
-      return { state: { ...state, escape: null, heldSeq: [] }, toPty: Buffer.from(held) };
+      return { state: hazardPoison({ ...state, escape: null, heldSeq: [] }), toPty: Buffer.from(held) };
 
     case "csi_candidate": {
       if (isCsiFinal(byte)) {
@@ -381,10 +439,22 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
           // enter modal, swallow the sequence — nothing of it reaches the child.
           return enterModal({ ...state, escape: null, heldSeq: [] });
         }
+        if (byte === 0x75 && isKittyPlainEnterParams(mode.params) && !state.inPaste) {
+          // Kitty-encoded plain Enter is a line submit: intercept exactly like
+          // raw \r (holding the whole sequence), else forward + clean boundary.
+          const cleared = { ...state, escape: null, heldSeq: [] };
+          const opened = maybeOpenNotifier(cleared, held);
+          if (opened !== null) return opened;
+          return { state: hazardBoundary(cleared), toPty: Buffer.from(held) };
+        }
         let inPaste = state.inPaste;
         if (byte === 0x7e && mode.params === "200") inPaste = true;
         if (byte === 0x7e && mode.params === "201") inPaste = false;
-        return { state: { ...state, escape: null, heldSeq: [], inPaste }, toPty: Buffer.from(held) };
+        const next = { ...state, escape: null, heldSeq: [], inPaste };
+        return {
+          state: isNeutralPassthroughCsi(mode.params, byte) ? next : hazardPoison(next),
+          toPty: Buffer.from(held),
+        };
       }
       if (isCandidateParamByte(byte) && mode.params.length < CSI_CANDIDATE_PARAMS_CAP) {
         return {
@@ -396,15 +466,34 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
         };
       }
       // Not a kitty key shape (mouse '<', private '?', over-long, …): forward
-      // the held prefix and finish the sequence forwarded-as-it-comes.
+      // the held prefix and finish the sequence forwarded-as-it-comes. Poison
+      // is decided at the completing final byte (responses stay neutral).
       return {
-        state: { ...state, escape: { kind: "csi", params: mode.params + String.fromCharCode(byte) }, heldSeq: [] },
+        state: {
+          ...state,
+          escape: { kind: "csi", params: mode.params + String.fromCharCode(byte) },
+          heldSeq: [],
+        },
         toPty: Buffer.from(held),
       };
     }
 
-    default:
-      return { state: trackForwardedEscapeByte(byte, state), toPty: Buffer.from([byte]) };
+    default: {
+      // Streaming a forwarded sequence. Poison only when a COMPLETED sequence
+      // could be a keypress: CSI finals that are not protocol responses, and
+      // legacy mouse reports. String sequences (OSC/DCS…) are responses.
+      const wasCsi = mode.kind === "csi";
+      const wasMouse = mode.kind === "legacy_mouse";
+      const nextState = trackForwardedEscapeByte(byte, state);
+      let out = nextState;
+      if (wasCsi && isCsiFinal(byte) && !isNeutralPassthroughCsi(mode.kind === "csi" ? mode.params : "", byte)) {
+        out = hazardPoison(out);
+      }
+      if (wasMouse && nextState.escape === null) {
+        out = hazardPoison(out);
+      }
+      return { state: out, toPty: Buffer.from([byte]) };
+    }
   }
 }
 
@@ -419,7 +508,25 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
   if (!state.inPaste && byte === state.leaderByte) {
     return enterModal(state);
   }
-  return { state, toPty: Buffer.from([byte]) };
+  if (state.inPaste) {
+    // Pasted content: forwarded untouched, and the line is no longer straight.
+    return { state: hazardPoison(state), toPty: Buffer.from([byte]) };
+  }
+  if (byte === 0x0d) {
+    const opened = maybeOpenNotifier(state, [0x0d]);
+    if (opened !== null) return opened;
+    return { state: hazardBoundary(state), toPty: Buffer.from([byte]) };
+  }
+  if (byte === 0x0a || byte === 0x03) {
+    // LF submit / ctrl-C (Claude clears its input line): clean boundary.
+    return { state: hazardBoundary(state), toPty: Buffer.from([byte]) };
+  }
+  if (byte >= 0x20 && byte <= 0x7e) {
+    return { state: hazardAppend(state, byte), toPty: Buffer.from([byte]) };
+  }
+  // Backspace/TAB/other controls/non-ASCII: editing or content the shadow
+  // cannot model — forward untouched, line no longer provably straight.
+  return { state: hazardPoison(state), toPty: Buffer.from([byte]) };
 }
 
 // ---------------------------------------------------------------------------
@@ -427,9 +534,103 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
 // ---------------------------------------------------------------------------
 
 function cancelModal(state: InputState): StepOutcome {
+  if (state.mode === "notifier") return notifierResolve(state, false);
   return {
-    state: { ...createInputState(state.leaderByte), inPaste: state.inPaste },
+    state: {
+      ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
+      inPaste: state.inPaste,
+    },
     actions: [{ kind: "exit_modal" }],
+  };
+}
+
+/**
+ * Settle the notifier overlay. Continue forwards the exact held Enter once
+ * (run.ts writes it); return forwards nothing and KEEPS the clean shadow line —
+ * Claude's input box still holds the typed command, so a bare re-Enter
+ * re-notifies instead of silently executing.
+ */
+function notifierResolve(state: InputState, forward: boolean): StepOutcome {
+  const base: InputState = {
+    ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
+    inPaste: state.inPaste,
+  };
+  if (forward) {
+    return { state: base, actions: [{ kind: "notifier_continue", enterBytes: state.heldEnter }] };
+  }
+  return {
+    state: { ...base, hazardLine: state.hazardLine },
+    actions: [{ kind: "notifier_return" }],
+  };
+}
+
+/** Hazard-shadow helpers: poison marks the line unprovable until a boundary. */
+function hazardPoison(state: InputState): InputState {
+  if (!state.notifierEnabled || state.hazardPoisoned) return state;
+  return { ...state, hazardPoisoned: true };
+}
+function hazardBoundary(state: InputState): InputState {
+  if (!state.notifierEnabled) return state;
+  return { ...state, hazardLine: "", hazardPoisoned: false };
+}
+function hazardAppend(state: InputState, byte: number): InputState {
+  if (!state.notifierEnabled || state.hazardPoisoned) return state;
+  if (state.hazardLine.length >= HAZARD_LINE_CAP) return hazardPoison(state);
+  return { ...state, hazardLine: state.hazardLine + String.fromCharCode(byte) };
+}
+
+/**
+ * Bytes delivered to the child without passing through the shadow (the handoff
+ * input barrier flushes raw). If they ended at a line boundary the child's
+ * input line is fresh; otherwise it holds content the shadow never saw and the
+ * line is no longer provably straight.
+ */
+export function noteUntrackedDeliveredInput(state: InputState, bytes: Buffer): InputState {
+  if (bytes.length === 0) return state;
+  const last = bytes[bytes.length - 1];
+  if (last === 0x0d || last === 0x0a || last === 0x03) return hazardBoundary(state);
+  return hazardPoison(state);
+}
+
+/**
+ * Terminal→app protocol traffic on stdin (responses to queries, focus events)
+ * does NOT edit Claude's input line and must not poison the straight-line
+ * shadow — under tmux these arrive constantly and would otherwise disable the
+ * notifier entirely. Anything that could be a keypress still poisons.
+ */
+function isNeutralPassthroughCsi(params: string, finalByte: number): boolean {
+  if (params.startsWith("?")) return true; // DA / DECRPM / kitty-query responses
+  if (finalByte === 0x52) return true; // CSI <row>;<col> R — cursor position report
+  if ((finalByte === 0x49 || finalByte === 0x4f) && params === "") return true; // focus in/out
+  return false;
+}
+
+/** Kitty CSI-u plain Enter (keycode 13, no modifier, press/repeat). */
+function isKittyPlainEnterParams(params: string): boolean {
+  const fields = params.split(";");
+  if (Number.parseInt(fields[0] ?? "", 10) !== 13) return false;
+  const [modifierPart, eventPart] = (fields[1] ?? "").split(":");
+  if (modifierPart !== undefined && modifierPart !== "" && Number.parseInt(modifierPart, 10) !== 1) return false;
+  const event = eventPart === undefined || eventPart === "" ? 1 : Number.parseInt(eventPart, 10);
+  return event === 1 || event === 2;
+}
+
+/** Hold this Enter behind the confirmation overlay, or null to pass through. */
+function maybeOpenNotifier(state: InputState, enterBytes: number[]): StepOutcome | null {
+  if (!state.notifierEnabled || state.inPaste || state.hazardPoisoned) return null;
+  const command = matchHazardousCommand(state.hazardLine);
+  if (command === null) return null;
+  return {
+    state: {
+      ...state,
+      mode: "notifier",
+      escape: null,
+      heldSeq: [],
+      heldEnter: enterBytes,
+      notifierCommand: command,
+      panelRows: [],
+    },
+    actions: [{ kind: "notifier_open", command }],
   };
 }
 
@@ -495,6 +696,13 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
 }
 
 function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
+  if (state.mode === "notifier") {
+    // Only two answers exist: Enter continues (forward the held Enter once),
+    // cancel-family returns (forward nothing). Everything else is dropped.
+    if (key.kind === "enter") return notifierResolve(state, true);
+    if (key.kind === "cancel") return notifierResolve(state, false);
+    return { state };
+  }
   if (state.mode === "executing") {
     // Cancel-family keys DETACH a running command (Esc, ctrl-C, leader — any
     // encoding): the panel closes and output resumes; the command keeps
@@ -640,6 +848,13 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // Leader-again dismisses in every mode — while executing it detaches,
     // same as Esc and ctrl-C (a running command must never trap the screen).
     return cancelModal(state);
+  }
+
+  if (state.mode === "notifier") {
+    if (byte === 0x0d || byte === 0x0a) return notifierResolve(state, true);
+    // 'n' is a natural "no": treat it as return; other keys are dropped.
+    if (byte === 0x6e || byte === 0x4e) return notifierResolve(state, false);
+    return { state };
   }
 
   if (state.mode === "executing") return { state };

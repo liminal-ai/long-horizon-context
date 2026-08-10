@@ -7,11 +7,13 @@ function stripCcLhcFlags(argv: string[]): {
   argv: string[];
   noCapture: boolean;
   noInference: boolean;
+  notifierDisabled: boolean;
   contextPolicyOverrides: ContextPolicyPartial;
 } {
   const out: string[] = [];
   let noCapture = false;
   let noInference = process.env.CC_LHC_NO_INFERENCE === "1";
+  let notifierDisabled = false;
   const contextPolicyOverrides: ContextPolicyPartial = {};
   for (const arg of argv) {
     // Contract: every --lhc-* flag belongs to cc-lhc and is consumed here;
@@ -60,12 +62,16 @@ function stripCcLhcFlags(argv: string[]): {
         contextPolicyOverrides.observeOnly = true;
         continue;
       }
+      if (arg === "--lhc-no-notifier") {
+        notifierDisabled = true;
+        continue;
+      }
       console.error(`Unknown cc-lhc flag: ${arg} (cc-lhc owns the --lhc-* namespace)`);
       process.exit(2);
     }
     out.push(arg);
   }
-  return { argv: out, noCapture, noInference, contextPolicyOverrides };
+  return { argv: out, noCapture, noInference, notifierDisabled, contextPolicyOverrides };
 }
 
 const rawArgv = process.argv.slice(2);
@@ -87,6 +93,7 @@ if (isRetrievalArgv(rawArgv)) {
   const exitCode = await run(parsed.argv, {
     noCapture: parsed.noCapture,
     noInference: parsed.noInference,
+    ...(parsed.notifierDisabled ? { notifierDisabled: true } : {}),
     ...(hasOverrides ? { contextPolicyOverrides: parsed.contextPolicyOverrides } : {}),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);

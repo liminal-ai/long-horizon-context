@@ -140,12 +140,13 @@ describe("mapRolloutLine", () => {
     expect(mapRolloutLine(snapshot!).stats.meta).toBe(1);
   });
 
-  it("counts housekeeping record types as meta (attachment, queue-operation, ai-title, last-prompt)", () => {
+  it("counts housekeeping record types as meta (attachment, queue-operation, titles, last-prompt)", () => {
     const attachments = fixtures.filter((item) => item.attachment !== undefined);
     expect(attachments.length).toBeGreaterThanOrEqual(1);
     const inline = [
       { type: "queue-operation", operation: "enqueue", content: "x" },
       { type: "ai-title", aiTitle: "t" },
+      { type: "custom-title", customTitle: "cc-lhc-fable-coder", sessionId: "dafaf472-fc6b-4126-8d5b-e15fc2b88d44" },
       { type: "last-prompt", lastPrompt: "x" },
       { type: "attachment", attachment: { type: "skill_listing" } },
     ] as RolloutLineItem[];

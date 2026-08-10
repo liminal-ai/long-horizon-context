@@ -66,6 +66,11 @@ import {
   type RevocationResult,
   type RuntimeDescriptorV1,
 } from "../runtime/descriptor.js";
+import {
+  acquireSessionOwner,
+  SessionOwnershipConflictError,
+  type SessionOwnerLease,
+} from "../runtime/session-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
@@ -75,6 +80,7 @@ import {
   finishExecuting,
   forceResetInput,
   type InputState,
+  noteUntrackedDeliveredInput,
   processInputChunk,
   resolveBareEsc,
   resolveLeaderByte,
@@ -170,6 +176,8 @@ export type RunOptions = {
    * spawn a generic fake child that rejects claude-only flags).
    */
   disableNativeBackstopArgs?: boolean;
+  /** Disable the hazardous-command notifier for this launch (--lhc-no-notifier). */
+  notifierDisabled?: boolean;
 };
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -245,6 +253,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
 
   let expectedSession: ExpectedSession | undefined;
+  const ownedSessionLeases = new Map<string, SessionOwnerLease>();
+  const releaseSessionOwners = (): void => {
+    for (const lease of ownedSessionLeases.values()) lease.release();
+    ownedSessionLeases.clear();
+  };
+  const ensureSessionOwner = (sessionId: string): void => {
+    if (ownedSessionLeases.has(sessionId)) return;
+    ownedSessionLeases.set(sessionId, acquireSessionOwner(sessionId));
+  };
   let resumeSessionIdForLineage: string | undefined;
   let childArgv = argv;
   /** Non-selector user argv retained for wrapper-owned respawn. */
@@ -268,14 +285,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.info(
         `cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`,
       );
+      ensureSessionOwner(expectedSession.sessionId);
       const safety = respawnArgvSafety(respawnRest, respawnPassthrough);
       if (!safety.safe) {
         respawnUnsafeReason = safety.reason;
         wrapperLog.warn(`cc-lhc handoff disabled for this launch form: ${safety.reason}`);
       }
     } catch (cause) {
+      releaseSessionOwners();
       const message =
-        cause instanceof LaunchGrammarError || cause instanceof Error ? cause.message : String(cause);
+        cause instanceof SessionOwnershipConflictError
+          ? `cc-lhc refused duplicate session owner: ${cause.message}`
+          : cause instanceof LaunchGrammarError || cause instanceof Error
+            ? cause.message
+            : String(cause);
       stderr.write(`${message}\n`);
       return 2;
     }
@@ -322,6 +345,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           stderr.write(`cc-lhc: descriptor revoke failed: ${rev.reason}\n`);
         }
         stderr.write(`cc-lhc: ${guided.reason}\n`);
+        releaseSessionOwners();
         return 2;
       }
       childArgv = guided.argv;
@@ -367,6 +391,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       runtimeDescriptorPath = undefined;
       runtimeDescriptor = undefined;
     }
+    releaseSessionOwners();
     throw cause;
   }
 
@@ -700,6 +725,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
     cleanupDescriptor();
+    releaseSessionOwners();
   };
 
   process.on("exit", cleanup);
@@ -711,7 +737,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const leaderByte = resolveLeaderByte(process.env.CC_LHC_LEADER, (message) => {
     wrapperLog.warn(message);
   });
-  let inputState: InputState = createInputState(leaderByte);
+  const notifierEnabled = options.notifierDisabled !== true;
+  let inputState: InputState = createInputState(leaderByte, { notifierEnabled });
   /** Bumped on every modal entry; tags a dismiss-at-injection so late failures reopen only if still idle. */
   let modalGeneration = 0;
 
@@ -1152,6 +1179,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           // then the held bytes land on it in order.
           altScreen.leave();
           outputHold.flush();
+        } else if (action.kind === "notifier_open") {
+          wrapperLog.info(`cc-lhc notifier: holding Enter for ${action.command}`);
+          outputHold.hold();
+          altScreen.enter();
+        } else if (action.kind === "notifier_continue") {
+          altScreen.leave();
+          outputHold.flush();
+          if (action.enterBytes.length > 0) {
+            // The user's own Enter, delivered exactly once — it is input
+            // reaching Claude, so it bumps the governor epoch like any byte.
+            governorState = noteGovernorInput(governorState);
+            currentPty.write(Buffer.from(action.enterBytes).toString("latin1"));
+          }
+        } else if (action.kind === "notifier_return") {
+          altScreen.leave();
+          outputHold.flush();
         } else if (action.kind === "execute") runModalCommand(action.commandLine);
       }
     };
@@ -1277,6 +1320,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     /** Spawn a claude child for `--resume <sessionId>` with a fresh opening
      * descriptor generation; attaches output/exit handlers. */
     const spawnHandoffChild = (sessionId: string): HandoffChild => {
+      ensureSessionOwner(sessionId);
       let respawnArgv = respawnChildArgv(respawnRest, respawnPassthrough, sessionId);
       if (nativeBackstopArgs.length > 0) respawnArgv = [...nativeBackstopArgs, ...respawnArgv];
       // Fresh descriptor per child generation: the old one is closed at commit;
@@ -1372,7 +1416,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         flushInputBarrier: (child: HandoffChild): number => {
           const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
           inputBarrier = null;
-          if (bytes.length > 0) child.write(bytes.toString("latin1"));
+          if (bytes.length > 0) {
+            child.write(bytes.toString("latin1"));
+            // These bytes reached the child without passing the hazard shadow.
+            inputState = noteUntrackedDeliveredInput(inputState, bytes);
+          }
           return bytes.length;
         },
         takeInputBarrierBuffer: (): Buffer => {

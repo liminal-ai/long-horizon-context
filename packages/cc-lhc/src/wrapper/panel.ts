@@ -13,6 +13,8 @@ export const PANEL_PROMPT = "long-horizon commands> ";
 export const PANEL_HINT = "Enter run · Esc close · ctrl-C detach";
 /** Shown while a command runs — Esc/ctrl-C/leader all detach in executing mode. */
 export const PANEL_HINT_EXECUTING = "Esc/ctrl-C detach · command keeps running";
+/** Notifier overlay: two answers only; the typed command stays in Claude's input line. */
+export const NOTIFIER_HINT = "Enter continue · Esc/n return (your typed line stays put)";
 
 /**
  * Progress line while a command executes. Every command gets one — a panel
@@ -110,7 +112,11 @@ export function renderPanel(state: InputState, cols: number, rows: number, elaps
   for (const row of panelRows) lines.push({ text: truncate(row) });
   if (panelRows.length > 0) lines.push({ text: "" });
 
-  if (state.mode === "executing") {
+  if (state.mode === "notifier") {
+    lines.push({ text: truncate(`Claude ${state.notifierCommand} can invalidate cc-lhc session capture/binding`) });
+    lines.push({ text: "" });
+    lines.push({ text: truncate(NOTIFIER_HINT), dim: true });
+  } else if (state.mode === "executing") {
     lines.push({ text: truncate(commandProgressLabel(state.line, elapsedSeconds)) });
     lines.push({ text: "" });
     lines.push({ text: truncate(PANEL_HINT_EXECUTING), dim: true });

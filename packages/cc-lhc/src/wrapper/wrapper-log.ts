@@ -41,13 +41,20 @@ export interface WrapperLog {
 }
 
 export function createWrapperLog(path: string = defaultWrapperLogPath()): WrapperLog {
+  // Status is about this wrapper process, not every warning ever written by
+  // every session/test to the shared durable log.
+  let currentRunWarnings = 0;
   try {
     mkdirSync(dirname(path), { recursive: true });
   } catch {
     // Appends below fail silently too — logging must never take the wrapper down.
   }
   const append = (level: "info" | "warn", message: string): void => {
-    void appendFile(path, `${new Date().toISOString()} [${level}] ${message}\n`).catch(() => {});
+    void appendFile(path, `${new Date().toISOString()} [${level}] ${message}\n`)
+      .then(() => {
+        if (level === "warn") currentRunWarnings += 1;
+      })
+      .catch(() => {});
   };
   return {
     path,
@@ -58,7 +65,7 @@ export function createWrapperLog(path: string = defaultWrapperLogPath()): Wrappe
       append("warn", message);
     },
     warningCount(): number {
-      return countWarnLinesInLog(path);
+      return currentRunWarnings;
     },
   };
 }

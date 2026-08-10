@@ -304,7 +304,7 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 // Housekeeping record types Claude Code writes into session files. None carry
 // conversation content: queue-operation duplicates the prompt already captured
 // via the user record; attachment records are tool/agent/skill listing deltas
-// injected by the runtime; ai-title and last-prompt are session metadata.
+// injected by the runtime; ai-title/custom-title and last-prompt are session metadata.
 // Counted as meta so skipped_unknown stays a meaningful drift gauge.
 // Known housekeeping record types from the supported Claude Code corpus
 // (2.1.215–2.1.226 census). Counted as meta so skipped_unknown remains a
@@ -315,6 +315,7 @@ const META_LINE_TYPES = new Set([
   "queue-operation",
   "attachment",
   "ai-title",
+  "custom-title",
   "last-prompt",
   "mode",
   "permission-mode",

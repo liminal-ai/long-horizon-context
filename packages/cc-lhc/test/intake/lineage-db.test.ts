@@ -12,6 +12,7 @@ import {
   lookupSessionLineage,
   lookupThreadForSession,
   newestSessionEntry,
+  openLineageDatabase,
   recordSessionThread,
   resolveCaptureThread,
   tryContinueThreadFromNewestSession,
@@ -214,7 +215,11 @@ describe("lineage sqlite", () => {
         if (opens === 1) {
           const realExec = db.exec.bind(db);
           db.exec = (sql: string) => {
-            if (sql.includes("CREATE TABLE")) throw new Error("schema init boom");
+            if (sql.includes("CREATE TABLE")) {
+              const error = new Error("file is not a database") as Error & { code?: string };
+              error.code = "ERR_SQLITE_NOTADB";
+              throw error;
+            }
             return realExec(sql);
           };
           const realClose = db.close.bind(db);
@@ -231,6 +236,27 @@ describe("lineage sqlite", () => {
     expect(closes).toBeGreaterThanOrEqual(1);
     expect(lookupThreadForSession(dbPath, "after-recreate", deps)).toBe("th_ok");
     expect(readdirSync(home).some((name) => name.includes(".corrupt-"))).toBe(true);
+  });
+
+  it("never renames a healthy database on a transient lock", () => {
+    const home = tempHome();
+    const dbPath = dbPathInHome(home);
+    recordSessionThread(dbPath, "existing", "th_existing", {}, { prefix: { kind: "none" } });
+    let renamed = false;
+    expect(() =>
+      openLineageDatabase(dbPath, {
+        openDbFn: () => {
+          const error = new Error("database is locked") as Error & { code?: string };
+          error.code = "ERR_SQLITE_BUSY";
+          throw error;
+        },
+        renameFn: () => {
+          renamed = true;
+        },
+      }),
+    ).toThrow(/database is locked/);
+    expect(renamed).toBe(false);
+    expect(lookupThreadForSession(dbPath, "existing")).toBe("th_existing");
   });
 
   it("persists verified prefix boundary and preserves it across ordinary re-bind", () => {

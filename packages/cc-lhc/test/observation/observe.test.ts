@@ -339,12 +339,26 @@ describe("observeRolloutLine", () => {
     expect(result.stats.unknown).toBe(0);
   });
 
-  it("latches degradation on unknown shapes with bounded type key", () => {
+  it("counts unknown top-level host chrome without degrading capture", () => {
     const weird: RolloutLineItem = { type: "totally-unknown-record-type", foo: 1 };
+    const result = observeRolloutLine(weird, 4, { generation: 2 });
+    expect(result.stats.unknown).toBe(1);
+    expect(result.lifecycle).not.toContainEqual({
+      kind: "capture_degraded",
+      reason: "unknown_shape:type=totally-unknown-record-type",
+      generation: 2,
+    });
+  });
+
+  it("degrades on unknown conversational content that could be omitted", () => {
+    const weird = {
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "future-dialogue-block", value: "not mapped" }] },
+    } as unknown as RolloutLineItem;
     const result = observeRolloutLine(weird, 4, { generation: 2 });
     expect(result.lifecycle).toContainEqual({
       kind: "capture_degraded",
-      reason: "unknown_shape:type=totally-unknown-record-type",
+      reason: "unknown_shape:type=assistant",
       generation: 2,
     });
   });
