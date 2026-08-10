@@ -1963,3 +1963,16 @@ ordinary insertion) preserved.
 
 No commit. Scope unchanged beyond `_jsstr.py` predicate, the two regressions,
 and this addendum.
+
+## Leg-1 certified landing receipt
+
+- Certified package commit:
+  **`99d10f2f6eb7a259c4e33ba55f042c7adf6181d0`**
+  (`fix(lhc-py): match JSON stringify retrieval bytes`).
+- The authoritative gate was rerun after that commit with a clean
+  `packages/lhc-py` and wave-worklog scope. Artifact identity proved the exact
+  package venv, editable source, and commit above.
+- Final committed-artifact result: **695 passed + 15 intentional skips = 710
+  classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
+- This landing receipt changes documentation only; the certified
+  `packages/lhc-py` tree remains exactly the tree tested at `99d10f2`.
