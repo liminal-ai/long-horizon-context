@@ -3,14 +3,15 @@
 Retrieval: deterministic drill-down from band labels to full content.
 ``get_turns`` serves rendered turns by turn id (``t…``); ``get_messages``
 serves verbatim message content by message id (``m…``). Both enforce a
-per-call token budget with in-order serving. Every requested id writes one
-impression row. Retrieval never mutates record content; the only write is
-the impression log.
+per-call token budget with in-order serving. Oversized content is served as
+an exact token slice with a ``slice`` receipt for ``from_token`` continuation;
+later ids past a spent budget get explicit ``budget`` receipts. Every
+requested id writes one impression row. Retrieval never mutates record
+content; the only write is the impression log.
 
-Public options are snake_case (Fable ruling). R4 owns domain + schema v6 +
-impressions + id validation/cap. R6 owns historical-envelope formatter and
-full byte-budget golden coverage; the budget walk and slice helpers here are
-the minimal contract scaffolding the retrieve path requires.
+Public options are snake_case (Fable ruling). Historical-envelope formatting
+lives in :mod:`lhc.retrieval.format` (SDK-owned; pin wording from pi-lhc
+serving tools, assembly placement per SDK/Rust R6).
 """
 
 from __future__ import annotations
@@ -210,6 +211,38 @@ def _utf8_bytes(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+def _to_finite_js_number(value: int | float) -> float | None:
+    """Convert a Python int/float to a finite IEEE-754 value, or ``None``.
+
+    TS ``number`` is always a finite-or-special double. Python ints past
+    ``Number.MAX_VALUE`` raise ``OverflowError`` on ``float()`` — treat those
+    as outside the JS Number domain rather than letting the exception escape.
+    """
+    try:
+        as_float = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(as_float):
+        return None
+    return as_float
+
+
+def _is_js_number_integer(value: object) -> bool:
+    """Match TS ``Number.isInteger`` for values that can be finite JS numbers.
+
+    ``Number.isInteger(x)`` requires ``typeof x === "number"``, finite, and
+    ``Math.floor(x) === x``. Python ``bool`` is excluded (TS boolean is not a
+    number). Arbitrary-precision ints that cannot convert to a finite double
+    are outside the domain and rejected.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer()
+    as_float = _to_finite_js_number(value)
+    return as_float is not None and as_float.is_integer()
+
+
 def _resolve_budget(options: RetrievalOptions | None) -> float:
     budget = (
         DEFAULT_RETRIEVAL_TOKEN_BUDGET
@@ -218,11 +251,12 @@ def _resolve_budget(options: RetrievalOptions | None) -> float:
     )
     if isinstance(budget, bool) or not isinstance(budget, (int, float)):
         raise ValueError(f"retrieval tokenBudget must be a positive number, got {budget!s}")
-    if not math.isfinite(float(budget)) or float(budget) <= 0:
+    as_float = _to_finite_js_number(budget)
+    if as_float is None or as_float <= 0:
         raise ValueError(f"retrieval tokenBudget must be a positive number, got {budget!s}")
     # Default is also the ceiling: callers cannot raise the model-visible bound.
     # Preserve fractional values (TS ``Math.min``) — do not truncate with int().
-    return min(float(budget), float(DEFAULT_RETRIEVAL_TOKEN_BUDGET))
+    return min(as_float, float(DEFAULT_RETRIEVAL_TOKEN_BUDGET))
 
 
 def _resolve_byte_budget(options: RetrievalOptions | None) -> float:
@@ -231,29 +265,27 @@ def _resolve_byte_budget(options: RetrievalOptions | None) -> float:
     budget = options.byte_budget
     if isinstance(budget, bool) or not isinstance(budget, (int, float)):
         raise ValueError(f"retrieval byteBudget must be a positive number, got {budget!s}")
-    if math.isnan(float(budget)) or float(budget) <= 0:
+    # TS: Number.isNaN(budget) || budget <= 0 — +Infinity is allowed (default).
+    # Huge Python ints outside the float domain are not valid JS numbers.
+    try:
+        as_float = float(budget)
+    except OverflowError:
+        raise ValueError(
+            f"retrieval byteBudget must be a positive number, got {budget!s}"
+        ) from None
+    if math.isnan(as_float) or as_float <= 0:
         raise ValueError(f"retrieval byteBudget must be a positive number, got {budget!s}")
-    return float(budget)
+    return as_float
 
 
 def _resolve_from_token(options: RetrievalOptions | None) -> int:
     from_token = 0 if options is None or options.from_token is None else options.from_token
-    if isinstance(from_token, bool) or not isinstance(from_token, (int, float)):
+    # TS: Number.isInteger(from) && from >= 0 — finite Number domain only.
+    if not _is_js_number_integer(from_token) or from_token < 0:  # type: ignore[operator]
         raise ValueError(
             f"retrieval fromToken must be a non-negative integer, got {from_token!s}"
         )
-    # TS Number.isInteger: reject fractional floats and non-finite.
-    if isinstance(from_token, float):
-        if not math.isfinite(from_token) or not from_token.is_integer() or from_token < 0:
-            raise ValueError(
-                f"retrieval fromToken must be a non-negative integer, got {from_token!s}"
-            )
-        return int(from_token)
-    if from_token < 0:
-        raise ValueError(
-            f"retrieval fromToken must be a non-negative integer, got {from_token!s}"
-        )
-    return int(from_token)
+    return int(from_token)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,10 +362,12 @@ def _budget_walk(
         # items slice only when enough budget remains to be worth reading.
         # Slice helpers floor max_tokens (TS Math.floor); remaining may be float.
         if from_token > 0 or remaining >= RETRIEVAL_SLICE_FLOOR:
-            slice_max = int(remaining) if remaining >= 0 else 0
+            # TS passes remaining (possibly fractional); slice helpers Math.floor.
+            slice_max = remaining if remaining >= 0 else 0
             if math.isfinite(byte_budget):
+                # Pass remaining bytes as float (TS compares <= maxBytes directly).
                 window = slice_tokens_byte_capped(
-                    item_text, from_token, slice_max, int(remaining_bytes)
+                    item_text, from_token, slice_max, remaining_bytes
                 )
             else:
                 window = slice_tokens(item_text, from_token, slice_max)
@@ -627,10 +661,25 @@ async def list_impressions(ref: ThreadRef) -> OpResult[list[ImpressionRecord]]:
         return storage_failure(f"impression read-back failed: {reason}")
 
 
+from .format import (  # noqa: E402 — after types; format TYPE_CHECKING-imports us
+    PULL_TOKEN_BUDGET,
+    assemble_result,
+    format_get_messages_result,
+    format_get_turns_result,
+    message_section,
+    recall_close,
+    recall_open,
+    section_footer,
+    slice_footer,
+    turn_section,
+    unserved_line,
+)
+
 __all__ = [
     "DEFAULT_RETRIEVAL_TOKEN_BUDGET",
     "MAX_RETRIEVAL_IDS_PER_CALL",
     "MAX_RETRIEVAL_OUTPUT_TOKENS",
+    "PULL_TOKEN_BUDGET",
     "RETRIEVAL_ID_PATTERN",
     "RETRIEVAL_SLICE_FLOOR",
     "ImpressionRecord",
@@ -642,8 +691,18 @@ __all__ = [
     "SliceReceipt",
     "UnservedEntity",
     "UnservedReason",
+    "assemble_result",
     "clamp_id_echo",
+    "format_get_messages_result",
+    "format_get_turns_result",
     "get_messages",
     "get_turns",
     "list_impressions",
+    "message_section",
+    "recall_close",
+    "recall_open",
+    "section_footer",
+    "slice_footer",
+    "turn_section",
+    "unserved_line",
 ]

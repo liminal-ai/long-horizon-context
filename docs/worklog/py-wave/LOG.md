@@ -1437,3 +1437,247 @@ Status: **PASS — safe to commit**.
   and forced annotation of untruncated content.
 - Artifact identity matched the package venv/editable source at `HEAD` `d7997ff`;
   path-scoped status was unchanged by verification.
+
+## R6 — bounded pull ergonomics and byte-stable formatting
+
+Status: **implementer complete** (working tree; pending independent verifier + path-scoped commit).
+Implementer: **Grok 4.5** (authorized R6 slice; fresh disposable session).
+Verifier: pending (fresh GPT-5.6 Sol high per PLAN).
+
+Contract pin: TypeScript SDK `81cd48c`
+(`packages/lhc/src/retrieval/index.ts`,
+`packages/pi-lhc/src/serving/retrieval-tools.ts`,
+`packages/lhc/test/retrieval.test.ts`,
+`packages/pi-lhc/test/serving/retrieval-tools.test.ts`).
+Rust trap map only (same pin): `src/retrieval/{mod,format}.rs`,
+`tests/{retrieval,retrieval_id_cap,open_busy_timeout_race}.rs`.
+
+Fable rulings applied: `MAX_RETRIEVAL_OUTPUT_TOKENS=22_000`; public options
+snake_case; SDK owns recalled-history envelope + receipt formatting
+(Hermes H2 stays thin registration).
+
+### Base
+
+- R5 commit `eb13f58ab18bf1e7492c5b991a3ef8bda1f0ab19`
+  (`fix(lhc-py): preserve full truncation token totals`) is current `HEAD`.
+- R6 sits uncommitted on top of that HEAD.
+
+### SQLite parallel-open race (reproduce-before-port)
+
+Pinned TS/Rust set `PRAGMA busy_timeout = 5000` **before**
+`PRAGMA journal_mode = WAL` because WAL init takes a brief write lock and
+Node's opener has no prior busy handler (instant `SQLITE_BUSY` under
+parallel tool opens).
+
+Python production `open_database` uses `sqlite3.connect(..., isolation_level=None)`
+with the **default connect timeout of 5.0s**, which installs a busy handler
+**before** any pragma — including before WAL. Reproduction:
+
+| Opener | Connect timeout | Trials | Errors |
+| --- | --- | --- | --- |
+| WAL then busy_timeout | `timeout=0` | 20 × 64×20 | **10** (`database is locked`) |
+| busy_timeout then WAL | `timeout=0` | 20 × 64×20 | **0** |
+| Current production order (WAL then busy pragma) | default `5.0` | 10 × 64×16 | **0** |
+
+**Decision:** race is **not production-reachable** under Python's default
+connect timeout. Did **not** mechanically reorder pragmas in `storage.py`
+(PLAN: do not port without reproduction on the live path). No open-order
+code change; evidence recorded here only.
+
+### What changed
+
+Pull ergonomics + SDK formatter — carries R4/R5 (schema v6 impressions,
+snake_case options, record purity, special-token totality).
+
+- `packages/lhc-py/src/lhc/retrieval/format.py` (**new**)
+  - Pin wording: `recall_open` / `recall_close` / `slice_footer` /
+    `unserved_line` (en-dash/em-dash byte-stable vs pi-lhc).
+  - SDK assembly placement (Rust/format contract): recalled bodies alone
+    inside `<recalled-history>`; slice footers + unserved receipts after
+    `</recalled-history>`.
+  - `assemble_result` hard-caps sections/footers/unserved at 32 (reject,
+    not truncate). Analytic bound `MAX_RETRIEVAL_OUTPUT_TOKENS=22000`
+    proven by maximal-class fixture (no runtime truncation).
+  - Host helpers: `format_get_turns_result` / `format_get_messages_result`.
+- `packages/lhc-py/src/lhc/retrieval/__init__.py`
+  - R6 docstring; re-exports format surface; budget walk passes fractional
+    remaining tokens/bytes into slice helpers (TS `Math.floor` / `<= maxBytes`).
+- `packages/lhc-py/src/lhc/shared_tech/token_counting/__init__.py`
+  - `slice_tokens` / `slice_tokens_byte_capped` floor `max_tokens`; accept
+    float `max_bytes`; clean-tail still shrinks U+FFFD mid-char tails.
+- Tests:
+  - `tests/test_retrieval_format.py` (**new**) — byte-identical open/close/
+    footer/unserved goldens; envelope placement; cap rejects; maximal
+    assembly ≤ 22k and ≥ 10k density.
+  - `tests/test_retrieval.py` — oversized slice, `from_token` reassembly,
+    multi-id per-item continuation (incl. past-the-end), crossing-item +
+    budget receipts, default/cap 8000, live formatter wiring, full
+    `byte_budget` suite (dense bytes, crab UTF-8 clean-tail, sliver
+    exemption, whole-serve, byte-spent multi-id), special-token slice path.
+
+### Invariants held
+
+- Token budget defaults/caps at 8,000; input-order whole/slice/budget/
+  deleted/missing/invalid receipts.
+- Exact `from_token` continuation per item; past-the-end empty slice receipt.
+- `byte_budget` slices fit UTF-8 bytes and end on clean code-point boundaries;
+  clean-tail never leaves mid-char U+FFFD; byte-bound serves exempt from
+  token sliver floor.
+- Refusal receipts teach the exact recovery call; guidance follows
+  `</recalled-history>`.
+- Formatter cardinality + analytic 22k bound; no runtime truncation.
+- Schema v6 impressions, snake_case options, record purity, special-token
+  capture/retrieve totality preserved.
+- `storage.py` open pragma order unchanged (race unreachable).
+
+### Deliberately out of scope (R6)
+
+- Hermes host registration / leg 2.
+- Mechanical busy_timeout-before-WAL reorder (unreachable on production path).
+- Unrelated dirt under `packages/cc-lhc`, `.beads`, `pnpm-lock.yaml`,
+  TypeScript `packages/lhc` working tree.
+
+### Exact commands and results
+
+```text
+# Focused R6 modules
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval_format.py tests/test_retrieval.py \
+  tests/test_retrieval_id_cap.py tests/test_token_counting_special.py -q
+→ 60 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (696 tests)
+  gate: passed=681 notimpl=0 skipped=15 wrong=0 classified=696
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `eb13f58ab18bf1e7492c5b991a3ef8bda1f0ab19` (R5 on main; uncommitted R6 on top) |
+| path-scoped porcelain | `M` retrieval/__init__.py, token_counting/__init__.py, test_retrieval.py, LOG.md; `??` retrieval/format.py, test_retrieval_format.py |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R6 cluster: **60 passed** (format + retrieval + id-cap + special-token)
+- Full gate: collect **696** · passed=681 notimpl=0 skipped=15 wrong=0 classified=696 · **GATE PASS**
+- Delta vs R5 suite (668 collect / 653 pass): **+28** tests (696 / 681)
+
+### Risks / notes
+
+- pi-lhc at the pin appends slice footers **inside** served sections (inside
+  the envelope). SDK/Rust R6 + Fable ruling place footers **after** the close;
+  Python follows the SDK assembly contract while keeping pin **wording**
+  byte-identical. Hermes H2 must consume `lhc.retrieval.format`, not re-copy
+  the older inside-envelope host layout.
+- Sub-floor token budgets (`< 256`) refuse rather than slice when
+  `from_token == 0` — pin `budgetWalk`; tests use budgets ≥ floor for slice
+  paths.
+- No stage/commit/push. Unrelated dirt under `cc-lhc` / `.beads` / `pnpm-lock`
+  / TS `packages/lhc` untouched.
+
+## R6 round-2 — Number-domain validation (verifier P1 correction)
+
+Status: **implementer complete** (working tree; no commit).
+Implementer: **Grok 4.5** (authorized R6 validation correction round 2).
+Base: `eb13f58` (R5 on main); uncommitted R6 + this correction on top.
+
+### Findings (independent verifier, production-reachable P1)
+
+1. **`from_token` accepted arbitrary Python ints** unlike finite JS
+   `Number.isInteger`. `from_token=10**2000` past-end-served 32 ids; slice
+   footers printed full decimals and format output exceeded the analytic
+   `MAX_RETRIEVAL_OUTPUT_TOKENS=22_000` bound. Fix must reject outside the
+   finite TS Number domain before reads/formatting — not truncate receipts.
+2. **`token_budget` / `byte_budget` with huge ints** (e.g. `10**400`) raised
+   `OverflowError` on `float()` outside the `OpResult` storage-failure
+   contract. Must return normal validation failures.
+
+Pinned TS `81cd48c` bool / NaN / ±Infinity / fractional semantics must stay.
+
+### Fix (narrow)
+
+`packages/lhc-py/src/lhc/retrieval/__init__.py` only:
+
+- `_to_finite_js_number` / `_is_js_number_integer` — finite IEEE-754 domain;
+  `OverflowError` → out-of-domain; match `Number.isInteger` (bool excluded).
+- `_resolve_from_token` — reject non-`Number.isInteger` / negative / out-of-domain
+  ints; preserve ordinary valid ints (`0`, `1`, `50000`, `2**53-1`, `10**308`, …).
+- `_resolve_budget` / `_resolve_byte_budget` — catch float overflow; same
+  `ValueError` → `storage_failure` messages as other numeric rejects.
+  Byte `+inf` still allowed; token non-finite still rejected.
+
+No formatter truncation, no receipt clipping, no analytic-bound change.
+
+### TDD receipts
+
+**RED** (regressions only, pre-fix):
+
+```text
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval.py::test_from_token_rejects_outside_finite_js_number_domain \
+  tests/test_retrieval.py::test_token_and_byte_budget_huge_ints_are_storage_failures_not_overflow -v
+→ 2 failed
+  - from_token=10**2000 accepted (ok=True)
+  - token_budget=10**400 raised OverflowError
+```
+
+**GREEN** (post-fix):
+
+```text
+# Focused R6 modules (+2 new public-path regressions)
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval_format.py tests/test_retrieval.py \
+  tests/test_retrieval_id_cap.py tests/test_token_counting_special.py -q
+→ 62 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (698 tests)
+  gate: passed=683 notimpl=0 skipped=15 wrong=0 classified=698
+```
+
+### Artifact identity
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | editable `file:///…/packages/lhc-py` |
+| SDK `HEAD` | `eb13f58ab18bf1e7492c5b991a3ef8bda1f0ab19` |
+| path-scoped porcelain | `M` retrieval/__init__.py, token_counting/__init__.py, test_retrieval.py, LOG.md; `??` retrieval/format.py, test_retrieval_format.py |
+
+### Scope
+
+- Touched: `packages/lhc-py/src/lhc/retrieval/__init__.py`,
+  `packages/lhc-py/tests/test_retrieval.py`, this LOG entry.
+- Unchanged: formatter analytic bound, `.beads`, `pnpm-lock`, TS tree,
+  `cc-lhc`, Hermes, git history/staging/remotes. No commit.
+
+## R6 — independent verifier final verdict
+
+Status: **PASS — safe to commit**.
+
+- Final verifier: fresh GPT-5.6 Sol high run `20260810-210029-17c903`.
+- Both numeric P1s closed: `from_token` rejects outside the finite JS Number
+  domain; huge `token_budget` / `byte_budget` ints return storage failures
+  (no `OverflowError`). Numeric edge semantics (bool / NaN / ±Infinity /
+  fractional) held at pin `81cd48c`.
+- 32-ID largest finite offset formatted at **3865 tokens ≤ 22000** analytic
+  bound (no receipt clipping).
+- Focused R6: **62 passed**. Exact-interpreter full gate: **683 passed + 15
+  intentional skips = 698 classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
+- No P0 / P1 / P2 findings. Hermes not inspected (out of scope).
+- Artifact identity: interpreter `packages/lhc-py/.venv/bin/python3`, editable
+  source `packages/lhc-py`, `HEAD` `eb13f58`; path-scoped status unchanged by
+  verification.

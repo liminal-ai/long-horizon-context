@@ -7,6 +7,7 @@ certification.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import tiktoken
@@ -62,20 +63,22 @@ def _clean_tail_window(
     return text, k
 
 
-def slice_tokens(text: str, from_token: int, max_tokens: int) -> TokenSlice:
+def slice_tokens(text: str, from_token: int, max_tokens: float | int) -> TokenSlice:
     """Exact token window: encode, slice [from, from+max), decode (clean tail).
 
     Past-the-end offset returns an empty slice preserving the requested offset
-    so the caller's receipt can name what was asked. R4 scaffolding for the
-    retrieval budget walk; R6 owns full byte-bound / formatter coverage.
+    so the caller's receipt can name what was asked. ``max_tokens`` is floored
+    (TS ``Math.floor``).
     """
     tokens = _encode_all(text)
     total_tokens = len(tokens)
     from_idx = max(0, int(from_token))
+    # Floor like TS Math.floor — truncate toward -inf for the rare negative.
+    floored_max = max(0, math.floor(float(max_tokens)))
     if from_idx >= total_tokens:
         to_idx = from_idx
     else:
-        to_idx = min(from_idx + max(0, int(max_tokens)), total_tokens)
+        to_idx = min(from_idx + floored_max, total_tokens)
     window_text, window_count = _clean_tail_window(
         tokens, from_idx, to_idx - from_idx, at_end=(to_idx == total_tokens)
     )
@@ -88,31 +91,39 @@ def slice_tokens(text: str, from_token: int, max_tokens: int) -> TokenSlice:
 
 
 def slice_tokens_byte_capped(
-    text: str, from_token: int, max_tokens: int, max_bytes: int
+    text: str,
+    from_token: int,
+    max_tokens: float | int,
+    max_bytes: float | int,
 ) -> TokenSlice:
-    """``slice_tokens`` also fitted to a UTF-8 byte allowance (R6 scaffolding).
+    """``slice_tokens`` also fitted to a UTF-8 byte allowance.
 
     Encode once; when the token window exceeds ``max_bytes``, binary-search the
     largest token count whose decoded slice fits. Receipts stay token-
-    denominated. R4 needs this on the retrieve path when ``byte_budget`` is set;
-    full byte-bound golden coverage is R6.
+    denominated — bytes only shrink how much is served now. Clean-tail then
+    shrinks until the decoded window ends on a valid UTF-8 code-point boundary
+    (    never leaves a mid-character U+FFFD split).
     """
     tokens = _encode_all(text)
     total_tokens = len(tokens)
     from_idx = max(0, int(from_token))
+    floored_max = max(0, math.floor(float(max_tokens)))
     if from_idx >= total_tokens:
         to_idx = from_idx
     else:
-        to_idx = min(from_idx + max(0, int(max_tokens)), total_tokens)
+        to_idx = min(from_idx + floored_max, total_tokens)
+
+    byte_cap = float(max_bytes)
 
     def fits(end: int) -> bool:
-        return len(_decode_tokens(tokens[from_idx:end]).encode("utf-8")) <= max_bytes
+        return len(_decode_tokens(tokens[from_idx:end]).encode("utf-8")) <= byte_cap
 
     count = to_idx - from_idx
     if not fits(to_idx):
         low = 0
         high = count
         while low < high:
+            # TS: Math.ceil((low + high) / 2) — same for ints as (low+high+1)//2.
             mid = (low + high + 1) // 2
             if fits(from_idx + mid):
                 low = mid
