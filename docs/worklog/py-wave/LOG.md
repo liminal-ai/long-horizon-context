@@ -1681,3 +1681,285 @@ Status: **PASS — safe to commit**.
 - Artifact identity: interpreter `packages/lhc-py/.venv/bin/python3`, editable
   source `packages/lhc-py`, `HEAD` `eb13f58`; path-scoped status unchanged by
   verification.
+
+## Leg-1 certification P1 — verbatim pretty JSON number spelling
+
+Status: **implementer complete** (working tree; no commit).
+Implementer: **Grok 4.5 high** (authorized narrow Leg-1 cert P1 correction).
+Base: `f113259e4d59cb3566d919f1fa89404d2485f5d8` (`feat(lhc-py): add bounded retrieval formatting`).
+Contract pin: TypeScript SDK `81cd48c` `packages/lhc/src/retrieval/index.ts`
+(`verbatimText` → `JSON.stringify(…, null, 2)`).
+
+### Finding (production-reachable P1)
+
+`retrieval._verbatim_text` pretty-printed `tool_call` arguments with Python
+`json.dumps(..., indent=2, ensure_ascii=False)`. Node/TS uses
+`JSON.stringify(value, null, 2)`. Number spelling diverges:
+
+| value | Python `json.dumps` | JS `JSON.stringify` |
+| --- | --- | --- |
+| `1.0` | `1.0` | `1` |
+| `1e-7` | `1e-07` | `1e-7` |
+| `1e-6` | `1e-06` | `0.000001` |
+
+That changes token counts and whole/slice budget decisions. Certifier case
+`{values:[1.0]*1500}` under the default 8 000 budget:
+
+- Python spelling ≈ **9017** tokens → **slice** (`to_token=8000`, `total=9017`)
+- JS spelling ≈ **6017** tokens → **whole serve** (no slice)
+
+The shared `_jsstr.py` already had ECMAScript number spelling via
+`js_format_number` / compact `js_json_dumps`; only the pretty form was missing.
+
+Default arm of `_verbatim_text` (`model_change` / `thinking_level_change`) uses
+the same TS contract (`JSON.stringify(content, null, 2)`) and is production-
+reachable; both pretty paths were corrected. No other serialization surfaces
+were broadened.
+
+### Fix (narrow)
+
+1. `packages/lhc-py/src/lhc/shared_tech/_jsstr.py`
+   - `_write_json_pretty` + public `js_json_dumps_pretty` —
+     `JSON.stringify(value, null, 2)`: two-space indent, `": "` after keys,
+     empty `{}`/`[]` compact, insertion-ordered keys, non-ASCII raw, number
+     leaves via `js_format_number` after `js_json_normalize`.
+2. `packages/lhc-py/src/lhc/retrieval/__init__.py`
+   - `_verbatim_text` `tool_call` args → `js_json_dumps_pretty`
+   - default block arm → `js_json_dumps_pretty` (same contract)
+3. `packages/lhc-py/tests/test_retrieval.py`
+   - public-path parity: nested numeric args exact pretty bytes
+   - certifier budget-boundary: 1500×`1.0` whole-serves under default budget
+
+### TDD receipts
+
+**RED** (regressions only, pre-fix):
+
+```text
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_pretty_js_number_bytes \
+  tests/test_retrieval.py::test_get_messages_numeric_array_args_whole_serve_under_default_budget -v
+→ 2 failed
+  - pretty bytes: count 1.0 / rate 1e-07 (Python) ≠ 1 / 1e-7 (JS)
+  - bulk args sliced: SliceReceipt(0, 8000, total=9017) instead of whole serve
+```
+
+**GREEN** (post-fix):
+
+```text
+# Focused new regressions
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_pretty_js_number_bytes \
+  tests/test_retrieval.py::test_get_messages_numeric_array_args_whole_serve_under_default_budget -q
+→ 2 passed
+
+# Focused retrieval cluster + jsstr numbers
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval_format.py tests/test_retrieval.py \
+  tests/test_retrieval_id_cap.py tests/test_token_counting_special.py \
+  tests/test_jsstr_numbers.py -q
+→ 121 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (700 tests)
+  gate: passed=685 notimpl=0 skipped=15 wrong=0 classified=700
+```
+
+### Artifact identity
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | editable `file:///…/packages/lhc-py` |
+| SDK `HEAD` | `f113259e4d59cb3566d919f1fa89404d2485f5d8` |
+| path-scoped porcelain | `M` retrieval/__init__.py, shared_tech/_jsstr.py, test_retrieval.py, docs/worklog/py-wave/LOG.md |
+
+### Scope
+
+- Touched: `packages/lhc-py/src/lhc/shared_tech/_jsstr.py`,
+  `packages/lhc-py/src/lhc/retrieval/__init__.py`,
+  `packages/lhc-py/tests/test_retrieval.py`, this LOG entry.
+- Unchanged: Hermes, TypeScript working tree, `cc-lhc`, beads, `pnpm-lock`,
+  git history/staging/remotes/marker. No commit. No unrelated serialization.
+
+## Leg-1 certification P1 correction round 2 — JSON.stringify array-index key order
+
+Status: **implementer complete** (working tree; no commit).
+Implementer: **Grok 4.5 high** (authorized narrow Leg-1 cert P1 correction round 2).
+Base: `f113259e4d59cb3566d919f1fa89404d2485f5d8` + prior numeric pretty-stringify working tree.
+Contract: ECMA-262 `OrdinaryOwnPropertyKeys` / `JSON.stringify` object property order
+(pin-equivalent Node v24.18.0 oracle).
+
+### Finding (production-reachable P1)
+
+Independent verifier confirmed numeric pretty spelling fixed, then found key-order
+divergence: JS `JSON.stringify` emits canonical array-index keys
+(`0` … `2^32-2`, decimal spelling only) first in ascending numeric order, recursively,
+then other string keys in insertion order. Python writers kept dict insertion order.
+
+Public intake accepts such keys on `tool_call.arguments`. Model-visible
+`get_messages` pretty bytes / slice prefixes then diverge from TS.
+
+Both compact `js_json_dumps` and pretty `js_json_dumps_pretty` shared the defect
+(compact is used on capture-side token estimates and other public storage paths).
+
+### Fix (narrow)
+
+1. `packages/lhc-py/src/lhc/shared_tech/_jsstr.py`
+   - `_is_js_array_index_key` — canonical decimal `0..4294967294` only
+     (`"01"`, `"4294967295"`, signs, fractions stay ordinary)
+   - `_js_json_object_items` — shared key-order helper
+   - `_write_json` + `_write_json_pretty` both consume the helper (recursive)
+2. Comment accuracy only: `deterministic.py` key-order note.
+3. Tests (TDD):
+   - `tests/test_jsstr_numbers.py` — unit + live Node oracle for boundaries
+     `0`, `2`, `10`, `01`, `4294967294`, `4294967295`, nested, ordinary insertion
+   - `tests/test_retrieval.py` — public intake→`get_messages` pretty bytes + prefix order
+
+Prior numeric/non-ASCII pretty behavior retained. No storage-row rewrite, no Hermes,
+no git ops, no unrelated serializers.
+
+### TDD receipts
+
+**RED** (new regressions only, pre-fix):
+
+```text
+.venv/bin/python3 -B -m pytest \
+  tests/test_jsstr_numbers.py::test_js_json_dumps_array_index_keys_sorted_first \
+  tests/test_jsstr_numbers.py::test_js_json_dumps_pretty_array_index_keys_sorted_first \
+  tests/test_jsstr_numbers.py::test_js_json_dumps_nested_array_index_keys \
+  tests/test_jsstr_numbers.py::test_js_json_dumps_boundary_non_index_spellings \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_js_array_index_key_order -v
+→ 5 failed
+  - compact/pretty retained insertion order (z,10,2,0,…) ≠ JS (0,2,10,4294967294,…)
+  - nested + public get_messages prefix/byte mismatch
+```
+
+**GREEN** (post-fix):
+
+```text
+# Focused new + prior numeric regressions
+.venv/bin/python3 -B -m pytest tests/test_jsstr_numbers.py \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_pretty_js_number_bytes \
+  tests/test_retrieval.py::test_get_messages_numeric_array_args_whole_serve_under_default_budget \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_js_array_index_key_order -q
+→ 67 passed · wrong=0 notimpl=0 skipped=0
+
+# Focused retrieval cluster + jsstr
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval_format.py tests/test_retrieval.py \
+  tests/test_retrieval_id_cap.py tests/test_token_counting_special.py \
+  tests/test_jsstr_numbers.py -q
+→ 129 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (708 tests)
+  gate: passed=693 notimpl=0 skipped=15 wrong=0 classified=708
+```
+
+Node live oracle: `js_json_dumps` / `js_json_dumps_pretty` byte-equal to
+`JSON.stringify` / `JSON.stringify(_, null, 2)` for the boundary object (Node v24.18.0).
+
+### Artifact identity
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | editable `file:///…/packages/lhc-py` |
+| SDK `HEAD` | `f113259e4d59cb3566d919f1fa89404d2485f5d8` |
+| path-scoped porcelain | `M` `_jsstr.py`, `deterministic.py`, `test_jsstr_numbers.py`, `test_retrieval.py`, `docs/worklog/py-wave/LOG.md` (+ prior R2 numeric files still dirty) |
+
+### Scope
+
+- Touched this round: `packages/lhc-py/src/lhc/shared_tech/_jsstr.py`,
+  `packages/lhc-py/src/lhc/shared_tech/deterministic.py` (comment),
+  `packages/lhc-py/tests/test_jsstr_numbers.py`,
+  `packages/lhc-py/tests/test_retrieval.py`, this LOG entry.
+- Unchanged: Hermes, TypeScript tree, `cc-lhc`, beads, `pnpm-lock`, git
+  history/staging/remotes/marker. No commit. No stored-row rewrite.
+
+## Leg-1 independent certification — final verdict
+
+Status: **PASS — safe to commit**.
+
+- Independent certifier: fresh GPT-5.6 Sol high run
+  `20260810-214055-6cf56b`.
+- No P0 / P1 / P2 findings. Both certification corrections were confirmed
+  production-reachable and correct: public retrieval pretty-printing uses
+  ECMAScript number spelling, and compact/pretty object serialization applies
+  recursive `JSON.stringify` array-index key ordering while Unicode digits stay
+  ordinary keys.
+- Independent Node probes matched **4096/4096** finite-float spellings and the
+  nested pretty key-order/number oracle.
+- Focused correction suite: **69 passed**, `wrong=0`, `notimpl=0`, `skipped=0`.
+- Fresh schema-v6 creation plus genuine seeded v5→v6 migration exhibit:
+  **2 passed**, including preserved records, active CHECK constraints, and a
+  valid insert after the constraint probe.
+- Exact-interpreter authoritative gate: **695 passed + 15 intentional TS
+  `it.skip` mirrors = 710 classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
+- Artifact identity: `packages/lhc-py/.venv/bin/python3`; editable source
+  `file:///srv/work/long-horizon-context/packages/lhc-py`; certification base
+  `f113259e4d59cb3566d919f1fa89404d2485f5d8` plus the five expected
+  package-scoped correction files.
+- R1–R6 parity inventory was present and exercised: empty-thinking husks;
+  signatures/identity grouping; stable labels; retrieval/schema migration and
+  impressions; token-total markers/special-token capture; bounded retrieval,
+  continuation, UTF-8 byte slicing, and formatter goldens.
+- No unapproved TypeScript contract deviations. Approved Python adaptations
+  remain snake_case retrieval options and SDK-owned receipt placement outside
+  the recalled-history envelope.
+- `git diff --check -- packages/lhc-py` was clean. Package-scoped status was
+  identical before and after certification; the verifier made no edits and did
+  not inspect Hermes.
+
+### Addendum — ASCII-only array-index digit grammar (steward follow-up)
+
+Steward diff inspection: `_is_js_array_index_key` used Python `str.isdigit()`,
+which accepts Unicode Nd (e.g. Arabic-Indic `"١"`). JS array-index names are
+canonical ASCII decimal only, so `"١"` must stay ordinary (not sort as index 1).
+`int("١")` is also 1 in Python, so the false positive was production-reachable
+on public intake→`get_messages` pretty bytes.
+
+**Fix:** digit check is now explicit ASCII `'0'..'9'` (`all("0" <= c <= "9" …)`);
+all prior boundaries (`"0"`, leading zeros, `4294967294`/`4294967295`, nested,
+ordinary insertion) preserved.
+
+**Tests:**
+- shared helper: `test_js_json_dumps_unicode_digits_remain_ordinary_keys`
+  (compact + pretty; Arabic-Indic keys ordered around ASCII `"1"`/`"2"`/`"10"`)
+- public path: `test_get_messages_tool_call_args_unicode_digit_keys_stay_ordinary`
+
+**Receipts:**
+
+```text
+# Focused new + prior array-index / numeric
+.venv/bin/python3 -B -m pytest tests/test_jsstr_numbers.py \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_pretty_js_number_bytes \
+  tests/test_retrieval.py::test_get_messages_numeric_array_args_whole_serve_under_default_budget \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_js_array_index_key_order \
+  tests/test_retrieval.py::test_get_messages_tool_call_args_unicode_digit_keys_stay_ordinary -q
+→ 69 passed · wrong=0 notimpl=0 skipped=0
+
+# Retrieval cluster + jsstr
+.venv/bin/python3 -B -m pytest \
+  tests/test_retrieval_format.py tests/test_retrieval.py \
+  tests/test_retrieval_id_cap.py tests/test_token_counting_special.py \
+  tests/test_jsstr_numbers.py -q
+→ 131 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+.venv/bin/python3 -B scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (710 tests)
+  gate: passed=695 notimpl=0 skipped=15 wrong=0 classified=710
+```
+
+No commit. Scope unchanged beyond `_jsstr.py` predicate, the two regressions,
+and this addendum.

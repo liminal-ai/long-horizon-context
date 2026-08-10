@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Generic, Literal, Sequence, TypeVar
 
-from ..shared_tech._jsstr import js_json_dumps, js_len, js_slice
+from ..shared_tech._jsstr import js_json_dumps, js_json_dumps_pretty, js_len, js_slice
 from ..shared_tech.errors import OpResult, storage_failure
 from ..shared_tech.persist import create_db_read_transaction, create_db_write_transaction
 from ..shared_tech.storage import Database
@@ -495,9 +495,9 @@ def _verbatim_text(blocks: Sequence[dict[str, object]]) -> str:
             name = content.get("toolName") if isinstance(content.get("toolName"), str) else "tool"
             call_id = content.get("toolCallId") if isinstance(content.get("toolCallId"), str) else ""
             id_part = f" {call_id}" if call_id else ""
-            args_pretty = json.dumps(
-                content.get("arguments"), indent=2, ensure_ascii=False
-            )
+            # TS: JSON.stringify(content["arguments"], null, 2) — ECMAScript
+            # number spelling (1.0 → "1", 1e-7 → "1e-7"), not Python json.dumps.
+            args_pretty = js_json_dumps_pretty(content.get("arguments"))
             parts.append(f"[tool_call {name}{id_part}]\n{args_pretty}")
         elif block_type == "tool_result":
             call_id = content.get("toolCallId") if isinstance(content.get("toolCallId"), str) else ""
@@ -508,7 +508,9 @@ def _verbatim_text(blocks: Sequence[dict[str, object]]) -> str:
             err_part = " ERROR" if is_error else ""
             parts.append(f"[tool_result{id_part}{err_part}]\n{body}")
         else:
-            parts.append(f"[{block_type}]\n{json.dumps(content, indent=2, ensure_ascii=False)}")
+            # model_change / thinking_level_change (and any other stored type):
+            # TS default arm uses JSON.stringify(content, null, 2).
+            parts.append(f"[{block_type}]\n{js_json_dumps_pretty(content)}")
     return "\n".join(parts)
 
 

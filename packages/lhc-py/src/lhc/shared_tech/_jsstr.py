@@ -276,6 +276,58 @@ def js_format_number(value: float | int) -> str:
     return sign + _js_format_ecma_digits(s, n)
 
 
+# Max array-index property name: ToUint32 bound excluding 2^32-1
+# (ECMA-262 IsArrayIndex / OrdinaryOwnPropertyKeys).
+_MAX_ARRAY_INDEX = 2**32 - 2  # 4294967294
+
+
+def _is_js_array_index_key(key: str) -> bool:
+    """True iff *key* is a canonical array-index property name.
+
+    Canonical *ASCII* decimal spelling of an integer in ``0 .. 2**32-2`` only:
+    ``"0"``, ``"1"``, …, ``"4294967294"``. Leading zeros (``"01"``),
+    ``"4294967295"``, signs, fractions, scientific forms, and non-ASCII digit
+    characters (e.g. Arabic-Indic ``"١"``, which Python ``str.isdigit()``
+    accepts) are ordinary string keys (JSON.stringify insertion-order group).
+
+    Digit check is ASCII ``'0'..'9'`` only — not ``str.isdigit()`` — matching
+    ECMA-262 array-index / ``ToString(ToUint32(n))`` canonical spelling.
+    """
+    if key == "0":
+        return True
+    if not key or key[0] == "0":
+        return False
+    # ASCII decimal digits only. ``str.isdigit()`` is wrong here: it accepts
+    # Unicode Nd (and some other) characters that are not JS array-index keys.
+    if not all("0" <= c <= "9" for c in key):
+        return False
+    # Digit length > 10 cannot be ≤ 4294967294; len==10 still needs the bound.
+    if len(key) > 10:
+        return False
+    return int(key) <= _MAX_ARRAY_INDEX
+
+
+def _js_json_object_items(value: dict) -> list[tuple[str, object]]:
+    """Object entries in JSON.stringify / OrdinaryOwnPropertyKeys order.
+
+    1. Array-index keys ascending by numeric value.
+    2. Remaining string keys in insertion order.
+
+    Shared by compact and pretty writers so capture-side compact dumps and
+    retrieval-side pretty dumps cannot drift on key order.
+    """
+    index_items: list[tuple[int, str, object]] = []
+    ordinary: list[tuple[str, object]] = []
+    for key, item in value.items():
+        skey = str(key)
+        if _is_js_array_index_key(skey):
+            index_items.append((int(skey), skey, item))
+        else:
+            ordinary.append((skey, item))
+    index_items.sort(key=lambda t: t[0])
+    return [(s, v) for _, s, v in index_items] + ordinary
+
+
 def _write_json(value: object) -> str:
     """Compact JSON writer with JS number spelling (no spaces)."""
     if value is None:
@@ -295,9 +347,62 @@ def _write_json(value: object) -> str:
         return "[" + ",".join(_write_json(item) for item in value) + "]"
     if isinstance(value, dict):
         parts: list[str] = []
-        for key, item in value.items():
-            parts.append(json.dumps(str(key), ensure_ascii=False) + ":" + _write_json(item))
+        for key, item in _js_json_object_items(value):
+            parts.append(json.dumps(key, ensure_ascii=False) + ":" + _write_json(item))
         return "{" + ",".join(parts) + "}"
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+_PRETTY_INDENT = "  "  # JSON.stringify space=2
+
+
+def _write_json_pretty(value: object, depth: int = 0) -> str:
+    """Pretty JSON writer matching ``JSON.stringify(value, null, 2)``.
+
+    Same leaf spelling as :func:`_write_json` (ECMAScript numbers, raw
+    non-ASCII, JSON.stringify key order via :func:`_js_json_object_items`).
+    Empty objects/arrays stay compact (``{}`` / ``[]``); non-empty containers
+    place each element on its own line with two-space indent per depth, and
+    ``": "`` after object keys.
+    """
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return js_format_number(value)
+    if isinstance(value, float):
+        return js_format_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return "[]"
+        inner = depth + 1
+        pad = _PRETTY_INDENT * inner
+        close = _PRETTY_INDENT * depth
+        lines = [
+            pad + _write_json_pretty(item, inner) + ("," if i + 1 < len(value) else "")
+            for i, item in enumerate(value)
+        ]
+        return "[\n" + "\n".join(lines) + "\n" + close + "]"
+    if isinstance(value, dict):
+        if len(value) == 0:
+            return "{}"
+        items = _js_json_object_items(value)
+        inner = depth + 1
+        pad = _PRETTY_INDENT * inner
+        close = _PRETTY_INDENT * depth
+        lines: list[str] = []
+        for i, (key, item) in enumerate(items):
+            key_json = json.dumps(key, ensure_ascii=False)
+            comma = "," if i + 1 < len(items) else ""
+            lines.append(
+                pad + key_json + ": " + _write_json_pretty(item, inner) + comma
+            )
+        return "{\n" + "\n".join(lines) + "\n" + close + "}"
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
@@ -305,9 +410,23 @@ def js_json_dumps(value: object) -> str:
     """JSON.stringify-compatible compact dump (no spaces, ensure_ascii=False).
 
     Number leaves use ECMAScript Number::toString spelling (see
-    js_format_number); dict key order is insertion order.
+    js_format_number). Object keys follow JSON.stringify order: canonical
+    array-index names (0..2^32-2) ascending, then other keys in insertion
+    order (see :func:`_js_json_object_items`).
     """
     return _write_json(js_json_normalize(value))
+
+
+def js_json_dumps_pretty(value: object) -> str:
+    """``JSON.stringify(value, null, 2)`` — pretty dump with JS number spelling.
+
+    Same leaf and key-order contract as :func:`js_json_dumps` (ECMAScript
+    Number::toString, array-index keys first, non-ASCII raw). Indentation and
+    ``": "`` spacing match Node's two-space pretty form. Used by retrieval
+    ``_verbatim_text`` for tool_call arguments (and other pretty
+    ``JSON.stringify`` paths).
+    """
+    return _write_json_pretty(js_json_normalize(value), 0)
 
 
 def js_repr(value: object) -> str:

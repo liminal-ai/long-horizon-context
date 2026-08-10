@@ -457,6 +457,324 @@ async def test_get_messages_reports_deleted(sdk, file_path: str) -> None:
     assert result.value.unserved[0].id == prompt_id
 
 
+# ── Leg-1 cert P1: tool_call args pretty JSON.stringify number spelling ──
+#
+# Pin TS 81cd48c retrieval verbatimText uses JSON.stringify(args, null, 2).
+# Python json.dumps(indent=2) spells 1.0 → "1.0" and 1e-7 → "1e-07"; Node
+# spells "1" and "1e-7". That drifts tokens and whole/slice budget decisions.
+
+
+_NESTED_NUMERIC_ARGS = {
+    "count": 1.0,
+    "rate": 1e-7,
+    "micro": 1e-6,
+    "half": 1.5,
+    "label": "café",
+    "nested": {"x": 1.0, "y": [1.0, 1e-7, 2]},
+    "emptyObj": {},
+    "emptyArr": [],
+}
+
+# Node oracle: JSON.stringify(_NESTED_NUMERIC_ARGS, null, 2) at pin-equivalent
+# Number::toString spelling (1.0 → 1, 1e-7 → 1e-7, non-ASCII raw).
+_NESTED_NUMERIC_ARGS_PRETTY_JS = """\
+{
+  "count": 1,
+  "rate": 1e-7,
+  "micro": 0.000001,
+  "half": 1.5,
+  "label": "café",
+  "nested": {
+    "x": 1,
+    "y": [
+      1,
+      1e-7,
+      2
+    ]
+  },
+  "emptyObj": {},
+  "emptyArr": []
+}"""
+
+
+async def test_get_messages_tool_call_args_pretty_js_number_bytes(
+    sdk, file_path: str
+) -> None:
+    """Public get_messages path: tool_call arguments pretty-print is exact
+    JSON.stringify(value, null, 2) bytes for nested numeric leaves."""
+    await _send(
+        file_path,
+        [
+            valid_event("user_prompt", {"payload": {"text": "run compute"}}),
+            valid_event(
+                "tool_call",
+                {
+                    "payload": {
+                        "toolCallId": "call-num",
+                        "toolName": "compute",
+                        "arguments": _NESTED_NUMERIC_ARGS,
+                    }
+                },
+            ),
+            valid_event("turn_end"),
+        ],
+    )
+    listed = await sdk.messages.list({"filePath": file_path})
+    assert listed.ok is True
+    if not listed.ok:
+        return
+    call_id = next(r.message_id for r in listed.value if r.kind == "tool_call")
+
+    result = await retrieval.get_messages({"filePath": file_path}, [call_id])
+    assert result.ok is True
+    if not result.ok:
+        return
+    assert len(result.value.served) == 1
+    served = result.value.served[0]
+    expected = f"[tool_call compute call-num]\n{_NESTED_NUMERIC_ARGS_PRETTY_JS}"
+    assert served.text == expected
+    # Python json.dumps spellings must not appear on the public path.
+    assert "1.0" not in served.text
+    assert "1e-07" not in served.text
+    assert "1e-7" in served.text
+    assert "café" in served.text  # non-ASCII raw (not \\uXXXX)
+
+
+async def test_get_messages_numeric_array_args_whole_serve_under_default_budget(
+    sdk, file_path: str
+) -> None:
+    """Certifier budget-boundary: {values:[1.0]*1500} whole-serves under the
+    default 8k budget at pinned JSON.stringify size. Python json.dumps
+    indent=2 spelling inflates tokens past the ceiling and forces a slice."""
+    args = {"values": [1.0] * 1500}
+    await _send(
+        file_path,
+        [
+            valid_event("user_prompt", {"payload": {"text": "bulk"}}),
+            valid_event(
+                "tool_call",
+                {
+                    "payload": {
+                        "toolCallId": "call-bulk",
+                        "toolName": "bulk",
+                        "arguments": args,
+                    }
+                },
+            ),
+            valid_event("turn_end"),
+        ],
+    )
+    listed = await sdk.messages.list({"filePath": file_path})
+    assert listed.ok is True
+    if not listed.ok:
+        return
+    call_id = next(r.message_id for r in listed.value if r.kind == "tool_call")
+
+    result = await retrieval.get_messages({"filePath": file_path}, [call_id])
+    assert result.ok is True
+    if not result.ok:
+        return
+    assert len(result.value.served) == 1
+    served = result.value.served[0]
+    # Whole serve — not a Python-spelling-induced slice.
+    assert served.slice is None
+    assert result.value.unserved == []
+    assert served.tokens <= DEFAULT_RETRIEVAL_TOKEN_BUDGET
+    assert result.value.total_tokens == served.tokens
+    # Spelling is JS bare integer lines, not "1.0".
+    assert "\n    1,\n" in served.text or served.text.endswith("\n    1\n}")
+    assert "1.0" not in served.text
+    # Sanity: Python-spelling size would have exceeded the default budget.
+    import json as _json
+
+    py_inflated = (
+        f"[tool_call bulk call-bulk]\n"
+        f"{_json.dumps(args, indent=2, ensure_ascii=False)}"
+    )
+    assert estimate_tokens(py_inflated) > DEFAULT_RETRIEVAL_TOKEN_BUDGET
+    assert served.tokens < estimate_tokens(py_inflated)
+
+
+# ── Leg-1 cert P1 round 2: JSON.stringify array-index key order ──
+#
+# Canonical array-index keys (0..2^32-2, decimal spelling only) serialize
+# first in ascending numeric order; other keys keep insertion order.
+# Python dict insertion order alone diverges for public intake→get_messages.
+
+
+def _array_index_key_args() -> dict[str, object]:
+    """Insertion order disagrees with JSON.stringify property order."""
+    nested: dict[str, object] = {}
+    nested["10"] = "t"
+    nested["2"] = "w"
+    nested["0"] = "z"
+    nested["ordinary"] = 1
+    args: dict[str, object] = {}
+    args["z"] = 1
+    args["10"] = "ten"
+    args["2"] = "two"
+    args["0"] = "zero"
+    args["a"] = 2
+    args["01"] = "zo"  # leading zero → ordinary key
+    args["4294967294"] = "max-array"  # max array index
+    args["4294967295"] = "beyond"  # 2^32-1 → ordinary
+    args["-1"] = "neg"
+    args["1.5"] = "f"
+    args["nested"] = nested
+    args["label"] = "café"  # non-ASCII preserved raw
+    return args
+
+
+# Node: JSON.stringify(_array_index_key_args(), null, 2)
+_ARRAY_INDEX_KEY_ARGS_PRETTY_JS = """\
+{
+  "0": "zero",
+  "2": "two",
+  "10": "ten",
+  "4294967294": "max-array",
+  "z": 1,
+  "a": 2,
+  "01": "zo",
+  "4294967295": "beyond",
+  "-1": "neg",
+  "1.5": "f",
+  "nested": {
+    "0": "z",
+    "2": "w",
+    "10": "t",
+    "ordinary": 1
+  },
+  "label": "café"
+}"""
+
+
+async def test_get_messages_tool_call_args_js_array_index_key_order(
+    sdk, file_path: str
+) -> None:
+    """Public intake→get_messages: tool_call args key order matches
+    JSON.stringify (array indices first; ordinary insertion order retained)."""
+    args = _array_index_key_args()
+    await _send(
+        file_path,
+        [
+            valid_event("user_prompt", {"payload": {"text": "key order"}}),
+            valid_event(
+                "tool_call",
+                {
+                    "payload": {
+                        "toolCallId": "call-keys",
+                        "toolName": "keyed",
+                        "arguments": args,
+                    }
+                },
+            ),
+            valid_event("turn_end"),
+        ],
+    )
+    listed = await sdk.messages.list({"filePath": file_path})
+    assert listed.ok is True
+    if not listed.ok:
+        return
+    call_id = next(r.message_id for r in listed.value if r.kind == "tool_call")
+
+    result = await retrieval.get_messages({"filePath": file_path}, [call_id])
+    assert result.ok is True
+    if not result.ok:
+        return
+    assert len(result.value.served) == 1
+    served = result.value.served[0]
+    expected = f"[tool_call keyed call-keys]\n{_ARRAY_INDEX_KEY_ARGS_PRETTY_JS}"
+    assert served.text == expected
+    # Prefix must start with sorted array indices, not insertion-order "z".
+    assert '"0": "zero"' in served.text
+    assert served.text.index('"0"') < served.text.index('"z"')
+    assert served.text.index('"2"') < served.text.index('"10"')
+    assert served.text.index('"10"') < served.text.index('"4294967294"')
+    # Non-index spellings stay ordinary (after array indices, insertion order).
+    assert served.text.index('"01"') > served.text.index('"a"')
+    assert served.text.index('"4294967295"') > served.text.index('"01"')
+    assert "café" in served.text
+
+
+def _unicode_digit_key_args() -> dict[str, object]:
+    """Unicode Nd keys interleaved around ASCII array-index keys.
+
+    Arabic-Indic digits are Python ``str.isdigit()`` / ``int()`` friendly but
+    must remain ordinary keys under JS array-index grammar (ASCII decimal only).
+    """
+    args: dict[str, object] = {}
+    args["z"] = 1
+    args["١"] = "arabic-1"  # U+0661 — before ASCII "1" in insertion order
+    args["1"] = "one"
+    args["٢"] = "arabic-2"  # U+0662 — between "1" and "2" in insertion order
+    args["2"] = "two"
+    args["10"] = "ten"
+    args["١٠"] = "arabic-10"  # U+0661 U+0660 — after ASCII "10"
+    return args
+
+
+# Node: JSON.stringify(_unicode_digit_key_args(), null, 2)
+_UNICODE_DIGIT_KEY_ARGS_PRETTY_JS = """\
+{
+  "1": "one",
+  "2": "two",
+  "10": "ten",
+  "z": 1,
+  "١": "arabic-1",
+  "٢": "arabic-2",
+  "١٠": "arabic-10"
+}"""
+
+
+async def test_get_messages_tool_call_args_unicode_digit_keys_stay_ordinary(
+    sdk, file_path: str
+) -> None:
+    """Public intake→get_messages: Unicode digit keys stay ordinary (not indices).
+
+    Regression for ``str.isdigit()`` false-positive: Arabic-Indic ``١`` must not
+    sort as array index 1 ahead of ordinary key ``z``.
+    """
+    args = _unicode_digit_key_args()
+    await _send(
+        file_path,
+        [
+            valid_event("user_prompt", {"payload": {"text": "unicode digit keys"}}),
+            valid_event(
+                "tool_call",
+                {
+                    "payload": {
+                        "toolCallId": "call-unicode-keys",
+                        "toolName": "keyed",
+                        "arguments": args,
+                    }
+                },
+            ),
+            valid_event("turn_end"),
+        ],
+    )
+    listed = await sdk.messages.list({"filePath": file_path})
+    assert listed.ok is True
+    if not listed.ok:
+        return
+    call_id = next(r.message_id for r in listed.value if r.kind == "tool_call")
+
+    result = await retrieval.get_messages({"filePath": file_path}, [call_id])
+    assert result.ok is True
+    if not result.ok:
+        return
+    assert len(result.value.served) == 1
+    served = result.value.served[0]
+    expected = (
+        f"[tool_call keyed call-unicode-keys]\n{_UNICODE_DIGIT_KEY_ARGS_PRETTY_JS}"
+    )
+    assert served.text == expected
+    # ASCII indices first; Arabic-Indic keys remain ordinary after "z".
+    assert served.text.index('"1"') < served.text.index('"z"')
+    assert served.text.index('"z"') < served.text.index('"١"')
+    assert served.text.index('"١"') < served.text.index('"٢"')
+    assert served.text.index('"٢"') < served.text.index('"١٠"')
+
+
 # ── impression log ────────────────────────────────────────────────────
 
 

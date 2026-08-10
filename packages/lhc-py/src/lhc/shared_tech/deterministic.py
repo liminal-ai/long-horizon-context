@@ -46,7 +46,7 @@ DETERMINISTIC_MARKERS: dict[DeterministicOpName, str] = {
 # FNV-1a 32-bit over the canonical input JSON: stable, dependency-free, and
 # input-sensitive enough that distinct inputs mark distinct outputs.
 # NOTE (Phase 2): "canonical input JSON" must byte-match JS JSON.stringify —
-# separators, key order (insertion order), and string escaping all matter.
+# separators, key order (array-index then insertion), and string escaping.
 def deterministic_digest(input: object) -> str:
     # JS JSON.stringify does not escape non-ASCII; then charCodeAt walks UTF-16.
     text = js_json_dumps(input)
