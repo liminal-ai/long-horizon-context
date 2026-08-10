@@ -1056,3 +1056,253 @@ Status: **PASS — safe to commit**.
 - Exact-interpreter full gate: **616 passed + 15 intentional skips = 631
   classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
 - R3 scope held; no R4 retrieval API or schema work entered.
+
+## R4 — schema v6 retrieval domain and impressions
+
+Status: **implementer complete** (working tree; pending independent verifier + path-scoped commit).
+Implementer: **Grok 4.5** (authorized R4 slice; fresh disposable session).
+Verifier: pending (fresh GPT-5.6 Sol high per PLAN).
+
+Contract pin: TypeScript SDK `81cd48c`
+(`retrieval/index.ts`, `sdk.ts`, `shared-tech/{storage,thread-migrate}.ts`,
+`threads/internal/create.ts`, `test/{retrieval,retrieval-id-cap,thread-migrate}.test.ts`).
+Rust trap map only (same pin): `src/retrieval/mod.rs`,
+`tests/{retrieval,retrieval_id_cap,thread_migrate}.rs`.
+
+### Base
+
+- R3 commit `b59decf43e99d5878881ad3cfda4268e8c51bc03` is current `HEAD`
+  (`feat(lhc-py): add stable turn and message labels`).
+- R4 sits uncommitted on top of that HEAD.
+
+### What changed
+
+Schema v6 + public retrieval domain — no R5 truncation token-total markers,
+no R6 historical-envelope formatter goldens.
+
+- `packages/lhc-py/src/lhc/shared_tech/storage.py`
+  - `CURRENT_THREAD_SCHEMA_VERSION = 6`.
+- `packages/lhc-py/src/lhc/shared_tech/thread_migrate.py`
+  - `THREAD_SCHEMA_VERSION_6 = 6`.
+  - `retrieval_impression_schema_statements()` — table + indexes + CHECKs
+    (`entity_kind IN ('turn','message')`, `served IN (0,1)`).
+  - v5→v6 migration step in `migrate_thread_schema`.
+- `packages/lhc-py/src/lhc/threads/internal/create.py`
+  - Fresh create splices derivation_log **and** retrieval_impression schema
+    statements (TS create.ts order).
+- `packages/lhc-py/src/lhc/shared_tech/token_counting/__init__.py`
+  - `slice_tokens` / `slice_tokens_byte_capped` + clean-tail scaffolding
+    (required by retrieve budget walk; full R6 byte goldens not claimed).
+- `packages/lhc-py/src/lhc/retrieval/__init__.py` (**new**)
+  - Public snake_case API: `get_turns`, `get_messages`, `list_impressions`,
+    `RetrievalOptions` (`token_budget` / `byte_budget` / `from_token` / `surface`),
+    constants (`DEFAULT_RETRIEVAL_TOKEN_BUDGET=8000`, `MAX_RETRIEVAL_IDS_PER_CALL=32`,
+    `MAX_RETRIEVAL_OUTPUT_TOKENS=22000`, `RETRIEVAL_ID_PATTERN`, `RETRIEVAL_SLICE_FLOOR`).
+  - Id validation `^[tm]\d{1,12}$`; `clamp_id_echo` via UTF-16 `js_len`/`js_slice`.
+  - Dedupe before 32-id cap; exact 32 pass; 33 refuse with split guidance.
+  - One impression row per **deduped** requested id (first occurrence wins),
+    including served / not_found / deleted / budget / invalid.
+  - `get_turns` reuses R3 `labeled_or_recomposed_turn_rendering` for stored
+    labeled pass-through vs legacy unlabeled recompose (`source` stored|composed).
+  - `get_messages` verbatim block text (tool call/result pairing ids).
+  - Budget walk with whole-serve / slice floor / budget unserved (R6 scaffolding).
+- `packages/lhc-py/src/lhc/sdk.py` + `__init__.py`
+  - `sdk.retrieval` scoped surface; package re-exports.
+- Tests:
+  - `tests/test_retrieval.py` (new) — serve/compose/legacy/not_found/budget/
+    deleted/impressions/record purity/canonical order/12–13 digit boundary.
+  - `tests/test_retrieval_id_cap.py` (new) — 32/33 cap, dedupe-before-cap,
+    UTF-16 clamp (ASCII + astral), budget ceiling, invalid impressions.
+  - `tests/test_thread_migrate.py` — final version asserts → v6; genuine seeded
+    v5→v6 exhibit (preserve events/messages/turns + CHECK probes); fresh-v6.
+  - `tests/test_view_fixture.py` — fresh schema version assert `6`.
+
+### Invariants held
+
+- Fresh threads are schema v6 with `retrieval_impression` + indexes.
+- Real seeded v5 open migrates in place; events/messages/turns/blocks preserved;
+  CHECK constraints reject bad `entity_kind` / `served`.
+- Public API snake_case; error reason strings keep TS camelCase field names
+  (`tokenBudget`, `fromToken`, `byteBudget`) for parity.
+- Dedupe before cap; first occurrence wins for serve **and** impression.
+- Exactly one impression per deduped id including every result class.
+- `get_turns` uses R3 labeled_or_recomposed helper (no double-label; no writes).
+- Request order for multi-id serves; composed members follow persisted message order.
+
+### Deliberately out of scope (R4)
+
+- R5 truncation markers as full stored token totals / legacy char translation.
+- R6 historical-envelope formatter, maximal-output bound tests, byte-budget
+  goldens, sliver exemption exhibits (scaffolding present; goldens not claimed).
+- Unrelated dirt under `packages/cc-lhc`, `.beads`, `pnpm-lock.yaml`,
+  TypeScript `packages/lhc` working tree.
+
+### Exact commands and results
+
+```text
+# Focused R4 modules
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_retrieval.py tests/test_retrieval_id_cap.py -q
+→ 25 passed · wrong=0 notimpl=0 skipped=0
+
+# Migration + R4 cluster
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_retrieval.py tests/test_retrieval_id_cap.py \
+  tests/test_thread_migrate.py tests/test_view_fixture.py -q
+→ 46 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (658 tests)
+  gate: passed=643 notimpl=0 skipped=15 wrong=0 classified=658
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `b59decf43e99d5878881ad3cfda4268e8c51bc03` (R3 on main; uncommitted R4 on top) |
+| path-scoped porcelain | `M` storage/thread_migrate/create/token_counting/sdk/__init__/test_thread_migrate/test_view_fixture; `??` retrieval/__init__.py, test_retrieval.py, test_retrieval_id_cap.py; `M` docs/worklog/py-wave/LOG.md (this entry) |
+
+### Suite receipt (not frozen criteria)
+
+- Focused R4 retrieval: **25 passed** (18 core + 7 id-cap)
+- Focused migrate suite: **8 passed** (was 6; +v5→v6 + fresh-v6)
+- Full gate: collect **658** · passed=643 notimpl=0 skipped=15 wrong=0 classified=658 · **GATE PASS**
+- Delta vs R3 suite (631 collect / 616 pass): **+27** tests (658 / 643)
+
+### Risks / notes
+
+- Budget walk includes slice helpers so oversized items under default budget can
+  slice rather than refuse; R6 owns full byte-bound / clean-tail / envelope
+  golden claims. R4 tests prove whole-serve, budget-unserved, and id/impression
+  contracts without claiming R6 goldens.
+- v5 simulation for the genuine migrate exhibit drops `retrieval_impression`
+  from a fresh v6 file then rewinds `user_version` — same trap-map technique as
+  Rust. Not a production path.
+- Python option fields are snake_case; hosts must not pass camelCase kwargs
+  unless they construct `RetrievalOptions` with snake fields.
+- No stage/commit/push. Unrelated dirt under `cc-lhc` / `.beads` / `pnpm-lock`
+  / TS `packages/lhc` untouched. No R5+.
+
+## R4 — verifier round 2 (four findings) + implementer fix
+
+Status: **implementer round-2 complete** (working tree; pending re-verify + path-scoped commit).
+Implementer: **Grok 4.5**.
+Verifier round 1 envelope: `codex-subagent result 20260810-175512-104f48` — **FAIL**.
+
+Contract pin unchanged: TypeScript SDK `81cd48c`.
+
+### Verifier findings (independently verified)
+
+1. **P1 — Astral invalid-ID clamp aborts retrieval.** UTF-16 32-unit cut on
+   astral input leaves a lone surrogate; Python sqlite3 cannot bind it, so the
+   whole write transaction fails. Node completes the call; SQLite stores U+FFFD.
+2. **P1 — Regex accepts Unicode digits.** Python `\d` is Unicode-aware; JS `\d`
+   is ASCII-only. IDs like `t١` were `not_found` instead of `invalid`.
+3. **P2 — Fractional token budgets truncated.** `_resolve_budget` used `int()`,
+   so `0.5→0`, `1.5→1`, `7999.9→7999`. Pinned TS `Math.min` preserves fractions.
+4. **P2 — CHECK-constraint tests mutation-blind.** `except Exception: pass`
+   swallowed the `AssertionError` that should fire when inserts succeed;
+   CHECK-stripped mutants survived.
+
+### Round-2 fixes (strictly those four)
+
+- `packages/lhc-py/src/lhc/retrieval/__init__.py`
+  - `clamp_id_echo`: after UTF-16 slice, replace lone surrogates with U+FFFD
+    (Node/SQLite stored form). Receipt + impression stay aligned; call completes.
+  - `RETRIEVAL_ID_PATTERN`: `^[tm][0-9]{1,12}$` (ASCII digits only).
+  - `_resolve_budget`: `min(float(budget), DEFAULT)` — no `int()` truncation;
+    receipt `token_budget` typed `float`.
+  - Budget walk floors slice max_tokens when remaining is fractional (TS
+    `Math.floor` on slice path).
+- `packages/lhc-py/tests/test_thread_migrate.py`
+  - CHECK probes use `pytest.raises(sqlite3.IntegrityError)` so a successful
+    insert fails the test; mutants without CHECK cannot survive.
+- `packages/lhc-py/tests/test_retrieval_id_cap.py`
+  - Astral clamp unit test expects U+FFFD replacement (not raw lone surrogate).
+  - **New** production-path regressions:
+    - `test_astral_invalid_id_completes_call_and_writes_impression`
+    - `test_unicode_digits_are_invalid_not_not_found`
+    - `test_fractional_token_budget_preserved_like_ts_math_min`
+
+### Production probes (post-fix)
+
+```text
+P1-astral ok= True · echo has FFFD · served=1 · impression matches
+P1-digits pattern match= False · outcome= invalid  (was not_found)
+P2-budget 0.5 → 0.5 · 1.5 → 1.5 · 7999.9 → 7999.9
+```
+
+### Exact commands and results
+
+```text
+# Focused R4 modules (+ 3 new round-2 regressions)
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_retrieval.py tests/test_retrieval_id_cap.py -q
+→ 28 passed · wrong=0 notimpl=0 skipped=0
+
+# Migration + R4 cluster
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 -m pytest \
+  tests/test_retrieval.py tests/test_retrieval_id_cap.py \
+  tests/test_thread_migrate.py tests/test_view_fixture.py -q
+→ 49 passed · wrong=0 notimpl=0 skipped=0
+
+# Authoritative full gate
+cd /srv/work/long-horizon-context/packages/lhc-py
+/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3 scripts/check_gate.py
+→ GATE PASS
+  collect-only: clean (661 tests)
+  gate: passed=646 notimpl=0 skipped=15 wrong=0 classified=661
+```
+
+### Artifact identity (full-gate receipt)
+
+| Field | Value |
+| --- | --- |
+| `sys.executable` | `/srv/work/long-horizon-context/packages/lhc-py/.venv/bin/python3` |
+| `sys.prefix` | `/srv/work/long-horizon-context/packages/lhc-py/.venv` |
+| `lhc.__file__` | `/srv/work/long-horizon-context/packages/lhc-py/src/lhc/__init__.py` |
+| `direct_url.json` | `{"url":"file:///srv/work/long-horizon-context/packages/lhc-py","dir_info":{"editable":true}}` |
+| SDK `HEAD` | `b59decf43e99d5878881ad3cfda4268e8c51bc03` (R3 on main; uncommitted R4 + round-2 on top) |
+
+### Suite delta vs R4 round 1
+
+| | Round 1 | Round 2 |
+| --- | --- | --- |
+| Focused retrieval | 25 | 28 (+3 regressions) |
+| R4/migration cluster | 46 | 49 |
+| Full gate collect | 658 | 661 |
+| Full gate passed | 643 | 646 |
+| Intentional skips | 15 | 15 |
+
+### Scope held
+
+- Only the four verified findings + focused regressions + LOG evidence.
+- No R5 truncation markers, no R6 envelope goldens, no unrelated cleanup.
+- No stage / commit / push / fetch / reset / stash / clean.
+
+## R4 — independent verifier final verdict
+
+Status: **PASS — safe to commit**.
+
+- Final verifier: fresh GPT-5.6 Sol high session. The normal read-only sandbox
+  could not initialize because this host denies bwrap loopback setup; the
+  approved full-access fallback was used with a strict read-only brief and
+  path-scoped before/after status checks.
+- All four prior findings were resolved: astral clamps persist U+FFFD without
+  aborting impressions; ID digits are ASCII-only; fractional budgets remain
+  fractional while slice windows floor at the TS boundary; migration CHECK
+  tests require real `sqlite3.IntegrityError` and prove a later valid insert.
+- No production-reachable regression was found in the fixes.
+- Focused R4: **28 passed**; R4 + migration cluster: **49 passed**.
+- Exact-interpreter full gate: **646 passed + 15 intentional skips = 661
+  classified**, `wrong=0`, `notimpl=0`, **GATE PASS**.
+- Verifier artifact identity matched the package venv and editable source at
+  current `HEAD` `b59decf`; path-scoped status was unchanged by verification.
