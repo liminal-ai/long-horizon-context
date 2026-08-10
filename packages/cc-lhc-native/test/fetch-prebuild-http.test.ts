@@ -132,7 +132,11 @@ describe("fetch-prebuild against a mutating loopback release server", () => {
       { [assetLib.CHECKSUMS_ASSET_NAME]: sums([[currentAsset, other]]), [currentAsset]: garbage },
       async (baseUrl) => {
         const run = await runFetch(baseUrl, currentKey, root);
-        expect(run.status).toBe(1);
+        // Failure exits are nonzero, not exactly 1: Windows can surface a
+        // native abnormal-termination status (e.g. 3221226505) for a failing
+        // Node subprocess; the semantic proof is stderr + on-disk state.
+        expect(run.status).not.toBe(0);
+        expect(run.status).not.toBeNull();
         expect(run.stderr).toContain("checksum mismatch");
         expect(readFileSync(dest)).toEqual(sentinel);
         expect(residue(root, currentKey)).toEqual([]);
@@ -148,7 +152,8 @@ describe("fetch-prebuild against a mutating loopback release server", () => {
       { [assetLib.CHECKSUMS_ASSET_NAME]: sums([[currentAsset, garbage]]), [currentAsset]: garbage },
       async (baseUrl) => {
         const run = await runFetch(baseUrl, currentKey, root);
-        expect(run.status).toBe(1);
+        expect(run.status).not.toBe(0);
+        expect(run.status).not.toBeNull();
         expect(run.stdout).toContain("checksum verified");
         expect(run.stderr).toContain("rejected before install (installed addon untouched)");
         expect(readFileSync(dest)).toEqual(sentinel);
@@ -169,7 +174,8 @@ describe("fetch-prebuild against a mutating loopback release server", () => {
         },
         async (baseUrl) => {
           const run = await runFetch(baseUrl, currentKey, root, { CC_LHC_PREBUILD_TEST_FAIL: "install" });
-          expect(run.status).toBe(1);
+          expect(run.status).not.toBe(0);
+          expect(run.status).not.toBeNull();
           expect(run.stdout).toContain("addon verified live in subprocess");
           expect(run.stderr).toContain("test-injected replacement failure");
           expect(run.stderr).toContain("previously installed addon restored");

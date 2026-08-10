@@ -10,7 +10,9 @@
 # (pwsh, the runner default) on Windows — Windows evidence must not detour
 # through Git Bash. The linux-arm64 and win32-arm64 runner labels
 # (ubuntu-24.04-arm, windows-11-arm) are GitHub public-preview labels; they
-# are required jobs, not optional ones.
+# are required jobs, not optional ones. win32-x64 stays on windows-2022:
+# windows-2025 ships Visual Studio 18, which node-gyp rejects as an unknown
+# version (observed in run 31404594096).
 #
 # The aggregate job merges all six prebuilds, enforces the full release-bundle
 # contract, and uploads release-candidate assets with SHA-256 checksums.
@@ -42,22 +44,22 @@ jobs:
           - target: darwin-arm64
             runner: macos-15
           - target: win32-x64
-            runner: windows-2025
+            runner: windows-2022
           - target: win32-arm64
             runner: windows-11-arm
     steps:
       - name: Checkout (recursive submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Install pnpm 11.8.0
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.8.0
 
       - name: Install Node 24.18.0
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.18.0
           cache: pnpm
@@ -98,7 +100,7 @@ jobs:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
 
       - name: Upload prebuild artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prebuild-${{ matrix.target }}
           path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
@@ -110,17 +112,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout (recursive submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Install pnpm 11.8.0
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.8.0
 
       - name: Install Node 24.18.0
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.18.0
           cache: pnpm
@@ -132,7 +134,7 @@ jobs:
         run: pnpm --filter cc-lhc-native run build
 
       - name: Download all prebuild artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: prebuild-*
           path: .artifacts/prebuilds
@@ -148,14 +150,14 @@ jobs:
         run: node packages/cc-lhc-native/scripts/check-release-bundle.mjs --dir .artifacts/release-bundle
 
       - name: Upload release bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cc-lhc-native-release-bundle
           path: .artifacts/release-bundle
           if-no-files-found: error
 
       - name: Upload release-candidate assets (six prebuilds + SHA256SUMS)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cc-lhc-native-release-assets
           path: .artifacts/release-assets

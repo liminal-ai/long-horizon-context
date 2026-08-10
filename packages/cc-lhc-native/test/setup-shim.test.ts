@@ -69,8 +69,10 @@ describe("shim content", () => {
 
   it("Windows launcher.js executes: forwards args, guards missing dist (runs on every platform)", () => {
     const marker = `launcher-ok-${process.pid}`;
-    // Metacharacters that are legal in directory names on every filesystem.
-    const repo = mkdtempSync(join(tmpdir(), "cc-lhc shim $ & (x) 'q\" repo-"));
+    // Metacharacters that are legal in directory names on every filesystem
+    // (no double quote — illegal in Windows filenames; the JSON-encoding test
+    // above keeps covering quotes in generated content).
+    const repo = mkdtempSync(join(tmpdir(), "cc-lhc shim $ & (x) 'q repo-"));
     const distDir = join(repo, "packages", "cc-lhc", "dist");
     mkdirSync(distDir, { recursive: true });
     const distBin = join(distDir, "bin.js");

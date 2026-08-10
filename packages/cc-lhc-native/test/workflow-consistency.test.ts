@@ -17,7 +17,10 @@ import { loadTargetsManifest, targetKey } from "../src/targets.js";
 const packageRoot = defaultPackageRoot();
 const repoRoot = join(packageRoot, "..", "..");
 const workflowPath = join(repoRoot, ".github", "workflows", "native-platforms.yml");
-const workflow = readFileSync(workflowPath, "utf8");
+// Normalize newlines once: a Windows checkout (core.autocrlf) may hand this
+// file over with CRLF, and every regex/indexOf below must parse identically
+// on all six matrix legs.
+const workflow = readFileSync(workflowPath, "utf8").replaceAll("\r\n", "\n");
 const manifest = loadTargetsManifest(join(packageRoot, "targets.json"));
 const manifestKeys = manifest.targets.map(targetKey);
 const assetLib = await import(pathToFileURL(join(packageRoot, "scripts", "asset-names.mjs")).href);
@@ -28,7 +31,7 @@ const EXPECTED_RUNNERS: Record<string, string> = {
   "linux-arm64": "ubuntu-24.04-arm",
   "darwin-x64": "macos-15-intel",
   "darwin-arm64": "macos-15",
-  "win32-x64": "windows-2025",
+  "win32-x64": "windows-2022",
   "win32-arm64": "windows-11-arm",
 };
 
@@ -60,6 +63,25 @@ describe("matrix ↔ targets.json", () => {
 describe("pinned toolchain and required steps", () => {
   it("checks out recursive submodules in every job", () => {
     expect(workflow.match(/submodules: recursive/g)?.length).toBe(2);
+  });
+
+  it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
+    // Current major per action, verified against the official releases via gh
+    // on 2026-08-10 — all run on the Node 24 actions runtime.
+    const REQUIRED_ACTION_MAJORS: Record<string, number> = {
+      "actions/checkout": 7,
+      "actions/setup-node": 7,
+      "actions/upload-artifact": 7,
+      "actions/download-artifact": 8,
+      "pnpm/action-setup": 6,
+    };
+    const used = [...workflow.matchAll(/uses: ([^\s@]+)@v(\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);
+    expect(used.length).toBeGreaterThan(0);
+    for (const [action, major] of used) {
+      expect(REQUIRED_ACTION_MAJORS[action], `unexpected action ${action} — add it to the pinned majors`).toBeDefined();
+      expect(major, `${action} must stay on v${REQUIRED_ACTION_MAJORS[action]}`).toBe(REQUIRED_ACTION_MAJORS[action]);
+    }
+    expect(new Set(used.map(([action]) => action)).size).toBe(Object.keys(REQUIRED_ACTION_MAJORS).length);
   });
 
   it("pins Node 24.18.0 and pnpm 11.8.0 (matching packageManager)", () => {
