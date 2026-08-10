@@ -644,12 +644,8 @@ fn message_candidate(db: &Db, message_id: &str) -> Candidate<RetrievedMessage> {
 }
 
 fn generate_call_id() -> String {
-    use std::io::Read;
     let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .expect("open /dev/urandom")
-        .read_exact(&mut bytes)
-        .expect("read /dev/urandom");
+    getrandom::fill(&mut bytes).expect("generate retrieval call id entropy");
     // UUID v4-ish hex with dashes (format not load-bearing; uniqueness is).
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",

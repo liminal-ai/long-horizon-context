@@ -24,6 +24,7 @@ indexmap = { version = "2", features = ["serde"] }
 rusqlite = { version = ">=0.37, <0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 futures = "0.3"
+getrandom = "0.3"
 regex = "1"
 # Lookaround / backrefs (JS `(?!…)`); only where `regex` cannot express the pattern.
 fancy-regex = "0.17"

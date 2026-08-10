@@ -153,12 +153,8 @@ const THREAD_SCHEMA_STATEMENT_TEMPLATES: &[&str] = &[
 
 /// TS `generateThreadId` — `th_` + 16 hex chars (8 random bytes).
 pub fn generate_thread_id() -> String {
-    use std::io::Read;
     let mut bytes = [0u8; 8];
-    std::fs::File::open("/dev/urandom")
-        .expect("open /dev/urandom")
-        .read_exact(&mut bytes)
-        .expect("read /dev/urandom");
+    getrandom::fill(&mut bytes).expect("generate thread id entropy");
     let mut hex = String::with_capacity(16);
     for b in bytes {
         hex.push_str(&format!("{b:02x}"));
