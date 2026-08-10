@@ -24,11 +24,13 @@ describe("cc-lhc help surface", () => {
       "CC_LHC_CLAUDE_BIN",
       "CC_LHC_INPUT_DEBUG=FILE",
       "CC_LHC_RUNTIME_DESCRIPTOR",
+      "BASH_MAX_OUTPUT_LENGTH",
+      "XDG_CONFIG_HOME",
       "ctrl-]",
       "bounds <lower> <upper>",
     ]) {
       expect(CC_LHC_HELP).toContain(required);
     }
-    expect(CC_LHC_HELP).toContain("--help, pass through to Claude");
+    expect(CC_LHC_HELP).toContain("--help, are forwarded");
   });
 });

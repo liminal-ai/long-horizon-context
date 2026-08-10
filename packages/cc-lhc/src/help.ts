@@ -28,13 +28,16 @@ Environment:
   CC_LHC_LEADER=KEY                Control-panel key (default: ctrl-])
   CC_LHC_INPUT_DEBUG=FILE          Append input-protocol diagnostics to FILE
   CC_LHC_RUNTIME_DESCRIPTOR        Wrapper-owned retrieval binding; do not set manually
+  BASH_MAX_OUTPUT_LENGTH=N         Further clamp retrieval stdout bytes
+  XDG_CONFIG_HOME                  Base directory for user context policy
 
 Control panel:
   Press ctrl-] (or CC_LHC_LEADER) while Claude is running.
   Commands: status, stats, compact, prune [targetTokens], export,
             auto on|off, bounds <lower> <upper>, help
 
-All non-LHC arguments, including --help, pass through to Claude unchanged.`;
+Reserved subcommands are handled by cc-lhc. Ordinary Claude arguments, including
+--help, are forwarded after safe session-selector normalization.`;
 
 export function isLhcHelpArgv(argv: readonly string[]): boolean {
   return argv.length === 1 && argv[0] === "--lhc-help";

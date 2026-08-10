@@ -15,7 +15,7 @@ The system is an SDK consumed by host harnesses. The **TypeScript core is the co
 | [PI](https://github.com/earendil-works/pi) (Earendil Works) | `pi-lhc` extension — the reference integration; PI is vendored here as a submodule |
 | Codex CLI (OpenAI) | [maintained fork](https://github.com/liminal-ai/codex-lhc), native Rust integration via the vendored `lhc-rs` port |
 | Grok Build (xAI) | [maintained fork](https://github.com/liminal-ai/grok-build-lhc), native Rust integration via the vendored `lhc-rs` port |
-| Claude Code (Anthropic) | `cc-lhc` wrapper — closed host; PTY passthrough + rollout observation (next-generation design converged, see `docs/worklog/`) |
+| Claude Code (Anthropic) | `cc-lhc` wrapper — certified closed-host integration with rollout capture, retrieval, and automatic context handoff |
 | t3code | `t3code-lhc` host package for the t3code web harness |
 
 Maintenance patterns for all of these (fork sync drills, wrapper patterns) are in `docs/host-integrations.md`.
@@ -32,9 +32,9 @@ packages/
 ├── lhc-convex/  Convex port — certified against the TS contract
 ├── pi-lhc/      PI extension — captures PI events into LHC, bridges compact, serves
 │                context, registers retrieval tools
-├── cc-lhc/      Claude Code wrapper — PTY passthrough, rollout capture into LHC intake,
-│                ctrl-] leader-key command modal, claude -p inference lane, prune/compact
-│                via rollout rebuild + in-app /resume swap. State in ~/.cc-lhc/
+├── cc-lhc/      Claude Code wrapper — PTY passthrough, bound rollout capture, Bash
+│                retrieval, ctrl-] control panel, claude -p inference, and automatic
+│                compact via rollout rebuild + controlled child respawn
 └── t3code-lhc/  t3code host — provider-conversation capture, operator-driven context swap
 ```
 
@@ -59,9 +59,21 @@ A PI extension that hooks into PI's session lifecycle. It captures PI events int
 | `/lhc-export-pi-session` | Export the live in-memory PI session to a text file (fidelity diffing) |
 | `/lhc-export-threadview` | Export LHC's canonical render of the thread (fidelity diffing) |
 
-### `cc-lhc` — The Claude Code Wrapper (POC)
+### `cc-lhc` — The Claude Code Wrapper
 
-Wraps the closed `claude` CLI in a PTY: raw passthrough, session-rollout capture into an LHC thread, a ctrl-] leader-key modal for LHC commands (status/stats/prune/compact — mutating commands refuse while a claude turn is open), a `claude -p` inference lane for derivations (Sonnet 5 no-thinking baseline), and prune/compact via rollout rebuild + an injected in-app `/resume` that hot-swaps the session in-place. Fully self-contained state in `~/.cc-lhc/` (registry, lineage, threads). Known warts are listed in `packages/cc-lhc/README.md`.
+Wraps the closed `claude` CLI in a PTY and binds its rollout stream to one LHC
+thread. It provides canonical capture, stable `<tN>`/`<mN>` labels, model-callable
+retrieval through Bash, a `claude -p` derivation lane, provider-usage-driven
+automatic compact, and manual compact/prune through the ctrl-] control panel.
+For respawn-safe interactive launches, context changes rebuild a new rollout and
+use a transactionally controlled child respawn; lineage and retrieval advance
+only after replacement capture and child liveness are proven. Unsafe launch argv
+degrades to an explicit external-resume path rather than risking prompt replay.
+State is isolated under `~/.cc-lhc/`.
+
+Run `cc-lhc --lhc-help` for wrapper flags and commands. The retained whole-product
+certification against Claude Code 2.1.226 is in
+`packages/cc-lhc/test/fixtures/slice7-certification-evidence.md`.
 
 ## Installing the Claude Code Harness (cc-lhc)
 

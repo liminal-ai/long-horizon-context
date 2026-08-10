@@ -1,75 +1,171 @@
 # cc-lhc
 
-CLI wrapper that launches Claude Code under a PTY for LHC integration.
+`cc-lhc` is the production Claude Code host for Long Horizon Context. It wraps
+the closed `claude` CLI in a PTY, captures Claude's rollout JSONL into an LHC
+thread, runs derivation inference through isolated `claude -p` subprocesses,
+and, for respawn-safe interactive launches, rebuilds/respawns Claude when the
+served thread view changes.
 
-Usage: `cc-lhc [claude args...]` — all arguments pass through to `claude` verbatim.
+The integration was certified on 2026-08-10 against Claude Code 2.1.226. See
+[`test/fixtures/slice7-certification-evidence.md`](test/fixtures/slice7-certification-evidence.md)
+for the retained acceptance record.
 
-Override the child binary with `CC_LHC_CLAUDE_BIN` (default: `claude` on PATH).
+## Start and help
 
-## Current status (2026-07-06)
+```text
+cc-lhc [cc-lhc flags] [claude args...]
+cc-lhc --lhc-help
+```
 
-Working POC, all core paths proven on real sessions:
+The three documented subcommands are reserved by the wrapper. Ordinary Claude
+arguments, including `--help`, are forwarded after safe session-selector
+normalization. Unknown `--lhc-*` flags exit with status 2.
+`CC_LHC_CLAUDE_BIN` overrides the child binary. State defaults to
+`~/.cc-lhc`; `CC_LHC_HOME` overrides it.
 
-- **Capture**: rollout JSONL tailed into an LHC thread; tolerant of unknown record types (skips are counted, the `stats` command shows them — a rising `skipped_unknown` after a Claude Code update is the schema-drift signal).
-- **Inference lane**: derivations run through `claude -p` (Sonnet 5 no-thinking baseline, concurrency 3). No API key needed beyond the Claude Code login.
-- **Prune and compact**: both live-proven, including a 340k-token real session compacted 2026-07-06. Restart is an in-app `/resume <new-session-id>` injection — ~1-2s in-place swap, no process kill. Original session files are never modified. Both refuse while a claude turn is open (turn gate, below).
-- **Thread continuity**: prune/compact/resume all land on the same LHC thread via `~/.cc-lhc` lineage; replayed prefix lines are excluded from re-intake by position (leak fixed after the first live fire).
+## What is integrated
 
-Setup: see the root README's "Installing the Claude Code Harness" kickoff, which drives `.setup/cc-lhc-standalone.md` (validated by a cold agent run).
+- **Canonical capture.** A versioned rollout parser maps recognized
+  conversational records into the append-only LHC record. Harmless host
+  metadata is counted as telemetry; only classified integrity failures mark
+  capture degraded.
+- **Stable identity.** Assistant model identity is frozen from the response
+  record. Thinking signatures are opaque; empty-but-signed thinking is
+  preserved in the canonical record. The certified rebuild arm currently
+  omits thinking blocks because the closed host cannot prove the prepared
+  request identity required for safe signed replay.
+- **Retrieval.** Claude can invoke `get-turns` and `get-messages` through Bash.
+  A wrapper-owned runtime descriptor binds each invocation to the exact live
+  session and LHC thread. Stale ownership, malformed state, and session
+  mismatch fail closed before archive access or impression writes.
+- **Context governance.** Provider-reported usage drives automatic compact at
+  confirmed turn boundaries. Built-in policy targets 240k, triggers at 500k,
+  reserves 50k runway, keeps native compact as a 1M emergency backstop, and
+  leaves automatic prune off.
+- **Controlled handoff.** On a respawn-safe interactive launch, compact/prune
+  rebuild a new rollout, terminate the
+  old child, and spawn `claude --resume <new-id>`. Capture stays attached
+  through old-child exit; lineage and the ready descriptor advance only after
+  replacement capture and child liveness are proven. User input is buffered
+  after the transaction's commit point and delivered exactly once, or retained
+  in a recovery artifact.
+- **Single ownership.** A process-identity lease prevents two wrappers from
+  owning the same Claude session, including across PID reuse.
 
-Fixed defects (2026-07-06/07):
+## Retrieval and migration commands
 
-- **Leader dead on kitty-protocol terminals** — fixed: ctrl-] worked on xterm and Apple Terminal but did nothing on iTerm2, Warp, Ghostty, and cmux. The split was exactly kitty-keyboard-protocol support: claude pushes disambiguate mode (`ESC[>1u`), so those terminals deliver ctrl-] as `CSI 93;5u`, never as raw 0x1d — and passthrough only matched the raw byte (the tmux rig missed it because send-keys synthesizes raw bytes, bypassing the terminal's encoder). Passthrough now holds ESC-led numeric CSI prefixes until they classify and recognizes the configured leader in kitty CSI-u and xterm modifyOtherKeys (`CSI 27;5;93~`, observed live from tmux extended-keys) forms — swallowed whole on match, forwarded intact otherwise; leader-again cancel works in all encodings.
+```text
+cc-lhc get-turns [--from TOKENS] <tN>...
+cc-lhc get-messages [--from TOKENS] <mN>...
+cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
+```
 
-- **Post-swap screen corruption** — fixed: the swap receipt now travels inside the rebuilt rollout as a trailing `[runtime note]` line (Claude Code renders it natively in the transcript on resume, and it enters the thread record so later rebuilds re-serve it), and a single ctrl-L (0x0c) injected after swap confirmation makes Claude Code repaint over the pre-swap raw prints. The resume-failure message still prints raw — it must be visible even at the cost of a corrupted line.
-- **Slash-command interception** (resolved 2026-07-07 by removal): the wrapper used to intercept typed `/lhc-*` lines by estimating Claude Code's input-box state from the stdin byte stream (a shadow count of the box). The estimator failed repeatedly — type-and-erase lockout, paste dispatch, kitty release events — because it inferred state it did not own: CC-side box fills (history recall), editing keys, and terminal noise all desynced it. The whole mechanism is gone, replaced by the ctrl-] leader-key modal (below), where ambiguity cannot exist by construction — while modal, the input line is ours. This also drops the wrapper's dependence on stdin heuristics entirely: passthrough now forwards every byte untouched.
+Retrieval is model-callable and uses the inherited
+`CC_LHC_RUNTIME_DESCRIPTOR`; users should not set it manually. The service
+computes a whole-stdout ceiling of at most 24,000 bytes, reserves envelope
+overhead, and gives the remainder to the SDK as its byte budget. This keeps the
+complete recalled-history envelope within Claude's certified inline-output
+limit. Continuation receipts provide the next token offset.
 
-Known open defects:
+`backfill-labels` is an operator command. It recomposes legacy stored
+`turn_rendering` derivations with stable `<tN>`/`<mN>` labels for one explicit
+thread. It does not use inference, alter canonical events, queue work, or
+change source versions; `--dry-run` reports the planned changes.
 
-- **Bare `--continue` reattach gap**: lineage reattachment is only reliable via explicit `-r <session-id>`; interleaved sessions can make `--continue` silently start a fresh thread.
+## Control panel
 
-## `~/.cc-lhc` layout
+Press **ctrl-]** while Claude is running. The wrapper opens an alternate-screen
+panel so it never writes diagnostics into Claude's input box. Override the key
+with `CC_LHC_LEADER`.
 
-cc-lhc owns its complete state under `~/.cc-lhc` (override for tests with `CC_LHC_HOME`):
-
-| Path | Purpose |
-|------|---------|
-| `registry.sqlite` | LHC thread registry for cc-lhc threads (`registryPath` on every `ThreadRef`) |
-| `cc-lhc.sqlite` | Session lineage (`rollout_session_id → thread_id`) and replay-dedupe signatures |
-| `threads/<uuid>.sqlite` | Per-thread LHC databases |
-
-Nothing cc-related is written under `~/.lhc`. Existing threads there remain readable; fresh cc-lhc sessions start clean in `~/.cc-lhc`.
-
-## Command surface: the ctrl-] leader modal
-
-Press **ctrl-]** (0x1d — telnet's escape-to-control-channel precedent; probed a no-op in claude 2.1.202 with both an empty and a drafted input box) to open the command modal. The leader is recognized in all three encodings a terminal may deliver: the legacy raw byte, kitty CSI-u (`ESC[93;5u` — claude pushes kitty disambiguate mode, so iTerm2/Warp/Ghostty send this form; press/repeat only, ctrl-only modifier), and xterm modifyOtherKeys (`ESC[27;5;93~`, what tmux extended-keys emits). It opens the command modal: the wrapper switches to the terminal's **alternate screen** and draws a centered panel with the prompt `long-horizon commands> `, receipt rows beneath it, and a dim key-hint line (`Enter run · Esc close · ctrl-C detach`). Override with `CC_LHC_LEADER` (a single control byte: literal char, caret notation like `^_`, or hex like `0x1f`; BEL/TAB/LF/CR/ctrl-C/ESC are rejected — BEL because it terminates OSC responses on stdin). The leader is recognized only as a real keypress: inside a bracketed paste or an in-flight terminal escape sequence it stays literal.
-
-While modal, stdin drives our line editor (backspace, ctrl-U kill; kitty CSI-u keys handled; ASCII-only — non-ASCII bytes are ignored) and **pty output is held** — claude keeps running, we delay rendering its bytes (4 MB cap; on overflow the modal cancels — logged, surfaced by `status` — and everything flushes). The panel redraws on every keypress and recenters on resize. Enter executes; **one keypress dismisses** — Esc, ctrl-C, or leader-again leaves the alternate screen (the terminal restores Claude Code's layout exactly) and then flushes the held output (a bare Esc in a non-kitty terminal resolves after ~50 ms — the next byte decides whether it introduced a split escape sequence); `help`/`?` lists commands; unknown commands show the help rows and stay modal.
-
-While a command is running the panel shows a progress line (`status — running… (3s)`, elapsed ticking once a second) and **the same dismiss keys detach** — Esc, ctrl-C, or leader-again, in any of the three encodings: the panel closes and output resumes; the command keeps running (single-flight), and its receipt lands on the panel if you reopen it, otherwise in the wrapper log. Rerunning a command while one is in flight is refused with a named line (`busy — compact still running (41s)…`). A stray string-sequence introducer on stdin (alt-], a truncated OSC response) used to wedge the modal by making every key read as protocol traffic; raw ctrl-C or the leader now escape that wedge (a legal OSC/DCS payload cannot contain them), closing the child's dangling introducer with ST.
-
-| Command | What it does |
+| Command | Effect |
 | --- | --- |
-| `status` | Thread-view status: tail tokens vs threshold, zone, derivation counts |
-| `stats` | One-line capture stats |
-| `prune [targetTokens]` | Advance the visibility boundary; rebuild + in-app resume |
-| `export` | Write canonical transcript dumps (rollout + thread view) to cwd for before/after fidelity diffs |
-| `compact` | Smart compact; rebuild + in-app resume |
-| `help` / `?` | List commands |
+| `status` | Capture, descriptor, derivation, context-policy, and last-action status |
+| `stats` | Current capture counters |
+| `compact` | Smart compact and controlled child handoff |
+| `prune [targetTokens]` | Advance the visibility boundary and hand off if changed |
+| `export` | Write rollout and served-view transcript dumps |
+| `auto on|off` | Change automatic compact for this wrapper lifetime |
+| `bounds <lower> <upper>` | Change compact target/trigger for this wrapper lifetime |
+| `help` / `?` | List panel commands |
 
-Command receipts render as panel rows above a fresh prompt on the alternate screen (immune to the main-screen TUI's repaints by construction), so you read the receipt and dismiss with a single Esc — the alt screen closes, Claude Code's screen is restored byte-exactly, and the held output flushes onto it in order. A `compact`/`prune` that ends in a **confirmed swap auto-dismisses** — zero keypresses after Enter; the panel closes itself and you watch the resumed session repaint, with the swap receipt rendered natively in the transcript. Refusals, errors, no-ops, and `status`/`stats` stay until dismissed.
+Panel edits are session-scoped. Persistent policy is configured below.
 
-**Output doctrine.** The wrapper never writes raw bytes into a UI it doesn't own: while claude owns the terminal, wrapper diagnostics (capture errors, resume logs, SIGUSR1 stats, overflow notices, detached-command receipts) go to `~/.cc-lhc/wrapper.log`, record-worthy events (drain-not-settled) additionally become thread runtime notes, and `status` reports "N warnings since launch — see <logpath>" whenever the log has warnings. Raw stderr is used only after the child has exited (the final stats line).
+The advisory lifecycle-command notifier warns on high-confidence user-entered
+`/resume`, `/clear`, and `/compact`; it never blocks or rewrites input and is
+not a correctness mechanism. Disable it for one launch with
+`--lhc-no-notifier`. A real session mismatch still revokes retrieval and
+capture through the authoritative rollout/session checks.
 
-**Turn gate.** `prune` and `compact` refuse with `turn in progress — rerun when idle` while a claude turn is open. Turn state is folded from the rollout tail the wrapper already parses — content first, `stop_reason` as refinement, because 2.1.201 writes assistant lines with no `stop_reason` at all: user prompt/tool_result lines open; an assistant line with tool_use blocks opens; otherwise `stop_reason` other than `tool_use` closes, and with no `stop_reason` a text-bearing assistant line closes (thinking-only lines are neutral); interrupt markers close. The turn state is rechecked at the last instant before `/resume` injection — if a background turn opened during the rebuild, the swap aborts cleanly (original session untouched; the rebuilt file may remain on disk unused). After a successful swap, if the OLD session file grew past the rebuild cutoff (a background turn raced the swap), a silent `runtime_note` is written to the thread record — the raced content reached the record via the old tail's final flush but is absent from the rebuilt live context.
+## Context policy
 
-Prune/compact rebuild a **new** rollout file under `~/.claude/projects/…` (original never modified), then inject `/resume <newSessionId>` into the running Claude Code, which hot-swaps the session in-place (~1-2s) on the same LHC thread. If the resume doesn't take (the `Session <newSessionId> was not found` tripwire, confirmed against whether the rebuilt rollout file actually grew), the original session stays live and the wrapper prints the manual `/resume` command.
+Policy precedence is:
 
-## Known warts (POC)
+```text
+builtin < user config < project config < launch flags / panel edits
+```
 
-- Exit is janky: the Claude Code intro/alt-screen content gets re-emitted into the scrollback multiple times (~7x observed) on child exit. Cosmetic; likely output-flush-after-restore ordering in run.ts onExit. Fix when it annoys someone.
-- The modal line editor is ASCII-only (commands are ASCII); non-ASCII bytes are ignored, arrow keys are dropped while modal.
-- `~/.cc-lhc/wrapper.log` is append-only with no rotation (POC-honest; safe to delete).
-- Rebuild emits NATIVE rollout lines: per-block assistant lines (`thinking` / `text` / `tool_use` with verbatim id+name+input, one block per line under a shared synthetic message id, `stop_reason: "tool_use"` on call lines) and tool results as `tool_result` blocks paired by `tool_use_id` — no bracket-label text in the tail (that echo-trained the model to emit `[tool …]` markers before real calls). `model_change` entries stamp the model on subsequent assistant lines. Remaining fidelity caveats: thinking blocks re-emit with `signature: ""` (signatures are not captured — a one-time cache miss, and untested against resume as of 2026-07-19), the native `toolUseResult` metadata field is not reconstructed, and `thinking_level_change` has no rollout representation.
-- If rollout jsonl is written but `sessions-index.json` update fails afterward, an orphan rollout file may remain (harmless; index unchanged).
-- `sessions-index.json.bak` is single-slot — only the pre-write snapshot is kept.
+User config is `$XDG_CONFIG_HOME/cc-lhc/config.json` (or
+`~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Unknown
+fields and invalid bounds are reported and disarm automatic policy without
+preventing Claude or capture from running. Supported persisted fields are
+`autoCompact`, `lowerBoundTokens`, `upperBoundTokens`, `profile`,
+`nativeCompactMode`, `nativeBackstopTokens`, `pruneEnabled`,
+`pruneThresholdTokens`, `pruneTargetTokens`, `retryGrowthTokens`, and
+`minRunwayTokens`. `observeOnly` is launch-only.
+
+Run `cc-lhc --lhc-help` for the wrapper's launch flags and operative
+environment surface.
+
+## State and diagnostics
+
+| Path under `~/.cc-lhc` | Purpose |
+| --- | --- |
+| `registry.sqlite` | Thread registry |
+| `cc-lhc.sqlite` | Claude-session lineage and capture metadata |
+| `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
+| `owners/*.json` | Exclusive live-session ownership leases |
+| `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600) |
+| `recovery/*` | Ordered input retained after an unrecoverable handoff failure |
+| `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
+
+Runtime descriptors live in a private runtime directory and are capabilities,
+not durable state. Rebuilt Claude rollouts remain under Claude's normal
+`~/.claude/projects/` layout. The original rollout is never rewritten.
+
+## Operational boundaries
+
+- Fresh capture launches with a wrapper-assigned session ID. Explicit
+  `--resume <id>` binds that session; bare `--resume` uses the wrapper-owned cwd
+  picker, and `--continue` is resolved before Claude is spawned. Ambiguous or
+  conflicting capture selectors fail before spawn.
+- Launch-time resume and wrapper-controlled handoffs preserve the LHC thread.
+  User-issued in-app `/resume` is unsupported; the
+  advisory warning appears first, and any resulting mismatch fails closed.
+- Automatic handoff requires respawn-safe launch argv. A positional initial
+  prompt, prompt tokens after `--`, or an option/value boundary the wrapper
+  cannot prove disables automatic respawn so a prompt is never re-executed.
+  Manual compact/prune still writes and binds the rebuilt artifact; continue it
+  with an external `cc-lhc --resume <rebuilt-session-id>`.
+- Exact signed-thinking replay would require exact stored/live request identity.
+  The wrapper cannot observe that closed request boundary, so rebuilt rollouts
+  currently omit thinking blocks rather than guessing.
+- Claude Code hooks are not required. The wrapper's lifecycle events come from
+  the authoritative rollout stream; PTY handling is limited to terminal
+  transport, the panel, child-liveness proof, and advisory notification.
+- Automatic prune remains off by default. Native Claude compact is retained
+  only as the configured emergency backstop.
+
+## Verification
+
+```text
+cd packages/cc-lhc
+./node_modules/.bin/tsc -p tsconfig.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.test.json
+./node_modules/.bin/vitest run
+```
+
+Certification includes the real installed artifact in SSH → tmux → PTY,
+automatic compact twice, unpiped labeled retrieval and impression recording,
+prune, clean exit/relaunch, explicit resume, deliberate in-app mismatch,
+legacy label backfill, and production-state isolation.
