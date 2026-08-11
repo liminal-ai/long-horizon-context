@@ -2,7 +2,7 @@
  * Correction 8: exact consumed-region continuity + terminal initial failures.
  */
 
-import { appendFileSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,6 +68,22 @@ describe("watcher continuity (exact consumed digest)", () => {
     const handle = openContinuityHandle(path);
     expect(verifyPrefixBoundaryOnHandle(handle, boundary).ok).toBe(true);
 
+    // POSIX proves the invariant end to end with a real rename over the
+    // watched path. Windows forbids replacing a file the continuity handle
+    // holds open (rename → EPERM — the OS itself blocks the substitution),
+    // so there the identity change is injected through the watcher's lstat
+    // seam while the lure bytes are really appended to the path: the watcher
+    // must still degrade on the dev/ino mismatch and never deliver the lure.
+    const seamSwap = process.platform === "win32";
+    let pathSwapped = false;
+    const swappedIo: Partial<WatcherIo> = {
+      lstat: (p) => {
+        const st = lstatSync(p);
+        if (!pathSwapped) return { dev: st.dev, ino: st.ino };
+        return { dev: st.dev, ino: typeof st.ino === "bigint" ? st.ino + 1n : st.ino + 1 };
+      },
+    };
+
     const lines: string[] = [];
     const cont: string[] = [];
     watcher = watchRolloutFile({
@@ -81,16 +97,21 @@ describe("watcher continuity (exact consumed digest)", () => {
         }
       },
       onContinuityFailure: (m) => cont.push(m),
+      ...(seamSwap ? { io: swappedIo } : {}),
     });
     await watcher.initialCatchUp;
 
     // Replace path only after ready — must not follow new inode lure.
-    writeFileSync(
-      alt,
-      prefix +
-        `${JSON.stringify({ type: "user", uuid: "LURE", message: { role: "user", content: "lure-path-replace" } })}\n`,
-    );
-    renameSync(alt, path);
+    const lure = `${JSON.stringify({ type: "user", uuid: "LURE", message: { role: "user", content: "lure-path-replace" } })}\n`;
+    if (seamSwap) {
+      // Flip identity FIRST so no poll can legitimately read the appended
+      // bytes before the path stops matching the proven file.
+      pathSwapped = true;
+      appendFileSync(path, lure);
+    } else {
+      writeFileSync(alt, prefix + lure);
+      renameSync(alt, path);
+    }
     await sleep(200);
     expect(cont.length).toBeGreaterThanOrEqual(1);
     expect(lines).not.toContain("LURE");

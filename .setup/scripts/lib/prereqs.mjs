@@ -60,3 +60,61 @@ export function probeSpawnOptions(platform) {
 export function safeProbeToken(token) {
   return /^[A-Za-z0-9._:=@/-]+$/.test(token);
 }
+
+/**
+ * Windows native-Claude contract (mirrors the production resolver in
+ * packages/cc-lhc/src/shared/claude-bin.ts, kept dist-free here): cc-lhc's
+ * PTY layer (ConPTY) spawns absolute native executables only — a `.cmd`/npm
+ * shim would require routing arbitrary argv through cmd.exe, which cc-lhc
+ * refuses. Resolve `candidate` (CC_LHC_CLAUDE_BIN or "claude") through
+ * PATH/PATHEXT accepting only .exe/.com; report a shim-only PATH with
+ * actionable guidance. `isFile` must behave case-insensitively like NTFS.
+ */
+export function resolveWindowsClaudeExe(candidate, pathValue, pathextValue, isFile) {
+  const NATIVE = [".exe", ".com"];
+  const SHIMS = [".cmd", ".bat", ".ps1"];
+  const guidance = "install native Claude Code (claude.exe) or set CC_LHC_CLAUDE_BIN to its absolute .exe path";
+  const ext = (p) => {
+    const m = /\.[^.\\/]+$/.exec(p);
+    return m ? m[0].toLowerCase() : "";
+  };
+  if (candidate.includes("\\") || candidate.includes("/") || /^[A-Za-z]:/.test(candidate)) {
+    const e = ext(candidate);
+    if (NATIVE.includes(e)) {
+      return isFile(candidate)
+        ? { ok: true, path: candidate }
+        : { ok: false, detail: `Claude executable not found at ${candidate} — ${guidance}` };
+    }
+    if (e === "") {
+      for (const nativeExt of NATIVE) {
+        if (isFile(candidate + nativeExt)) return { ok: true, path: candidate + nativeExt };
+      }
+      return { ok: false, detail: `no native executable at ${candidate}(.exe|.com) — ${guidance}` };
+    }
+    return { ok: false, detail: `${candidate} is not a native executable (${e}) — ${guidance}` };
+  }
+  const pathext = (pathextValue && pathextValue !== "" ? pathextValue : ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.startsWith("."));
+  const dirs = (pathValue ?? "")
+    .split(";")
+    .map((dir) => dir.trim().replace(/^"(.*)"$/, "$1"))
+    .filter((dir) => dir !== "");
+  let shimHit;
+  for (const dir of dirs) {
+    for (const entryExt of pathext) {
+      const probe = `${dir}\\${candidate}${entryExt}`;
+      if (!isFile(probe)) continue;
+      if (NATIVE.includes(entryExt)) return { ok: true, path: probe };
+      if (shimHit === undefined && SHIMS.includes(entryExt)) shimHit = probe;
+    }
+  }
+  if (shimHit !== undefined) {
+    return {
+      ok: false,
+      detail: `PATH resolves ${candidate} only to a shell shim (${shimHit}); cc-lhc's PTY needs a native executable — ${guidance}`,
+    };
+  }
+  return { ok: false, detail: `${candidate} not found on PATH — ${guidance}` };
+}

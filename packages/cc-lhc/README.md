@@ -135,7 +135,7 @@ environment surface.
 | `cc-lhc.sqlite` | Claude-session lineage and capture metadata |
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive live-session ownership leases |
-| `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600) |
+| `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
 | `recovery/*` | Ordered input retained after an unrecoverable handoff failure |
 | `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
 

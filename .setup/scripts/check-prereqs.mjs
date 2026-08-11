@@ -5,11 +5,19 @@
 // pi-lhc skips the Claude Code and native-target checks.
 // Runs on native Linux, macOS, and Windows (cmd or PowerShell).
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readTargetsManifestLite } from "../../packages/cc-lhc-native/scripts/asset-names.mjs";
-import { claudeAuthProbeArgs, evaluateNodeVersion, probeSpawnOptions, safeProbeToken, targetSupport } from "./lib/prereqs.mjs";
+import {
+  claudeAuthProbeArgs,
+  evaluateNodeVersion,
+  probeSpawnOptions,
+  resolveWindowsClaudeExe,
+  safeProbeToken,
+  targetSupport,
+} from "./lib/prereqs.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -76,6 +84,27 @@ if (target === "cc-lhc") {
 if (target === "cc-lhc") {
   const claudeV = run("claude", ["--version"]);
   check("claude on PATH", claudeV !== null, claudeV ?? "Claude Code not found");
+
+  if (process.platform === "win32") {
+    // cc-lhc's PTY (ConPTY) spawns absolute native executables only — a
+    // .cmd/npm shim on PATH is not launchable. Same contract as the
+    // production resolver (packages/cc-lhc/src/shared/claude-bin.ts).
+    const override = process.env.CC_LHC_CLAUDE_BIN;
+    const candidate = override !== undefined && override !== "" ? override : "claude";
+    const native = resolveWindowsClaudeExe(
+      candidate,
+      process.env.PATH ?? process.env.Path ?? "",
+      process.env.PATHEXT,
+      (p) => {
+        try {
+          return statSync(p).isFile();
+        } catch {
+          return false;
+        }
+      },
+    );
+    check("claude native executable (ConPTY)", native.ok, native.ok ? native.path : native.detail);
+  }
 
   if (claudeV !== null && !skipClaudeCall) {
     // Real auth probe; --no-session-persistence keeps the probe from writing

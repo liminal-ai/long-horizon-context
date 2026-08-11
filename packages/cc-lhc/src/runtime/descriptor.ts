@@ -97,6 +97,14 @@ export function newDescriptorPath(home: string = ccLhcHome(), io: DescriptorIo =
   return join(runtimeDir(home), `${io.randomId()}.json`);
 }
 
+// Platform contract for descriptor confidentiality: on POSIX the 0600 mode
+// (and the runtime dir's 0700) is the enforcement. Windows has no POSIX mode
+// bits — Node maps mode to the read-only attribute only, so stat reports
+// 0666-style modes there. On Windows the enforcement is the cc-lhc home
+// location policy: ccLhcHome (src/intake/paths.ts) fails closed when
+// CC_LHC_HOME resolves outside the user profile, so the descriptor always
+// lives under the profile and inherits its default user-scoped ACLs. No
+// bespoke DACL is installed, inspected, or claimed.
 export function publishAtomic(path: string, body: string, io: DescriptorIo = defaultDescriptorIo()): void {
   const dir = dirname(path);
   io.mkdir(dir);

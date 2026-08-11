@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -221,6 +222,69 @@ describe("createClaudeCliModelCall", () => {
     expect(holdResult.ok).toBe(true);
     expect(existsSync(sentinelPath)).toBe(true);
     expect(readFileSync(sentinelPath, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  // Deterministic ChildProcess-compatible seam (no real child, no timing):
+  // stdin.write reports the platform's child-exited failure asynchronously
+  // (nextTick, like Windows' "write EOF"), then the child closes with the
+  // scripted code on a later setImmediate — error strictly before close.
+  function scriptedSpawn(script: { stdinError?: Error; exitCode: number; stdout?: string }): typeof spawn {
+    return ((..._args: Parameters<typeof spawn>) => {
+      const stdin = new EventEmitter() as EventEmitter & { write: (d: unknown) => boolean; end: () => void };
+      stdin.write = () => {
+        if (script.stdinError !== undefined) {
+          process.nextTick(() => stdin.emit("error", script.stdinError));
+          return false;
+        }
+        return true;
+      };
+      stdin.end = () => {};
+      const child = new EventEmitter() as EventEmitter & {
+        stdin: typeof stdin;
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: () => void;
+      };
+      child.stdin = stdin;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      setImmediate(() => {
+        if (script.stdout !== undefined) child.stdout.emit("data", script.stdout);
+        child.emit("close", script.exitCode);
+      });
+      return child as unknown as ChildProcess;
+    }) as typeof spawn;
+  }
+
+  it("fails closed on exit 0 when the prompt was never delivered (stdin failure), and settles/releases once", async () => {
+    const limiter = createConcurrencyLimiter(1);
+    const failing = createClaudeCliModelCall({
+      binary: () => "claude",
+      spawnFn: scriptedSpawn({
+        stdinError: Object.assign(new Error("write EOF"), { code: "EOF" }),
+        exitCode: 0,
+        stdout: "plausible summary that never saw the prompt",
+      }),
+      limiter,
+      maxConcurrency: 1,
+      timeoutMs: 1_000,
+    });
+    const result = await failing(baseInput);
+    expect(result).toEqual({ ok: false, kind: "other", message: expect.stringContaining("stdin delivery failed") });
+    if (!result.ok) expect(result.message).toContain("write EOF");
+
+    // The failed call released its slot exactly once: a follow-up call on the
+    // SAME single-slot limiter runs immediately and a clean exit-0 child with
+    // delivered stdin still succeeds unchanged.
+    const succeeding = createClaudeCliModelCall({
+      binary: () => "claude",
+      spawnFn: scriptedSpawn({ exitCode: 0, stdout: "ok" }),
+      limiter,
+      maxConcurrency: 1,
+      timeoutMs: 1_000,
+    });
+    await expect(succeeding(baseInput)).resolves.toEqual({ ok: true, text: "ok" });
   });
 
   it("survives stdin EPIPE when child exits before consuming stdin", async () => {

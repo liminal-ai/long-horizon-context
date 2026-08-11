@@ -20,8 +20,10 @@ Wrapper flags:
   --lhc-observe-only               Report governor decisions without mutating
 
 Environment:
-  CC_LHC_HOME                      State root (default: ~/.cc-lhc)
-  CC_LHC_CLAUDE_BIN                Claude binary path
+  CC_LHC_HOME                      State root (default: ~/.cc-lhc; on Windows it
+                                   must stay inside your user profile)
+  CC_LHC_CLAUDE_BIN                Claude binary path (on Windows: an absolute
+                                   native .exe — never a .cmd shim)
   CC_LHC_NO_INFERENCE=1            Disable derivation model calls
   CC_LHC_INFERENCE_CONCURRENCY=N   Derivation subprocess concurrency
   CC_LHC_INFERENCE_TIMEOUT_MS=N    Derivation subprocess timeout

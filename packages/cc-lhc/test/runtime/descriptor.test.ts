@@ -55,7 +55,14 @@ describe("runtime descriptor identity", () => {
     expect(desc.state).toBe("opening");
     expect(desc.processIdentity.pid).toBe(process.pid);
     expect(desc.processIdentity.starttime).toMatch(/^\d+$/);
-    expect(statMode(path)).toBe(0o600);
+    // Confidentiality contract is platform-split: POSIX enforces the exact
+    // 0600 mode; Windows has no meaningful POSIX mode bits, so no mode is
+    // asserted there — the enforced contract is the in-profile location
+    // policy (resolveCcLhcHome, covered in test/intake/paths.test.ts) plus
+    // the profile's default ACLs. No bespoke DACL is installed or claimed.
+    if (process.platform !== "win32") {
+      expect(statMode(path)).toBe(0o600);
+    }
     const loaded = loadDescriptor(path, io);
     expect(loaded.ok).toBe(true);
   });

@@ -1,9 +1,11 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
+import type { IPty } from "@lydell/node-pty";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
@@ -13,6 +15,7 @@ import { ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN } from "../../src/wrapper/panel.js";
 import {
   OUTPUT_HOLD_OVERFLOW_MESSAGE,
   onTerminalResize,
+  type PtySpawn,
   resizePty,
   run,
   settleReceipts,
@@ -57,6 +60,63 @@ async function waitFor(condition: () => boolean | Promise<boolean>, label: strin
     if (Date.now() - start > capMs) throw new Error(`timed out waiting for ${label}`);
     await sleep(25);
   }
+}
+
+/**
+ * Pipe-backed PtySpawn seam: proves run()'s output-forwarding / exit-code
+ * wiring without invoking platform-native node-pty — ConPTY on the Windows
+ * runners cannot spawn these stub children ("File not found"), and the
+ * wiring under test is above the PTY layer. Real-PTY end-to-end behavior
+ * stays covered by the POSIX alt-screen suite (run-alt-screen.test.ts).
+ * `rig.child` exposes the spawned child so tests can end the run portably
+ * (child exit) instead of self-delivering POSIX signals.
+ */
+function pipePtySpawn(rig: { child?: ChildProcess }): PtySpawn {
+  return ((file: string, args: string[], opts: { env?: Record<string, string>; cwd?: string }) => {
+    const child = spawn(file, args, {
+      env: opts.env ?? (process.env as Record<string, string>),
+      ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    rig.child = child;
+    const dataCbs: Array<(data: string) => void> = [];
+    const exitCbs: Array<(event: { exitCode: number; signal?: number }) => void> = [];
+    const forward = (chunk: Buffer): void => {
+      const text = chunk.toString("latin1");
+      for (const cb of dataCbs) cb(text);
+    };
+    child.stdout?.on("data", forward);
+    child.stderr?.on("data", forward);
+    child.on("close", (code, signal) => {
+      for (const cb of exitCbs) cb({ exitCode: code ?? 0, ...(signal === null ? {} : { signal: 15 }) });
+    });
+    return {
+      pid: child.pid ?? -1,
+      cols: 80,
+      rows: 24,
+      process: file,
+      handleFlowControl: false,
+      onData: (cb: (data: string) => void) => {
+        dataCbs.push(cb);
+        return { dispose: () => {} };
+      },
+      onExit: (cb: (event: { exitCode: number; signal?: number }) => void) => {
+        exitCbs.push(cb);
+        return { dispose: () => {} };
+      },
+      resize: () => {},
+      clear: () => {},
+      write: (data: string) => {
+        child.stdin?.write(Buffer.from(data, "latin1"));
+      },
+      kill: () => {
+        child.kill();
+      },
+      pause: () => {},
+      resume: () => {},
+      on: () => {},
+    } as unknown as IPty;
+  }) as PtySpawn;
 }
 
 function fakeStdout(cols: number, rows: number): NodeJS.WriteStream {
@@ -163,8 +223,10 @@ describe("run", () => {
       output.push(chunk.toString());
     });
 
-    const exitCode = await run(["-c", "echo hello; exit 3"], {
-      claudeBin: "bash",
+    const rig: { child?: ChildProcess } = {};
+    const exitCode = await run(["-e", "process.stdout.write('hello'); process.exit(3);"], {
+      claudeBin: process.execPath,
+      spawnPty: pipePtySpawn(rig),
       stdin,
       stdout,
       disableNativeBackstopArgs: true,
@@ -287,8 +349,10 @@ describe("run", () => {
       output.push(chunk.toString("latin1"));
     });
 
+    const rig: { child?: ChildProcess } = {};
     const runPromise = run([FAKE_PTY_CHILD], {
       claudeBin: "node",
+      spawnPty: pipePtySpawn(rig),
       stdin,
       stdout,
       disableNativeBackstopArgs: true,
@@ -304,7 +368,8 @@ describe("run", () => {
     const joined = output.join("");
     expect(joined.split(LEAVE_ALT_SCREEN).length - 1).toBe(0);
 
-    process.kill(process.pid, "SIGTERM");
+    // End the run portably: child exit (not a self-delivered POSIX signal).
+    rig.child?.kill();
     await runPromise;
   }, 15_000);
 

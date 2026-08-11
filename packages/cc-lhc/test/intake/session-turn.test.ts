@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
 import { type CaptureSession, startCaptureSession } from "../../src/intake/session.js";
@@ -49,10 +49,10 @@ function hermeticSession(
     projectsRoot: string;
   },
 ): CaptureSession {
+  // basename, not split("/"): the capture bind (session.ts) requires the
+  // rollout basename to equal the session id, and Windows paths use "\\".
   const sessionId =
-    rolloutOptions.knownRolloutPath !== undefined
-      ? rolloutOptions.knownRolloutPath.replace(/\.jsonl$/, "").split("/").pop()!
-      : "session";
+    rolloutOptions.knownRolloutPath !== undefined ? basename(rolloutOptions.knownRolloutPath, ".jsonl") : "session";
   return startCaptureSession({
     cwd: rolloutOptions.cwd,
     startedAt: new Date(Date.now() - 60_000),

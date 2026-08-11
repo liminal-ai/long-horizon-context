@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,8 +33,19 @@ describe("createWrapperLog", () => {
     expect(contents.split("\n").filter(Boolean)).toHaveLength(3);
   });
 
+  // Deterministically unwritable on every platform: the parent of the log
+  // path is an existing regular FILE, so directory creation and append both
+  // fail (ENOTDIR on POSIX, ENOENT on Windows). "/dev/null/…" is only
+  // unwritable on POSIX — on Windows it is a creatable relative path.
+  function unwritableLogPath(): string {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-wlog-blocked-"));
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "");
+    return join(blocker, "impossible", "wrapper.log");
+  }
+
   it("never throws when the path is unwritable", async () => {
-    const log = createWrapperLog("/dev/null/impossible/wrapper.log");
+    const log = createWrapperLog(unwritableLogPath());
     expect(() => {
       log.info("x");
       log.warn("y");
@@ -57,7 +68,7 @@ describe("createWrapperLog", () => {
   });
 
   it("does not count warnings whose append failed", async () => {
-    const log = createWrapperLog("/dev/null/impossible/wrapper.log");
+    const log = createWrapperLog(unwritableLogPath());
     log.warn("phantom");
     await sleep(50);
     expect(log.warningCount()).toBe(0);

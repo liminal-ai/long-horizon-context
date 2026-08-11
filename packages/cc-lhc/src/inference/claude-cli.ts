@@ -55,10 +55,6 @@ export function classifyStderr(stderr: string): ModelCallFailureKind {
   return "other";
 }
 
-function isEpipe(cause: unknown): boolean {
-  return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "EPIPE";
-}
-
 class ConcurrencyLimiter {
   private running = 0;
   private readonly waiters: Array<() => void> = [];
@@ -193,37 +189,43 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
         stderr += chunk.toString();
       });
 
+      // A failed stdin write must never settle the call: when the child
+      // exits before consuming stdin, the platform surfaces the write failure
+      // as EPIPE (POSIX) or EOF/ECONNRESET (Windows), and racing ahead of
+      // 'close' would discard the child's authoritative exit code and stderr
+      // (e.g. an auth failure). 'close' or the timeout always settles; the
+      // stdin failure is kept only as fallback context.
+      let stdinFailure: string | undefined;
+      const noteStdinFailure = (cause: unknown): void => {
+        stdinFailure ??= cause instanceof Error ? cause.message : String(cause);
+      };
       const stdin = child.stdin;
       if (stdin !== null) {
-        stdin.on("error", (cause) => {
-          if (isEpipe(cause)) return;
-          finish({
-            ok: false,
-            kind: "other",
-            message: excerpt(cause instanceof Error ? cause.message : String(cause)),
-          });
-        });
+        stdin.on("error", noteStdinFailure);
         try {
           stdin.write(userBody);
           stdin.end();
         } catch (cause) {
-          if (!isEpipe(cause)) {
-            finish({
-              ok: false,
-              kind: "other",
-              message: excerpt(cause instanceof Error ? cause.message : String(cause)),
-            });
-          }
+          noteStdinFailure(cause);
         }
       }
 
       child.on("close", (code) => {
         if (code === 0) {
-          finish({ ok: true, text: stdout });
+          if (stdinFailure === undefined) {
+            finish({ ok: true, text: stdout });
+            return;
+          }
+          // Fail closed: exit 0 with an undelivered prompt must never pass
+          // as a successful derivation — the output cannot have seen the
+          // user body.
+          finish({ ok: false, kind: "other", message: excerpt(`stdin delivery failed: ${stdinFailure}`) });
           return;
         }
         const kind = classifyStderr(stderr);
-        finish({ ok: false, kind, message: excerpt(stderr === "" ? `exit code ${String(code)}` : stderr) });
+        const base = stderr === "" ? `exit code ${String(code)}` : stderr;
+        const message = stderr === "" && stdinFailure !== undefined ? `${base}; stdin: ${stdinFailure}` : base;
+        finish({ ok: false, kind, message: excerpt(message) });
       });
     });
   };
