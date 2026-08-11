@@ -1,0 +1,8 @@
+{
+  "pin": "f6510314fe545b363e65e5059201b8d7119bac96",
+  "source": "packages/lhc (frozen contract) at f651031",
+  "generatedBy": "src/shared/regen_frozen_goldens.test.ts",
+  "cases": {
+    "selectArrangement": "{\"compactPoint\":4,\"coveredFrom\":1,\"entries\":[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"turn_rendering\",\"degraded\":false,\"gap\":false,\"startOrder\":1,\"text\":\"alpha\",\"tokens\":1},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"turn_rendering\",\"degraded\":false,\"gap\":false,\"startOrder\":3,\"text\":\"b\",\"tokens\":1}],\"skipped\":[]}"
+  }
+}

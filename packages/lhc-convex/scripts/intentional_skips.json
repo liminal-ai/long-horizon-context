@@ -1,0 +1,35 @@
+{
+  "comment": "Every skipped test in the certification suite must be registered here with a class and reason. Classes: ts-mirror (mirrors an upstream it.skip in the frozen TS suite), port-lag (sanctioned lag, bead long-horizon-context-bu9 / convex-wave; un-skip slice named), infra (harness machinery, never part of certification).",
+  "skips": [
+    {
+      "fullName": "FIX-3.3: a claimed summary for a deleted message discards on completion completing the straggler after the delete discards as stale_discarded (in-flight claim seam is substrate)",
+      "class": "ts-mirror",
+      "reason": "Upstream it.skip in frozen epic-fix-02; needs an in-flight delayKind claim window with no Convex seam."
+    },
+    {
+      "fullName": "TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses deterministic truncation; non-tool content untouched renders deterministic tool-result floors even when a ready summary exists",
+      "class": "ts-mirror",
+      "reason": "Upstream it.skip in frozen view-boundary (deterministic floors with a ready summary)."
+    },
+    {
+      "fullName": "TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-tool content full everywhere renders deterministic tool-result floors behind the boundary and full content ahead of it",
+      "class": "ts-mirror",
+      "reason": "Upstream it.skip in frozen view-llm-request-context (deterministic floors with a ready summary)."
+    },
+    {
+      "fullName": "frozen intake validation differential acceptance, codes, reasons, and event indexes are byte-for-byte equivalent",
+      "class": "port-lag",
+      "reason": "Sanctioned lag (bead bu9); un-skip at convex-wave S2/S4 when the last validator drift clears."
+    },
+    {
+      "fullName": "frozen turn composition differential tool-run grouping, fallbacks, gaps, and dialogue assembly stay byte-for-byte equivalent",
+      "class": "port-lag",
+      "reason": "Sanctioned lag (bead bu9); un-skip at convex-wave S3 (labels)."
+    },
+    {
+      "fullName": "frozen golden regeneration regenerates all frozen goldens from the pinned contract",
+      "class": "infra",
+      "reason": "Env-gated golden regeneration harness (REGEN_FROZEN_GOLDENS=1); never part of certification."
+    }
+  ]
+}

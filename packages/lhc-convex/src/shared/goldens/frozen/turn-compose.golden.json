@@ -1,0 +1,9 @@
+{
+  "pin": "f6510314fe545b363e65e5059201b8d7119bac96",
+  "source": "packages/lhc (frozen contract) at f651031",
+  "generatedBy": "src/shared/regen_frozen_goldens.test.ts",
+  "cases": {
+    "composeRenderingInput": "{\"parts\":[{\"messageId\":\"m1\",\"kind\":\"user_prompt\",\"text\":\"Please inspect this.\",\"fallback\":true},{\"messageId\":\"m2\",\"kind\":\"tool_call\",\"text\":\"[tool run · read · 1 call · 1 succeeded]\\n<m2>read({\\\"path\\\":\\\"a\\\"}) ⇒ succeeded</m2>\\n<m3>checking</m3>\\n<m4>read succeeded ⇒ succeeded</m4>\",\"fallback\":false,\"outcome\":\"succeeded\",\"memberMessageIds\":[\"m2\",\"m3\",\"m4\"]},{\"messageId\":\"m5\",\"kind\":\"runtime_note\",\"text\":\"after tool\",\"fallback\":false},{\"messageId\":\"m6\",\"kind\":\"assistant_text\",\"text\":\"Done.\",\"fallback\":false}],\"gaps\":[{\"subjectKind\":\"message\",\"subjectId\":\"m1\",\"derivationType\":\"smoothed_prompt\"}],\"recoveries\":[{\"subjectKind\":\"message\",\"subjectId\":\"m1\",\"derivationType\":\"smoothed_prompt\",\"content\":\"Please inspect this.\",\"sourceVersion\":2,\"reason\":\"failed_floor\",\"floorUsed\":\"Please inspect this.\"}]}",
+    "composePreDetailedAssembly": "{\"text\":\"User:\\nPlease inspect this.\\n\\n⏺ Done.\",\"gaps\":[{\"subjectKind\":\"message\",\"subjectId\":\"m1\",\"derivationType\":\"smoothed_prompt\"}],\"recoveries\":[{\"subjectKind\":\"message\",\"subjectId\":\"m1\",\"derivationType\":\"smoothed_prompt\",\"content\":\"Please inspect this.\",\"sourceVersion\":2,\"reason\":\"failed_floor\",\"floorUsed\":\"Please inspect this.\"}]}"
+  }
+}
