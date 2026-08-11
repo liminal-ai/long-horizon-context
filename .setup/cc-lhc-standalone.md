@@ -43,20 +43,16 @@ pnpm --config.verify-deps-before-run=false --filter cc-lhc run build
 
 Do not run the root `pnpm build` — it builds every package including PI-dependent ones you don't need.
 
-## Step 4: Native identity addon (no compiler needed)
+## Step 4: Build the native identity addon
 
-cc-lhc's single-ownership invariant uses a small native Node-API addon (`cc-lhc-native`) for exact process identity. It is delivered as a prebuilt, checksum-verified binary — installing it does not require a compiler:
-
-```bash
-node .setup/scripts/fetch-prebuild.mjs
-```
-
-The downloader picks the artifact matching this machine, verifies its SHA-256 against the release's `SHA256SUMS`, then load-probes the downloaded file in a subprocess to prove it serves a live process identity — all before touching anything installed. Only after both proofs pass does it swap the file into `packages/cc-lhc-native/prebuilds/`, using a rename-only backup/restore transaction: on any failure the previously installed addon is preserved (restored if already moved aside) and the temporary download is removed. When fetching for a different machine (`--target`), only the checksum is verified — a foreign binary cannot be loaded here. The release it downloads from is pinned in `.setup/prebuild-release.json`; `--tag <release-tag>` or `--base-url <url>` overrides it. If no release tag is configured yet (pre-release checkouts), the script says so — in that case build from source instead, which needs a C toolchain (and Python for node-gyp):
+cc-lhc's single-ownership invariant uses a small native Node-API addon (`cc-lhc-native`) for exact process identity. Until npm packaging exists, build that addon from the checkout:
 
 ```bash
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild
 ```
+
+This pre-publication checkout builds the addon from source. `node-gyp` needs Python plus the native compiler toolchain: GCC/Make on Linux, Xcode Command Line Tools on macOS, or Visual Studio Build Tools with the Desktop C++ workload on Windows. The eventual npm package will install the matching prebuilt addon; that packaging is intentionally deferred until the source version has been dogfooded and signed off.
 
 **Verify:** `node packages/cc-lhc/dist/bin.js --version` prints the Claude Code version banner (it passes through to the real `claude`). For full confidence run the deterministic suite with the compiled addon made mandatory:
 
@@ -69,7 +65,7 @@ $env:CC_LHC_NATIVE_REQUIRE_ADDON="1"; pnpm --config.verify-deps-before-run=false
 cmd /c "set CC_LHC_NATIVE_REQUIRE_ADDON=1&& pnpm --config.verify-deps-before-run=false --filter cc-lhc run test"
 ```
 
-On Linux the run must end exactly `Tests  634 passed | 1 skipped (635)` (figures at time of writing) — the single skip is intentional, the non-Linux complement test `readProcessIdentityLinux (non-Linux)`. On macOS and Windows the same 635 tests run with the complementary platform-gated tests skipped instead (e.g. the POSIX-signal wrapper tests skip on Windows); zero failures is the bar on every platform.
+The current suite contains 658 tests. Platform-specific tests may skip where they do not apply; zero failures is the bar on every platform.
 
 ## Step 5: Put `cc-lhc` on PATH
 
@@ -122,7 +118,8 @@ git submodule update --init
 pnpm install
 pnpm --config.verify-deps-before-run=false --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
-node .setup/scripts/fetch-prebuild.mjs   # or rebuild from source as in step 4
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native
+pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild
 pnpm --config.verify-deps-before-run=false --filter cc-lhc run build
 ```
 

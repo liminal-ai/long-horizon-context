@@ -1,14 +1,12 @@
 /**
  * Workflow/manifest consistency: the GitHub matrix in
  * .github/workflows/native-platforms.yml must stay in lockstep with
- * targets.json (the single source of truth), the pinned toolchain versions,
- * and the artifact naming the aggregation and downloader scripts expect.
+ * targets.json (the single source of truth) and the pinned toolchain versions.
  * Deliberately string/regex-based so the gate needs no YAML dependency.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { defaultPackageRoot } from "../src/index.js";
@@ -23,7 +21,6 @@ const workflowPath = join(repoRoot, ".github", "workflows", "native-platforms.ym
 const workflow = readFileSync(workflowPath, "utf8").replaceAll("\r\n", "\n");
 const manifest = loadTargetsManifest(join(packageRoot, "targets.json"));
 const manifestKeys = manifest.targets.map(targetKey);
-const assetLib = await import(pathToFileURL(join(packageRoot, "scripts", "asset-names.mjs")).href);
 
 /** The certified runner mapping; ARM Linux/Windows labels are public preview but required. */
 const EXPECTED_RUNNERS: Record<string, string> = {
@@ -62,7 +59,7 @@ describe("matrix ↔ targets.json", () => {
 
 describe("pinned toolchain and required steps", () => {
   it("checks out recursive submodules in every job", () => {
-    expect(workflow.match(/submodules: recursive/g)?.length).toBe(2);
+    expect(workflow.match(/submodules: recursive/g)?.length).toBe(1);
   });
 
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
@@ -71,8 +68,6 @@ describe("pinned toolchain and required steps", () => {
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,
       "actions/setup-node": 7,
-      "actions/upload-artifact": 7,
-      "actions/download-artifact": 8,
       "pnpm/action-setup": 6,
     };
     const used = [...workflow.matchAll(/uses: ([^\s@]+)@v(\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);
@@ -86,7 +81,7 @@ describe("pinned toolchain and required steps", () => {
 
   it("pins Node 24.18.0 and pnpm 11.8.0 (matching packageManager)", () => {
     expect(workflow).toContain("node-version: 24.18.0");
-    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(2);
+    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(1);
     const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { packageManager?: string };
     expect(rootPkg.packageManager).toBe("pnpm@11.8.0");
   });
@@ -98,15 +93,13 @@ describe("pinned toolchain and required steps", () => {
     const gyp = workflow.indexOf("pnpm --filter cc-lhc-native run build:native");
     const stage = workflow.indexOf("run stage:prebuild");
     const nativeTest = workflow.indexOf("run test:native");
-    const bundleCheck = workflow.indexOf(`run check:release-bundle --target \${{ matrix.target }}`);
     const ccBuild = workflow.indexOf("pnpm --filter cc-lhc run build");
     expect(lhcBuild).toBeGreaterThan(-1);
     expect(nativeBuild).toBeGreaterThan(lhcBuild);
     expect(gyp).toBeGreaterThan(nativeBuild);
     expect(stage).toBeGreaterThan(gyp);
     expect(nativeTest).toBeGreaterThan(stage);
-    expect(bundleCheck).toBeGreaterThan(nativeTest);
-    expect(ccBuild).toBeGreaterThan(bundleCheck);
+    expect(ccBuild).toBeGreaterThan(nativeTest);
   });
 
   it("runs the cc-lhc suite with the compiled addon mandatory", () => {
@@ -120,29 +113,16 @@ describe("pinned toolchain and required steps", () => {
   });
 });
 
-describe("artifact topology", () => {
-  it("each matrix job uploads its own staged prebuild under prebuild-<target>", () => {
-    expect(workflow).toContain(`name: prebuild-\${{ matrix.target }}`);
-    expect(workflow).toContain(`path: packages/cc-lhc-native/prebuilds/\${{ matrix.target }}/${manifest.artifact}`);
-    expect(workflow).toContain("if-no-files-found: error");
+describe("mainline source-checkout contract", () => {
+  it("runs for relevant pushes to main and remains manually dispatchable", () => {
+    expect(workflow).toContain("push:");
+    expect(workflow).toContain("branches: [main]");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("pull_request:");
   });
 
-  it("aggregation downloads prebuild-*, assembles, validates the full contract, and uploads assets", () => {
-    expect(workflow).toContain("pattern: prebuild-*");
-    expect(workflow).toContain("assemble-release-bundle.mjs");
-    expect(workflow).toContain("check-release-bundle.mjs --dir .artifacts/release-bundle");
-    expect(workflow).toContain("name: cc-lhc-native-release-bundle");
-    expect(workflow).toContain("name: cc-lhc-native-release-assets");
-  });
-
-  it("asset names produced by aggregation are what the downloader will request", () => {
-    for (const key of manifestKeys) {
-      expect(assetLib.assetNameForTarget(manifest.artifact, key)).toBe(`cc_lhc_identity-${key}.node`);
-    }
-    expect(assetLib.CHECKSUMS_ASSET_NAME).toBe("SHA256SUMS");
-  });
-
-  it("publishes nothing: no release creation, no tag pushes", () => {
+  it("produces no release assets or publication side effects", () => {
+    expect(workflow).not.toMatch(/upload-artifact|download-artifact|assemble-release-bundle|release-candidate/);
     expect(workflow).not.toMatch(/gh release|action-gh-release|releases\/create|git tag|git push/);
   });
 });

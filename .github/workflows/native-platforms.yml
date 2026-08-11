@@ -1,10 +1,9 @@
 # Native-platform matrix for cc-lhc (Slice XP3).
 #
-# Proves the clean-machine story on every supported target from
+# Proves the source-checkout story on every supported target from
 # packages/cc-lhc-native/targets.json: frozen install, dependency-order build,
-# real native-addon compile + tests, staged prebuild validated against the
-# release-bundle contract, and the full cc-lhc suite with the compiled addon
-# made mandatory (CC_LHC_NATIVE_REQUIRE_ADDON=1).
+# real native-addon compile + tests, and the full cc-lhc suite with the
+# compiled addon mandatory (CC_LHC_NATIVE_REQUIRE_ADDON=1).
 #
 # Shells are platform-native on purpose: bash on Linux/macOS, PowerShell
 # (pwsh, the runner default) on Windows — Windows evidence must not detour
@@ -14,13 +13,19 @@
 # windows-2025 ships Visual Studio 18, which node-gyp rejects as an unknown
 # version (observed in run 31404594096).
 #
-# The aggregate job merges all six prebuilds, enforces the full release-bundle
-# contract, and uploads release-candidate assets with SHA-256 checksums.
-# It does NOT create tags or publish a release — that is Slice XP4.
 name: native-platforms
 
 on:
-  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-platforms.yml"
+      - ".setup/**"
+      - "packages/cc-lhc/**"
+      - "packages/cc-lhc-native/**"
+      - "packages/lhc/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
   workflow_dispatch:
 
 concurrency:
@@ -85,9 +90,6 @@ jobs:
       - name: Native addon tests (compiled addon mandatory)
         run: pnpm --filter cc-lhc-native run test:native
 
-      - name: Validate staged prebuild against release-bundle contract
-        run: pnpm --filter cc-lhc-native run check:release-bundle --target ${{ matrix.target }}
-
       - name: Build cc-lhc
         run: pnpm --filter cc-lhc run build
 
@@ -98,67 +100,3 @@ jobs:
         run: pnpm --filter cc-lhc run test
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
-
-      - name: Upload prebuild artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: prebuild-${{ matrix.target }}
-          path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
-          if-no-files-found: error
-
-  aggregate:
-    name: release-candidate assets
-    needs: native
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout (recursive submodules)
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      - name: Install pnpm 11.8.0
-        uses: pnpm/action-setup@v6
-        with:
-          version: 11.8.0
-
-      - name: Install Node 24.18.0
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24.18.0
-          cache: pnpm
-
-      - name: Install workspace (frozen)
-        run: pnpm install --frozen-lockfile
-
-      - name: Build cc-lhc-native (TypeScript)
-        run: pnpm --filter cc-lhc-native run build
-
-      - name: Download all prebuild artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: prebuild-*
-          path: .artifacts/prebuilds
-
-      - name: Assemble release bundle and checksummed assets
-        run: >
-          node packages/cc-lhc-native/scripts/assemble-release-bundle.mjs
-          --artifacts .artifacts/prebuilds
-          --bundle-out .artifacts/release-bundle
-          --assets-out .artifacts/release-assets
-
-      - name: Validate full release-bundle contract (all six targets)
-        run: node packages/cc-lhc-native/scripts/check-release-bundle.mjs --dir .artifacts/release-bundle
-
-      - name: Upload release bundle
-        uses: actions/upload-artifact@v7
-        with:
-          name: cc-lhc-native-release-bundle
-          path: .artifacts/release-bundle
-          if-no-files-found: error
-
-      - name: Upload release-candidate assets (six prebuilds + SHA256SUMS)
-        uses: actions/upload-artifact@v7
-        with:
-          name: cc-lhc-native-release-assets
-          path: .artifacts/release-assets
-          if-no-files-found: error
