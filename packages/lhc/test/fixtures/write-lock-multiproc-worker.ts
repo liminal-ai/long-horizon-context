@@ -12,12 +12,7 @@
  */
 import { existsSync, writeFileSync } from "node:fs";
 
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  retrieval,
-  type MessageEventInput,
-} from "../../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, type MessageEventInput, retrieval } from "../../src/index.js";
 
 const filePath = process.argv[2];
 const rounds = Number(process.argv[3] ?? "20");
@@ -25,17 +20,8 @@ const outPath = process.argv[4];
 const readyPath = process.argv[5];
 const goPath = process.argv[6];
 
-if (
-  !filePath ||
-  !outPath ||
-  !readyPath ||
-  !goPath ||
-  !Number.isFinite(rounds) ||
-  rounds < 1
-) {
-  console.error(
-    "usage: write-lock-multiproc-worker.ts <filePath> <rounds> <outJson> <readyPath> <goPath>",
-  );
+if (!filePath || !outPath || !readyPath || !goPath || !Number.isFinite(rounds) || rounds < 1) {
+  console.error("usage: write-lock-multiproc-worker.ts <filePath> <rounds> <outJson> <readyPath> <goPath>");
   process.exit(2);
 }
 
@@ -92,10 +78,7 @@ for (let i = 0; i < rounds; i += 1) {
       const surface = `child-${i}`;
       const [ret, cap] = await Promise.all([
         retrieval.getTurns({ filePath }, ["t1"], { surface }),
-        sdk.intakeStream.messageEvents(
-          { filePath },
-          raceCaptureEvents("child", i, `c-${i}`, `ca-${i}`),
-        ),
+        sdk.intakeStream.messageEvents({ filePath }, raceCaptureEvents("child", i, `c-${i}`, `ca-${i}`)),
       ]);
       if (!ret.ok || !cap.ok) {
         fails += 1;

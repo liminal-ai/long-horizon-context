@@ -18,9 +18,7 @@ export function openDatabase(path: string): DatabaseSync {
   // Only promote to WAL when not already WAL. Re-applying `PRAGMA journal_mode
   // = WAL` on every open takes a write lock that races concurrent openers.
   // Query form is read-only against an already-WAL file.
-  const modeRow = db.prepare("PRAGMA journal_mode").get() as
-    | { journal_mode: string }
-    | undefined;
+  const modeRow = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
   const mode = String(modeRow?.journal_mode ?? "").toLowerCase();
   if (mode !== "wal") {
     db.exec("PRAGMA journal_mode = WAL;");

@@ -191,9 +191,7 @@ export function __writeLockMapSizeForTests(): number {
  * Optional test-only stat override (ESM cannot spy on node:fs bindings).
  * Production always uses the real statSync.
  */
-let statSyncForTests:
-  | ((filePath: string) => { dev: number | bigint; ino: number | bigint })
-  | undefined;
+let statSyncForTests: ((filePath: string) => { dev: number | bigint; ino: number | bigint }) | undefined;
 /** Narrow test seam — not a public policy export. */
 export function __setStatSyncForTests(
   fn: ((filePath: string) => { dev: number | bigint; ino: number | bigint }) | undefined,
@@ -246,10 +244,7 @@ async function withThreadWriteLock<T>(key: string, run: () => Promise<T>): Promi
 }
 
 /** Test seam: run under the same mutex used by write transactions. */
-export async function __runUnderThreadWriteLockForTests<T>(
-  filePath: string,
-  run: () => Promise<T>,
-): Promise<T> {
+export async function __runUnderThreadWriteLockForTests<T>(filePath: string, run: () => Promise<T>): Promise<T> {
   const key = threadWriteLockKey(filePath);
   if (key === null) {
     throw new Error(`could not establish current file identity for write lock: ${filePath}`);
@@ -269,9 +264,7 @@ export async function createDbWriteTransaction<T>(
 
   const lockKey = threadWriteLockKey(filePath);
   if (lockKey === null) {
-    return storageFailure(
-      `could not establish current file identity for write lock: ${filePath}`,
-    );
+    return storageFailure(`could not establish current file identity for write lock: ${filePath}`);
   }
 
   return withThreadWriteLock(lockKey, async () => {

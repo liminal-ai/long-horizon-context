@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Literal, Protocol, TypeVar, TypedDict
 from weakref import WeakKeyDictionary
 
-from . import inspect, intake_stream, messages, thread_view, threads, turns
+from . import inspect, intake_stream, messages, retrieval, thread_view, threads, turns
 from .intake_stream import BatchResult, EventKind, EventRecord, MessageEventInput
 from .messages import (
     Block,
@@ -238,6 +238,7 @@ _ = (
     peek_thread_id,
     resolve_guards,
     resolve_view_config,
+    retrieval,
     run_drain,
     run_with_instance_seam,
     set_scheduler_poke,
@@ -430,6 +431,7 @@ class Lhc(Protocol):
     threads: LhcThreads
     intake_stream: IntakeStreamSurface
     messages: LhcMessages
+    retrieval: object  # typeof retrieval domain (get_turns / get_messages / list_impressions)
     turns: LhcTurns
     thread_view: ThreadViewSurface
     # Read-only report surface. Scoped through the instance seam like every other
@@ -1136,6 +1138,7 @@ def init_lhc(config: SdkConfig) -> Lhc:
     sdk.threads = _scope_surface(threads, seam)
     sdk.intake_stream = _scope_surface(intake_surface, seam)
     sdk.messages = _scope_surface(messages, seam)
+    sdk.retrieval = _scope_surface(retrieval, seam)
     sdk.turns = _scope_surface(turns, seam)
     sdk.thread_view = _scope_surface(thread_view, seam)
     sdk.inspect = _scope_surface(inspect, seam)
@@ -1291,6 +1294,7 @@ __all__ = [
     "query_log",
     "queue_detail",
     "register_testing_work",
+    "retrieval",
     "set_scheduler_poke",
     "set_thread_touch",
     "supersede_queued",

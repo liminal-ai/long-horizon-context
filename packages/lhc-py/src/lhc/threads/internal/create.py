@@ -23,6 +23,7 @@ from ...shared_tech.thread_migrate import (
     derivation_log_schema_statements,
     is_supported_thread_schema_version,
     migrate_thread_schema,
+    retrieval_impression_schema_statements,
 )
 from ...shared_tech.token_counting import TOKEN_ESTIMATOR_ID
 
@@ -173,7 +174,10 @@ def _thread_schema_statements(thread_id: str, created_at: str) -> list[str]:
     statements: list[str] = []
     for template in _THREAD_SCHEMA_STATEMENT_TEMPLATES:
         if template.startswith("INSERT INTO turns"):
+            # TS create.ts: ...derivationLogSchemaStatements(),
+            # ...retrievalImpressionSchemaStatements(), then seed turn + version.
             statements.extend(derivation_log_schema_statements())
+            statements.extend(retrieval_impression_schema_statements())
         statements.append(
             template.format(
                 thread_id=thread_id,

@@ -306,6 +306,10 @@ class RenderingPart:
     fallback: bool  # true ⇒ gap recorded
     blocks: list[RenderingPartBlock] | None = None
     outcome: ToolOutcome | None = None  # tool activity only
+    # Tool-run parts list every member message id (contract order). Present and
+    # non-empty ⇒ composeStructuredTurnText leaves member line tags alone
+    # (no outer per-message wrap on the whole run body).
+    member_message_ids: list[str] | None = None
 
 
 InferenceCallbackName = Literal[

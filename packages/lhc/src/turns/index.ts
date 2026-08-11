@@ -18,10 +18,7 @@ import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from
 import { type ChunkStructureRow, readChunkStructure } from "./internal/chunks.js";
 import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
-import {
-  backfillRenderingLabelsInOpenDb,
-  type RenderingLabelBackfillReceipt,
-} from "./internal/label-backfill.js";
+import { backfillRenderingLabelsInOpenDb, type RenderingLabelBackfillReceipt } from "./internal/label-backfill.js";
 import {
   closeTurn,
   countTurnMembers,

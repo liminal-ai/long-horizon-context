@@ -3,8 +3,8 @@
  * symlink alias. Separate-process same-file race uses tsx fixture.
  */
 
-import { linkSync, mkdtempSync, symlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { linkSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,9 +113,7 @@ describe("thread write lock identity", () => {
         expect(refused.error.code).toBe("storage_failure");
         expect(refused.error.reason).toMatch(/identity/);
       }
-      await expect(__runUnderThreadWriteLockForTests(filePath, async () => 1)).rejects.toThrow(
-        /identity/,
-      );
+      await expect(__runUnderThreadWriteLockForTests(filePath, async () => 1)).rejects.toThrow(/identity/);
     } finally {
       __setStatSyncForTests(undefined);
     }
@@ -176,9 +174,7 @@ describe("thread write lock identity", () => {
       releaseGates[i]!();
       if (i < 4) {
         await waitForEntry(i + 2);
-        expect(entryOrder.slice(0, i + 2)).toEqual(
-          Array.from({ length: i + 2 }, (_, j) => j),
-        );
+        expect(entryOrder.slice(0, i + 2)).toEqual(Array.from({ length: i + 2 }, (_, j) => j));
       }
     }
 
@@ -256,9 +252,7 @@ describe("thread write lock identity", () => {
     const nBefore = impsBefore.value.length;
 
     const dbPre = new DatabaseSync(filePath, { readOnly: true });
-    const eventsBeforeRow = dbPre.prepare(`SELECT COUNT(*) AS c FROM event`).get() as
-      | { c: number }
-      | undefined;
+    const eventsBeforeRow = dbPre.prepare(`SELECT COUNT(*) AS c FROM event`).get() as { c: number } | undefined;
     const eventsBefore = Number(eventsBeforeRow?.c ?? 0);
     dbPre.close();
     // Seed is 3 events (user, assistant, turn_end).
@@ -267,15 +261,11 @@ describe("thread write lock identity", () => {
     // Pre-release: go must not exist yet (barrier not released).
     expect(existsSync(goPath)).toBe(false);
 
-    const child = spawn(
-      tsxBin,
-      [multiprocFixture, filePath, String(rounds), outPath, readyPath, goPath],
-      {
-        cwd: join(here, ".."),
-        env: { ...process.env },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(tsxBin, [multiprocFixture, filePath, String(rounds), outPath, readyPath, goPath], {
+      cwd: join(here, ".."),
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let stderr = "";
     child.stderr?.on("data", (c: Buffer) => {
@@ -316,17 +306,11 @@ describe("thread write lock identity", () => {
           }
           const [ret, cap] = await Promise.all([
             retrieval.getTurns({ filePath }, ["t1"], { surface }),
-            sdk.intakeStream.messageEvents(
-              { filePath },
-              raceCaptureEvents("parent", i, `p-${i}`, `pa-${i}`),
-            ),
+            sdk.intakeStream.messageEvents({ filePath }, raceCaptureEvents("parent", i, `p-${i}`, `pa-${i}`)),
           ]);
           if (!ret.ok || !cap.ok) {
             parentFails += 1;
-            const reasons = [
-              ret.ok ? "" : ret.error.reason,
-              cap.ok ? "" : cap.error.reason,
-            ].join(" ");
+            const reasons = [ret.ok ? "" : ret.error.reason, cap.ok ? "" : cap.error.reason].join(" ");
             if (/database is locked/i.test(reasons)) parentLocked += 1;
             return;
           }
@@ -395,9 +379,7 @@ describe("thread write lock identity", () => {
 
     // Exact durable event delta: seed 3 + 2 sides × rounds × 3 events.
     const dbPost = new DatabaseSync(filePath, { readOnly: true });
-    const eventsAfterRow = dbPost.prepare(`SELECT COUNT(*) AS c FROM event`).get() as
-      | { c: number }
-      | undefined;
+    const eventsAfterRow = dbPost.prepare(`SELECT COUNT(*) AS c FROM event`).get() as { c: number } | undefined;
     const eventsAfter = Number(eventsAfterRow?.c ?? 0);
     const keys = dbPost
       .prepare(`SELECT idempotency_key FROM event WHERE idempotency_key LIKE 'race-%'`)

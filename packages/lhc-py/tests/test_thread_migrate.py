@@ -21,6 +21,7 @@ from lhc.shared_tech.thread_migrate import (
     THREAD_SCHEMA_VERSION_2,
     THREAD_SCHEMA_VERSION_4,
     THREAD_SCHEMA_VERSION_5,
+    THREAD_SCHEMA_VERSION_6,
 )
 from lhc.threads.internal.create import open_thread_database
 from fixtures import (
@@ -324,9 +325,15 @@ async def test_opens_a_v1_thread_file_migrates_derivation_log_and_preserves_exis
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
         assert (
             db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get()
+            is not None
+        )
+        assert (
+            db.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'"
+            ).get()
             is not None
         )
         metadata = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get()
@@ -355,7 +362,7 @@ async def test_migrates_v2_derivation_rows_and_stored_view_json(store: TempStore
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
         derivation = db.prepare(
             """SELECT derivation_type, content FROM derivation
                WHERE subject_kind = 'turn' AND subject_id = 't1' AND derivation_type = 'detailed_turn_compression'"""
@@ -415,7 +422,7 @@ async def test_normalizes_queued_old_shape_turn_derivation_items_and_drains_clea
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
         payload = json.loads(
             db.prepare("SELECT payload FROM work_item WHERE kind = 'turn_derivation'").get()["payload"]
         )
@@ -617,7 +624,7 @@ async def test_migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data
 
     db = opened.value
     try:
-        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_5
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
 
         turn_cols = [
             str(row["name"]) for row in db.prepare("PRAGMA table_info(turns)").all()
@@ -654,5 +661,156 @@ async def test_migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data
         ).get()
         assert prompt is not None
         assert json.loads(str(prompt["content"])) == {"text": "v4 migration prompt"}
+    finally:
+        db.close()
+
+
+async def test_migrates_a_genuine_v5_file_creates_retrieval_impression_table_preserves_rows(
+    store: TempStore,
+) -> None:
+    """v5 open migrates in place: retrieval_impression + indexes, records preserved, CHECKs active."""
+    file_path = store.thread_path()
+    created = await threads.new_thread(
+        NewThreadInput(file_path=file_path, registry_path=store.registry_path)
+    )
+    assert created.ok is True
+    if not created.ok:
+        return
+
+    # Seed real rows (messages / turns / events) before stripping the impression
+    # table — migration must preserve them.
+    intake = await intake_stream.message_events(
+        {"filePath": file_path},
+        [
+            valid_event("user_prompt", {"payload": {"text": "v5 migrate seed prompt"}}),
+            valid_event("assistant_text", {"payload": {"text": "v5 migrate seed answer"}}),
+            valid_event("turn_end"),
+        ],
+    )
+    assert intake.ok is True
+    if not intake.ok:
+        return
+
+    old = _connect(file_path)
+    try:
+        event_count = int(old.prepare("SELECT COUNT(*) AS c FROM event").get()["c"])  # type: ignore[index]
+        message_count = int(old.prepare("SELECT COUNT(*) AS c FROM message").get()["c"])  # type: ignore[index]
+        turn_count = int(old.prepare("SELECT COUNT(*) AS c FROM turns").get()["c"])  # type: ignore[index]
+        prompt_row = old.prepare(
+            "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0"
+        ).get()
+        assert prompt_row is not None
+        prompt_text = str(prompt_row["content"])
+        # Downgrade a current (v6) file to genuine v5 shape.
+        old.exec("DROP TABLE IF EXISTS retrieval_impression;")
+        old.exec(f"PRAGMA user_version = {THREAD_SCHEMA_VERSION_5};")
+        assert (
+            old.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'"
+            ).get()
+            is None
+        )
+        assert get_schema_version(old) == THREAD_SCHEMA_VERSION_5
+        assert event_count >= 3
+        assert message_count >= 2
+        assert turn_count >= 1
+    finally:
+        old.close()
+
+    opened = open_thread_database(file_path)
+    assert opened.ok is True
+    if not opened.ok:
+        return
+
+    db = opened.value
+    try:
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
+        assert (
+            db.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'"
+            ).get()
+            is not None
+        )
+        indexes = [
+            str(row["name"])
+            for row in db.prepare(
+                """SELECT name FROM sqlite_master
+                   WHERE type = 'index' AND name LIKE 'idx_retrieval_impression_%'
+                   ORDER BY name"""
+            ).all()
+        ]
+        assert indexes == [
+            "idx_retrieval_impression_call",
+            "idx_retrieval_impression_entity",
+        ]
+
+        # Data preservation: seed rows survive the 5→6 upgrade.
+        assert int(db.prepare("SELECT COUNT(*) AS c FROM event").get()["c"]) == event_count  # type: ignore[index]
+        assert int(db.prepare("SELECT COUNT(*) AS c FROM message").get()["c"]) == message_count  # type: ignore[index]
+        assert int(db.prepare("SELECT COUNT(*) AS c FROM turns").get()["c"]) == turn_count  # type: ignore[index]
+        after_prompt = db.prepare(
+            "SELECT content FROM message_block WHERE message_id = 'm1' AND block_index = 0"
+        ).get()
+        assert after_prompt is not None
+        assert str(after_prompt["content"]) == prompt_text
+        assert "v5 migrate seed prompt" in prompt_text
+
+        # CHECK constraints: bad entity_kind and bad served must be rejected.
+        # Require a genuine IntegrityError — a bare `except Exception: pass`
+        # swallows AssertionError and lets CHECK-stripped mutants survive.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.prepare(
+                """INSERT INTO retrieval_impression
+                     (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+                   VALUES ('c1', 'test', 'bogus', 't1', 0, 1, NULL, 1)"""
+            ).run()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.prepare(
+                """INSERT INTO retrieval_impression
+                     (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+                   VALUES ('c2', 'test', 'turn', 't1', 0, 2, NULL, 1)"""
+            ).run()
+
+        # Valid insert still works after the rejected attempts.
+        db.prepare(
+            """INSERT INTO retrieval_impression
+                 (call_id, surface, entity_kind, entity_id, request_idx, served, reason, tokens)
+               VALUES ('c3', 'test', 'turn', 't1', 0, 1, NULL, 7)"""
+        ).run()
+        ok_row = db.prepare(
+            "SELECT entity_kind, served, tokens FROM retrieval_impression WHERE call_id = 'c3'"
+        ).get()
+        assert ok_row is not None
+        assert ok_row["entity_kind"] == "turn"
+        assert int(ok_row["served"]) == 1  # type: ignore[arg-type]
+        assert int(ok_row["tokens"]) == 7  # type: ignore[arg-type]
+    finally:
+        db.close()
+
+
+async def test_fresh_thread_is_schema_v6_with_retrieval_impression(store: TempStore) -> None:
+    """Fresh threads are schema v6 and carry the retrieval_impression table."""
+    file_path = store.thread_path()
+    created = await threads.new_thread(
+        NewThreadInput(file_path=file_path, registry_path=store.registry_path)
+    )
+    assert created.ok is True
+    if not created.ok:
+        return
+
+    opened = open_thread_database(file_path)
+    assert opened.ok is True
+    if not opened.ok:
+        return
+    db = opened.value
+    try:
+        assert get_schema_version(db) == THREAD_SCHEMA_VERSION_6
+        assert (
+            db.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'"
+            ).get()
+            is not None
+        )
     finally:
         db.close()

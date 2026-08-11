@@ -3,16 +3,8 @@
 // no work is queued; missing/failed renderings are reported, never repaired.
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  countLiveItems,
-  initLhc,
-  type InferenceCallbacks,
-  type Lhc,
-  retrieval,
-  threads,
-  turns,
-} from "../src/index.js";
-import { createInferenceCallbacksDouble, openRaw, tempStore, type TempStore, validEvent } from "./fixtures/index.js";
+import { countLiveItems, type InferenceCallbacks, initLhc, type Lhc, retrieval, threads, turns } from "../src/index.js";
+import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
 let filePath: string;
@@ -76,9 +68,7 @@ function stripLabels(turnId: string): void {
 function canonicalEventRows(): string {
   const db = openRaw(filePath);
   try {
-    return JSON.stringify(
-      db.prepare(`SELECT event_order, event_kind, payload FROM event ORDER BY event_order`).all(),
-    );
+    return JSON.stringify(db.prepare(`SELECT event_order, event_kind, payload FROM event ORDER BY event_order`).all());
   } finally {
     db.close();
   }

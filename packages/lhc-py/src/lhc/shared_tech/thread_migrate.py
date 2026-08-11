@@ -19,6 +19,7 @@ THREAD_SCHEMA_VERSION_2 = 2
 THREAD_SCHEMA_VERSION_3 = 3
 THREAD_SCHEMA_VERSION_4 = 4
 THREAD_SCHEMA_VERSION_5 = 5
+THREAD_SCHEMA_VERSION_6 = 6
 
 _OLD_DERIVATION_TYPE = "smooth_turn_compression"
 _NEW_DERIVATION_TYPE = "detailed_turn_compression"
@@ -44,9 +45,33 @@ _DERIVATION_LOG_SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_derivation_log_event ON derivation_log (event_kind);",
 )
 
+# Schema v6: retrieval impression log — one row per requested entity per
+# retrieval call (get_turns / get_messages). Idempotent statements shared by
+# fresh create and the 5→6 migration.
+_RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS retrieval_impression (
+      impression_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id TEXT NOT NULL,
+      surface TEXT NOT NULL,
+      entity_kind TEXT NOT NULL CHECK (entity_kind IN ('turn','message')),
+      entity_id TEXT NOT NULL,
+      request_idx INTEGER NOT NULL,
+      served INTEGER NOT NULL CHECK (served IN (0,1)),
+      reason TEXT,
+      tokens INTEGER,
+      recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );""",
+    "CREATE INDEX IF NOT EXISTS idx_retrieval_impression_entity ON retrieval_impression (entity_kind, entity_id);",
+    "CREATE INDEX IF NOT EXISTS idx_retrieval_impression_call ON retrieval_impression (call_id);",
+)
+
 
 def derivation_log_schema_statements() -> list[str]:
     return list(_DERIVATION_LOG_SCHEMA_STATEMENTS)
+
+
+def retrieval_impression_schema_statements() -> list[str]:
+    return list(_RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS)
 
 
 def _migrate_detailed_turn_compression_rename(db: Database) -> None:
@@ -254,6 +279,10 @@ def migrate_thread_schema(db: Database) -> None:
         if version == THREAD_SCHEMA_VERSION_4:
             _migrate_turn_host_facts(db)
             version = THREAD_SCHEMA_VERSION_5
+        if version == THREAD_SCHEMA_VERSION_5:
+            for statement in retrieval_impression_schema_statements():
+                db.exec(statement)
+            version = THREAD_SCHEMA_VERSION_6
         if version != CURRENT_THREAD_SCHEMA_VERSION:
             raise RuntimeError(f"unsupported thread schema version {version}")
         db.exec(f"PRAGMA user_version = {CURRENT_THREAD_SCHEMA_VERSION};")
