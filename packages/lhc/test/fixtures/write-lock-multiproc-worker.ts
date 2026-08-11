@@ -12,7 +12,7 @@
  */
 import { existsSync, writeFileSync } from "node:fs";
 
-import { createDeterministicInferenceCallbacks, initLhc, retrieval, type MessageEventInput } from "../../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, type MessageEventInput, retrieval } from "../../src/index.js";
 
 const filePath = process.argv[2];
 const rounds = Number(process.argv[3] ?? "20");

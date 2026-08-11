@@ -3,8 +3,8 @@
  * symlink alias. Separate-process same-file race uses tsx fixture.
  */
 
-import { linkSync, mkdtempSync, symlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { linkSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
