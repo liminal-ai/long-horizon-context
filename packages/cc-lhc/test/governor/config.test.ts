@@ -13,8 +13,8 @@ import {
 
 describe("context policy config", () => {
   it("built-in defaults match steward work-ready path", () => {
-    expect(BUILTIN_CONTEXT_POLICY.lowerBoundTokens).toBe(240_000);
-    expect(BUILTIN_CONTEXT_POLICY.upperBoundTokens).toBe(500_000);
+    expect(BUILTIN_CONTEXT_POLICY.lowerBoundTokens).toBe(180_000);
+    expect(BUILTIN_CONTEXT_POLICY.upperBoundTokens).toBe(360_000);
     expect(BUILTIN_CONTEXT_POLICY.nativeBackstopTokens).toBe(1_000_000);
     expect(BUILTIN_CONTEXT_POLICY.autoCompact).toBe(true);
     expect(BUILTIN_CONTEXT_POLICY.observeOnly).toBe(false);

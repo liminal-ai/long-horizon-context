@@ -6,7 +6,7 @@ import { renderPanel } from "../../src/wrapper/panel.js";
 const STATUS_ROWS = [
   "LHC context management",
   "capture ready · retrieval ready",
-  "provider context 31k · auto on · trigger 500k · target 240k",
+  "provider context 31k · auto on · trigger 360k · target 180k",
   "native compact backstop 1000k (--autocompact, next-launch value)",
   "active operation: none",
   "last action: compacted 3m ago (auto) · trigger 508k · view 247k",

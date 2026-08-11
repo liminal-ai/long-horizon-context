@@ -49,7 +49,7 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   session and LHC thread. Stale ownership, malformed state, and session
   mismatch fail closed before archive access or impression writes.
 - **Context governance.** Provider-reported usage drives automatic compact at
-  confirmed turn boundaries. Built-in policy targets 240k, triggers at 500k,
+  confirmed turn boundaries. Built-in policy targets 180k, triggers at 360k,
   reserves 50k runway, keeps native compact as a 1M emergency backstop, and
   leaves automatic prune off.
 - **Controlled handoff.** On a respawn-safe interactive launch, compact/prune

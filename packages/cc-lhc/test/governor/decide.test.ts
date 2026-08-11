@@ -15,10 +15,10 @@ function baseInput(over: Partial<GovernorInput> = {}): GovernorInput {
     turnOpen: false,
     settleStale: false,
     providerContext: {
-      inputTokens: 500_000,
+      inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
-      total: 500_000,
+      total: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
     },
     captureHealthy: true,
     captureGeneration: 1,
@@ -53,10 +53,10 @@ describe("decideGovernor", () => {
     const d = decideGovernor(
       baseInput({
         providerContext: {
-          inputTokens: 499_999,
+          inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens - 1,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
-          total: 499_999,
+          total: BUILTIN_CONTEXT_POLICY.upperBoundTokens - 1,
         },
       }),
     );
@@ -67,10 +67,10 @@ describe("decideGovernor", () => {
     const d = decideGovernor(
       baseInput({
         providerContext: {
-          inputTokens: 400_000,
+          inputTokens: 260_000,
           cacheCreationInputTokens: 50_000,
           cacheReadInputTokens: 50_000,
-          total: 500_000,
+          total: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
         },
       }),
     );

@@ -21,8 +21,8 @@ import type {
 /** Steward built-in defaults for the work-ready path (Slice 4: auto on). */
 export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   autoCompact: true,
-  lowerBoundTokens: 240_000,
-  upperBoundTokens: 500_000,
+  lowerBoundTokens: 180_000,
+  upperBoundTokens: 360_000,
   profile: "continuation",
   nativeCompactMode: "emergency_backstop",
   nativeBackstopTokens: 1_000_000,
