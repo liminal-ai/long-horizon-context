@@ -5,12 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  type Lhc,
-  retrieval,
-} from "../src/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "../src/index.js";
 import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 describe("sqlite concurrent capture + retrieval", () => {
