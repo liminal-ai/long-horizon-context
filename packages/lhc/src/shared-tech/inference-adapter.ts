@@ -111,14 +111,17 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
     if (text === "") {
       return inferenceFailure("empty_output", "model returned empty or whitespace-only text", messages);
     }
-    // Provenance is the assignment's three config-known strings, copied, never
-    // authored from model output.
+    // Provenance: config-known strings, copied, never authored from model
+    // output. Hosts that route dynamically may report the actually-serving
+    // provider/model on the result; those take precedence so durable
+    // provenance stays truthful across live model switches. The prompt is
+    // always the assignment's.
     return {
       ok: true,
       text,
       provenance: {
-        provider: assignment.provider,
-        model: assignment.model,
+        provider: result.actualProvider ?? assignment.provider,
+        model: result.actualModel ?? assignment.model,
         prompt: assignment.prompt,
       },
       requestMessages: messages,

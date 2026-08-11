@@ -224,3 +224,40 @@ async def test_classifies_a_never_settling_host_as_timeout_after_the_race() -> N
     if not result.ok:
         assert result.kind == "timeout"
         assert "50" in result.message
+
+
+async def test_actual_provider_model_on_a_success_override_assignment_provenance() -> None:
+    """actualProvider/actualModel on a success override assignment provenance; prompt stays the assignment's"""
+    from lhc.shared_tech.inference_types import ModelCallOk
+
+    async def call(_input: ModelCallInput):
+        return ModelCallOk(text="smoothed just fine", actual_provider="prov-actual", actual_model="model-actual")
+
+    sdk = _inference_sdk(call)
+    result = await _drain_normally(sdk, await _seed_smoothing_only(sdk, _fresh_store()))
+
+    smoothed = next((f for f in result.derivations if f.derivation_type == "smoothed_prompt"), None)
+    assert smoothed is not None
+    assert smoothed.state == "ready"
+    provenance = smoothed.metadata.provenance
+    assert provenance.provider == "prov-actual"
+    assert provenance.model == "model-actual"
+    assert provenance.prompt == valid_assignments()["smoothed_prompt"].prompt
+
+
+async def test_absent_actuals_keep_the_assignments_provenance_exactly_as_before() -> None:
+    """absent actuals keep the assignment's provenance exactly as before"""
+    from lhc.shared_tech.inference_types import ModelCallOk
+
+    async def call(_input: ModelCallInput):
+        return ModelCallOk(text="smoothed plainly")
+
+    sdk = _inference_sdk(call)
+    result = await _drain_normally(sdk, await _seed_smoothing_only(sdk, _fresh_store()))
+
+    smoothed = next((f for f in result.derivations if f.derivation_type == "smoothed_prompt"), None)
+    assert smoothed is not None
+    assert smoothed.state == "ready"
+    provenance = smoothed.metadata.provenance
+    assert provenance.provider == valid_assignments()["smoothed_prompt"].provider
+    assert provenance.model == valid_assignments()["smoothed_prompt"].model

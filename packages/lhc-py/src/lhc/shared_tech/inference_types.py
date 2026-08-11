@@ -43,6 +43,12 @@ class ModelCallInput:
 class ModelCallOk:
     text: str
     ok: Literal[True] = True
+    # When the host routes dynamically (live model switches, provider
+    # fallback), these report what actually served the call. LHC records
+    # them as provenance when present; None means the assignment's
+    # provider/model served as configured.
+    actual_provider: str | None = None
+    actual_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

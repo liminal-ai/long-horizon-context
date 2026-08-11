@@ -143,11 +143,16 @@ async def _call_kind(
         return _inference_failure(
             "empty_output", "model returned empty or whitespace-only text", messages
         )
+    # Hosts that route dynamically may report the actually-serving
+    # provider/model on the result; those take precedence so durable
+    # provenance stays truthful across live model switches (TS parity).
+    actual_provider = None if isinstance(result, dict) else getattr(result, "actual_provider", None)
+    actual_model = None if isinstance(result, dict) else getattr(result, "actual_model", None)
     return InferenceOk(
         text=text,
         provenance=ProviderProvenance(
-            provider=assignment.provider,
-            model=assignment.model,
+            provider=actual_provider or assignment.provider,
+            model=actual_model or assignment.model,
             prompt=assignment.prompt,
         ),
         request_messages=messages,

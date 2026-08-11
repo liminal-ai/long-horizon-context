@@ -15,7 +15,18 @@ export interface ModelCallInput {
   thinking?: ModelAssignment["thinking"];
 }
 
-export type ModelCallResult = { ok: true; text: string } | { ok: false; kind: ModelCallFailureKind; message: string };
+export type ModelCallResult =
+  | {
+      ok: true;
+      text: string;
+      /** When the host routes dynamically (live model switches, provider
+       *  fallback), these report what actually served the call. LHC records
+       *  them as provenance when present; absent means the assignment's
+       *  provider/model served as configured. */
+      actualProvider?: string;
+      actualModel?: string;
+    }
+  | { ok: false; kind: ModelCallFailureKind; message: string };
 
 /** `empty_output` is adapter-generated; hosts never return it.
  *  Thrown exceptions classify as `other`. */

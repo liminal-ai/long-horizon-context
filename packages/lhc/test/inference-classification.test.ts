@@ -183,3 +183,35 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     });
   });
 });
+
+describe("provenance reports the actually-serving model when the host says so", () => {
+  it("actualProvider/actualModel on a success override assignment provenance; prompt stays the assignment's", async () => {
+    const sdk = inferenceSdk(async () => ({
+      ok: true,
+      text: "smoothed just fine",
+      actualProvider: "prov-actual",
+      actualModel: "model-actual",
+    }));
+    const { derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
+    expect(smoothed?.state).toBe("ready");
+    expect(smoothed?.metadata?.provenance).toMatchObject({
+      provider: "prov-actual",
+      model: "model-actual",
+    });
+    expect(smoothed?.metadata?.provenance?.prompt).toBe(validAssignments().smoothed_prompt.prompt);
+  });
+
+  it("absent actuals keep the assignment's provenance exactly as before", async () => {
+    const sdk = inferenceSdk(async () => ({ ok: true, text: "smoothed plainly" }));
+    const { derivations: forms } = await drainNormally(sdk, await seedSmoothingOnly(sdk, freshStore()));
+
+    const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
+    expect(smoothed?.state).toBe("ready");
+    expect(smoothed?.metadata?.provenance).toMatchObject({
+      provider: validAssignments().smoothed_prompt.provider,
+      model: validAssignments().smoothed_prompt.model,
+    });
+  });
+});
