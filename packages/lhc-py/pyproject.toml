@@ -2,7 +2,7 @@
 name = "lhc-py"
 version = "0.0.1"
 description = "Python port of the LHC SDK (packages/lhc). Phase 1: skeletons + tests."
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "tiktoken>=0.13.0",
 ]
