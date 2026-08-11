@@ -36,15 +36,46 @@ long-horizon-context-efk, slices Gate-0 + S1–S4 at contract pin `f651031`).
    them — resume-grade identity); session view emits `thinkingSignature`
    and group provenance and splits assistant groups at identity boundaries.
 
-## Schema impact — additive only
+## Schema and data-contract impact — additive only, two layers
 
+**Convex table schema (what push-time validation sees):**
 - ONE new table: `impressions` (retrieval usage log).
-- ZERO changes to existing tables (signature/identity ride inside the
-  existing `v.any()` block content).
-- Convex push-time validation passes automatically for existing data
-  (new table = nothing to validate). No migration code. Rollback =
-  redeploying the previous component version; the `impressions` table is
-  ignored by older code and data-safe.
+- ZERO definition changes to existing tables — verified:
+  `git diff f651031..ae8a6fe -- packages/lhc-convex/convex/schema.ts`
+  shows only the impressions block.
+- Push-time validation passes automatically for existing data (new table =
+  nothing to validate). No migration code. Rollback = redeploying the
+  previous component version; the `impressions` table is ignored by older
+  code and data-safe.
+
+**Payload/data contract (below schema validation — S2):** existing tables'
+DOCUMENTS may now carry new optional keys that Convex schema validation does
+not see because `messageBlocks.content` is `v.any()`:
+- intake accepts optional `signature`, `provider`, `model`, `api` on
+  `assistant_thinking` payloads and optional `provider`, `model`, `api` on
+  `assistant_text` payloads (closed schemas — unknown fields still reject);
+- those keys are copied verbatim onto `messageBlocks.content`;
+- session-view entries may carry `thinkingSignature` on thinking parts and
+  `provider`/`model`/`api` on assistant entries.
+Code reading block content or session views should tolerate these optional
+keys (readers that ignore unknown keys are unaffected). Old documents are
+untouched; absence of the keys is the pre-0.1.0 state.
+
+## Error classification on retrieval refusals (read before wiring tools)
+
+Caller-shaped refusals — invalid `tokenBudget`/`byteBudget`/`fromToken`,
+empty id list, over-cap id count — return
+`{ errorClass: "system_error", code: "storage_failure" }`, NOT
+`caller_error`. This mirrors the pinned TypeScript contract source exactly
+(retrieval/index.ts at `f651031`) and matches the rs/py ports; it is
+intentional parity, not a port bug. Malformed individual ids are NOT errors:
+they come back inside an ok receipt as per-id `{reason: "invalid"}`
+entries. Practical rule for the tool wrapper: treat any `ok: false` from
+retrieval as a retryable-after-fixing-the-call failure and read per-id
+dispositions from `unserved`. (Whether these refusals should be
+reclassified `caller_error` upstream is an open contract question routed to
+Fable; any change would land in TypeScript first and propagate to all
+ports together.)
 
 ## Integration steps
 
