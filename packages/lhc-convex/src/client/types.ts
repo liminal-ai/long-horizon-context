@@ -148,15 +148,31 @@ export type TurnEndPayload = {
 
 // Provider usage is the host's verbatim JSON object for one model call — no
 // fixed column set, no interpretation inside LHC (schema v5 / D1, D3).
+// provider/model/api are the optional host identity that produced the output,
+// frozen at request-preparation time (pin 795da41) — resume replays signed
+// reasoning only under an exact identity match.
 export type AssistantTextPayload = {
   text: string;
   providerUsage?: Record<string, unknown>;
+  provider?: string;
+  model?: string;
+  api?: string;
+};
+
+// signature is the provider's opaque reasoning signature, captured verbatim
+// and never interpreted (pin d0f00bb). Hosts should omit rather than send "".
+export type AssistantThinkingPayload = {
+  text: string;
+  signature?: string;
+  provider?: string;
+  model?: string;
+  api?: string;
 };
 
 export type MessageEventInput =
   | BaseEvent<"user_prompt", { text: string }>
   | BaseEvent<"assistant_text", AssistantTextPayload>
-  | BaseEvent<"assistant_thinking", { text: string }>
+  | BaseEvent<"assistant_thinking", AssistantThinkingPayload>
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
@@ -334,11 +350,17 @@ export type SessionThreadViewEntry =
         type: "text" | "thinking" | "toolCall";
         text?: string;
         thinking?: string;
+        thinkingSignature?: string;
         toolCallId?: string;
         toolName?: string;
         arguments?: Record<string, unknown>;
       }>;
       sourceMessages: SessionThreadViewEntrySource[];
+      // Group provenance: first non-empty identity from the grouped assistant
+      // rows; the group splits at identity boundaries (pin 8981bcb).
+      provider?: string;
+      model?: string;
+      api?: string;
     }
   | {
       role: "toolResult";

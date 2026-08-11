@@ -4,6 +4,7 @@ import type { CompactChunkMaterialSnapshot } from "../src/shared/view_render.js"
 import {
   assembleBandText,
   excerptLine,
+  hasThinkingText,
   isEmptyThinkingHusk,
   renderTailMessage,
   type TailMessageRow,
@@ -290,7 +291,10 @@ async function assembledContext(db: Reader, instance: string, thread: string) {
     });
   }
   for (const row of rows) {
+    // Skip true husks always; skip signature-only thinking here because the
+    // text LLM path cannot carry the opaque token (session-view still serves it).
     if (isEmptyThinkingHusk(row)) continue;
+    if (row.kind === "assistant_thinking" && !hasThinkingText(row)) continue;
     entries.push({ message: renderTailMessage(row, { boundaryPosition, toolNameByCallId: names }) });
   }
   return { snapshot, compactPoint, boundaryPosition, rows, entries };
@@ -322,6 +326,61 @@ function parseModelRef(model: string) {
     : { provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
 }
 
+function provenanceStringField(content: Record<string, unknown>, key: string): string | undefined {
+  const value = content[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+interface RowProvenance {
+  provider?: string;
+  model?: string;
+  api?: string;
+}
+
+/** Provider/model/api carried by one assistant row (thinking or text only). */
+function rowProvenanceOf(row: TailMessageRow): RowProvenance {
+  if (row.kind !== "assistant_thinking" && row.kind !== "assistant_text") return {};
+  const content = row.blocks[0]?.content ?? {};
+  const provider = provenanceStringField(content, "provider");
+  const model = provenanceStringField(content, "model");
+  const api = provenanceStringField(content, "api");
+  return {
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(api !== undefined ? { api } : {}),
+  };
+}
+
+/** True when both sides state a field and disagree — rows with no provenance
+ *  never conflict (they inherit the group's). */
+function provenanceConflicts(a: RowProvenance, b: RowProvenance): boolean {
+  return (
+    (a.provider !== undefined && b.provider !== undefined && a.provider !== b.provider) ||
+    (a.model !== undefined && b.model !== undefined && a.model !== b.model) ||
+    (a.api !== undefined && b.api !== undefined && a.api !== b.api)
+  );
+}
+
+/** First non-empty provider/model/api from grouped assistant rows (thinking or text). */
+function modelProvenanceOf(rows: readonly TailMessageRow[]): RowProvenance {
+  let provider: string | undefined;
+  let model: string | undefined;
+  let api: string | undefined;
+  for (const row of rows) {
+    if (row.kind !== "assistant_thinking" && row.kind !== "assistant_text") continue;
+    const content = row.blocks[0]?.content ?? {};
+    provider ??= provenanceStringField(content, "provider");
+    model ??= provenanceStringField(content, "model");
+    api ??= provenanceStringField(content, "api");
+    if (provider !== undefined && model !== undefined && api !== undefined) break;
+  }
+  return {
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(api !== undefined ? { api } : {}),
+  };
+}
+
 export const getSessionThreadView = query({
   args: { instance: v.string(), ref: v.object({ threadId: v.optional(v.string()), filePath: v.optional(v.string()) }) },
   handler: async (ctx, args) => {
@@ -337,10 +396,17 @@ export const getSessionThreadView = query({
     }));
     let parts: Array<Record<string, unknown>> = [];
     let sources: Array<Record<string, unknown>> = [];
+    let groupRows: TailMessageRow[] = [];
+    let groupProvenance: RowProvenance = {};
     const flush = () => {
-      if (parts.length > 0) entries.push({ role: "assistant", content: parts, sourceMessages: sources });
+      if (parts.length > 0) {
+        const provenance = modelProvenanceOf(groupRows);
+        entries.push({ role: "assistant", content: parts, sourceMessages: sources, ...provenance });
+      }
       parts = [];
       sources = [];
+      groupRows = [];
+      groupProvenance = {};
     };
     for (const row of assembled.rows) {
       if (isEmptyThinkingHusk(row)) continue;
@@ -353,20 +419,41 @@ export const getSessionThreadView = query({
           content: row.kind === "runtime_note" ? `[runtime note] ${text}` : text,
           sourceMessages: [source(row)],
         });
-      } else if (row.kind === "assistant_text") {
-        parts.push({ type: "text", text });
+      } else if (row.kind === "assistant_text" || row.kind === "assistant_thinking" || row.kind === "tool_call") {
+        // Identity boundary: message-level provenance covers every signature
+        // in the group, so rows captured under a different model/provider
+        // must start a new assistant entry — otherwise the identity gate
+        // would re-emit (or suppress) the wrong ciphertext on resume.
+        const rp = rowProvenanceOf(row);
+        if (provenanceConflicts(groupProvenance, rp)) flush();
+        groupProvenance = {
+          ...(groupProvenance.provider !== undefined || rp.provider !== undefined
+            ? { provider: groupProvenance.provider ?? rp.provider }
+            : {}),
+          ...(groupProvenance.model !== undefined || rp.model !== undefined
+            ? { model: groupProvenance.model ?? rp.model }
+            : {}),
+          ...(groupProvenance.api !== undefined || rp.api !== undefined ? { api: groupProvenance.api ?? rp.api } : {}),
+        };
+        if (row.kind === "assistant_text") {
+          parts.push({ type: "text", text });
+        } else if (row.kind === "assistant_thinking") {
+          const signature = block["signature"] ?? block["thinkingSignature"];
+          parts.push({
+            type: "thinking",
+            thinking: text,
+            ...(typeof signature === "string" && signature !== "" ? { thinkingSignature: signature } : {}),
+          });
+        } else {
+          parts.push({
+            type: "toolCall",
+            toolCallId: typeof block["toolCallId"] === "string" ? block["toolCallId"] : "",
+            toolName: typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool",
+            arguments: typeof block["arguments"] === "object" && block["arguments"] !== null ? block["arguments"] : {},
+          });
+        }
         sources.push(source(row));
-      } else if (row.kind === "assistant_thinking") {
-        parts.push({ type: "thinking", thinking: text });
-        sources.push(source(row));
-      } else if (row.kind === "tool_call") {
-        parts.push({
-          type: "toolCall",
-          toolCallId: typeof block["toolCallId"] === "string" ? block["toolCallId"] : "",
-          toolName: typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool",
-          arguments: typeof block["arguments"] === "object" && block["arguments"] !== null ? block["arguments"] : {},
-        });
-        sources.push(source(row));
+        groupRows.push(row);
       } else if (row.kind === "tool_result") {
         flush();
         const toolCallId = typeof block["toolCallId"] === "string" ? block["toolCallId"] : "";
@@ -382,9 +469,13 @@ export const getSessionThreadView = query({
           sourceMessages: [source(row)],
         });
       } else if (row.kind === "model_change") {
+        // Flush first: the change marks a boundary in time, so it must not
+        // appear BEFORE assistant output that preceded it.
+        flush();
         const parsed = parseModelRef(String(block["newModel"] ?? ""));
         if (parsed !== null) entries.push({ kind: "model_change", ...parsed, sourceMessages: [source(row)] });
       } else if (row.kind === "thinking_level_change") {
+        flush();
         entries.push({
           kind: "thinking_level_change",
           level: String(block["newLevel"] ?? ""),

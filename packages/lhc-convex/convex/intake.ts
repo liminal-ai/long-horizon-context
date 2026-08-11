@@ -9,11 +9,35 @@ import { scheduleDrain } from "./queue.js";
 function projection(kind: string, payload: Record<string, unknown>) {
   switch (kind) {
     case "user_prompt":
-    case "assistant_text":
-    case "assistant_thinking":
     case "runtime_note": {
       const text = String(payload["text"] ?? "");
       return { blockType: "text", content: { text }, tokens: estimateTokens(text) };
+    }
+    case "assistant_text": {
+      // Verbatim payload copy: text always; model identity when the host sent
+      // it (pin 795da41 — resume keeps signed thinking only under an exact
+      // identity match, so identity is frozen at capture).
+      const text = String(payload["text"] ?? "");
+      const content: Record<string, unknown> = { text };
+      for (const field of ["provider", "model", "api"] as const) {
+        if (payload[field] !== undefined) content[field] = payload[field];
+      }
+      return { blockType: "text", content, tokens: estimateTokens(text) };
+    }
+    case "assistant_thinking": {
+      // Verbatim payload copy: text always; signature + model identity when
+      // sent (pin d0f00bb / 795da41). Signature bytes count toward the
+      // estimate — served back to the provider they sit in the live context
+      // window (the fable live-vs-LHC token gap).
+      const text = String(payload["text"] ?? "");
+      const content: Record<string, unknown> = { text };
+      if (payload["signature"] !== undefined) content["signature"] = payload["signature"];
+      for (const field of ["provider", "model", "api"] as const) {
+        if (payload[field] !== undefined) content[field] = payload[field];
+      }
+      const signature = typeof payload["signature"] === "string" ? payload["signature"] : "";
+      const estimateSource = signature !== "" ? `${text}${signature}` : text;
+      return { blockType: "text", content, tokens: estimateTokens(estimateSource) };
     }
     case "model_change": {
       const previousModel = String(payload["previousModel"] ?? "");

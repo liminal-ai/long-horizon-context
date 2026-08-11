@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import {
   CONTRACT_PIN,
+  encodeFrozenCase,
   eventCases,
   threadRefCases,
   turnComposeFixture,
@@ -81,10 +82,10 @@ describe.runIf(process.env["REGEN_FROZEN_GOLDENS"] === "1")("frozen golden regen
     )) as { validateEvents: typeof validateEvents; validateThreadRef: typeof validateThreadRef };
     const validationCases: Record<string, string> = {};
     for (const c of eventCases()) {
-      validationCases[`validateEvents: ${c.name}`] = JSON.stringify(validateModule.validateEvents(c.input));
+      validationCases[`validateEvents: ${c.name}`] = encodeFrozenCase(validateModule.validateEvents(c.input));
     }
     for (const c of threadRefCases()) {
-      validationCases[`validateThreadRef: ${c.name}`] = JSON.stringify(validateModule.validateThreadRef(c.input));
+      validationCases[`validateThreadRef: ${c.name}`] = encodeFrozenCase(validateModule.validateThreadRef(c.input));
     }
     writeGolden("intake-validate", validationCases);
 

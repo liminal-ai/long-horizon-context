@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import { CONTRACT_PIN, eventCases, threadRefCases } from "./frozen_cases.js";
+import { CONTRACT_PIN, encodeFrozenCase, eventCases, threadRefCases } from "./frozen_cases.js";
 import golden from "./goldens/frozen/intake-validate.golden.json" with { type: "json" };
 import {
   validateEvents as validateConvexEvents,
@@ -15,7 +15,7 @@ import {
 // S2/S4 — flip at whichever slice clears the last validator drift).
 // The golden is generated from the contract pin, so un-skipping compares the
 // port against pinned bytes, not the moving sibling tree.
-describe.skip("frozen intake validation differential", () => {
+describe("frozen intake validation differential", () => {
   test("acceptance, codes, reasons, and event indexes are byte-for-byte equivalent", () => {
     expect(golden.pin).toBe(CONTRACT_PIN);
     const cases = golden.cases as Record<string, string>;
@@ -23,14 +23,14 @@ describe.skip("frozen intake validation differential", () => {
 
     for (const validationCase of eventCases()) {
       const expected = cases[`validateEvents: ${validationCase.name}`];
-      const actual = JSON.stringify(validateConvexEvents(validationCase.input));
+      const actual = encodeFrozenCase(validateConvexEvents(validationCase.input));
       if (expected === undefined || actual !== expected) {
         mismatches.push({ case: validationCase.name, expected, actual });
       }
     }
     for (const validationCase of threadRefCases()) {
       const expected = cases[`validateThreadRef: ${validationCase.name}`];
-      const actual = JSON.stringify(validateConvexThreadRef(validationCase.input));
+      const actual = encodeFrozenCase(validateConvexThreadRef(validationCase.input));
       if (expected === undefined || actual !== expected) {
         mismatches.push({ case: validationCase.name, expected, actual });
       }

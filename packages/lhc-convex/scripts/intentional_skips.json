@@ -7,19 +7,14 @@
       "reason": "Upstream it.skip in frozen epic-fix-02; needs an in-flight delayKind claim window with no Convex seam."
     },
     {
-      "fullName": "TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses deterministic truncation; non-tool content untouched renders deterministic tool-result floors even when a ready summary exists",
+      "fullName": "TC-4.2 (AC-4.1, AC-4.2): flipped renders \u2014 full-band boundary uses deterministic truncation; non-tool content untouched renders deterministic tool-result floors even when a ready summary exists",
       "class": "ts-mirror",
       "reason": "Upstream it.skip in frozen view-boundary (deterministic floors with a ready summary)."
     },
     {
-      "fullName": "TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-tool content full everywhere renders deterministic tool-result floors behind the boundary and full content ahead of it",
+      "fullName": "TC-1.4 (AC-1.5): boundary mid-tail \u2014 short behind, full ahead, non-tool content full everywhere renders deterministic tool-result floors behind the boundary and full content ahead of it",
       "class": "ts-mirror",
       "reason": "Upstream it.skip in frozen view-llm-request-context (deterministic floors with a ready summary)."
-    },
-    {
-      "fullName": "frozen intake validation differential acceptance, codes, reasons, and event indexes are byte-for-byte equivalent",
-      "class": "port-lag",
-      "reason": "Sanctioned lag (bead bu9); un-skip at convex-wave S2/S4 when the last validator drift clears."
     },
     {
       "fullName": "frozen turn composition differential tool-run grouping, fallbacks, gaps, and dialogue assembly stay byte-for-byte equivalent",

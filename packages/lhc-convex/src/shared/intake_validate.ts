@@ -179,8 +179,10 @@ function validatePayload(
           : kind === "thinking_level_change"
             ? new Set(["previousLevel", "newLevel"])
             : kind === "assistant_text"
-              ? new Set(["text", "providerUsage"])
-              : new Set(["text"]);
+              ? new Set(["text", "providerUsage", "provider", "model", "api"])
+              : kind === "assistant_thinking"
+                ? new Set(["text", "signature", "provider", "model", "api"])
+                : new Set(["text"]);
   const extra = firstExtra(payload, fields);
   if (extra !== undefined) {
     return callerError(
@@ -220,7 +222,8 @@ function validatePayload(
     const nextIssue = stringIssue(payload, "newLevel", true);
     if (nextIssue !== undefined) return callerError(`payload: ${nextIssue}`, index);
   } else if (kind === "assistant_text") {
-    // text required; providerUsage optional verbatim JSON object (no inner shape).
+    // text required; providerUsage optional verbatim JSON object (no inner shape);
+    // provider/model/api optional host identity strings for resume (pin 795da41).
     const textIssue = stringIssue(payload, "text", false);
     if (textIssue !== undefined) return callerError(`payload: ${textIssue}`, index);
     if ("providerUsage" in payload && payload["providerUsage"] !== undefined) {
@@ -229,6 +232,24 @@ function validatePayload(
           `payload: "providerUsage" Expected { readonly [x: string]: unknown }, actual ${actual(payload["providerUsage"])}`,
           index,
         );
+      }
+    }
+    for (const field of ["provider", "model", "api"] as const) {
+      if (!(field in payload) || payload[field] === undefined) continue;
+      if (typeof payload[field] !== "string") {
+        return callerError(`payload: "${field}" Expected string, actual ${actual(payload[field])}`, index);
+      }
+    }
+  } else if (kind === "assistant_thinking") {
+    // text required; signature is optional opaque provider bytes/token (may be
+    // empty; hosts should omit rather than send ""); provider/model/api optional
+    // host identity for resume (pin d0f00bb / 795da41).
+    const textIssue = stringIssue(payload, "text", false);
+    if (textIssue !== undefined) return callerError(`payload: ${textIssue}`, index);
+    for (const field of ["signature", "provider", "model", "api"] as const) {
+      if (!(field in payload) || payload[field] === undefined) continue;
+      if (typeof payload[field] !== "string") {
+        return callerError(`payload: "${field}" Expected string, actual ${actual(payload[field])}`, index);
       }
     }
   } else {

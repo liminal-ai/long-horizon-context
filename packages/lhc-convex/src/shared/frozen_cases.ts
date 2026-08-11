@@ -13,6 +13,13 @@ import type { SelectionInputs } from "./view_select.js";
 
 export const CONTRACT_PIN = "f6510314fe545b363e65e5059201b8d7119bac96";
 
+// JSON.stringify(undefined) is undefined (not a string) — a validator that
+// returns undefined for a valid input would silently drop its golden case.
+// Encode undefined explicitly so accept-cases are first-class golden entries.
+export function encodeFrozenCase(value: unknown): string {
+  return JSON.stringify(value) ?? "__undefined__";
+}
+
 export function viewSelectFixture(): SelectionInputs {
   return {
     messages: [

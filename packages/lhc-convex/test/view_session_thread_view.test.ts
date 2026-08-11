@@ -241,3 +241,91 @@ describe("runtime_note entries", () => {
     expect(note.sourceMessages).toHaveLength(1);
   });
 });
+
+// Identity-boundary splits + change-entry flushes (mirrors the frozen legs
+// added by TS 8981bcb / e905cf4 / 1c89ae4 at the contract pin).
+describe("assistant group identity boundaries", () => {
+  test("splits assistant groups at identity boundaries so signatures keep their own provenance", async () => {
+    // Two thinking rows with different capture identities inside one
+    // assistant run (model changed mid-turn). Message-level provenance
+    // covers every signature in a group, so the group must split — otherwise
+    // the second signature would serve under the first identity and the
+    // host's identity gate would re-emit the wrong ciphertext.
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan a", signature: "SIG_A", provider: "openai", model: "gpt-a", api: "responses" },
+      }),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan b", signature: "SIG_B", provider: "openai", model: "gpt-b", api: "responses" },
+      }),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    const assistants = view.value.entries.filter(
+      (entry): entry is MessageEntry & { role: "assistant" } => isMessageEntry(entry) && entry.role === "assistant",
+    ) as Array<{ role: "assistant"; content: Array<{ type: string; thinkingSignature?: string }>; model?: string }>;
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]?.model).toBe("gpt-a");
+    expect(assistants[1]?.model).toBe("gpt-b");
+    const first = assistants[0]?.content[0];
+    const second = assistants[1]?.content[0];
+    expect(first?.type === "thinking" && first.thinkingSignature).toBe("SIG_A");
+    expect(second?.type === "thinking" && second.thinkingSignature).toBe("SIG_B");
+    // The trailing plain text (no provenance) inherits the open group.
+    expect(assistants[1]?.content.some((part) => part.type === "text")).toBe(true);
+  });
+
+  test("splits on provider-only identity conflicts and orders change entries after the flushed group", async () => {
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan a", signature: "SIG_A", provider: "openai", model: "m", api: "responses" },
+      }),
+      validEvent("model_change", {
+        payload: { previousModel: "openai/m", newModel: "other/m" },
+      }),
+      validEvent("assistant_thinking", {
+        payload: { text: "plan b", signature: "SIG_B", provider: "other", model: "m", api: "responses" },
+      }),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    // History order preserved: assistant(A) BEFORE the model_change marker,
+    // then assistant(B) — and the provider-only difference alone must split.
+    expect(entryKinds(view.value.entries)).toEqual(["user", "assistant", "model_change", "assistant"]);
+    const assistants = view.value.entries.filter(
+      (entry): entry is MessageEntry & { role: "assistant" } => isMessageEntry(entry) && entry.role === "assistant",
+    ) as Array<{ role: "assistant"; provider?: string }>;
+    expect(assistants[0]?.provider).toBe("openai");
+    expect(assistants[1]?.provider).toBe("other");
+  });
+
+  test("orders a thinking_level_change between the flushed assistant group and the next", async () => {
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text"),
+      validEvent("thinking_level_change", { payload: { previousLevel: "low", newLevel: "high" } }),
+      validEvent("assistant_text"),
+      validEvent("turn_end"),
+    ]);
+    expect(captured.ok).toBe(true);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+
+    expect(entryKinds(view.value.entries)).toEqual(["user", "assistant", "thinking_level_change", "assistant"]);
+  });
+});

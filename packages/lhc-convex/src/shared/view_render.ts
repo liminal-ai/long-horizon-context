@@ -76,6 +76,13 @@ export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   return !hasText && !hasSignature;
 }
 
+/** True when thinking has non-empty text (the only form the text LLM path can render). */
+export function hasThinkingText(message: TailMessageRow): boolean {
+  if (message.kind !== "assistant_thinking") return false;
+  const text = message.blocks[0]?.content?.["text"];
+  return typeof text === "string" && text.trim() !== "";
+}
+
 export interface TailRenderContext {
   boundaryPosition: number;
   toolNameByCallId: ReadonlyMap<string, string>;
