@@ -7,5 +7,8 @@ let encoder: Tiktoken | null = null;
 
 export function estimateTokens(text: string): number {
   if (encoder === null) encoder = new Tiktoken(o200kBase);
-  return encoder.encode(text).length;
+  // Allow all special tokens: captured text is data, and a literal
+  // "<|endoftext|>" in a transcript must count, never throw — counting is
+  // on the capture path and capture must be total.
+  return encoder.encode(text, "all").length;
 }

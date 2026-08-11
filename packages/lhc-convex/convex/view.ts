@@ -4,6 +4,7 @@ import type { CompactChunkMaterialSnapshot } from "../src/shared/view_render.js"
 import {
   assembleBandText,
   excerptLine,
+  isEmptyThinkingHusk,
   renderTailMessage,
   type TailMessageRow,
   toolNamesByCallId,
@@ -289,6 +290,7 @@ async function assembledContext(db: Reader, instance: string, thread: string) {
     });
   }
   for (const row of rows) {
+    if (isEmptyThinkingHusk(row)) continue;
     entries.push({ message: renderTailMessage(row, { boundaryPosition, toolNameByCallId: names }) });
   }
   return { snapshot, compactPoint, boundaryPosition, rows, entries };
@@ -341,6 +343,7 @@ export const getSessionThreadView = query({
       sources = [];
     };
     for (const row of assembled.rows) {
+      if (isEmptyThinkingHusk(row)) continue;
       const block = row.blocks[0]?.content ?? {};
       const text = typeof block["text"] === "string" ? block["text"] : "";
       if (row.kind === "user_prompt" || row.kind === "runtime_note") {

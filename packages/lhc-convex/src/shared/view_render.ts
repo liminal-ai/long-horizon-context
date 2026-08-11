@@ -59,6 +59,23 @@ function textOf(message: TailMessageRow): string {
 // What the tail renderer needs beyond the message itself: the boundary
 // position (short/full selection) and the call-id → tool-name pairing
 // (results carry only their call id).
+// Anthropic models running with omitted thinking display emit thinking blocks
+// whose text is empty, with the encrypted reasoning carried (if at all) in a
+// signature. An empty-text, unsigned block carries nothing a model can use,
+// and the two serving exits rendered it divergently (standalone [thinking]
+// husk vs empty adjacent part). Skip such rows at serve time only — capture
+// and derivations keep them. Signed blocks are served once signature capture
+// lands; the predicate already honors them. (Mirrors TS aa56b8b at the pin.)
+export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
+  if (message.kind !== "assistant_thinking") return false;
+  const content = message.blocks[0]?.content ?? {};
+  const text = content["text"];
+  const hasText = typeof text === "string" && text.trim() !== "";
+  const signature = content["signature"] ?? content["thinkingSignature"];
+  const hasSignature = typeof signature === "string" && signature !== "";
+  return !hasText && !hasSignature;
+}
+
 export interface TailRenderContext {
   boundaryPosition: number;
   toolNameByCallId: ReadonlyMap<string, string>;

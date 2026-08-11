@@ -421,6 +421,10 @@ function renderingPartLabel(kind: RenderingPart["kind"]): string {
 
 function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
   return parts
+    // Empty thinking has no usable representation in a text band. Leaving it
+    // here bypasses the serving-exit tail filters once the turn is compacted.
+    // (Mirrors TS f1f6323 at the pin.)
+    .filter((part) => part.kind !== "assistant_thinking" || part.text.trim() !== "")
     .map((part) => {
       const annotations = [
         part.fallback ? "fallback" : undefined,
