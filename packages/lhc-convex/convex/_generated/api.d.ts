@@ -17,6 +17,7 @@ import type * as intake from "../intake.js";
 import type * as logging from "../logging.js";
 import type * as queue from "../queue.js";
 import type * as records from "../records.js";
+import type * as retrieval from "../retrieval.js";
 import type * as threads from "../threads.js";
 import type * as view from "../view.js";
 import type * as work from "../work.js";
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   logging: typeof logging;
   queue: typeof queue;
   records: typeof records;
+  retrieval: typeof retrieval;
   threads: typeof threads;
   view: typeof view;
   work: typeof work;

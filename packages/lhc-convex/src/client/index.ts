@@ -2,6 +2,13 @@ import type { GenericActionCtx, GenericDataModel } from "convex/server";
 import type { ComponentApi } from "../../convex/_generated/component.js";
 import { PROMPT_NAMES as VALID_PROMPT_NAMES } from "../shared/prompts/index.js";
 import type {
+  ImpressionRecord,
+  RetrievalOptions,
+  RetrievalReceipt,
+  RetrievedMessage,
+  RetrievedTurn,
+} from "../shared/retrieval.js";
+import type {
   BatchResult,
   ChunkDeriveResult,
   ChunkRecord,
@@ -240,6 +247,19 @@ export class Lhc {
     status: (ref: ThreadRef) => Promise<OpResult<{ queued: number; running: number; drainScheduled: boolean }>>;
     touch: (ref: ThreadRef) => Promise<OpResult<{ scheduled: boolean }>>;
   };
+  readonly retrieval: {
+    getTurns: (
+      ref: ThreadRef,
+      turnIds: readonly string[],
+      options?: RetrievalOptions,
+    ) => Promise<OpResult<RetrievalReceipt<RetrievedTurn>>>;
+    getMessages: (
+      ref: ThreadRef,
+      messageIds: readonly string[],
+      options?: RetrievalOptions,
+    ) => Promise<OpResult<RetrievalReceipt<RetrievedMessage>>>;
+    listImpressions: (ref: ThreadRef) => Promise<OpResult<ImpressionRecord[]>>;
+  };
 
   constructor(
     private readonly component: ComponentApi,
@@ -396,6 +416,24 @@ export class Lhc {
         (await this.executor.runQuery(this.component.inspect.health, refArgs(ref))) as OpResult<HealthReport>,
       view: async (ref) =>
         (await this.executor.runQuery(this.component.inspect.view, refArgs(ref))) as OpResult<ViewContentsReport>,
+    };
+    this.retrieval = {
+      getTurns: async (ref, turnIds, options) =>
+        (await this.executor.runMutation(this.component.retrieval.getTurns, {
+          ...refArgs(ref),
+          ids: [...turnIds],
+          ...(options === undefined ? {} : { options }),
+        })) as OpResult<RetrievalReceipt<RetrievedTurn>>,
+      getMessages: async (ref, messageIds, options) =>
+        (await this.executor.runMutation(this.component.retrieval.getMessages, {
+          ...refArgs(ref),
+          ids: [...messageIds],
+          ...(options === undefined ? {} : { options }),
+        })) as OpResult<RetrievalReceipt<RetrievedMessage>>,
+      listImpressions: async (ref) =>
+        (await this.executor.runQuery(this.component.retrieval.listImpressions, refArgs(ref))) as OpResult<
+          ImpressionRecord[]
+        >,
     };
     this.logging = {
       write: async (ref, entry) => {

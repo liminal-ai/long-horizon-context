@@ -202,6 +202,25 @@ export default defineSchema({
     updatedAt: v.string(),
   }).index("by_instance_and_thread", ["instance", "thread"]),
 
+  // One row per id requested through retrieval (schema v6 analog): the
+  // durable usage log later ranking work reads. Written in the retrieval
+  // mutation; nothing on the serving path reads it. Additive table —
+  // deploy-safe for existing instances.
+  impressions: defineTable({
+    instance: v.string(),
+    thread: v.string(),
+    seq: v.number(),
+    callId: v.string(),
+    surface: v.string(),
+    entityKind: v.union(v.literal("turn"), v.literal("message")),
+    entityId: v.string(),
+    requestIdx: v.number(),
+    served: v.boolean(),
+    reason: v.optional(v.string()),
+    tokens: v.optional(v.number()),
+    recordedAt: v.string(),
+  }).index("by_instance_and_thread_and_seq", ["instance", "thread", "seq"]),
+
   logs: defineTable({
     instance: v.string(),
     thread: v.string(),
