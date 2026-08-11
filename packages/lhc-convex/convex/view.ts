@@ -776,6 +776,35 @@ export const compact = mutation({
       }),
     ) as Record<(typeof BAND_ORDER)[number], { entries: number; tokens: number }>;
     const tailTokens = await tailTokenSum(ctx.db, args.instance, resolved.thread.thread, selection.compactPoint);
+    // Frozen parity (ruled into the wave): a chunk floored to its stored
+    // member material is warning-logged as well as receipted.
+    const floorEntries = selection.entries.filter((entry) => entry.derivationUsed === "stored_member_concat");
+    if (floorEntries.length > 0) {
+      const lastLog = await ctx.db
+        .query("logs")
+        .withIndex("by_instance_and_thread_and_seq", (q) =>
+          q.eq("instance", args.instance).eq("thread", resolved.thread.thread),
+        )
+        .order("desc")
+        .first();
+      let seq = (lastLog?.seq ?? 0) + 1;
+      const timestamp = nowIso();
+      for (const entry of floorEntries) {
+        await ctx.db.insert("logs", {
+          instance: args.instance,
+          thread: resolved.thread.thread,
+          seq,
+          level: "warning",
+          message: "compact floored a chunk entry to stored member material",
+          deriv: entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
+          subject: entry.subjectId,
+          reason: entry.reason ?? "not_ready",
+          floorUsed: "stored_member_concat",
+          recordedAt: timestamp,
+        });
+        seq += 1;
+      }
+    }
     return {
       ok: true as const,
       value: {

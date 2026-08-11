@@ -388,13 +388,23 @@ export function excerptLine(
 // the representation body, [degraded: …] when a fallback rung rendered, or the
 // gap line as the last rung. select.ts prices exactly this text in the fill
 // walk; the band stores exactly this text.
+//
+// Chunk entries may carry memberTurnIds so detailed/brief bands show which
+// turns the chunk covers (smooth turn bodies already wrap themselves in <t…>).
+// The header renders for gap entries too (pin 9317f0f — unavailable chunk
+// entries stay addressable).
 export function renderArrangementEntry(
   subjectKind: "turn" | "chunk",
   _subjectId: string,
   rep: ResolvedRepresentation,
   noteTexts: readonly string[],
+  memberTurnIds: readonly string[] = [],
 ): string {
   const lines = noteTexts.map((text) => `[inter-turn note] ${text}`);
+  if (subjectKind === "chunk" && memberTurnIds.length > 0) {
+    // Keep format identical to formatTurnRangeHeader in turns/compose.
+    lines.push(`<turns>${memberTurnIds.join(" ")}</turns>`);
+  }
   if (rep.gap) {
     lines.push(`[${subjectKind} unavailable: ${rep.reason ?? "unknown"}]`);
   } else {

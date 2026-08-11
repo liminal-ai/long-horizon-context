@@ -11,7 +11,7 @@ import { composePreDetailedAssembly, composeRenderingInput } from "./turn_compos
 // (bead long-horizon-context-bu9); un-skip when the port syncs (convex-wave S3).
 // The golden is generated from the contract pin, so un-skipping compares the
 // port against pinned bytes, not the moving sibling tree.
-describe.skip("frozen turn composition differential", () => {
+describe("frozen turn composition differential", () => {
   test("tool-run grouping, fallbacks, gaps, and dialogue assembly stay byte-for-byte equivalent", () => {
     expect(golden.pin).toBe(CONTRACT_PIN);
     const { messages, derivations } = turnComposeFixture();

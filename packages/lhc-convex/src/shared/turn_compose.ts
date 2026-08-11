@@ -18,14 +18,35 @@ import type {
   ToolOutcome,
 } from "../client/types.js";
 import { cleanPrompt } from "./smoothing.js";
-import { truncateForFallback } from "./tool_result_rendering.js";
+import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "./tool_result_rendering.js";
 
 // The member message as the composer sees it: kind plus projected blocks,
 // verbatim from the record (already deleted-filtered by the caller's read).
 export interface ComposeMessage {
   messageId: string;
   kind: RenderingPartKind;
+  tokenEstimate: number;
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
+}
+
+// Rendering truncation names the message's full stored token count, so the
+// marker doubles as the size receipt a later retrieval call can budget for
+// (pin 90890ee).
+function truncateForRendering(text: string, tokenEstimate: number): string {
+  if (text.length <= FALLBACK_TRUNCATION_LIMIT) return text;
+  return `${text.slice(0, FALLBACK_TRUNCATION_LIMIT)}… [truncated — ${tokenEstimate} tok total]`;
+}
+
+// A ready tool_result_summary that is exactly the deterministic char-marker
+// truncation of the raw content is translated to the token-total marker; any
+// other derived text serves verbatim.
+function readyText(message: ComposeMessage, derivedText: string): string {
+  if (message.kind !== "tool_result") return derivedText;
+  const block = message.blocks[0]?.content ?? {};
+  const rawText = typeof block["content"] === "string" ? block["content"] : "";
+  return derivedText === truncateForFallback(rawText)
+    ? truncateForRendering(rawText, message.tokenEstimate)
+    : derivedText;
 }
 
 // One message-owned derivation row as composition input; keyed by the caller as
@@ -126,14 +147,14 @@ const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
       const toolName = typeof block["toolName"] === "string" ? block["toolName"] : "unknown_tool";
-      return truncateForFallback(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`);
+      return truncateForRendering(`${toolName}(${JSON.stringify(block["arguments"] ?? {})})`, message.tokenEstimate);
     },
   },
   tool_result: {
     derivation: "tool_result_summary",
     fallbackText: (message) => {
       const block = message.blocks[0]?.content ?? {};
-      return truncateForFallback(typeof block["content"] === "string" ? block["content"] : "");
+      return truncateForRendering(typeof block["content"] === "string" ? block["content"] : "", message.tokenEstimate);
     },
   },
 };
@@ -174,7 +195,7 @@ function buildAtom(
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text: ready ? (derivation.content as string) : plan.fallbackText(message),
+    text: ready ? readyText(message, derivation.content as string) : plan.fallbackText(message),
     fallback: plan.derivation !== undefined && !ready,
   };
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {
@@ -259,12 +280,27 @@ function runTallyText(counts: Record<ToolOutcome, number>): string {
 
 // One RenderingPart for a maximal tool run: a run-level header over member
 // accounts in record order, each tool member stating its own outcome.
+/** Short XML wrap: tag name is the entity id (`m12`, `t3`). */
+export function wrapEntityXml(entityId: string, body: string): string {
+  return `<${entityId}>\n${body}\n</${entityId}>`;
+}
+
+function wrapMessageLineXml(messageId: string, line: string): string {
+  return `<${messageId}>${line}</${messageId}>`;
+}
+
+// One RenderingPart for a maximal tool run: a run-level header over member
+// accounts in record order, each tool member stating its own outcome. Each
+// member line is tagged with its message id so smooth history can address it.
 function composeRun(members: readonly ComposeAtom[]): RenderingPart {
   const { counts, outcome, callCount, toolNames } = tallyRun(members);
   const tools = toolNames.length > 0 ? toolNames.join(", ") : "tools";
   const header = `tool run · ${tools} · ${callCount} call${callCount === 1 ? "" : "s"} · ${runTallyText(counts)}`;
   const detail = members
-    .map((m) => (m.isTool ? `${m.part.text} ⇒ ${m.part.outcome ?? "unknown"}` : m.part.text))
+    .map((m) => {
+      const line = m.isTool ? `${m.part.text} ⇒ ${m.part.outcome ?? "unknown"}` : m.part.text;
+      return wrapMessageLineXml(m.part.messageId, line);
+    })
     .join("\n");
   const text = `[${header}]\n${detail}`;
   const lead = members[0];
@@ -275,6 +311,7 @@ function composeRun(members: readonly ComposeAtom[]): RenderingPart {
     text,
     fallback: members.some((m) => m.isTool && m.part.fallback),
     outcome,
+    memberMessageIds: members.map((m) => m.part.messageId),
   };
 }
 
@@ -369,4 +406,56 @@ export function composePreDetailedAssembly(
     if (built.recovery !== undefined) recoveries.push(built.recovery);
   }
   return { text: composeDialogueText(parts), gaps, recoveries };
+}
+
+function renderingPartLabel(kind: RenderingPartKind): string {
+  switch (kind) {
+    case "user_prompt":
+      return "User prompt";
+    case "assistant_text":
+      return "Assistant response";
+    case "assistant_thinking":
+      return "Assistant thinking";
+    case "runtime_note":
+      return "Runtime note";
+    case "model_change":
+      return "Model change";
+    case "thinking_level_change":
+      return "Thinking level change";
+    case "tool_call":
+      return "Tool call";
+    case "tool_result":
+      return "Tool result";
+  }
+}
+
+/** Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
+ *  pre_detailed_assembly (compression stays untagged). */
+export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string): string {
+  const inner = parts
+    // Empty thinking has no usable representation in a text band. Leaving it
+    // here bypasses the serving-exit tail filters once the turn is compacted.
+    .filter((part) => part.kind !== "assistant_thinking" || part.text.trim() !== "")
+    .map((part) => {
+      const annotations = [
+        part.fallback ? "fallback" : undefined,
+        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
+      ].filter((annotation): annotation is string => annotation !== undefined);
+      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
+      const header = `${renderingPartLabel(part.kind)}${suffix}`;
+      // Tool runs already tag each member line; other parts wrap the whole body.
+      const body =
+        part.memberMessageIds !== undefined && part.memberMessageIds.length > 0
+          ? part.text
+          : wrapEntityXml(part.messageId, part.text);
+      return `${header}\n${body}`;
+    })
+    .join("\n\n");
+  return wrapEntityXml(turnId, inner);
+}
+
+/** Chunk band header: member turn ids the model can request later. */
+export function formatTurnRangeHeader(turnIds: readonly string[]): string {
+  if (turnIds.length === 0) return "";
+  return `<turns>${turnIds.join(" ")}</turns>`;
 }

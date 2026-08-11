@@ -56,11 +56,13 @@ export function turnComposeFixture(): {
   return {
     messages: [
       {
+        tokenEstimate: 1,
         messageId: "m1",
         kind: "user_prompt",
         blocks: [{ blockType: "text", content: { text: "  Please inspect this.  " } }],
       },
       {
+        tokenEstimate: 1,
         messageId: "m2",
         kind: "tool_call",
         blocks: [
@@ -68,21 +70,25 @@ export function turnComposeFixture(): {
         ],
       },
       {
+        tokenEstimate: 1,
         messageId: "m3",
         kind: "assistant_thinking",
         blocks: [{ blockType: "text", content: { text: "checking" } }],
       },
       {
+        tokenEstimate: 1,
         messageId: "m4",
         kind: "tool_result",
         blocks: [{ blockType: "tool_result", content: { toolCallId: "call-1", content: "file body", isError: false } }],
       },
       {
+        tokenEstimate: 1,
         messageId: "m5",
         kind: "runtime_note",
         blocks: [{ blockType: "text", content: { text: "after tool" } }],
       },
       {
+        tokenEstimate: 1,
         messageId: "m6",
         kind: "assistant_text",
         blocks: [{ blockType: "text", content: { text: "Done." } }],

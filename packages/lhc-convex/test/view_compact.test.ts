@@ -284,8 +284,8 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     // piecewise checks; deterministic).
     expect(receipt.value.bands).toEqual({
       brief: { entries: 0, tokens: 0 },
-      detailed: { entries: 3, tokens: 83 },
-      smooth: { entries: 1, tokens: 121 },
+      detailed: { entries: 3, tokens: 111 },
+      smooth: { entries: 1, tokens: 174 },
     });
     expect(receipt.value.bands.smooth.tokens).toBeGreaterThan(shares.smooth);
     expect(receipt.value.gaps).toEqual([]);
@@ -439,14 +439,15 @@ describe("architecture-risk: coverage edge accounting", () => {
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
 
-    // The compact point lands at t10's close. [calibrated] With the port's
-    // smaller canned summaries the brief band holds two chunk entries (frozen's
-    // larger summaries admitted only one and pushed c1 out of the window), so
-    // coveredFrom reaches back to t1 rather than stopping at the window edge.
+    // The compact point lands at t10's close. [calibrated] Since S3's labels
+    // (<turns> headers + <tN>/<mN> wraps) grew entry sizes, the brief band
+    // admits only one chunk entry — matching the frozen shape, where c1 is
+    // pushed out of the window and coveredFrom stops at the window edge (t13)
+    // instead of reaching back to t1.
     expect(receipt.value.compactPoint).toBe(56);
-    expect(receipt.value.coveredFrom).toBe(1);
+    expect(receipt.value.coveredFrom).toBe(13);
     expect(receipt.value.bands.detailed.entries).toBe(1);
-    expect(receipt.value.bands.brief.entries).toBe(2);
+    expect(receipt.value.bands.brief.entries).toBe(1);
     expect(receipt.value.gaps).toEqual([]);
   });
 });

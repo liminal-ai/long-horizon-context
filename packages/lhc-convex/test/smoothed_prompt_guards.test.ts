@@ -9,9 +9,8 @@
 //
 // Two frozen legs are not ported. The direct-callback "resolves guard defaults
 // for direct-callback hosts" case has no analog: the component has no
-// inferenceCallbacks surface. And the suspicious-discard warning-log assertion
-// cannot be ported: the component stamps metadata.discardReason but writes no
-// warning-level log row on that path (see report).
+// inferenceCallbacks surface. The suspicious-discard warning-log leg now
+// ports: the component warning-logs the discard (convex-wave parity ruling).
 import { describe, expect, test } from "vitest";
 import type { Lhc } from "../src/client/index.js";
 import { cleanPrompt } from "../src/shared/smoothing.js";
@@ -141,6 +140,19 @@ describe("smoothed_prompt guard config", () => {
       metadata: { discardReason: "suspicious_output_ratio" },
     });
     expect(await liveWorkCount(fixture)).toBe(0);
+
+    // Frozen parity (ruled into the wave): the discard is warning-logged.
+    const logs = await fixture.sdk.logging.query({ filePath }, { level: "warning" });
+    expect(logs.ok).toBe(true);
+    if (!logs.ok) return;
+    expect(logs.value).toContainEqual(
+      expect.objectContaining({
+        level: "warning",
+        derivationType: "smoothed_prompt",
+        reason: "suspicious_output_ratio",
+        floorUsed: cleanPrompt(prompt),
+      }),
+    );
   });
 
   test("turn construction uses the guard cap for pending prompt smoothing", async () => {

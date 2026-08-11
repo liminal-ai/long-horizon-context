@@ -152,6 +152,20 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     expect(detailedText).not.toContain("unavailable");
     // Compact ran no model calls: the degraded band is a pure stored-member concat.
     expect(capturedCalls).toEqual([]);
+
+    // Frozen parity (ruled into the wave): the floor is warning-logged too.
+    const logs = await fixture.sdk.logging.query({ filePath }, { level: "warning" });
+    expect(logs.ok).toBe(true);
+    if (!logs.ok) return;
+    expect(logs.value).toContainEqual(
+      expect.objectContaining({
+        level: "warning",
+        derivationType: "chunk_summary_detailed",
+        subjectId: "c1",
+        reason: "failed_floor",
+        floorUsed: "stored_member_concat",
+      }),
+    );
   });
 
   test("halts compact before fallback assembly when stop is requested", async () => {

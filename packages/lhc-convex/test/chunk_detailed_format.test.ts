@@ -146,8 +146,6 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
   });
 
   test("uses ready pre_detailed_assembly as the floor for a failed detailed member", async () => {
-    // The failed_floor derivation-time log has no analog on the component (the
-    // floor is substituted silently); only the floor CONTENT behavior ports.
     const fixture = serviceFixture({
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
@@ -166,6 +164,20 @@ describe("Story 4: chunk_summary_detailed concatenation format", () => {
       state: "ready",
       content: assembly,
     });
+
+    // Frozen parity (ruled into the wave): the member floor is warning-logged.
+    const logs = await fixture.sdk.logging.query({ filePath }, { level: "warning" });
+    expect(logs.ok).toBe(true);
+    if (!logs.ok) return;
+    expect(logs.value).toContainEqual(
+      expect.objectContaining({
+        level: "warning",
+        derivationType: "chunk_summary_detailed",
+        subjectId: "t1",
+        reason: "failed_member_floor",
+        floorUsed: "pre_detailed_assembly",
+      }),
+    );
   });
 
   test("fails the detailed summary when a member projection is pending", async () => {

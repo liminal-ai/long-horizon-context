@@ -17,11 +17,6 @@
       "reason": "Upstream it.skip in frozen view-llm-request-context (deterministic floors with a ready summary)."
     },
     {
-      "fullName": "frozen turn composition differential tool-run grouping, fallbacks, gaps, and dialogue assembly stay byte-for-byte equivalent",
-      "class": "port-lag",
-      "reason": "Sanctioned lag (bead bu9); un-skip at convex-wave S3 (labels)."
-    },
-    {
       "fullName": "frozen golden regeneration regenerates all frozen goldens from the pinned contract",
       "class": "infra",
       "reason": "Env-gated golden regeneration harness (REGEN_FROZEN_GOLDENS=1); never part of certification."

@@ -74,10 +74,21 @@ async function renderingContent(sdk: Lhc, filePath: string): Promise<string> {
   return report.value.find((form) => form.derivationType === "turn_rendering")?.content ?? "";
 }
 
-// turn_rendering is `${label}${suffix}\n${text}` sections joined by "\n\n";
-// dropping the label line of each section yields the per-part body.
+function stripEntityXml(body: string): string {
+  // Block wrap: <mN>\n…\n</mN>. Tool-run lines: <mN>…</mN> on each line.
+  const block = body.match(/^<m\d+>\n([\s\S]*)\n<\/m\d+>$/);
+  if (block?.[1] !== undefined) return block[1];
+  return body.replace(/<\/m\d+>/g, "").replace(/<m\d+>/g, "");
+}
+
+// turn_rendering is `${label}${suffix}\n${body}` sections joined by "\n\n"
+// inside the turn's <tN> wrap; dropping the label line and the entity tags of
+// each section yields the per-part body (mirrors the frozen helper at the pin).
 async function renderingBodies(sdk: Lhc, filePath: string): Promise<string[]> {
-  return (await renderingContent(sdk, filePath)).split("\n\n").map((part) => part.split("\n").slice(1).join("\n"));
+  let content = await renderingContent(sdk, filePath);
+  // Drop the outer <tN>…</tN> wrap added for addressable smooth history.
+  content = content.replace(/^<t\d+>\n/, "").replace(/\n<\/t\d+>$/, "");
+  return content.split("\n\n").map((part) => stripEntityXml(part.split("\n").slice(1).join("\n")));
 }
 
 async function deleteWork(fixture: Fixture, thread: string, kind: string): Promise<void> {

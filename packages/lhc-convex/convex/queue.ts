@@ -12,6 +12,7 @@ import {
   composeDerivationKey,
   composePreDetailedAssembly,
   composeRenderingInput,
+  composeStructuredTurnText,
   type RecoveryReceipt,
 } from "../src/shared/turn_compose.js";
 import type { RenderingPart, RenderingPartKind } from "../src/client/types.js";
@@ -398,44 +399,6 @@ function blockContent(source: Record<string, unknown>): Record<string, unknown> 
   return blocks?.[0]?.content ?? {};
 }
 
-function renderingPartLabel(kind: RenderingPart["kind"]): string {
-  switch (kind) {
-    case "user_prompt":
-      return "User prompt";
-    case "assistant_text":
-      return "Assistant response";
-    case "assistant_thinking":
-      return "Assistant thinking";
-    case "runtime_note":
-      return "Runtime note";
-    case "model_change":
-      return "Model change";
-    case "thinking_level_change":
-      return "Thinking level change";
-    case "tool_call":
-      return "Tool call";
-    case "tool_result":
-      return "Tool result";
-  }
-}
-
-function composeStructuredTurnText(parts: readonly RenderingPart[]): string {
-  return parts
-    // Empty thinking has no usable representation in a text band. Leaving it
-    // here bypasses the serving-exit tail filters once the turn is compacted.
-    // (Mirrors TS f1f6323 at the pin.)
-    .filter((part) => part.kind !== "assistant_thinking" || part.text.trim() !== "")
-    .map((part) => {
-      const annotations = [
-        part.fallback ? "fallback" : undefined,
-        part.outcome === undefined ? undefined : `outcome: ${part.outcome}`,
-      ].filter((annotation): annotation is string => annotation !== undefined);
-      const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
-      return `${renderingPartLabel(part.kind)}${suffix}\n${part.text}`;
-    })
-    .join("\n\n");
-}
-
 function boundContent(content: string, maxInputChars: number): string {
   if (content.length <= maxInputChars) return content;
   const marker = `\n\n[... truncated: tool result was ${String(content.length)} chars; head and tail retained ...]\n\n`;
@@ -564,6 +527,22 @@ async function handleWork(
           metadata: suspicious ? { discardReason: "suspicious_output_ratio" } : inference.metadata,
         },
       ],
+      // Frozen parity (ruled into the wave): a suspicious discard is
+      // warning-logged, not only stamped in metadata.
+      ...(suspicious
+        ? {
+            logs: [
+              {
+                level: "warning" as const,
+                message: "suspicious smoothed_prompt output discarded",
+                deriv: "smoothed_prompt",
+                subject: message.message,
+                reason: "suspicious_output_ratio",
+                floorUsed: cleaned,
+              },
+            ],
+          }
+        : {}),
     };
   }
   if (item.kind === "tool_result_summary") {
@@ -693,6 +672,7 @@ async function handleWork(
     const messages = material.map((member) => ({
       messageId: member.message.message,
       kind: member.message.kind as RenderingPartKind,
+      tokenEstimate: member.message.tokenEstimate,
       blocks: member.blocks.map((block) => ({
         blockType: block.blockType,
         content: block.content as Record<string, unknown>,
@@ -725,7 +705,7 @@ async function handleWork(
           scope: "turn",
           subject: turn.turn,
           deriv: "turn_rendering",
-          content: composeStructuredTurnText(rendering.parts),
+          content: composeStructuredTurnText(rendering.parts, turn.turn),
           gaps: rendering.gaps,
         },
         {
@@ -840,12 +820,30 @@ async function handleWork(
     const chunk = source["chunk"] as Doc<"chunks">;
     const projections = source["projections"] as Array<{ turnId: string; derivations: Array<Doc<"derivations">> }>;
     const sections: string[] = [];
+    const floorLogs: Array<{
+      level: "warning";
+      message: string;
+      deriv: string;
+      subject: string;
+      reason: string;
+      floorUsed: string;
+    }> = [];
     for (const member of projections) {
       const compression = member.derivations.find((row) => row.deriv === "detailed_turn_compression");
       const assembly = member.derivations.find((row) => row.deriv === "pre_detailed_assembly");
       if (compression?.state === "ready" && compression.content !== undefined) sections.push(compression.content);
       else if (compression?.state === "failed" && assembly?.state === "ready" && assembly.content !== undefined) {
         sections.push(assembly.content);
+        // Frozen parity (ruled into the wave): a failed member floored to its
+        // pre_detailed_assembly is warning-logged, never silent.
+        floorLogs.push({
+          level: "warning",
+          message: "failed member floored to pre_detailed_assembly in chunk_summary_detailed",
+          deriv: "chunk_summary_detailed",
+          subject: member.turnId,
+          reason: "failed_member_floor",
+          floorUsed: "pre_detailed_assembly",
+        });
       } else {
         return { state: "failed", reason: `member_projection_not_ready: member ${member.turnId}` };
       }
@@ -855,6 +853,7 @@ async function handleWork(
       writes: [
         { scope: "chunk", subject: chunk.chunk, deriv: "chunk_summary_detailed", content: sections.join("\n\n") },
       ],
+      ...(floorLogs.length > 0 ? { logs: floorLogs } : {}),
     };
   }
   if (item.kind === "chunk_summary_brief") {

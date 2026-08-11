@@ -263,6 +263,9 @@ export interface RenderingPart {
   fallback: boolean;
   blocks?: Array<{ blockType: string; content: Record<string, unknown> }>;
   outcome?: ToolOutcome;
+  // Set on tool-run parts: the message ids whose lines the run text carries,
+  // each wrapped in its own <mN> tag (pin 753a177).
+  memberMessageIds?: string[];
 }
 
 export interface MessageRecord {
