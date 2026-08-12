@@ -330,6 +330,13 @@ def read_turn_chunk_structure(db: Database) -> TurnChunkStructure:
     )
 
 
+def drop_unreadable_chunks(db: Database, chunk_ids: list[str]) -> list[str]:
+    """Compact hook: remove derived empty chunks in caller transaction."""
+    from .internal.chunks import drop_empty_readable_chunks
+
+    return drop_empty_readable_chunks(db, chunk_ids)
+
+
 # ── report and repair ─────────────────────────────────────────────
 
 

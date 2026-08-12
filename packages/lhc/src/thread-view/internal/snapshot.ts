@@ -222,9 +222,10 @@ export interface ViewReplaceInput {
 // to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
 // rolls the whole replace back and the previous view keeps serving. Compact is
 // the writer of view rows and the boundary reset on compact.
-export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput): void {
+export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput, beforeReplace?: () => void): void {
   db.exec("BEGIN IMMEDIATE;");
   try {
+    beforeReplace?.();
     db.prepare(`DELETE FROM thread_view WHERE singleton = 1`).run();
     db.prepare(
       `INSERT INTO thread_view (singleton, view_id, created_at, compact_point, covered_from,

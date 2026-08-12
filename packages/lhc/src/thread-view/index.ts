@@ -628,32 +628,38 @@ export async function compact(
       return callerError("compact_stopped", "compact stopped before snapshot write");
     }
 
-    replaceViewSnapshot(db, {
-      viewId,
-      createdAt,
-      compactPoint: selection.compactPoint,
-      coveredFrom: selection.coveredFrom,
-      profileName,
-      configJson: JSON.stringify({
-        lowerBound: merged.lowerBound,
-        percentages: merged.percentages,
-      }),
-      arrangementJson: JSON.stringify(
-        selection.entries.map((entry) => ({
-          band: entry.band,
-          subjectKind: entry.subjectKind,
-          subjectId: entry.subjectId,
-          derivationUsed: entry.derivationUsed,
-          degraded: entry.degraded,
-        })),
-      ),
-      gapsJson: JSON.stringify(gapNotes(selection)),
-      sourceStateJson: JSON.stringify({
-        maxEventOrder: inputs.maxEventOrder,
-        derivationCounts: inputs.derivationCounts,
-      }),
-      bands,
-    });
+    replaceViewSnapshot(
+      db,
+      {
+        viewId,
+        createdAt,
+        compactPoint: selection.compactPoint,
+        coveredFrom: selection.coveredFrom,
+        profileName,
+        configJson: JSON.stringify({
+          lowerBound: merged.lowerBound,
+          percentages: merged.percentages,
+        }),
+        arrangementJson: JSON.stringify(
+          selection.entries.map((entry) => ({
+            band: entry.band,
+            subjectKind: entry.subjectKind,
+            subjectId: entry.subjectId,
+            derivationUsed: entry.derivationUsed,
+            degraded: entry.degraded,
+          })),
+        ),
+        gapsJson: JSON.stringify(gapNotes(selection)),
+        sourceStateJson: JSON.stringify({
+          maxEventOrder: inputs.maxEventOrder,
+          derivationCounts: inputs.derivationCounts,
+        }),
+        bands,
+      },
+      () => {
+        turnsDomain.dropUnreadableChunks(db, inputs.emptyChunkIds ?? []);
+      },
+    );
 
     const bandReport = {} as CompactReceipt["bands"];
     for (const band of BAND_ORDER) {

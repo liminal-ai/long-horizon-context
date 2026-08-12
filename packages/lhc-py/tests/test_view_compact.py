@@ -1091,3 +1091,125 @@ async def test_tc_1_5_a_tail_delete_vanishes_from_the_next_context_read_a_banded
     if not status_final.ok:
         return
     assert status_final.value.derivation.pending > 0
+
+
+async def test_compact_drops_consecutive_chunks_with_only_tombstoned_members_atomically(
+    store: TempStore,
+) -> None:
+    """Regression for the Console c62/c63 post-triage compact failure."""
+    sdk = init_lhc(
+        SdkConfig(
+            mode="manual",
+            inference_callbacks=create_inference_callbacks_double(),
+            chunk_policy=ChunkPolicyConfig(
+                target_projected_tokens=1,
+                max_projected_tokens=1,
+            ),
+        )
+    )
+    file_path = store.thread_path()
+    created = await sdk.threads.new_thread(
+        {"filePath": file_path, "registryPath": store.registry_path}
+    )
+    assert created.ok is True
+
+    events: list[MessageEventInput] = []
+    for turn in range(1, 7):
+        events.extend(
+            [
+                valid_event("user_prompt", {"payload": {"text": f"prompt {turn}"}}),
+                valid_event("assistant_text", {"payload": {"text": f"answer {turn}"}}),
+                valid_event("turn_end"),
+            ]
+        )
+    captured = await sdk.intake_stream.message_events(
+        {"filePath": file_path}, events
+    )
+    assert captured.ok is True
+    drained = await sdk.work.drain({"filePath": file_path})
+    assert drained.ok is True
+    first = await sdk.thread_view.compact(
+        {"filePath": file_path}, CompactOpts(params=TARGET_PARAMS)
+    )
+    assert first.ok is True
+    assert _view_row_count(file_path) == 1
+
+    db = open_raw(file_path)
+    try:
+        canonical_before = _sha256(
+            {
+                "events": _db_rows(db, "SELECT * FROM event ORDER BY event_order"),
+                "blocks": _db_rows(
+                    db,
+                    "SELECT * FROM message_block ORDER BY message_id, block_index",
+                ),
+            }
+        )
+        db.exec("BEGIN IMMEDIATE;")
+        db.prepare(
+            "UPDATE turns SET deleted_at = ? WHERE turn_id IN ('t2', 't3')"
+        ).run("2026-08-12T00:00:00.000Z")
+        db.prepare(
+            "UPDATE message SET deleted_at = ? WHERE turn_id IN ('t2', 't3')"
+        ).run("2026-08-12T00:00:00.000Z")
+        db.exec("COMMIT;")
+        assert _db_rows(
+            db,
+            "SELECT chunk_id FROM chunk WHERE chunk_id IN ('c2', 'c3') ORDER BY chunk_id",
+        ) == [{"chunk_id": "c2"}, {"chunk_id": "c3"}]
+    finally:
+        db.close()
+
+    preview = await sdk.thread_view.preview_compact(
+        {"filePath": file_path}, CompactOpts(params=TARGET_PARAMS)
+    )
+    assert preview.ok is True
+    # Preview is read-only; cleanup and view replacement share compact's txn.
+    db = open_raw(file_path)
+    try:
+        assert _db_rows(
+            db,
+            "SELECT chunk_id FROM chunk WHERE chunk_id IN ('c2', 'c3') ORDER BY chunk_id",
+        ) == [{"chunk_id": "c2"}, {"chunk_id": "c3"}]
+    finally:
+        db.close()
+
+    repaired = await sdk.thread_view.compact(
+        {"filePath": file_path}, CompactOpts(params=TARGET_PARAMS)
+    )
+    assert repaired.ok is True
+    rebuilt_again = await sdk.thread_view.compact(
+        {"filePath": file_path}, CompactOpts(params=TARGET_PARAMS)
+    )
+    assert rebuilt_again.ok is True
+
+    db = open_raw(file_path)
+    try:
+        canonical_after = _sha256(
+            {
+                "events": _db_rows(db, "SELECT * FROM event ORDER BY event_order"),
+                "blocks": _db_rows(
+                    db,
+                    "SELECT * FROM message_block ORDER BY message_id, block_index",
+                ),
+            }
+        )
+        assert canonical_after == canonical_before
+        assert _db_rows(
+            db,
+            "SELECT * FROM chunk WHERE chunk_id IN ('c2', 'c3')",
+        ) == []
+        assert _db_rows(
+            db,
+            "SELECT * FROM chunk_member WHERE chunk_id IN ('c2', 'c3')",
+        ) == []
+        assert _db_rows(
+            db,
+            """SELECT * FROM derivation
+               WHERE subject_kind = 'chunk' AND subject_id IN ('c2', 'c3')""",
+        ) == []
+        assert dict(db.prepare("PRAGMA integrity_check").get()) == {
+            "integrity_check": "ok"
+        }
+    finally:
+        db.close()

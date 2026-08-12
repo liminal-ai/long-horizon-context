@@ -15,7 +15,7 @@ import {
 import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
-import { type ChunkStructureRow, readChunkStructure } from "./internal/chunks.js";
+import { type ChunkStructureRow, dropEmptyReadableChunks, readChunkStructure } from "./internal/chunks.js";
 import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import { backfillRenderingLabelsInOpenDb, type RenderingLabelBackfillReceipt } from "./internal/label-backfill.js";
@@ -215,6 +215,12 @@ export interface TurnChunkStructure {
 
 export function readTurnChunkStructure(db: DatabaseSync): TurnChunkStructure {
   return { turns: readTurnStructure(db), chunks: readChunkStructure(db) };
+}
+
+// Cross-domain compact hook. The caller owns the surrounding transaction;
+// turns owns validation and removal of its derived chunk rows.
+export function dropUnreadableChunks(db: DatabaseSync, chunkIds: readonly string[]): string[] {
+  return dropEmptyReadableChunks(db, chunkIds);
 }
 
 // ── report and repair ─────────────────────────────────────────────

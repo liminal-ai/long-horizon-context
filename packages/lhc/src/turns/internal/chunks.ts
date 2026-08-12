@@ -7,7 +7,7 @@
 // with any close's summary enqueues or nothing.
 import type { DatabaseSync } from "node:sqlite";
 import type { DbWriteTransaction } from "../../shared-tech/index.js";
-import { enqueue, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
+import { enqueue, supersedeQueued, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 
 export interface ChunkPolicy {
   targetProjectedTokens: number;
@@ -169,6 +169,45 @@ export function readChunkStructure(db: DatabaseSync): ChunkStructureRow[] {
     status: row.status as "open" | "closed",
     memberTurnIds: membersByChunk.get(row.chunk_id) ?? [],
   }));
+}
+
+// A tombstoned turn remains a legitimate stable-address record, but a derived
+// chunk whose every member turn is tombstoned has no readable source. Such a
+// chunk must not survive as an input to compact: its summaries describe content
+// the readable projection intentionally removed. Cleanup is deliberately
+// revalidated at write time because preview/selection may have read the file
+// before another process acquired the compact transaction.
+export function dropEmptyReadableChunks(db: DatabaseSync, candidates: readonly string[]): string[] {
+  const dropped: string[] = [];
+  const hasReadableMember = db.prepare(
+    `SELECT 1 FROM chunk_member cm
+     JOIN turns t ON t.turn_id = cm.turn_id AND t.deleted_at IS NULL
+     WHERE cm.chunk_id = ? LIMIT 1`,
+  );
+  const hasClaimedWork = db.prepare(
+    `SELECT 1 FROM work_item
+     WHERE status = 'claimed' AND source_ref = ?
+       AND kind IN ('chunk_summary_detailed', 'chunk_summary_brief')
+     LIMIT 1`,
+  );
+  const dropDerivations = db.prepare(`DELETE FROM derivation WHERE subject_kind = 'chunk' AND subject_id = ?`);
+  const dropMembers = db.prepare(`DELETE FROM chunk_member WHERE chunk_id = ?`);
+  const dropChunk = db.prepare(`DELETE FROM chunk WHERE chunk_id = ?`);
+
+  for (const chunkId of [...new Set(candidates)]) {
+    if (hasReadableMember.get(chunkId) !== undefined) continue;
+    const sourceRef = { chunkId };
+    if (hasClaimedWork.get(JSON.stringify(sourceRef)) !== undefined) continue;
+    supersedeQueued(db, [
+      { kind: "chunk_summary_detailed", sourceRef },
+      { kind: "chunk_summary_brief", sourceRef },
+    ]);
+    dropDerivations.run(chunkId);
+    dropMembers.run(chunkId);
+    dropChunk.run(chunkId);
+    dropped.push(chunkId);
+  }
+  return dropped;
 }
 
 // Placement read-back for the turns surface: chunkId + memberIdx by turn, one

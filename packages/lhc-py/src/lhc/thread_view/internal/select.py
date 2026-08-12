@@ -25,7 +25,7 @@ processing of everything older than it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Literal, TypeVar, cast
 
 from ...messages import read_live_messages
@@ -103,6 +103,7 @@ class SelectionInputs:
     max_event_order: int
     derivation_counts: dict[str, dict[str, int]]  # derivation type → state → count
     compact_chunk_materials: dict[str, CompactChunkMaterialSnapshot] | None = None
+    empty_chunk_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,16 +142,11 @@ class SelectionResult:
 
 
 _SQL_DERIVATION_ROWS = (
-    """SELECT subject_id, derivation_type, state, content, reason FROM derivation
-       WHERE subject_kind IN ('turn', 'chunk')"""
+    """SELECT subject_kind, subject_id, derivation_type, state, content, reason
+       FROM derivation"""
 )
 
 _SQL_MAX_EVENT_ORDER = """SELECT COALESCE(MAX(event_order), 0) AS m FROM event"""
-
-_SQL_DERIVATION_COUNTS = (
-    """SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state"""
-)
-
 
 # ── reads (corruption check lives here, pre-transaction) ─────────
 
@@ -220,6 +216,8 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
             )
         )
 
+    live_turn_ids = {turn.turn_id for turn in turns}
+    empty_chunk_ids: list[str] = []
     chunks: list[SelectionChunk] = []
     for row in structure.chunks:
         for member_turn_id in row.member_turn_ids:
@@ -229,6 +227,11 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
                     f"canonical record corrupt: chunk {row.chunk_id} membership "
                     f"references missing turn {member_turn_id}",
                 )
+        if not any(
+            turn_id in live_turn_ids for turn_id in row.member_turn_ids
+        ):
+            empty_chunk_ids.append(row.chunk_id)
+            continue
         chunks.append(
             SelectionChunk(
                 chunk_id=row.chunk_id,
@@ -240,7 +243,21 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
 
     derivation_rows = db.prepare(_SQL_DERIVATION_ROWS).all()
     derivations: dict[str, DerivationSnapshot] = {}
+    empty_chunk_set = set(empty_chunk_ids)
+    derivation_counts: dict[str, dict[str, int]] = {}
     for row in derivation_rows:
+        subject_kind = str(row["subject_kind"])
+        subject_id = str(row["subject_id"])
+        if subject_kind == "chunk" and subject_id in empty_chunk_set:
+            continue
+        dtype = str(row["derivation_type"])
+        state = str(row["state"])
+        derivation_counts[dtype] = {
+            **derivation_counts.get(dtype, {}),
+            state: derivation_counts.get(dtype, {}).get(state, 0) + 1,
+        }
+        if subject_kind not in {"turn", "chunk"}:
+            continue
         snapshot = DerivationSnapshot(
             state=cast(
                 Literal["pending", "ready", "failed", "blocked"],
@@ -249,7 +266,7 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
             content=None if row["content"] is None else str(row["content"]),
             reason=None if row["reason"] is None else str(row["reason"]),
         )
-        derivations[f"{row['subject_id']}/{row['derivation_type']}"] = snapshot
+        derivations[f"{subject_id}/{dtype}"] = snapshot
 
     # R3 serve-time legacy fallback (TS retrieval turnCandidate algorithm):
     # ready turn_rendering without the outer <turnId> wrap is recomposed from
@@ -259,15 +276,6 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
 
     max_row = db.prepare(_SQL_MAX_EVENT_ORDER).get()
     assert max_row is not None
-    count_rows = db.prepare(_SQL_DERIVATION_COUNTS).all()
-    derivation_counts: dict[str, dict[str, int]] = {}
-    for row in count_rows:
-        dtype = str(row["derivation_type"])
-        derivation_counts[dtype] = {
-            **derivation_counts.get(dtype, {}),
-            str(row["state"]): int(row["n"]),  # type: ignore[arg-type]
-        }
-
     return SelectionInputs(
         messages=messages,
         turns=turns,
@@ -275,6 +283,7 @@ def read_selection_inputs(db: Database) -> SelectionInputs:
         derivations=derivations,
         max_event_order=int(max_row["m"]),  # type: ignore[arg-type]
         derivation_counts=derivation_counts,
+        empty_chunk_ids=empty_chunk_ids,
     )
 
 

@@ -209,6 +209,55 @@ def read_chunk_structure(db: Database) -> list[ChunkStructureRow]:
     ]
 
 
+def drop_empty_readable_chunks(
+    db: Database, candidates: list[str]
+) -> list[str]:
+    """Remove derived chunks whose members are all tombstoned.
+
+    The caller owns the ambient view-replacement transaction. Revalidation
+    under that write lock prevents a stale preview from deleting a chunk that
+    gained a readable member. Claimed summary work is left intact; selection
+    can safely omit the empty chunk and a later compact performs cleanup after
+    the claim settles.
+    """
+    dropped: list[str] = []
+    has_readable_member = db.prepare(
+        """SELECT 1 FROM chunk_member cm
+           JOIN turns t ON t.turn_id = cm.turn_id AND t.deleted_at IS NULL
+           WHERE cm.chunk_id = ? LIMIT 1"""
+    )
+    has_claimed_work = db.prepare(
+        """SELECT 1 FROM work_item
+           WHERE status = 'claimed'
+             AND kind IN ('chunk_summary_detailed', 'chunk_summary_brief')
+             AND json_extract(source_ref, '$.chunkId') = ?
+           LIMIT 1"""
+    )
+    drop_queued_work = db.prepare(
+        """DELETE FROM work_item
+           WHERE status = 'queued'
+             AND kind IN ('chunk_summary_detailed', 'chunk_summary_brief')
+             AND json_extract(source_ref, '$.chunkId') = ?"""
+    )
+    drop_derivations = db.prepare(
+        "DELETE FROM derivation WHERE subject_kind = 'chunk' AND subject_id = ?"
+    )
+    drop_members = db.prepare("DELETE FROM chunk_member WHERE chunk_id = ?")
+    drop_chunk = db.prepare("DELETE FROM chunk WHERE chunk_id = ?")
+
+    for chunk_id in dict.fromkeys(candidates):
+        if has_readable_member.get(chunk_id) is not None:
+            continue
+        if has_claimed_work.get(chunk_id) is not None:
+            continue
+        drop_queued_work.run(chunk_id)
+        drop_derivations.run(chunk_id)
+        drop_members.run(chunk_id)
+        drop_chunk.run(chunk_id)
+        dropped.append(chunk_id)
+    return dropped
+
+
 # Placement read-back for the turns surface: chunk_id + member_idx by turn, one
 # query, stored values only.
 @dataclass(frozen=True, slots=True)

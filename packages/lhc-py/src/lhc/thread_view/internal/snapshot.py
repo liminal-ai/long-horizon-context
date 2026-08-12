@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Callable, Literal, cast
 
 from ...shared_tech.derivation import RenderingPartKind
 from ...shared_tech.storage import Database
@@ -365,9 +365,15 @@ class ViewReplaceInput:
 # to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
 # rolls the whole replace back and the previous view keeps serving. Compact is
 # the writer of view rows and the boundary reset on compact.
-def replace_view_snapshot(db: Database, input: ViewReplaceInput) -> None:
+def replace_view_snapshot(
+    db: Database,
+    input: ViewReplaceInput,
+    before_replace: Callable[[], None] | None = None,
+) -> None:
     db.exec("BEGIN IMMEDIATE;")
     try:
+        if before_replace is not None:
+            before_replace()
         db.prepare(_SQL_DELETE_THREAD_VIEW).run()
         db.prepare(_SQL_INSERT_THREAD_VIEW).run(
             input.view_id,

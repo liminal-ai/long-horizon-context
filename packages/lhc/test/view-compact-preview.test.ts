@@ -1,5 +1,7 @@
 // Story 0 / TC-5.1c: previewCompact shares computeArrangement with compact;
 // compactPoint agrees exactly; preview is read-only.
+
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   countLiveItems,
@@ -70,6 +72,19 @@ function storedArrangementSubjectIds(filePath: string): string[] {
       | undefined;
     if (row === undefined) return [];
     return (JSON.parse(row.arrangement_json) as Array<{ subjectId: string }>).map((entry) => entry.subjectId);
+  } finally {
+    db.close();
+  }
+}
+
+function canonicalHashes(filePath: string): { events: string; messageBlocks: string } {
+  const db = openRaw(filePath);
+  try {
+    const hashRows = (table: "event" | "message_block"): string =>
+      createHash("sha256")
+        .update(JSON.stringify(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))
+        .digest("hex");
+    return { events: hashRows("event"), messageBlocks: hashRows("message_block") };
   } finally {
     db.close();
   }
@@ -429,5 +444,85 @@ describe("previewCompact agreement with compact", () => {
     expect(preview.ok).toBe(true);
     expect(sdk.scheduler.testPassCount(threadId)).toBe(passesBefore);
     expect(liveCount(filePath)).toBeGreaterThan(0);
+  });
+});
+
+describe("empty derived chunk recovery", () => {
+  it("ignores consecutive all-tombstoned chunks in preview and drops them atomically with a replacement view", async () => {
+    const sdk = initLhc({
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
+    });
+    const filePath = store.threadPath();
+    const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const batch: MessageEventInput[] = [];
+    for (let turn = 1; turn <= 6; turn += 1) {
+      batch.push(
+        validEvent("user_prompt", { payload: { text: `prompt ${turn}` } }),
+        validEvent("assistant_text", { payload: { text: `answer ${turn}` } }),
+        validEvent("turn_end"),
+      );
+    }
+    const captured = await sdk.intakeStream.messageEvents({ filePath }, batch);
+    expect(captured.ok).toBe(true);
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok).toBe(true);
+
+    const first = await sdk.threadView.compact({ filePath }, { params: TARGET_PARAMS });
+    expect(first.ok).toBe(true);
+    expect(viewRowCount(filePath)).toBe(1);
+    const canonicalBefore = canonicalHashes(filePath);
+
+    const db = openRaw(filePath);
+    try {
+      db.exec("BEGIN IMMEDIATE;");
+      db.prepare(`UPDATE turns SET deleted_at = ? WHERE turn_id IN ('t2', 't3')`).run("2026-08-12T00:00:00.000Z");
+      db.prepare(`UPDATE message SET deleted_at = ? WHERE turn_id IN ('t2', 't3')`).run("2026-08-12T00:00:00.000Z");
+      db.exec("COMMIT;");
+      expect(db.prepare(`SELECT chunk_id FROM chunk WHERE chunk_id IN ('c2', 'c3') ORDER BY chunk_id`).all()).toEqual([
+        { chunk_id: "c2" },
+        { chunk_id: "c3" },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const preview = await sdk.threadView.previewCompact({ filePath }, { params: TARGET_PARAMS });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.value.kind).toBe("ok");
+    // Preview is read-only: physical cleanup waits for compact's view-replace transaction.
+    const afterPreview = openRaw(filePath);
+    try {
+      expect(
+        afterPreview.prepare(`SELECT chunk_id FROM chunk WHERE chunk_id IN ('c2', 'c3') ORDER BY chunk_id`).all(),
+      ).toEqual([{ chunk_id: "c2" }, { chunk_id: "c3" }]);
+    } finally {
+      afterPreview.close();
+    }
+
+    const compacted = await sdk.threadView.compact({ filePath }, { params: TARGET_PARAMS });
+    expect(compacted.ok).toBe(true);
+    expect(canonicalHashes(filePath)).toEqual(canonicalBefore);
+
+    const rebuiltAgain = await sdk.threadView.compact({ filePath }, { params: TARGET_PARAMS });
+    expect(rebuiltAgain.ok).toBe(true);
+    expect(canonicalHashes(filePath)).toEqual(canonicalBefore);
+
+    const repaired = openRaw(filePath);
+    try {
+      expect(repaired.prepare(`SELECT chunk_id FROM chunk WHERE chunk_id IN ('c2', 'c3')`).all()).toEqual([]);
+      expect(repaired.prepare(`SELECT * FROM chunk_member WHERE chunk_id IN ('c2', 'c3')`).all()).toEqual([]);
+      expect(
+        repaired.prepare(`SELECT * FROM derivation WHERE subject_kind = 'chunk' AND subject_id IN ('c2', 'c3')`).all(),
+      ).toEqual([]);
+      expect(repaired.prepare(`PRAGMA integrity_check`).get()).toEqual({ integrity_check: "ok" });
+    } finally {
+      repaired.close();
+    }
   });
 });

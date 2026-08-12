@@ -79,6 +79,9 @@ export interface SelectionInputs {
   compactChunkMaterials?: Map<string, CompactChunkMaterialSnapshot>;
   maxEventOrder: number;
   derivationCounts: Record<string, Record<string, number>>; // derivation type → state → count
+  // Derived chunks whose stored members are all legitimate tombstoned turns.
+  // Preview ignores them; compact removes them with the replacement view.
+  emptyChunkIds?: string[];
 }
 
 export interface ArrangementEntry {
@@ -176,7 +179,9 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     };
   });
 
-  const chunks: SelectionChunk[] = structure.chunks.map((row) => {
+  const liveTurnIds = new Set(turns.map((turn) => turn.turnId));
+  const emptyChunkIds: string[] = [];
+  const chunks: SelectionChunk[] = structure.chunks.flatMap((row) => {
     for (const memberTurnId of row.memberTurnIds) {
       if (!turnIds.has(memberTurnId)) {
         throw new CanonicalCorruptionError(
@@ -185,20 +190,24 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
         );
       }
     }
-    return {
-      chunkId: row.chunkId,
-      chunkOrder: row.chunkOrder,
-      status: row.status,
-      memberTurnIds: row.memberTurnIds,
-    };
+    if (!row.memberTurnIds.some((turnId) => liveTurnIds.has(turnId))) {
+      emptyChunkIds.push(row.chunkId);
+      return [];
+    }
+    return [
+      {
+        chunkId: row.chunkId,
+        chunkOrder: row.chunkOrder,
+        status: row.status,
+        memberTurnIds: row.memberTurnIds,
+      },
+    ];
   });
 
   const derivationRows = db
-    .prepare(
-      `SELECT subject_id, derivation_type, state, content, reason FROM derivation
-       WHERE subject_kind IN ('turn', 'chunk')`,
-    )
+    .prepare(`SELECT subject_kind, subject_id, derivation_type, state, content, reason FROM derivation`)
     .all() as unknown as Array<{
+    subject_kind: string;
     subject_id: string;
     derivation_type: string;
     state: string;
@@ -206,7 +215,15 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     reason: string | null;
   }>;
   const derivations = new Map<string, DerivationSnapshot>();
+  const emptyChunkSet = new Set(emptyChunkIds);
+  const derivationCounts: Record<string, Record<string, number>> = {};
   for (const row of derivationRows) {
+    if (row.subject_kind === "chunk" && emptyChunkSet.has(row.subject_id)) continue;
+    derivationCounts[row.derivation_type] = {
+      ...derivationCounts[row.derivation_type],
+      [row.state]: (derivationCounts[row.derivation_type]?.[row.state] ?? 0) + 1,
+    };
+    if (row.subject_kind !== "turn" && row.subject_kind !== "chunk") continue;
     const snapshot: DerivationSnapshot = { state: row.state as DerivationSnapshot["state"] };
     if (row.content !== null) snapshot.content = row.content;
     if (row.reason !== null) snapshot.reason = row.reason;
@@ -216,18 +233,8 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
   const maxRow = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as {
     m: number | bigint;
   };
-  const countRows = db
-    .prepare(`SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state`)
-    .all() as unknown as Array<{ derivation_type: string; state: string; n: number | bigint }>;
-  const derivationCounts: Record<string, Record<string, number>> = {};
-  for (const row of countRows) {
-    derivationCounts[row.derivation_type] = {
-      ...derivationCounts[row.derivation_type],
-      [row.state]: Number(row.n),
-    };
-  }
 
-  return { messages, turns, chunks, derivations, maxEventOrder: Number(maxRow.m), derivationCounts };
+  return { messages, turns, chunks, derivations, maxEventOrder: Number(maxRow.m), derivationCounts, emptyChunkIds };
 }
 
 // ── the pure walk ─────────────────────────────────────────────────

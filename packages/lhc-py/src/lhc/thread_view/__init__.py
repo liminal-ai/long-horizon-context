@@ -63,6 +63,7 @@ from ..shared_tech.view import (
     ViewStatusVisibility,
 )
 from ..threads import ThreadRef, open_thread_database, resolve_thread_ref
+from ..turns import drop_unreadable_chunks
 from ..turns import report as turns_report
 from .internal.assemble import assemble_view
 from .internal.boundary import read_boundary_position, visibility_zone_tokens
@@ -942,6 +943,7 @@ async def compact(ref: ThreadRef, opts: CompactOpts) -> OpResult[CompactReceipt]
                     for row in bands
                 ],
             ),
+            lambda: drop_unreadable_chunks(db, inputs.empty_chunk_ids),
         )
 
         band_report: dict[Band, CompactBandStats] = {}
