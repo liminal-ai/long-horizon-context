@@ -68,6 +68,7 @@ describe("pinned toolchain and required steps", () => {
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,
       "actions/setup-node": 7,
+      "actions/upload-artifact": 6,
       "pnpm/action-setup": 6,
     };
     const used = [...workflow.matchAll(/uses: ([^\s@]+)@v(\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);
@@ -121,8 +122,14 @@ describe("mainline source-checkout contract", () => {
     expect(workflow).not.toContain("pull_request:");
   });
 
-  it("produces no release assets or publication side effects", () => {
-    expect(workflow).not.toMatch(/upload-artifact|download-artifact|assemble-release-bundle|release-candidate/);
+  it("retains each tested prebuild without publishing a release", () => {
+    expect(workflow).toContain("uses: actions/upload-artifact@v6");
+    expect(workflow).toContain("name: prebuild-${{ matrix.target }}");
+    expect(workflow).toContain(
+      "path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node",
+    );
+    expect(workflow).toContain("if-no-files-found: error");
+    expect(workflow).not.toMatch(/download-artifact|assemble-release-bundle|release-candidate/);
     expect(workflow).not.toMatch(/gh release|action-gh-release|releases\/create|git tag|git push/);
   });
 });

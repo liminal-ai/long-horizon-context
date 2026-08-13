@@ -100,3 +100,14 @@ jobs:
         run: pnpm --filter cc-lhc run test
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
+
+      # Keep the runner-built addon after the job. Besides feeding release
+      # aggregation, this is the no-compiler installation input for real
+      # workstation dogfood on the matching platform.
+      - name: Upload staged native addon
+        uses: actions/upload-artifact@v6
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
+          if-no-files-found: error
+          retention-days: 30

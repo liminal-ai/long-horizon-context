@@ -1,0 +1,155 @@
+name: windows-npm-dogfood
+
+on:
+  workflow_dispatch:
+
+jobs:
+  native:
+    name: native-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            runner: blacksmith-2vcpu-windows-2025
+          - target: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout recursively
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Build runtime packages
+        run: |
+          pnpm --filter lhc run build
+          pnpm --filter cc-lhc-native run build
+
+      - name: Compile native identity addon
+        run: pnpm --filter cc-lhc-native run build:native
+        env:
+          npm_config_msvs_version: "2022"
+
+      - name: Stage native identity addon
+        run: pnpm --filter cc-lhc-native run stage:prebuild
+
+      - name: Test native addon
+        run: pnpm --filter cc-lhc-native run test:native
+
+      - name: Build and test cc-lhc with addon mandatory
+        run: |
+          pnpm --filter cc-lhc run build
+          pnpm --filter cc-lhc run typecheck
+          pnpm --filter cc-lhc run test
+        env:
+          CC_LHC_NATIVE_REQUIRE_ADDON: "1"
+
+      - name: Upload tested prebuild
+        uses: actions/upload-artifact@v6
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    name: assemble-npm-package
+    needs: native
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Checkout recursively
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JavaScript runtime
+        run: |
+          pnpm --filter lhc run build
+          pnpm --filter cc-lhc-native run build
+          pnpm --filter cc-lhc run build
+
+      - name: Download tested Windows prebuilds
+        uses: actions/download-artifact@v7
+        with:
+          pattern: prebuild-win32-*
+          path: artifacts
+
+      - name: Assemble and pack npm artifact
+        run: |
+          node packages/cc-lhc/scripts/assemble-npm-dogfood.mjs --artifacts artifacts --out release/package
+          npm pack ./release/package --pack-destination ./release
+
+      - name: Upload npm dogfood tarball
+        uses: actions/upload-artifact@v6
+        with:
+          name: cc-lhc-npm-dogfood
+          path: release/liminal-ai-cc-lhc-*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  install-smoke:
+    name: npm-install-${{ matrix.target }}
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            runner: blacksmith-2vcpu-windows-2025
+          - target: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - name: Install Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+
+      - name: Download npm dogfood tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: cc-lhc-npm-dogfood
+          path: package
+
+      - name: Install package globally with npm
+        shell: pwsh
+        run: |
+          $tarball = (Get-ChildItem -LiteralPath package -Filter *.tgz -File -ErrorAction Stop).FullName
+          npm install --global $tarball
+
+      - name: Prove installed launcher, addon, and native PTY
+        shell: pwsh
+        run: |
+          $fakeClaude = Join-Path $env:RUNNER_TEMP "claude.exe"
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $fakeClaude
+          $env:CC_LHC_CLAUDE_BIN = $fakeClaude
+          cc-lhc --version
