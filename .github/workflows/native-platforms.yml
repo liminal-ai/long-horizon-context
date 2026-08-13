@@ -174,7 +174,7 @@ jobs:
       - name: Pack unpublished npm candidate
         run: |
           mkdir -p build/npm-artifact
-          npm pack build/cc-lhc-npm --pack-destination build/npm-artifact
+          npm pack ./build/cc-lhc-npm --pack-destination build/npm-artifact
 
       - name: Preserve unpublished npm candidate
         uses: actions/upload-artifact@v7

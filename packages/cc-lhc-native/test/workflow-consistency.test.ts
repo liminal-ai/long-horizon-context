@@ -126,6 +126,7 @@ describe("mainline source-checkout contract", () => {
   it("assembles an unpublished npm candidate without release or publication side effects", () => {
     expect(workflow).toContain("assemble-npm-package.mjs");
     expect(workflow).toContain("smoke-npm-package.mjs");
+    expect(workflow).toContain("npm pack ./build/cc-lhc-npm");
     expect(workflow).toContain("cc-lhc-npm-candidate");
     expect(workflow).not.toMatch(/npm publish|gh release|action-gh-release|releases\/create|git tag|git push/);
   });
