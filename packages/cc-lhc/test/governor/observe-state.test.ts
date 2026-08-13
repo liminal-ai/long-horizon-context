@@ -84,6 +84,74 @@ describe("governor observe-state fold", () => {
     expect(r.observes[0]?.decision).toBe("below_threshold");
   });
 
+  it("uses only the latest completed sampling as provider authority", () => {
+    const state = createGovernorRuntimeState({
+      captureHealthy: true,
+      captureGeneration: 1,
+      descriptorReady: true,
+    });
+    const resolved = armed(true);
+
+    const missing = applyGovernorLifecycleBatch(
+      state,
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "request-1",
+          providerUsage: { input_tokens: 600_000 },
+        },
+        { kind: "sampling_observed", samplingId: "request-2" },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      resolved,
+    );
+    expect(missing.observes[0]?.decision).toBe("no_provider_usage");
+    expect(missing.observes[0]?.providerContextTotal).toBeNull();
+
+    const invalid = applyGovernorLifecycleBatch(
+      state,
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "request-1",
+          providerUsage: { input_tokens: 600_000 },
+        },
+        {
+          kind: "sampling_observed",
+          samplingId: "request-2",
+          providerUsage: { input_tokens: -1 },
+        },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      resolved,
+    );
+    expect(invalid.observes[0]?.decision).toBe("no_provider_usage");
+    expect(invalid.observes[0]?.providerContextTotal).toBeNull();
+
+    const replaced = applyGovernorLifecycleBatch(
+      state,
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "request-1",
+          providerUsage: { input_tokens: 600_000 },
+        },
+        {
+          kind: "sampling_observed",
+          samplingId: "request-2",
+          providerUsage: { input_tokens: 100_000 },
+        },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      resolved,
+    );
+    expect(replaced.observes[0]?.decision).toBe("below_threshold");
+    expect(replaced.observes[0]?.providerContextTotal).toBe(100_000);
+  });
+
   it("input epoch change during turn suppresses would_compact", () => {
     let state = createGovernorRuntimeState({
       captureHealthy: true,

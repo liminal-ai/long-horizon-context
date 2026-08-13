@@ -18,6 +18,27 @@ describe("providerContextFromUsage", () => {
     });
   });
 
+  it("uses the Claude 2.1.228 usage triad without double-counting diagnostics", () => {
+    const ctx = providerContextFromUsage({
+      input_tokens: 210_000,
+      cache_creation_input_tokens: 25_000,
+      cache_read_input_tokens: 85_000,
+      output_tokens: 12_000,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 20_000,
+        ephemeral_1h_input_tokens: 5_000,
+      },
+      iterations: [{ input_tokens: 999_999 }],
+      output_tokens_details: { text_tokens: 12_000 },
+    });
+    expect(ctx).toEqual({
+      inputTokens: 210_000,
+      cacheCreationInputTokens: 25_000,
+      cacheReadInputTokens: 85_000,
+      total: 320_000,
+    });
+  });
+
   it("treats absent cache fields as zero when input present", () => {
     const ctx = providerContextFromUsage({ input_tokens: 50 });
     expect(ctx?.total).toBe(50);

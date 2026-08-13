@@ -126,7 +126,10 @@ export function applyGovernorLifecycleSignal(
       return {
         state: {
           ...state,
-          latestProviderContext: usage ?? state.latestProviderContext,
+          // The latest completed sampling is authoritative. Missing or invalid
+          // provider usage must clear an older count rather than trigger from
+          // stale pressure observed on a previous model request.
+          latestProviderContext: usage,
           latestSamplingId: signal.samplingId,
           sawSamplingThisTurn: true,
         },
