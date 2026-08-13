@@ -64,12 +64,12 @@ describe("pinned toolchain and required steps", () => {
 
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
     // Current major per action, verified against the official releases via gh
-    // on 2026-08-10 — all run on the Node 24 actions runtime.
+    // on 2026-08-13 — all run on the Node 24 actions runtime.
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,
-      "actions/download-artifact": 4,
+      "actions/download-artifact": 8,
       "actions/setup-node": 7,
-      "actions/upload-artifact": 4,
+      "actions/upload-artifact": 7,
       "pnpm/action-setup": 6,
     };
     const used = [...workflow.matchAll(/uses: ([^\s@]+)@v(\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);

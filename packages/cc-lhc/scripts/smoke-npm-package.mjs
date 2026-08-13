@@ -3,17 +3,27 @@
 /** Pack and globally install an unpublished candidate in disposable prefixes. */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const candidateRoot = resolve(process.argv[2] ?? join(packageRoot, "..", "..", "build", "cc-lhc-npm"));
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCliCandidates = [
+  process.env.npm_execpath,
+  join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  join(dirname(dirname(process.execPath)), "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+].filter(Boolean);
+const npmCli = npmCliCandidates.find(existsSync);
+if (!npmCli) {
+  console.error(`cc-lhc npm smoke: cannot locate npm CLI (checked ${npmCliCandidates.join(", ")})`);
+  process.exit(1);
+}
 
 function fail(message, result) {
   console.error(`cc-lhc npm smoke: ${message}`);
+  if (result?.error) console.error(result.error);
   if (result?.stdout) process.stderr.write(result.stdout);
   if (result?.stderr) process.stderr.write(result.stderr);
   process.exit(1);
@@ -27,6 +37,10 @@ function run(command, args, options = {}) {
   return result;
 }
 
+function runNpm(args) {
+  return run(process.execPath, [npmCli, ...args]);
+}
+
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
 if (manifest.private !== true || manifest.ccLhcCandidate?.publishLocked !== true) {
   fail("refusing to smoke an unlocked publication candidate");
@@ -36,7 +50,7 @@ const scratch = mkdtempSync(join(tmpdir(), "cc-lhc-npm-smoke-"));
 try {
   const packDir = join(scratch, "pack");
   mkdirSync(packDir);
-  const pack = run(npm, ["pack", candidateRoot, "--pack-destination", packDir, "--json"]);
+  const pack = runNpm(["pack", candidateRoot, "--pack-destination", packDir, "--json"]);
   const packed = JSON.parse(pack.stdout);
   if (!Array.isArray(packed) || packed.length !== 1 || typeof packed[0]?.filename !== "string") {
     fail("npm pack returned an unexpected result");
@@ -48,7 +62,7 @@ try {
     const prefix = join(scratch, label);
     const installArgs = ["install", "--global", "--prefix", prefix, tarball];
     if (ignoreScripts) installArgs.push("--ignore-scripts");
-    const install = run(npm, installArgs);
+    const install = runNpm(installArgs);
     if (/node-gyp|\b(?:g\+\+|clang|msbuild)\b|visual studio build tools/i.test(install.stdout + install.stderr)) {
       fail(`${label} install invoked a native compiler`, install);
     }
@@ -59,7 +73,7 @@ try {
       fail(`${label} install did not expose the retrieval commands`, help);
     }
 
-    const npmRoot = run(npm, ["root", "--global", "--prefix", prefix]).stdout.trim();
+    const npmRoot = runNpm(["root", "--global", "--prefix", prefix]).stdout.trim();
     const installedRoot = join(npmRoot, ...manifest.name.split("/"));
     const nativeEntry = join(installedRoot, "node_modules", "cc-lhc-native", "dist", "index.js");
     const nativeProbe = [
