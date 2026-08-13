@@ -1,7 +1,7 @@
 {
   "name": "no_authoritative_provider_usage",
   "contractVersion": "1.0.0",
-  "description": "Missing provider usage never fabricates an upper trigger; continue normally.",
+  "description": "Missing provider usage never fabricates an upper trigger; continue normally (not via below_trigger).",
   "coverage": [
     "no_authoritative_provider_usage"
   ],
@@ -40,6 +40,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -56,7 +57,6 @@
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
-      "below_trigger",
       "terminal_continue_normal"
     ],
     "effects": [
@@ -101,13 +101,23 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
         "evaluating_pressure",
-        "below_trigger",
         "terminal_continue_normal"
       ]
     }

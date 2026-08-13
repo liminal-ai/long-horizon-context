@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": false,
@@ -70,19 +71,23 @@
         "writer": "lhc"
       },
       {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1
+      },
+      {
         "type": "compact",
         "lowerTargetDomain": "lhc_rendered_history",
         "lowerTargetTokens": 40000,
         "allowDegradedDerivations": true
       },
       {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed"
-      },
-      {
-        "type": "open_continuation_turn",
-        "count": 1
+        "type": "degrade_fidelity",
+        "causes": [
+          "lower_target_missed"
+        ]
       },
       {
         "type": "insert_continuation_marker",
@@ -94,12 +99,6 @@
       },
       {
         "type": "install_serving_view"
-      },
-      {
-        "type": "degrade_fidelity",
-        "causes": [
-          "lower_target_missed"
-        ]
       },
       {
         "type": "record_receipt",
@@ -146,19 +145,23 @@
           "writer": "lhc"
         },
         {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1
+        },
+        {
           "type": "compact",
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
         },
         {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed"
-        },
-        {
-          "type": "open_continuation_turn",
-          "count": 1
+          "type": "degrade_fidelity",
+          "causes": [
+            "lower_target_missed"
+          ]
         },
         {
           "type": "insert_continuation_marker",
@@ -172,12 +175,6 @@
           "type": "install_serving_view"
         },
         {
-          "type": "degrade_fidelity",
-          "causes": [
-            "lower_target_missed"
-          ]
-        },
-        {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
@@ -186,8 +183,19 @@
           "type": "release_writer"
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",

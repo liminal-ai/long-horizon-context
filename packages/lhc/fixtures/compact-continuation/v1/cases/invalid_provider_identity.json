@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -64,7 +65,7 @@
       {
         "type": "refuse",
         "code": "invalid_provider_identity",
-        "reason": "required provider/model identity cannot be proven for a valid request"
+        "reason": "required provider/model identity cannot be proven; next provider request is not trustworthy"
       },
       {
         "type": "record_receipt",
@@ -104,7 +105,7 @@
         {
           "type": "refuse",
           "code": "invalid_provider_identity",
-          "reason": "required provider/model identity cannot be proven for a valid request"
+          "reason": "required provider/model identity cannot be proven; next provider request is not trustworthy"
         },
         {
           "type": "record_receipt",
@@ -112,8 +113,19 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": false
+      },
       "refused": true,
       "refuseCode": "invalid_provider_identity",
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",

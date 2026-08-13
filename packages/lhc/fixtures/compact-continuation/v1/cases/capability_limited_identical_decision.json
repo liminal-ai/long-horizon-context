@@ -1,8 +1,9 @@
 {
-  "name": "active_non_tool_above_trigger",
+  "name": "capability_limited_identical_decision",
   "contractVersion": "1.0.0",
-  "description": "Above trigger active non-tool: force_turn_end then compact, one continuation turn via atomic turn_end, marker.",
+  "description": "capability_limited host capability does not change the decision table or fabricate host effects.",
   "coverage": [
+    "capability_limited",
     "active_non_tool_continuation"
   ],
   "input": {
@@ -25,14 +26,14 @@
       "domain": "provider_reported_input"
     },
     "postMeasurementEstimate": {
-      "tokens": 1000,
+      "tokens": 0,
       "source": "lhc_token_estimate",
       "domain": "source_labelled_estimate"
     },
     "policy": {
       "upperTriggerTokens": 100000,
       "lowerTargetTokens": 40000,
-      "hostCapability": "full_state_machine"
+      "hostCapability": "capability_limited"
     },
     "continuation": {
       "kind": "active_non_tool"
@@ -111,10 +112,10 @@
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
-        "estimateTokens": 1000,
+        "estimateTokens": 0,
         "estimateSource": "lhc_token_estimate",
         "estimateDomain": "source_labelled_estimate",
-        "nextRequestPressureTokens": 106000,
+        "nextRequestPressureTokens": 105000,
         "upperTriggerTokens": 100000,
         "atOrAboveTrigger": true
       },

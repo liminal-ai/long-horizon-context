@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -62,6 +63,7 @@
     "effects": [
       {
         "type": "skip_seam",
+        "code": "transport_retry",
         "reason": "mutation forbidden inside transport retry"
       },
       {
@@ -101,6 +103,7 @@
       "effects": [
         {
           "type": "skip_seam",
+          "code": "transport_retry",
           "reason": "mutation forbidden inside transport retry"
         },
         {
@@ -109,8 +112,19 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": true,
+      "skipCode": "transport_retry",
       "transitionPath": [
         "idle",
         "terminal_skip"

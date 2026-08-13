@@ -3,7 +3,6 @@
   "contractVersion": "1.0.0",
   "description": "Provider base alone below trigger; labelled estimate pushes next-request pressure over.",
   "coverage": [
-    "below_trigger",
     "active_non_tool_continuation"
   ],
   "input": {
@@ -44,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -71,19 +71,17 @@
         "writer": "lhc"
       },
       {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1
+      },
+      {
         "type": "compact",
         "lowerTargetDomain": "lhc_rendered_history",
         "lowerTargetTokens": 40000,
         "allowDegradedDerivations": true
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed"
-      },
-      {
-        "type": "open_continuation_turn",
-        "count": 1
       },
       {
         "type": "insert_continuation_marker",
@@ -139,19 +137,17 @@
           "writer": "lhc"
         },
         {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1
+        },
+        {
           "type": "compact",
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
-        },
-        {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed"
-        },
-        {
-          "type": "open_continuation_turn",
-          "count": 1
         },
         {
           "type": "insert_continuation_marker",
@@ -173,8 +169,19 @@
           "type": "release_writer"
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",

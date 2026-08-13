@@ -1,9 +1,10 @@
 {
-  "name": "compact_failed",
+  "name": "pending_forced_boundary_repair",
   "contractVersion": "1.0.0",
-  "description": "Structurally invalid compact assembly refuses.",
+  "description": "Repair after prior forced boundary: do not re-force turn_end or duplicate marker; resume compact onward.",
   "coverage": [
-    "compact_install_failure"
+    "pending_boundary_repair",
+    "active_non_tool_continuation"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -43,42 +44,64 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": true,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
+      "path_continue_turn",
       "compacting",
-      "terminal_refuse"
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "1.0.0",
-      "outcome": "refuse",
-      "reasonCode": "compact_failed",
-      "turnEndReason": null,
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
+      "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -92,36 +115,68 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": false,
-        "markerServed": false,
-        "sameAgenticTurnPreserved": true
+        "opened": true,
+        "markerServed": true,
+        "sameAgenticTurnPreserved": false
       },
       "effects": [
         {
-          "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
-      "refused": true,
-      "refuseCode": "compact_failed",
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": true
+      },
+      "refused": false,
+      "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
         "evaluating_pressure",
+        "path_continue_turn",
         "compacting",
-        "terminal_refuse"
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }

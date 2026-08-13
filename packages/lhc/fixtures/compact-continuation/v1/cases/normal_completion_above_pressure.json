@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -104,8 +105,19 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",

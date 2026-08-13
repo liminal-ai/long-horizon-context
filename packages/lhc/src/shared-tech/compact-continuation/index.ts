@@ -5,12 +5,15 @@
 
 export {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
+  COMPACT_CONTINUATION_HOST_CAPABILITIES,
   COMPACT_CONTINUATION_INVARIANTS,
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
+  COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
   COMPACT_CONTINUATION_TRANSITION_ORDER,
+  COMPACT_CONTINUATION_WRITER_CLAIMS,
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactContinuationDecision,
   type CompactContinuationEffect,
@@ -25,7 +28,9 @@ export {
   type CompactContinuationPressureReceipt,
   type CompactContinuationReceipt,
   type CompactContinuationRefuseCode,
+  type CompactContinuationResidualState,
   type CompactContinuationSeam,
+  type CompactContinuationSkipCode,
   type CompactContinuationState,
   type CompactContinuationTransitionStep,
   type CompactMaterialFacts,
@@ -38,9 +43,6 @@ export {
   type WorkContinuation,
   type WriterClaim,
 } from "./contract.js";
-
-// Re-export CompactMaterialFacts under the shorter alias used above if needed.
-// contract exports CompactMaterialFacts directly.
 
 export { decideCompactContinuation } from "./decide.js";
 

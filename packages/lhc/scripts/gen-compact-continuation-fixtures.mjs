@@ -1,6 +1,8 @@
 /**
  * Generates LIM-60 compact-continuation parity fixtures from the pure decision function.
  * Usage (from packages/lhc): pnpm exec tsx scripts/gen-compact-continuation-fixtures.mjs
+ *
+ * Regeneration with an unchanged decision table must leave a clean git diff.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -79,6 +81,7 @@ function makeInput(over = {}) {
     policy: { ...basePolicy, ...(over.policy || {}) },
     continuation: over.continuation ?? { kind: "active_non_tool" },
     invariants: { ...goodInvariants, ...(over.invariants || {}) },
+    pendingForcedContinuationBoundary: over.pendingForcedContinuationBoundary ?? false,
     compactMaterial: { ...goodMaterial, ...(over.compactMaterial || {}) },
   };
 }
@@ -87,7 +90,7 @@ const cases = [
   {
     name: "no_authoritative_provider_usage",
     coverage: ["no_authoritative_provider_usage"],
-    description: "Missing provider usage never fabricates an upper trigger; continue normally.",
+    description: "Missing provider usage never fabricates an upper trigger; continue normally (not via below_trigger).",
     input: makeInput({
       providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
       continuation: { kind: "active_non_tool" },
@@ -140,7 +143,8 @@ const cases = [
   {
     name: "active_non_tool_above_trigger",
     coverage: ["active_non_tool_continuation"],
-    description: "Above trigger active non-tool: force context_compact_continue, one continuation turn, marker.",
+    description:
+      "Above trigger active non-tool: force_turn_end then compact, one continuation turn via atomic turn_end, marker.",
     input: makeInput({
       providerUsage: providerAbove,
       postMeasurementEstimate: est(1_000),
@@ -150,7 +154,7 @@ const cases = [
   {
     name: "derivation_gaps_degraded_compact",
     coverage: ["derivation_gaps_degraded"],
-    description: "Missing/failed derivations degrade fidelity but do not block a valid compact.",
+    description: "Missing/failed derivations degrade fidelity at compact assembly; do not block a valid compact.",
     input: makeInput({
       providerUsage: providerAbove,
       continuation: { kind: "active_non_tool" },
@@ -178,8 +182,9 @@ const cases = [
   {
     name: "incomplete_capture",
     coverage: ["incomplete_capture"],
-    description: "Incomplete capture refuses; invariants cannot be proven.",
+    description: "Incomplete capture refuses even below pressure; claimed seam is untrustworthy.",
     input: makeInput({
+      providerUsage: providerBelow,
       invariants: { ...goodInvariants, captureComplete: false },
     }),
   },
@@ -204,20 +209,49 @@ const cases = [
     }),
   },
   {
-    name: "compact_failed",
-    coverage: ["compact_install_failure"],
-    description: "Structurally invalid compact assembly refuses.",
+    name: "compact_failed_preserve_tool",
+    coverage: ["compact_install_failure", "pending_tool_result_continuation"],
+    description:
+      "Tool-preserve compact failure: claim+compact attempted; original turn open; prior view intact; writer released.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId: "call-42",
+        correlationValid: true,
+      },
+      compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
+    }),
+  },
+  {
+    name: "compact_failed_continue_turn",
+    coverage: ["compact_install_failure", "active_non_tool_continuation", "post_boundary_failure"],
+    description:
+      "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
     input: makeInput({
       continuation: { kind: "active_non_tool" },
       compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
     }),
   },
   {
-    name: "install_failed",
-    coverage: ["compact_install_failure"],
-    description: "Install failure after valid compact refuses.",
+    name: "install_failed_continue_turn",
+    coverage: ["compact_install_failure", "active_non_tool_continuation", "post_boundary_failure"],
+    description:
+      "Install failure after forced boundary: no partial install; boundary durable; no marker; writer released.",
     input: makeInput({
       continuation: { kind: "active_non_tool" },
+      compactMaterial: { ...goodMaterial, installSucceeds: false },
+    }),
+  },
+  {
+    name: "install_failed_preserve_tool",
+    coverage: ["compact_install_failure", "pending_tool_result_continuation"],
+    description: "Tool-preserve install failure: original turn open; prior view intact; writer released.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId: "call-42",
+        correlationValid: true,
+      },
       compactMaterial: { ...goodMaterial, installSucceeds: false },
     }),
   },
@@ -246,6 +280,14 @@ const cases = [
     }),
   },
   {
+    name: "not_at_settled_seam",
+    coverage: ["stale_epoch_or_transport_retry"],
+    description: "Seam not yet settled is a skip/wait, not record corruption.",
+    input: makeInput({
+      seam: { ...goodSeam, captureFlushed: false },
+    }),
+  },
+  {
     name: "no_useful_reduction",
     coverage: ["no_useful_reduction"],
     description: "No useful reduction without structural failure is a first-class non-error outcome.",
@@ -256,7 +298,7 @@ const cases = [
   },
   {
     name: "pressure_from_estimate_crosses_trigger",
-    coverage: ["below_trigger", "active_non_tool_continuation"],
+    coverage: ["active_non_tool_continuation"],
     description: "Provider base alone below trigger; labelled estimate pushes next-request pressure over.",
     input: makeInput({
       providerUsage: {
@@ -269,6 +311,36 @@ const cases = [
       },
       postMeasurementEstimate: est(10_000, "host_byte_estimate"),
       continuation: { kind: "active_non_tool" },
+    }),
+  },
+  {
+    name: "capability_limited_identical_decision",
+    coverage: ["capability_limited", "active_non_tool_continuation"],
+    description: "capability_limited host capability does not change the decision table or fabricate host effects.",
+    input: makeInput({
+      policy: { ...basePolicy, hostCapability: "capability_limited" },
+      continuation: { kind: "active_non_tool" },
+    }),
+  },
+  {
+    name: "pending_forced_boundary_repair",
+    coverage: ["pending_boundary_repair", "active_non_tool_continuation"],
+    description:
+      "Repair after prior forced boundary: do not re-force turn_end or duplicate marker; resume compact onward.",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
+  {
+    name: "pending_forced_boundary_compact_failed",
+    coverage: ["pending_boundary_repair", "post_boundary_failure", "compact_install_failure"],
+    description:
+      "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      pendingForcedContinuationBoundary: true,
+      compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
     }),
   },
 ];
@@ -289,7 +361,7 @@ for (const c of cases) {
   const file = `cases/${c.name}.json`;
   writeFileSync(join(baseDir, file), JSON.stringify(body, null, 2) + "\n");
   manifestCases.push({ file, name: c.name, coverage: c.coverage });
-  console.log("wrote", file, "→", expected.outcome);
+  console.log("wrote", file, "→", expected.outcome, expected.receipt.refuseCode ?? expected.receipt.skipCode ?? "");
 }
 
 const requiredCoverage = [
@@ -307,6 +379,9 @@ const requiredCoverage = [
   "native_writer_conflict",
   "stale_epoch_or_transport_retry",
   "no_useful_reduction",
+  "capability_limited",
+  "pending_boundary_repair",
+  "post_boundary_failure",
 ];
 
 const manifest = {

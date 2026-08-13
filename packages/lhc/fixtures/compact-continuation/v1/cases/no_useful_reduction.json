@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -59,6 +60,7 @@
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
+      "path_continue_turn",
       "compacting",
       "installing",
       "terminal_no_reduction"
@@ -69,10 +71,25 @@
         "writer": "lhc"
       },
       {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1
+      },
+      {
         "type": "compact",
         "lowerTargetDomain": "lhc_rendered_history",
         "lowerTargetTokens": 40000,
         "allowDegradedDerivations": true
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
       },
       {
         "type": "install_serving_view"
@@ -90,7 +107,7 @@
       "contractVersion": "1.0.0",
       "outcome": "no_reduction",
       "reasonCode": "no_useful_reduction",
-      "turnEndReason": null,
+      "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -110,9 +127,9 @@
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": false,
-        "markerServed": false,
-        "sameAgenticTurnPreserved": true
+        "opened": true,
+        "markerServed": true,
+        "sameAgenticTurnPreserved": false
       },
       "effects": [
         {
@@ -120,10 +137,25 @@
           "writer": "lhc"
         },
         {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1
+        },
+        {
           "type": "compact",
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
         },
         {
           "type": "install_serving_view"
@@ -137,12 +169,24 @@
           "type": "release_writer"
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
         "evaluating_pressure",
+        "path_continue_turn",
         "compacting",
         "installing",
         "terminal_no_reduction"

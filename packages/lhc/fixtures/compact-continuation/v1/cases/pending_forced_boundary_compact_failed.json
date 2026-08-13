@@ -1,9 +1,11 @@
 {
-  "name": "active_non_tool_above_trigger",
+  "name": "pending_forced_boundary_compact_failed",
   "contractVersion": "1.0.0",
-  "description": "Above trigger active non-tool: force_turn_end then compact, one continuation turn via atomic turn_end, marker.",
+  "description": "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
   "coverage": [
-    "active_non_tool_continuation"
+    "pending_boundary_repair",
+    "post_boundary_failure",
+    "compact_install_failure"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -25,7 +27,7 @@
       "domain": "provider_reported_input"
     },
     "postMeasurementEstimate": {
-      "tokens": 1000,
+      "tokens": 0,
       "source": "lhc_token_estimate",
       "domain": "source_labelled_estimate"
     },
@@ -43,39 +45,31 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": false,
+    "pendingForcedContinuationBoundary": true,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": true,
+      "compactStructurallyValid": false,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
     }
   },
   "expected": {
-    "outcome": "compact_continue_turn",
-    "terminalState": "terminal_continue_turn",
+    "outcome": "refuse",
+    "terminalState": "terminal_refuse",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "installing",
-      "terminal_continue_turn"
+      "terminal_refuse"
     ],
     "effects": [
       {
         "type": "claim_writer",
         "writer": "lhc"
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed",
-        "opensContinuationTurn": true,
-        "continuationTurnCount": 1
       },
       {
         "type": "compact",
@@ -84,15 +78,9 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "insert_continuation_marker",
-        "kind": "lhc.compact_continuation",
-        "modelVisible": true,
-        "lhcInspectVisible": true,
-        "userChatVisible": false,
-        "hostMayInjectTransiently": true
-      },
-      {
-        "type": "install_serving_view"
+        "type": "refuse",
+        "code": "compact_failed",
+        "reason": "compact assembly could not produce a structurally valid view"
       },
       {
         "type": "record_receipt",
@@ -105,16 +93,16 @@
     ],
     "receipt": {
       "contractVersion": "1.0.0",
-      "outcome": "compact_continue_turn",
-      "reasonCode": "context_compact_continue",
+      "outcome": "refuse",
+      "reasonCode": "compact_failed",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
-        "estimateTokens": 1000,
+        "estimateTokens": 0,
         "estimateSource": "lhc_token_estimate",
         "estimateDomain": "source_labelled_estimate",
-        "nextRequestPressureTokens": 106000,
+        "nextRequestPressureTokens": 105000,
         "upperTriggerTokens": 100000,
         "atOrAboveTrigger": true
       },
@@ -128,7 +116,7 @@
       "degradationReasons": [],
       "continuation": {
         "opened": true,
-        "markerServed": true,
+        "markerServed": false,
         "sameAgenticTurnPreserved": false
       },
       "effects": [
@@ -137,28 +125,15 @@
           "writer": "lhc"
         },
         {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed",
-          "opensContinuationTurn": true,
-          "continuationTurnCount": 1
-        },
-        {
           "type": "compact",
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
         },
         {
-          "type": "insert_continuation_marker",
-          "kind": "lhc.compact_continuation",
-          "modelVisible": true,
-          "lhcInspectVisible": true,
-          "userChatVisible": false,
-          "hostMayInjectTransiently": true
-        },
-        {
-          "type": "install_serving_view"
+          "type": "refuse",
+          "code": "compact_failed",
+          "reason": "compact assembly could not produce a structurally valid view"
         },
         {
           "type": "record_receipt",
@@ -171,15 +146,15 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": false,
+        "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
-        "markerServed": true,
+        "markerServed": false,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": true
+        "nextProviderRequestAllowed": false
       },
-      "refused": false,
-      "refuseCode": null,
+      "refused": true,
+      "refuseCode": "compact_failed",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -188,8 +163,7 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "installing",
-        "terminal_continue_turn"
+        "terminal_refuse"
       ]
     }
   }

@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -63,6 +64,7 @@
     "effects": [
       {
         "type": "skip_seam",
+        "code": "input_epoch_changed",
         "reason": "input epoch changed (1→2); skip seam"
       },
       {
@@ -102,6 +104,7 @@
       "effects": [
         {
           "type": "skip_seam",
+          "code": "input_epoch_changed",
           "reason": "input epoch changed (1→2); skip seam"
         },
         {
@@ -110,8 +113,19 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": true
+      },
       "refused": false,
       "refuseCode": null,
+      "skipped": true,
+      "skipCode": "input_epoch_changed",
       "transitionPath": [
         "at_seam",
         "checking_invariants",

@@ -1,7 +1,7 @@
 {
   "name": "incomplete_capture",
   "contractVersion": "1.0.0",
-  "description": "Incomplete capture refuses; invariants cannot be proven.",
+  "description": "Incomplete capture refuses even below pressure; claimed seam is untrustworthy.",
   "coverage": [
     "incomplete_capture"
   ],
@@ -18,10 +18,10 @@
     },
     "providerUsage": {
       "available": true,
-      "inputTokens": 90000,
-      "cacheCreationTokens": 5000,
-      "cacheReadTokens": 10000,
-      "total": 105000,
+      "inputTokens": 70000,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 5000,
+      "total": 75000,
       "domain": "provider_reported_input"
     },
     "postMeasurementEstimate": {
@@ -43,6 +43,7 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
+    "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -64,7 +65,7 @@
       {
         "type": "refuse",
         "code": "incomplete_capture",
-        "reason": "capture of the settled model turn is incomplete; invariants cannot be proven"
+        "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
       },
       {
         "type": "record_receipt",
@@ -78,14 +79,14 @@
       "reasonCode": "incomplete_capture",
       "turnEndReason": null,
       "pressure": {
-        "providerBaseTokens": 105000,
+        "providerBaseTokens": 75000,
         "providerBaseDomain": "provider_reported_input",
         "estimateTokens": 0,
         "estimateSource": "lhc_token_estimate",
         "estimateDomain": "source_labelled_estimate",
-        "nextRequestPressureTokens": 105000,
+        "nextRequestPressureTokens": 75000,
         "upperTriggerTokens": 100000,
-        "atOrAboveTrigger": true
+        "atOrAboveTrigger": false
       },
       "lowerTarget": {
         "domain": "lhc_rendered_history",
@@ -104,7 +105,7 @@
         {
           "type": "refuse",
           "code": "incomplete_capture",
-          "reason": "capture of the settled model turn is incomplete; invariants cannot be proven"
+          "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
         },
         {
           "type": "record_receipt",
@@ -112,8 +113,19 @@
           "userChatVisible": false
         }
       ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": false
+      },
       "refused": true,
       "refuseCode": "incomplete_capture",
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
