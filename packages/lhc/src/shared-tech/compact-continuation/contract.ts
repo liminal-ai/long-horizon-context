@@ -260,7 +260,7 @@ export type CompactContinuationRefuseCode =
   | "install_failed"
   | "no_valid_provider_request"
   /**
-   * pendingForcedContinuationBoundary is true but continuation.kind is not
+   * `forcedContinuationBoundary.applied` is true but continuation.kind is not
    * active_non_tool (illegal v1 combination).
    */
   | "invalid_pending_boundary_continuation"
@@ -731,7 +731,9 @@ export type CompactContinuationDecision = {
  * 7. Branch on pressure × work-continuation kind.
  * 8. Active non-tool: force turn boundary **before** compact so the just-closed
  *    turn is eligible; one turn_end closes prior and opens one continuation turn.
- *    Repair with `pendingForcedContinuationBoundary` skips re-forcing.
+ *    Repair supplies `forcedContinuationBoundary` as
+ *    `{ applied: true, continuationTurnId, forcedThisSeam: false }` and skips
+ *    re-forcing.
  * 9. Compact (closed history) with degraded-derivation tolerance; lower target
  *    is not a success gate. Fidelity degradation is classified at assembly.
  * 10. Preserve tool pair / insert marker / install serving view.
@@ -752,9 +754,10 @@ export type CompactContinuationDecision = {
  * - **Skip**: `nextProviderRequestAllowed=false` (wait and re-evaluate). Does
  *   not cancel an in-flight transport retry. Pending-boundary residual fields
  *   remain truthful on skip/health-refuse.
- * - **Repair/retry**: pending boundary takes precedence over fresh pressure;
- *   do not duplicate the boundary; reassert marker by idempotency key; retry
- *   install.
+ * - **Repair/retry**: `forcedContinuationBoundary` with
+ *   `{ applied: true, forcedThisSeam: false }` takes precedence over fresh
+ *   pressure; do not duplicate the boundary; reassert marker by idempotency
+ *   key; retry install.
  */
 export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "seam_eligibility",

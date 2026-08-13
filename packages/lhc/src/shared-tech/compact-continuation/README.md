@@ -67,9 +67,10 @@ new turn id, then classifies via the oracle.
 | Install fail vs no-reduction | **Install failure always wins**; `usefulReduction` only after successful install |
 | Skip | `nextProviderRequestAllowed=false` (wait/re-evaluate; does not cancel in-flight transport retry) |
 
-**Repair/retry:** `pendingForcedContinuationBoundary` takes precedence over fresh
-pressure/usage; requires `continuation.kind === "active_non_tool"`; reassert
-marker by idempotency key (no duplicate boundary).
+**Repair/retry:** `forcedContinuationBoundary` with
+`{ applied: true, continuationTurnId, forcedThisSeam: false }` takes precedence
+over fresh pressure/usage; requires `continuation.kind === "active_non_tool"`;
+reassert marker by idempotency key (no duplicate boundary).
 
 ## Skip vs refuse
 
