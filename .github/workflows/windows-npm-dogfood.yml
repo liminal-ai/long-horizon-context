@@ -149,10 +149,12 @@ jobs:
           $tarball = (Get-ChildItem -LiteralPath package -Filter *.tgz -File -ErrorAction Stop).FullName
           npm install --global $tarball
 
+      - name: Install pinned Claude Code for integration smoke
+        shell: pwsh
+        run: npm install --global @anthropic-ai/claude-code@2.1.231
+
       - name: Prove installed launcher, addon, and native PTY
         shell: pwsh
         run: |
-          $fakeClaude = Join-Path $env:RUNNER_TEMP "claude.exe"
-          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $fakeClaude
-          $env:CC_LHC_CLAUDE_BIN = $fakeClaude
+          claude --version
           cc-lhc --version
