@@ -66,7 +66,6 @@ for (const [name, sourceRoot] of Object.entries(workspacePackages)) {
     types: sourceManifest.types,
     exports: sourceManifest.exports,
     engines: sourceManifest.engines,
-    ...(name === "lhc" ? { dependencies: sourceManifest.dependencies } : {}),
   };
   writeFileSync(join(destination, "package.json"), JSON.stringify(runtimeManifest, null, 2) + "\n");
 }
