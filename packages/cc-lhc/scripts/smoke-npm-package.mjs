@@ -46,7 +46,9 @@ function runInstalledCli(executable, args) {
   // A .cmd shim is not a Win32 executable. `call` lets cmd.exe parse the
   // quoted path without Node passing the quote characters through literally.
   const command = ["call", `"${executable.replaceAll('"', '""')}"`, ...args].join(" ");
-  return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command]);
+  return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command], {
+    windowsVerbatimArguments: true,
+  });
 }
 
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
