@@ -43,7 +43,9 @@ function runNpm(args) {
 
 function runInstalledCli(executable, args) {
   if (process.platform !== "win32") return run(executable, args);
-  const command = [`"${executable.replaceAll('"', '""')}"`, ...args].join(" ");
+  // A .cmd shim is not a Win32 executable. `call` lets cmd.exe parse the
+  // quoted path without Node passing the quote characters through literally.
+  const command = ["call", `"${executable.replaceAll('"', '""')}"`, ...args].join(" ");
   return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command]);
 }
 
