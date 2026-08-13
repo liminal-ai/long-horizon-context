@@ -64,12 +64,17 @@ import * as turnsDomain from "./turns/index.js";
 import { dispatchTurnOwnedWork, turnWorkHandlers } from "./turns/internal/derive.js";
 
 export type {
+  BoundaryRow,
+  BoundaryStatus,
   CompactContinuationHostFacts,
   CompactContinuationRunResult,
   CompactContinuationTestHooks,
+  StageName,
   StoredCompactContinuationReceipt,
+  ToolPairProof,
   WriterClaimRow,
 } from "./compact-continuation/index.js";
+export { provePendingToolPair, validateHostFacts } from "./compact-continuation/index.js";
 export type {
   BatchResult,
   EventKind,
@@ -328,6 +333,15 @@ export interface ThreadViewSurface {
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
   ): Promise<OpResult<PreviewCompactOutcome>>;
+  prepareCompact(
+    ref: threadsDomain.ThreadRef,
+    opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+  ): Promise<OpResult<threadViewDomain.PreparedCompact>>;
+  installPreparedCompact(
+    ref: threadsDomain.ThreadRef,
+    prepared: threadViewDomain.PreparedCompact,
+    opts?: threadViewDomain.InstallPreparedOptions,
+  ): Promise<OpResult<CompactReceipt>>;
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -773,6 +787,8 @@ export function initLhc(config: SdkConfig): Lhc {
         prune: threadViewDomain.prune,
         describe: threadViewDomain.describe,
         previewCompact: threadViewDomain.previewCompact,
+        prepareCompact: threadViewDomain.prepareCompact,
+        installPreparedCompact: threadViewDomain.installPreparedCompact,
         compact: threadViewDomain.compact,
         materialize: threadViewDomain.materialize,
       },

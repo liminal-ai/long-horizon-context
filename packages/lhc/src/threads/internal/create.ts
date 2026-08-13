@@ -10,7 +10,7 @@ import {
   SQLITE_BUSY_TIMEOUT_MS,
 } from "../../shared-tech/storage.js";
 import {
-  compactContinuationSchemaStatements,
+  compactContinuationCurrentSchemaStatements,
   derivationLogSchemaStatements,
   isSupportedThreadSchemaVersion,
   migrateThreadSchema,
@@ -157,7 +157,7 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
     `CREATE INDEX idx_log_reason ON log (reason);`,
     ...derivationLogSchemaStatements(),
     ...retrievalImpressionSchemaStatements(),
-    ...compactContinuationSchemaStatements(),
+    ...compactContinuationCurrentSchemaStatements(),
     `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
      VALUES ('t1', 1, 'open', 0);`,
     `PRAGMA user_version = ${CURRENT_THREAD_SCHEMA_VERSION};`,

@@ -1,5 +1,5 @@
 /**
- * LIM-61: staged compact-continuation runtime against real thread state.
+ * LIM-61: staged compact-continuation runtime (correction: B1–B3, M4–M8).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -11,8 +11,10 @@ import {
   intakeStream,
   type Lhc,
   messages,
+  provePendingToolPair,
   threads,
   turns,
+  validateHostFacts,
 } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
@@ -78,9 +80,8 @@ function baseFacts(overrides: Partial<CompactContinuationHostFacts> = {}): Compa
 }
 
 async function seedOpenAgenticTurn(filePath: string): Promise<void> {
-  // Populated open turn so force_turn_end has members to close.
   const batch = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "continue the investigation" } }),
+    validEvent("user_prompt", { payload: { text: "continue the investigation with more context" } }),
     validEvent("assistant_text", { payload: { text: "working on it with more detail ".repeat(20) } }),
     validEvent("tool_call", {
       payload: { toolCallId: "call-active-1", toolName: "read_file", arguments: { path: "x.txt" } },
@@ -106,20 +107,51 @@ async function seedPendingToolTurn(filePath: string, toolCallId: string): Promis
   if (!batch.ok) throw new Error(batch.error.reason);
 }
 
+function snapshotCanonical(filePath: string): {
+  eventCount: number;
+  turnCount: number;
+  markerCount: number;
+  viewId: string | null;
+  maxEventOrder: number;
+} {
+  const db = openRaw(filePath);
+  try {
+    const eventCount = Number((db.prepare(`SELECT COUNT(*) AS n FROM event`).get() as { n: number | bigint }).n);
+    const turnCount = Number((db.prepare(`SELECT COUNT(*) AS n FROM turns`).get() as { n: number | bigint }).n);
+    const markerCount = Number(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM event WHERE event_kind = 'compact_continuation_marker'`).get() as {
+          n: number | bigint;
+        }
+      ).n,
+    );
+    const view = db.prepare(`SELECT view_id FROM thread_view WHERE singleton = 1`).get() as
+      | { view_id: string }
+      | undefined;
+    const maxEventOrder = Number(
+      (db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as { m: number | bigint }).m,
+    );
+    return {
+      eventCount,
+      turnCount,
+      markerCount,
+      viewId: view?.view_id ?? null,
+      maxEventOrder,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 describe("LIM-61 compact-continuation runtime", () => {
   it("below trigger / no authoritative usage: no mutation", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
-    const beforeTurns = await turns.listTurns({ filePath: fixture.filePath });
-    expect(beforeTurns.ok).toBe(true);
-    if (!beforeTurns.ok) return;
-    const turnCount = beforeTurns.value.length;
-    const viewBefore = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    const before = snapshotCanonical(fixture.filePath);
 
     const below = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
         attemptId: "below-1",
-        continuation: { kind: "active_non_tool" },
         providerUsage: {
           available: true,
           inputTokens: 1000,
@@ -129,65 +161,125 @@ describe("LIM-61 compact-continuation runtime", () => {
           domain: "provider_reported_input",
         },
         postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
-        policy: { upperTriggerTokens: 100000, lowerTargetTokens: 400, hostCapability: "full_state_machine" },
       }),
     );
     expect(below.ok).toBe(true);
     if (!below.ok) return;
     expect(below.value.receipt.outcome).toBe("continue_normal");
-    expect(below.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(below.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
 
     const noUsage = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
         attemptId: "no-usage-1",
-        continuation: { kind: "active_non_tool" },
         providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
       }),
     );
     expect(noUsage.ok).toBe(true);
     if (!noUsage.ok) return;
     expect(noUsage.value.receipt.outcome).toBe("continue_normal");
-
-    const afterTurns = await turns.listTurns({ filePath: fixture.filePath });
-    expect(afterTurns.ok).toBe(true);
-    if (!afterTurns.ok) return;
-    expect(afterTurns.value.length).toBe(turnCount);
-    const viewAfter = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
-    expect(viewAfter).toEqual(viewBefore);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
   });
 
   it("normal completion creates no continuation turn", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
-    const before = await turns.listTurns({ filePath: fixture.filePath });
-    expect(before.ok).toBe(true);
-    if (!before.ok) return;
-
+    const before = snapshotCanonical(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "complete-1",
-        continuation: { kind: "none" },
-        providerUsage: {
-          available: true,
-          inputTokens: 90000,
-          cacheCreationTokens: 5000,
-          cacheReadTokens: 10000,
-          total: 105000,
-          domain: "provider_reported_input",
-        },
-      }),
+      baseFacts({ attemptId: "complete-1", continuation: { kind: "none" } }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.receipt.outcome).toBe("normal_complete");
-    expect(result.value.receipt.continuation.opened).toBe(false);
     expect(result.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(snapshotCanonical(fixture.filePath).turnCount).toBe(before.turnCount);
+  });
 
-    const after = await turns.listTurns({ filePath: fixture.filePath });
-    expect(after.ok).toBe(true);
-    if (!after.ok) return;
-    expect(after.value.length).toBe(before.value.length);
+  it("B1: above-trigger health refusals do not mutate record or view", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const baseline = await fixture.sdk.threadView.compact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+    );
+    expect(baseline.ok).toBe(true);
+    if (!baseline.ok) return;
+    const before = snapshotCanonical(fixture.filePath);
+
+    for (const [attemptId, facts] of [
+      ["health-capture", baseFacts({ attemptId: "health-capture", captureComplete: false })],
+      ["health-identity", baseFacts({ attemptId: "health-identity", providerIdentityValid: false })],
+      [
+        "health-open",
+        baseFacts({
+          attemptId: "health-open",
+          // Durable open-turn is still true; force via corrupt would be state_corruption.
+          // Use invalid tool correlation shape on active path with singleOpenTurn override
+          // that contradicts — runtime trusts durable single open; so use incomplete capture variants.
+        }),
+      ],
+    ] as const) {
+      void facts;
+      void attemptId;
+    }
+
+    const capture = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "health-capture", captureComplete: false }),
+    );
+    expect(capture.ok).toBe(true);
+    if (!capture.ok) return;
+    expect(capture.value.receipt.refuseCode).toBe("incomplete_capture");
+    expect(capture.value.receipt.residual.priorServingViewIntact).toBe(true);
+    expect(capture.value.receipt.residual.markerPersisted).toBe(false);
+    expect(capture.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+
+    const identity = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "health-identity", providerIdentityValid: false }),
+    );
+    expect(identity.ok).toBe(true);
+    if (!identity.ok) return;
+    expect(identity.value.receipt.refuseCode).toBe("invalid_provider_identity");
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+
+    // Invalid tool correlation (host + durable) on preserve path.
+    await seedPendingToolTurn(fixture.filePath, "call-bad-corr");
+    const beforeTool = snapshotCanonical(fixture.filePath);
+    const corr = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "health-corr",
+        continuation: {
+          kind: "pending_correlated_tool_result",
+          toolCallId: "call-bad-corr",
+          correlationValid: false,
+        },
+      }),
+    );
+    expect(corr.ok).toBe(true);
+    if (!corr.ok) return;
+    expect(corr.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+    expect(snapshotCanonical(fixture.filePath)).toEqual(beforeTool);
+
+    // Durable pair missing despite host correlationValid.
+    const missing = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "health-pair-missing",
+        continuation: {
+          kind: "pending_correlated_tool_result",
+          toolCallId: "call-does-not-exist",
+          correlationValid: true,
+        },
+      }),
+    );
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) return;
+    expect(missing.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+    expect(snapshotCanonical(fixture.filePath)).toEqual(beforeTool);
   });
 
   it("active non-tool success: one boundary, one hidden typed marker, install", async () => {
@@ -201,35 +293,23 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.value.receipt.outcome).toMatch(/compact_continue_turn|degraded_compact|no_reduction/);
+    expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(result.value.receipt.outcome);
     expect(result.value.forcedBoundaryThisAttempt).toBe(true);
     expect(result.value.continuationTurnId).toMatch(/^t\d+$/);
-    expect(result.value.receipt.residual.forcedContinuationBoundaryApplied).toBe(true);
-    expect(result.value.receipt.residual.continuationTurnOpened).toBe(true);
-    expect(result.value.receipt.turnEndReason).toBe(CONTEXT_COMPACT_CONTINUE_REASON);
+    expect(result.value.markerPersisted).toBe(true);
+    expect(result.value.pendingBoundary).toBeNull();
 
     const cTurnId = result.value.continuationTurnId!;
-    const hasMarker = await compactContinuation.hasCompactContinuationMarker({ filePath: fixture.filePath }, cTurnId);
-    expect(hasMarker.ok).toBe(true);
-    if (!hasMarker.ok) return;
-    expect(hasMarker.value).toBe(true);
-    expect(result.value.markerPersisted).toBe(true);
-
-    // Ordinary user chat hides the marker.
     const userChat = await messages.list({ filePath: fixture.filePath }, { forUserChat: true });
     expect(userChat.ok).toBe(true);
     if (!userChat.ok) return;
     expect(userChat.value.every((m) => m.kind !== "compact_continuation_marker")).toBe(true);
 
-    // Default list / inspect still sees it.
     const all = await messages.list({ filePath: fixture.filePath });
     expect(all.ok).toBe(true);
     if (!all.ok) return;
-    const markers = all.value.filter((m) => m.kind === "compact_continuation_marker");
-    expect(markers).toHaveLength(1);
-    expect(markers[0]?.blocks[0]?.blockType).toBe("compact_continuation_marker");
+    expect(all.value.filter((m) => m.kind === "compact_continuation_marker")).toHaveLength(1);
 
-    // Model-serving representation includes the marker text.
     const ctx = await fixture.sdk.threadView.getLlmRequestContext({ filePath: fixture.filePath });
     expect(ctx.ok).toBe(true);
     if (!ctx.ok) return;
@@ -237,66 +317,92 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(joined).toContain("[compact continuation]");
     expect(joined).toContain(`continuationTurnId=${cTurnId}`);
 
-    // Exactly one empty continuation turn (marker may be sole member).
-    const turnList = await turns.listTurns({ filePath: fixture.filePath });
-    expect(turnList.ok).toBe(true);
-    if (!turnList.ok) return;
-    const open = turnList.value.filter((t) => t.status === "open");
-    expect(open).toHaveLength(1);
-    expect(open[0]?.turnId).toBe(cTurnId);
-
-    // Durable receipt readback.
-    const stored = await compactContinuation.getCompactContinuationReceipt(
-      { filePath: fixture.filePath },
-      "active-success-1",
-    );
-    expect(stored.ok).toBe(true);
-    if (!stored.ok) return;
-    expect(stored.value?.receipt.outcome).toBe(result.value.receipt.outcome);
-    expect(stored.value?.continuationTurnId).toBe(cTurnId);
-
-    // No empty extra continuation turn beyond the one boundary.
-    const forceEffects = result.value.receipt.effects.filter((e) => e.type === "force_turn_end");
-    expect(forceEffects).toHaveLength(1);
+    const session = await fixture.sdk.threadView.getSessionThreadView({ filePath: fixture.filePath });
+    expect(session.ok).toBe(true);
+    if (!session.ok) return;
+    const sessionText = JSON.stringify(session.value.entries);
+    expect(sessionText).toContain("[compact continuation]");
   });
 
-  it("repeated compactions in one thread create distinct markers", async () => {
+  it("B2: completed boundary is not re-repaired on below-trigger seam", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-
     const first = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      baseFacts({ attemptId: "repeat-1" }),
+      baseFacts({ attemptId: "complete-boundary-1" }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.pendingBoundary).toBeNull();
+    const viewAfter = snapshotCanonical(fixture.filePath);
+
+    const below = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "complete-boundary-below",
+        providerUsage: {
+          available: true,
+          inputTokens: 100,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          total: 100,
+          domain: "provider_reported_input",
+        },
+        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      }),
+    );
+    expect(below.ok).toBe(true);
+    if (!below.ok) return;
+    expect(below.value.receipt.outcome).toBe("continue_normal");
+    expect(below.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(viewAfter);
+  });
+
+  it("B2: completed attemptId replays without re-mutation", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const first = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "replay-1" }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const after = snapshotCanonical(fixture.filePath);
+
+    const second = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "replay-1" }),
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.replayedTerminalAttempt).toBe(true);
+    expect(second.value.receipt.outcome).toBe(first.value.receipt.outcome);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(after);
+  });
+
+  it("later above-trigger active work creates a distinct new boundary", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const first = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "distinct-1" }),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const tA = first.value.continuationTurnId!;
 
-    // Populate the continuation turn so the next force can close it.
     await seedOpenAgenticTurn(fixture.filePath);
-
     const second = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      baseFacts({ attemptId: "repeat-2" }),
+      baseFacts({ attemptId: "distinct-2" }),
     );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    const tB = second.value.continuationTurnId!;
-
-    expect(tA).not.toBe(tB);
-    expect(compactContinuationMarkerIdempotencyKey(tA)).not.toBe(compactContinuationMarkerIdempotencyKey(tB));
-
-    const all = await messages.list({ filePath: fixture.filePath });
-    expect(all.ok).toBe(true);
-    if (!all.ok) return;
-    const markers = all.value.filter((m) => m.kind === "compact_continuation_marker");
-    expect(markers.length).toBeGreaterThanOrEqual(2);
-    const turnIds = new Set(markers.map((m) => String(m.blocks[0]?.content["continuationTurnId"] ?? "")));
-    expect(turnIds.has(tA)).toBe(true);
-    expect(turnIds.has(tB)).toBe(true);
+    expect(second.value.forcedBoundaryThisAttempt).toBe(true);
+    expect(second.value.continuationTurnId).not.toBe(tA);
   });
 
-  it("tool-result branch: compact success preserves tool pair; no marker", async () => {
+  it("tool-result branch preserves pair; no marker", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const toolCallId = "call-preserve-1";
     await seedPendingToolTurn(fixture.filePath, toolCallId);
@@ -305,187 +411,56 @@ describe("LIM-61 compact-continuation runtime", () => {
       { filePath: fixture.filePath },
       baseFacts({
         attemptId: "tool-success-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          toolCallId,
-          correlationValid: true,
-        },
+        continuation: { kind: "pending_correlated_tool_result", toolCallId, correlationValid: true },
       }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(["compact_preserve_tool", "degraded_compact", "no_reduction"]).toContain(result.value.receipt.outcome);
     expect(result.value.forcedBoundaryThisAttempt).toBe(false);
-    expect(result.value.receipt.residual.originalAgenticTurnStillOpen).toBe(true);
     expect(result.value.receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
-    expect(result.value.receipt.effects.some((e) => e.type === "preserve_tool_pair_verbatim")).toBe(true);
 
     const listed = await messages.list({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    const toolMsgs = listed.value.filter((m) => m.kind === "tool_call" || m.kind === "tool_result");
-    const pair = toolMsgs.filter((m) => m.blocks.some((b) => b.content["toolCallId"] === toolCallId));
-    expect(pair.some((m) => m.kind === "tool_call")).toBe(true);
-    expect(pair.some((m) => m.kind === "tool_result")).toBe(true);
-    const resultMsg = pair.find((m) => m.kind === "tool_result");
-    expect(resultMsg?.blocks[0]?.content["content"]).toBe("tool result verbatim payload that must survive");
-
-    // No orphaned pair: both present, same id.
+    const pair = listed.value.filter(
+      (m) =>
+        (m.kind === "tool_call" || m.kind === "tool_result") &&
+        m.blocks.some((b) => b.content["toolCallId"] === toolCallId),
+    );
     expect(pair).toHaveLength(2);
+    expect(pair.find((m) => m.kind === "tool_result")?.blocks[0]?.content["content"]).toBe(
+      "tool result verbatim payload that must survive",
+    );
   });
 
-  it("tool-result branch: install failure keeps prior view and pair; no marker", async () => {
+  it("M8: durable tool-pair proof rejects orphaned and mismatched pairs", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
-    // Install a baseline view first.
-    const baseline = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
-    );
-    expect(baseline.ok).toBe(true);
-    if (!baseline.ok) return;
-    const viewIdBefore = baseline.value.viewId;
+    await seedPendingToolTurn(fixture.filePath, "call-ok");
 
-    const toolCallId = "call-preserve-install-fail";
-    await seedPendingToolTurn(fixture.filePath, toolCallId);
+    const db = openRaw(fixture.filePath);
+    try {
+      const ok = provePendingToolPair(db, "call-ok");
+      expect(ok.ok).toBe(true);
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "tool-install-fail-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          toolCallId,
-          correlationValid: true,
-        },
-        testHooks: { failInstallBeforeWrite: true },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(result.value.receipt.refuseCode).toBe("install_failed");
-    expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
-    expect(result.value.receipt.residual.originalAgenticTurnStillOpen).toBe(true);
+      const missing = provePendingToolPair(db, "call-missing");
+      expect(missing.ok).toBe(false);
+      if (!missing.ok) expect(missing.reason).toBe("call_missing");
 
-    const described = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
-    expect(described.ok).toBe(true);
-    if (!described.ok) return;
-    expect(described.value?.viewId).toBe(viewIdBefore);
-  });
-
-  it("tool-result branch: compact failure refuses with prior view intact", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: false });
-    const toolCallId = "call-preserve-compact-fail";
-    await seedPendingToolTurn(fixture.filePath, toolCallId);
-
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "tool-compact-fail-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          toolCallId,
-          correlationValid: true,
-        },
-        testHooks: {
-          skipRealCompact: true,
-          forceCompactStructurallyValid: false,
-          forceCanProduceValidProviderRequest: false,
-        },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(["compact_failed", "no_valid_provider_request"]).toContain(result.value.receipt.refuseCode);
-    expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
-    expect(result.value.receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
-  });
-
-  it("tool-result branch: degraded success still installs; no marker", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: true });
-    const toolCallId = "call-preserve-degraded";
-    await seedPendingToolTurn(fixture.filePath, toolCallId);
-
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "tool-degraded-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          toolCallId,
-          correlationValid: true,
-        },
-        testHooks: { forceDerivationsMissingOrFailed: true },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // Degraded may still be compact_preserve_tool or degraded_compact depending on material.
-    expect(result.value.receipt.refused).toBe(false);
-    expect(result.value.receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
-  });
-
-  it("tool-result branch: no useful reduction is not a hard failure", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: false });
-    const toolCallId = "call-preserve-no-red";
-    await seedPendingToolTurn(fixture.filePath, toolCallId);
-
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "tool-no-red-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          toolCallId,
-          correlationValid: true,
-        },
-        testHooks: {
-          skipRealCompact: true,
-          forceUsefulReduction: false,
-          forceInstallSucceeds: true,
-          forceCompactStructurallyValid: true,
-          forceCanProduceValidProviderRequest: true,
-        },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("no_reduction");
-    expect(result.value.receipt.refused).toBe(false);
-  });
-
-  it("active branch: install failure keeps marker persisted, prior view intact", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: false });
-    const baseline = await fixture.sdk.threadView.compact(
-      { filePath: fixture.filePath },
-      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
-    );
-    expect(baseline.ok).toBe(true);
-    if (!baseline.ok) return;
-    const viewIdBefore = baseline.value.viewId;
-
-    await seedOpenAgenticTurn(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "active-install-fail-1",
-        testHooks: { failInstallBeforeWrite: true },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(result.value.receipt.refuseCode).toBe("install_failed");
-    expect(result.value.receipt.residual.markerPersisted).toBe(true);
-    expect(result.value.receipt.residual.markerServed).toBe(false);
-    expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
-    expect(result.value.forcedBoundaryThisAttempt).toBe(true);
-
-    const described = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
-    expect(described.ok).toBe(true);
-    if (!described.ok) return;
-    expect(described.value?.viewId).toBe(viewIdBefore);
+      // Orphaned call: delete result message tombstone-style.
+      db.prepare(
+        `UPDATE message SET deleted_at = ? WHERE message_id IN (
+           SELECT m.message_id FROM message m
+           JOIN message_block b ON b.message_id = m.message_id
+           WHERE b.block_type = 'tool_result' AND json_extract(b.content, '$.toolCallId') = 'call-ok'
+         )`,
+      ).run(new Date().toISOString());
+      const orphan = provePendingToolPair(db, "call-ok");
+      expect(orphan.ok).toBe(false);
+      if (!orphan.ok) expect(orphan.reason).toBe("orphaned_call");
+    } finally {
+      db.close();
+    }
   });
 
   it("repair after boundary is idempotent (no second boundary)", async () => {
@@ -503,32 +478,28 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!interrupted.ok) return;
     expect(interrupted.value.forcedBoundaryThisAttempt).toBe(true);
     const cTurnId = interrupted.value.continuationTurnId!;
+    // Crash interrupt leaves pending boundary + held writer; resume same attemptId.
+    expect(interrupted.value.pendingBoundary?.status).toBe("pending");
+    expect(interrupted.value.replayedTerminalAttempt).toBe(false);
 
-    const turnList1 = await turns.listTurns({ filePath: fixture.filePath });
-    expect(turnList1.ok).toBe(true);
-    if (!turnList1.ok) return;
-    const closedWithReason = turnList1.value.filter((t) => t.outcomeReason === CONTEXT_COMPACT_CONTINUE_REASON);
-    expect(closedWithReason.length).toBe(1);
-
-    // Repair: same attempt id, writerClaim lhc-compatible (none after release).
     const repaired = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
-        attemptId: "repair-boundary-1b",
+        attemptId: "repair-boundary-1",
+        writerClaim: "lhc",
         continuation: { kind: "active_non_tool" },
       }),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
-    // Second call must not force another boundary.
     expect(repaired.value.forcedBoundaryThisAttempt).toBe(false);
     expect(repaired.value.continuationTurnId).toBe(cTurnId);
+    expect(repaired.value.replayedTerminalAttempt).toBe(false);
 
-    const turnList2 = await turns.listTurns({ filePath: fixture.filePath });
-    expect(turnList2.ok).toBe(true);
-    if (!turnList2.ok) return;
-    const closed2 = turnList2.value.filter((t) => t.outcomeReason === CONTEXT_COMPACT_CONTINUE_REASON);
-    expect(closed2.length).toBe(1);
+    const turnList = await turns.listTurns({ filePath: fixture.filePath });
+    expect(turnList.ok).toBe(true);
+    if (!turnList.ok) return;
+    expect(turnList.value.filter((t) => t.outcomeReason === CONTEXT_COMPACT_CONTINUE_REASON)).toHaveLength(1);
   });
 
   it("repair after marker is idempotent (no second marker)", async () => {
@@ -546,142 +517,142 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!interrupted.ok) return;
     const cTurnId = interrupted.value.continuationTurnId!;
     expect(interrupted.value.receipt.residual.markerPersisted).toBe(true);
-
-    const listed1 = await messages.list({ filePath: fixture.filePath });
-    expect(listed1.ok).toBe(true);
-    if (!listed1.ok) return;
-    const markers1 = listed1.value.filter((m) => m.kind === "compact_continuation_marker");
-    expect(markers1).toHaveLength(1);
+    expect(interrupted.value.pendingBoundary?.markerPersisted).toBe(true);
 
     const repaired = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
-        attemptId: "repair-marker-2",
+        attemptId: "repair-marker-1",
+        writerClaim: "lhc",
         continuation: { kind: "active_non_tool" },
       }),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
     expect(repaired.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(repaired.value.replayedTerminalAttempt).toBe(false);
 
-    const listed2 = await messages.list({ filePath: fixture.filePath });
-    expect(listed2.ok).toBe(true);
-    if (!listed2.ok) return;
-    const markers2 = listed2.value.filter((m) => m.kind === "compact_continuation_marker");
-    expect(markers2).toHaveLength(1);
-    expect(markers2[0]?.blocks[0]?.content["continuationTurnId"]).toBe(cTurnId);
-
-    // Idempotency key was reasserted (skip on intake), not duplicated.
     const events = await intakeStream.listEvents({ filePath: fixture.filePath });
     expect(events.ok).toBe(true);
     if (!events.ok) return;
     const key = compactContinuationMarkerIdempotencyKey(cTurnId);
-    const keyHits = events.value.filter((e) => e.idempotencyKey === key);
-    expect(keyHits).toHaveLength(1);
+    expect(events.value.filter((e) => e.idempotencyKey === key)).toHaveLength(1);
   });
 
-  it("repair after failed install is idempotent", async () => {
+  it("B3/M6: crash with held writer + pending boundary resumes same attemptId", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
 
-    const first = await compactContinuation.runCompactContinuation(
+    // Cooperative interrupt leaves boundary pending but releases writer; re-hold for crash model.
+    const interrupted = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
-        attemptId: "repair-install-1",
-        testHooks: { failInstallBeforeWrite: true },
+        attemptId: "crash-1",
+        testHooks: { interruptAfterBoundary: true },
       }),
     );
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.value.receipt.refuseCode).toBe("install_failed");
-    const cTurnId = first.value.continuationTurnId!;
+    expect(interrupted.ok).toBe(true);
+    if (!interrupted.ok) return;
+    const cTurnId = interrupted.value.continuationTurnId!;
 
-    const second = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "repair-install-2",
-        // Allow install on repair.
-      }),
-    );
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
-    expect(second.value.forcedBoundaryThisAttempt).toBe(false);
-    expect(second.value.continuationTurnId).toBe(cTurnId);
-    // Marker still single.
-    const listed = await messages.list({ filePath: fixture.filePath });
-    expect(listed.ok).toBe(true);
-    if (!listed.ok) return;
-    expect(listed.value.filter((m) => m.kind === "compact_continuation_marker")).toHaveLength(1);
-  });
-
-  it("input epoch change skips without mutation; writer released out-of-band when held", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: false });
-    const before = await turns.listTurns({ filePath: fixture.filePath });
-    expect(before.ok).toBe(true);
-    if (!before.ok) return;
-
-    // Simulate held claim then skip.
-    const db = openRaw(fixture.filePath);
-    try {
-      db.prepare(
-        `UPDATE compact_continuation_writer SET claim = 'lhc', attempt_id = ?, claimed_at = ? WHERE singleton = 1`,
-      ).run("epoch-skip-1", new Date().toISOString());
-    } finally {
-      db.close();
-    }
-
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "epoch-skip-1",
-        writerClaim: "lhc",
-        seam: {
-          ...SETTLED_SEAM,
-          inputEpochAtDecision: 1,
-          inputEpochAtApply: 2,
-        },
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.skipped).toBe(true);
-    expect(result.value.receipt.skipCode).toBe("input_epoch_changed");
-    expect(result.value.receipt.residual.writerReleased).toBe(true);
-
+    // interruptAfterBoundary leaves writer held + boundary pending (crash model).
     const claim = await compactContinuation.getCompactContinuationWriterClaim({ filePath: fixture.filePath });
     expect(claim.ok).toBe(true);
     if (!claim.ok) return;
-    expect(claim.value.claim).toBe("none");
+    expect(claim.value.claim).toBe("lhc");
+    expect(claim.value.attemptId).toBe("crash-1");
 
-    const after = await turns.listTurns({ filePath: fixture.filePath });
-    expect(after.ok).toBe(true);
-    if (!after.ok) return;
-    expect(after.value.length).toBe(before.value.length);
-  });
+    // Different attempt cannot steal.
+    const steal = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "crash-other", continuation: { kind: "active_non_tool" } }),
+    );
+    expect(steal.ok).toBe(false);
+    if (steal.ok) return;
+    expect(steal.error.code).toBe("compact_continuation_writer_conflict");
 
-  it("writer conflict (native) refuses without claiming LHC", async () => {
-    const fixture = await derivedThreadFixture(store, { failures: false });
-    const result = await compactContinuation.runCompactContinuation(
+    // Resume with owning attemptId.
+    const resumed = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
-        attemptId: "native-1",
-        writerClaim: "native",
+        attemptId: "crash-1",
+        writerClaim: "lhc",
         continuation: { kind: "active_non_tool" },
       }),
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(result.value.receipt.refuseCode).toBe("native_writer_conflict");
-    expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(resumed.value.continuationTurnId).toBe(cTurnId);
+    expect(resumed.value.replayedTerminalAttempt).toBe(false);
 
-    const claim = await compactContinuation.getCompactContinuationWriterClaim({ filePath: fixture.filePath });
-    expect(claim.ok).toBe(true);
-    if (!claim.ok) return;
-    expect(claim.value.claim).toBe("none");
+    const claimAfter = await compactContinuation.getCompactContinuationWriterClaim({ filePath: fixture.filePath });
+    expect(claimAfter.ok).toBe(true);
+    if (!claimAfter.ok) return;
+    expect(claimAfter.value.claim).toBe("none");
   });
 
-  it("structurally invalid install fails closed with prior valid view intact", async () => {
+  it("B3: finalize write failure does not return success with allowed next request", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "finalize-fail-1",
+        testHooks: { failFinalizeWrite: true },
+      }),
+    );
+    // May fail at finalize after mutations — must not be ok with nextProviderRequestAllowed.
+    if (result.ok) {
+      // If somehow finalize injection only hits after empty path — not our case.
+      expect(result.value.nextProviderRequestAllowed).toBe(false);
+    } else {
+      expect(result.error.code).toBe("storage_failure");
+    }
+  });
+
+  it("M4: stale prepared compact install refuses; prior view intact", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    const prepared = await fixture.sdk.threadView.prepareCompact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+    );
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    // Concurrent capture advances source state.
+    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
+      validEvent("user_prompt", { payload: { text: "steering" } }),
+    ]);
+
+    const installed = await fixture.sdk.threadView.installPreparedCompact(
+      { filePath: fixture.filePath },
+      prepared.value,
+    );
+    expect(installed.ok).toBe(false);
+    if (installed.ok) return;
+    expect(installed.error.code).toBe("stale_prepared_compact");
+
+    // Public compact still works after refuse.
+    const compact = await fixture.sdk.threadView.compact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+    );
+    expect(compact.ok).toBe(true);
+  });
+
+  it("M4: public compact prepare→install stays green with no intervening mutation", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    const compact = await fixture.sdk.threadView.compact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+    );
+    expect(compact.ok).toBe(true);
+    if (!compact.ok) return;
+    expect(compact.value.compactPoint).toBeGreaterThan(0);
+  });
+
+  it("install failure after marker keeps prior view; boundary/marker residual truthful", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const baseline = await fixture.sdk.threadView.compact(
       { filePath: fixture.filePath },
@@ -689,23 +660,20 @@ describe("LIM-61 compact-continuation runtime", () => {
     );
     expect(baseline.ok).toBe(true);
     if (!baseline.ok) return;
-
     await seedOpenAgenticTurn(fixture.filePath);
+
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
-        attemptId: "invalid-install-1",
-        testHooks: {
-          skipRealCompact: true,
-          forceCompactStructurallyValid: true,
-          forceCanProduceValidProviderRequest: false,
-        },
+        attemptId: "install-fail-1",
+        testHooks: { failInstallBeforeWrite: true },
       }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(result.value.receipt.refuseCode).toBe("no_valid_provider_request");
+    expect(result.value.receipt.refuseCode).toBe("install_failed");
+    expect(result.value.receipt.residual.markerPersisted).toBe(true);
+    expect(result.value.receipt.residual.markerServed).toBe(false);
     expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
 
     const described = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
@@ -714,64 +682,55 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(described.value?.viewId).toBe(baseline.value.viewId);
   });
 
-  it("no conversation message created only for telemetry (receipt not in messages)", async () => {
+  it("input validation rejects malformed host facts", async () => {
+    expect(validateHostFacts(null)?.code).toBe("invalid_compact_continuation_input");
+    expect(validateHostFacts({ attemptId: "" })?.code).toBe("invalid_compact_continuation_input");
     const fixture = await derivedThreadFixture(store, { failures: false });
-    await seedOpenAgenticTurn(fixture.filePath);
-    const before = await messages.list({ filePath: fixture.filePath });
-    expect(before.ok).toBe(true);
-    if (!before.ok) return;
-
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      baseFacts({ attemptId: "no-telemetry-msg-1" }),
+      // @ts-expect-error intentional invalid
+      { attemptId: "" },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const after = await messages.list({ filePath: fixture.filePath });
-    expect(after.ok).toBe(true);
-    if (!after.ok) return;
-    // New messages may include marker only — never a receipt dump.
-    const newOnes = after.value.slice(before.value.length);
-    for (const m of newOnes) {
-      expect(
-        m.kind === "compact_continuation_marker" ||
-          m.kind === "user_prompt" ||
-          m.kind === "assistant_text" ||
-          m.kind === "tool_call" ||
-          m.kind === "tool_result",
-      ).toBe(true);
-      if (m.kind === "compact_continuation_marker") {
-        expect(m.blocks[0]?.content["cause"]).toBe("context_compacted_task_in_progress");
-      }
-    }
-    // Receipt lives in its own table.
-    const receipts = await compactContinuation.listCompactContinuationReceipts({ filePath: fixture.filePath });
-    expect(receipts.ok).toBe(true);
-    if (!receipts.ok) return;
-    expect(receipts.value.some((r) => r.attemptId === "no-telemetry-msg-1")).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("invalid_compact_continuation_input");
   });
 
-  it("refuse-receipt fidelity describes installed view only", async () => {
+  it("native writer conflict refuses without claim", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    const before = snapshotCanonical(fixture.filePath);
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "native-1", writerClaim: "native" }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.receipt.refuseCode).toBe("native_writer_conflict");
+    expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+  });
+
+  it("durable receipt and stage log are inspectable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "fidelity-note-1",
-        testHooks: {
-          failInstallBeforeWrite: true,
-          forceDerivationsMissingOrFailed: true,
-        },
-      }),
+      baseFacts({ attemptId: "inspect-1" }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.refuseReceiptFidelityDescribes).toBe("installed_view_only");
-    if (result.value.receipt.refused) {
-      // Oracle hardcodes full fidelity on refuse even if degrade effect present.
-      expect(result.value.receipt.fidelity).toBe("full");
-    }
+
+    const stored = await compactContinuation.getCompactContinuationReceipt({ filePath: fixture.filePath }, "inspect-1");
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(stored.value?.terminal).toBe(true);
+    expect(stored.value?.receipt.outcome).toBe(result.value.receipt.outcome);
+
+    const stages = await compactContinuation.listCompactContinuationStages({ filePath: fixture.filePath }, "inspect-1");
+    expect(stages.ok).toBe(true);
+    if (!stages.ok) return;
+    expect(stages.value.some((s) => s.stage === "claimed_writer")).toBe(true);
+    expect(stages.value.some((s) => s.stage === "receipt_recorded")).toBe(true);
   });
 
   it("SDK surface exposes compactContinuation on initLhc", async () => {

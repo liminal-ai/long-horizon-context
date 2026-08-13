@@ -47,6 +47,19 @@ Host trigger policy (when to call) is **outside** the SDK.
 
 Receipts are **not** ordinary conversation messages.
 
+## Crash recovery protocol
+
+1. **Inspect writer:** `getCompactContinuationWriterClaim(ref)`. If `claim === "lhc"`, the owning `attemptId` is the only attempt that may resume; a different attempt receives `compact_continuation_writer_conflict`.
+2. **Inspect pending boundary:** `getPendingCompactContinuationBoundary(ref)`. Status `pending` or `failed_repairable` means compact/marker/install is incomplete — re-enter with the **same** `attemptId` and `continuation.kind: "active_non_tool"`. Do not force a second boundary.
+3. **Completed attempt:** reusing a terminal `attemptId` returns the stored receipt (`replayedTerminalAttempt: true`) without re-compacting.
+4. **Stage audit:** `listCompactContinuationStages(ref, attemptId)` is append-only.
+
+Complete boundaries (`status: "complete"`) are ordinary continuation turns. Later below-trigger seams do not mutate; a later above-trigger active seam may create a **new** boundary with a new turn/marker id.
+
+## Preflight (no mutation)
+
+Settled-seam health refusals (incomplete capture, invalid identity, broken open turn, invalid tool correlation / durable pair proof, native writer conflict) and quiet seams (below trigger, missing usage, normal complete) **never** claim the writer or mutate the record/view.
+
 ## Test hooks
 
-`testHooks` on host facts enable failure injection (interrupt after boundary/marker, fail install, skip real compact). Production hosts omit them.
+`testHooks` are test-only fault injection (interrupt after boundary/marker, fail install, fail finalize, skip real compact). Production hosts omit them.

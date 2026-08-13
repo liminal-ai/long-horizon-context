@@ -564,11 +564,26 @@ export async function previewCompact(
  * Prepared compact assembly (no view write). Used by the public compact path
  * and by compact-continuation so the marker can land before install.
  */
+/**
+ * Source-state fingerprint captured at prepare time. Install refuses when
+ * current durable state diverges beyond the allowed marker delta.
+ */
+export type PreparedCompactSourceState = {
+  maxEventOrder: number;
+  derivationCounts: Record<string, Record<string, number>>;
+  /** JSON of live message ids + kinds after compact point, in record order. */
+  tailSignature: string;
+  /** Current view id if any (null when never compacted). */
+  installedViewId: string | null;
+  compactPoint: number;
+};
+
 export type PreparedCompact = {
   selection: SelectionResult;
   emptyChunkIds: readonly string[];
   maxEventOrder: number;
   derivationCounts: Record<string, Record<string, number>>;
+  sourceState: PreparedCompactSourceState;
   viewId: string;
   firstKeptMessageId: string | null;
   profileName: string | null;
@@ -579,7 +594,56 @@ export type PreparedCompact = {
   gaps: CompactReceipt["gaps"];
 };
 
+/** Build a source-state fingerprint for install validation. */
+export function readPreparedSourceState(db: DatabaseSync, compactPoint: number): PreparedCompactSourceState {
+  const maxRow = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as {
+    m: number | bigint;
+  };
+  const derivationRows = db
+    .prepare(`SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state`)
+    .all() as unknown as Array<{ derivation_type: string; state: string; n: number | bigint }>;
+  const derivationCounts: Record<string, Record<string, number>> = {};
+  for (const row of derivationRows) {
+    derivationCounts[row.derivation_type] = {
+      ...derivationCounts[row.derivation_type],
+      [row.state]: Number(row.n),
+    };
+  }
+  const tailRows = db
+    .prepare(
+      `SELECT message_id, kind, source_event_order FROM message
+       WHERE deleted_at IS NULL AND source_event_order > ?
+       ORDER BY source_event_order`,
+    )
+    .all(compactPoint) as unknown as Array<{
+    message_id: string;
+    kind: string;
+    source_event_order: number | bigint;
+  }>;
+  const view = readViewSnapshot(db);
+  return {
+    maxEventOrder: Number(maxRow.m),
+    derivationCounts,
+    tailSignature: JSON.stringify(
+      tailRows.map((r) => ({ id: r.message_id, kind: r.kind, order: Number(r.source_event_order) })),
+    ),
+    installedViewId: view?.viewId ?? null,
+    compactPoint,
+  };
+}
+
+export type InstallPreparedOptions = {
+  signal?: { aborted: boolean };
+  createdAt?: string;
+  /**
+   * When set, allow exactly one additional event after prepare whose
+   * idempotency key matches (continue-turn marker). Any other drift refuses.
+   */
+  allowedMarkerIdempotencyKey?: string;
+};
+
 function buildPreparedFromArrangement(
+  db: DatabaseSync,
   selection: SelectionResult,
   inputs: {
     emptyChunkIds?: readonly string[];
@@ -608,11 +672,14 @@ function buildPreparedFromArrangement(
     return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
   });
 
+  const sourceState = readPreparedSourceState(db, selection.compactPoint);
+
   return {
     selection,
     emptyChunkIds: inputs.emptyChunkIds ?? [],
     maxEventOrder: inputs.maxEventOrder,
     derivationCounts: inputs.derivationCounts,
+    sourceState,
     viewId,
     firstKeptMessageId,
     profileName,
@@ -628,6 +695,81 @@ function buildPreparedFromArrangement(
       })),
     gaps: gapNotes(selection),
   };
+}
+
+/**
+ * Validate prepared source state against current durable state.
+ * Public compact: no drift allowed.
+ * Continue-turn: allow exactly the marker event identified by allowedMarkerIdempotencyKey.
+ */
+export function validatePreparedSourceState(
+  db: DatabaseSync,
+  prepared: PreparedCompact,
+  opts: { allowedMarkerIdempotencyKey?: string } = {},
+): { ok: true } | { ok: false; reason: string } {
+  const current = readPreparedSourceState(db, prepared.sourceState.compactPoint);
+
+  // Derivation counts must match (no repair/completion between prepare and install).
+  if (JSON.stringify(current.derivationCounts) !== JSON.stringify(prepared.sourceState.derivationCounts)) {
+    return { ok: false, reason: "derivation state changed since prepare" };
+  }
+
+  // Installed view must not have been replaced by another compact.
+  if (current.installedViewId !== prepared.sourceState.installedViewId) {
+    return { ok: false, reason: "serving view changed since prepare" };
+  }
+
+  if (opts.allowedMarkerIdempotencyKey === undefined) {
+    if (current.maxEventOrder !== prepared.sourceState.maxEventOrder) {
+      return {
+        ok: false,
+        reason: `event order advanced ${prepared.sourceState.maxEventOrder}→${current.maxEventOrder} since prepare`,
+      };
+    }
+    if (current.tailSignature !== prepared.sourceState.tailSignature) {
+      return { ok: false, reason: "tail messages changed since prepare" };
+    }
+    return { ok: true };
+  }
+
+  // Marker-allowed path: at most one new event, and it must be the marker.
+  if (current.maxEventOrder < prepared.sourceState.maxEventOrder) {
+    return { ok: false, reason: "event order regressed since prepare" };
+  }
+  if (current.maxEventOrder === prepared.sourceState.maxEventOrder) {
+    // Marker may already have been present at prepare (repair) — tail must match.
+    if (current.tailSignature !== prepared.sourceState.tailSignature) {
+      return { ok: false, reason: "tail messages changed since prepare without event advance" };
+    }
+    return { ok: true };
+  }
+  if (current.maxEventOrder !== prepared.sourceState.maxEventOrder + 1) {
+    return {
+      ok: false,
+      reason: `expected at most one event advance for marker, got ${prepared.sourceState.maxEventOrder}→${current.maxEventOrder}`,
+    };
+  }
+  const newEvent = db
+    .prepare(`SELECT event_order, event_kind, idempotency_key FROM event WHERE event_order = ?`)
+    .get(current.maxEventOrder) as
+    | { event_order: number | bigint; event_kind: string; idempotency_key: string }
+    | undefined;
+  if (newEvent === undefined) {
+    return { ok: false, reason: "new event row missing after order advance" };
+  }
+  if (newEvent.event_kind !== "compact_continuation_marker") {
+    return {
+      ok: false,
+      reason: `expected compact_continuation_marker, got ${newEvent.event_kind}`,
+    };
+  }
+  if (newEvent.idempotency_key !== opts.allowedMarkerIdempotencyKey) {
+    return {
+      ok: false,
+      reason: `marker idempotency key mismatch (expected ${opts.allowedMarkerIdempotencyKey})`,
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -660,7 +802,15 @@ export async function prepareCompact(
     if (!computed.ok) return computed;
 
     const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
-    const prepared = buildPreparedFromArrangement(selection, inputs, viewId, firstKeptMessageId, profileName, merged);
+    const prepared = buildPreparedFromArrangement(
+      db,
+      selection,
+      inputs,
+      viewId,
+      firstKeptMessageId,
+      profileName,
+      merged,
+    );
     for (const warning of prepared.warnings) {
       writeLog(transaction, {
         level: "warning",
@@ -681,12 +831,13 @@ export async function prepareCompact(
 
 /**
  * Atomically install a previously prepared compact snapshot. On failure the
- * prior serving view remains intact.
+ * prior serving view remains intact. Refuses when source state diverged since
+ * prepare (unless allowedMarkerIdempotencyKey permits exactly that marker).
  */
 export async function installPreparedCompact(
   ref: ThreadRef,
   prepared: PreparedCompact,
-  opts: { signal?: { aborted: boolean }; createdAt?: string } = {},
+  opts: InstallPreparedOptions = {},
 ): Promise<OpResult<CompactReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -697,12 +848,41 @@ export async function installPreparedCompact(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
+    const sourceCheck = validatePreparedSourceState(
+      db,
+      prepared,
+      opts.allowedMarkerIdempotencyKey !== undefined
+        ? { allowedMarkerIdempotencyKey: opts.allowedMarkerIdempotencyKey }
+        : {},
+    );
+    if (!sourceCheck.ok) {
+      return {
+        ok: false,
+        error: {
+          errorClass: "caller_error",
+          code: "stale_prepared_compact",
+          reason: `prepared compact is stale: ${sourceCheck.reason}`,
+        },
+      };
+    }
+
     const createdAt = opts.createdAt ?? new Date().toISOString();
     fireViewInjection("compact-write");
 
     if (compactStopped(opts.signal)) {
       return callerError("compact_stopped", "compact stopped before snapshot write");
     }
+
+    // Snapshot source_state_json reflects post-marker max when marker was allowed.
+    const installMaxEventOrder =
+      opts.allowedMarkerIdempotencyKey !== undefined
+        ? Math.max(
+            prepared.maxEventOrder,
+            Number(
+              (db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as { m: number | bigint }).m,
+            ),
+          )
+        : prepared.maxEventOrder;
 
     replaceViewSnapshot(
       db,
@@ -727,7 +907,7 @@ export async function installPreparedCompact(
         ),
         gapsJson: JSON.stringify(prepared.gaps),
         sourceStateJson: JSON.stringify({
-          maxEventOrder: prepared.maxEventOrder,
+          maxEventOrder: installMaxEventOrder,
           derivationCounts: prepared.derivationCounts,
         }),
         bands: prepared.bands,

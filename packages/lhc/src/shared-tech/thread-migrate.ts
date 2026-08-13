@@ -8,6 +8,7 @@ export const THREAD_SCHEMA_VERSION_4 = 4;
 export const THREAD_SCHEMA_VERSION_5 = 5;
 export const THREAD_SCHEMA_VERSION_6 = 6;
 export const THREAD_SCHEMA_VERSION_7 = 7;
+export const THREAD_SCHEMA_VERSION_8 = 8;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -55,7 +56,7 @@ export function derivationLogSchemaStatements(): string[] {
 /**
  * Schema v7: compact-continuation writer claim + durable transition receipts.
  * Receipts are inspectable and not ordinary conversation history.
- * Statements are idempotent for fresh create and 6→7 migration.
+ * Used by 6→7 migration only (v7 receipt shape lacks terminal flag).
  */
 export function compactContinuationSchemaStatements(): string[] {
   return [
@@ -81,6 +82,118 @@ export function compactContinuationSchemaStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
        ON compact_continuation_receipt (recorded_at DESC);`,
   ];
+}
+
+/**
+ * Current (v8) compact-continuation tables for fresh create.
+ * Writer + boundary status + append-only stage log + terminal receipts.
+ */
+export function compactContinuationCurrentSchemaStatements(): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS compact_continuation_writer (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      claim TEXT NOT NULL CHECK (claim IN ('none', 'lhc')),
+      attempt_id TEXT,
+      claimed_at TEXT
+    );`,
+    `INSERT OR IGNORE INTO compact_continuation_writer (singleton, claim, attempt_id, claimed_at)
+       VALUES (1, 'none', NULL, NULL);`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_boundary (
+      continuation_turn_id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'failed_repairable')),
+      marker_persisted INTEGER NOT NULL CHECK (marker_persisted IN (0, 1)),
+      last_stage TEXT NOT NULL,
+      forced_at TEXT NOT NULL,
+      completed_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
+       ON compact_continuation_boundary (status);`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_stage_log (
+      log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      detail_json TEXT,
+      recorded_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_stage_attempt
+       ON compact_continuation_stage_log (attempt_id, log_id);`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_receipt (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);`,
+  ];
+}
+
+function migrateCompactContinuationV8(db: DatabaseSync): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS compact_continuation_boundary (
+      continuation_turn_id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'failed_repairable')),
+      marker_persisted INTEGER NOT NULL CHECK (marker_persisted IN (0, 1)),
+      last_stage TEXT NOT NULL,
+      forced_at TEXT NOT NULL,
+      completed_at TEXT
+    );`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
+       ON compact_continuation_boundary (status);`,
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS compact_continuation_stage_log (
+      log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      detail_json TEXT,
+      recorded_at TEXT NOT NULL
+    );`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_stage_attempt
+       ON compact_continuation_stage_log (attempt_id, log_id);`,
+  );
+  // Rebuild receipt table with terminal column.
+  db.exec(
+    `CREATE TABLE compact_continuation_receipt_v8 (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );`,
+  );
+  db.exec(
+    `INSERT INTO compact_continuation_receipt_v8 (
+       attempt_id, recorded_at, outcome, reason_code, refused, skipped, terminal,
+       continuation_turn_id, receipt_json, decision_json
+     )
+     SELECT attempt_id, recorded_at, outcome, reason_code, refused, skipped, 1,
+            continuation_turn_id, receipt_json, decision_json
+     FROM compact_continuation_receipt`,
+  );
+  db.exec(`DROP TABLE compact_continuation_receipt;`);
+  db.exec(`ALTER TABLE compact_continuation_receipt_v8 RENAME TO compact_continuation_receipt;`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);`,
+  );
 }
 
 const OLD_PROMPT_JSON = `"prompt":"${OLD_PROMPT_NAME}"`;
@@ -277,6 +390,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_6) {
       for (const statement of compactContinuationSchemaStatements()) db.exec(statement);
       version = THREAD_SCHEMA_VERSION_7;
+    }
+    if (version === THREAD_SCHEMA_VERSION_7) {
+      migrateCompactContinuationV8(db);
+      version = THREAD_SCHEMA_VERSION_8;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);
