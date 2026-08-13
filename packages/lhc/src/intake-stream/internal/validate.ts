@@ -15,6 +15,7 @@ export const EVENT_KINDS = [
   "thinking_level_change",
   "tool_call",
   "tool_result",
+  "compact_continuation_marker",
   "turn_end",
 ] as const;
 
@@ -92,6 +93,15 @@ const ToolResultPayloadSchema = Schema.Struct({
   toolCallId: NonEmptyString,
   content: Schema.String,
   isError: Schema.optional(Schema.Boolean),
+});
+// Typed compact-continuation marker: closed payload; semantics are contract-frozen.
+const CompactContinuationMarkerPayloadSchema = Schema.Struct({
+  kind: Schema.Literal("lhc.compact_continuation"),
+  continuationTurnId: NonEmptyString,
+  cause: Schema.Literal("context_compacted_task_in_progress"),
+  action: Schema.Literal("continue_existing_task"),
+  newUserRequest: Schema.Literal(false),
+  waitForUser: Schema.Literal(false),
 });
 
 function firstIssue(error: ParseResult.ParseError): string {
@@ -196,6 +206,9 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
       break;
     case "thinking_level_change":
       issue = decodeIssue(ThinkingLevelChangePayloadSchema, payload);
+      break;
+    case "compact_continuation_marker":
+      issue = decodeIssue(CompactContinuationMarkerPayloadSchema, payload);
       break;
     default:
       issue = decodeIssue(TextPayloadSchema, payload);

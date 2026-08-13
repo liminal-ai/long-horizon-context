@@ -240,6 +240,28 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
         flushAssistant();
         entries.push({ role: "user", content: `[runtime note] ${textOf(row)}`, sourceMessages: [entrySource(row)] });
         break;
+      case "compact_continuation_marker": {
+        // Typed host handoff / model-serving form. Not ordinary user chat;
+        // hosts that rebuild session files need the marker in place.
+        flushAssistant();
+        const block = blockContent(row);
+        const cause = typeof block["cause"] === "string" ? block["cause"] : "context_compacted_task_in_progress";
+        const action = typeof block["action"] === "string" ? block["action"] : "continue_existing_task";
+        const turnId = typeof block["continuationTurnId"] === "string" ? block["continuationTurnId"] : "";
+        entries.push({
+          role: "user",
+          content: [
+            "[compact continuation]",
+            `cause=${cause}`,
+            `action=${action}`,
+            "newUserRequest=false",
+            "waitForUser=false",
+            `continuationTurnId=${turnId}`,
+          ].join(" "),
+          sourceMessages: [entrySource(row)],
+        });
+        break;
+      }
     }
   }
   flushAssistant();

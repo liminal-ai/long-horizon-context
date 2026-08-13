@@ -8,6 +8,7 @@ import {
   THREAD_SCHEMA_VERSION_4,
   THREAD_SCHEMA_VERSION_5,
   THREAD_SCHEMA_VERSION_6,
+  THREAD_SCHEMA_VERSION_7,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -239,7 +240,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -271,7 +272,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -342,7 +343,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -546,7 +547,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
 
       const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
       const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
@@ -616,7 +617,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_6);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
       ).toBeDefined();
@@ -629,6 +630,51 @@ describe("thread schema migration", () => {
           .all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(indexes).toEqual(["idx_retrieval_impression_call", "idx_retrieval_impression_entity"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a genuine v6 file by creating compact-continuation writer and receipt tables", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const old = new DatabaseSync(filePath);
+    try {
+      old.exec("DROP TABLE compact_continuation_receipt;");
+      old.exec("DROP TABLE compact_continuation_writer;");
+      old.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_6};`);
+      expect(
+        old
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_writer'")
+          .get(),
+      ).toBeUndefined();
+    } finally {
+      old.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_7);
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_writer'")
+          .get(),
+      ).toBeDefined();
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_receipt'")
+          .get(),
+      ).toBeDefined();
+      const claim = db.prepare(`SELECT claim FROM compact_continuation_writer WHERE singleton = 1`).get() as {
+        claim: string;
+      };
+      expect(claim.claim).toBe("none");
     } finally {
       db.close();
     }

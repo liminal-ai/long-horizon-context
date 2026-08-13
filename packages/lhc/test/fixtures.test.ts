@@ -12,6 +12,7 @@ const ALL_KINDS: readonly EventKind[] = [
   "thinking_level_change",
   "tool_call",
   "tool_result",
+  "compact_continuation_marker",
   "turn_end",
 ];
 
@@ -24,6 +25,7 @@ const GOLDEN_PAYLOAD_KEYS: Record<EventKind, string[]> = {
   thinking_level_change: ["previousLevel", "newLevel"],
   tool_call: ["toolCallId", "toolName", "arguments"],
   tool_result: ["toolCallId", "content", "isError"],
+  compact_continuation_marker: ["kind", "continuationTurnId", "cause", "action", "newUserRequest", "waitForUser"],
   turn_end: [],
 };
 

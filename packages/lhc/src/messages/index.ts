@@ -30,7 +30,13 @@ import {
   readMutableMessage,
 } from "./internal/store.js";
 
-export type BlockType = "text" | "tool_call" | "tool_result" | "model_change" | "thinking_level_change";
+export type BlockType =
+  | "text"
+  | "tool_call"
+  | "tool_result"
+  | "model_change"
+  | "thinking_level_change"
+  | "compact_continuation_marker";
 
 export interface Block {
   blockType: BlockType;
@@ -163,12 +169,21 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
 // Bounded-listing options: from/to are source-event-order bounds, limit caps
 // the count after bounds, includeDeleted is the audit opt-in. All optional:
 // existing callers see visible messages, unbounded, in record order.
+//
+// `forUserChat: true` hides typed compact-continuation markers (and any future
+// kinds that are model/inspect visible but not ordinary user chat). Default
+// list/show retain markers for inspection and retrieval.
 export interface MessageListOptions {
   from?: number;
   to?: number;
   limit?: number;
   includeDeleted?: boolean;
+  /** When true, exclude kinds that are not ordinary user chat (e.g. markers). */
+  forUserChat?: boolean;
 }
+
+/** Message kinds present in the canonical record but hidden from ordinary user chat. */
+export const USER_CHAT_HIDDEN_KINDS = ["compact_continuation_marker"] as const;
 
 function invalidBounds(reason: string): ErrorResult {
   return { errorClass: "caller_error", code: "invalid_bounds", reason };
@@ -207,7 +222,11 @@ export async function list(threadRef: ThreadRef, filter?: MessageListOptions): P
       // that window: each record carries its stored derivations, attached from
       // one grouped query scoped to the listed ids, never every message-owned
       // derivation in a large thread.
-      const records = readMessages(transaction.db, filter ?? {});
+      let records = readMessages(transaction.db, filter ?? {});
+      if (filter?.forUserChat === true) {
+        const hidden = new Set<string>(USER_CHAT_HIDDEN_KINDS);
+        records = records.filter((record) => !hidden.has(record.kind));
+      }
       const derivationsByMessage = readMessageDerivations(
         transaction.db,
         records.map((record) => record.messageId),

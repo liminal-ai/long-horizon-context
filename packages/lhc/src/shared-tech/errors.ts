@@ -35,7 +35,10 @@ export type ErrorCode =
   // Bounded listing: a bad bounds option is an operational caller error
   // returned as a result, mirroring the compact-params precedent.
   | "invalid_bounds" // caller_error — list bounds option rejected
-  | "invalid_target_tokens"; // caller_error — prune targetTokens rejected
+  | "invalid_target_tokens" // caller_error — prune targetTokens rejected
+  // Compact-continuation runtime (LIM-61):
+  | "invalid_compact_continuation_input" // caller_error — host input failed closed validation
+  | "compact_continuation_writer_conflict"; // caller_error — cannot claim exclusive LHC writer
 
 export interface ErrorResult {
   errorClass: ErrorClass;

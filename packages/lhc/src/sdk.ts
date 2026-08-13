@@ -1,3 +1,4 @@
+export * as compactContinuation from "./compact-continuation/index.js";
 export * as inspect from "./inspect/index.js";
 export * as intakeStream from "./intake-stream/index.js";
 export * as messages from "./messages/index.js";
@@ -7,6 +8,7 @@ export * as threadView from "./thread-view/index.js";
 export * as threads from "./threads/index.js";
 export * as turns from "./turns/index.js";
 
+import * as compactContinuationDomain from "./compact-continuation/index.js";
 import * as inspectDomain from "./inspect/index.js";
 import * as intakeStreamDomain from "./intake-stream/index.js";
 import * as messagesDomain from "./messages/index.js";
@@ -62,6 +64,13 @@ import * as turnsDomain from "./turns/index.js";
 import { dispatchTurnOwnedWork, turnWorkHandlers } from "./turns/internal/derive.js";
 
 export type {
+  CompactContinuationHostFacts,
+  CompactContinuationRunResult,
+  CompactContinuationTestHooks,
+  StoredCompactContinuationReceipt,
+  WriterClaimRow,
+} from "./compact-continuation/index.js";
+export type {
   BatchResult,
   EventKind,
   EventRecord,
@@ -76,7 +85,7 @@ export type {
   MutationResult,
 } from "./messages/index.js";
 // Compact-continuation contract (LIM-60): pure whole-seam oracle + parity helpers.
-// Stage-by-stage runtime against live threads is LIM-61.
+// Stage-by-stage runtime against live threads is LIM-61 (`compactContinuation`).
 export {
   asCompactContinuationInput,
   assertDecisionParity,
@@ -349,6 +358,11 @@ export interface Lhc {
   retrieval: typeof retrievalDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
+  /**
+   * Compact-continuation runtime (LIM-61): staged operation against thread
+   * state. Host trigger policy stays outside the SDK.
+   */
+  compactContinuation: typeof compactContinuationDomain;
   // Read-only report surface. Scoped through the instance seam like every other
   // namespace so composed status reads resolve this SDK's view config.
   inspect: typeof inspectDomain;
@@ -764,6 +778,7 @@ export function initLhc(config: SdkConfig): Lhc {
       },
       seam,
     ),
+    compactContinuation: scopeSurface(compactContinuationDomain, seam),
     inspect: scopeSurface(inspectDomain, seam),
     logging,
     config: resolved,

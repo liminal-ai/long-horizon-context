@@ -97,7 +97,8 @@ export type RenderingPartKind =
   | "model_change"
   | "thinking_level_change"
   | "tool_call"
-  | "tool_result";
+  | "tool_result"
+  | "compact_continuation_marker";
 
 export interface RenderingPart {
   messageId: string;

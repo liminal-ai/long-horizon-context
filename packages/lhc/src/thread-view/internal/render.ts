@@ -159,6 +159,25 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
         content: `[thinking level change] ${String(block["previousLevel"] ?? "")} -> ${String(block["newLevel"] ?? "")}`,
       };
     }
+    case "compact_continuation_marker": {
+      // Model-serving representation of the typed continuation marker.
+      // Ordinary user-chat projections hide this kind; model context includes it.
+      const block = message.blocks[0]?.content ?? {};
+      const cause = typeof block["cause"] === "string" ? block["cause"] : "context_compacted_task_in_progress";
+      const action = typeof block["action"] === "string" ? block["action"] : "continue_existing_task";
+      const turnId = typeof block["continuationTurnId"] === "string" ? block["continuationTurnId"] : "";
+      return {
+        role: "user",
+        content: [
+          "[compact continuation]",
+          `cause=${cause}`,
+          `action=${action}`,
+          "newUserRequest=false",
+          "waitForUser=false",
+          `continuationTurnId=${turnId}`,
+        ].join(" "),
+      };
+    }
   }
 }
 

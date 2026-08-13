@@ -44,6 +44,20 @@ export type AssistantThinkingPayload = {
   signature?: string;
 } & AssistantModelProvenance;
 
+/**
+ * Typed compact-continuation marker payload (LIM-61).
+ * Model-visible when served; LHC inspect/retrieval-visible; hidden from ordinary user chat.
+ * Semantics fields are frozen by the compact-continuation contract.
+ */
+export type CompactContinuationMarkerPayload = {
+  kind: "lhc.compact_continuation";
+  continuationTurnId: string;
+  cause: "context_compacted_task_in_progress";
+  action: "continue_existing_task";
+  newUserRequest: false;
+  waitForUser: false;
+};
+
 export type MessageEventInput =
   | BaseEvent<"user_prompt", { text: string }>
   | BaseEvent<"assistant_text", AssistantTextPayload>
@@ -53,6 +67,7 @@ export type MessageEventInput =
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
   | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> }>
   | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean }>
+  | BaseEvent<"compact_continuation_marker", CompactContinuationMarkerPayload>
   | BaseEvent<"turn_end", TurnEndPayload>;
 
 // Derived, not parallel-maintained: the kind list cannot drift from the union.

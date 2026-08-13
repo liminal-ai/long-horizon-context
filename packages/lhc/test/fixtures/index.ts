@@ -26,6 +26,14 @@ const defaultPayloads: { [K in EventKind]: () => EventByKind<K>["payload"] } = {
     content: "contents of notes.txt",
     isError: false,
   }),
+  compact_continuation_marker: () => ({
+    kind: "lhc.compact_continuation",
+    continuationTurnId: "t2",
+    cause: "context_compacted_task_in_progress",
+    action: "continue_existing_task",
+    newUserRequest: false,
+    waitForUser: false,
+  }),
   turn_end: () => ({}),
 };
 

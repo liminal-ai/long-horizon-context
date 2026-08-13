@@ -104,6 +104,30 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
         // block carries in full.
         tokenEstimate: estimateTokens(event.payload.content),
       };
+    case "compact_continuation_marker": {
+      // Typed marker: model-visible when served; not ordinary user chat.
+      // Token estimate covers the stable model-facing instruction text.
+      const content = {
+        kind: event.payload.kind,
+        continuationTurnId: event.payload.continuationTurnId,
+        cause: event.payload.cause,
+        action: event.payload.action,
+        newUserRequest: event.payload.newUserRequest,
+        waitForUser: event.payload.waitForUser,
+      };
+      const modelFacing = [
+        "[compact continuation]",
+        `cause=${event.payload.cause}`,
+        `action=${event.payload.action}`,
+        "newUserRequest=false",
+        "waitForUser=false",
+        `continuationTurnId=${event.payload.continuationTurnId}`,
+      ].join(" ");
+      return {
+        blocks: [{ blockType: "compact_continuation_marker", content }],
+        tokenEstimate: estimateTokens(modelFacing),
+      };
+    }
     case "turn_end":
       return null;
   }

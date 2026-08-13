@@ -7,6 +7,7 @@ export const THREAD_SCHEMA_VERSION_3 = 3;
 export const THREAD_SCHEMA_VERSION_4 = 4;
 export const THREAD_SCHEMA_VERSION_5 = 5;
 export const THREAD_SCHEMA_VERSION_6 = 6;
+export const THREAD_SCHEMA_VERSION_7 = 7;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -48,6 +49,37 @@ export function derivationLogSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_derivation_log_subject ON derivation_log (subject_kind, subject_id, derivation_type);`,
     `CREATE INDEX IF NOT EXISTS idx_derivation_log_event ON derivation_log (event_kind);`,
+  ];
+}
+
+/**
+ * Schema v7: compact-continuation writer claim + durable transition receipts.
+ * Receipts are inspectable and not ordinary conversation history.
+ * Statements are idempotent for fresh create and 6→7 migration.
+ */
+export function compactContinuationSchemaStatements(): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS compact_continuation_writer (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      claim TEXT NOT NULL CHECK (claim IN ('none', 'lhc')),
+      attempt_id TEXT,
+      claimed_at TEXT
+    );`,
+    `INSERT OR IGNORE INTO compact_continuation_writer (singleton, claim, attempt_id, claimed_at)
+       VALUES (1, 'none', NULL, NULL);`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_receipt (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);`,
   ];
 }
 
@@ -241,6 +273,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_5) {
       for (const statement of retrievalImpressionSchemaStatements()) db.exec(statement);
       version = THREAD_SCHEMA_VERSION_6;
+    }
+    if (version === THREAD_SCHEMA_VERSION_6) {
+      for (const statement of compactContinuationSchemaStatements()) db.exec(statement);
+      version = THREAD_SCHEMA_VERSION_7;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

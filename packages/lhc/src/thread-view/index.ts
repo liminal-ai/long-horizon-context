@@ -560,16 +560,84 @@ export async function previewCompact(
   }
 }
 
-// Compact runs only when invoked through this surface; no core path calls it.
-// Order: validate profile/params before IO, read record + derivations with
-// corruption checks before the write transaction, run selection, render bands,
-// replace the view and reset the boundary in one BEGIN IMMEDIATE, then return a
-// receipt. Assembly is entirely from stored artifacts: nothing here can reach
-// inference or schedule repair work.
-export async function compact(
+/**
+ * Prepared compact assembly (no view write). Used by the public compact path
+ * and by compact-continuation so the marker can land before install.
+ */
+export type PreparedCompact = {
+  selection: SelectionResult;
+  emptyChunkIds: readonly string[];
+  maxEventOrder: number;
+  derivationCounts: Record<string, Record<string, number>>;
+  viewId: string;
+  firstKeptMessageId: string | null;
+  profileName: string | null;
+  merged: ViewProfile;
+  bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
+  warnings: NonNullable<CompactReceipt["warnings"]>;
+  degraded: CompactReceipt["degraded"];
+  gaps: CompactReceipt["gaps"];
+};
+
+function buildPreparedFromArrangement(
+  selection: SelectionResult,
+  inputs: {
+    emptyChunkIds?: readonly string[];
+    maxEventOrder: number;
+    derivationCounts: Record<string, Record<string, number>>;
+  },
+  viewId: string,
+  firstKeptMessageId: string | null,
+  profileName: string | null,
+  merged: ViewProfile,
+): PreparedCompact {
+  const warnings: NonNullable<CompactReceipt["warnings"]> = selection.entries
+    .filter((entry) => entry.derivationUsed === "stored_member_concat")
+    .map((entry) => ({
+      band: entry.band,
+      subjectId: entry.subjectId,
+      derivationType: entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
+      reason: entry.reason ?? "not_ready",
+    }));
+
+  const entriesByBand = (band: Band): ArrangementEntry[] => selection.entries.filter((entry) => entry.band === band);
+  const bands = BAND_ORDER.flatMap((band) => {
+    const entries = entriesByBand(band);
+    if (entries.length === 0) return [];
+    const renderedText = assembleBandText(entries.map((entry) => entry.text));
+    return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
+  });
+
+  return {
+    selection,
+    emptyChunkIds: inputs.emptyChunkIds ?? [],
+    maxEventOrder: inputs.maxEventOrder,
+    derivationCounts: inputs.derivationCounts,
+    viewId,
+    firstKeptMessageId,
+    profileName,
+    merged,
+    bands,
+    warnings,
+    degraded: selection.entries
+      .filter((entry) => entry.degraded)
+      .map((entry) => ({
+        band: entry.band,
+        subjectId: entry.subjectId,
+        usedDerivation: entry.derivationUsed,
+      })),
+    gaps: gapNotes(selection),
+  };
+}
+
+/**
+ * Assemble a compact without writing the serving view. Failures leave the
+ * prior view intact. Callers that need a durable install use installPreparedCompact.
+ */
+export async function prepareCompact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
-): Promise<OpResult<CompactReceipt>> {
+): Promise<OpResult<PreparedCompact>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
   const { filePath } = resolved.value;
@@ -592,16 +660,8 @@ export async function compact(
     if (!computed.ok) return computed;
 
     const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
-
-    const warnings: CompactReceipt["warnings"] = selection.entries
-      .filter((entry) => entry.derivationUsed === "stored_member_concat")
-      .map((entry) => ({
-        band: entry.band,
-        subjectId: entry.subjectId,
-        derivationType: entry.band === "brief" ? "chunk_summary_brief" : "chunk_summary_detailed",
-        reason: entry.reason ?? "not_ready",
-      }));
-    for (const warning of warnings) {
+    const prepared = buildPreparedFromArrangement(selection, inputs, viewId, firstKeptMessageId, profileName, merged);
+    for (const warning of prepared.warnings) {
       writeLog(transaction, {
         level: "warning",
         message: "compact chunk fallback used",
@@ -611,17 +671,33 @@ export async function compact(
         floorUsed: "stored_member_concat",
       });
     }
+    return { ok: true, value: prepared };
+  } catch (cause) {
+    return storageFailure(`view prepareCompact failed: ${detail(cause)}`);
+  } finally {
+    db.close();
+  }
+}
 
-    const entriesByBand = (band: Band): ArrangementEntry[] => selection.entries.filter((entry) => entry.band === band);
-    const bands = BAND_ORDER.flatMap((band) => {
-      const entries = entriesByBand(band);
-      if (entries.length === 0) return [];
-      const renderedText = assembleBandText(entries.map((entry) => entry.text));
-      return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
-    });
+/**
+ * Atomically install a previously prepared compact snapshot. On failure the
+ * prior serving view remains intact.
+ */
+export async function installPreparedCompact(
+  ref: ThreadRef,
+  prepared: PreparedCompact,
+  opts: { signal?: { aborted: boolean }; createdAt?: string } = {},
+): Promise<OpResult<CompactReceipt>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
 
-    const createdAt = new Date().toISOString();
-
+  const opened = openThreadDatabase(filePath);
+  if (!opened.ok) return opened;
+  const db = opened.value;
+  try {
+    const createdAt = opts.createdAt ?? new Date().toISOString();
     fireViewInjection("compact-write");
 
     if (compactStopped(opts.signal)) {
@@ -631,17 +707,17 @@ export async function compact(
     replaceViewSnapshot(
       db,
       {
-        viewId,
+        viewId: prepared.viewId,
         createdAt,
-        compactPoint: selection.compactPoint,
-        coveredFrom: selection.coveredFrom,
-        profileName,
+        compactPoint: prepared.selection.compactPoint,
+        coveredFrom: prepared.selection.coveredFrom,
+        profileName: prepared.profileName,
         configJson: JSON.stringify({
-          lowerBound: merged.lowerBound,
-          percentages: merged.percentages,
+          lowerBound: prepared.merged.lowerBound,
+          percentages: prepared.merged.percentages,
         }),
         arrangementJson: JSON.stringify(
-          selection.entries.map((entry) => ({
+          prepared.selection.entries.map((entry) => ({
             band: entry.band,
             subjectKind: entry.subjectKind,
             subjectId: entry.subjectId,
@@ -649,57 +725,65 @@ export async function compact(
             degraded: entry.degraded,
           })),
         ),
-        gapsJson: JSON.stringify(gapNotes(selection)),
+        gapsJson: JSON.stringify(prepared.gaps),
         sourceStateJson: JSON.stringify({
-          maxEventOrder: inputs.maxEventOrder,
-          derivationCounts: inputs.derivationCounts,
+          maxEventOrder: prepared.maxEventOrder,
+          derivationCounts: prepared.derivationCounts,
         }),
-        bands,
+        bands: prepared.bands,
       },
       () => {
-        turnsDomain.dropUnreadableChunks(db, inputs.emptyChunkIds ?? []);
+        turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
       },
     );
 
     const bandReport = {} as CompactReceipt["bands"];
     for (const band of BAND_ORDER) {
-      const stored = bands.find((row) => row.band === band);
+      const stored = prepared.bands.find((row) => row.band === band);
       bandReport[band] = {
-        entries: entriesByBand(band).length,
+        entries: prepared.selection.entries.filter((entry) => entry.band === band).length,
         tokens: stored?.tokenCount ?? 0,
       };
     }
-    const tailTokens = tailTokenSum(db, selection.compactPoint);
-    const renderedBands = buildRenderedBands(selection, bands);
+    const tailTokens = tailTokenSum(db, prepared.selection.compactPoint);
+    const renderedBands = buildRenderedBands(prepared.selection, prepared.bands);
     return {
       ok: true,
       value: {
-        viewId,
-        profile: profileName,
-        config: { ...merged.percentages, lowerBound: merged.lowerBound },
+        viewId: prepared.viewId,
+        profile: prepared.profileName,
+        config: { ...prepared.merged.percentages, lowerBound: prepared.merged.lowerBound },
         bands: bandReport,
         tailTokens,
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
-        coveredFrom: selection.coveredFrom,
-        compactPoint: selection.compactPoint,
-        degraded: selection.entries
-          .filter((entry) => entry.degraded)
-          .map((entry) => ({
-            band: entry.band,
-            subjectId: entry.subjectId,
-            usedDerivation: entry.derivationUsed,
-          })),
-        gaps: gapNotes(selection),
-        warnings,
+        coveredFrom: prepared.selection.coveredFrom,
+        compactPoint: prepared.selection.compactPoint,
+        degraded: prepared.degraded,
+        gaps: prepared.gaps,
+        warnings: prepared.warnings,
         renderedBands,
-        firstKeptMessageId,
+        firstKeptMessageId: prepared.firstKeptMessageId,
       },
     };
   } catch (cause) {
-    return storageFailure(`view compact failed: ${detail(cause)}`);
+    return storageFailure(`view installPreparedCompact failed: ${detail(cause)}`);
   } finally {
     db.close();
   }
+}
+
+// Compact runs only when invoked through this surface; no core path calls it.
+// Order: validate profile/params before IO, prepare assembly, replace the view
+// and reset the boundary in one BEGIN IMMEDIATE, then return a receipt.
+// Assembly is entirely from stored artifacts: nothing here can reach inference
+// or schedule repair work.
+export async function compact(
+  ref: ThreadRef,
+  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+): Promise<OpResult<CompactReceipt>> {
+  const prepared = await prepareCompact(ref, opts);
+  if (!prepared.ok) return prepared;
+  return installPreparedCompact(ref, prepared.value, opts.signal !== undefined ? { signal: opts.signal } : {});
 }
 
 // ── materialize ──────────────────────────────────────────────────

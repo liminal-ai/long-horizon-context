@@ -142,6 +142,22 @@ const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
       return truncateForRendering(typeof block["content"] === "string" ? block["content"] : "", message.tokenEstimate);
     },
   },
+  compact_continuation_marker: {
+    fallbackText: (message) => {
+      const block = message.blocks[0]?.content ?? {};
+      const cause = typeof block["cause"] === "string" ? block["cause"] : "context_compacted_task_in_progress";
+      const action = typeof block["action"] === "string" ? block["action"] : "continue_existing_task";
+      const turnId = typeof block["continuationTurnId"] === "string" ? block["continuationTurnId"] : "";
+      return [
+        "[compact continuation]",
+        `cause=${cause}`,
+        `action=${action}`,
+        "newUserRequest=false",
+        "waitForUser=false",
+        `continuationTurnId=${turnId}`,
+      ].join(" ");
+    },
+  },
 };
 
 function readyText(message: ComposeMessage, derivedText: string): string {
@@ -398,6 +414,8 @@ function renderingPartLabel(kind: RenderingPartKind): string {
       return "Tool call";
     case "tool_result":
       return "Tool result";
+    case "compact_continuation_marker":
+      return "Compact continuation";
   }
 }
 

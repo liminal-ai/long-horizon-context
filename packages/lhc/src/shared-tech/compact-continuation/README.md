@@ -113,3 +113,41 @@ pnpm exec tsx scripts/gen-compact-continuation-fixtures.mjs
 ```
 
 (from `packages/lhc`). Regeneration must leave a clean git diff when the decision table is unchanged.
+
+## Runtime (LIM-61)
+
+Staged operation: `packages/lhc/src/compact-continuation/` via `sdk.compactContinuation.runCompactContinuation`.
+
+Host supplies seam, provider usage, post-measurement estimate, policy, continuation kind, identity/capture facts, and writer posture. **Host trigger policy stays outside the SDK.**
+
+### Durable stages
+
+1. Seam eligibility / epoch (skip — no writer claim).
+2. Claim LHC writer (schema v7 `compact_continuation_writer`).
+3. Optional `force_turn_end` with reason `context_compact_continue` (atomic open of one continuation turn).
+4. Compact assembly (`threadView.prepareCompact`) — degraded derivations do not block structure.
+5. Typed `compact_continuation_marker` event (idempotency `lhc.compact_continuation:<tN>`).
+6. Install serving view (`threadView.installPreparedCompact`) — prior view intact on failure.
+7. Durable receipt (`compact_continuation_receipt`) — not conversation history.
+8. Release writer.
+
+Repair detects an applied boundary + marker from durable state and never forces a second boundary/marker.
+
+### Fable certification notes folded into runtime
+
+| Note | Runtime behavior |
+|---|---|
+| **Refuse-receipt fidelity** | Oracle refuse receipts report `fidelity: "full"` / empty `degradationReasons` even when effects include `degrade_fidelity`. That describes the **installed** view (none on refuse), not attempted material. `CompactContinuationRunResult.refuseReceiptFidelityDescribes = "installed_view_only"`. Hosts needing attempt-scoped fidelity read `effects` for `degrade_fidelity`. |
+| **Continuation turn id** | Runtime only supplies non-empty turn ids from real `turn_end` transitions. Empty-id defensive oracle branches remain unreachable through this path. |
+| **Skip while LHC writer held** | Pre-seam skips release the held claim **out-of-band** when `writerClaim: "lhc"` for this attempt, so residual `writerReleased: true` is truthful even though the oracle skip effect list has no `release_writer`. |
+| **Dead defensive branches** | Runtime does not call the oracle with empty continuation turn ids or illegal fresh+markerAlreadyPersisted pairs; those remain validator/oracle-only guards. |
+
+### Marker visibility
+
+- **Canonical record / inspect / messages.list (default):** present.
+- **Ordinary user chat:** hidden via `messages.list({ forUserChat: true })`.
+- **Model serving / session view:** present as typed `[compact continuation] …` user content.
+
+### Schema
+
+Thread schema **v7**: `compact_continuation_writer`, `compact_continuation_receipt`. Fresh create + 6→7 migration.
