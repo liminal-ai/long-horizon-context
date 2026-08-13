@@ -110,6 +110,7 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": false,
         "continuationTurnOpened": false,
+        "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": true

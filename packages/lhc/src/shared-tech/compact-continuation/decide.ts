@@ -8,6 +8,7 @@
 
 import {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
+  COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
   COMPACT_CONTINUATION_MARKER_KIND,
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactContinuationDecision,
@@ -37,7 +38,6 @@ function pressureReceipt(input: CompactContinuationInput): CompactContinuationPr
       atOrAboveTrigger: null,
     };
   }
-  // Validator rejects unsafe combined sums; oracle assumes validated inputs.
   const next = providerUsage.total + postMeasurementEstimate.tokens;
   return {
     providerBaseTokens: providerUsage.total,
@@ -65,6 +65,24 @@ function lowerTargetReceipt(
 
 function residual(parts: CompactContinuationResidualState): CompactContinuationResidualState {
   return parts;
+}
+
+/**
+ * Pending forced-boundary residual facts must remain truthful on skip/refuse
+ * exits that never reach repair compact.
+ */
+function pendingBoundaryResidualOverlay(
+  input: CompactContinuationInput,
+  base: CompactContinuationResidualState,
+): CompactContinuationResidualState {
+  if (!input.pendingForcedContinuationBoundary) return base;
+  return {
+    ...base,
+    forcedContinuationBoundaryApplied: true,
+    continuationTurnOpened: true,
+    originalAgenticTurnStillOpen: false,
+    nextProviderRequestAllowed: false,
+  };
 }
 
 function baseReceipt(
@@ -151,7 +169,6 @@ function decide(
   };
 }
 
-/** Pre-claim refuse: no writer claimed, prior view intact, original turn open. */
 function refuseEarly(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -162,29 +179,33 @@ function refuseEarly(
     { type: "refuse", code, reason },
     { type: "record_receipt", durable: true, userChatVisible: false },
   ];
+  const pending = input.pendingForcedContinuationBoundary;
   return decide(input, {
     outcome: "refuse",
     terminalState: "terminal_refuse",
     transitionPath: [...path, "terminal_refuse"],
     effects,
     reasonCode: code,
-    turnEndReason: null,
+    turnEndReason: pending ? CONTEXT_COMPACT_CONTINUE_REASON : null,
     fidelity: "full",
     degradationReasons: [],
     continuation: {
-      opened: false,
+      opened: pending,
       markerServed: false,
-      sameAgenticTurnPreserved: true,
+      sameAgenticTurnPreserved: !pending,
     },
-    residual: residual({
-      writerReleased: true,
-      priorServingViewIntact: true,
-      forcedContinuationBoundaryApplied: false,
-      continuationTurnOpened: false,
-      markerServed: false,
-      originalAgenticTurnStillOpen: true,
-      nextProviderRequestAllowed: false,
-    }),
+    residual: residual(
+      pendingBoundaryResidualOverlay(input, {
+        writerReleased: true,
+        priorServingViewIntact: true,
+        forcedContinuationBoundaryApplied: false,
+        continuationTurnOpened: false,
+        markerPersisted: false,
+        markerServed: false,
+        originalAgenticTurnStillOpen: true,
+        nextProviderRequestAllowed: false,
+      }),
+    ),
     refused: true,
     refuseCode: code,
     skipped: false,
@@ -193,11 +214,6 @@ function refuseEarly(
   });
 }
 
-/**
- * Unsupported contract version: refuse without claiming the input was accepted
- * as v1. Receipt contractVersion is the oracle version that classified the
- * refuse; reasonCode carries the rejected input version.
- */
 function refuseUnsupportedVersion(input: CompactContinuationInput): CompactContinuationDecision {
   const rejected = String(input.contractVersion);
   const reason = `unsupported compact-continuation contract version ${rejected}; oracle is ${COMPACT_CONTINUATION_CONTRACT_VERSION}`;
@@ -205,7 +221,6 @@ function refuseUnsupportedVersion(input: CompactContinuationInput): CompactConti
     { type: "refuse", code: "unsupported_contract_version", reason },
     { type: "record_receipt", durable: true, userChatVisible: false },
   ];
-  // Minimal pressure/lower receipts without trusting policy arithmetic.
   const pressure: CompactContinuationPressureReceipt = {
     providerBaseTokens: null,
     providerBaseDomain: "provider_reported_input",
@@ -241,6 +256,7 @@ function refuseUnsupportedVersion(input: CompactContinuationInput): CompactConti
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: false,
       continuationTurnOpened: false,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: false,
@@ -270,29 +286,35 @@ function skip(
     { type: "skip_seam", code, reason },
     { type: "record_receipt", durable: true, userChatVisible: false },
   ];
+  const pending = input.pendingForcedContinuationBoundary;
   return decide(input, {
     outcome: "skip_seam",
     terminalState: "terminal_skip",
     transitionPath: [...path, "terminal_skip"],
     effects,
     reasonCode: code,
-    turnEndReason: null,
+    turnEndReason: pending ? CONTEXT_COMPACT_CONTINUE_REASON : null,
     fidelity: "full",
     degradationReasons: [],
     continuation: {
-      opened: false,
+      opened: pending,
       markerServed: false,
-      sameAgenticTurnPreserved: true,
+      sameAgenticTurnPreserved: !pending,
     },
-    residual: residual({
-      writerReleased: true,
-      priorServingViewIntact: true,
-      forcedContinuationBoundaryApplied: false,
-      continuationTurnOpened: false,
-      markerServed: false,
-      originalAgenticTurnStillOpen: true,
-      nextProviderRequestAllowed: true,
-    }),
+    residual: residual(
+      pendingBoundaryResidualOverlay(input, {
+        writerReleased: true,
+        priorServingViewIntact: true,
+        forcedContinuationBoundaryApplied: false,
+        continuationTurnOpened: false,
+        markerPersisted: false,
+        markerServed: false,
+        originalAgenticTurnStillOpen: true,
+        // Skip = wait and re-evaluate. Does not authorize a fresh next request.
+        // Does not cancel an already in-flight transport retry.
+        nextProviderRequestAllowed: false,
+      }),
+    ),
     refused: false,
     refuseCode: null,
     skipped: true,
@@ -330,6 +352,7 @@ function continueNormal(
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: false,
       continuationTurnOpened: false,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: true,
@@ -367,6 +390,7 @@ function normalComplete(
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: false,
       continuationTurnOpened: false,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
       nextProviderRequestAllowed: true,
@@ -398,6 +422,18 @@ function compactEffect(input: CompactContinuationInput): CompactContinuationEffe
   };
 }
 
+function markerEffect(): CompactContinuationEffect {
+  return {
+    type: "insert_continuation_marker",
+    kind: COMPACT_CONTINUATION_MARKER_KIND,
+    idempotencyKey: COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
+    modelVisible: true,
+    lhcInspectVisible: true,
+    userChatVisible: false,
+    hostMayInjectTransiently: true,
+  };
+}
+
 function degradationReasonsOf(input: CompactContinuationInput): string[] {
   const reasons: string[] = [];
   if (input.compactMaterial.derivationsMissingOrFailed) {
@@ -409,10 +445,6 @@ function degradationReasonsOf(input: CompactContinuationInput): string[] {
   return reasons;
 }
 
-/**
- * Post-claim failure on tool-preserve path: original turn still open; prior
- * view intact; no marker; writer released.
- */
 function refuseAfterPreserveAttempt(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -446,6 +478,7 @@ function refuseAfterPreserveAttempt(
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: false,
       continuationTurnOpened: false,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: false,
@@ -458,11 +491,6 @@ function refuseAfterPreserveAttempt(
   });
 }
 
-/**
- * Post-claim failure on continue-turn path after forced boundary: boundary and
- * one empty continuation turn remain durable; no marker; prior view intact;
- * no next provider request; writer released.
- */
 function refuseAfterContinueAttempt(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -471,6 +499,7 @@ function refuseAfterContinueAttempt(
   effectsSoFar: CompactContinuationEffect[],
   compactRan: boolean,
   boundaryAppliedThisSeam: boolean,
+  markerPersisted: boolean,
 ): CompactContinuationDecision {
   const effects: CompactContinuationEffect[] = [
     ...effectsSoFar,
@@ -498,6 +527,7 @@ function refuseAfterContinueAttempt(
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: boundaryApplied,
       continuationTurnOpened: boundaryApplied,
+      markerPersisted,
       markerServed: false,
       originalAgenticTurnStillOpen: !boundaryApplied,
       nextProviderRequestAllowed: false,
@@ -538,8 +568,6 @@ function postCompactTail(
     if (!boundaryAlreadyPending) {
       effectsSoFar.push(forceTurnEndEffect());
     }
-    // Compact only after the just-closed turn is eligible (or already closed
-    // on a pending-boundary repair).
     effectsSoFar.push(compactEffect(input));
 
     const pathAfterClaim: CompactContinuationState[] = [...branchPath, "compacting"];
@@ -553,10 +581,10 @@ function postCompactTail(
         effectsSoFar,
         true,
         !boundaryAlreadyPending,
+        false,
       );
     }
     if (!material.canProduceValidProviderRequest) {
-      // Structurally compacted but cannot form a valid request — no install.
       return refuseAfterContinueAttempt(
         input,
         pathAfterClaim,
@@ -565,24 +593,34 @@ function postCompactTail(
         effectsSoFar,
         true,
         !boundaryAlreadyPending,
+        false,
       );
     }
 
-    // Fidelity degradation classified at compact assembly, before install.
+    // Fidelity degradation classified at compact assembly, before marker/install.
     insertDegradeAfterCompact(effectsSoFar, degradationReasons);
 
+    // Persist typed marker after successful compact, before serving-view install.
+    effectsSoFar.push(markerEffect());
+
+    // Install failure always wins over no-reduction classification.
+    if (!material.installSucceeds) {
+      return refuseAfterContinueAttempt(
+        input,
+        [...pathAfterClaim, "installing"],
+        "install_failed",
+        "post-compact serving view could not be installed",
+        effectsSoFar,
+        true,
+        !boundaryAlreadyPending,
+        true, // marker persisted, not served
+      );
+    }
+
+    // usefulReduction evaluated only after successful install.
     if (!material.usefulReduction) {
-      // Install still proceeds when structure is valid; no_reduction is non-error.
       const effects: CompactContinuationEffect[] = [
         ...effectsSoFar,
-        {
-          type: "insert_continuation_marker",
-          kind: COMPACT_CONTINUATION_MARKER_KIND,
-          modelVisible: true,
-          lhcInspectVisible: true,
-          userChatVisible: false,
-          hostMayInjectTransiently: true,
-        },
         { type: "install_serving_view" },
         { type: "record_receipt", durable: true, userChatVisible: false },
         { type: "release_writer" },
@@ -606,6 +644,7 @@ function postCompactTail(
           priorServingViewIntact: false,
           forcedContinuationBoundaryApplied: true,
           continuationTurnOpened: true,
+          markerPersisted: true,
           markerServed: true,
           originalAgenticTurnStillOpen: false,
           nextProviderRequestAllowed: true,
@@ -618,29 +657,8 @@ function postCompactTail(
       });
     }
 
-    if (!material.installSucceeds) {
-      // No marker, no install_serving_view — prior view intact.
-      return refuseAfterContinueAttempt(
-        input,
-        [...pathAfterClaim, "installing"],
-        "install_failed",
-        "post-compact serving view could not be installed",
-        effectsSoFar,
-        true,
-        !boundaryAlreadyPending,
-      );
-    }
-
     const effects: CompactContinuationEffect[] = [
       ...effectsSoFar,
-      {
-        type: "insert_continuation_marker",
-        kind: COMPACT_CONTINUATION_MARKER_KIND,
-        modelVisible: true,
-        lhcInspectVisible: true,
-        userChatVisible: false,
-        hostMayInjectTransiently: true,
-      },
       { type: "install_serving_view" },
       { type: "record_receipt", durable: true, userChatVisible: false },
       { type: "release_writer" },
@@ -667,6 +685,7 @@ function postCompactTail(
         priorServingViewIntact: false,
         forcedContinuationBoundaryApplied: true,
         continuationTurnOpened: true,
+        markerPersisted: true,
         markerServed: true,
         originalAgenticTurnStillOpen: false,
         nextProviderRequestAllowed: true,
@@ -710,6 +729,18 @@ function postCompactTail(
 
   insertDegradeAfterCompact(effectsSoFar, degradationReasons);
 
+  // Install failure always wins over no-reduction.
+  if (!material.installSucceeds) {
+    return refuseAfterPreserveAttempt(
+      input,
+      [...pathAfterClaim, "installing"],
+      "install_failed",
+      "post-compact serving view could not be installed",
+      effectsSoFar,
+      true,
+    );
+  }
+
   if (!material.usefulReduction) {
     const effects: CompactContinuationEffect[] = [
       ...effectsSoFar,
@@ -741,6 +772,7 @@ function postCompactTail(
         priorServingViewIntact: false,
         forcedContinuationBoundaryApplied: false,
         continuationTurnOpened: false,
+        markerPersisted: false,
         markerServed: false,
         originalAgenticTurnStillOpen: true,
         nextProviderRequestAllowed: true,
@@ -751,19 +783,6 @@ function postCompactTail(
       skipCode: null,
       compactRan: true,
     });
-  }
-
-  if (!material.installSucceeds) {
-    // Preserve pair is a structural serve rule, not an install of a new view —
-    // failure before install: prior view intact, no install effect.
-    return refuseAfterPreserveAttempt(
-      input,
-      [...pathAfterClaim, "installing"],
-      "install_failed",
-      "post-compact serving view could not be installed",
-      effectsSoFar,
-      true,
-    );
   }
 
   const effects: CompactContinuationEffect[] = [
@@ -799,6 +818,7 @@ function postCompactTail(
       priorServingViewIntact: false,
       forcedContinuationBoundaryApplied: false,
       continuationTurnOpened: false,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: true,
@@ -826,6 +846,8 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
   const seam = input.seam;
 
   // Transport retry is never a seam — skip without mutating.
+  // nextProviderRequestAllowed=false: machine does not authorize a fresh
+  // request; does not cancel an already in-flight transport retry.
   if (seam.insideTransportRetry) {
     return skip(input, ["idle"], "transport_retry", "mutation forbidden inside transport retry");
   }
@@ -833,7 +855,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
   const atSeam =
     seam.modelResponseComplete && seam.requestedToolsSettled && seam.captureFlushed && seam.beforeNextProviderRequest;
 
-  // Not yet settled: skip/wait — not record corruption, not a hard refuse.
   if (!atSeam) {
     return skip(
       input,
@@ -845,7 +866,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
 
   const path: CompactContinuationState[] = ["at_seam", "checking_invariants"];
 
-  // Input epoch: decision and apply must match (steering race).
   if (seam.inputEpochAtDecision !== seam.inputEpochAtApply) {
     return skip(
       input,
@@ -855,7 +875,17 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     );
   }
 
-  // Writer exclusivity — hard refuse (story acceptance).
+  // Illegal pending-boundary × continuation kind (closed total evaluator).
+  if (input.pendingForcedContinuationBoundary && input.continuation.kind !== "active_non_tool") {
+    return refuseEarly(
+      input,
+      path,
+      "invalid_pending_boundary_continuation",
+      `pendingForcedContinuationBoundary requires continuation.kind active_non_tool; got ${input.continuation.kind}`,
+    );
+  }
+
+  // Writer exclusivity — native/conflict hard refuse; "lhc" is idempotent reassert.
   if (input.invariants.writerClaim === "conflict" || input.invariants.writerClaim === "native") {
     return refuseEarly(
       input,
@@ -865,8 +895,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     );
   }
 
-  // Record/request-health proofs after a claimed settled seam — hard refuse
-  // even below pressure (see refuse-code docs on contract.ts).
   if (!input.invariants.captureComplete) {
     return refuseEarly(
       input,
@@ -898,9 +926,15 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     );
   }
 
-  // Provider usage authority — never fabricate upper-trigger base.
-  // Missing usage does NOT route through below_trigger (pressure never evaluated).
   const evalPath: CompactContinuationState[] = [...path, "evaluating_pressure"];
+
+  // Pending forced-boundary repair takes precedence over fresh pressure/usage.
+  // Resume compact/marker/install regardless of missing provider usage or a
+  // now-below trigger (boundary is sunk durable state).
+  if (input.pendingForcedContinuationBoundary) {
+    return postCompactTail(input, evalPath, "continue_turn");
+  }
+
   if (!input.providerUsage.available) {
     if (input.continuation.kind === "none") {
       return normalComplete(input, evalPath, "no_provider_usage_work_complete");
@@ -916,7 +950,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     return continueNormal(input, evalPath, "below_trigger", true);
   }
 
-  // Above trigger.
   if (input.continuation.kind === "none") {
     return normalComplete(input, evalPath, "normal_complete_above_pressure");
   }
@@ -925,6 +958,5 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     return postCompactTail(input, evalPath, "preserve_tool");
   }
 
-  // active_non_tool — pendingForcedContinuationBoundary skips re-forcing.
   return postCompactTail(input, evalPath, "continue_turn");
 }

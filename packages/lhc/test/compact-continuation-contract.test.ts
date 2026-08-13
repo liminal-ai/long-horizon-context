@@ -12,6 +12,7 @@ import {
   assertDecisionParity,
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_INVARIANTS,
+  COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
@@ -115,6 +116,7 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("compact_preserve_tool");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("native_writer_conflict");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("unsupported_contract_version");
+    expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("invalid_pending_boundary_continuation");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("transport_retry");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("not_at_settled_seam");
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("transport_retry");
@@ -122,8 +124,11 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("not_at_settled_seam");
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER[0]).toBe("seam_eligibility");
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER).toContain("force_boundary_if_continue_turn");
-    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("stable_turn_end_reason_context_compact_continue");
-    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("pure_function_is_whole_seam_oracle_not_pre_effect_plan");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("install_failure_wins_over_no_reduction_classification");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain(
+      "pending_forced_boundary_repair_takes_precedence_over_fresh_pressure",
+    );
+    expect(COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY).toBe("lhc.compact_continuation:context_compact_continue");
   });
 });
 
@@ -221,12 +226,15 @@ describe("compact-continuation decision invariants", () => {
     const marker = actual.effects.find((e) => e.type === "insert_continuation_marker");
     expect(marker).toMatchObject({
       kind: COMPACT_CONTINUATION_MARKER_KIND,
+      idempotencyKey: COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
       modelVisible: true,
       userChatVisible: false,
     });
     expect(actual.effects.some((e) => e.type === "preserve_tool_pair_verbatim")).toBe(false);
     expect(actual.receipt.continuation.opened).toBe(true);
     expect(actual.receipt.residual.continuationTurnOpened).toBe(true);
+    expect(actual.receipt.residual.markerPersisted).toBe(true);
+    expect(actual.receipt.residual.markerServed).toBe(true);
   });
 
   it("pending tool path preserves pair and inserts no continuation marker", () => {
@@ -258,6 +266,7 @@ describe("compact-continuation decision invariants", () => {
       priorServingViewIntact: true,
       forcedContinuationBoundaryApplied: true,
       continuationTurnOpened: true,
+      markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
       nextProviderRequestAllowed: false,
@@ -323,7 +332,7 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.receipt.contractVersion).toBe(COMPACT_CONTINUATION_CONTRACT_VERSION);
   });
 
-  it("not_at_settled_seam is a skip not a refuse", () => {
+  it("not_at_settled_seam is a skip not a refuse and does not authorize next request", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -342,6 +351,7 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.outcome).toBe("skip_seam");
     expect(actual.receipt.skipCode).toBe("not_at_settled_seam");
     expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(false);
   });
 
   it("degrade_fidelity is ordered after compact and before install", () => {
@@ -407,5 +417,258 @@ describe("compact-continuation decision invariants", () => {
     });
     const v = validateCompactContinuationInput(bad);
     expect(v.ok).toBe(false);
+  });
+
+  // ── Independent behavioral probes (not regenerated-fixture-only) ─────────
+
+  it("install failure wins over no-reduction on continue-turn", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          compactMaterial: {
+            derivationsMissingOrFailed: false,
+            lowerTargetMet: true,
+            compactStructurallyValid: true,
+            installSucceeds: false,
+            usefulReduction: false,
+            canProduceValidProviderRequest: true,
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("install_failed");
+    expect(actual.effects.map((e) => e.type)).not.toContain("install_serving_view");
+    expect(actual.effects.map((e) => e.type)).toContain("insert_continuation_marker");
+    expect(actual.receipt.residual).toMatchObject({
+      priorServingViewIntact: true,
+      markerPersisted: true,
+      markerServed: false,
+      nextProviderRequestAllowed: false,
+      forcedContinuationBoundaryApplied: true,
+      writerReleased: true,
+    });
+  });
+
+  it("install failure wins over no-reduction on preserve-tool", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            toolCallId: "call-42",
+            correlationValid: true,
+          },
+          compactMaterial: {
+            derivationsMissingOrFailed: false,
+            lowerTargetMet: true,
+            compactStructurallyValid: true,
+            installSucceeds: false,
+            usefulReduction: false,
+            canProduceValidProviderRequest: true,
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("install_failed");
+    expect(actual.effects.map((e) => e.type)).not.toContain("install_serving_view");
+    expect(actual.receipt.residual).toMatchObject({
+      priorServingViewIntact: true,
+      markerPersisted: false,
+      markerServed: false,
+      originalAgenticTurnStillOpen: true,
+      nextProviderRequestAllowed: false,
+    });
+  });
+
+  it("pending boundary resumes repair despite missing provider usage", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          providerUsage: {
+            available: false,
+            reason: "missing",
+            domain: "provider_reported_input",
+          },
+          pendingForcedContinuationBoundary: true,
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("compact_continue_turn");
+    expect(actual.outcome).not.toBe("continue_normal");
+    expect(actual.effects.some((e) => e.type === "force_turn_end")).toBe(false);
+    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(true);
+  });
+
+  it("pending boundary resumes repair despite below-trigger pressure", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          providerUsage: {
+            available: true,
+            inputTokens: 10_000,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            total: 10_000,
+            domain: "provider_reported_input",
+          },
+          policy: {
+            upperTriggerTokens: 100_000,
+            lowerTargetTokens: 40_000,
+            hostCapability: "full_state_machine",
+          },
+          pendingForcedContinuationBoundary: true,
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("compact_continue_turn");
+    expect(actual.transitionPath).not.toContain("below_trigger");
+  });
+
+  it("pending boundary with kind none refuses as invalid continuation state", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          pendingForcedContinuationBoundary: true,
+          continuation: { kind: "none" },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(true);
+    expect(actual.receipt.residual.continuationTurnOpened).toBe(true);
+    expect(actual.receipt.residual.originalAgenticTurnStillOpen).toBe(false);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(false);
+  });
+
+  it("pending boundary with tool continuation refuses as invalid continuation state", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          pendingForcedContinuationBoundary: true,
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            toolCallId: "call-1",
+            correlationValid: true,
+          },
+        }),
+      ),
+    );
+    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+  });
+
+  it("skip with pending boundary preserves residual boundary truth", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          seam: {
+            modelResponseComplete: true,
+            requestedToolsSettled: true,
+            captureFlushed: false,
+            beforeNextProviderRequest: true,
+            insideTransportRetry: false,
+            inputEpochAtDecision: 0,
+            inputEpochAtApply: 0,
+          },
+          pendingForcedContinuationBoundary: true,
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("skip_seam");
+    expect(actual.receipt.residual).toMatchObject({
+      forcedContinuationBoundaryApplied: true,
+      continuationTurnOpened: true,
+      originalAgenticTurnStillOpen: false,
+      nextProviderRequestAllowed: false,
+      markerPersisted: false,
+      markerServed: false,
+    });
+    expect(actual.receipt.turnEndReason).toBe(CONTEXT_COMPACT_CONTINUE_REASON);
+  });
+
+  it("transport_retry skip does not authorize a fresh next request", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          seam: {
+            modelResponseComplete: true,
+            requestedToolsSettled: true,
+            captureFlushed: true,
+            beforeNextProviderRequest: true,
+            insideTransportRetry: true,
+            inputEpochAtDecision: 0,
+            inputEpochAtApply: 0,
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("skip_seam");
+    expect(actual.receipt.skipCode).toBe("transport_retry");
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(false);
+  });
+
+  it("writerClaim lhc is accepted and still records claim_writer (idempotent reassert)", () => {
+    const none = decideCompactContinuation(asCompactContinuationInput(baseInput()));
+    const lhc = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          invariants: {
+            captureComplete: true,
+            providerIdentityValid: true,
+            singleOpenTurn: true,
+            writerClaim: "lhc",
+          },
+        }),
+      ),
+    );
+    expect(lhc.outcome).toBe(none.outcome);
+    expect(lhc.effects).toEqual(none.effects);
+    expect(lhc.effects.some((e) => e.type === "claim_writer")).toBe(true);
+  });
+
+  it("rejects unknown fields on closed-shape input objects", () => {
+    const bad = baseInput({ mystery: true });
+    const v = validateCompactContinuationInput(bad);
+    expect(v.ok).toBe(false);
+    expect(v.issues.some((i) => i.message.includes("unknown field"))).toBe(true);
+
+    const badUsage = baseInput({
+      providerUsage: {
+        available: false,
+        reason: "missing",
+        domain: "provider_reported_input",
+        inputTokens: 1,
+      },
+    });
+    const v2 = validateCompactContinuationInput(badUsage);
+    expect(v2.ok).toBe(false);
+  });
+
+  it("install_failed continue-turn has marker persisted then release without install", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          compactMaterial: {
+            derivationsMissingOrFailed: false,
+            lowerTargetMet: true,
+            compactStructurallyValid: true,
+            installSucceeds: false,
+            usefulReduction: true,
+            canProduceValidProviderRequest: true,
+          },
+        }),
+      ),
+    );
+    const types = actual.effects.map((e) => e.type);
+    expect(types.indexOf("compact")).toBeLessThan(types.indexOf("insert_continuation_marker"));
+    expect(types).not.toContain("install_serving_view");
+    expect(types).toContain("release_writer");
+    expect(actual.receipt.residual.markerPersisted).toBe(true);
+    expect(actual.receipt.residual.markerServed).toBe(false);
   });
 });

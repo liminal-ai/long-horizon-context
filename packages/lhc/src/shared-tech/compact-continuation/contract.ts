@@ -44,6 +44,13 @@ export const CONTEXT_COMPACT_CONTINUE_REASON = "context_compact_continue" as con
  */
 export const COMPACT_CONTINUATION_MARKER_KIND = "lhc.compact_continuation" as const;
 
+/**
+ * Stable idempotency identity for the typed continuation marker, derived from
+ * the forced continuation boundary cause. Reasserting the same key during
+ * repair skips rather than creating a duplicate marker.
+ */
+export const COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY = "lhc.compact_continuation:context_compact_continue" as const;
+
 // ── Accounting domains (intentionally distinct) ──────────────────────────────
 
 /**
@@ -228,6 +235,11 @@ export type CompactContinuationRefuseCode =
   | "compact_failed"
   | "install_failed"
   | "no_valid_provider_request"
+  /**
+   * pendingForcedContinuationBoundary is true but continuation.kind is not
+   * active_non_tool (illegal v1 combination).
+   */
+  | "invalid_pending_boundary_continuation"
   /** Input contractVersion is not this oracle version; not an accepted v1 seam. */
   | "unsupported_contract_version";
 
@@ -240,6 +252,7 @@ export const COMPACT_CONTINUATION_REFUSE_CODES: readonly CompactContinuationRefu
   "compact_failed",
   "install_failed",
   "no_valid_provider_request",
+  "invalid_pending_boundary_continuation",
   "unsupported_contract_version",
 ] as const;
 
@@ -291,8 +304,18 @@ export type CompactContinuationEffect =
       location: "open_turn_tail";
     }
   | {
+      /**
+       * Persist one canonical typed marker that starts the continuation turn.
+       * Model-visible when later installed into a serving view; always LHC
+       * inspection/retrieval-visible; hidden from normal user chat.
+       *
+       * Insertion is durable on successful compact (before serving-view install).
+       * Idempotency: reasserting the same `idempotencyKey` during repair skips
+       * rather than creating a duplicate.
+       */
       type: "insert_continuation_marker";
       kind: typeof COMPACT_CONTINUATION_MARKER_KIND;
+      idempotencyKey: typeof COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY;
       modelVisible: true;
       lhcInspectVisible: true;
       userChatVisible: false;
@@ -383,6 +406,15 @@ export type WorkContinuation =
     }
   | { kind: "active_non_tool" };
 
+/**
+ * Writer claim observed at seam entry.
+ * - `none`: no writer held; this operation may claim LHC.
+ * - `lhc`: already-established claim owned by **this same operation** (e.g.
+ *   repair after crash mid-seam). The whole-seam receipt still records a
+ *   `claim_writer` effect as the claim of record — idempotent re-assert, not a
+ *   second lock acquisition.
+ * - `native` / `conflict`: hard refuse (no silent native mid-turn fallback).
+ */
 export type WriterClaim = "none" | "lhc" | "native" | "conflict";
 
 export const COMPACT_CONTINUATION_WRITER_CLAIMS: readonly WriterClaim[] = [
@@ -462,9 +494,19 @@ export type CompactContinuationInput = {
   /**
    * True when a prior seam attempt already applied `force_turn_end` with
    * `context_compact_continue` and left exactly one empty continuation turn
-   * open, but compact/marker/install did not complete. Repair/retry must
-   * **not** force a duplicate boundary or insert a second marker; it resumes
-   * from compact onward with the boundary already durable.
+   * open, but compact/marker/install did not complete.
+   *
+   * **Legal v1:** requires `continuation.kind === "active_non_tool"`. Pairing
+   * with `none` or `pending_correlated_tool_result` is an invalid continuation
+   * state (`invalid_pending_boundary_continuation`).
+   *
+   * **Repair precedence:** after seam + record/request-health checks pass,
+   * resume compact/marker/install regardless of missing provider usage or a
+   * now-below trigger. Do not route through continue_normal / normal_complete.
+   *
+   * **Idempotency:** do not force a duplicate boundary; reassert the same
+   * marker insertion by `idempotencyKey` (skip if already present), then retry
+   * install.
    */
   pendingForcedContinuationBoundary: boolean;
   // ── attempt results ───────────────────────────────────────────────────────
@@ -513,7 +555,8 @@ export type CompactContinuationResidualState = {
   priorServingViewIntact: boolean;
   /**
    * A forced `context_compact_continue` boundary was applied on this seam
-   * (or already pending from a prior attempt). Durable even if compact/install fails.
+   * (or already pending from a prior attempt). Durable even if compact/install
+   * fails, and even when skip/health-refuse exits with pending boundary true.
    */
   forcedContinuationBoundaryApplied: boolean;
   /**
@@ -521,16 +564,31 @@ export type CompactContinuationResidualState = {
    * boundary (atomic turn_end). False when no forced boundary applies.
    */
   continuationTurnOpened: boolean;
-  /** Typed continuation marker was served into the model-visible context. */
+  /**
+   * Typed marker was persisted into the canonical record (after successful
+   * compact, before serving-view install). True on install_failed after
+   * marker insertion; repair reasserts the same idempotency key.
+   */
+  markerPersisted: boolean;
+  /**
+   * Typed continuation marker reached an installed model-visible serving view.
+   * False on install failure even when `markerPersisted` is true.
+   */
   markerServed: boolean;
   /**
-   * Original agentic turn still open (tool-preserve path and early refuses/skips).
-   * False after a forced continuation boundary.
+   * Original agentic turn still open (tool-preserve path and early refuses/skips
+   * without a pending forced boundary). False after a forced continuation
+   * boundary (including pending-boundary residual on skip/refuse).
    */
   originalAgenticTurnStillOpen: boolean;
   /**
-   * Next provider request may be issued for this outcome. False on refuse and
-   * on post-boundary failures that leave no installable request.
+   * This state-machine receipt has authorized a fresh next provider request.
+   * False on refuse, skip (wait and re-evaluate), and post-boundary failures.
+   *
+   * **Does not cancel an already in-flight transport retry.** For
+   * `transport_retry` skips, this means the compact-continuation machine has
+   * not authorized a *new* governed request; the in-flight retry proceeds under
+   * transport rules alone.
    */
   nextProviderRequestAllowed: boolean;
 };
@@ -611,17 +669,24 @@ export type CompactContinuationDecision = {
  * 10. Preserve tool pair / insert marker / install serving view.
  * 11. Record durable receipt (not user chat); release writer.
  *
- * ### Residual state after post-claim failure
+ * ### Residual state after post-claim failure / skip with pending boundary
  * - **tool-preserve** compact/install failure: original agentic turn remains
  *   open; prior serving view intact; no marker; writer released.
- * - **active non-tool** compact/install failure **after** forced boundary:
- *   boundary and the one empty continuation turn remain durable; no marker
- *   served; no next provider request; prior serving view remains installed;
- *   writer released.
- * - **install_failed**: must not imply a partially installed view
- *   (`priorServingViewIntact: true`, no successful `install_serving_view`).
- * - **Repair/retry**: if `pendingForcedContinuationBoundary` is true, do not
- *   create a duplicate boundary or second marker; resume compact onward.
+ * - **active non-tool** compact failure **after** forced boundary (before
+ *   marker): boundary durable; markerPersisted=false; markerServed=false;
+ *   prior view intact; no next request; writer released.
+ * - **active non-tool** install failure **after** successful compact: marker
+ *   is persisted (`markerPersisted=true`, `markerServed=false`); no
+ *   `install_serving_view`; prior view intact; boundary durable; repair
+ *   recoverable; writer released.
+ * - **install_failed** always wins over `no_reduction` classification.
+ *   `usefulReduction` is evaluated only after successful install.
+ * - **Skip**: `nextProviderRequestAllowed=false` (wait and re-evaluate). Does
+ *   not cancel an in-flight transport retry. Pending-boundary residual fields
+ *   remain truthful on skip/health-refuse.
+ * - **Repair/retry**: pending boundary takes precedence over fresh pressure;
+ *   do not duplicate the boundary; reassert marker by idempotency key; retry
+ *   install.
  */
 export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "seam_eligibility",
@@ -658,7 +723,15 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
   "refuse_only_when_no_valid_request_or_invariants_unproven",
   "one_writer_at_seam_no_silent_native_mid_turn_fallback",
   "post_claim_failures_release_writer_and_state_residual_truthfully",
-  "pending_forced_boundary_repair_does_not_duplicate_boundary_or_marker",
+  "pending_forced_boundary_repair_takes_precedence_over_fresh_pressure",
+  "pending_forced_boundary_requires_active_non_tool_continuation",
+  "pending_forced_boundary_residual_truthful_on_skip_and_refuse",
+  "install_failure_wins_over_no_reduction_classification",
+  "marker_persisted_before_install_served_only_after_install",
+  "marker_insertion_idempotent_by_boundary_derived_key",
+  "skip_does_not_authorize_next_provider_request",
+  "writer_claim_lhc_is_idempotent_reassert_not_second_lock",
+  "input_is_closed_shape_unknown_fields_rejected",
   "receipts_are_not_user_chat",
   "stable_turn_end_reason_context_compact_continue",
   "no_false_parity_for_capability_limited_hosts",
@@ -666,3 +739,13 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
 ] as const;
 
 export type CompactContinuationInvariantId = (typeof COMPACT_CONTINUATION_INVARIANTS)[number];
+
+// ── Closed-shape parity ──────────────────────────────────────────────────────
+
+/**
+ * v1 JSON inputs are **closed-shape**: TypeScript and Rust must reject unknown
+ * fields at every contract-owned input object and discriminated-union branch
+ * (`deny_unknown_fields` equivalent). Receipt validators may be extended to
+ * full closed-shape in the Rust port story; input closure is mandatory now.
+ */
+export const COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE = true as const;

@@ -44,15 +44,23 @@ Fixtures pin oracle outputs for TypeScript/Rust parity. Do not implement host I/
 claim_writer → force_turn_end → compact → [degrade_fidelity] → insert_continuation_marker → install_serving_view → record_receipt → release_writer
 ```
 
+Marker insertion is **canonical/persisted** with stable `idempotencyKey`
+`lhc.compact_continuation:context_compact_continue`. `markerPersisted` vs
+`markerServed`: install failure can report persisted=true, served=false.
+
 ## Residual state after post-claim failure
 
 | Path | Residual |
 |---|---|
 | Tool-preserve compact/install fail | Original agentic turn still open; prior serving view intact; no marker; writer released |
-| Active non-tool fail **after** forced boundary | Boundary + one empty continuation turn durable; no marker; no next provider request; prior serving view intact; writer released |
-| Install fail | Never implies a partially installed view (`priorServingViewIntact: true`, no successful `install_serving_view`) |
+| Active non-tool compact fail after boundary | Boundary durable; markerPersisted=false; no next request; prior view intact |
+| Active non-tool install fail after compact | Marker persisted not served; no install effect; prior view intact; repair recoverable |
+| Install fail vs no-reduction | **Install failure always wins**; `usefulReduction` only after successful install |
+| Skip | `nextProviderRequestAllowed=false` (wait/re-evaluate; does not cancel in-flight transport retry) |
 
-**Repair/retry:** if `pendingForcedContinuationBoundary` is true, do **not** force a duplicate boundary or insert a second marker; resume from compact onward.
+**Repair/retry:** `pendingForcedContinuationBoundary` takes precedence over fresh
+pressure/usage; requires `continuation.kind === "active_non_tool"`; reassert
+marker by idempotency key (no duplicate boundary).
 
 ## Skip vs refuse
 

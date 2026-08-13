@@ -1,11 +1,10 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "writer_claim_lhc_idempotent",
   "contractVersion": "1.0.0",
-  "description": "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+  "description": "writerClaim lhc is an already-established claim; claim_writer in receipt is idempotent reassert.",
   "coverage": [
-    "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "writer_claim_lhc_idempotent",
+    "active_non_tool_continuation"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -43,28 +42,29 @@
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "none"
+      "writerClaim": "lhc"
     },
     "pendingForcedContinuationBoundary": false,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "terminal_refuse"
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
       {
@@ -85,9 +85,16 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
@@ -100,8 +107,8 @@
     ],
     "receipt": {
       "contractVersion": "1.0.0",
-      "outcome": "refuse",
-      "reasonCode": "compact_failed",
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -123,7 +130,7 @@
       "degradationReasons": [],
       "continuation": {
         "opened": true,
-        "markerServed": false,
+        "markerServed": true,
         "sameAgenticTurnPreserved": false
       },
       "effects": [
@@ -145,9 +152,16 @@
           "allowDegradedDerivations": true
         },
         {
-          "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
@@ -160,16 +174,16 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
-        "markerPersisted": false,
-        "markerServed": false,
+        "markerPersisted": true,
+        "markerServed": true,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": false
+        "nextProviderRequestAllowed": true
       },
-      "refused": true,
-      "refuseCode": "compact_failed",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -178,7 +192,8 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "terminal_refuse"
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }

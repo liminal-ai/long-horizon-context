@@ -180,6 +180,69 @@
         "post_boundary_failure",
         "compact_install_failure"
       ]
+    },
+    {
+      "file": "cases/install_failed_no_reduction_continue_turn.json",
+      "name": "install_failed_no_reduction_continue_turn",
+      "coverage": [
+        "compact_install_failure",
+        "active_non_tool_continuation",
+        "install_over_no_reduction"
+      ]
+    },
+    {
+      "file": "cases/install_failed_no_reduction_preserve_tool.json",
+      "name": "install_failed_no_reduction_preserve_tool",
+      "coverage": [
+        "compact_install_failure",
+        "pending_tool_result_continuation",
+        "install_over_no_reduction"
+      ]
+    },
+    {
+      "file": "cases/pending_boundary_missing_provider_usage.json",
+      "name": "pending_boundary_missing_provider_usage",
+      "coverage": [
+        "pending_boundary_repair",
+        "pending_boundary_pressure_precedence"
+      ]
+    },
+    {
+      "file": "cases/pending_boundary_below_trigger.json",
+      "name": "pending_boundary_below_trigger",
+      "coverage": [
+        "pending_boundary_repair",
+        "pending_boundary_pressure_precedence"
+      ]
+    },
+    {
+      "file": "cases/pending_boundary_illegal_kind_none.json",
+      "name": "pending_boundary_illegal_kind_none",
+      "coverage": [
+        "invalid_pending_boundary_continuation"
+      ]
+    },
+    {
+      "file": "cases/pending_boundary_illegal_kind_tool.json",
+      "name": "pending_boundary_illegal_kind_tool",
+      "coverage": [
+        "invalid_pending_boundary_continuation"
+      ]
+    },
+    {
+      "file": "cases/writer_claim_lhc_idempotent.json",
+      "name": "writer_claim_lhc_idempotent",
+      "coverage": [
+        "writer_claim_lhc_idempotent",
+        "active_non_tool_continuation"
+      ]
+    },
+    {
+      "file": "cases/pending_boundary_skip_preserves_residual.json",
+      "name": "pending_boundary_skip_preserves_residual",
+      "coverage": [
+        "pending_boundary_residual_on_skip"
+      ]
     }
   ],
   "requiredCoverage": [
@@ -199,6 +262,11 @@
     "no_useful_reduction",
     "capability_limited",
     "pending_boundary_repair",
-    "post_boundary_failure"
+    "post_boundary_failure",
+    "install_over_no_reduction",
+    "pending_boundary_pressure_precedence",
+    "invalid_pending_boundary_continuation",
+    "writer_claim_lhc_idempotent",
+    "pending_boundary_residual_on_skip"
   ]
 }

@@ -343,6 +343,106 @@ const cases = [
       compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
     }),
   },
+  {
+    name: "install_failed_no_reduction_continue_turn",
+    coverage: ["compact_install_failure", "active_non_tool_continuation", "install_over_no_reduction"],
+    description:
+      "Install failure wins over no-reduction on continue-turn: no install_serving_view; marker persisted not served.",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      compactMaterial: {
+        ...goodMaterial,
+        usefulReduction: false,
+        installSucceeds: false,
+      },
+    }),
+  },
+  {
+    name: "install_failed_no_reduction_preserve_tool",
+    coverage: ["compact_install_failure", "pending_tool_result_continuation", "install_over_no_reduction"],
+    description: "Install failure wins over no-reduction on preserve-tool: prior view intact; no next request.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId: "call-42",
+        correlationValid: true,
+      },
+      compactMaterial: {
+        ...goodMaterial,
+        usefulReduction: false,
+        installSucceeds: false,
+      },
+    }),
+  },
+  {
+    name: "pending_boundary_missing_provider_usage",
+    coverage: ["pending_boundary_repair", "pending_boundary_pressure_precedence"],
+    description: "Pending boundary resumes repair despite missing provider usage (sunk cost; not continue_normal).",
+    input: makeInput({
+      providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
+      continuation: { kind: "active_non_tool" },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
+  {
+    name: "pending_boundary_below_trigger",
+    coverage: ["pending_boundary_repair", "pending_boundary_pressure_precedence"],
+    description: "Pending boundary resumes repair despite now-below-trigger pressure.",
+    input: makeInput({
+      providerUsage: {
+        available: true,
+        inputTokens: 70_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 5_000,
+        total: 75_000,
+        domain: "provider_reported_input",
+      },
+      postMeasurementEstimate: est(0),
+      continuation: { kind: "active_non_tool" },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
+  {
+    name: "pending_boundary_illegal_kind_none",
+    coverage: ["invalid_pending_boundary_continuation"],
+    description: "pendingForcedContinuationBoundary with kind none is invalid continuation state.",
+    input: makeInput({
+      continuation: { kind: "none" },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
+  {
+    name: "pending_boundary_illegal_kind_tool",
+    coverage: ["invalid_pending_boundary_continuation"],
+    description: "pendingForcedContinuationBoundary with pending tool result is invalid continuation state.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId: "call-42",
+        correlationValid: true,
+      },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
+  {
+    name: "writer_claim_lhc_idempotent",
+    coverage: ["writer_claim_lhc_idempotent", "active_non_tool_continuation"],
+    description: "writerClaim lhc is an already-established claim; claim_writer in receipt is idempotent reassert.",
+    input: makeInput({
+      invariants: { ...goodInvariants, writerClaim: "lhc" },
+      continuation: { kind: "active_non_tool" },
+    }),
+  },
+  {
+    name: "pending_boundary_skip_preserves_residual",
+    coverage: ["pending_boundary_residual_on_skip"],
+    description: "Skip with pending boundary keeps forced boundary residual true and does not authorize next request.",
+    input: makeInput({
+      seam: { ...goodSeam, captureFlushed: false },
+      continuation: { kind: "active_non_tool" },
+      pendingForcedContinuationBoundary: true,
+    }),
+  },
 ];
 
 mkdirSync(join(baseDir, "cases"), { recursive: true });
@@ -382,6 +482,11 @@ const requiredCoverage = [
   "capability_limited",
   "pending_boundary_repair",
   "post_boundary_failure",
+  "install_over_no_reduction",
+  "pending_boundary_pressure_precedence",
+  "invalid_pending_boundary_continuation",
+  "writer_claim_lhc_idempotent",
+  "pending_boundary_residual_on_skip",
 ];
 
 const manifest = {

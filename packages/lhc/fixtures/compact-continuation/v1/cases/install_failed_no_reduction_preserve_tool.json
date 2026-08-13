@@ -1,11 +1,11 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "install_failed_no_reduction_preserve_tool",
   "contractVersion": "1.0.0",
-  "description": "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+  "description": "Install failure wins over no-reduction on preserve-tool: prior view intact; no next request.",
   "coverage": [
     "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "pending_tool_result_continuation",
+    "install_over_no_reduction"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -37,7 +37,9 @@
       "hostCapability": "full_state_machine"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "pending_correlated_tool_result",
+      "toolCallId": "call-42",
+      "correlationValid": true
     },
     "invariants": {
       "captureComplete": true,
@@ -49,9 +51,9 @@
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
-      "installSucceeds": true,
-      "usefulReduction": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": false,
+      "usefulReduction": false,
       "canProduceValidProviderRequest": true
     }
   },
@@ -62,21 +64,15 @@
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
-      "path_continue_turn",
+      "path_preserve_tool",
       "compacting",
+      "installing",
       "terminal_refuse"
     ],
     "effects": [
       {
         "type": "claim_writer",
         "writer": "lhc"
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed",
-        "opensContinuationTurn": true,
-        "continuationTurnCount": 1
       },
       {
         "type": "compact",
@@ -86,8 +82,8 @@
       },
       {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "install_failed",
+        "reason": "post-compact serving view could not be installed"
       },
       {
         "type": "record_receipt",
@@ -101,8 +97,8 @@
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
-      "turnEndReason": "context_compact_continue",
+      "reasonCode": "install_failed",
+      "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -122,21 +118,14 @@
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": true,
+        "opened": false,
         "markerServed": false,
-        "sameAgenticTurnPreserved": false
+        "sameAgenticTurnPreserved": true
       },
       "effects": [
         {
           "type": "claim_writer",
           "writer": "lhc"
-        },
-        {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed",
-          "opensContinuationTurn": true,
-          "continuationTurnCount": 1
         },
         {
           "type": "compact",
@@ -146,8 +135,8 @@
         },
         {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "install_failed",
+          "reason": "post-compact serving view could not be installed"
         },
         {
           "type": "record_receipt",
@@ -161,23 +150,24 @@
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": true,
-        "continuationTurnOpened": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": false,
+        "originalAgenticTurnStillOpen": true,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "install_failed",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
         "evaluating_pressure",
-        "path_continue_turn",
+        "path_preserve_tool",
         "compacting",
+        "installing",
         "terminal_refuse"
       ]
     }

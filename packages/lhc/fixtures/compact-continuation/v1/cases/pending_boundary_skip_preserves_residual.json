@@ -1,18 +1,16 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "pending_boundary_skip_preserves_residual",
   "contractVersion": "1.0.0",
-  "description": "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+  "description": "Skip with pending boundary keeps forced boundary residual true and does not authorize next request.",
   "coverage": [
-    "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "pending_boundary_residual_on_skip"
   ],
   "input": {
     "contractVersion": "1.0.0",
     "seam": {
       "modelResponseComplete": true,
       "requestedToolsSettled": true,
-      "captureFlushed": true,
+      "captureFlushed": false,
       "beforeNextProviderRequest": true,
       "insideTransportRetry": false,
       "inputEpochAtDecision": 1,
@@ -45,63 +43,39 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": false,
+    "pendingForcedContinuationBoundary": true,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "skip_seam",
+    "terminalState": "terminal_skip",
     "transitionPath": [
-      "at_seam",
-      "checking_invariants",
-      "evaluating_pressure",
-      "path_continue_turn",
-      "compacting",
-      "terminal_refuse"
+      "idle",
+      "terminal_skip"
     ],
     "effects": [
       {
-        "type": "claim_writer",
-        "writer": "lhc"
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed",
-        "opensContinuationTurn": true,
-        "continuationTurnCount": 1
-      },
-      {
-        "type": "compact",
-        "lowerTargetDomain": "lhc_rendered_history",
-        "lowerTargetTokens": 40000,
-        "allowDegradedDerivations": true
-      },
-      {
-        "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "type": "skip_seam",
+        "code": "not_at_settled_seam",
+        "reason": "compact-continuation requires a settled model-turn seam before the next provider request"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
-      },
-      {
-        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "1.0.0",
-      "outcome": "refuse",
-      "reasonCode": "compact_failed",
+      "outcome": "skip_seam",
+      "reasonCode": "not_at_settled_seam",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -116,7 +90,7 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": true,
+        "met": null,
         "isSuccessGate": false
       },
       "fidelity": "full",
@@ -128,34 +102,14 @@
       },
       "effects": [
         {
-          "type": "claim_writer",
-          "writer": "lhc"
-        },
-        {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed",
-          "opensContinuationTurn": true,
-          "continuationTurnCount": 1
-        },
-        {
-          "type": "compact",
-          "lowerTargetDomain": "lhc_rendered_history",
-          "lowerTargetTokens": 40000,
-          "allowDegradedDerivations": true
-        },
-        {
-          "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "type": "skip_seam",
+          "code": "not_at_settled_seam",
+          "reason": "compact-continuation requires a settled model-turn seam before the next provider request"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
-        },
-        {
-          "type": "release_writer"
         }
       ],
       "residual": {
@@ -168,17 +122,13 @@
         "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": false
       },
-      "refused": true,
-      "refuseCode": "compact_failed",
-      "skipped": false,
-      "skipCode": null,
+      "refused": false,
+      "refuseCode": null,
+      "skipped": true,
+      "skipCode": "not_at_settled_seam",
       "transitionPath": [
-        "at_seam",
-        "checking_invariants",
-        "evaluating_pressure",
-        "path_continue_turn",
-        "compacting",
-        "terminal_refuse"
+        "idle",
+        "terminal_skip"
       ]
     }
   }

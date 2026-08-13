@@ -6,6 +6,7 @@
 import {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_HOST_CAPABILITIES,
+  COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
@@ -46,6 +47,21 @@ function isBool(value: unknown): value is boolean {
   return typeof value === "boolean";
 }
 
+/** Closed-shape: reject unknown keys on contract-owned input objects. */
+function rejectUnknownKeys(
+  obj: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  const allow = new Set(allowed);
+  for (const key of Object.keys(obj)) {
+    if (!allow.has(key)) {
+      issues.push(issue(`${path}.${key}`, "unknown field (closed-shape input rejects unknown keys)"));
+    }
+  }
+}
+
 const OUTCOME_SET = new Set<string>(COMPACT_CONTINUATION_OUTCOME_KINDS);
 const STATE_SET = new Set<string>(COMPACT_CONTINUATION_STATES);
 const REFUSE_SET = new Set<string>(COMPACT_CONTINUATION_REFUSE_CODES);
@@ -79,6 +95,20 @@ function validateSeam(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("seam", "required object"));
     return;
   }
+  rejectUnknownKeys(
+    raw,
+    [
+      "modelResponseComplete",
+      "requestedToolsSettled",
+      "captureFlushed",
+      "beforeNextProviderRequest",
+      "insideTransportRetry",
+      "inputEpochAtDecision",
+      "inputEpochAtApply",
+    ],
+    "seam",
+    issues,
+  );
   for (const k of [
     "modelResponseComplete",
     "requestedToolsSettled",
@@ -104,6 +134,16 @@ function validateProviderUsage(raw: unknown, issues: ValidationIssue[]): void {
   if (!isBool(raw["available"])) {
     issues.push(issue("providerUsage.available", "must be a boolean"));
     return;
+  }
+  if (raw["available"] === true) {
+    rejectUnknownKeys(
+      raw,
+      ["available", "inputTokens", "cacheCreationTokens", "cacheReadTokens", "total", "domain"],
+      "providerUsage",
+      issues,
+    );
+  } else {
+    rejectUnknownKeys(raw, ["available", "reason", "domain"], "providerUsage", issues);
   }
   if (raw["domain"] !== "provider_reported_input") {
     issues.push(issue("providerUsage.domain", 'must be "provider_reported_input"'));
@@ -141,6 +181,7 @@ function validateEstimate(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("postMeasurementEstimate", "required object"));
     return;
   }
+  rejectUnknownKeys(raw, ["tokens", "source", "domain"], "postMeasurementEstimate", issues);
   if (!isSafeNonNegInt(raw["tokens"])) {
     issues.push(issue("postMeasurementEstimate.tokens", "must be a non-negative safe integer"));
   }
@@ -157,6 +198,7 @@ function validatePolicy(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("policy", "required object"));
     return;
   }
+  rejectUnknownKeys(raw, ["upperTriggerTokens", "lowerTargetTokens", "hostCapability"], "policy", issues);
   if (!isSafeNonNegInt(raw["upperTriggerTokens"])) {
     issues.push(issue("policy.upperTriggerTokens", "must be a non-negative safe integer"));
   }
@@ -178,6 +220,11 @@ function validateContinuation(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("continuation.kind", "must be none | pending_correlated_tool_result | active_non_tool"));
     return;
   }
+  if (kind === "none" || kind === "active_non_tool") {
+    rejectUnknownKeys(raw, ["kind"], "continuation", issues);
+  } else {
+    rejectUnknownKeys(raw, ["kind", "toolCallId", "correlationValid"], "continuation", issues);
+  }
   if (kind === "pending_correlated_tool_result") {
     if (typeof raw["toolCallId"] !== "string" || raw["toolCallId"].length === 0) {
       issues.push(issue("continuation.toolCallId", "required non-empty string"));
@@ -193,6 +240,12 @@ function validateInvariants(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("invariants", "required object"));
     return;
   }
+  rejectUnknownKeys(
+    raw,
+    ["captureComplete", "providerIdentityValid", "singleOpenTurn", "writerClaim"],
+    "invariants",
+    issues,
+  );
   for (const k of ["captureComplete", "providerIdentityValid", "singleOpenTurn"] as const) {
     requireBool(raw, k, "invariants", issues);
   }
@@ -206,6 +259,19 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("compactMaterial", "required object"));
     return;
   }
+  rejectUnknownKeys(
+    raw,
+    [
+      "derivationsMissingOrFailed",
+      "lowerTargetMet",
+      "compactStructurallyValid",
+      "installSucceeds",
+      "usefulReduction",
+      "canProduceValidProviderRequest",
+    ],
+    "compactMaterial",
+    issues,
+  );
   for (const k of [
     "derivationsMissingOrFailed",
     "lowerTargetMet",
@@ -227,6 +293,22 @@ export function validateCompactContinuationInput(raw: unknown): ValidationResult
   if (typeof raw["contractVersion"] !== "string" || raw["contractVersion"].length === 0) {
     issues.push(issue("contractVersion", "required non-empty string"));
   }
+  rejectUnknownKeys(
+    raw,
+    [
+      "contractVersion",
+      "seam",
+      "providerUsage",
+      "postMeasurementEstimate",
+      "policy",
+      "continuation",
+      "invariants",
+      "pendingForcedContinuationBoundary",
+      "compactMaterial",
+    ],
+    "$",
+    issues,
+  );
   validateSeam(raw["seam"], issues);
   validateProviderUsage(raw["providerUsage"], issues);
   validateEstimate(raw["postMeasurementEstimate"], issues);
@@ -288,6 +370,9 @@ function validateEffect(effect: unknown, path: string, issues: ValidationIssue[]
     if (effect["kind"] !== COMPACT_CONTINUATION_MARKER_KIND) {
       issues.push(issue(`${path}.kind`, `must be ${COMPACT_CONTINUATION_MARKER_KIND}`));
     }
+    if (effect["idempotencyKey"] !== COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY) {
+      issues.push(issue(`${path}.idempotencyKey`, `must be ${COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY}`));
+    }
     if (effect["userChatVisible"] !== false) {
       issues.push(issue(`${path}.userChatVisible`, "must be false"));
     }
@@ -333,6 +418,7 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
     "priorServingViewIntact",
     "forcedContinuationBoundaryApplied",
     "continuationTurnOpened",
+    "markerPersisted",
     "markerServed",
     "originalAgenticTurnStillOpen",
     "nextProviderRequestAllowed",
@@ -341,6 +427,9 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (raw["writerReleased"] !== true) {
     issues.push(issue("residual.writerReleased", "terminal receipts must release the writer"));
+  }
+  if (raw["markerServed"] === true && raw["markerPersisted"] !== true) {
+    issues.push(issue("residual.markerServed", "served requires markerPersisted"));
   }
 }
 
@@ -443,6 +532,14 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     if (raw["refused"] === true) {
       issues.push(issue("refused", "refused and skipped are mutually exclusive"));
     }
+    if (isObject(raw["residual"]) && raw["residual"]["nextProviderRequestAllowed"] !== false) {
+      issues.push(
+        issue(
+          "residual.nextProviderRequestAllowed",
+          "skip means wait/re-evaluate; must not authorize next provider request",
+        ),
+      );
+    }
   } else if (raw["skipCode"] !== null && raw["skipCode"] !== undefined) {
     issues.push(issue("skipCode", "must be null when not skipped"));
   }
@@ -539,14 +636,34 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
         issue("residual.priorServingViewIntact", "install failure must not imply a partially installed view"),
       );
     }
+    if (raw["refuseCode"] === "install_failed") {
+      if (hasInstall) {
+        issues.push(issue("effects", "install_failed must not include successful install_serving_view"));
+      }
+      if (isObject(raw["residual"]) && raw["residual"]["nextProviderRequestAllowed"] !== false) {
+        issues.push(issue("residual.nextProviderRequestAllowed", "install_failed forbids next request"));
+      }
+      if (isObject(raw["residual"]) && raw["residual"]["markerServed"] === true) {
+        issues.push(issue("residual.markerServed", "install_failed means marker was not served"));
+      }
+    }
+    if (hasMarker && isObject(raw["residual"]) && raw["residual"]["markerPersisted"] !== true) {
+      issues.push(issue("residual.markerPersisted", "insert_continuation_marker requires markerPersisted"));
+    }
 
     // Continuation receipt fields vs effects.
+    // markerServed on continuation means served into installed view; may be false
+    // while hasMarker+markerPersisted on install_failed.
     if (isObject(raw["continuation"])) {
       if (raw["continuation"]["markerServed"] === true && !hasMarker) {
         issues.push(issue("continuation.markerServed", "true requires insert_continuation_marker"));
       }
-      if (raw["continuation"]["markerServed"] === false && hasMarker) {
-        issues.push(issue("continuation.markerServed", "false contradicts insert_continuation_marker"));
+      if (
+        raw["continuation"]["markerServed"] === true &&
+        isObject(raw["residual"]) &&
+        raw["residual"]["markerServed"] !== true
+      ) {
+        issues.push(issue("continuation.markerServed", "must match residual.markerServed"));
       }
       if (raw["continuation"]["opened"] === true && raw["continuation"]["sameAgenticTurnPreserved"] !== false) {
         issues.push(

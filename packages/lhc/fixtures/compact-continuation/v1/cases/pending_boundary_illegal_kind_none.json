@@ -1,11 +1,9 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "pending_boundary_illegal_kind_none",
   "contractVersion": "1.0.0",
-  "description": "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+  "description": "pendingForcedContinuationBoundary with kind none is invalid continuation state.",
   "coverage": [
-    "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "invalid_pending_boundary_continuation"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -37,7 +35,7 @@
       "hostCapability": "full_state_machine"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "none"
     },
     "invariants": {
       "captureComplete": true,
@@ -45,11 +43,11 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": false,
+    "pendingForcedContinuationBoundary": true,
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
@@ -61,47 +59,24 @@
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "evaluating_pressure",
-      "path_continue_turn",
-      "compacting",
       "terminal_refuse"
     ],
     "effects": [
       {
-        "type": "claim_writer",
-        "writer": "lhc"
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed",
-        "opensContinuationTurn": true,
-        "continuationTurnCount": 1
-      },
-      {
-        "type": "compact",
-        "lowerTargetDomain": "lhc_rendered_history",
-        "lowerTargetTokens": 40000,
-        "allowDegradedDerivations": true
-      },
-      {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "invalid_pending_boundary_continuation",
+        "reason": "pendingForcedContinuationBoundary requires continuation.kind active_non_tool; got none"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
-      },
-      {
-        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
+      "reasonCode": "invalid_pending_boundary_continuation",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -116,7 +91,7 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": true,
+        "met": null,
         "isSuccessGate": false
       },
       "fidelity": "full",
@@ -128,34 +103,14 @@
       },
       "effects": [
         {
-          "type": "claim_writer",
-          "writer": "lhc"
-        },
-        {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed",
-          "opensContinuationTurn": true,
-          "continuationTurnCount": 1
-        },
-        {
-          "type": "compact",
-          "lowerTargetDomain": "lhc_rendered_history",
-          "lowerTargetTokens": 40000,
-          "allowDegradedDerivations": true
-        },
-        {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "invalid_pending_boundary_continuation",
+          "reason": "pendingForcedContinuationBoundary requires continuation.kind active_non_tool; got none"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
-        },
-        {
-          "type": "release_writer"
         }
       ],
       "residual": {
@@ -169,15 +124,12 @@
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "invalid_pending_boundary_continuation",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "evaluating_pressure",
-        "path_continue_turn",
-        "compacting",
         "terminal_refuse"
       ]
     }

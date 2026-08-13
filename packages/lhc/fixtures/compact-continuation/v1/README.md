@@ -29,6 +29,13 @@ v1/
 `expected` is the full pure-oracle output: `outcome`, `terminalState`,
 `transitionPath`, `effects`, and `receipt` (including `residual`, skip/refuse codes).
 
+## Closed-shape inputs
+
+v1 inputs are **closed-shape**: unknown fields on every contract-owned input
+object and discriminated-union branch are rejected (`deny_unknown_fields`
+equivalent for Rust). Receipt closed-shape may be tightened in the Rust port
+story; input closure is mandatory now.
+
 ## Regenerating
 
 From `packages/lhc` after editing the pure decision function:
@@ -39,3 +46,5 @@ pnpm exec tsx scripts/gen-compact-continuation-fixtures.mjs
 
 Only regenerate when the contract decision table intentionally changes.
 With an unchanged table, regeneration must leave a clean git diff.
+Independent behavioral tests in `test/compact-continuation-contract.test.ts`
+are the authority for corner outcomes; fixtures alone are not.

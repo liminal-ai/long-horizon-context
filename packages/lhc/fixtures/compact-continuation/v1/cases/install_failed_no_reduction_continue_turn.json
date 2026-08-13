@@ -1,11 +1,11 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "install_failed_no_reduction_continue_turn",
   "contractVersion": "1.0.0",
-  "description": "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+  "description": "Install failure wins over no-reduction on continue-turn: no install_serving_view; marker persisted not served.",
   "coverage": [
     "compact_install_failure",
     "active_non_tool_continuation",
-    "post_boundary_failure"
+    "install_over_no_reduction"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -49,9 +49,9 @@
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
-      "installSucceeds": true,
-      "usefulReduction": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": false,
+      "usefulReduction": false,
       "canProduceValidProviderRequest": true
     }
   },
@@ -64,6 +64,7 @@
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
+      "installing",
       "terminal_refuse"
     ],
     "effects": [
@@ -85,9 +86,18 @@
         "allowDegradedDerivations": true
       },
       {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "install_failed",
+        "reason": "post-compact serving view could not be installed"
       },
       {
         "type": "record_receipt",
@@ -101,7 +111,7 @@
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
+      "reasonCode": "install_failed",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -145,9 +155,18 @@
           "allowDegradedDerivations": true
         },
         {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "install_failed",
+          "reason": "post-compact serving view could not be installed"
         },
         {
           "type": "record_receipt",
@@ -163,13 +182,13 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
-        "markerPersisted": false,
+        "markerPersisted": true,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "install_failed",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -178,6 +197,7 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
+        "installing",
         "terminal_refuse"
       ]
     }

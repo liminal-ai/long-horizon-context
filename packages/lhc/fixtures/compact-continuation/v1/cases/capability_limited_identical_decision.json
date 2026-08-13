@@ -87,6 +87,7 @@
       {
         "type": "insert_continuation_marker",
         "kind": "lhc.compact_continuation",
+        "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
         "modelVisible": true,
         "lhcInspectVisible": true,
         "userChatVisible": false,
@@ -153,6 +154,7 @@
         {
           "type": "insert_continuation_marker",
           "kind": "lhc.compact_continuation",
+          "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
           "modelVisible": true,
           "lhcInspectVisible": true,
           "userChatVisible": false,
@@ -175,6 +177,7 @@
         "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
+        "markerPersisted": true,
         "markerServed": true,
         "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": true
