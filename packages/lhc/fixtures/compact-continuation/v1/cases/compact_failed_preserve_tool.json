@@ -6,6 +6,7 @@
     "compact_install_failure",
     "pending_tool_result_continuation"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

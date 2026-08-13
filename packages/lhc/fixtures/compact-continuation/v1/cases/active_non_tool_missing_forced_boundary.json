@@ -6,6 +6,7 @@
     "invalid_pending_boundary_continuation",
     "missing_forced_boundary_above_trigger"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

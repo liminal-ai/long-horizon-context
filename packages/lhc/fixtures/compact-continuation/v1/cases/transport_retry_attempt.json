@@ -5,6 +5,7 @@
   "coverage": [
     "stale_epoch_or_transport_retry"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

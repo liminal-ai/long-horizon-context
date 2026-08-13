@@ -5,6 +5,7 @@
   "coverage": [
     "no_useful_reduction"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

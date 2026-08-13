@@ -6,6 +6,7 @@
     "open_turn_invariant_broken",
     "record_request_health_refuse"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

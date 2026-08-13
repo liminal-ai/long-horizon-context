@@ -5,6 +5,7 @@
   "coverage": [
     "invalid_pending_boundary_continuation"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

@@ -6,6 +6,7 @@
     "capability_limited",
     "active_non_tool_continuation"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

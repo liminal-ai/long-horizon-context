@@ -6,6 +6,7 @@
     "invalid_pending_boundary_continuation",
     "forced_boundary_legality_precedence"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

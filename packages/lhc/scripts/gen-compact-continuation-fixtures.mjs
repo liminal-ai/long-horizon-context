@@ -451,6 +451,9 @@ const cases = [
   },
   {
     name: "fresh_force_marker_already_persisted_illegal",
+    // Input is intentionally invalid; total-evaluator residual is still pinned for
+    // direct typed callers. Harness branches on inputValidation, not coverage tags.
+    inputValidation: "reject",
     coverage: [
       "invalid_pending_boundary_continuation",
       "fresh_force_marker_already_persisted_illegal",
@@ -529,21 +532,38 @@ const cases = [
 
 mkdirSync(join(baseDir, "cases"), { recursive: true });
 
+/** Closed vocabulary: whether validateCompactContinuationInput must accept or reject `input`. */
+const INPUT_VALIDATION = Object.freeze({ accept: "accept", reject: "reject" });
+
 const manifestCases = [];
 for (const c of cases) {
+  const inputValidation = c.inputValidation ?? INPUT_VALIDATION.accept;
+  if (inputValidation !== INPUT_VALIDATION.accept && inputValidation !== INPUT_VALIDATION.reject) {
+    throw new Error(
+      `case ${c.name}: inputValidation must be "accept" | "reject", got ${JSON.stringify(inputValidation)}`,
+    );
+  }
   const expected = decideCompactContinuation(c.input);
   const body = {
     name: c.name,
     contractVersion: V,
     description: c.description,
     coverage: c.coverage,
+    inputValidation,
     input: c.input,
     expected,
   };
   const file = `cases/${c.name}.json`;
   writeFileSync(join(baseDir, file), JSON.stringify(body, null, 2) + "\n");
-  manifestCases.push({ file, name: c.name, coverage: c.coverage });
-  console.log("wrote", file, "→", expected.outcome, expected.receipt.refuseCode ?? expected.receipt.skipCode ?? "");
+  manifestCases.push({ file, name: c.name, coverage: c.coverage, inputValidation });
+  console.log(
+    "wrote",
+    file,
+    "→",
+    inputValidation,
+    expected.outcome,
+    expected.receipt.refuseCode ?? expected.receipt.skipCode ?? "",
+  );
 }
 
 const requiredCoverage = [

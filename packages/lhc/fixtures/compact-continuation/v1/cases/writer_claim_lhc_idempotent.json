@@ -6,6 +6,7 @@
     "writer_claim_lhc_idempotent",
     "active_non_tool_continuation"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

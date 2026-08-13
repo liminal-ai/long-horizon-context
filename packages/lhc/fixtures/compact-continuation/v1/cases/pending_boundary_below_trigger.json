@@ -6,6 +6,7 @@
     "pending_boundary_repair",
     "pending_boundary_pressure_precedence"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

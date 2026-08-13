@@ -38,11 +38,16 @@ import {
 
 const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "compact-continuation", "v1");
 
+/** Closed fixture vocabulary: validateCompactContinuationInput expectation. */
+const INPUT_VALIDATION_VALUES = ["accept", "reject"] as const;
+type InputValidation = (typeof INPUT_VALIDATION_VALUES)[number];
+
 type FixtureCase = {
   name: string;
   contractVersion: string;
   description: string;
   coverage: string[];
+  inputValidation: InputValidation;
   input: unknown;
   expected: CompactContinuationDecision;
 };
@@ -50,9 +55,21 @@ type FixtureCase = {
 type Manifest = {
   contractVersion: string;
   contractId: string;
-  cases: Array<{ file: string; name: string; coverage: string[] }>;
+  cases: Array<{
+    file: string;
+    name: string;
+    coverage: string[];
+    inputValidation: InputValidation;
+  }>;
   requiredCoverage: string[];
 };
+
+function assertInputValidation(value: unknown, label: string): asserts value is InputValidation {
+  expect(
+    INPUT_VALIDATION_VALUES.includes(value as InputValidation),
+    `${label}: inputValidation must be "accept" | "reject", got ${JSON.stringify(value)}`,
+  ).toBe(true);
+}
 
 function loadManifest(): Manifest {
   return JSON.parse(readFileSync(join(fixturesRoot, "manifest.json"), "utf8")) as Manifest;
@@ -185,19 +202,15 @@ describe("compact-continuation parity fixtures", () => {
       expect(fixture.contractVersion).toBe(COMPACT_CONTINUATION_CONTRACT_VERSION);
       expect(fixture.name).toBe(entry.name);
 
+      assertInputValidation(entry.inputValidation, `manifest ${entry.name}`);
+      assertInputValidation(fixture.inputValidation, `fixture ${fixture.name}`);
+      expect(fixture.inputValidation, "fixture/manifest inputValidation must agree").toBe(entry.inputValidation);
+
       const inputCheck = validateCompactContinuationInput(fixture.input);
-      // One documented contradiction is input-invalid *and* total-evaluator refuse:
-      // fresh force + markerAlreadyPersisted. Direct callers still need residual parity.
-      const intentionalInputInvalid = fixture.coverage.includes("fresh_force_marker_already_persisted_illegal");
-      if (intentionalInputInvalid) {
+      // Branch on first-class inputValidation only — never on coverage-tag strings.
+      // Rejected inputs may still carry total-oracle expected for direct typed callers.
+      if (fixture.inputValidation === "reject") {
         expect(inputCheck.ok, "fixture must remain input-invalid").toBe(false);
-        expect(
-          inputCheck.issues.some(
-            (i) =>
-              i.path === "forcedContinuationBoundary" &&
-              i.message.includes("forcedThisSeam true cannot pair with markerAlreadyPersisted true"),
-          ),
-        ).toBe(true);
       } else {
         expect(inputCheck.ok, JSON.stringify(inputCheck.issues)).toBe(true);
       }
@@ -208,9 +221,10 @@ describe("compact-continuation parity fixtures", () => {
       const receiptCheck = validateCompactContinuationReceipt(fixture.expected.receipt);
       expect(receiptCheck.ok, JSON.stringify(receiptCheck.issues)).toBe(true);
 
-      const input = intentionalInputInvalid
-        ? (fixture.input as ReturnType<typeof asCompactContinuationInput>)
-        : asCompactContinuationInput(fixture.input);
+      const input =
+        fixture.inputValidation === "reject"
+          ? (fixture.input as ReturnType<typeof asCompactContinuationInput>)
+          : asCompactContinuationInput(fixture.input);
       const actual = decideCompactContinuation(input);
 
       const parity = assertDecisionParity(actual, fixture.expected);

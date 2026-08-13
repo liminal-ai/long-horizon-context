@@ -7,6 +7,7 @@
     "fresh_force_marker_already_persisted_illegal",
     "forced_boundary_legality_precedence"
   ],
+  "inputValidation": "reject",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

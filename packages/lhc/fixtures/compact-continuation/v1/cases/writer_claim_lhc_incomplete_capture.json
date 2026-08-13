@@ -6,6 +6,7 @@
     "writer_claim_lhc_idempotent",
     "settled_seam_lhc_claim_early_refuse"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

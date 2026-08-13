@@ -5,6 +5,7 @@
   "coverage": [
     "pending_boundary_residual_on_skip"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {

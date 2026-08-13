@@ -5,6 +5,7 @@
   "coverage": [
     "invalid_provider_identity"
   ],
+  "inputValidation": "accept",
   "input": {
     "contractVersion": "1.0.0",
     "seam": {
