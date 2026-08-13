@@ -59,7 +59,7 @@ describe("matrix ↔ targets.json", () => {
 
 describe("pinned toolchain and required steps", () => {
   it("checks out recursive submodules in every job", () => {
-    expect(workflow.match(/submodules: recursive/g)?.length).toBe(1);
+    expect(workflow.match(/submodules: recursive/g)?.length).toBe(2);
   });
 
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
@@ -67,7 +67,9 @@ describe("pinned toolchain and required steps", () => {
     // on 2026-08-10 — all run on the Node 24 actions runtime.
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,
+      "actions/download-artifact": 4,
       "actions/setup-node": 7,
+      "actions/upload-artifact": 4,
       "pnpm/action-setup": 6,
     };
     const used = [...workflow.matchAll(/uses: ([^\s@]+)@v(\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);
@@ -81,7 +83,7 @@ describe("pinned toolchain and required steps", () => {
 
   it("pins Node 24.18.0 and pnpm 11.8.0 (matching packageManager)", () => {
     expect(workflow).toContain("node-version: 24.18.0");
-    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(1);
+    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(2);
     const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { packageManager?: string };
     expect(rootPkg.packageManager).toBe("pnpm@11.8.0");
   });
@@ -121,8 +123,10 @@ describe("mainline source-checkout contract", () => {
     expect(workflow).not.toContain("pull_request:");
   });
 
-  it("produces no release assets or publication side effects", () => {
-    expect(workflow).not.toMatch(/upload-artifact|download-artifact|assemble-release-bundle|release-candidate/);
-    expect(workflow).not.toMatch(/gh release|action-gh-release|releases\/create|git tag|git push/);
+  it("assembles an unpublished npm candidate without release or publication side effects", () => {
+    expect(workflow).toContain("assemble-npm-package.mjs");
+    expect(workflow).toContain("smoke-npm-package.mjs");
+    expect(workflow).toContain("cc-lhc-npm-candidate");
+    expect(workflow).not.toMatch(/npm publish|gh release|action-gh-release|releases\/create|git tag|git push/);
   });
 });
