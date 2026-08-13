@@ -44,9 +44,18 @@ Fixtures pin oracle outputs for TypeScript/Rust parity. Do not implement host I/
 claim_writer → force_turn_end → compact → [degrade_fidelity] → insert_continuation_marker → install_serving_view → record_receipt → release_writer
 ```
 
-Marker insertion is **canonical/persisted** with stable `idempotencyKey`
-`lhc.compact_continuation:context_compact_continue`. `markerPersisted` vs
-`markerServed`: install failure can report persisted=true, served=false.
+Marker insertion is **canonical/persisted**. Idempotency key is
+`lhc.compact_continuation:<continuationTurnId>` (unique per forced boundary,
+stable across repair). Semantics: `cause=context_compacted_task_in_progress`,
+`action=continue_existing_task`, `newUserRequest=false`, `waitForUser=false`.
+`markerPersisted` vs `markerServed`: install failure can report
+persisted=true, served=false.
+
+**Boundary identity input:** `forcedContinuationBoundary` is
+`{ applied: false }` or
+`{ applied: true, continuationTurnId, forcedThisSeam }`.
+Runtime forces `turn_end` first on a fresh continue-turn seam, supplies the
+new turn id, then classifies via the oracle.
 
 ## Residual state after post-claim failure
 

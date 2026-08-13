@@ -1,9 +1,10 @@
 {
-  "name": "native_writer_conflict",
+  "name": "pending_boundary_illegal_kind_vs_native",
   "contractVersion": "1.0.0",
-  "description": "Native/conflict writer claim refuses silent mid-turn fallback.",
+  "description": "forced_boundary_state_legality precedes writer_claim: applied+kind none refuses invalid_pending even when native conflict also present.",
   "coverage": [
-    "native_writer_conflict"
+    "invalid_pending_boundary_continuation",
+    "forced_boundary_legality_precedence"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -35,16 +36,18 @@
       "hostCapability": "full_state_machine"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "none"
     },
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "native"
     },
     "forcedContinuationBoundary": {
-      "applied": false
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
@@ -66,8 +69,8 @@
     "effects": [
       {
         "type": "refuse",
-        "code": "native_writer_conflict",
-        "reason": "LHC and host-native compact must be one writer at a seam; native/conflict claim refuses silent mid-turn fallback"
+        "code": "invalid_pending_boundary_continuation",
+        "reason": "forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got none"
       },
       {
         "type": "record_receipt",
@@ -78,8 +81,8 @@
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "native_writer_conflict",
-      "turnEndReason": null,
+      "reasonCode": "invalid_pending_boundary_continuation",
+      "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -99,15 +102,15 @@
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": false,
+        "opened": true,
         "markerServed": false,
-        "sameAgenticTurnPreserved": true
+        "sameAgenticTurnPreserved": false
       },
       "effects": [
         {
           "type": "refuse",
-          "code": "native_writer_conflict",
-          "reason": "LHC and host-native compact must be one writer at a seam; native/conflict claim refuses silent mid-turn fallback"
+          "code": "invalid_pending_boundary_continuation",
+          "reason": "forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got none"
         },
         {
           "type": "record_receipt",
@@ -118,16 +121,16 @@
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": false,
-        "continuationTurnOpened": false,
-        "continuationTurnId": null,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": true,
+        "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "native_writer_conflict",
+      "refuseCode": "invalid_pending_boundary_continuation",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [

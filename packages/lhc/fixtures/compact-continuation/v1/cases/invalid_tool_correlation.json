@@ -45,7 +45,9 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": false,
+    "forcedContinuationBoundary": {
+      "applied": false
+    },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -120,6 +122,7 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": false,
         "continuationTurnOpened": false,
+        "continuationTurnId": null,
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,

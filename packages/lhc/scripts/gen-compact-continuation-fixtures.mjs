@@ -72,6 +72,10 @@ const est = (tokens = 0, source = "lhc_token_estimate") => ({
   domain: "source_labelled_estimate",
 });
 
+function appliedBoundary(continuationTurnId, forcedThisSeam) {
+  return { applied: true, continuationTurnId, forcedThisSeam };
+}
+
 function makeInput(over = {}) {
   return {
     contractVersion: V,
@@ -81,7 +85,7 @@ function makeInput(over = {}) {
     policy: { ...basePolicy, ...(over.policy || {}) },
     continuation: over.continuation ?? { kind: "active_non_tool" },
     invariants: { ...goodInvariants, ...(over.invariants || {}) },
-    pendingForcedContinuationBoundary: over.pendingForcedContinuationBoundary ?? false,
+    forcedContinuationBoundary: over.forcedContinuationBoundary ?? { applied: false },
     compactMaterial: { ...goodMaterial, ...(over.compactMaterial || {}) },
   };
 }
@@ -146,6 +150,7 @@ const cases = [
     description:
       "Above trigger active non-tool: force_turn_end then compact, one continuation turn via atomic turn_end, marker.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       providerUsage: providerAbove,
       postMeasurementEstimate: est(1_000),
       continuation: { kind: "active_non_tool" },
@@ -156,6 +161,7 @@ const cases = [
     coverage: ["derivation_gaps_degraded"],
     description: "Missing/failed derivations degrade fidelity at compact assembly; do not block a valid compact.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       providerUsage: providerAbove,
       continuation: { kind: "active_non_tool" },
       compactMaterial: {
@@ -170,6 +176,7 @@ const cases = [
     coverage: ["lower_target_missed"],
     description: "Lower target missed is not a success gate; valid request still installs (degraded).",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       providerUsage: providerAbove,
       continuation: { kind: "active_non_tool" },
       compactMaterial: {
@@ -228,6 +235,7 @@ const cases = [
     description:
       "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
       compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
     }),
@@ -238,6 +246,7 @@ const cases = [
     description:
       "Install failure after forced boundary: no partial install; boundary durable; no marker; writer released.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
       compactMaterial: { ...goodMaterial, installSucceeds: false },
     }),
@@ -292,6 +301,7 @@ const cases = [
     coverage: ["no_useful_reduction"],
     description: "No useful reduction without structural failure is a first-class non-error outcome.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
       compactMaterial: { ...goodMaterial, usefulReduction: false },
     }),
@@ -301,6 +311,7 @@ const cases = [
     coverage: ["active_non_tool_continuation"],
     description: "Provider base alone below trigger; labelled estimate pushes next-request pressure over.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       providerUsage: {
         available: true,
         inputTokens: 80_000,
@@ -318,6 +329,7 @@ const cases = [
     coverage: ["capability_limited", "active_non_tool_continuation"],
     description: "capability_limited host capability does not change the decision table or fabricate host effects.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       policy: { ...basePolicy, hostCapability: "capability_limited" },
       continuation: { kind: "active_non_tool" },
     }),
@@ -329,7 +341,7 @@ const cases = [
       "Repair after prior forced boundary: do not re-force turn_end or duplicate marker; resume compact onward.",
     input: makeInput({
       continuation: { kind: "active_non_tool" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
   {
@@ -339,7 +351,7 @@ const cases = [
       "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
     input: makeInput({
       continuation: { kind: "active_non_tool" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
       compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
     }),
   },
@@ -349,6 +361,7 @@ const cases = [
     description:
       "Install failure wins over no-reduction on continue-turn: no install_serving_view; marker persisted not served.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
       compactMaterial: {
         ...goodMaterial,
@@ -381,7 +394,7 @@ const cases = [
     input: makeInput({
       providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
       continuation: { kind: "active_non_tool" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
   {
@@ -399,29 +412,40 @@ const cases = [
       },
       postMeasurementEstimate: est(0),
       continuation: { kind: "active_non_tool" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
+    }),
+  },
+  {
+    name: "pending_boundary_illegal_kind_vs_native",
+    coverage: ["invalid_pending_boundary_continuation", "forced_boundary_legality_precedence"],
+    description:
+      "forced_boundary_state_legality precedes writer_claim: applied+kind none refuses invalid_pending even when native conflict also present.",
+    input: makeInput({
+      continuation: { kind: "none" },
+      forcedContinuationBoundary: appliedBoundary("t2", false),
+      invariants: { ...goodInvariants, writerClaim: "native" },
     }),
   },
   {
     name: "pending_boundary_illegal_kind_none",
     coverage: ["invalid_pending_boundary_continuation"],
-    description: "pendingForcedContinuationBoundary with kind none is invalid continuation state.",
+    description: "forcedContinuationBoundary with kind none is invalid continuation state.",
     input: makeInput({
       continuation: { kind: "none" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
   {
     name: "pending_boundary_illegal_kind_tool",
     coverage: ["invalid_pending_boundary_continuation"],
-    description: "pendingForcedContinuationBoundary with pending tool result is invalid continuation state.",
+    description: "forcedContinuationBoundary with pending tool result is invalid continuation state.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
         toolCallId: "call-42",
         correlationValid: true,
       },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
   {
@@ -429,6 +453,7 @@ const cases = [
     coverage: ["writer_claim_lhc_idempotent", "active_non_tool_continuation"],
     description: "writerClaim lhc is an already-established claim; claim_writer in receipt is idempotent reassert.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
       invariants: { ...goodInvariants, writerClaim: "lhc" },
       continuation: { kind: "active_non_tool" },
     }),
@@ -440,7 +465,7 @@ const cases = [
     input: makeInput({
       seam: { ...goodSeam, captureFlushed: false },
       continuation: { kind: "active_non_tool" },
-      pendingForcedContinuationBoundary: true,
+      forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
 ];

@@ -6,7 +6,9 @@
 import {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_HOST_CAPABILITIES,
-  COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY,
+  COMPACT_CONTINUATION_MARKER_ACTION,
+  COMPACT_CONTINUATION_MARKER_CAUSE,
+  COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX,
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
@@ -19,6 +21,7 @@ import {
   type CompactContinuationInput,
   type CompactContinuationOutcomeKind,
   type CompactContinuationState,
+  compactContinuationMarkerIdempotencyKey,
 } from "./contract.js";
 
 export type ValidationIssue = {
@@ -254,6 +257,32 @@ function validateInvariants(raw: unknown, issues: ValidationIssue[]): void {
   }
 }
 
+function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
+  if (!isObject(raw)) {
+    issues.push(issue("forcedContinuationBoundary", "required object"));
+    return;
+  }
+  if (!isBool(raw["applied"])) {
+    issues.push(issue("forcedContinuationBoundary.applied", "must be a boolean"));
+    return;
+  }
+  if (raw["applied"] === false) {
+    rejectUnknownKeys(raw, ["applied"], "forcedContinuationBoundary", issues);
+    return;
+  }
+  rejectUnknownKeys(raw, ["applied", "continuationTurnId", "forcedThisSeam"], "forcedContinuationBoundary", issues);
+  if (typeof raw["continuationTurnId"] !== "string" || raw["continuationTurnId"].length === 0) {
+    issues.push(issue("forcedContinuationBoundary.continuationTurnId", "required non-empty string when applied"));
+  } else if (!/^t\d+$/.test(raw["continuationTurnId"])) {
+    // Soft shape check: turn ids are tN; still accept any non-empty string? Ruling says tN.
+    // Require t + digits for parity stability.
+    issues.push(issue("forcedContinuationBoundary.continuationTurnId", "must match turn id shape t<digits>"));
+  }
+  if (!isBool(raw["forcedThisSeam"])) {
+    issues.push(issue("forcedContinuationBoundary.forcedThisSeam", "must be a boolean when applied"));
+  }
+}
+
 function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
   if (!isObject(raw)) {
     issues.push(issue("compactMaterial", "required object"));
@@ -303,7 +332,7 @@ export function validateCompactContinuationInput(raw: unknown): ValidationResult
       "policy",
       "continuation",
       "invariants",
-      "pendingForcedContinuationBoundary",
+      "forcedContinuationBoundary",
       "compactMaterial",
     ],
     "$",
@@ -315,9 +344,7 @@ export function validateCompactContinuationInput(raw: unknown): ValidationResult
   validatePolicy(raw["policy"], issues);
   validateContinuation(raw["continuation"], issues);
   validateInvariants(raw["invariants"], issues);
-  if (!isBool(raw["pendingForcedContinuationBoundary"])) {
-    issues.push(issue("pendingForcedContinuationBoundary", "must be a boolean"));
-  }
+  validateForcedBoundary(raw["forcedContinuationBoundary"], issues);
   validateMaterial(raw["compactMaterial"], issues);
 
   // Reject unsafe combined token sums before arithmetic (pressure = base + estimate).
@@ -365,13 +392,43 @@ function validateEffect(effect: unknown, path: string, issues: ValidationIssue[]
     if (effect["continuationTurnCount"] !== 1) {
       issues.push(issue(`${path}.continuationTurnCount`, "must be 1"));
     }
+    if (typeof effect["continuationTurnId"] !== "string" || effect["continuationTurnId"].length === 0) {
+      issues.push(issue(`${path}.continuationTurnId`, "required non-empty turn id"));
+    }
   }
   if (type === "insert_continuation_marker") {
     if (effect["kind"] !== COMPACT_CONTINUATION_MARKER_KIND) {
       issues.push(issue(`${path}.kind`, `must be ${COMPACT_CONTINUATION_MARKER_KIND}`));
     }
-    if (effect["idempotencyKey"] !== COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY) {
-      issues.push(issue(`${path}.idempotencyKey`, `must be ${COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY}`));
+    if (typeof effect["continuationTurnId"] !== "string" || effect["continuationTurnId"].length === 0) {
+      issues.push(issue(`${path}.continuationTurnId`, "required non-empty turn id"));
+    } else {
+      const expectedKey = compactContinuationMarkerIdempotencyKey(effect["continuationTurnId"]);
+      if (effect["idempotencyKey"] !== expectedKey) {
+        issues.push(
+          issue(
+            `${path}.idempotencyKey`,
+            `must equal ${COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX}<continuationTurnId> (expected ${expectedKey})`,
+          ),
+        );
+      }
+    }
+    if (!isObject(effect["semantics"])) {
+      issues.push(issue(`${path}.semantics`, "required object"));
+    } else {
+      const s = effect["semantics"];
+      if (s["cause"] !== COMPACT_CONTINUATION_MARKER_CAUSE) {
+        issues.push(issue(`${path}.semantics.cause`, `must be ${COMPACT_CONTINUATION_MARKER_CAUSE}`));
+      }
+      if (s["action"] !== COMPACT_CONTINUATION_MARKER_ACTION) {
+        issues.push(issue(`${path}.semantics.action`, `must be ${COMPACT_CONTINUATION_MARKER_ACTION}`));
+      }
+      if (s["newUserRequest"] !== false) {
+        issues.push(issue(`${path}.semantics.newUserRequest`, "must be false"));
+      }
+      if (s["waitForUser"] !== false) {
+        issues.push(issue(`${path}.semantics.waitForUser`, "must be false"));
+      }
     }
     if (effect["userChatVisible"] !== false) {
       issues.push(issue(`${path}.userChatVisible`, "must be false"));
@@ -430,6 +487,15 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (raw["markerServed"] === true && raw["markerPersisted"] !== true) {
     issues.push(issue("residual.markerServed", "served requires markerPersisted"));
+  }
+  if (raw["continuationTurnId"] !== null && typeof raw["continuationTurnId"] !== "string") {
+    issues.push(issue("residual.continuationTurnId", "must be string or null"));
+  }
+  if (
+    raw["forcedContinuationBoundaryApplied"] === true &&
+    (raw["continuationTurnId"] === null || raw["continuationTurnId"] === undefined)
+  ) {
+    issues.push(issue("residual.continuationTurnId", "required when forcedContinuationBoundaryApplied"));
   }
 }
 
@@ -558,6 +624,13 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
 
     if (hasForce && raw["turnEndReason"] !== CONTEXT_COMPACT_CONTINUE_REASON) {
       issues.push(issue("turnEndReason", "force_turn_end requires turnEndReason context_compact_continue"));
+    }
+    if (hasForce && hasMarker) {
+      const forceFx = raw["effects"].find((e) => isObject(e) && e["type"] === "force_turn_end");
+      const markFx = raw["effects"].find((e) => isObject(e) && e["type"] === "insert_continuation_marker");
+      if (isObject(forceFx) && isObject(markFx) && forceFx["continuationTurnId"] !== markFx["continuationTurnId"]) {
+        issues.push(issue("effects", "force_turn_end and marker continuationTurnId must match"));
+      }
     }
 
     // Outcomes that imply a forced boundary (including degraded + post-boundary refuse).

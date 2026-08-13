@@ -43,7 +43,11 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": true,
+    "forcedContinuationBoundary": {
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": false
+    },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -117,6 +121,7 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,

@@ -45,7 +45,11 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": false,
+    "forcedContinuationBoundary": {
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": true
+    },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -77,7 +81,8 @@
         "reason": "context_compact_continue",
         "outcome": "completed",
         "opensContinuationTurn": true,
-        "continuationTurnCount": 1
+        "continuationTurnCount": 1,
+        "continuationTurnId": "t2"
       },
       {
         "type": "compact",
@@ -88,7 +93,14 @@
       {
         "type": "insert_continuation_marker",
         "kind": "lhc.compact_continuation",
-        "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
         "modelVisible": true,
         "lhcInspectVisible": true,
         "userChatVisible": false,
@@ -146,7 +158,8 @@
           "reason": "context_compact_continue",
           "outcome": "completed",
           "opensContinuationTurn": true,
-          "continuationTurnCount": 1
+          "continuationTurnCount": 1,
+          "continuationTurnId": "t2"
         },
         {
           "type": "compact",
@@ -157,7 +170,14 @@
         {
           "type": "insert_continuation_marker",
           "kind": "lhc.compact_continuation",
-          "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
           "modelVisible": true,
           "lhcInspectVisible": true,
           "userChatVisible": false,
@@ -182,6 +202,7 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": true,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,

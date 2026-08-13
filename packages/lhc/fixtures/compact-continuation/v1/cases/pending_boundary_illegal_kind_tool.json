@@ -1,7 +1,7 @@
 {
   "name": "pending_boundary_illegal_kind_tool",
   "contractVersion": "1.0.0",
-  "description": "pendingForcedContinuationBoundary with pending tool result is invalid continuation state.",
+  "description": "forcedContinuationBoundary with pending tool result is invalid continuation state.",
   "coverage": [
     "invalid_pending_boundary_continuation"
   ],
@@ -45,7 +45,11 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": true,
+    "forcedContinuationBoundary": {
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": false
+    },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -67,7 +71,7 @@
       {
         "type": "refuse",
         "code": "invalid_pending_boundary_continuation",
-        "reason": "pendingForcedContinuationBoundary requires continuation.kind active_non_tool; got pending_correlated_tool_result"
+        "reason": "forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got pending_correlated_tool_result"
       },
       {
         "type": "record_receipt",
@@ -107,7 +111,7 @@
         {
           "type": "refuse",
           "code": "invalid_pending_boundary_continuation",
-          "reason": "pendingForcedContinuationBoundary requires continuation.kind active_non_tool; got pending_correlated_tool_result"
+          "reason": "forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got pending_correlated_tool_result"
         },
         {
           "type": "record_receipt",
@@ -120,6 +124,7 @@
         "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,

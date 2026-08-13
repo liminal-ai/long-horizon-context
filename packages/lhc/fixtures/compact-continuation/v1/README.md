@@ -36,6 +36,11 @@ object and discriminated-union branch are rejected (`deny_unknown_fields`
 equivalent for Rust). Receipt closed-shape may be tightened in the Rust port
 story; input closure is mandatory now.
 
+**Rust closed unions:** naive `#[serde(deny_unknown_fields)]` on
+internally-tagged or boolean-discriminated enums does **not** enforce
+per-variant closed shape. LIM-62 must use per-variant closed structs and/or
+custom validation equivalent to the TypeScript validator and parity tests.
+
 ## Regenerating
 
 From `packages/lhc` after editing the pure decision function:

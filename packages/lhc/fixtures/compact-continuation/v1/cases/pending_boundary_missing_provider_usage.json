@@ -41,7 +41,11 @@
       "singleOpenTurn": true,
       "writerClaim": "none"
     },
-    "pendingForcedContinuationBoundary": true,
+    "forcedContinuationBoundary": {
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": false
+    },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
@@ -77,7 +81,14 @@
       {
         "type": "insert_continuation_marker",
         "kind": "lhc.compact_continuation",
-        "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
         "modelVisible": true,
         "lhcInspectVisible": true,
         "userChatVisible": false,
@@ -137,7 +148,14 @@
         {
           "type": "insert_continuation_marker",
           "kind": "lhc.compact_continuation",
-          "idempotencyKey": "lhc.compact_continuation:context_compact_continue",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
           "modelVisible": true,
           "lhcInspectVisible": true,
           "userChatVisible": false,
@@ -160,6 +178,7 @@
         "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": true,
         "markerServed": true,
         "originalAgenticTurnStillOpen": false,

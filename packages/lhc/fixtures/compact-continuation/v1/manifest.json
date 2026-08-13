@@ -216,6 +216,14 @@
       ]
     },
     {
+      "file": "cases/pending_boundary_illegal_kind_vs_native.json",
+      "name": "pending_boundary_illegal_kind_vs_native",
+      "coverage": [
+        "invalid_pending_boundary_continuation",
+        "forced_boundary_legality_precedence"
+      ]
+    },
+    {
       "file": "cases/pending_boundary_illegal_kind_none.json",
       "name": "pending_boundary_illegal_kind_none",
       "coverage": [

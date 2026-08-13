@@ -45,11 +45,35 @@ export const CONTEXT_COMPACT_CONTINUE_REASON = "context_compact_continue" as con
 export const COMPACT_CONTINUATION_MARKER_KIND = "lhc.compact_continuation" as const;
 
 /**
- * Stable idempotency identity for the typed continuation marker, derived from
- * the forced continuation boundary cause. Reasserting the same key during
- * repair skips rather than creating a duplicate marker.
+ * Prefix for per-boundary marker idempotency keys.
+ * Full key = prefix + continuationTurnId (e.g. `lhc.compact_continuation:t3`).
+ * Must be unique per forced boundary and stable across repair of that boundary.
  */
-export const COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY = "lhc.compact_continuation:context_compact_continue" as const;
+export const COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX = "lhc.compact_continuation:" as const;
+
+/** Build the intake-safe marker idempotency key for one continuation turn. */
+export function compactContinuationMarkerIdempotencyKey(continuationTurnId: string): string {
+  return `${COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX}${continuationTurnId}`;
+}
+
+/** Stable marker semantic cause: context compacted while the task remained in progress. */
+export const COMPACT_CONTINUATION_MARKER_CAUSE = "context_compacted_task_in_progress" as const;
+
+/** Stable marker semantic action: continue the existing task. */
+export const COMPACT_CONTINUATION_MARKER_ACTION = "continue_existing_task" as const;
+
+/**
+ * Required model-facing semantics of the typed continuation marker.
+ * Hosts may render provider-specific text but must preserve these fields.
+ */
+export type CompactContinuationMarkerSemantics = {
+  cause: typeof COMPACT_CONTINUATION_MARKER_CAUSE;
+  action: typeof COMPACT_CONTINUATION_MARKER_ACTION;
+  /** This is not a new user request. */
+  newUserRequest: false;
+  /** Do not wait for another user message. */
+  waitForUser: false;
+};
 
 // ── Accounting domains (intentionally distinct) ──────────────────────────────
 
@@ -281,6 +305,9 @@ export type CompactContinuationEffect =
        * turn** (`turns.create`). This single effect models that atomic
        * boundary. Runtimes must not apply a second imperative "open turn"
        * action that would create another turn.
+       *
+       * `continuationTurnId` is the newly opened turn id (`tN`) returned by
+       * that transition — the stable per-boundary identity for marker keys.
        */
       type: "force_turn_end";
       reason: typeof CONTEXT_COMPACT_CONTINUE_REASON;
@@ -289,6 +316,8 @@ export type CompactContinuationEffect =
       opensContinuationTurn: true;
       /** Always 1: exactly one empty continuation turn after the boundary. */
       continuationTurnCount: 1;
+      /** Newly opened continuation turn id (`tN`). */
+      continuationTurnId: string;
     }
   | {
       type: "compact";
@@ -310,18 +339,26 @@ export type CompactContinuationEffect =
        * inspection/retrieval-visible; hidden from normal user chat.
        *
        * Insertion is durable on successful compact (before serving-view install).
-       * Idempotency: reasserting the same `idempotencyKey` during repair skips
-       * rather than creating a duplicate.
+       * Idempotency key is `lhc.compact_continuation:<continuationTurnId>` —
+       * unique per forced boundary, stable across repair of that boundary.
+       * Reasserting the same key during repair skips rather than duplicating.
+       *
+       * `semantics` is the stable instruction payload every host must preserve
+       * (render/transient inject may vary; meaning may not).
        */
       type: "insert_continuation_marker";
       kind: typeof COMPACT_CONTINUATION_MARKER_KIND;
-      idempotencyKey: typeof COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_KEY;
+      /** Echo of the forced boundary's continuation turn id. */
+      continuationTurnId: string;
+      /** Must equal compactContinuationMarkerIdempotencyKey(continuationTurnId). */
+      idempotencyKey: string;
+      semantics: CompactContinuationMarkerSemantics;
       modelVisible: true;
       lhcInspectVisible: true;
       userChatVisible: false;
       /**
        * Hosts that cannot mirror the typed item may inject transiently while
-       * preserving the canonical boundary and cause.
+       * preserving the canonical boundary and semantics.
        */
       hostMayInjectTransiently: true;
     }
@@ -405,6 +442,36 @@ export type WorkContinuation =
       correlationValid: boolean;
     }
   | { kind: "active_non_tool" };
+
+/**
+ * Forced continuation-boundary identity for the whole-seam oracle.
+ *
+ * Runtime protocol (LIM-61):
+ * - **Fresh continue-turn:** apply atomic `turn_end` first, receive the new
+ *   continuation turn id (`tN`), supply `{ applied: true, continuationTurnId,
+ *   forcedThisSeam: true }`.
+ * - **Repair:** read the already-open continuation turn id; supply
+ *   `{ applied: true, continuationTurnId, forcedThisSeam: false }` — do not
+ *   force another boundary.
+ * - **No forced boundary** (preserve-tool, below-trigger, skips, etc.):
+ *   `{ applied: false }`.
+ *
+ * Continue-turn compact/marker paths require `applied: true` with a non-empty
+ * turn id. Marker idempotency keys derive from that id only (not UUID, usage,
+ * epoch, timestamp, or the reason string alone).
+ */
+export type ForcedContinuationBoundary =
+  | { applied: false }
+  | {
+      applied: true;
+      /** Newly opened (or already open) continuation turn id, e.g. `t3`. */
+      continuationTurnId: string;
+      /**
+       * true when this seam applied the atomic force_turn_end;
+       * false when repairing a prior forced boundary (no second force).
+       */
+      forcedThisSeam: boolean;
+    };
 
 /**
  * Writer claim observed at seam entry.
@@ -492,23 +559,19 @@ export type CompactContinuationInput = {
   continuation: WorkContinuation;
   invariants: CompactContinuationInvariants;
   /**
-   * True when a prior seam attempt already applied `force_turn_end` with
-   * `context_compact_continue` and left exactly one empty continuation turn
-   * open, but compact/marker/install did not complete.
+   * Forced boundary identity (or none). Replaces the prior bare boolean.
    *
-   * **Legal v1:** requires `continuation.kind === "active_non_tool"`. Pairing
-   * with `none` or `pending_correlated_tool_result` is an invalid continuation
-   * state (`invalid_pending_boundary_continuation`).
+   * **Legal v1 when applied:** requires `continuation.kind === "active_non_tool"`.
+   * Pairing with `none` or `pending_correlated_tool_result` is
+   * `invalid_pending_boundary_continuation`.
    *
-   * **Repair precedence:** after seam + record/request-health checks pass,
-   * resume compact/marker/install regardless of missing provider usage or a
-   * now-below trigger. Do not route through continue_normal / normal_complete.
+   * **Repair precedence** (`applied: true`, `forcedThisSeam: false`): after seam
+   * + record/request-health checks pass, resume compact/marker/install
+   * regardless of missing provider usage or a now-below trigger.
    *
-   * **Idempotency:** do not force a duplicate boundary; reassert the same
-   * marker insertion by `idempotencyKey` (skip if already present), then retry
-   * install.
+   * **Marker identity:** key = `lhc.compact_continuation:<continuationTurnId>`.
    */
-  pendingForcedContinuationBoundary: boolean;
+  forcedContinuationBoundary: ForcedContinuationBoundary;
   // ── attempt results ───────────────────────────────────────────────────────
   compactMaterial: CompactMaterialFacts;
 };
@@ -564,6 +627,11 @@ export type CompactContinuationResidualState = {
    * boundary (atomic turn_end). False when no forced boundary applies.
    */
   continuationTurnOpened: boolean;
+  /**
+   * Continuation turn id for an applied forced boundary (`tN`), else null.
+   * Inspectable for repair and marker-key audit.
+   */
+  continuationTurnId: string | null;
   /**
    * Typed marker was persisted into the canonical record (after successful
    * compact, before serving-view install). True on install_failed after
@@ -691,6 +759,13 @@ export type CompactContinuationDecision = {
 export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "seam_eligibility",
   "input_epoch",
+  /**
+   * Forced-boundary state + continuation-kind legality. Runs after epoch and
+   * **before** writer/capture proofs so invalid applied+kind pairs refuse as
+   * `invalid_pending_boundary_continuation` even when a native writer conflict
+   * is also present (pinned by fixture/test).
+   */
+  "forced_boundary_state_legality",
   "writer_claim",
   "capture_identity_correlation",
   "provider_usage_authority",
@@ -723,12 +798,12 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
   "refuse_only_when_no_valid_request_or_invariants_unproven",
   "one_writer_at_seam_no_silent_native_mid_turn_fallback",
   "post_claim_failures_release_writer_and_state_residual_truthfully",
-  "pending_forced_boundary_repair_takes_precedence_over_fresh_pressure",
-  "pending_forced_boundary_requires_active_non_tool_continuation",
-  "pending_forced_boundary_residual_truthful_on_skip_and_refuse",
+  "forced_boundary_repair_takes_precedence_over_fresh_pressure",
+  "applied_forced_boundary_requires_active_non_tool_continuation",
+  "applied_forced_boundary_residual_truthful_on_skip_and_refuse",
   "install_failure_wins_over_no_reduction_classification",
   "marker_persisted_before_install_served_only_after_install",
-  "marker_insertion_idempotent_by_boundary_derived_key",
+  "marker_idempotency_key_is_prefix_plus_continuation_turn_id",
   "skip_does_not_authorize_next_provider_request",
   "writer_claim_lhc_is_idempotent_reassert_not_second_lock",
   "input_is_closed_shape_unknown_fields_rejected",
@@ -749,3 +824,12 @@ export type CompactContinuationInvariantId = (typeof COMPACT_CONTINUATION_INVARI
  * full closed-shape in the Rust port story; input closure is mandatory now.
  */
 export const COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE = true as const;
+
+/**
+ * Rust ports: naive `#[serde(deny_unknown_fields)]` on internally-tagged or
+ * boolean-discriminated enums does **not** enforce per-variant closed shape.
+ * Use per-variant closed structs and/or custom validation equivalent to the
+ * TypeScript validator and parity tests.
+ */
+export const COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE =
+  "per-variant closed structs required; deny_unknown_fields on enum derive is insufficient" as const;
