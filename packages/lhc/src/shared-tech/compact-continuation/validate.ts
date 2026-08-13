@@ -289,6 +289,15 @@ function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
   if (!isBool(raw["markerAlreadyPersisted"])) {
     issues.push(issue("forcedContinuationBoundary.markerAlreadyPersisted", "must be a boolean when applied"));
   }
+  // Fresh force just minted continuationTurnId; boundary marker cannot already exist.
+  if (raw["forcedThisSeam"] === true && raw["markerAlreadyPersisted"] === true) {
+    issues.push(
+      issue(
+        "forcedContinuationBoundary",
+        "forcedThisSeam true cannot pair with markerAlreadyPersisted true (fresh turn_end marker cannot already exist)",
+      ),
+    );
+  }
 }
 
 function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {

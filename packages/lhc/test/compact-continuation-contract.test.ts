@@ -186,7 +186,21 @@ describe("compact-continuation parity fixtures", () => {
       expect(fixture.name).toBe(entry.name);
 
       const inputCheck = validateCompactContinuationInput(fixture.input);
-      expect(inputCheck.ok, JSON.stringify(inputCheck.issues)).toBe(true);
+      // One documented contradiction is input-invalid *and* total-evaluator refuse:
+      // fresh force + markerAlreadyPersisted. Direct callers still need residual parity.
+      const intentionalInputInvalid = fixture.coverage.includes("fresh_force_marker_already_persisted_illegal");
+      if (intentionalInputInvalid) {
+        expect(inputCheck.ok, "fixture must remain input-invalid").toBe(false);
+        expect(
+          inputCheck.issues.some(
+            (i) =>
+              i.path === "forcedContinuationBoundary" &&
+              i.message.includes("forcedThisSeam true cannot pair with markerAlreadyPersisted true"),
+          ),
+        ).toBe(true);
+      } else {
+        expect(inputCheck.ok, JSON.stringify(inputCheck.issues)).toBe(true);
+      }
 
       const expectedCheck = validateCompactContinuationDecision(fixture.expected);
       expect(expectedCheck.ok, JSON.stringify(expectedCheck.issues)).toBe(true);
@@ -194,7 +208,9 @@ describe("compact-continuation parity fixtures", () => {
       const receiptCheck = validateCompactContinuationReceipt(fixture.expected.receipt);
       expect(receiptCheck.ok, JSON.stringify(receiptCheck.issues)).toBe(true);
 
-      const input = asCompactContinuationInput(fixture.input);
+      const input = intentionalInputInvalid
+        ? (fixture.input as ReturnType<typeof asCompactContinuationInput>)
+        : asCompactContinuationInput(fixture.input);
       const actual = decideCompactContinuation(input);
 
       const parity = assertDecisionParity(actual, fixture.expected);
@@ -1002,5 +1018,61 @@ describe("marker identity per forced boundary", () => {
     const v = validateCompactContinuationInput(bad);
     expect(v.ok).toBe(false);
     expect(v.issues.some((i) => i.path.includes("markerAlreadyPersisted"))).toBe(true);
+  });
+
+  it("rejects fresh force + markerAlreadyPersisted (validate + total evaluator residual truth)", () => {
+    const raw = baseInput({
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: {
+        applied: true,
+        continuationTurnId: "t2",
+        forcedThisSeam: true,
+        markerAlreadyPersisted: true,
+      },
+      // Also present so legality precedence over writer_claim is pinned.
+      invariants: {
+        captureComplete: true,
+        providerIdentityValid: true,
+        singleOpenTurn: true,
+        writerClaim: "native",
+      },
+    });
+
+    const v = validateCompactContinuationInput(raw);
+    expect(v.ok).toBe(false);
+    expect(
+      v.issues.some(
+        (i) =>
+          i.path === "forcedContinuationBoundary" &&
+          i.message.includes("forcedThisSeam true cannot pair with markerAlreadyPersisted true"),
+      ),
+    ).toBe(true);
+
+    // Total evaluator refuses even for direct typed callers that skip as*.
+    const actual = decideCompactContinuation(raw as ReturnType<typeof asCompactContinuationInput>);
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+    expect(actual.receipt.refuseCode).not.toBe("native_writer_conflict");
+    expect(actual.transitionPath).toEqual(["at_seam", "checking_invariants", "terminal_refuse"]);
+    expect(actual.receipt.residual).toMatchObject({
+      forcedContinuationBoundaryApplied: true,
+      continuationTurnOpened: true,
+      continuationTurnId: "t2",
+      markerPersisted: false,
+      markerServed: false,
+      originalAgenticTurnStillOpen: false,
+      nextProviderRequestAllowed: false,
+      priorServingViewIntact: true,
+      writerReleased: true,
+    });
+    expect(actual.receipt.continuation).toMatchObject({
+      opened: true,
+      markerServed: false,
+      sameAgenticTurnPreserved: false,
+    });
+    expect(actual.receipt.turnEndReason).toBe(CONTEXT_COMPACT_CONTINUE_REASON);
+    // Receipt/decision remain validator-clean even though input is illegal.
+    expect(validateCompactContinuationDecision(actual).ok).toBe(true);
+    expect(validateCompactContinuationReceipt(actual.receipt).ok).toBe(true);
   });
 });

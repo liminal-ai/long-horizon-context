@@ -57,10 +57,15 @@ persisted=true, served=false.
 Runtime forces `turn_end` first on a fresh continue-turn seam, supplies the
 new turn id with `markerAlreadyPersisted: false`, then classifies via the
 oracle. Repair supplies the actual `markerAlreadyPersisted` after checking the
-boundary-derived key.
+boundary-derived key. `forcedThisSeam: true` + `markerAlreadyPersisted: true`
+is illegal v1 (fresh force cannot already hold the boundary marker): input
+validation rejects it and the oracle refuses
+`invalid_pending_boundary_continuation` without trusting the marker claim.
 
 `markerPersisted` on residual is **record residual state** after the attempt
-(not attempt-scoped): true when already present or this attempt persisted it.
+(not attempt-scoped): true when a trusted prior marker is present (repair) or
+this attempt persisted it — never from a contradictory fresh+already-persisted
+claim.
 
 ## Residual state after post-claim failure
 
@@ -84,7 +89,7 @@ takes precedence over fresh pressure/usage; requires
 
 | Skip codes | Refuse codes (examples) |
 |---|---|
-| `not_at_settled_seam`, `transport_retry`, `input_epoch_changed` | `incomplete_capture`, `invalid_provider_identity`, `invalid_tool_correlation`, `open_turn_invariant_broken`, `native_writer_conflict`, `compact_failed`, `install_failed`, `no_valid_provider_request`, `invalid_pending_boundary_continuation` (wrong kind, missing applied boundary above trigger, empty turn id), `unsupported_contract_version` |
+| `not_at_settled_seam`, `transport_retry`, `input_epoch_changed` | `incomplete_capture`, `invalid_provider_identity`, `invalid_tool_correlation`, `open_turn_invariant_broken`, `native_writer_conflict`, `compact_failed`, `install_failed`, `no_valid_provider_request`, `invalid_pending_boundary_continuation` (wrong kind, missing applied boundary above trigger, empty turn id, fresh force + markerAlreadyPersisted), `unsupported_contract_version` |
 
 ## Outcomes
 

@@ -467,6 +467,14 @@ export type WorkContinuation =
  * turn id. Marker idempotency keys derive from that id only (not UUID, usage,
  * epoch, timestamp, or the reason string alone). Reassertion of the marker is
  * idempotent by that per-boundary key.
+ *
+ * **Illegal v1 combination:** `applied: true` with `forcedThisSeam: true` and
+ * `markerAlreadyPersisted: true`. A fresh atomic `turn_end` just minted the
+ * continuation turn id, so its boundary-derived marker cannot already exist at
+ * seam entry. Input validation rejects this pair; the total evaluator also
+ * refuses `invalid_pending_boundary_continuation` at
+ * `forced_boundary_state_legality` (residual does not trust the claim —
+ * `markerPersisted`/`markerServed` stay false while applied-boundary facts remain).
  */
 export type ForcedContinuationBoundary =
   | { applied: false }
@@ -482,11 +490,14 @@ export type ForcedContinuationBoundary =
       /**
        * Closed residual fact at seam entry: does the boundary-keyed marker
        * already exist in the canonical record?
-       * - Fresh force supplies `false`.
+       * - Fresh force supplies `false` (must not be true — illegal with
+       *   `forcedThisSeam: true`).
        * - Repair checks the boundary-derived idempotency key and supplies the
        *   actual existing state.
-       * Residual `markerPersisted` is true when this is true **or** this
-       * attempt persisted the marker.
+       * Residual `markerPersisted` is true when a *trusted* prior marker is
+       * present (repair, `forcedThisSeam: false`) **or** this attempt
+       * persisted the marker. A contradictory fresh+already-persisted claim
+       * is never OR'd into residual true.
        */
       markerAlreadyPersisted: boolean;
     };
@@ -583,6 +594,8 @@ export type CompactContinuationInput = {
    * Pairing with `none` or `pending_correlated_tool_result` is
    * `invalid_pending_boundary_continuation`. Active non-tool above trigger with
    * `{ applied: false }` is the same refuse (runtime must force first).
+   * `forcedThisSeam: true` + `markerAlreadyPersisted: true` is the same refuse
+   * (and input-invalid): fresh force cannot already hold the boundary marker.
    *
    * **Repair precedence** (`applied: true`, `forcedThisSeam: false`): after seam
    * + record/request-health checks pass, resume compact/marker/install
@@ -590,7 +603,8 @@ export type CompactContinuationInput = {
    *
    * **Marker identity:** key = `lhc.compact_continuation:<continuationTurnId>`.
    * **Marker residual:** supply `markerAlreadyPersisted` so residual
-   * `markerPersisted` is record-state truthful across repair.
+   * `markerPersisted` is record-state truthful across repair. Only trusted when
+   * `forcedThisSeam: false`.
    */
   forcedContinuationBoundary: ForcedContinuationBoundary;
   // ── attempt results ───────────────────────────────────────────────────────
@@ -797,9 +811,10 @@ export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "input_epoch",
   /**
    * Forced-boundary state + continuation-kind legality. Runs after epoch and
-   * **before** writer/capture proofs so invalid applied+kind pairs refuse as
+   * **before** writer/capture proofs so invalid applied pairs refuse as
    * `invalid_pending_boundary_continuation` even when a native writer conflict
-   * is also present (pinned by fixture/test).
+   * is also present (pinned by fixture/test). Covers wrong kind, empty turn id,
+   * and fresh force (`forcedThisSeam: true`) with `markerAlreadyPersisted: true`.
    */
   "forced_boundary_state_legality",
   "writer_claim",

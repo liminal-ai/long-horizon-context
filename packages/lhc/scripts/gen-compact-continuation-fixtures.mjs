@@ -450,6 +450,24 @@ const cases = [
     }),
   },
   {
+    name: "fresh_force_marker_already_persisted_illegal",
+    coverage: [
+      "invalid_pending_boundary_continuation",
+      "fresh_force_marker_already_persisted_illegal",
+      "forced_boundary_legality_precedence",
+    ],
+    description:
+      "forcedThisSeam true + markerAlreadyPersisted true is illegal v1: forced_boundary_state_legality refuses invalid_pending without trusting the marker claim (residual markerPersisted/markerServed false; applied boundary/turn facts preserved). Input validation also rejects; fixture pins total-evaluator residual for direct callers.",
+    // Intentionally input-invalid (validateForcedBoundary rejects). decide still
+    // refuses at forced_boundary_state_legality for typed/direct callers.
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: appliedBoundary("t2", true, true),
+      // Native conflict also present: legality must still win (same stage precedence).
+      invariants: { ...goodInvariants, writerClaim: "native" },
+    }),
+  },
+  {
     name: "writer_claim_lhc_idempotent",
     coverage: ["writer_claim_lhc_idempotent", "active_non_tool_continuation"],
     description: "writerClaim lhc is an already-established claim; claim_writer in receipt is idempotent reassert.",
@@ -549,6 +567,7 @@ const requiredCoverage = [
   "install_over_no_reduction",
   "pending_boundary_pressure_precedence",
   "invalid_pending_boundary_continuation",
+  "fresh_force_marker_already_persisted_illegal",
   "writer_claim_lhc_idempotent",
   "pending_boundary_residual_on_skip",
   "missing_forced_boundary_above_trigger",

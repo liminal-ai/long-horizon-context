@@ -77,19 +77,27 @@ function residual(parts: CompactContinuationResidualState): CompactContinuationR
 /**
  * Applied forced-boundary residual facts must remain truthful on skip/refuse
  * exits that never reach repair compact.
+ *
+ * `markerAlreadyPersisted` is trusted only on repair (`forcedThisSeam: false`).
+ * A fresh force (`forcedThisSeam: true`) just minted the continuation turn id,
+ * so its boundary-derived marker cannot already exist — never OR a rejected
+ * fresh+already-persisted claim back to residual true.
  */
 function appliedBoundaryResidualOverlay(
   input: CompactContinuationInput,
   base: CompactContinuationResidualState,
 ): CompactContinuationResidualState {
   if (!isAppliedBoundary(input.forcedContinuationBoundary)) return base;
+  const trustPriorMarker =
+    input.forcedContinuationBoundary.forcedThisSeam !== true &&
+    input.forcedContinuationBoundary.markerAlreadyPersisted === true;
   return {
     ...base,
     forcedContinuationBoundaryApplied: true,
     continuationTurnOpened: true,
     continuationTurnId: input.forcedContinuationBoundary.continuationTurnId,
-    // Residual marker presence: already-persisted fact at entry (repair).
-    markerPersisted: base.markerPersisted || input.forcedContinuationBoundary.markerAlreadyPersisted === true,
+    // Residual marker presence: already-persisted fact at entry (repair only).
+    markerPersisted: base.markerPersisted || trustPriorMarker,
     originalAgenticTurnStillOpen: false,
     nextProviderRequestAllowed: false,
   };
@@ -121,7 +129,11 @@ function earlyRefuseEffects(
 
 function residualMarkerPersisted(input: CompactContinuationInput, attemptPersisted: boolean): boolean {
   if (!isAppliedBoundary(input.forcedContinuationBoundary)) return attemptPersisted;
-  return attemptPersisted || input.forcedContinuationBoundary.markerAlreadyPersisted === true;
+  // Fresh force cannot already hold a marker; only repair prior-marker is residual fact.
+  const prior =
+    input.forcedContinuationBoundary.forcedThisSeam !== true &&
+    input.forcedContinuationBoundary.markerAlreadyPersisted === true;
+  return attemptPersisted || prior;
 }
 
 function baseReceipt(
@@ -974,6 +986,20 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
       path,
       "invalid_pending_boundary_continuation",
       "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied",
+    );
+  }
+  // Fresh atomic turn_end just minted the continuation turn id; its
+  // boundary-derived marker cannot already exist at seam entry.
+  if (
+    isAppliedBoundary(input.forcedContinuationBoundary) &&
+    input.forcedContinuationBoundary.forcedThisSeam === true &&
+    input.forcedContinuationBoundary.markerAlreadyPersisted === true
+  ) {
+    return refuseEarly(
+      input,
+      path,
+      "invalid_pending_boundary_continuation",
+      "forcedContinuationBoundary.forcedThisSeam true cannot pair with markerAlreadyPersisted true (fresh turn_end marker cannot already exist)",
     );
   }
 
