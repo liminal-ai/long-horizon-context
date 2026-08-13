@@ -1369,7 +1369,7 @@ Maintenance: update entries in place; a superseded decision gets one line in its
 - Confidence: medium
 
 ### PROC-6: Two-tier verification; biome at root; Node pinned
-- Decision: `verify` = biome format check + lint + typecheck + fast tests; `verify:all` adds keyed/slow suites. Biome config lives at the root and format/lint must run from the repo root (package-local verify breaks). Node floor is >=24.17.0 (stable node:sqlite); the former <25 cap was dropped 2026-07-12 as untested-major conservatism with no technical basis — the prereq checker passes newer majors with an untested note. Runtime-first-in-PATH failure logged.
+- Decision: `verify` = biome format check + lint + typecheck + fast tests; `verify:all` adds keyed/slow suites. Biome config lives at the root and format/lint must run from the repo root (package-local verify breaks). The source-workspace Node floor is >=24.17.0. The cc-lhc npm package has a separately certified runtime floor of >=24.3.0 and suppresses only the exact `node:sqlite` experimental-status warning emitted by Node 24.3–24.14. The former <25 cap was dropped 2026-07-12 as untested-major conservatism with no technical basis — the prereq checker passes newer majors with an untested note. Runtime-first-in-PATH failure logged.
 - Why: fast gate for iteration, full gate for landings; one formatter config, one invocation point; ambient-PATH mismatches caused real confusion. [rationale: documented]
 - Status: firm
 - Evidence: root package.json scripts/engines; commits 980688f, 14ad907; docs/onboard/bad-code-log.md PATH entry

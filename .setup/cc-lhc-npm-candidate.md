@@ -31,7 +31,7 @@ target-specific optional packages for the same six targets. A supported client
 therefore downloads prebuilt PTY and identity binaries. It does not run
 `node-gyp` or require a C++ toolchain.
 
-The package requires Node 24.17 or later. Claude Code remains an external host
+The package requires Node 24.3 or later. Claude Code remains an external host
 prerequisite and is not bundled.
 
 ## Local current-platform candidate

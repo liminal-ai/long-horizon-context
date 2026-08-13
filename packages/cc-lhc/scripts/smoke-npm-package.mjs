@@ -82,6 +82,9 @@ try {
     if (!help.stdout.includes("get-turns") || !help.stdout.includes("get-messages")) {
       fail(`${label} install did not expose the retrieval commands`, help);
     }
+    if (help.stderr.includes("ExperimentalWarning: SQLite is an experimental feature")) {
+      fail(`${label} install leaked the known Node 24.3 node:sqlite warning`, help);
+    }
 
     const npmRoot = runNpm(["root", "--global", "--prefix", prefix]).stdout.trim();
     const installedRoot = join(npmRoot, ...manifest.name.split("/"));

@@ -42,16 +42,22 @@ jobs:
         include:
           - target: linux-x64
             runner: ubuntu-24.04
+            consumer_node: 24.3.0
           - target: linux-arm64
             runner: ubuntu-24.04-arm
+            consumer_node: 24.3.0
           - target: darwin-x64
             runner: macos-15-intel
+            consumer_node: 24.3.0
           - target: darwin-arm64
             runner: macos-15
+            consumer_node: 24.3.0
           - target: win32-x64
             runner: windows-2022
+            consumer_node: 24.15.0
           - target: win32-arm64
             runner: windows-11-arm
+            consumer_node: 24.15.0
     steps:
       - name: Checkout (recursive submodules)
         uses: actions/checkout@v7
@@ -63,7 +69,7 @@ jobs:
         with:
           version: 11.8.0
 
-      - name: Install Node 24.18.0
+      - name: Install build Node 24.18.0
         uses: actions/setup-node@v7
         with:
           node-version: 24.18.0
@@ -101,6 +107,11 @@ jobs:
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
 
+      - name: Install consumer Node ${{ matrix.consumer_node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.consumer_node }}
+
       - name: Assemble current-target npm candidate
         run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current
 
@@ -132,7 +143,7 @@ jobs:
         with:
           version: 11.8.0
 
-      - name: Install Node 24.18.0
+      - name: Install build Node 24.18.0
         uses: actions/setup-node@v7
         with:
           node-version: 24.18.0
@@ -159,6 +170,11 @@ jobs:
             --artifacts build/native-artifacts \
             --bundle-out build/cc-lhc-native \
             --assets-out build/native-assets
+
+      - name: Install consumer Node 24.3.0 baseline
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.3.0
 
       - name: Assemble complete unpublished npm candidate
         run: |
