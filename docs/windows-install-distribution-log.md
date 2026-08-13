@@ -1,5 +1,10 @@
 # Windows installation and distribution log
 
+## 2026-08-13: First CI dogfood dispatch
+
+- Added a branch-scoped `push` trigger for `codex/windows-npm-dogfood` because GitHub does not expose a new `workflow_dispatch` workflow until the workflow exists on the default branch.
+- The trigger is intentionally limited to this dogfood branch and can be removed when the workflow reaches the default branch.
+
 Status: active dogfood log
 
 Started: 2026-08-13

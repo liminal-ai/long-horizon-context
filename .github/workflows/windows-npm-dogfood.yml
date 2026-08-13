@@ -1,6 +1,9 @@
 name: windows-npm-dogfood
 
 on:
+  push:
+    branches:
+      - codex/windows-npm-dogfood
   workflow_dispatch:
 
 jobs:
