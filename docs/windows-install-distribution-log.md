@@ -7,6 +7,7 @@
 - Attempt 1 built and tested both native addons successfully, assembled the npm tarball, and installed it globally with npm on Windows ARM64.
 - The first runtime smoke exposed an npm bundling issue: dependencies repeated on the bundled `lhc` manifest were treated as transitive bundled dependencies, leaving empty `effect` and `js-tiktoken` directories. Public runtime dependencies remain top-level, while the bundled private package manifests must not repeat them.
 - Attempt 2 proved the corrected tarball installs all nine public packages. Its initial x64 runtime smoke reached the PTY but the fake Claude surrogate rejected cc-lhc's valid `--autocompact` injection; use pinned Claude Code 2.1.231 for the integration smoke instead of a renamed `node.exe`.
+- Attempt 3 exposed npm 11.16's install-script allowlist behavior. A plain global Claude npm install leaves only its `.cmd` launcher usable because the reviewed postinstall did not run. Pin and allow exactly `@anthropic-ai/claude-code@2.1.231`, then give cc-lhc the package's native `bin\claude.exe` path. Do not weaken cc-lhc's refusal to execute shell shims.
 
 Status: active dogfood log
 

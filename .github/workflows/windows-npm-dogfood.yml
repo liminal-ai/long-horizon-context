@@ -151,10 +151,14 @@ jobs:
 
       - name: Install pinned Claude Code for integration smoke
         shell: pwsh
-        run: npm install --global @anthropic-ai/claude-code@2.1.231
+        run: npm install --global --allow-scripts="@anthropic-ai/claude-code@2.1.231" @anthropic-ai/claude-code@2.1.231
 
       - name: Prove installed launcher, addon, and native PTY
         shell: pwsh
         run: |
-          claude --version
+          $env:CC_LHC_CLAUDE_BIN = Join-Path (npm root --global) "@anthropic-ai\claude-code\bin\claude.exe"
+          if (-not (Test-Path -LiteralPath $env:CC_LHC_CLAUDE_BIN -PathType Leaf)) {
+            throw "Pinned Claude Code native executable is missing: $env:CC_LHC_CLAUDE_BIN"
+          }
+          & $env:CC_LHC_CLAUDE_BIN --version
           cc-lhc --version
