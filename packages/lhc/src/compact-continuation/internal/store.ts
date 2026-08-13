@@ -1,6 +1,6 @@
 // Durable compact-continuation writer, boundary status, stage log, receipts.
 // Domain-owned table access only — no ad hoc SQL outside this module.
-// Schema v8: terminal receipts (no LWW overwrite), append-only stage log.
+// Schema v9: terminal receipts, attempt intent, force intent, ownership-safe boundary.
 
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -28,6 +28,7 @@ export type BoundaryRow = {
 
 export type StageName =
   | "claimed_writer"
+  | "force_intent"
   | "force_turn_end"
   | "compact_prepared"
   | "marker_persisted"
@@ -37,6 +38,21 @@ export type StageName =
   | "receipt_recorded"
   | "writer_released"
   | "interrupted";
+
+export type ForceIntentRow = {
+  attemptId: string;
+  turnEndIdempotencyKey: string;
+  status: "intent" | "applied" | "reconciled";
+  continuationTurnId: string | null;
+  recordedAt: string;
+};
+
+export type AttemptRow = {
+  attemptId: string;
+  intentHash: string;
+  intentJson: string;
+  createdAt: string;
+};
 
 export function readWriterClaim(db: DatabaseSync): WriterClaimRow {
   const row = db
@@ -282,6 +298,10 @@ export function listStageLog(
   }));
 }
 
+/**
+ * Insert or update a boundary owned by attemptId.
+ * Never changes ownership: if the row exists under a different attempt, throws.
+ */
 export function upsertBoundary(
   db: DatabaseSync,
   row: {
@@ -294,16 +314,20 @@ export function upsertBoundary(
     completedAt?: string | null;
   },
 ): void {
+  const existing = readBoundary(db, row.continuationTurnId);
+  if (existing !== null && existing.attemptId !== row.attemptId) {
+    throw new Error(`boundary ${row.continuationTurnId} owned by ${existing.attemptId}, not ${row.attemptId}`);
+  }
   db.prepare(
     `INSERT INTO compact_continuation_boundary (
        continuation_turn_id, attempt_id, status, marker_persisted, last_stage, forced_at, completed_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(continuation_turn_id) DO UPDATE SET
-       attempt_id = excluded.attempt_id,
        status = excluded.status,
        marker_persisted = excluded.marker_persisted,
        last_stage = excluded.last_stage,
-       completed_at = excluded.completed_at`,
+       completed_at = excluded.completed_at
+     WHERE compact_continuation_boundary.attempt_id = excluded.attempt_id`,
   ).run(
     row.continuationTurnId,
     row.attemptId,
@@ -313,6 +337,113 @@ export function upsertBoundary(
     row.forcedAt,
     row.completedAt ?? null,
   );
+}
+
+export function insertAttemptIntent(
+  db: DatabaseSync,
+  attemptId: string,
+  intentHash: string,
+  intentJson: string,
+  createdAt: string,
+): "inserted" | "exists_same" | "exists_different" {
+  const existing = db
+    .prepare(`SELECT intent_hash FROM compact_continuation_attempt WHERE attempt_id = ?`)
+    .get(attemptId) as { intent_hash: string } | undefined;
+  if (existing !== undefined) {
+    return existing.intent_hash === intentHash ? "exists_same" : "exists_different";
+  }
+  db.prepare(
+    `INSERT INTO compact_continuation_attempt (attempt_id, intent_hash, intent_json, created_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(attemptId, intentHash, intentJson, createdAt);
+  return "inserted";
+}
+
+export function readAttemptIntent(db: DatabaseSync, attemptId: string): AttemptRow | null {
+  const row = db
+    .prepare(
+      `SELECT attempt_id, intent_hash, intent_json, created_at FROM compact_continuation_attempt WHERE attempt_id = ?`,
+    )
+    .get(attemptId) as { attempt_id: string; intent_hash: string; intent_json: string; created_at: string } | undefined;
+  if (row === undefined) return null;
+  return {
+    attemptId: row.attempt_id,
+    intentHash: row.intent_hash,
+    intentJson: row.intent_json,
+    createdAt: row.created_at,
+  };
+}
+
+export function recordForceIntent(
+  db: DatabaseSync,
+  attemptId: string,
+  turnEndIdempotencyKey: string,
+  recordedAt: string,
+): void {
+  db.prepare(
+    `INSERT INTO compact_continuation_force_intent (
+       attempt_id, turn_end_idempotency_key, status, continuation_turn_id, recorded_at
+     ) VALUES (?, ?, 'intent', NULL, ?)
+     ON CONFLICT(attempt_id) DO UPDATE SET
+       turn_end_idempotency_key = excluded.turn_end_idempotency_key,
+       status = CASE
+         WHEN compact_continuation_force_intent.status = 'reconciled' THEN compact_continuation_force_intent.status
+         ELSE 'intent'
+       END,
+       recorded_at = excluded.recorded_at`,
+  ).run(attemptId, turnEndIdempotencyKey, recordedAt);
+}
+
+export function readForceIntent(db: DatabaseSync, attemptId: string): ForceIntentRow | null {
+  const row = db
+    .prepare(
+      `SELECT attempt_id, turn_end_idempotency_key, status, continuation_turn_id, recorded_at
+       FROM compact_continuation_force_intent WHERE attempt_id = ?`,
+    )
+    .get(attemptId) as
+    | {
+        attempt_id: string;
+        turn_end_idempotency_key: string;
+        status: string;
+        continuation_turn_id: string | null;
+        recorded_at: string;
+      }
+    | undefined;
+  if (row === undefined) return null;
+  return {
+    attemptId: row.attempt_id,
+    turnEndIdempotencyKey: row.turn_end_idempotency_key,
+    status: row.status as ForceIntentRow["status"],
+    continuationTurnId: row.continuation_turn_id,
+    recordedAt: row.recorded_at,
+  };
+}
+
+export function markForceIntentApplied(db: DatabaseSync, attemptId: string, continuationTurnId: string): void {
+  db.prepare(
+    `UPDATE compact_continuation_force_intent
+     SET status = 'reconciled', continuation_turn_id = ?
+     WHERE attempt_id = ?`,
+  ).run(continuationTurnId, attemptId);
+}
+
+/**
+ * Find turn opened by a force turn_end event (idempotency key), if recorded.
+ */
+export function findContinuationTurnFromForceKey(db: DatabaseSync, turnEndIdempotencyKey: string): string | null {
+  const event = db
+    .prepare(
+      `SELECT event_order FROM event
+       WHERE idempotency_key = ? AND event_kind = 'turn_end'`,
+    )
+    .get(turnEndIdempotencyKey) as { event_order: number | bigint } | undefined;
+  if (event === undefined) return null;
+  const order = Number(event.event_order);
+  // The newly opened turn has opened_at_event_order = turn_end event order.
+  const turn = db
+    .prepare(`SELECT turn_id FROM turns WHERE opened_at_event_order = ? ORDER BY turn_order DESC LIMIT 1`)
+    .get(order) as { turn_id: string } | undefined;
+  return turn?.turn_id ?? null;
 }
 
 export function readBoundary(db: DatabaseSync, continuationTurnId: string): BoundaryRow | null {

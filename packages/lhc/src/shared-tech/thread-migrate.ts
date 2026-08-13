@@ -9,6 +9,7 @@ export const THREAD_SCHEMA_VERSION_5 = 5;
 export const THREAD_SCHEMA_VERSION_6 = 6;
 export const THREAD_SCHEMA_VERSION_7 = 7;
 export const THREAD_SCHEMA_VERSION_8 = 8;
+export const THREAD_SCHEMA_VERSION_9 = 9;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -85,8 +86,8 @@ export function compactContinuationSchemaStatements(): string[] {
 }
 
 /**
- * Current (v8) compact-continuation tables for fresh create.
- * Writer + boundary status + append-only stage log + terminal receipts.
+ * Current (v9) compact-continuation tables for fresh create.
+ * Writer + boundary + stage log + terminal receipts + attempt intent + force intent.
  */
 export function compactContinuationCurrentSchemaStatements(): string[] {
   return [
@@ -132,7 +133,40 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
        ON compact_continuation_receipt (recorded_at DESC);`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
+      attempt_id TEXT PRIMARY KEY,
+      intent_hash TEXT NOT NULL,
+      intent_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE TABLE IF NOT EXISTS compact_continuation_force_intent (
+      attempt_id TEXT PRIMARY KEY,
+      turn_end_idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('intent', 'applied', 'reconciled')),
+      continuation_turn_id TEXT,
+      recorded_at TEXT NOT NULL
+    );`,
   ];
+}
+
+function migrateCompactContinuationV9(db: DatabaseSync): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
+      attempt_id TEXT PRIMARY KEY,
+      intent_hash TEXT NOT NULL,
+      intent_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );`,
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS compact_continuation_force_intent (
+      attempt_id TEXT PRIMARY KEY,
+      turn_end_idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('intent', 'applied', 'reconciled')),
+      continuation_turn_id TEXT,
+      recorded_at TEXT NOT NULL
+    );`,
+  );
 }
 
 function migrateCompactContinuationV8(db: DatabaseSync): void {
@@ -394,6 +428,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_7) {
       migrateCompactContinuationV8(db);
       version = THREAD_SCHEMA_VERSION_8;
+    }
+    if (version === THREAD_SCHEMA_VERSION_8) {
+      migrateCompactContinuationV9(db);
+      version = THREAD_SCHEMA_VERSION_9;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

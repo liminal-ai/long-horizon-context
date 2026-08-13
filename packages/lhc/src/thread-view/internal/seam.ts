@@ -4,12 +4,16 @@
 // Tests reach the setters through test/fixtures/view-seam.ts (the one
 // directory sanctioned to import below the SDK surface); production code
 // only ever fires.
-export type ViewInjectionPoint = "compact-write";
+export type ViewInjectionPoint =
+  | "compact-write"
+  /** Fires inside BEGIN IMMEDIATE before source validation (install TOCTOU tests). */
+  | "compact-install-before-validate";
 
 export type ViewInjectionHook = () => void;
 
 const hooks: Record<ViewInjectionPoint, ViewInjectionHook | null> = {
   "compact-write": null,
+  "compact-install-before-validate": null,
 };
 
 export function setViewInjectionHook(point: ViewInjectionPoint, hook: ViewInjectionHook | null): void {

@@ -562,14 +562,16 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(claim.value.claim).toBe("lhc");
     expect(claim.value.attemptId).toBe("crash-1");
 
-    // Different attempt cannot steal.
+    // Different attempt cannot steal (ownership conflict before writer claim).
     const steal = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({ attemptId: "crash-other", continuation: { kind: "active_non_tool" } }),
     );
     expect(steal.ok).toBe(false);
     if (steal.ok) return;
-    expect(steal.error.code).toBe("compact_continuation_writer_conflict");
+    expect(["compact_continuation_attempt_conflict", "compact_continuation_writer_conflict"]).toContain(
+      steal.error.code,
+    );
 
     // Resume with owning attemptId.
     const resumed = await compactContinuation.runCompactContinuation(
@@ -675,11 +677,367 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(result.value.receipt.residual.markerPersisted).toBe(true);
     expect(result.value.receipt.residual.markerServed).toBe(false);
     expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
+    expect(result.value.pendingBoundary?.status).toBe("failed_repairable");
+
+    const stored = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "install-fail-1",
+    );
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(stored.value?.terminal).toBe(false);
 
     const described = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
     expect(described.ok).toBe(true);
     if (!described.ok) return;
     expect(described.value?.viewId).toBe(baseline.value.viewId);
+  });
+
+  it("P1: install fail → failed_repairable nonterminal → same attempt repair succeeds", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+
+    const failed = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "repair-install-1",
+        testHooks: { failInstallBeforeWrite: true },
+      }),
+    );
+    expect(failed.ok).toBe(true);
+    if (!failed.ok) return;
+    expect(failed.value.receipt.refuseCode).toBe("install_failed");
+    expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
+    expect(failed.value.pendingBoundary?.attemptId).toBe("repair-install-1");
+    const cTurnId = failed.value.continuationTurnId!;
+
+    const storedFail = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "repair-install-1",
+    );
+    expect(storedFail.ok).toBe(true);
+    if (!storedFail.ok) return;
+    expect(storedFail.value?.terminal).toBe(false);
+
+    const repaired = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "repair-install-1",
+        writerClaim: "none",
+        continuation: { kind: "active_non_tool" },
+      }),
+    );
+    expect(repaired.ok).toBe(true);
+    if (!repaired.ok) return;
+    expect(repaired.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(repaired.value.continuationTurnId).toBe(cTurnId);
+    expect(repaired.value.replayedTerminalAttempt).toBe(false);
+    expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(repaired.value.receipt.outcome);
+    expect(repaired.value.pendingBoundary).toBeNull();
+
+    const storedOk = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "repair-install-1",
+    );
+    expect(storedOk.ok).toBe(true);
+    if (!storedOk.ok) return;
+    expect(storedOk.value?.terminal).toBe(true);
+  });
+
+  it("P1: foreign attempt cannot steal failed_repairable boundary", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+
+    const failed = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "owner-fail-1",
+        testHooks: { failInstallBeforeWrite: true },
+      }),
+    );
+    expect(failed.ok).toBe(true);
+    if (!failed.ok) return;
+    expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
+
+    const steal = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "thief-1",
+        continuation: { kind: "active_non_tool" },
+      }),
+    );
+    expect(steal.ok).toBe(false);
+    if (steal.ok) return;
+    expect(steal.error.code).toBe("compact_continuation_attempt_conflict");
+    expect(steal.error.reason).toContain("owner-fail-1");
+
+    // Owner can still resume.
+    const owner = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "owner-fail-1",
+        continuation: { kind: "active_non_tool" },
+      }),
+    );
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) return;
+    expect(owner.value.pendingBoundary).toBeNull();
+  });
+
+  it("P1: interruptAfterTurnEndCommit → resume materializes one boundary only", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+
+    const interrupted = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "force-gap-1",
+        testHooks: { interruptAfterTurnEndCommit: true },
+      }),
+    );
+    expect(interrupted.ok).toBe(true);
+    if (!interrupted.ok) return;
+    expect(interrupted.value.forcedBoundaryThisAttempt).toBe(false);
+    // Crash gap: turn_end committed, boundary not yet written.
+    expect(interrupted.value.pendingBoundary).toBeNull();
+
+    const claim = await compactContinuation.getCompactContinuationWriterClaim({ filePath: fixture.filePath });
+    expect(claim.ok).toBe(true);
+    if (!claim.ok) return;
+    expect(claim.value.claim).toBe("lhc");
+    expect(claim.value.attemptId).toBe("force-gap-1");
+
+    const resumed = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "force-gap-1",
+        writerClaim: "lhc",
+        continuation: { kind: "active_non_tool" },
+      }),
+    );
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.value.forcedBoundaryThisAttempt).toBe(false);
+    expect(resumed.value.continuationTurnId).toMatch(/^t\d+$/);
+    expect(resumed.value.pendingBoundary).toBeNull();
+    expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(resumed.value.receipt.outcome);
+
+    const turnList = await turns.listTurns({ filePath: fixture.filePath });
+    expect(turnList.ok).toBe(true);
+    if (!turnList.ok) return;
+    expect(turnList.value.filter((t) => t.outcomeReason === CONTEXT_COMPACT_CONTINUE_REASON)).toHaveLength(1);
+  });
+
+  it("P1: terminal replay same intent ok; different continuation kind → attempt_conflict", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+
+    const first = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "intent-replay-1" }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const after = snapshotCanonical(fixture.filePath);
+
+    const same = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "intent-replay-1" }),
+    );
+    expect(same.ok).toBe(true);
+    if (!same.ok) return;
+    expect(same.value.replayedTerminalAttempt).toBe(true);
+    expect(same.value.receipt.outcome).toBe(first.value.receipt.outcome);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(after);
+
+    const different = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "intent-replay-1",
+        continuation: { kind: "none" },
+      }),
+    );
+    expect(different.ok).toBe(false);
+    if (different.ok) return;
+    expect(different.error.code).toBe("compact_continuation_attempt_conflict");
+  });
+
+  it("P1: preSkip with pending same attempt → nonterminal, later repair ok", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+
+    const interrupted = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "preskip-pending-1",
+        testHooks: { interruptAfterBoundary: true },
+      }),
+    );
+    expect(interrupted.ok).toBe(true);
+    if (!interrupted.ok) return;
+    expect(interrupted.value.pendingBoundary?.status).toBe("pending");
+    const cTurnId = interrupted.value.continuationTurnId!;
+
+    const skip = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "preskip-pending-1",
+        writerClaim: "lhc",
+        seam: {
+          ...SETTLED_SEAM,
+          insideTransportRetry: true,
+        },
+      }),
+    );
+    expect(skip.ok).toBe(true);
+    if (!skip.ok) return;
+    expect(skip.value.receipt.skipped).toBe(true);
+    expect(skip.value.pendingBoundary?.status).toBe("pending");
+    expect(skip.value.pendingBoundary?.continuationTurnId).toBe(cTurnId);
+
+    const storedSkip = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "preskip-pending-1",
+    );
+    expect(storedSkip.ok).toBe(true);
+    if (!storedSkip.ok) return;
+    expect(storedSkip.value?.terminal).toBe(false);
+
+    const repaired = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "preskip-pending-1",
+        writerClaim: "none",
+        continuation: { kind: "active_non_tool" },
+      }),
+    );
+    expect(repaired.ok).toBe(true);
+    if (!repaired.ok) return;
+    expect(repaired.value.continuationTurnId).toBe(cTurnId);
+    expect(repaired.value.pendingBoundary).toBeNull();
+    expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(repaired.value.receipt.outcome);
+  });
+
+  it("P1: tool-pair matrix — durable proof rejects bad pairs without mutation", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedPendingToolTurn(fixture.filePath, "call-matrix-ok");
+    const before = snapshotCanonical(fixture.filePath);
+
+    const valid = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "pair-valid",
+        continuation: {
+          kind: "pending_correlated_tool_result",
+          toolCallId: "call-matrix-ok",
+          correlationValid: true,
+        },
+        providerUsage: {
+          available: true,
+          inputTokens: 1000,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          total: 1000,
+          domain: "provider_reported_input",
+        },
+        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      }),
+    );
+    // Below trigger → no mutation path even with valid pair.
+    expect(valid.ok).toBe(true);
+    if (!valid.ok) return;
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+
+    const cases: Array<{ attemptId: string; toolCallId: string; mutate: (db: ReturnType<typeof openRaw>) => void }> = [
+      {
+        attemptId: "pair-orphan-call",
+        toolCallId: "call-matrix-ok",
+        mutate: (db) => {
+          db.prepare(
+            `UPDATE message SET deleted_at = ? WHERE message_id IN (
+               SELECT m.message_id FROM message m
+               JOIN message_block b ON b.message_id = m.message_id
+               WHERE b.block_type = 'tool_result' AND json_extract(b.content, '$.toolCallId') = 'call-matrix-ok'
+             )`,
+          ).run(new Date().toISOString());
+        },
+      },
+      {
+        attemptId: "pair-missing",
+        toolCallId: "call-does-not-exist",
+        mutate: () => {},
+      },
+    ];
+
+    for (const c of cases) {
+      const db = openRaw(fixture.filePath);
+      try {
+        c.mutate(db);
+      } finally {
+        db.close();
+      }
+      const snap = snapshotCanonical(fixture.filePath);
+      const result = await compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: c.attemptId,
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            toolCallId: c.toolCallId,
+            correlationValid: true,
+          },
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+      expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+      expect(snapshotCanonical(fixture.filePath)).toEqual(snap);
+    }
+
+    // Unit-level matrix for provePendingToolPair shapes.
+    const fixture2 = await derivedThreadFixture(store, { failures: false });
+    await seedPendingToolTurn(fixture2.filePath, "call-u");
+    const db2 = openRaw(fixture2.filePath);
+    try {
+      expect(provePendingToolPair(db2, "call-u").ok).toBe(true);
+
+      // Orphan result: delete call.
+      db2
+        .prepare(
+          `UPDATE message SET deleted_at = ? WHERE message_id IN (
+             SELECT m.message_id FROM message m
+             JOIN message_block b ON b.message_id = m.message_id
+             WHERE b.block_type = 'tool_call' AND json_extract(b.content, '$.toolCallId') = 'call-u'
+           )`,
+        )
+        .run(new Date().toISOString());
+      const orphanResult = provePendingToolPair(db2, "call-u");
+      expect(orphanResult.ok).toBe(false);
+      if (!orphanResult.ok) expect(orphanResult.reason).toBe("orphaned_result");
+    } finally {
+      db2.close();
+    }
+
+    const fixture3 = await derivedThreadFixture(store, { failures: false });
+    await seedPendingToolTurn(fixture3.filePath, "call-d");
+    // Duplicate call: insert second tool_call row is hard without events; use unit proof via second seed id.
+    const db3 = openRaw(fixture3.filePath);
+    try {
+      // Unreadable payload: corrupt result content JSON toolCallId mismatch path via block update.
+      db3
+        .prepare(
+          `UPDATE message_block SET content = ?
+           WHERE block_type = 'tool_result'
+             AND json_extract(content, '$.toolCallId') = 'call-d'`,
+        )
+        .run(JSON.stringify({ toolCallId: "call-d", content: 123, isError: false }));
+      const unreadable = provePendingToolPair(db3, "call-d");
+      expect(unreadable.ok).toBe(false);
+      if (!unreadable.ok) expect(unreadable.reason).toBe("unreadable_payload");
+    } finally {
+      db3.close();
+    }
   });
 
   it("input validation rejects malformed host facts", async () => {
