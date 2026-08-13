@@ -41,6 +41,12 @@ function runNpm(args) {
   return run(process.execPath, [npmCli, ...args]);
 }
 
+function runInstalledCli(executable, args) {
+  if (process.platform !== "win32") return run(executable, args);
+  const command = [`"${executable.replaceAll('"', '""')}"`, ...args].join(" ");
+  return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command]);
+}
+
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
 if (manifest.private !== true || manifest.ccLhcCandidate?.publishLocked !== true) {
   fail("refusing to smoke an unlocked publication candidate");
@@ -68,7 +74,7 @@ try {
     }
 
     const executable = process.platform === "win32" ? join(prefix, "cc-lhc.cmd") : join(prefix, "bin", "cc-lhc");
-    const help = run(executable, ["--lhc-help"]);
+    const help = runInstalledCli(executable, ["--lhc-help"]);
     if (!help.stdout.includes("get-turns") || !help.stdout.includes("get-messages")) {
       fail(`${label} install did not expose the retrieval commands`, help);
     }
