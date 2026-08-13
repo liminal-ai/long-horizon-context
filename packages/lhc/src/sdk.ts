@@ -75,6 +75,34 @@ export type {
   MessageRecord,
   MutationResult,
 } from "./messages/index.js";
+// Compact-continuation contract (LIM-60): pure state machine + parity helpers.
+// Runtime evaluation against live threads is LIM-61.
+export {
+  asCompactContinuationInput,
+  assertDecisionParity,
+  COMPACT_CONTINUATION_CONTRACT_VERSION,
+  COMPACT_CONTINUATION_INVARIANTS,
+  COMPACT_CONTINUATION_MARKER_KIND,
+  COMPACT_CONTINUATION_OUTCOME_KINDS,
+  COMPACT_CONTINUATION_REFUSE_CODES,
+  COMPACT_CONTINUATION_STATES,
+  COMPACT_CONTINUATION_TRANSITION_ORDER,
+  CONTEXT_COMPACT_CONTINUE_REASON,
+  type CompactContinuationDecision,
+  type CompactContinuationEffect,
+  type CompactContinuationHostCapability,
+  type CompactContinuationInput,
+  type CompactContinuationOutcomeKind,
+  type CompactContinuationReceipt,
+  type CompactContinuationRefuseCode,
+  type CompactContinuationState,
+  decideCompactContinuation,
+  type ValidationIssue,
+  type ValidationResult,
+  validateCompactContinuationDecision,
+  validateCompactContinuationInput,
+  validateCompactContinuationReceipt,
+} from "./shared-tech/compact-continuation/index.js";
 // Inference vocabulary: the host-supplied ModelCall boundary and per-kind
 // assignment config. The adapter and registry are construction internals behind
 // initLhc.

@@ -1,0 +1,202 @@
+{
+  "name": "lower_target_missed_valid_request",
+  "contractVersion": "1.0.0",
+  "description": "Lower target missed is not a success gate; valid request still installs (degraded).",
+  "coverage": [
+    "lower_target_missed"
+  ],
+  "input": {
+    "contractVersion": "1.0.0",
+    "seam": {
+      "modelResponseComplete": true,
+      "requestedToolsSettled": true,
+      "captureFlushed": true,
+      "beforeNextProviderRequest": true,
+      "insideTransportRetry": false,
+      "inputEpochAtDecision": 1,
+      "inputEpochAtApply": 1
+    },
+    "providerUsage": {
+      "available": true,
+      "inputTokens": 90000,
+      "cacheCreationTokens": 5000,
+      "cacheReadTokens": 10000,
+      "total": 105000,
+      "domain": "provider_reported_input"
+    },
+    "postMeasurementEstimate": {
+      "tokens": 0,
+      "source": "lhc_token_estimate",
+      "domain": "source_labelled_estimate"
+    },
+    "policy": {
+      "upperTriggerTokens": 100000,
+      "lowerTargetTokens": 40000,
+      "hostCapability": "full_state_machine"
+    },
+    "continuation": {
+      "kind": "active_non_tool"
+    },
+    "invariants": {
+      "captureComplete": true,
+      "providerIdentityValid": true,
+      "singleOpenTurn": true,
+      "writerClaim": "none"
+    },
+    "compactMaterial": {
+      "derivationsMissingOrFailed": false,
+      "lowerTargetMet": false,
+      "compactStructurallyValid": true,
+      "installSucceeds": true,
+      "usefulReduction": true,
+      "canProduceValidProviderRequest": true
+    }
+  },
+  "expected": {
+    "outcome": "degraded_compact",
+    "terminalState": "terminal_degraded",
+    "transitionPath": [
+      "at_seam",
+      "checking_invariants",
+      "evaluating_pressure",
+      "path_continue_turn",
+      "compacting",
+      "installing",
+      "terminal_degraded"
+    ],
+    "effects": [
+      {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed"
+      },
+      {
+        "type": "open_continuation_turn",
+        "count": 1
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
+      },
+      {
+        "type": "degrade_fidelity",
+        "causes": [
+          "lower_target_missed"
+        ]
+      },
+      {
+        "type": "record_receipt",
+        "durable": true,
+        "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
+      }
+    ],
+    "receipt": {
+      "contractVersion": "1.0.0",
+      "outcome": "degraded_compact",
+      "reasonCode": "degraded_continue_turn",
+      "turnEndReason": "context_compact_continue",
+      "pressure": {
+        "providerBaseTokens": 105000,
+        "providerBaseDomain": "provider_reported_input",
+        "estimateTokens": 0,
+        "estimateSource": "lhc_token_estimate",
+        "estimateDomain": "source_labelled_estimate",
+        "nextRequestPressureTokens": 105000,
+        "upperTriggerTokens": 100000,
+        "atOrAboveTrigger": true
+      },
+      "lowerTarget": {
+        "domain": "lhc_rendered_history",
+        "tokens": 40000,
+        "met": false,
+        "isSuccessGate": false
+      },
+      "fidelity": "degraded",
+      "degradationReasons": [
+        "lower_target_missed"
+      ],
+      "continuation": {
+        "opened": true,
+        "markerServed": true,
+        "sameAgenticTurnPreserved": false
+      },
+      "effects": [
+        {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed"
+        },
+        {
+          "type": "open_continuation_turn",
+          "count": 1
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
+        },
+        {
+          "type": "degrade_fidelity",
+          "causes": [
+            "lower_target_missed"
+          ]
+        },
+        {
+          "type": "record_receipt",
+          "durable": true,
+          "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
+        }
+      ],
+      "refused": false,
+      "refuseCode": null,
+      "transitionPath": [
+        "at_seam",
+        "checking_invariants",
+        "evaluating_pressure",
+        "path_continue_turn",
+        "compacting",
+        "installing",
+        "terminal_degraded"
+      ]
+    }
+  }
+}

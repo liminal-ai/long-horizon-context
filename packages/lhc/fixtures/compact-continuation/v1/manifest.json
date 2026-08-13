@@ -1,0 +1,150 @@
+{
+  "contractVersion": "1.0.0",
+  "contractId": "lhc.compact_continuation",
+  "description": "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). TypeScript and Rust consumers must match expected decisions exactly.",
+  "cases": [
+    {
+      "file": "cases/no_authoritative_provider_usage.json",
+      "name": "no_authoritative_provider_usage",
+      "coverage": [
+        "no_authoritative_provider_usage"
+      ]
+    },
+    {
+      "file": "cases/below_trigger.json",
+      "name": "below_trigger",
+      "coverage": [
+        "below_trigger"
+      ]
+    },
+    {
+      "file": "cases/normal_completion_below_pressure.json",
+      "name": "normal_completion_below_pressure",
+      "coverage": [
+        "normal_completion"
+      ]
+    },
+    {
+      "file": "cases/normal_completion_above_pressure.json",
+      "name": "normal_completion_above_pressure",
+      "coverage": [
+        "normal_completion"
+      ]
+    },
+    {
+      "file": "cases/pending_tool_result_above_trigger.json",
+      "name": "pending_tool_result_above_trigger",
+      "coverage": [
+        "pending_tool_result_continuation"
+      ]
+    },
+    {
+      "file": "cases/active_non_tool_above_trigger.json",
+      "name": "active_non_tool_above_trigger",
+      "coverage": [
+        "active_non_tool_continuation"
+      ]
+    },
+    {
+      "file": "cases/derivation_gaps_degraded_compact.json",
+      "name": "derivation_gaps_degraded_compact",
+      "coverage": [
+        "derivation_gaps_degraded"
+      ]
+    },
+    {
+      "file": "cases/lower_target_missed_valid_request.json",
+      "name": "lower_target_missed_valid_request",
+      "coverage": [
+        "lower_target_missed"
+      ]
+    },
+    {
+      "file": "cases/incomplete_capture.json",
+      "name": "incomplete_capture",
+      "coverage": [
+        "incomplete_capture"
+      ]
+    },
+    {
+      "file": "cases/invalid_tool_correlation.json",
+      "name": "invalid_tool_correlation",
+      "coverage": [
+        "invalid_tool_correlation"
+      ]
+    },
+    {
+      "file": "cases/invalid_provider_identity.json",
+      "name": "invalid_provider_identity",
+      "coverage": [
+        "invalid_provider_identity"
+      ]
+    },
+    {
+      "file": "cases/compact_failed.json",
+      "name": "compact_failed",
+      "coverage": [
+        "compact_install_failure"
+      ]
+    },
+    {
+      "file": "cases/install_failed.json",
+      "name": "install_failed",
+      "coverage": [
+        "compact_install_failure"
+      ]
+    },
+    {
+      "file": "cases/native_writer_conflict.json",
+      "name": "native_writer_conflict",
+      "coverage": [
+        "native_writer_conflict"
+      ]
+    },
+    {
+      "file": "cases/input_epoch_changed.json",
+      "name": "input_epoch_changed",
+      "coverage": [
+        "stale_epoch_or_transport_retry"
+      ]
+    },
+    {
+      "file": "cases/transport_retry_attempt.json",
+      "name": "transport_retry_attempt",
+      "coverage": [
+        "stale_epoch_or_transport_retry"
+      ]
+    },
+    {
+      "file": "cases/no_useful_reduction.json",
+      "name": "no_useful_reduction",
+      "coverage": [
+        "no_useful_reduction"
+      ]
+    },
+    {
+      "file": "cases/pressure_from_estimate_crosses_trigger.json",
+      "name": "pressure_from_estimate_crosses_trigger",
+      "coverage": [
+        "below_trigger",
+        "active_non_tool_continuation"
+      ]
+    }
+  ],
+  "requiredCoverage": [
+    "no_authoritative_provider_usage",
+    "below_trigger",
+    "normal_completion",
+    "pending_tool_result_continuation",
+    "active_non_tool_continuation",
+    "derivation_gaps_degraded",
+    "lower_target_missed",
+    "incomplete_capture",
+    "invalid_tool_correlation",
+    "invalid_provider_identity",
+    "compact_install_failure",
+    "native_writer_conflict",
+    "stale_epoch_or_transport_retry",
+    "no_useful_reduction"
+  ]
+}

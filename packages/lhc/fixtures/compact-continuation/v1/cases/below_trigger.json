@@ -1,0 +1,118 @@
+{
+  "name": "below_trigger",
+  "contractVersion": "1.0.0",
+  "description": "Provider base + estimate below upper trigger continues normally.",
+  "coverage": [
+    "below_trigger"
+  ],
+  "input": {
+    "contractVersion": "1.0.0",
+    "seam": {
+      "modelResponseComplete": true,
+      "requestedToolsSettled": true,
+      "captureFlushed": true,
+      "beforeNextProviderRequest": true,
+      "insideTransportRetry": false,
+      "inputEpochAtDecision": 1,
+      "inputEpochAtApply": 1
+    },
+    "providerUsage": {
+      "available": true,
+      "inputTokens": 70000,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 5000,
+      "total": 75000,
+      "domain": "provider_reported_input"
+    },
+    "postMeasurementEstimate": {
+      "tokens": 10000,
+      "source": "lhc_token_estimate",
+      "domain": "source_labelled_estimate"
+    },
+    "policy": {
+      "upperTriggerTokens": 100000,
+      "lowerTargetTokens": 40000,
+      "hostCapability": "full_state_machine"
+    },
+    "continuation": {
+      "kind": "active_non_tool"
+    },
+    "invariants": {
+      "captureComplete": true,
+      "providerIdentityValid": true,
+      "singleOpenTurn": true,
+      "writerClaim": "none"
+    },
+    "compactMaterial": {
+      "derivationsMissingOrFailed": false,
+      "lowerTargetMet": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": true,
+      "usefulReduction": true,
+      "canProduceValidProviderRequest": true
+    }
+  },
+  "expected": {
+    "outcome": "continue_normal",
+    "terminalState": "terminal_continue_normal",
+    "transitionPath": [
+      "at_seam",
+      "checking_invariants",
+      "evaluating_pressure",
+      "below_trigger",
+      "terminal_continue_normal"
+    ],
+    "effects": [
+      {
+        "type": "record_receipt",
+        "durable": true,
+        "userChatVisible": false
+      }
+    ],
+    "receipt": {
+      "contractVersion": "1.0.0",
+      "outcome": "continue_normal",
+      "reasonCode": "below_trigger",
+      "turnEndReason": null,
+      "pressure": {
+        "providerBaseTokens": 75000,
+        "providerBaseDomain": "provider_reported_input",
+        "estimateTokens": 10000,
+        "estimateSource": "lhc_token_estimate",
+        "estimateDomain": "source_labelled_estimate",
+        "nextRequestPressureTokens": 85000,
+        "upperTriggerTokens": 100000,
+        "atOrAboveTrigger": false
+      },
+      "lowerTarget": {
+        "domain": "lhc_rendered_history",
+        "tokens": 40000,
+        "met": null,
+        "isSuccessGate": false
+      },
+      "fidelity": "full",
+      "degradationReasons": [],
+      "continuation": {
+        "opened": false,
+        "markerServed": false,
+        "sameAgenticTurnPreserved": true
+      },
+      "effects": [
+        {
+          "type": "record_receipt",
+          "durable": true,
+          "userChatVisible": false
+        }
+      ],
+      "refused": false,
+      "refuseCode": null,
+      "transitionPath": [
+        "at_seam",
+        "checking_invariants",
+        "evaluating_pressure",
+        "below_trigger",
+        "terminal_continue_normal"
+      ]
+    }
+  }
+}
