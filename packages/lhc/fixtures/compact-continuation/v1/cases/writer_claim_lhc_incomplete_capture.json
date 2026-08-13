@@ -1,11 +1,10 @@
 {
-  "name": "pending_forced_boundary_compact_failed",
+  "name": "writer_claim_lhc_incomplete_capture",
   "contractVersion": "1.0.0",
-  "description": "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
+  "description": "writerClaim lhc at settled seam with incomplete capture: claim_writer then refuse then release_writer; residual writerReleased true.",
   "coverage": [
-    "pending_boundary_repair",
-    "post_boundary_failure",
-    "compact_install_failure"
+    "writer_claim_lhc_idempotent",
+    "settled_seam_lhc_claim_early_refuse"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -40,21 +39,18 @@
       "kind": "active_non_tool"
     },
     "invariants": {
-      "captureComplete": true,
+      "captureComplete": false,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "none"
+      "writerClaim": "lhc"
     },
     "forcedContinuationBoundary": {
-      "applied": true,
-      "continuationTurnId": "t2",
-      "forcedThisSeam": false,
-      "markerAlreadyPersisted": false
+      "applied": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
@@ -66,9 +62,6 @@
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "evaluating_pressure",
-      "path_continue_turn",
-      "compacting",
       "terminal_refuse"
     ],
     "effects": [
@@ -77,15 +70,9 @@
         "writer": "lhc"
       },
       {
-        "type": "compact",
-        "lowerTargetDomain": "lhc_rendered_history",
-        "lowerTargetTokens": 40000,
-        "allowDegradedDerivations": true
-      },
-      {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "incomplete_capture",
+        "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
       },
       {
         "type": "record_receipt",
@@ -99,8 +86,8 @@
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
-      "turnEndReason": "context_compact_continue",
+      "reasonCode": "incomplete_capture",
+      "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -114,15 +101,15 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": true,
+        "met": null,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": true,
+        "opened": false,
         "markerServed": false,
-        "sameAgenticTurnPreserved": false
+        "sameAgenticTurnPreserved": true
       },
       "effects": [
         {
@@ -130,15 +117,9 @@
           "writer": "lhc"
         },
         {
-          "type": "compact",
-          "lowerTargetDomain": "lhc_rendered_history",
-          "lowerTargetTokens": 40000,
-          "allowDegradedDerivations": true
-        },
-        {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "incomplete_capture",
+          "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
         },
         {
           "type": "record_receipt",
@@ -152,24 +133,21 @@
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": true,
-        "continuationTurnOpened": true,
-        "continuationTurnId": "t2",
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": false,
+        "originalAgenticTurnStillOpen": true,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "incomplete_capture",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "evaluating_pressure",
-        "path_continue_turn",
-        "compacting",
         "terminal_refuse"
       ]
     }

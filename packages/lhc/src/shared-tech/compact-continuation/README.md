@@ -53,30 +53,38 @@ persisted=true, served=false.
 
 **Boundary identity input:** `forcedContinuationBoundary` is
 `{ applied: false }` or
-`{ applied: true, continuationTurnId, forcedThisSeam }`.
+`{ applied: true, continuationTurnId, forcedThisSeam, markerAlreadyPersisted }`.
 Runtime forces `turn_end` first on a fresh continue-turn seam, supplies the
-new turn id, then classifies via the oracle.
+new turn id with `markerAlreadyPersisted: false`, then classifies via the
+oracle. Repair supplies the actual `markerAlreadyPersisted` after checking the
+boundary-derived key.
+
+`markerPersisted` on residual is **record residual state** after the attempt
+(not attempt-scoped): true when already present or this attempt persisted it.
 
 ## Residual state after post-claim failure
 
 | Path | Residual |
 |---|---|
-| Tool-preserve compact/install fail | Original agentic turn still open; prior serving view intact; no marker; writer released |
-| Active non-tool compact fail after boundary | Boundary durable; markerPersisted=false; no next request; prior view intact |
+| Tool-preserve compact/install fail | Original agentic turn still open; prior serving view intact; no marker; preserve effect on install fail; writer released |
+| Active non-tool compact fail after boundary | Boundary durable; markerPersisted = residual presence; no next request; prior view intact |
 | Active non-tool install fail after compact | Marker persisted not served; no install effect; prior view intact; repair recoverable |
+| Repair compact fail after prior marker | `markerPersisted: true`, `markerServed: false`; same key reassert |
+| Settled-seam early refuse with `writerClaim: "lhc"` | `claim_writer` + refuse + `release_writer` when residual writerReleased |
 | Install fail vs no-reduction | **Install failure always wins**; `usefulReduction` only after successful install |
 | Skip | `nextProviderRequestAllowed=false` (wait/re-evaluate; does not cancel in-flight transport retry) |
 
 **Repair/retry:** `forcedContinuationBoundary` with
-`{ applied: true, continuationTurnId, forcedThisSeam: false }` takes precedence
-over fresh pressure/usage; requires `continuation.kind === "active_non_tool"`;
-reassert marker by idempotency key (no duplicate boundary).
+`{ applied: true, continuationTurnId, forcedThisSeam: false, markerAlreadyPersisted }`
+takes precedence over fresh pressure/usage; requires
+`continuation.kind === "active_non_tool"`; reassert marker by idempotency key
+(no duplicate boundary).
 
 ## Skip vs refuse
 
 | Skip codes | Refuse codes (examples) |
 |---|---|
-| `not_at_settled_seam`, `transport_retry`, `input_epoch_changed` | `incomplete_capture`, `invalid_provider_identity`, `invalid_tool_correlation`, `open_turn_invariant_broken`, `native_writer_conflict`, `compact_failed`, `install_failed`, `no_valid_provider_request`, `unsupported_contract_version` |
+| `not_at_settled_seam`, `transport_retry`, `input_epoch_changed` | `incomplete_capture`, `invalid_provider_identity`, `invalid_tool_correlation`, `open_turn_invariant_broken`, `native_writer_conflict`, `compact_failed`, `install_failed`, `no_valid_provider_request`, `invalid_pending_boundary_continuation` (wrong kind, missing applied boundary above trigger, empty turn id), `unsupported_contract_version` |
 
 ## Outcomes
 

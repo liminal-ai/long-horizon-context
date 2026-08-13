@@ -1,9 +1,11 @@
 {
-  "name": "derivation_gaps_degraded_compact",
+  "name": "repair_prior_marker_compact_failed",
   "contractVersion": "1.0.0",
-  "description": "Missing/failed derivations degrade fidelity at compact assembly; do not block a valid compact.",
+  "description": "Repair after prior marker persistence with compact failure: markerPersisted true, markerServed false; reassert key idempotently; no force_turn_end.",
   "coverage": [
-    "derivation_gaps_degraded"
+    "pending_boundary_repair",
+    "post_boundary_failure",
+    "marker_residual_state"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -45,43 +47,34 @@
     },
     "forcedContinuationBoundary": {
       "applied": true,
-      "continuationTurnId": "t2",
-      "forcedThisSeam": true,
-      "markerAlreadyPersisted": false
+      "continuationTurnId": "t4",
+      "forcedThisSeam": false,
+      "markerAlreadyPersisted": true
     },
     "compactMaterial": {
-      "derivationsMissingOrFailed": true,
+      "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": true,
+      "compactStructurallyValid": false,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
     }
   },
   "expected": {
-    "outcome": "degraded_compact",
-    "terminalState": "terminal_degraded",
+    "outcome": "refuse",
+    "terminalState": "terminal_refuse",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "installing",
-      "terminal_degraded"
+      "terminal_refuse"
     ],
     "effects": [
       {
         "type": "claim_writer",
         "writer": "lhc"
-      },
-      {
-        "type": "force_turn_end",
-        "reason": "context_compact_continue",
-        "outcome": "completed",
-        "opensContinuationTurn": true,
-        "continuationTurnCount": 1,
-        "continuationTurnId": "t2"
       },
       {
         "type": "compact",
@@ -90,29 +83,9 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "degrade_fidelity",
-        "causes": [
-          "derivations_missing_or_failed"
-        ]
-      },
-      {
-        "type": "insert_continuation_marker",
-        "kind": "lhc.compact_continuation",
-        "continuationTurnId": "t2",
-        "idempotencyKey": "lhc.compact_continuation:t2",
-        "semantics": {
-          "cause": "context_compacted_task_in_progress",
-          "action": "continue_existing_task",
-          "newUserRequest": false,
-          "waitForUser": false
-        },
-        "modelVisible": true,
-        "lhcInspectVisible": true,
-        "userChatVisible": false,
-        "hostMayInjectTransiently": true
-      },
-      {
-        "type": "install_serving_view"
+        "type": "refuse",
+        "code": "compact_failed",
+        "reason": "compact assembly could not produce a structurally valid view"
       },
       {
         "type": "record_receipt",
@@ -125,8 +98,8 @@
     ],
     "receipt": {
       "contractVersion": "1.0.0",
-      "outcome": "degraded_compact",
-      "reasonCode": "degraded_continue_turn",
+      "outcome": "refuse",
+      "reasonCode": "compact_failed",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -144,13 +117,11 @@
         "met": true,
         "isSuccessGate": false
       },
-      "fidelity": "degraded",
-      "degradationReasons": [
-        "derivations_missing_or_failed"
-      ],
+      "fidelity": "full",
+      "degradationReasons": [],
       "continuation": {
         "opened": true,
-        "markerServed": true,
+        "markerServed": false,
         "sameAgenticTurnPreserved": false
       },
       "effects": [
@@ -159,43 +130,15 @@
           "writer": "lhc"
         },
         {
-          "type": "force_turn_end",
-          "reason": "context_compact_continue",
-          "outcome": "completed",
-          "opensContinuationTurn": true,
-          "continuationTurnCount": 1,
-          "continuationTurnId": "t2"
-        },
-        {
           "type": "compact",
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
         },
         {
-          "type": "degrade_fidelity",
-          "causes": [
-            "derivations_missing_or_failed"
-          ]
-        },
-        {
-          "type": "insert_continuation_marker",
-          "kind": "lhc.compact_continuation",
-          "continuationTurnId": "t2",
-          "idempotencyKey": "lhc.compact_continuation:t2",
-          "semantics": {
-            "cause": "context_compacted_task_in_progress",
-            "action": "continue_existing_task",
-            "newUserRequest": false,
-            "waitForUser": false
-          },
-          "modelVisible": true,
-          "lhcInspectVisible": true,
-          "userChatVisible": false,
-          "hostMayInjectTransiently": true
-        },
-        {
-          "type": "install_serving_view"
+          "type": "refuse",
+          "code": "compact_failed",
+          "reason": "compact assembly could not produce a structurally valid view"
         },
         {
           "type": "record_receipt",
@@ -208,17 +151,17 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": false,
+        "priorServingViewIntact": true,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
-        "continuationTurnId": "t2",
+        "continuationTurnId": "t4",
         "markerPersisted": true,
-        "markerServed": true,
+        "markerServed": false,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": true
+        "nextProviderRequestAllowed": false
       },
-      "refused": false,
-      "refuseCode": null,
+      "refused": true,
+      "refuseCode": "compact_failed",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -227,8 +170,7 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "installing",
-        "terminal_degraded"
+        "terminal_refuse"
       ]
     }
   }

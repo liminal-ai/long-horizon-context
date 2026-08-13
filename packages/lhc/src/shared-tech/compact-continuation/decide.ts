@@ -88,9 +88,40 @@ function appliedBoundaryResidualOverlay(
     forcedContinuationBoundaryApplied: true,
     continuationTurnOpened: true,
     continuationTurnId: input.forcedContinuationBoundary.continuationTurnId,
+    // Residual marker presence: already-persisted fact at entry (repair).
+    markerPersisted: base.markerPersisted || input.forcedContinuationBoundary.markerAlreadyPersisted === true,
     originalAgenticTurnStillOpen: false,
     nextProviderRequestAllowed: false,
   };
+}
+
+/**
+ * After a supported v1 input has reached the settled seam and carries
+ * `writerClaim: "lhc"`, early health/invariant refuses must record the
+ * idempotent claim_writer and a final release_writer when residual says
+ * writerReleased. Never claim/release native or conflict writers. Skips and
+ * unsupported-version exits keep their existing effect shape.
+ */
+function earlyRefuseEffects(
+  input: CompactContinuationInput,
+  code: CompactContinuationRefuseCode,
+  reason: string,
+): CompactContinuationEffect[] {
+  const effects: CompactContinuationEffect[] = [];
+  if (input.invariants.writerClaim === "lhc") {
+    effects.push({ type: "claim_writer", writer: "lhc" });
+  }
+  effects.push({ type: "refuse", code, reason });
+  effects.push({ type: "record_receipt", durable: true, userChatVisible: false });
+  if (input.invariants.writerClaim === "lhc") {
+    effects.push({ type: "release_writer" });
+  }
+  return effects;
+}
+
+function residualMarkerPersisted(input: CompactContinuationInput, attemptPersisted: boolean): boolean {
+  if (!isAppliedBoundary(input.forcedContinuationBoundary)) return attemptPersisted;
+  return attemptPersisted || input.forcedContinuationBoundary.markerAlreadyPersisted === true;
 }
 
 function baseReceipt(
@@ -183,10 +214,7 @@ function refuseEarly(
   code: CompactContinuationRefuseCode,
   reason: string,
 ): CompactContinuationDecision {
-  const effects: CompactContinuationEffect[] = [
-    { type: "refuse", code, reason },
-    { type: "record_receipt", durable: true, userChatVisible: false },
-  ];
+  const effects = earlyRefuseEffects(input, code, reason);
   const applied = isAppliedBoundary(input.forcedContinuationBoundary);
   return decide(input, {
     outcome: "refuse",
@@ -521,7 +549,8 @@ function refuseAfterContinueAttempt(
   effectsSoFar: CompactContinuationEffect[],
   compactRan: boolean,
   continuationTurnId: string,
-  markerPersisted: boolean,
+  /** True when this attempt inserted the marker (install_failed path). */
+  attemptMarkerPersisted: boolean,
 ): CompactContinuationDecision {
   const effects: CompactContinuationEffect[] = [
     ...effectsSoFar,
@@ -529,6 +558,7 @@ function refuseAfterContinueAttempt(
     { type: "record_receipt", durable: true, userChatVisible: false },
     { type: "release_writer" },
   ];
+  const markerPersisted = residualMarkerPersisted(input, attemptMarkerPersisted);
   return decide(input, {
     outcome: "refuse",
     terminalState: "terminal_refuse",
@@ -770,12 +800,22 @@ function postCompactTail(
   insertDegradeAfterCompact(effectsSoFar, degradationReasons);
 
   if (!material.installSucceeds) {
+    // Normative preserve-tool order places preserve before install; install
+    // attempt reached ⇒ include preserve effect even when install fails.
+    const installFailEffects: CompactContinuationEffect[] = [
+      ...effectsSoFar,
+      {
+        type: "preserve_tool_pair_verbatim",
+        toolCallId,
+        location: "open_turn_tail",
+      },
+    ];
     return refuseAfterPreserveAttempt(
       input,
       [...pathAfterClaim, "installing"],
       "install_failed",
       "post-compact serving view could not be installed",
-      effectsSoFar,
+      installFailEffects,
       true,
     );
   }

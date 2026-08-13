@@ -1,7 +1,7 @@
 {
   "name": "install_failed_continue_turn",
   "contractVersion": "1.0.0",
-  "description": "Install failure after forced boundary: no partial install; boundary durable; no marker; writer released.",
+  "description": "Install failure after forced boundary: no partial install; boundary durable; canonical marker persisted but not served; writer released.",
   "coverage": [
     "compact_install_failure",
     "active_non_tool_continuation",
@@ -48,7 +48,8 @@
     "forcedContinuationBoundary": {
       "applied": true,
       "continuationTurnId": "t2",
-      "forcedThisSeam": true
+      "forcedThisSeam": true,
+      "markerAlreadyPersisted": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,

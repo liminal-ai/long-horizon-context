@@ -18,16 +18,22 @@ import {
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
+  COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE,
   COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
   COMPACT_CONTINUATION_TRANSITION_ORDER,
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactContinuationDecision,
+  type CompactContinuationSeam,
+  type CompactMaterialFacts,
   compactContinuationMarkerIdempotencyKey,
   decideCompactContinuation,
+  type ForcedContinuationBoundary,
+  type ProviderUsageAuthority,
   validateCompactContinuationDecision,
   validateCompactContinuationInput,
   validateCompactContinuationReceipt,
+  type WorkContinuation,
 } from "../src/shared-tech/compact-continuation/index.js";
 
 const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "compact-continuation", "v1");
@@ -130,8 +136,23 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER).toContain("force_boundary_if_continue_turn");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("install_failure_wins_over_no_reduction_classification");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("forced_boundary_repair_takes_precedence_over_fresh_pressure");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("marker_persisted_is_residual_state_not_attempt_scoped");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("settled_seam_lhc_claim_early_refuse_records_claim_and_release");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("preserve_tool_install_failure_includes_preserve_effect");
     expect(COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX).toBe("lhc.compact_continuation:");
     expect(compactContinuationMarkerIdempotencyKey("t3")).toBe("lhc.compact_continuation:t3");
+    expect(COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE).toMatch(/per-variant closed structs/);
+    // Component input types are exported for LIM-61 / lhc-rs consumers (type-level pin).
+    const _seam = null as CompactContinuationSeam | null;
+    const _usage = null as ProviderUsageAuthority | null;
+    const _work = null as WorkContinuation | null;
+    const _material = null as CompactMaterialFacts | null;
+    const _boundary = null as ForcedContinuationBoundary | null;
+    void _seam;
+    void _usage;
+    void _work;
+    void _material;
+    void _boundary;
   });
 });
 
@@ -306,6 +327,7 @@ describe("compact-continuation decision invariants", () => {
       applied: true as const,
       continuationTurnId: "t2",
       forcedThisSeam: true,
+      markerAlreadyPersisted: false,
     };
     const full = decideCompactContinuation(
       asCompactContinuationInput(
@@ -446,6 +468,7 @@ describe("compact-continuation decision invariants", () => {
             applied: true,
             continuationTurnId: "t2",
             forcedThisSeam: true,
+            markerAlreadyPersisted: false,
           },
           compactMaterial: {
             derivationsMissingOrFailed: false,
@@ -513,7 +536,12 @@ describe("compact-continuation decision invariants", () => {
             reason: "missing",
             domain: "provider_reported_input",
           },
-          forcedContinuationBoundary: { applied: true, continuationTurnId: "t2", forcedThisSeam: false },
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: false,
+          },
           continuation: { kind: "active_non_tool" },
         }),
       ),
@@ -541,7 +569,12 @@ describe("compact-continuation decision invariants", () => {
             lowerTargetTokens: 40_000,
             hostCapability: "full_state_machine",
           },
-          forcedContinuationBoundary: { applied: true, continuationTurnId: "t2", forcedThisSeam: false },
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: false,
+          },
           continuation: { kind: "active_non_tool" },
         }),
       ),
@@ -554,7 +587,12 @@ describe("compact-continuation decision invariants", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
-          forcedContinuationBoundary: { applied: true, continuationTurnId: "t2", forcedThisSeam: false },
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: false,
+          },
           continuation: { kind: "none" },
         }),
       ),
@@ -571,7 +609,12 @@ describe("compact-continuation decision invariants", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
-          forcedContinuationBoundary: { applied: true, continuationTurnId: "t2", forcedThisSeam: false },
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: false,
+          },
           continuation: {
             kind: "pending_correlated_tool_result",
             toolCallId: "call-1",
@@ -596,7 +639,12 @@ describe("compact-continuation decision invariants", () => {
             inputEpochAtDecision: 0,
             inputEpochAtApply: 0,
           },
-          forcedContinuationBoundary: { applied: true, continuationTurnId: "t2", forcedThisSeam: false },
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: false,
+          },
           continuation: { kind: "active_non_tool" },
         }),
       ),
@@ -639,6 +687,7 @@ describe("compact-continuation decision invariants", () => {
       applied: true as const,
       continuationTurnId: "t2",
       forcedThisSeam: true,
+      markerAlreadyPersisted: false,
     };
     const none = decideCompactContinuation(
       asCompactContinuationInput(baseInput({ forcedContinuationBoundary: boundary })),
@@ -687,6 +736,7 @@ describe("compact-continuation decision invariants", () => {
             applied: true,
             continuationTurnId: "t2",
             forcedThisSeam: true,
+            markerAlreadyPersisted: false,
           },
           compactMaterial: {
             derivationsMissingOrFailed: false,
@@ -706,6 +756,142 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.receipt.residual.markerPersisted).toBe(true);
     expect(actual.receipt.residual.markerServed).toBe(false);
   });
+
+  it("active_non_tool above trigger without applied boundary refuses invalid_pending", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          continuation: { kind: "active_non_tool" },
+          forcedContinuationBoundary: { applied: false },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(false);
+    expect(actual.effects.map((e) => e.type)).toEqual(["refuse", "record_receipt"]);
+  });
+
+  it("singleOpenTurn false refuses open_turn_invariant_broken", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          invariants: {
+            captureComplete: true,
+            providerIdentityValid: true,
+            singleOpenTurn: false,
+            writerClaim: "none",
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("open_turn_invariant_broken");
+    expect(actual.receipt.residual.writerReleased).toBe(true);
+  });
+
+  it("repair after prior marker + compact failure reports residual markerPersisted", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t4",
+            forcedThisSeam: false,
+            markerAlreadyPersisted: true,
+          },
+          compactMaterial: {
+            derivationsMissingOrFailed: false,
+            lowerTargetMet: true,
+            compactStructurallyValid: false,
+            installSucceeds: true,
+            usefulReduction: true,
+            canProduceValidProviderRequest: true,
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("compact_failed");
+    expect(actual.effects.some((e) => e.type === "force_turn_end")).toBe(false);
+    expect(actual.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
+    expect(actual.receipt.residual).toMatchObject({
+      markerPersisted: true,
+      markerServed: false,
+      forcedContinuationBoundaryApplied: true,
+      continuationTurnId: "t4",
+      writerReleased: true,
+      priorServingViewIntact: true,
+      nextProviderRequestAllowed: false,
+    });
+  });
+
+  it("writerClaim lhc + incomplete capture records claim then release", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          invariants: {
+            captureComplete: false,
+            providerIdentityValid: true,
+            singleOpenTurn: true,
+            writerClaim: "lhc",
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("incomplete_capture");
+    expect(actual.receipt.residual.writerReleased).toBe(true);
+    const types = actual.effects.map((e) => e.type);
+    expect(types).toEqual(["claim_writer", "refuse", "record_receipt", "release_writer"]);
+    expect(types.indexOf("claim_writer")).toBeLessThan(types.indexOf("release_writer"));
+  });
+
+  it("install_failed preserve-tool includes preserve_tool_pair_verbatim and keeps turn open", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            toolCallId: "call-99",
+            correlationValid: true,
+          },
+          compactMaterial: {
+            derivationsMissingOrFailed: false,
+            lowerTargetMet: true,
+            compactStructurallyValid: true,
+            installSucceeds: false,
+            usefulReduction: true,
+            canProduceValidProviderRequest: true,
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("refuse");
+    expect(actual.receipt.refuseCode).toBe("install_failed");
+    const types = actual.effects.map((e) => e.type);
+    expect(types).toContain("preserve_tool_pair_verbatim");
+    expect(types.indexOf("compact")).toBeLessThan(types.indexOf("preserve_tool_pair_verbatim"));
+    expect(types.indexOf("preserve_tool_pair_verbatim")).toBeLessThan(types.indexOf("refuse"));
+    expect(types).not.toContain("insert_continuation_marker");
+    expect(types).not.toContain("install_serving_view");
+    expect(actual.receipt.residual).toMatchObject({
+      markerPersisted: false,
+      markerServed: false,
+      originalAgenticTurnStillOpen: true,
+      priorServingViewIntact: true,
+      writerReleased: true,
+    });
+    expect(actual.effects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "preserve_tool_pair_verbatim",
+          toolCallId: "call-99",
+          location: "open_turn_tail",
+        }),
+      ]),
+    );
+  });
 });
 
 describe("marker identity per forced boundary", () => {
@@ -717,6 +903,7 @@ describe("marker identity per forced boundary", () => {
             applied: true,
             continuationTurnId: "t2",
             forcedThisSeam: true,
+            markerAlreadyPersisted: false,
           },
         }),
       ),
@@ -728,6 +915,7 @@ describe("marker identity per forced boundary", () => {
             applied: true,
             continuationTurnId: "t5",
             forcedThisSeam: true,
+            markerAlreadyPersisted: false,
           },
         }),
       ),
@@ -759,6 +947,7 @@ describe("marker identity per forced boundary", () => {
             applied: true,
             continuationTurnId: "t4",
             forcedThisSeam: false,
+            markerAlreadyPersisted: false,
           },
         }),
       ),
@@ -787,6 +976,7 @@ describe("marker identity per forced boundary", () => {
             applied: true,
             continuationTurnId: "t2",
             forcedThisSeam: false,
+            markerAlreadyPersisted: false,
           },
           invariants: {
             captureComplete: true,
@@ -799,5 +989,18 @@ describe("marker identity per forced boundary", () => {
     );
     expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
     expect(actual.receipt.refuseCode).not.toBe("native_writer_conflict");
+  });
+
+  it("rejects applied boundary missing markerAlreadyPersisted", () => {
+    const bad = baseInput({
+      forcedContinuationBoundary: {
+        applied: true,
+        continuationTurnId: "t2",
+        forcedThisSeam: true,
+      },
+    });
+    const v = validateCompactContinuationInput(bad);
+    expect(v.ok).toBe(false);
+    expect(v.issues.some((i) => i.path.includes("markerAlreadyPersisted"))).toBe(true);
   });
 });

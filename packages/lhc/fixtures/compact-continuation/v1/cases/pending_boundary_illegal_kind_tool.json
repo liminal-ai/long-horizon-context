@@ -48,7 +48,8 @@
     "forcedContinuationBoundary": {
       "applied": true,
       "continuationTurnId": "t2",
-      "forcedThisSeam": false
+      "forcedThisSeam": false,
+      "markerAlreadyPersisted": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,

@@ -1,10 +1,11 @@
 {
   "name": "install_failed_preserve_tool",
   "contractVersion": "1.0.0",
-  "description": "Tool-preserve install failure: original turn open; prior view intact; writer released.",
+  "description": "Tool-preserve install failure: preserve pair before refuse; no marker; original turn open; prior view intact; writer released.",
   "coverage": [
     "compact_install_failure",
-    "pending_tool_result_continuation"
+    "pending_tool_result_continuation",
+    "preserve_tool_on_install_failure"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -82,6 +83,11 @@
         "allowDegradedDerivations": true
       },
       {
+        "type": "preserve_tool_pair_verbatim",
+        "toolCallId": "call-42",
+        "location": "open_turn_tail"
+      },
+      {
         "type": "refuse",
         "code": "install_failed",
         "reason": "post-compact serving view could not be installed"
@@ -133,6 +139,11 @@
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
+        },
+        {
+          "type": "preserve_tool_pair_verbatim",
+          "toolCallId": "call-42",
+          "location": "open_turn_tail"
         },
         {
           "type": "refuse",

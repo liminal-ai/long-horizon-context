@@ -1,11 +1,10 @@
 {
-  "name": "pending_forced_boundary_compact_failed",
+  "name": "active_non_tool_missing_forced_boundary",
   "contractVersion": "1.0.0",
-  "description": "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
+  "description": "active_non_tool above trigger with forcedContinuationBoundary.applied false refuses invalid_pending_boundary_continuation (runtime must force first).",
   "coverage": [
-    "pending_boundary_repair",
-    "post_boundary_failure",
-    "compact_install_failure"
+    "invalid_pending_boundary_continuation",
+    "missing_forced_boundary_above_trigger"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -46,15 +45,12 @@
       "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
-      "applied": true,
-      "continuationTurnId": "t2",
-      "forcedThisSeam": false,
-      "markerAlreadyPersisted": false
+      "applied": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
@@ -67,40 +63,25 @@
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
-      "path_continue_turn",
-      "compacting",
       "terminal_refuse"
     ],
     "effects": [
       {
-        "type": "claim_writer",
-        "writer": "lhc"
-      },
-      {
-        "type": "compact",
-        "lowerTargetDomain": "lhc_rendered_history",
-        "lowerTargetTokens": 40000,
-        "allowDegradedDerivations": true
-      },
-      {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "invalid_pending_boundary_continuation",
+        "reason": "active_non_tool above trigger requires forcedContinuationBoundary.applied with continuationTurnId (runtime forces turn_end first)"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
-      },
-      {
-        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
-      "turnEndReason": "context_compact_continue",
+      "reasonCode": "invalid_pending_boundary_continuation",
+      "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -114,62 +95,47 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": true,
+        "met": null,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": true,
+        "opened": false,
         "markerServed": false,
-        "sameAgenticTurnPreserved": false
+        "sameAgenticTurnPreserved": true
       },
       "effects": [
         {
-          "type": "claim_writer",
-          "writer": "lhc"
-        },
-        {
-          "type": "compact",
-          "lowerTargetDomain": "lhc_rendered_history",
-          "lowerTargetTokens": 40000,
-          "allowDegradedDerivations": true
-        },
-        {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "invalid_pending_boundary_continuation",
+          "reason": "active_non_tool above trigger requires forcedContinuationBoundary.applied with continuationTurnId (runtime forces turn_end first)"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
-        },
-        {
-          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": true,
-        "continuationTurnOpened": true,
-        "continuationTurnId": "t2",
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": false,
+        "originalAgenticTurnStillOpen": true,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "invalid_pending_boundary_continuation",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
         "evaluating_pressure",
-        "path_continue_turn",
-        "compacting",
         "terminal_refuse"
       ]
     }

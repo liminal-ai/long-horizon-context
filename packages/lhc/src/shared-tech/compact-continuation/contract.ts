@@ -260,8 +260,13 @@ export type CompactContinuationRefuseCode =
   | "install_failed"
   | "no_valid_provider_request"
   /**
-   * `forcedContinuationBoundary.applied` is true but continuation.kind is not
-   * active_non_tool (illegal v1 combination).
+   * Invalid forced-boundary / continuation-state combination. Covers:
+   * - `forcedContinuationBoundary.applied` is true but `continuation.kind` is
+   *   not `active_non_tool` (illegal v1 pairing);
+   * - `active_non_tool` above trigger with
+   *   `forcedContinuationBoundary: { applied: false }` (runtime must force the
+   *   boundary first and re-enter with the continuation turn id);
+   * - applied boundary with empty/missing `continuationTurnId`.
    */
   | "invalid_pending_boundary_continuation"
   /** Input contractVersion is not this oracle version; not an accepted v1 seam. */
@@ -449,16 +454,19 @@ export type WorkContinuation =
  * Runtime protocol (LIM-61):
  * - **Fresh continue-turn:** apply atomic `turn_end` first, receive the new
  *   continuation turn id (`tN`), supply `{ applied: true, continuationTurnId,
- *   forcedThisSeam: true }`.
- * - **Repair:** read the already-open continuation turn id; supply
- *   `{ applied: true, continuationTurnId, forcedThisSeam: false }` — do not
- *   force another boundary.
+ *   forcedThisSeam: true, markerAlreadyPersisted: false }`.
+ * - **Repair:** read the already-open continuation turn id; check whether the
+ *   boundary-derived marker key
+ *   (`lhc.compact_continuation:<continuationTurnId>`) already exists; supply
+ *   `{ applied: true, continuationTurnId, forcedThisSeam: false,
+ *   markerAlreadyPersisted: <actual> }` — do not force another boundary.
  * - **No forced boundary** (preserve-tool, below-trigger, skips, etc.):
  *   `{ applied: false }`.
  *
  * Continue-turn compact/marker paths require `applied: true` with a non-empty
  * turn id. Marker idempotency keys derive from that id only (not UUID, usage,
- * epoch, timestamp, or the reason string alone).
+ * epoch, timestamp, or the reason string alone). Reassertion of the marker is
+ * idempotent by that per-boundary key.
  */
 export type ForcedContinuationBoundary =
   | { applied: false }
@@ -471,6 +479,16 @@ export type ForcedContinuationBoundary =
        * false when repairing a prior forced boundary (no second force).
        */
       forcedThisSeam: boolean;
+      /**
+       * Closed residual fact at seam entry: does the boundary-keyed marker
+       * already exist in the canonical record?
+       * - Fresh force supplies `false`.
+       * - Repair checks the boundary-derived idempotency key and supplies the
+       *   actual existing state.
+       * Residual `markerPersisted` is true when this is true **or** this
+       * attempt persisted the marker.
+       */
+      markerAlreadyPersisted: boolean;
     };
 
 /**
@@ -563,13 +581,16 @@ export type CompactContinuationInput = {
    *
    * **Legal v1 when applied:** requires `continuation.kind === "active_non_tool"`.
    * Pairing with `none` or `pending_correlated_tool_result` is
-   * `invalid_pending_boundary_continuation`.
+   * `invalid_pending_boundary_continuation`. Active non-tool above trigger with
+   * `{ applied: false }` is the same refuse (runtime must force first).
    *
    * **Repair precedence** (`applied: true`, `forcedThisSeam: false`): after seam
    * + record/request-health checks pass, resume compact/marker/install
    * regardless of missing provider usage or a now-below trigger.
    *
    * **Marker identity:** key = `lhc.compact_continuation:<continuationTurnId>`.
+   * **Marker residual:** supply `markerAlreadyPersisted` so residual
+   * `markerPersisted` is record-state truthful across repair.
    */
   forcedContinuationBoundary: ForcedContinuationBoundary;
   // ── attempt results ───────────────────────────────────────────────────────
@@ -633,9 +654,13 @@ export type CompactContinuationResidualState = {
    */
   continuationTurnId: string | null;
   /**
-   * Typed marker was persisted into the canonical record (after successful
-   * compact, before serving-view install). True on install_failed after
-   * marker insertion; repair reasserts the same idempotency key.
+   * Residual: the boundary-keyed typed marker exists in the canonical record
+   * **after** this attempt (not attempt-scoped). True when it was already
+   * present at entry (`forcedContinuationBoundary.markerAlreadyPersisted`) or
+   * this attempt persisted it (successful compact, before install). A repair
+   * compact failure after a prior marker persistence reports
+   * `markerPersisted: true` with `markerServed: false`. Repair reasserts by
+   * the same per-boundary idempotency key.
    */
   markerPersisted: boolean;
   /**
@@ -732,8 +757,8 @@ export type CompactContinuationDecision = {
  * 8. Active non-tool: force turn boundary **before** compact so the just-closed
  *    turn is eligible; one turn_end closes prior and opens one continuation turn.
  *    Repair supplies `forcedContinuationBoundary` as
- *    `{ applied: true, continuationTurnId, forcedThisSeam: false }` and skips
- *    re-forcing.
+ *    `{ applied: true, continuationTurnId, forcedThisSeam: false,
+ *    markerAlreadyPersisted }` and skips re-forcing.
  * 9. Compact (closed history) with degraded-derivation tolerance; lower target
  *    is not a success gate. Fidelity degradation is classified at assembly.
  * 10. Preserve tool pair / insert marker / install serving view.
@@ -743,21 +768,29 @@ export type CompactContinuationDecision = {
  * - **tool-preserve** compact/install failure: original agentic turn remains
  *   open; prior serving view intact; no marker; writer released.
  * - **active non-tool** compact failure **after** forced boundary (before
- *   marker): boundary durable; markerPersisted=false; markerServed=false;
- *   prior view intact; no next request; writer released.
+ *   this attempt's marker): boundary durable; `markerPersisted` reflects
+ *   residual state (`markerAlreadyPersisted` or false when none yet);
+ *   markerServed=false; prior view intact; no next request; writer released.
  * - **active non-tool** install failure **after** successful compact: marker
  *   is persisted (`markerPersisted=true`, `markerServed=false`); no
  *   `install_serving_view`; prior view intact; boundary durable; repair
  *   recoverable; writer released.
+ * - **preserve-tool** install failure (install attempt reached): effects
+ *   include `preserve_tool_pair_verbatim` before refuse; no marker; original
+ *   turn open; prior view intact; writer released.
  * - **install_failed** always wins over `no_reduction` classification.
  *   `usefulReduction` is evaluated only after successful install.
+ * - **Settled-seam early health/invariant refuse** with `writerClaim: "lhc"`:
+ *   effects record idempotent `claim_writer` and final `release_writer` when
+ *   residual `writerReleased` is true. Never claim/release native/conflict.
  * - **Skip**: `nextProviderRequestAllowed=false` (wait and re-evaluate). Does
  *   not cancel an in-flight transport retry. Pending-boundary residual fields
  *   remain truthful on skip/health-refuse.
  * - **Repair/retry**: `forcedContinuationBoundary` with
- *   `{ applied: true, forcedThisSeam: false }` takes precedence over fresh
- *   pressure; do not duplicate the boundary; reassert marker by idempotency
- *   key; retry install.
+ *   `{ applied: true, forcedThisSeam: false, markerAlreadyPersisted }` takes
+ *   precedence over fresh pressure; do not duplicate the boundary; reassert
+ *   marker by idempotency key; residual `markerPersisted` is residual-state
+ *   truthful across repair; retry install.
  */
 export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "seam_eligibility",
@@ -806,9 +839,12 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
   "applied_forced_boundary_residual_truthful_on_skip_and_refuse",
   "install_failure_wins_over_no_reduction_classification",
   "marker_persisted_before_install_served_only_after_install",
+  "marker_persisted_is_residual_state_not_attempt_scoped",
   "marker_idempotency_key_is_prefix_plus_continuation_turn_id",
   "skip_does_not_authorize_next_provider_request",
   "writer_claim_lhc_is_idempotent_reassert_not_second_lock",
+  "settled_seam_lhc_claim_early_refuse_records_claim_and_release",
+  "preserve_tool_install_failure_includes_preserve_effect",
   "input_is_closed_shape_unknown_fields_rejected",
   "receipts_are_not_user_chat",
   "stable_turn_end_reason_context_compact_continue",

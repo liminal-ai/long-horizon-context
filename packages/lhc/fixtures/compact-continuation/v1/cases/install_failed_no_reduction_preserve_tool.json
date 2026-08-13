@@ -83,6 +83,11 @@
         "allowDegradedDerivations": true
       },
       {
+        "type": "preserve_tool_pair_verbatim",
+        "toolCallId": "call-42",
+        "location": "open_turn_tail"
+      },
+      {
         "type": "refuse",
         "code": "install_failed",
         "reason": "post-compact serving view could not be installed"
@@ -134,6 +139,11 @@
           "lowerTargetDomain": "lhc_rendered_history",
           "lowerTargetTokens": 40000,
           "allowDegradedDerivations": true
+        },
+        {
+          "type": "preserve_tool_pair_verbatim",
+          "toolCallId": "call-42",
+          "location": "open_turn_tail"
         },
         {
           "type": "refuse",

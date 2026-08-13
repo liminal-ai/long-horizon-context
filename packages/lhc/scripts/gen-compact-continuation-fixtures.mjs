@@ -72,8 +72,8 @@ const est = (tokens = 0, source = "lhc_token_estimate") => ({
   domain: "source_labelled_estimate",
 });
 
-function appliedBoundary(continuationTurnId, forcedThisSeam) {
-  return { applied: true, continuationTurnId, forcedThisSeam };
+function appliedBoundary(continuationTurnId, forcedThisSeam, markerAlreadyPersisted = false) {
+  return { applied: true, continuationTurnId, forcedThisSeam, markerAlreadyPersisted };
 }
 
 function makeInput(over = {}) {
@@ -244,7 +244,7 @@ const cases = [
     name: "install_failed_continue_turn",
     coverage: ["compact_install_failure", "active_non_tool_continuation", "post_boundary_failure"],
     description:
-      "Install failure after forced boundary: no partial install; boundary durable; no marker; writer released.",
+      "Install failure after forced boundary: no partial install; boundary durable; canonical marker persisted but not served; writer released.",
     input: makeInput({
       forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
@@ -253,8 +253,9 @@ const cases = [
   },
   {
     name: "install_failed_preserve_tool",
-    coverage: ["compact_install_failure", "pending_tool_result_continuation"],
-    description: "Tool-preserve install failure: original turn open; prior view intact; writer released.",
+    coverage: ["compact_install_failure", "pending_tool_result_continuation", "preserve_tool_on_install_failure"],
+    description:
+      "Tool-preserve install failure: preserve pair before refuse; no marker; original turn open; prior view intact; writer released.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -468,6 +469,44 @@ const cases = [
       forcedContinuationBoundary: appliedBoundary("t2", false),
     }),
   },
+  {
+    name: "active_non_tool_missing_forced_boundary",
+    coverage: ["invalid_pending_boundary_continuation", "missing_forced_boundary_above_trigger"],
+    description:
+      "active_non_tool above trigger with forcedContinuationBoundary.applied false refuses invalid_pending_boundary_continuation (runtime must force first).",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: { applied: false },
+    }),
+  },
+  {
+    name: "open_turn_invariant_broken",
+    coverage: ["open_turn_invariant_broken", "record_request_health_refuse"],
+    description: "singleOpenTurn false at a settled seam refuses open_turn_invariant_broken.",
+    input: makeInput({
+      invariants: { ...goodInvariants, singleOpenTurn: false },
+    }),
+  },
+  {
+    name: "repair_prior_marker_compact_failed",
+    coverage: ["pending_boundary_repair", "post_boundary_failure", "marker_residual_state"],
+    description:
+      "Repair after prior marker persistence with compact failure: markerPersisted true, markerServed false; reassert key idempotently; no force_turn_end.",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: appliedBoundary("t4", false, true),
+      compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
+    }),
+  },
+  {
+    name: "writer_claim_lhc_incomplete_capture",
+    coverage: ["writer_claim_lhc_idempotent", "settled_seam_lhc_claim_early_refuse"],
+    description:
+      "writerClaim lhc at settled seam with incomplete capture: claim_writer then refuse then release_writer; residual writerReleased true.",
+    input: makeInput({
+      invariants: { ...goodInvariants, writerClaim: "lhc", captureComplete: false },
+    }),
+  },
 ];
 
 mkdirSync(join(baseDir, "cases"), { recursive: true });
@@ -512,6 +551,12 @@ const requiredCoverage = [
   "invalid_pending_boundary_continuation",
   "writer_claim_lhc_idempotent",
   "pending_boundary_residual_on_skip",
+  "missing_forced_boundary_above_trigger",
+  "open_turn_invariant_broken",
+  "record_request_health_refuse",
+  "marker_residual_state",
+  "settled_seam_lhc_claim_early_refuse",
+  "preserve_tool_on_install_failure",
 ];
 
 const manifest = {

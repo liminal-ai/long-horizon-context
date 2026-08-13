@@ -270,7 +270,12 @@ function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
     rejectUnknownKeys(raw, ["applied"], "forcedContinuationBoundary", issues);
     return;
   }
-  rejectUnknownKeys(raw, ["applied", "continuationTurnId", "forcedThisSeam"], "forcedContinuationBoundary", issues);
+  rejectUnknownKeys(
+    raw,
+    ["applied", "continuationTurnId", "forcedThisSeam", "markerAlreadyPersisted"],
+    "forcedContinuationBoundary",
+    issues,
+  );
   if (typeof raw["continuationTurnId"] !== "string" || raw["continuationTurnId"].length === 0) {
     issues.push(issue("forcedContinuationBoundary.continuationTurnId", "required non-empty string when applied"));
   } else if (!/^t\d+$/.test(raw["continuationTurnId"])) {
@@ -280,6 +285,9 @@ function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (!isBool(raw["forcedThisSeam"])) {
     issues.push(issue("forcedContinuationBoundary.forcedThisSeam", "must be a boolean when applied"));
+  }
+  if (!isBool(raw["markerAlreadyPersisted"])) {
+    issues.push(issue("forcedContinuationBoundary.markerAlreadyPersisted", "must be a boolean when applied"));
   }
 }
 
@@ -666,6 +674,10 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
 
     // Meaningful order: claim before release; force before compact when both present;
     // degrade after compact and before install; compact before install.
+    // Residual writerReleased + claim_writer implies a final release_writer.
+    if (hasClaim && isObject(raw["residual"]) && raw["residual"]["writerReleased"] === true && !hasRelease) {
+      issues.push(issue("effects", "claim_writer with residual.writerReleased requires release_writer"));
+    }
     if (hasClaim && hasRelease) {
       if (types.indexOf("claim_writer") > types.indexOf("release_writer")) {
         issues.push(issue("effects", "claim_writer must precede release_writer"));

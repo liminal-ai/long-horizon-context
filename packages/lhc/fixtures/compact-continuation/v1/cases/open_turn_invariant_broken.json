@@ -1,11 +1,10 @@
 {
-  "name": "pending_forced_boundary_compact_failed",
+  "name": "open_turn_invariant_broken",
   "contractVersion": "1.0.0",
-  "description": "Repair compact failure with pending boundary: no duplicate force_turn_end; boundary remains; writer released.",
+  "description": "singleOpenTurn false at a settled seam refuses open_turn_invariant_broken.",
   "coverage": [
-    "pending_boundary_repair",
-    "post_boundary_failure",
-    "compact_install_failure"
+    "open_turn_invariant_broken",
+    "record_request_health_refuse"
   ],
   "input": {
     "contractVersion": "1.0.0",
@@ -42,19 +41,16 @@
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
-      "singleOpenTurn": true,
+      "singleOpenTurn": false,
       "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
-      "applied": true,
-      "continuationTurnId": "t2",
-      "forcedThisSeam": false,
-      "markerAlreadyPersisted": false
+      "applied": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true
@@ -66,41 +62,25 @@
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "evaluating_pressure",
-      "path_continue_turn",
-      "compacting",
       "terminal_refuse"
     ],
     "effects": [
       {
-        "type": "claim_writer",
-        "writer": "lhc"
-      },
-      {
-        "type": "compact",
-        "lowerTargetDomain": "lhc_rendered_history",
-        "lowerTargetTokens": 40000,
-        "allowDegradedDerivations": true
-      },
-      {
         "type": "refuse",
-        "code": "compact_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "open_turn_invariant_broken",
+        "reason": "exactly-one-open-turn invariant does not hold"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
-      },
-      {
-        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "1.0.0",
       "outcome": "refuse",
-      "reasonCode": "compact_failed",
-      "turnEndReason": "context_compact_continue",
+      "reasonCode": "open_turn_invariant_broken",
+      "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -114,62 +94,46 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": true,
+        "met": null,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "continuation": {
-        "opened": true,
+        "opened": false,
         "markerServed": false,
-        "sameAgenticTurnPreserved": false
+        "sameAgenticTurnPreserved": true
       },
       "effects": [
         {
-          "type": "claim_writer",
-          "writer": "lhc"
-        },
-        {
-          "type": "compact",
-          "lowerTargetDomain": "lhc_rendered_history",
-          "lowerTargetTokens": 40000,
-          "allowDegradedDerivations": true
-        },
-        {
           "type": "refuse",
-          "code": "compact_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "open_turn_invariant_broken",
+          "reason": "exactly-one-open-turn invariant does not hold"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
-        },
-        {
-          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": true,
-        "continuationTurnOpened": true,
-        "continuationTurnId": "t2",
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": false,
+        "originalAgenticTurnStillOpen": true,
         "nextProviderRequestAllowed": false
       },
       "refused": true,
-      "refuseCode": "compact_failed",
+      "refuseCode": "open_turn_invariant_broken",
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "evaluating_pressure",
-        "path_continue_turn",
-        "compacting",
         "terminal_refuse"
       ]
     }
