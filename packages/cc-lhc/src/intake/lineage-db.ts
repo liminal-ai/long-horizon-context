@@ -96,28 +96,6 @@ export function lineageReadFailureMessage(cause: unknown): string {
   return `[cc-lhc] lineage read failed (continuing): ${message}`;
 }
 
-function _safeLineageRead<T>(logError: (message: string) => void, run: () => T, fallback: T): T {
-  try {
-    return run();
-  } catch (cause) {
-    logError(lineageReadFailureMessage(cause));
-    return fallback;
-  }
-}
-
-async function _safeLineageReadAsync<T>(
-  logError: (message: string) => void,
-  run: () => Promise<T>,
-  fallback: T,
-): Promise<T> {
-  try {
-    return await run();
-  } catch (cause) {
-    logError(lineageReadFailureMessage(cause));
-    return fallback;
-  }
-}
-
 function tableHasColumn(db: DatabaseSync, table: string, column: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return rows.some((row) => row.name === column);

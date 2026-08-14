@@ -261,8 +261,7 @@ describe("resume handoff capture", () => {
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-prefix.jsonl");
     // Two replayed-prefix lines that map to unknown skips (no events).
-    const prefix =
-      `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`;
+    const prefix = `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`;
     writeFileSync(rolloutPath, prefix);
     const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
     const prefixBoundary = computeVerifiedPrefixBoundary(prefix, 2);
@@ -365,7 +364,15 @@ describe("resume handoff capture", () => {
           intakeStream: {
             messageEvents: async (_ref: unknown, events: unknown[]) => {
               intakeCalls.push(events.length);
-              return { ok: true, value: { events: events.map(() => ({ outcome: "recorded" })) } };
+              return {
+                ok: true,
+                value: {
+                  events: events.map((e) => ({
+                    idempotencyKey: (e as { idempotencyKey: string }).idempotencyKey,
+                    outcome: "recorded" as const,
+                  })),
+                },
+              };
             },
           },
         } as unknown as Lhc,

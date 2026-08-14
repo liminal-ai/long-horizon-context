@@ -3,12 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
-
-import { CAPTURE_NOT_READY_REFUSAL } from "../../src/intake/session.js";
-import { startCaptureSession } from "../../src/intake/session.js";
 import { runCompactCommand } from "../../src/commands/compact.js";
-import { encodeProjectPath } from "../../src/rollout/discover.js";
+import { CAPTURE_NOT_READY_REFUSAL, startCaptureSession } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import { encodeProjectPath } from "../../src/rollout/discover.js";
 
 async function waitFor(condition: () => boolean, label: string, attempts = 120): Promise<void> {
   for (let i = 0; i < attempts; i += 1) {
@@ -63,7 +61,15 @@ describe("initial replay barrier before ready", () => {
             messageEvents: async (_ref: ThreadRef, events: MessageEventInput[]) => {
               intakeCalls += 1;
               await gate;
-              return { ok: true, value: { events: events.map(() => ({ outcome: "recorded" })) } };
+              return {
+                ok: true,
+                value: {
+                  events: events.map((e) => ({
+                    idempotencyKey: (e as { idempotencyKey: string }).idempotencyKey,
+                    outcome: "recorded" as const,
+                  })),
+                },
+              };
             },
           },
         }) as unknown as Lhc,

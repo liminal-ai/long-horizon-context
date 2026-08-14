@@ -15,6 +15,7 @@ import { signaturesForRolloutLine } from "../../src/intake/replay-dedupe.js";
 import { startCaptureSession } from "../../src/intake/session.js";
 import {
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+  hostEstimateFromCanonicalBytes,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
@@ -81,14 +82,71 @@ function completeAssistant(
   };
 }
 
-function fakeSdk(intake: MessageEventInput[]): Lhc {
+function fakeSdk(
+  intake: MessageEventInput[],
+  options: {
+    onCall?: (events: MessageEventInput[]) => void;
+    /** Per-event outcome override by idempotency key (default recorded). */
+    outcomeByKey?: (key: string, event: MessageEventInput, index: number) => "recorded" | "skipped";
+    /** Return a malformed BatchResult (length/key) for map-fail tests. */
+    malformed?: "length" | "key" | "order";
+    fail?: boolean;
+  } = {},
+): Lhc {
   return {
     intakeStream: {
       messageEvents: async (_ref: ThreadRef, events: MessageEventInput[]) => {
+        options.onCall?.(events);
+        if (options.fail) {
+          return {
+            ok: false as const,
+            error: { code: "TEST_INTAKE", reason: "injected intake failure" },
+          };
+        }
         intake.push(...events);
+        if (options.malformed === "length") {
+          return {
+            ok: true as const,
+            value: {
+              events: events.slice(0, Math.max(0, events.length - 1)).map((e) => ({
+                idempotencyKey: e.idempotencyKey,
+                outcome: "recorded" as const,
+              })),
+            },
+          };
+        }
+        if (options.malformed === "key") {
+          return {
+            ok: true as const,
+            value: {
+              events: events.map((e, i) => ({
+                idempotencyKey: i === 0 ? "wrong-key" : e.idempotencyKey,
+                outcome: "recorded" as const,
+              })),
+            },
+          };
+        }
+        if (options.malformed === "order") {
+          // Same keys, reversed order — must fail closed (input-order alignment).
+          const reversed = [...events].reverse();
+          return {
+            ok: true as const,
+            value: {
+              events: reversed.map((e) => ({
+                idempotencyKey: e.idempotencyKey,
+                outcome: "recorded" as const,
+              })),
+            },
+          };
+        }
         return {
           ok: true as const,
-          value: { events: events.map(() => ({ outcome: "recorded" as const })) },
+          value: {
+            events: events.map((e, i) => ({
+              idempotencyKey: e.idempotencyKey,
+              outcome: options.outcomeByKey?.(e.idempotencyKey, e, i) ?? ("recorded" as const),
+            })),
+          },
         };
       },
     },
@@ -208,6 +266,9 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       // No estimate adds for re-tailed tool/user (and sampling dedupe blocks re-seed).
       const addsOnRetail = lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add");
       expect(addsOnRetail).toHaveLength(0);
+      // Re-tail publishes no turn_settled and no mode:set (deferred pressure dropped).
+      expect(lifecycle2.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
+      expect(lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "set")).toHaveLength(0);
       // Re-tail must not re-intake the large bodies.
       expect(JSON.stringify(intake2)).not.toContain(toolBody.slice(0, 40));
       expect(JSON.stringify(intake2)).not.toContain(userText.slice(0, 40));
@@ -297,7 +358,9 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
               }
               return {
                 ok: true as const,
-                value: { events: events.map(() => ({ outcome: "recorded" as const })) },
+                value: {
+                  events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })),
+                },
               };
             },
           },
@@ -334,6 +397,214 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       expect(session.getCaptureHealth().phase === "degraded" || session.isCaptureReady() === false).toBe(true);
     } finally {
       await session.stop();
+    }
+  });
+
+  it("catch-up batch with many novel lines uses one SDK intake call", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-batch-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-batch";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "dddddddd-eeee-ffff-0000-111111111111";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+
+    // Pre-write a multi-line rollout so the watcher's initial catch-up delivers
+    // the whole snapshot as ONE emission batch (see watcher deliver).
+    const lines: RolloutLineItem[] = [
+      userLine(sid, "u-batch-open", "start"),
+      completeAssistant(sid, "a-batch", "req_batch", "done", {
+        input_tokens: 5_000,
+        output_tokens: 9,
+      }),
+    ];
+    for (let i = 0; i < 12; i += 1) {
+      lines.push(userLine(sid, `u-batch-${i}`, `payload-${i}-` + "X".repeat(200)));
+    }
+    writeFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+
+    const intake: MessageEventInput[] = [];
+    let intakeCalls = 0;
+    const lifecycle: LifecycleSignal[] = [];
+    const session = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "fresh" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath: join(root, "lineage.sqlite"),
+      registryPath: join(root, "reg.sqlite"),
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle.push(...signals);
+      },
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId: "th_batch", registryPath: join(root, "reg.sqlite") } as ThreadRef,
+      }),
+      initSdkFn: () =>
+        fakeSdk(intake, {
+          onCall: () => {
+            intakeCalls += 1;
+          },
+        }),
+    });
+
+    try {
+      await waitFor(() => session.isCaptureReady(), "ready");
+      await waitFor(() => lifecycle.some((s) => s.kind === "turn_settled"), "settled after catch-up");
+      // Whole-batch intake: one messageEvents call for the catch-up batch, not per line.
+      expect(intakeCalls).toBe(1);
+      expect(intake.length).toBeGreaterThan(10);
+      // mode:add only once per novel content line that recorded (user lines after sampling).
+      const adds = lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add");
+      expect(adds.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  it("mixed recorded/skipped outcomes map by key; only recorded payload adds estimate", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-mixed-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-mixed";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "eeeeeeee-ffff-0000-1111-222222222222";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+    writeFileSync(path, "");
+
+    const lifecycle: LifecycleSignal[] = [];
+    const skippedBodies = new Set<string>();
+    const session = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "fresh" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath: join(root, "lineage.sqlite"),
+      registryPath: join(root, "reg.sqlite"),
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle.push(...signals);
+      },
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId: "th_mixed", registryPath: join(root, "reg.sqlite") } as ThreadRef,
+      }),
+      initSdkFn: () =>
+        fakeSdk([], {
+          outcomeByKey: (_key, event) => {
+            const text =
+              event.eventKind === "user_prompt" || event.eventKind === "tool_result"
+                ? String(
+                    (event.payload as { text?: string; content?: string }).text ??
+                      (event.payload as { content?: string }).content ??
+                      "",
+                  )
+                : "";
+            if (text.includes("SKIP_ME")) {
+              skippedBodies.add(text.slice(0, 20));
+              return "skipped";
+            }
+            return "recorded";
+          },
+        }),
+    });
+
+    try {
+      await waitFor(() => session.isCaptureReady(), "ready");
+      lifecycle.length = 0;
+      appendJsonl(
+        path,
+        completeAssistant(sid, "a-mix", "req_mix", "ok", {
+          input_tokens: 3_000,
+          output_tokens: 4,
+        }),
+      );
+      await waitFor(
+        () => lifecycle.some((s) => s.kind === "post_measurement_estimate" && s.mode === "set"),
+        "mode set",
+      );
+
+      // Skipped tool body must not contribute host-byte add; recorded user must.
+      const skipBody = "SKIP_ME" + "S".repeat(8_000);
+      const recordBody = "KEEP_ME" + "K".repeat(4_000);
+      appendJsonl(path, toolResultLine(sid, "tr-skip", "toolu_skip", skipBody));
+      appendJsonl(path, userLine(sid, "u-keep", recordBody));
+      await waitFor(
+        () => lifecycle.some((s) => s.kind === "post_measurement_estimate" && s.mode === "add"),
+        "recorded add",
+      );
+      await sleep(200);
+
+      const adds = lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add");
+      // Only the recorded user line (~1000+ tokens from 4k+ bytes), not the skipped 8k tool.
+      expect(adds).toHaveLength(1);
+      const add0 = adds[0]!;
+      expect(add0.kind).toBe("post_measurement_estimate");
+      if (add0.kind === "post_measurement_estimate") {
+        expect(add0.tokens).toBe(hostEstimateFromCanonicalBytes(Buffer.byteLength(recordBody, "utf8")).tokens);
+      }
+      expect(skippedBodies.size).toBeGreaterThan(0);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  it("malformed intake outcome length/key/order degrades and publishes no settle/add", async () => {
+    for (const malformed of ["length", "key", "order"] as const) {
+      const root = mkdtempSync(join(tmpdir(), `cc-lhc-est-mal-${malformed}-`));
+      const projectsRoot = join(root, "projects");
+      const cwd = `/work/est-mal-${malformed}`;
+      mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+      const sid = "ffffffff-0000-1111-2222-333333333333";
+      const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+      writeFileSync(path, "");
+
+      const lifecycle: LifecycleSignal[] = [];
+      const session = startCaptureSession({
+        cwd,
+        expectedSession: { sessionId: sid, source: "fresh" },
+        knownRolloutPath: path,
+        prefixBoundary: { kind: "none" },
+        noInference: true,
+        discoverDeps: { projectsRoot, pollMs: 20 },
+        lineageDbPath: join(root, "lineage.sqlite"),
+        registryPath: join(root, "reg.sqlite"),
+        log: () => {},
+        logError: () => {},
+        onLifecycle: (signals) => {
+          lifecycle.push(...signals);
+        },
+        createThreadFn: async () => ({
+          ok: true,
+          value: { threadId: `th_mal_${malformed}`, registryPath: join(root, "reg.sqlite") } as ThreadRef,
+        }),
+        initSdkFn: () => fakeSdk([], { malformed }),
+      });
+
+      try {
+        await waitFor(() => session.isCaptureReady(), "ready");
+        lifecycle.length = 0;
+        appendJsonl(path, userLine(sid, `u-mal-${malformed}`, "open"));
+        appendJsonl(
+          path,
+          completeAssistant(sid, `a-mal-${malformed}`, `req_mal_${malformed}`, "x", {
+            input_tokens: 1_000,
+            output_tokens: 3,
+          }),
+        );
+        await sleep(500);
+        expect(lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
+        expect(lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
+        expect(session.getCaptureHealth().phase === "degraded" || session.isCaptureReady() === false).toBe(true);
+        expect(lifecycle.some((s) => s.kind === "capture_degraded")).toBe(true);
+      } finally {
+        await session.stop();
+      }
     }
   });
 

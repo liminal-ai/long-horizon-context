@@ -16,8 +16,8 @@ import { describe, expect, it } from "vitest";
 import { mapRolloutLines } from "../../src/intake/map.js";
 import { startCaptureSession } from "../../src/intake/session.js";
 import { observeRolloutLines } from "../../src/observation/observe.js";
-import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
 const FIXTURE = join(
@@ -127,7 +127,11 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
           intakeStream: {
             messageEvents: async (
               _ref: ThreadRef,
-              events: Array<{ eventKind: string; payload?: { text?: string; model?: string } }>,
+              events: Array<{
+                eventKind: string;
+                idempotencyKey: string;
+                payload?: { text?: string; model?: string };
+              }>,
             ) => {
               for (const event of events) {
                 const row: { kind: string; text?: string; model?: string } = {
@@ -139,7 +143,12 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
               }
               return {
                 ok: true,
-                value: { events: events.map(() => ({ outcome: "recorded" })) },
+                value: {
+                  events: events.map((e) => ({
+                    idempotencyKey: e.idempotencyKey,
+                    outcome: "recorded" as const,
+                  })),
+                },
               };
             },
           },
@@ -154,10 +163,7 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
       const seq = loadSequence().map((item) => ({
         ...item,
         sessionId: sid,
-        message:
-          item.message === undefined
-            ? item.message
-            : { ...item.message },
+        message: item.message === undefined ? item.message : { ...item.message },
       }));
       for (const item of seq) {
         appendFileSync(path, `${JSON.stringify(item)}\n`);
@@ -197,10 +203,7 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
         },
       };
       appendFileSync(path, `${JSON.stringify(drifted)}\n`);
-      await waitFor(
-        () => lifecycle.some((s) => s.kind === "capture_degraded"),
-        "degraded after drifted fallback",
-      );
+      await waitFor(() => lifecycle.some((s) => s.kind === "capture_degraded"), "degraded after drifted fallback");
       expect(session.isCaptureReady()).toBe(false);
       expect(session.getCaptureHealth().phase).toBe("degraded");
 
@@ -227,9 +230,11 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
         initSdkFn: () =>
           ({
             intakeStream: {
-              messageEvents: async () => ({
-                ok: true,
-                value: { events: [{ outcome: "recorded" }] },
+              messageEvents: async (_ref: unknown, events: Array<{ idempotencyKey: string }> = []) => ({
+                ok: true as const,
+                value: {
+                  events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })),
+                },
               }),
             },
           }) as unknown as Lhc,

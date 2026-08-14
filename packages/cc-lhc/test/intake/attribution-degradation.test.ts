@@ -1,14 +1,13 @@
-import { mkdirSync, mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
-
-import { CAPTURE_DEGRADED_REFUSAL } from "../../src/commands/dispatch.js";
 import { runCompactCommand } from "../../src/commands/compact.js";
+import { CAPTURE_DEGRADED_REFUSAL } from "../../src/commands/dispatch.js";
 import { startCaptureSession } from "../../src/intake/session.js";
-import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import { encodeProjectPath } from "../../src/rollout/discover.js";
 
 async function waitFor(condition: () => boolean, label: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -50,7 +49,10 @@ describe("deterministic attribution + sticky degradation", () => {
         logError: () => {},
         createThreadFn: async () => ({
           ok: true,
-          value: { threadId: `th_${sid.slice(0, 4)}`, registryPath: join(projectsRoot, `registry-${sid}.sqlite`) } as ThreadRef,
+          value: {
+            threadId: `th_${sid.slice(0, 4)}`,
+            registryPath: join(projectsRoot, `registry-${sid}.sqlite`),
+          } as ThreadRef,
         }),
         initSdkFn: () =>
           ({
@@ -59,7 +61,15 @@ describe("deterministic attribution + sticky degradation", () => {
                 for (const event of events) {
                   if (event.payload?.text !== undefined) sink.push(event.payload.text);
                 }
-                return { ok: true, value: { events: events.map(() => ({ outcome: "recorded" })) } };
+                return {
+                  ok: true,
+                  value: {
+                    events: events.map((e) => ({
+                      idempotencyKey: (e as { idempotencyKey: string }).idempotencyKey,
+                      outcome: "recorded" as const,
+                    })),
+                  },
+                };
               },
             },
           }) as unknown as Lhc,
@@ -111,7 +121,12 @@ describe("deterministic attribution + sticky degradation", () => {
       initSdkFn: () =>
         ({
           intakeStream: {
-            messageEvents: async () => ({ ok: true, value: { events: [{ outcome: "recorded" }] } }),
+            messageEvents: async (_ref: unknown, events: Array<{ idempotencyKey: string }> = []) => ({
+              ok: true as const,
+              value: {
+                events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })),
+              },
+            }),
           },
         }) as unknown as Lhc,
     });
@@ -182,7 +197,12 @@ describe("deterministic attribution + sticky degradation", () => {
       initSdkFn: () =>
         ({
           intakeStream: {
-            messageEvents: async () => ({ ok: true, value: { events: [{ outcome: "recorded" }] } }),
+            messageEvents: async (_ref: unknown, events: Array<{ idempotencyKey: string }> = []) => ({
+              ok: true as const,
+              value: {
+                events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })),
+              },
+            }),
           },
         }) as unknown as Lhc,
     });
@@ -243,7 +263,15 @@ describe("deterministic attribution + sticky degradation", () => {
               for (const e of events) {
                 if (e.payload?.text) intake.push(e.payload.text);
               }
-              return { ok: true, value: { events: events.map(() => ({ outcome: "recorded" })) } };
+              return {
+                ok: true,
+                value: {
+                  events: events.map((e) => ({
+                    idempotencyKey: (e as { idempotencyKey: string }).idempotencyKey,
+                    outcome: "recorded" as const,
+                  })),
+                },
+              };
             },
           },
         }) as unknown as Lhc,

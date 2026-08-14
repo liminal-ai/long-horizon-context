@@ -179,11 +179,17 @@ export type RunOptions = {
    */
   commandGuard?: CommandInFlightGuard;
   /**
-   * Test hook: run before auto operation claim. Can force handoffInProgress race by
-   * setting handoff (production never uses this). `clearHandoffInProgress` restores
-   * so teardown is not stuck after the deferred gate.
+   * Test hook: run before auto operation claim. Can force handoffInProgress or
+   * exited races (production never uses this). `clearHandoffInProgress` restores
+   * so teardown is not stuck after the deferred gate. `markExited` sets the
+   * wrapper-exiting flag so the early `wrapper_exiting` terminalization path is
+   * reachable without a real process teardown race.
    */
-  onBeforeAutoOperation?: (ports: { markHandoffInProgress: () => void; clearHandoffInProgress: () => void }) => void;
+  onBeforeAutoOperation?: (ports: {
+    markHandoffInProgress: () => void;
+    clearHandoffInProgress: () => void;
+    markExited: () => void;
+  }) => void;
   /** Test hook: observe controlled-handoff results (auto and manual). */
   onHandoffResult?: (result: HandoffResult) => void;
   /** Test hooks: handoff timing (SIGTERM grace, SIGKILL wait, capture-ready cap, liveness caps). */
@@ -315,61 +321,53 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * Attach outcome to the exact receipt id that scheduled the operation.
    * Never uses "latest wouldMutate" fallback — session identity can change
    * mid-handoff and manual compact must not mutate unrelated governor rows.
-   * After mutation has begun, failures are loud (error log + lastAttempt).
+   *
+   * Failures are always loud for a known receipt id (error log + lastAttempt):
+   * a freshly inserted `scheduled` row that cannot be terminalized must not
+   * go quiet even when mutation has not begun. Missing receipt id remains
+   * loud only after mutation began (no durable row to recover).
    */
   const attachGovernorHandoffOutcome = (
     receiptId: string | null | undefined,
     outcome: GovernorHandoffOutcome,
     opts: { mutationBegan: boolean } = { mutationBegan: false },
   ): boolean => {
+    const markUndurable = (summary: string, logLine: string): void => {
+      wrapperLog.warn(logLine);
+      lastAttempt = { summary, atMs: Date.now() };
+    };
     if (receiptId === null || receiptId === undefined || receiptId === "") {
       if (opts.mutationBegan) {
-        wrapperLog.warn(`cc-lhc governor receipt outcome NOT durable: missing receipt id for outcome ${outcome.kind}`);
-        lastAttempt = {
-          summary: `receipt outcome undurable: missing receipt id (${outcome.kind})`,
-          atMs: Date.now(),
-        };
+        markUndurable(
+          `receipt outcome undurable: missing receipt id (${outcome.kind})`,
+          `cc-lhc governor receipt outcome NOT durable: missing receipt id for outcome ${outcome.kind}`,
+        );
       }
       return false;
     }
     if (governorReceiptStore === null) {
-      if (opts.mutationBegan) {
-        wrapperLog.warn(
-          `cc-lhc governor receipt outcome NOT durable: store unavailable for ${receiptId} outcome ${outcome.kind}`,
-        );
-        lastAttempt = {
-          summary: `receipt outcome undurable: store unavailable (${outcome.kind})`,
-          atMs: Date.now(),
-        };
-      }
+      markUndurable(
+        `receipt outcome undurable: store unavailable (${outcome.kind})`,
+        `cc-lhc governor receipt outcome NOT durable: store unavailable for ${receiptId} outcome ${outcome.kind}`,
+      );
       return false;
     }
     try {
       const updated = governorReceiptStore.attachHandoffOutcome(receiptId, outcome);
       if (updated === null) {
-        if (opts.mutationBegan) {
-          wrapperLog.warn(
-            `cc-lhc governor receipt outcome NOT durable: receipt ${receiptId} not found for outcome ${outcome.kind}`,
-          );
-          lastAttempt = {
-            summary: `receipt outcome undurable: receipt missing (${outcome.kind})`,
-            atMs: Date.now(),
-          };
-        }
+        markUndurable(
+          `receipt outcome undurable: receipt missing (${outcome.kind})`,
+          `cc-lhc governor receipt outcome NOT durable: receipt ${receiptId} not found for outcome ${outcome.kind}`,
+        );
         return false;
       }
       return true;
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
-      if (opts.mutationBegan) {
-        wrapperLog.warn(`cc-lhc governor receipt outcome NOT durable: attach failed for ${receiptId}: ${detail}`);
-        lastAttempt = {
-          summary: `receipt outcome undurable: attach failed (${outcome.kind})`,
-          atMs: Date.now(),
-        };
-      } else {
-        wrapperLog.warn(`cc-lhc governor receipt handoff attach failed: ${detail}`);
-      }
+      markUndurable(
+        `receipt outcome undurable: attach failed (${outcome.kind})`,
+        `cc-lhc governor receipt outcome NOT durable: attach failed for ${receiptId}: ${detail}`,
+      );
       return false;
     }
   };
@@ -753,14 +751,18 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             logLevel: "info" | "warn" = "info",
           ): void => {
             const outcome: GovernorHandoffOutcome = { kind: "mutation_deferred", detail, reason };
-            attachGovernorHandoffOutcome(receiptId, outcome, { mutationBegan: false });
+            const attached = attachGovernorHandoffOutcome(receiptId, outcome, { mutationBegan: false });
             const line = `cc-lhc governor: wouldMutate deferred (${reason}): ${detail} [receipt ${receiptId}]`;
             if (logLevel === "warn") wrapperLog.warn(line);
             else wrapperLog.info(line);
-            lastAttempt = {
-              summary: `auto compact deferred: ${reason} (${detail})`,
-              atMs: Date.now(),
-            };
+            // attachGovernorHandoffOutcome already sets lastAttempt on failure.
+            // On success, record the deferred gate for panel status.
+            if (attached) {
+              lastAttempt = {
+                summary: `auto compact deferred: ${reason} (${detail})`,
+                atMs: Date.now(),
+              };
+            }
           };
 
           if (exited) {
@@ -1867,7 +1869,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // on replay with no evidence whether mutation began.
     runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
       const { frozenTriggerTokens, receiptId } = args;
-      // Test seam: allow race injection before early gates (e.g. handoffInProgress).
+      // Test seam: allow race injection before early gates (handoff / exiting).
+      // forceExitedForAuto is local so we do not strand the real process-exit flag.
+      let forceExitedForAuto = false;
       options.onBeforeAutoOperation?.({
         markHandoffInProgress: () => {
           handoffInProgress = true;
@@ -1875,8 +1879,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         clearHandoffInProgress: () => {
           handoffInProgress = false;
         },
+        markExited: () => {
+          forceExitedForAuto = true;
+        },
       });
-      if (exited) {
+      if (exited || forceExitedForAuto) {
         attachGovernorHandoffOutcome(
           receiptId,
           {

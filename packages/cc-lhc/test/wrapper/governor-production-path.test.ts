@@ -685,21 +685,34 @@ describe("LIM-64 production wrapper path", () => {
     ]);
     await new Promise((r) => setTimeout(r, 400));
 
+    // Wait for both settled wouldMutate receipts to terminalize (preview refuse).
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          const settled = s
+            .listBySession("old-session")
+            .filter((r) => r.wouldMutate && r.observePhase === "settled_seam");
+          return settled.length >= 2 && settled.every((r) => r.handoffOutcome?.kind === "mutation_refused");
+        } finally {
+          s.close();
+        }
+      },
+      "both settled receipts terminal",
+      12_000,
+    );
+
     const store = openGovernorReceiptStore(receiptDb);
-    const would = store.listBySession("old-session").filter((r) => r.wouldMutate);
+    const would = store.listBySession("old-session").filter((r) => r.wouldMutate && r.observePhase === "settled_seam");
     expect(would.length).toBeGreaterThanOrEqual(2);
-    // First receipt should be terminal refused, not overwritten by second schedule.
     const first = would.find((r) => r.samplingId === "req:est");
-    expect(first?.handoffOutcome?.kind).toBe("mutation_refused");
     const second = would.find((r) => r.samplingId === "req:second");
+    expect(first).toBeDefined();
     expect(second).toBeDefined();
-    expect(second!.receiptId).not.toBe(first!.receiptId);
-    // Second may be scheduled or already refused depending on timing; never
-    // attached to the first receipt's outcome.
-    if (second!.handoffOutcome?.kind === "mutation_refused") {
-      expect(first!.handoffOutcome).toEqual(second!.handoffOutcome);
-      // outcomes may match textually but are separate rows
-    }
+    expect(first!.receiptId).not.toBe(second!.receiptId);
+    // Each row terminalizes independently — assert exact outcomes, not textual equality.
+    expect(first!.handoffOutcome?.kind).toBe("mutation_refused");
+    expect(second!.handoffOutcome?.kind).toBe("mutation_refused");
     store.close();
 
     spawned[0]!.fireExit(0);
@@ -890,60 +903,13 @@ describe("LIM-64 production wrapper path", () => {
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
     let mutationCalls = 0;
-    // First wouldMutate mutates (refused by preview) and sets cooldown via failed handoff path.
-    // Easier: pre-seed nothing; first settle mutates and fails; second settle hits cooldown.
-    // But first refuse via preview doesn't set cooldown — only handoff failure does.
-    // Inject: run first path that triggers autoBlockedUntilMs by performing a cancelled handoff.
-    // Simpler approach: use store hook is wrong for cooldown. Drive two settles where the first
-    // starts mutation that fails at handoff, then second should defer.
+    // Arrangement: first settle rebuilds, handoff rolls back (rebuilt capture never-ready)
+    // → autoBlockedUntilMs cooldown. Second distinct settle (req:cool2) must terminalize
+    // mutation_deferred/cooldown with wouldMutate true — not a vacuous open-turn row.
     const sdk = sdkForCapture(async () => ({
       ok: true,
       value: { kind: "error", reason: "stop" },
     }));
-    // Override compact path won't set cooldown. Force cooldown by wrapping after first observe:
-    // Use command guard + deferred path is different. Direct: monkey via second receipt after
-    // setting autoBlocked by first successful schedule that we can't easily force.
-    //
-    // Production path for cooldown is HANDOFF_FAILURE_COOLDOWN after handoff non-success.
-    // Use a compact that rebuilds then handoff cancelled via respawn... messy.
-    //
-    // Instead: schedule first auto op that refuses mutation (preview error) — no cooldown.
-    // For cooldown specifically, inject Date by pre-calling a second wouldMutate while
-    // autoBlockedUntilMs is set. We expose no setter — so simulate via first successful
-    // rebuild+handoff_cancelled.
-    //
-    // Practical test: use governorReceiptStoreHook is unrelated. Launch with positional so
-    // first is refused; cooldown is separate.
-    //
-    // Implement cooldown by opening run, first settle starts mutation that throws after
-    // claim... still no cooldown.
-    //
-    // Read code: autoBlockedUntilMs = Date.now() + HANDOFF_FAILURE_COOLDOWN_MS on handoff
-    // rolled_back/failed/cancelled paths. Use writeRebuilt + fail preCommitGate?
-    // With empty argv preCommit is fine.
-    // Simplest durable test: insert receipt ourselves is not testing wrapper.
-    //
-    // Force handoff_cancelled: respawn unsafe is checked before schedule now (refused),
-    // so handoff never starts. Use child that dies during handoff.
-    //
-    // Alternative: keep mutationCalls at 0 by injecting cooldown via a private path —
-    // not available. Test by double-settle where first is deferred as auto_operation_in_flight
-    // and second after first completes as cooldown only if handoff failed.
-    //
-    // We'll implement cooldown by: first settle → mutation refused (preview error) with
-    // NO cooldown expected; then manually...
-    //
-    // Use vi.spyOn on Date.now after first schedule? Too brittle.
-    //
-    // Production code sets cooldown in performHandoff. Call path: rebuild succeeds, handoff
-    // returns cancelled. Make preCommitGate fail after rebuild by opening modal... hard.
-    //
-    // Inject force: after first wouldMutate is terminal mutation_refused, use a second
-    // distinct pressure with handoff failure cooldown by calling attach + setting through
-    // a real failed handoff from auto_handoff tests.
-    //
-    // Minimal correct approach: first signals cause rebuild+handoff; kill child so handoff
-    // fails and sets cooldown; second signals deferred with cooldown.
 
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-cool-roll-"));
@@ -1066,21 +1032,112 @@ describe("LIM-64 production wrapper path", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    await new Promise((r) => setTimeout(r, 500));
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          return (
+            s
+              .listBySession("old-session")
+              .find(
+                (r) => r.samplingId === "req:cool2" && r.observePhase === "settled_seam" && r.wouldMutate === true,
+              ) !== undefined
+          );
+        } finally {
+          s.close();
+        }
+      },
+      "settled cool2 receipt",
+      8_000,
+    );
     expect(mutationCalls).toBe(mutationAfterFirst);
 
     const store = openGovernorReceiptStore(receiptDb);
-    const second = store.listBySession("old-session").find((r) => r.samplingId === "req:cool2");
-    // If wouldMutate fired for second, it must be deferred cooldown (not stranded scheduled).
-    if (second?.wouldMutate) {
-      expect(second.handoffOutcome?.kind).toBe("mutation_deferred");
-      expect((second.handoffOutcome as { reason?: string }).reason).toBe("cooldown");
-    }
+    const second = store
+      .listBySession("old-session")
+      .find((r) => r.samplingId === "req:cool2" && r.observePhase === "settled_seam" && r.wouldMutate === true);
+    expect(second).toBeDefined();
+    expect(second!.handoffOutcome?.kind).toBe("mutation_deferred");
+    expect((second!.handoffOutcome as { reason?: string }).reason).toBe("cooldown");
     store.close();
     writeSpy.mockRestore();
     spawned[spawned.length - 1]!.fireExit(0);
     await runPromise;
   }, 25_000);
+
+  it("wrapper_exiting before claim: no mutation; receipt mutation_deferred wrapper_exiting", async () => {
+    // Direct coverage of runAutoOperation's early wrapper_exiting gate (claim path).
+    // The lifecycle-side `if (exited) deferAuto("wrapper_exiting")` before setImmediate
+    // is only reachable during teardown (exited flipped between insert and schedule);
+    // that race cannot be forced without production-only timing and is not faked here.
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-wexit-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const spawned: FakePty[] = [];
+    let mutationSentinel = false;
+    const sdk = sdkForCapture(async () => {
+      mutationSentinel = true;
+      return { ok: true, value: { kind: "ok" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(8975 + spawned.length, `c${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: receiptDb,
+      onBeforeAutoOperation: ({ markExited }) => {
+        markExited();
+      },
+      onHandoffResult: () => {
+        throw new Error("must not handoff");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          const would = s
+            .listBySession("old-session")
+            .filter((r) => r.wouldMutate && r.observePhase === "settled_seam");
+          return would.length >= 1 && would[0]!.handoffOutcome?.kind === "mutation_deferred";
+        } finally {
+          s.close();
+        }
+      },
+      "wrapper_exiting terminal",
+      8_000,
+    );
+    expect(mutationSentinel).toBe(false);
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const would = store.listBySession("old-session").filter((r) => r.wouldMutate && r.observePhase === "settled_seam");
+    expect(would).toHaveLength(1);
+    expect(would[0]!.handoffOutcome).toMatchObject({
+      kind: "mutation_deferred",
+      reason: "wrapper_exiting",
+    });
+    store.close();
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
 
   it("handoff-in-progress before claim: no mutation; receipt mutation_deferred handoff_in_progress", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-handoff-ip-"));
