@@ -43,6 +43,7 @@ fn selection_inputs(turns: Vec<SelectionTurn>, messages: Vec<SelectionMessage>) 
         compact_chunk_materials: None,
         max_event_order,
         derivation_counts: IndexMap::new(),
+        empty_chunk_ids: Vec::new(),
     }
 }
 

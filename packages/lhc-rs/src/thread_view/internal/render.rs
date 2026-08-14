@@ -365,6 +365,41 @@ pub fn render_tail_message(
                 band: None,
             }
         }
+        RenderingPartKind::CompactContinuationMarker => {
+            // Model-serving representation of the typed continuation marker.
+            // Ordinary user-chat projections hide this kind; model context includes it.
+            let block = message
+                .blocks
+                .first()
+                .map(|b| &b.content)
+                .cloned()
+                .unwrap_or_default();
+            let cause = match block.get("cause") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "context_compacted_task_in_progress",
+            };
+            let action = match block.get("action") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "continue_existing_task",
+            };
+            let turn_id = match block.get("continuationTurnId") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            AssembledContextMessage {
+                role: AssembledContextRole::User,
+                content: [
+                    "[compact continuation]",
+                    &format!("cause={cause}"),
+                    &format!("action={action}"),
+                    "newUserRequest=false",
+                    "waitForUser=false",
+                    &format!("continuationTurnId={turn_id}"),
+                ]
+                .join(" "),
+                band: None,
+            }
+        }
     }
 }
 

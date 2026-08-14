@@ -22,7 +22,7 @@ use fixtures::{
 use lhc::shared_tech::derivation::DerivationState;
 use lhc::shared_tech::errors::ErrorCode;
 
-const ALL_KINDS: [EventKind; 9] = EventKind::ALL;
+const ALL_KINDS: [EventKind; 10] = EventKind::ALL;
 
 fn golden_payload_keys(kind: EventKind) -> &'static [&'static str] {
     match kind {
@@ -34,6 +34,14 @@ fn golden_payload_keys(kind: EventKind) -> &'static [&'static str] {
         EventKind::ThinkingLevelChange => &["previousLevel", "newLevel"],
         EventKind::ToolCall => &["toolCallId", "toolName", "arguments"],
         EventKind::ToolResult => &["toolCallId", "content", "isError"],
+        EventKind::CompactContinuationMarker => &[
+            "kind",
+            "continuationTurnId",
+            "cause",
+            "action",
+            "newUserRequest",
+            "waitForUser",
+        ],
         EventKind::TurnEnd => &[],
     }
 }

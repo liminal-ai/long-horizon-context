@@ -45,10 +45,9 @@ use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::view::{Band, ViewProfilePercentages, ViewSubjectKind};
 use crate::turns::{TurnStatus, read_turn_chunk_structure};
 
-/// TS SQL — exact source bytes.
+/// TS SQL — exact source bytes (subject_kind required for empty-chunk filter).
 pub(crate) const SQL_DERIVATION_ROWS: &str =
-    "SELECT subject_id, derivation_type, state, content, reason FROM derivation
-       WHERE subject_kind IN ('turn', 'chunk')";
+    "SELECT subject_kind, subject_id, derivation_type, state, content, reason FROM derivation";
 
 pub(crate) const SQL_MAX_EVENT_ORDER: &str = "SELECT COALESCE(MAX(event_order), 0) AS m FROM event";
 
@@ -176,6 +175,8 @@ pub struct SelectionInputs {
     pub max_event_order: i64,
     /// derivation type → state → count — TS nested `Record`/`Map` → IndexMap.
     pub derivation_counts: IndexMap<String, IndexMap<String, i64>>,
+    /// Chunks with no live (non-tombstoned) member turns — dropped at install.
+    pub empty_chunk_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -382,6 +383,9 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         });
     }
 
+    let live_turn_ids: std::collections::HashSet<String> =
+        turns.iter().map(|t| t.turn_id.clone()).collect();
+    let mut empty_chunk_ids: Vec<String> = Vec::new();
     let mut chunks: Vec<SelectionChunk> = Vec::new();
     for row in &structure.chunks {
         for member_turn_id in &row.member_turn_ids {
@@ -398,6 +402,14 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
                 ));
             }
         }
+        if !row
+            .member_turn_ids
+            .iter()
+            .any(|turn_id| live_turn_ids.contains(turn_id))
+        {
+            empty_chunk_ids.push(row.chunk_id.clone());
+            continue;
+        }
         chunks.push(SelectionChunk {
             chunk_id: row.chunk_id.clone(),
             chunk_order: row.chunk_order,
@@ -406,12 +418,30 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         });
     }
 
+    let empty_chunk_set: std::collections::HashSet<&str> =
+        empty_chunk_ids.iter().map(|s| s.as_str()).collect();
+    // Full derivation scan (TS order) for snapshots + counts with empty-chunk filter.
+    // When empty_chunk_ids is empty, counts match historical GROUP BY fixtures;
+    // when non-empty, filtered types/states are omitted from both maps.
     let derivation_rows = db.prepare(SQL_DERIVATION_ROWS).all(&[]);
     let mut derivations: IndexMap<String, DerivationSnapshot> = IndexMap::new();
+    let mut derivation_counts: IndexMap<String, IndexMap<String, i64>> = IndexMap::new();
     for row in derivation_rows {
+        let subject_kind = map_required_str(&row, "subject_kind");
         let subject_id = map_required_str(&row, "subject_id");
+        if subject_kind == "chunk" && empty_chunk_set.contains(subject_id.as_str()) {
+            continue;
+        }
         let derivation_type = map_required_str(&row, "derivation_type");
-        let state = derivation_state_from_wire(&map_required_str(&row, "state"));
+        let state_wire = map_required_str(&row, "state");
+        let state = derivation_state_from_wire(&state_wire);
+        let entry = derivation_counts
+            .entry(derivation_type.clone())
+            .or_default();
+        *entry.entry(state_wire).or_insert(0) += 1;
+        if subject_kind != "turn" && subject_kind != "chunk" {
+            continue;
+        }
         let mut snapshot = DerivationSnapshot {
             state,
             content: None,
@@ -426,21 +456,28 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         derivations.insert(format!("{subject_id}/{derivation_type}"), snapshot);
     }
 
+    // Prefer GROUP BY count order when no empty chunks (byte-stable with fixtures).
+    // Empty-chunk filter requires the scan-built map above.
+    let derivation_counts = if empty_chunk_ids.is_empty() {
+        let count_rows = db.prepare(SQL_DERIVATION_COUNTS).all(&[]);
+        let mut from_group: IndexMap<String, IndexMap<String, i64>> = IndexMap::new();
+        for row in count_rows {
+            let dtype = map_required_str(&row, "derivation_type");
+            let state = map_required_str(&row, "state");
+            let n = map_required_i64(&row, "n");
+            let entry = from_group.entry(dtype).or_default();
+            entry.insert(state, n);
+        }
+        from_group
+    } else {
+        derivation_counts
+    };
+
     let max_row = db
         .prepare(SQL_MAX_EVENT_ORDER)
         .get()
         .expect("COALESCE(MAX(...), 0) always returns a row");
     let max_event_order = map_required_i64(&max_row, "m");
-
-    let count_rows = db.prepare(SQL_DERIVATION_COUNTS).all(&[]);
-    let mut derivation_counts: IndexMap<String, IndexMap<String, i64>> = IndexMap::new();
-    for row in count_rows {
-        let dtype = map_required_str(&row, "derivation_type");
-        let state = map_required_str(&row, "state");
-        let n = map_required_i64(&row, "n");
-        let entry = derivation_counts.entry(dtype).or_default();
-        entry.insert(state, n);
-    }
 
     Ok(SelectionInputs {
         messages,
@@ -450,6 +487,7 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         compact_chunk_materials: None,
         max_event_order,
         derivation_counts,
+        empty_chunk_ids,
     })
 }
 

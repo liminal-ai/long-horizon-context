@@ -307,3 +307,74 @@ pub fn read_placements(db: &Db) -> IndexMap<String, ChunkPlacement> {
     }
     by_turn
 }
+
+// A chunk whose every member turn is tombstoned has no readable source. Such a
+// chunk must not survive as an input to compact: its summaries describe content
+// the readable projection intentionally removed. Cleanup is deliberately
+// revalidated at write time because preview/selection may have read the file
+// before another process acquired the compact transaction.
+/// TS `dropEmptyReadableChunks`.
+pub fn drop_empty_readable_chunks(db: &Db, candidates: &[String]) -> Vec<String> {
+    use crate::shared_tech::work_queue::{
+        SupersedeTarget, WorkKind, WorkSourceRef, supersede_queued,
+    };
+
+    let mut dropped = Vec::new();
+    let has_readable_member = db.prepare(
+        r#"SELECT 1 FROM chunk_member cm
+     JOIN turns t ON t.turn_id = cm.turn_id AND t.deleted_at IS NULL
+     WHERE cm.chunk_id = ? LIMIT 1"#,
+    );
+    let has_claimed_work = db.prepare(
+        r#"SELECT 1 FROM work_item
+     WHERE status = 'claimed' AND source_ref = ?
+       AND kind IN ('chunk_summary_detailed', 'chunk_summary_brief')
+     LIMIT 1"#,
+    );
+    let drop_derivations =
+        db.prepare("DELETE FROM derivation WHERE subject_kind = 'chunk' AND subject_id = ?");
+    let drop_members = db.prepare("DELETE FROM chunk_member WHERE chunk_id = ?");
+    let drop_chunk = db.prepare("DELETE FROM chunk WHERE chunk_id = ?");
+
+    let mut seen = std::collections::HashSet::new();
+    for chunk_id in candidates {
+        if !seen.insert(chunk_id.as_str()) {
+            continue;
+        }
+        if has_readable_member
+            .get_params(&[SqlParam::from(chunk_id.as_str())])
+            .is_some()
+        {
+            continue;
+        }
+        let source_ref = WorkSourceRef::Chunk {
+            chunk_id: chunk_id.clone(),
+        };
+        let source_ref_json =
+            crate::shared_tech::js_json::js_json_stringify_of(&source_ref).expect("sourceRef");
+        if has_claimed_work
+            .get_params(&[SqlParam::from(source_ref_json.as_str())])
+            .is_some()
+        {
+            continue;
+        }
+        supersede_queued(
+            db,
+            &[
+                SupersedeTarget {
+                    kind: WorkKind::ChunkSummaryDetailed,
+                    source_ref: source_ref.clone(),
+                },
+                SupersedeTarget {
+                    kind: WorkKind::ChunkSummaryBrief,
+                    source_ref,
+                },
+            ],
+        );
+        drop_derivations.run(&[SqlParam::from(chunk_id.as_str())]);
+        drop_members.run(&[SqlParam::from(chunk_id.as_str())]);
+        drop_chunk.run(&[SqlParam::from(chunk_id.as_str())]);
+        dropped.push(chunk_id.clone());
+    }
+    dropped
+}

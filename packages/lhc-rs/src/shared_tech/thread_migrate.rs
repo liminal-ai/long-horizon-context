@@ -16,6 +16,10 @@ pub const THREAD_SCHEMA_VERSION_3: i64 = 3;
 pub const THREAD_SCHEMA_VERSION_4: i64 = 4;
 pub const THREAD_SCHEMA_VERSION_5: i64 = 5;
 pub const THREAD_SCHEMA_VERSION_6: i64 = 6;
+pub const THREAD_SCHEMA_VERSION_7: i64 = 7;
+pub const THREAD_SCHEMA_VERSION_8: i64 = 8;
+pub const THREAD_SCHEMA_VERSION_9: i64 = 9;
+pub const THREAD_SCHEMA_VERSION_10: i64 = 10;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -71,6 +75,213 @@ const RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS: &[&str] = &[
 
 pub fn retrieval_impression_schema_statements() -> Vec<&'static str> {
     RETRIEVAL_IMPRESSION_SCHEMA_STATEMENTS.to_vec()
+}
+
+/// Schema v7: compact-continuation writer claim + durable transition receipts.
+/// Receipts are inspectable and not ordinary conversation history.
+/// Used by 6→7 migration only (v7 receipt shape lacks terminal flag).
+const COMPACT_CONTINUATION_SCHEMA_STATEMENTS: &[&str] = &[
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_writer (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      claim TEXT NOT NULL CHECK (claim IN ('none', 'lhc')),
+      attempt_id TEXT,
+      claimed_at TEXT
+    );"#,
+    r#"INSERT OR IGNORE INTO compact_continuation_writer (singleton, claim, attempt_id, claimed_at)
+       VALUES (1, 'none', NULL, NULL);"#,
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_receipt (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);"#,
+];
+
+pub fn compact_continuation_schema_statements() -> Vec<&'static str> {
+    COMPACT_CONTINUATION_SCHEMA_STATEMENTS.to_vec()
+}
+
+/// Current (v10) compact-continuation tables for fresh create.
+/// Writer + boundary + stage log + terminal receipts + attempt identity + force intent.
+/// At most one unresolved boundary (partial unique index).
+const COMPACT_CONTINUATION_CURRENT_SCHEMA_STATEMENTS: &[&str] = &[
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_writer (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      claim TEXT NOT NULL CHECK (claim IN ('none', 'lhc')),
+      attempt_id TEXT,
+      claimed_at TEXT
+    );"#,
+    r#"INSERT OR IGNORE INTO compact_continuation_writer (singleton, claim, attempt_id, claimed_at)
+       VALUES (1, 'none', NULL, NULL);"#,
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_boundary (
+      continuation_turn_id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'failed_repairable')),
+      marker_persisted INTEGER NOT NULL CHECK (marker_persisted IN (0, 1)),
+      last_stage TEXT NOT NULL,
+      forced_at TEXT NOT NULL,
+      completed_at TEXT
+    );"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
+       ON compact_continuation_boundary (status);"#,
+    // At most one pending/failed_repairable boundary per thread.
+    r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
+       ON compact_continuation_boundary ((1))
+       WHERE status IN ('pending', 'failed_repairable');"#,
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_stage_log (
+      log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      detail_json TEXT,
+      recorded_at TEXT NOT NULL
+    );"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_stage_attempt
+       ON compact_continuation_stage_log (attempt_id, log_id);"#,
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_receipt (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);"#,
+    // intent_hash/intent_json store immutable operation identity (not retry posture).
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
+      attempt_id TEXT PRIMARY KEY,
+      intent_hash TEXT NOT NULL,
+      intent_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );"#,
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_force_intent (
+      attempt_id TEXT PRIMARY KEY,
+      turn_end_idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('intent', 'applied', 'reconciled')),
+      continuation_turn_id TEXT,
+      recorded_at TEXT NOT NULL
+    );"#,
+];
+
+pub fn compact_continuation_current_schema_statements() -> Vec<&'static str> {
+    COMPACT_CONTINUATION_CURRENT_SCHEMA_STATEMENTS.to_vec()
+}
+
+fn migrate_compact_continuation_v9(db: &Db) {
+    db.exec(
+        r#"CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
+      attempt_id TEXT PRIMARY KEY,
+      intent_hash TEXT NOT NULL,
+      intent_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );"#,
+    );
+    db.exec(
+        r#"CREATE TABLE IF NOT EXISTS compact_continuation_force_intent (
+      attempt_id TEXT PRIMARY KEY,
+      turn_end_idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('intent', 'applied', 'reconciled')),
+      continuation_turn_id TEXT,
+      recorded_at TEXT NOT NULL
+    );"#,
+    );
+}
+
+/// v9→v10: enforce at most one unresolved compact-continuation boundary.
+fn migrate_compact_continuation_v10(db: &Db) {
+    let unresolved = db
+        .prepare(
+            r#"SELECT COUNT(*) AS n FROM compact_continuation_boundary
+       WHERE status IN ('pending', 'failed_repairable')"#,
+        )
+        .get();
+    let n = unresolved
+        .as_ref()
+        .and_then(|row| row.get("n"))
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+        .unwrap_or(0);
+    if n > 1 {
+        panic!(
+            "compact-continuation migration v10 refused: {n} unresolved boundaries (at most one allowed)"
+        );
+    }
+    db.exec(
+        r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
+       ON compact_continuation_boundary ((1))
+       WHERE status IN ('pending', 'failed_repairable');"#,
+    );
+}
+
+fn migrate_compact_continuation_v8(db: &Db) {
+    db.exec(
+        r#"CREATE TABLE IF NOT EXISTS compact_continuation_boundary (
+      continuation_turn_id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'failed_repairable')),
+      marker_persisted INTEGER NOT NULL CHECK (marker_persisted IN (0, 1)),
+      last_stage TEXT NOT NULL,
+      forced_at TEXT NOT NULL,
+      completed_at TEXT
+    );"#,
+    );
+    db.exec(
+        r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
+       ON compact_continuation_boundary (status);"#,
+    );
+    db.exec(
+        r#"CREATE TABLE IF NOT EXISTS compact_continuation_stage_log (
+      log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      detail_json TEXT,
+      recorded_at TEXT NOT NULL
+    );"#,
+    );
+    db.exec(
+        r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_stage_attempt
+       ON compact_continuation_stage_log (attempt_id, log_id);"#,
+    );
+    // Rebuild receipt table with terminal column.
+    db.exec(
+        r#"CREATE TABLE compact_continuation_receipt_v8 (
+      attempt_id TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      refused INTEGER NOT NULL CHECK (refused IN (0, 1)),
+      skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+      terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
+      continuation_turn_id TEXT,
+      receipt_json TEXT NOT NULL,
+      decision_json TEXT NOT NULL
+    );"#,
+    );
+    db.exec(
+        r#"INSERT INTO compact_continuation_receipt_v8 (
+       attempt_id, recorded_at, outcome, reason_code, refused, skipped, terminal,
+       continuation_turn_id, receipt_json, decision_json
+     )
+     SELECT attempt_id, recorded_at, outcome, reason_code, refused, skipped, 1,
+            continuation_turn_id, receipt_json, decision_json
+     FROM compact_continuation_receipt"#,
+    );
+    db.exec("DROP TABLE compact_continuation_receipt;");
+    db.exec("ALTER TABLE compact_continuation_receipt_v8 RENAME TO compact_continuation_receipt;");
+    db.exec(
+        r#"CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
+       ON compact_continuation_receipt (recorded_at DESC);"#,
+    );
 }
 
 fn migrate_detailed_turn_compression_rename(db: &Db) {
@@ -428,6 +639,24 @@ pub fn migrate_thread_schema(db: &Db) {
                 db.exec(statement);
             }
             version = THREAD_SCHEMA_VERSION_6;
+        }
+        if version == THREAD_SCHEMA_VERSION_6 {
+            for statement in compact_continuation_schema_statements() {
+                db.exec(statement);
+            }
+            version = THREAD_SCHEMA_VERSION_7;
+        }
+        if version == THREAD_SCHEMA_VERSION_7 {
+            migrate_compact_continuation_v8(db);
+            version = THREAD_SCHEMA_VERSION_8;
+        }
+        if version == THREAD_SCHEMA_VERSION_8 {
+            migrate_compact_continuation_v9(db);
+            version = THREAD_SCHEMA_VERSION_9;
+        }
+        if version == THREAD_SCHEMA_VERSION_9 {
+            migrate_compact_continuation_v10(db);
+            version = THREAD_SCHEMA_VERSION_10;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

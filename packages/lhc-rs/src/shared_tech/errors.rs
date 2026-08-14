@@ -74,6 +74,15 @@ pub enum ErrorCode {
     InvalidBounds,
     /// caller_error — prune targetTokens rejected
     InvalidTargetTokens,
+    // Compact-continuation runtime (LIM-61 / LIM-63A):
+    /// caller_error — host input failed closed validation
+    InvalidCompactContinuationInput,
+    /// caller_error — cannot claim exclusive LHC writer
+    CompactContinuationWriterConflict,
+    /// caller_error — attemptId reused for a different operation
+    CompactContinuationAttemptConflict,
+    /// caller_error — prepared compact source state no longer matches record
+    StalePreparedCompact,
 }
 
 impl ErrorClass {
@@ -115,6 +124,12 @@ impl ErrorCode {
             ErrorCode::UnknownFormat => "unknown_format",
             ErrorCode::InvalidBounds => "invalid_bounds",
             ErrorCode::InvalidTargetTokens => "invalid_target_tokens",
+            ErrorCode::InvalidCompactContinuationInput => "invalid_compact_continuation_input",
+            ErrorCode::CompactContinuationWriterConflict => "compact_continuation_writer_conflict",
+            ErrorCode::CompactContinuationAttemptConflict => {
+                "compact_continuation_attempt_conflict"
+            }
+            ErrorCode::StalePreparedCompact => "stale_prepared_compact",
         }
     }
 }

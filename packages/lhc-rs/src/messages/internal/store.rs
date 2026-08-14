@@ -265,6 +265,7 @@ fn message_kind_from_wire(kind: &str) -> MessageKind {
         "thinking_level_change" => MessageKind::ThinkingLevelChange,
         "tool_call" => MessageKind::ToolCall,
         "tool_result" => MessageKind::ToolResult,
+        "compact_continuation_marker" => MessageKind::CompactContinuationMarker,
         other => panic!("unknown message kind from row: {other}"),
     }
 }
@@ -276,6 +277,7 @@ fn block_type_from_wire(block_type: &str) -> BlockType {
         "tool_result" => BlockType::ToolResult,
         "model_change" => BlockType::ModelChange,
         "thinking_level_change" => BlockType::ThinkingLevelChange,
+        "compact_continuation_marker" => BlockType::CompactContinuationMarker,
         other => panic!("unknown block type from row: {other}"),
     }
 }

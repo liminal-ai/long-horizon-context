@@ -139,6 +139,7 @@ fn incident_inputs(options: IncidentOptions) -> SelectionInputs {
         compact_chunk_materials: Some(compact_chunk_materials),
         max_event_order: 80,
         derivation_counts: IndexMap::new(),
+        empty_chunk_ids: Vec::new(),
     }
 }
 

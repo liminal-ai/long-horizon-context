@@ -9,10 +9,11 @@ mod fixtures;
 use lhc::shared_tech::derivation::{LeaseConfig, SdkConfig, SdkMode};
 use lhc::shared_tech::js_json::js_json_stringify;
 use lhc::shared_tech::scheduler::DrainDisposition;
-use lhc::shared_tech::storage::{Db, SqlParam, get_schema_version};
+use lhc::shared_tech::storage::{CURRENT_THREAD_SCHEMA_VERSION, Db, SqlParam, get_schema_version};
 use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
-    THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6,
+    THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6, THREAD_SCHEMA_VERSION_7,
+    THREAD_SCHEMA_VERSION_8, THREAD_SCHEMA_VERSION_9, THREAD_SCHEMA_VERSION_10,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
@@ -324,7 +325,7 @@ async fn opens_a_v1_thread_file_migrates_derivation_log_and_preserves_existing_d
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_6);
+    assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
     assert!(
         db.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'"
@@ -380,7 +381,7 @@ async fn migrates_v2_derivation_rows_and_stored_view_json_from_smooth_turn_compr
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_6);
+    assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
     let derivation = db
         .prepare(
             "SELECT derivation_type, content FROM derivation
@@ -514,7 +515,7 @@ async fn normalizes_queued_old_shape_turn_derivation_items_and_drains_cleanly_en
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_6);
+    assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
     let payload_raw = db
         .prepare("SELECT payload FROM work_item WHERE kind = 'turn_derivation'")
         .get()
@@ -855,7 +856,7 @@ async fn migrates_a_v4_file_adds_nullable_host_fact_columns_preserves_data_backf
         store.cleanup();
         return;
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_6);
+    assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
 
     let turn_cols: Vec<String> = db
         .prepare("PRAGMA table_info(turns)")
@@ -1064,7 +1065,7 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
     let OpResult::Ok { value: db } = opened else {
         panic!("open failed");
     };
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_6);
+    assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
     let present = db
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'",

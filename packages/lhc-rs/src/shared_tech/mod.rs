@@ -25,6 +25,7 @@ pub mod persist;
 pub mod prompts;
 pub mod report;
 pub mod scheduler;
+pub mod sha256;
 pub mod storage;
 pub mod thread_migrate;
 pub mod token_counting;

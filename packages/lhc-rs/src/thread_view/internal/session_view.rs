@@ -206,7 +206,8 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
         | RenderingPartKind::ToolResult
         | RenderingPartKind::RuntimeNote
         | RenderingPartKind::ModelChange
-        | RenderingPartKind::ThinkingLevelChange => SessionAssistantPart {
+        | RenderingPartKind::ThinkingLevelChange
+        | RenderingPartKind::CompactContinuationMarker => SessionAssistantPart {
             type_: SessionAssistantPartType::Text,
             text: Some(String::new()),
             thinking: None,
@@ -404,6 +405,44 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                 entries.push(SessionThreadViewEntry::Message(
                     SessionThreadViewMessage::User(SessionUserMessage {
                         content: format!("{LITERAL_RUNTIME_NOTE_PREFIX}{}", text_of(row)),
+                        source_messages: vec![entry_source(row)],
+                    }),
+                ));
+            }
+            RenderingPartKind::CompactContinuationMarker => {
+                // Typed host handoff / model-serving form. Not ordinary user chat;
+                // hosts that rebuild session files need the marker in place.
+                flush_assistant(
+                    &mut assistant_parts,
+                    &mut assistant_sources,
+                    &mut assistant_rows,
+                    &mut assistant_provenance,
+                    &mut entries,
+                );
+                let block = block_content(row);
+                let cause = match block.get("cause") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "context_compacted_task_in_progress",
+                };
+                let action = match block.get("action") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "continue_existing_task",
+                };
+                let turn_id = match block.get("continuationTurnId") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "",
+                };
+                entries.push(SessionThreadViewEntry::Message(
+                    SessionThreadViewMessage::User(SessionUserMessage {
+                        content: [
+                            "[compact continuation]",
+                            &format!("cause={cause}"),
+                            &format!("action={action}"),
+                            "newUserRequest=false",
+                            "waitForUser=false",
+                            &format!("continuationTurnId={turn_id}"),
+                        ]
+                        .join(" "),
                         source_messages: vec![entry_source(row)],
                     }),
                 ));

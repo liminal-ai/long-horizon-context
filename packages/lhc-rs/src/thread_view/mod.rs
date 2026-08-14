@@ -17,18 +17,22 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::FutureExt;
-use serde_json::{Map, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 use crate::messages;
 use crate::shared_tech::context::{resolve_instance_config, resolve_instance_view_config};
 use crate::shared_tech::derivation::{DerivationReportEntry, DerivationState};
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
-use crate::shared_tech::js_json::{js_json_stringify, js_number_value, js_string_of_number};
+use crate::shared_tech::js_json::{
+    js_json_stringify, js_json_stringify_of, js_number_value, js_string_of_number,
+};
 use crate::shared_tech::logging::{LogEntry, LogLevel, write_log};
 use crate::shared_tech::persist::{
     DbReadTransaction, DbTransaction, DbWriteTransaction, create_db_read_transaction,
     create_db_write_transaction,
 };
+use crate::shared_tech::sha256::sha256_hex;
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::view::{
@@ -38,7 +42,7 @@ use crate::shared_tech::view::{
     LlmRequestContextPart, LlmRequestContextPartType, LlmRequestContextRole, PreviewCompactOutcome,
     PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SessionThreadView, StoredView,
     StoredViewSourceState, ViewCompactParams, ViewProfile, ViewProfilePercentages, ViewStatus,
-    ViewStatusDerivation, ViewStatusView, ViewStatusVisibility,
+    ViewStatusDerivation, ViewStatusView, ViewStatusVisibility, ViewSubjectKind,
 };
 use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 use crate::turns;
@@ -54,11 +58,11 @@ use internal::render::{
     AssembledContextRole, LITERAL_DERIVATION_STORED_MEMBER_CONCAT, assemble_band_text,
 };
 use internal::seam::{ViewInjectionPoint, fire_view_injection};
-use internal::select::{ArrangementEntry, SkippedEntry};
+use internal::select::{ArrangementEntry, SelectionResult, SkippedEntry};
 use internal::session_view::build_session_thread_view;
 use internal::snapshot::{
     ViewReplaceBand, ViewReplaceInput, read_stored_view, read_thread_metadata, read_view_snapshot,
-    replace_view_snapshot, tail_token_sum,
+    replace_view_snapshot, replace_view_snapshot_with, tail_token_sum,
 };
 
 /// Canonical materialize/writePiSessionFile result — one type, re-exported.
@@ -826,10 +830,10 @@ fn resolve_compact_call(opts: &CompactOpts) -> OpResult<ResolvedCompactCall> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct StoredBandRow {
-    band: Band,
-    rendered_text: String,
-    token_count: i64,
+pub struct StoredBandRow {
+    pub band: Band,
+    pub rendered_text: String,
+    pub token_count: i64,
 }
 
 fn build_rendered_bands(
@@ -1053,8 +1057,432 @@ fn compact_receipt_config(merged: &ViewProfile) -> CompactReceiptConfig {
     }
 }
 
-/// TS `compact` — PARTIAL (Wave 5 chunk-compact-recovery); full body Phase 2.
-pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
+// ── prepared compact / install (LIM-61 / LIM-63A) ─────────────────
+
+/// Source-state fingerprint for install validation (TS `PreparedCompactSourceState`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedCompactSourceState {
+    pub max_event_order: i64,
+    /// SHA-256 hex of relevant derivation rows.
+    pub derivation_digest: String,
+    /// SHA-256 hex of durable source messages/blocks used by bands + tail.
+    pub tail_digest: String,
+    /// SHA-256 hex of turn/chunk placement used by selection.
+    pub structure_digest: String,
+    pub installed_view_id: Option<String>,
+    pub compact_point: i64,
+}
+
+/// In-memory prepared compact snapshot (TS `PreparedCompact`). No durable write.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedCompact {
+    pub selection: SelectionResult,
+    pub empty_chunk_ids: Vec<String>,
+    pub max_event_order: i64,
+    pub derivation_counts: indexmap::IndexMap<String, indexmap::IndexMap<String, i64>>,
+    pub source_state: PreparedCompactSourceState,
+    pub selected_source_turn_ids: Vec<String>,
+    pub view_id: String,
+    pub first_kept_message_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub merged: ViewProfile,
+    pub bands: Vec<StoredBandRow>,
+    pub warnings: Vec<CompactWarning>,
+    pub degraded: Vec<CompactDegradedEntry>,
+    pub gaps: Vec<CompactGapEntry>,
+}
+
+/// TS `InstallPreparedOptions`.
+#[derive(Debug, Clone, Default)]
+pub struct InstallPreparedOptions {
+    pub signal: Option<CompactAbortSignal>,
+    pub created_at: Option<String>,
+    /// When set, allow exactly one additional marker event after prepare.
+    pub allowed_marker_idempotency_key: Option<String>,
+}
+
+/// Resolve every turn id whose messages feed prepared band text.
+pub fn selected_source_turn_ids_from_selection(
+    db: &Db,
+    selection: &SelectionResult,
+) -> Vec<String> {
+    let mut turn_ids = std::collections::BTreeSet::new();
+    for entry in &selection.entries {
+        if entry.subject_kind == ViewSubjectKind::Turn {
+            turn_ids.insert(entry.subject_id.clone());
+            continue;
+        }
+        let members = db
+            .prepare("SELECT turn_id FROM chunk_member WHERE chunk_id = ? ORDER BY member_idx")
+            .all(&[SqlParam::from(entry.subject_id.as_str())]);
+        for m in members {
+            if let Some(tid) = m.get("turn_id").and_then(|v| v.as_str()) {
+                turn_ids.insert(tid.to_string());
+            }
+        }
+    }
+    turn_ids.into_iter().collect()
+}
+
+/// Build a source-state fingerprint for install validation.
+pub fn read_prepared_source_state(
+    db: &Db,
+    compact_point: i64,
+    selected_source_turn_ids: &[String],
+    exclude_message_ids: Option<&std::collections::HashSet<String>>,
+) -> PreparedCompactSourceState {
+    let max_row = db
+        .prepare("SELECT COALESCE(MAX(event_order), 0) AS m FROM event")
+        .get()
+        .expect("max event order");
+    let max_event_order = max_row.get("m").and_then(|v| v.as_i64()).unwrap_or(0);
+    let exclude = exclude_message_ids.cloned().unwrap_or_default();
+    let selected_turns: Vec<String> = {
+        let mut v = selected_source_turn_ids.to_vec();
+        v.sort();
+        v
+    };
+
+    let derivation_rows = db.prepare(
+        r#"SELECT subject_kind, subject_id, derivation_type, state, content, reason, source_version, metadata
+       FROM derivation
+       ORDER BY subject_kind, subject_id, derivation_type"#,
+    ).all(&[]);
+    let derivation_payload: Vec<Value> = derivation_rows
+        .iter()
+        .map(|r| {
+            json!({
+                "k": r.get("subject_kind").and_then(|v| v.as_str()).unwrap_or(""),
+                "id": r.get("subject_id").and_then(|v| v.as_str()).unwrap_or(""),
+                "t": r.get("derivation_type").and_then(|v| v.as_str()).unwrap_or(""),
+                "s": r.get("state").and_then(|v| v.as_str()).unwrap_or(""),
+                "c": r.get("content").cloned().unwrap_or(Value::Null),
+                "r": r.get("reason").cloned().unwrap_or(Value::Null),
+                "v": r.get("source_version").and_then(|v| v.as_i64()).unwrap_or(0),
+                "m": r.get("metadata").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    let derivation_digest = sha256_hex(&js_json_stringify(&Value::Array(derivation_payload)));
+
+    let placeholders = selected_turns
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let turn_clause = if selected_turns.is_empty() {
+        "m.turn_id IN (SELECT turn_id FROM chunk_member)".to_string()
+    } else {
+        format!("m.turn_id IN ({placeholders})")
+    };
+    let mut bind: Vec<SqlParam> = vec![SqlParam::from(compact_point)];
+    for t in &selected_turns {
+        bind.push(SqlParam::from(t.as_str()));
+    }
+
+    let source_messages = db
+        .prepare(&format!(
+            r#"SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
+       FROM message m
+       WHERE m.source_event_order > ?
+          OR {turn_clause}
+       ORDER BY m.source_event_order, m.message_id"#
+        ))
+        .all(&bind);
+    let source_blocks = db
+        .prepare(&format!(
+            r#"SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
+       FROM message_block mb
+       JOIN message m ON m.message_id = mb.message_id
+       WHERE m.source_event_order > ?
+          OR {turn_clause}
+       ORDER BY m.source_event_order, m.message_id, mb.block_index"#
+        ))
+        .all(&bind);
+
+    let filtered_messages: Vec<Value> = source_messages
+        .iter()
+        .filter(|m| {
+            m.get("message_id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclude.contains(id))
+                .unwrap_or(true)
+        })
+        .map(|m| {
+            json!({
+                "id": m.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
+                "kind": m.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                "order": m.get("source_event_order").and_then(|v| v.as_i64()).unwrap_or(0),
+                "turn": m.get("turn_id").and_then(|v| v.as_str()).unwrap_or(""),
+                "deleted": m.get("deleted_at").cloned().unwrap_or(Value::Null),
+                "tokens": m.get("token_estimate").and_then(|v| v.as_i64()).unwrap_or(0),
+            })
+        })
+        .collect();
+    let filtered_blocks: Vec<Value> = source_blocks
+        .iter()
+        .filter(|b| {
+            b.get("message_id")
+                .and_then(|v| v.as_str())
+                .map(|id| !exclude.contains(id))
+                .unwrap_or(true)
+        })
+        .map(|b| {
+            json!({
+                "id": b.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
+                "i": b.get("block_index").and_then(|v| v.as_i64()).unwrap_or(0),
+                "t": b.get("block_type").and_then(|v| v.as_str()).unwrap_or(""),
+                "c": b.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+            })
+        })
+        .collect();
+    let tail_digest = sha256_hex(&js_json_stringify(&json!({
+        "messages": filtered_messages,
+        "blocks": filtered_blocks,
+    })));
+
+    let turn_rows = db
+        .prepare(
+            r#"SELECT turn_id, turn_order, status, opened_at_event_order, closed_at_event_order
+       FROM turns ORDER BY turn_order"#,
+        )
+        .all(&[]);
+    let chunk_rows = db
+        .prepare("SELECT chunk_id, chunk_order, status FROM chunk ORDER BY chunk_order")
+        .all(&[]);
+    let member_rows = db
+        .prepare(
+            "SELECT chunk_id, turn_id, member_idx FROM chunk_member ORDER BY chunk_id, member_idx",
+        )
+        .all(&[]);
+    let boundary = db
+        .prepare("SELECT position FROM view_boundary WHERE thread_singleton = 1")
+        .get();
+    let structure_digest = sha256_hex(&js_json_stringify(&json!({
+        "turns": turn_rows.iter().map(|t| json!({
+            "id": t.get("turn_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "o": t.get("turn_order").and_then(|v| v.as_i64()).unwrap_or(0),
+            "s": t.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+            "open": t.get("opened_at_event_order").and_then(|v| v.as_i64()).unwrap_or(0),
+            "close": t.get("closed_at_event_order").cloned().unwrap_or(Value::Null),
+        })).collect::<Vec<_>>(),
+        "chunks": chunk_rows.iter().map(|c| json!({
+            "id": c.get("chunk_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "o": c.get("chunk_order").and_then(|v| v.as_i64()).unwrap_or(0),
+            "s": c.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+        })).collect::<Vec<_>>(),
+        "members": member_rows.iter().map(|m| json!({
+            "c": m.get("chunk_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "t": m.get("turn_id").and_then(|v| v.as_str()).unwrap_or(""),
+            "i": m.get("member_idx").and_then(|v| v.as_i64()).unwrap_or(0),
+        })).collect::<Vec<_>>(),
+        "boundary": boundary.as_ref().and_then(|b| b.get("position")).and_then(|v| v.as_i64()).unwrap_or(0),
+    })));
+
+    let view = read_view_snapshot(db);
+    PreparedCompactSourceState {
+        max_event_order,
+        derivation_digest,
+        tail_digest,
+        structure_digest,
+        installed_view_id: view.map(|v| v.view_id),
+        compact_point,
+    }
+}
+
+/// Validate prepared source state against current durable state.
+pub fn validate_prepared_source_state(
+    db: &Db,
+    prepared: &PreparedCompact,
+    allowed_marker_idempotency_key: Option<&str>,
+) -> Result<(), String> {
+    let selected = if prepared.selected_source_turn_ids.is_empty() {
+        selected_source_turn_ids_from_selection(db, &prepared.selection)
+    } else {
+        prepared.selected_source_turn_ids.clone()
+    };
+    let current =
+        read_prepared_source_state(db, prepared.source_state.compact_point, &selected, None);
+    let prev = &prepared.source_state;
+
+    if current.installed_view_id != prev.installed_view_id {
+        return Err("serving view changed since prepare".into());
+    }
+    if current.structure_digest != prev.structure_digest {
+        return Err("turn/chunk structure changed since prepare".into());
+    }
+    if current.derivation_digest != prev.derivation_digest {
+        return Err("derivation content/state changed since prepare".into());
+    }
+
+    let Some(marker_key) = allowed_marker_idempotency_key else {
+        if current.max_event_order != prev.max_event_order {
+            return Err(format!(
+                "event order advanced {}→{} since prepare",
+                prev.max_event_order, current.max_event_order
+            ));
+        }
+        if current.tail_digest != prev.tail_digest {
+            return Err("tail message/block content changed since prepare".into());
+        }
+        return Ok(());
+    };
+
+    if current.max_event_order < prev.max_event_order {
+        return Err("event order regressed since prepare".into());
+    }
+    if current.max_event_order == prev.max_event_order {
+        if current.tail_digest != prev.tail_digest {
+            return Err(
+                "source message/block content changed since prepare without event advance".into(),
+            );
+        }
+        return Ok(());
+    }
+    if current.max_event_order != prev.max_event_order + 1 {
+        return Err(format!(
+            "expected at most one event advance for marker, got {}→{}",
+            prev.max_event_order, current.max_event_order
+        ));
+    }
+    let new_event = db
+        .prepare("SELECT event_order, event_kind, idempotency_key FROM event WHERE event_order = ?")
+        .get_params(&[SqlParam::from(current.max_event_order)]);
+    let Some(new_event) = new_event else {
+        return Err("new event row missing after order advance".into());
+    };
+    let event_kind = new_event
+        .get("event_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if event_kind != "compact_continuation_marker" {
+        return Err(format!(
+            "expected compact_continuation_marker, got {event_kind}"
+        ));
+    }
+    let idem = new_event
+        .get("idempotency_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if idem != marker_key {
+        return Err(format!(
+            "marker idempotency key mismatch (expected {marker_key})"
+        ));
+    }
+    let marker_message = db
+        .prepare(
+            r#"SELECT message_id FROM message
+       WHERE source_event_order = ? AND kind = 'compact_continuation_marker'"#,
+        )
+        .get_params(&[SqlParam::from(current.max_event_order)]);
+    let Some(marker_message) = marker_message else {
+        return Err("marker message row missing for advanced event".into());
+    };
+    let marker_id = marker_message
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut exclude = std::collections::HashSet::new();
+    exclude.insert(marker_id);
+    let without_marker = read_prepared_source_state(
+        db,
+        prepared.source_state.compact_point,
+        &selected,
+        Some(&exclude),
+    );
+    if without_marker.tail_digest != prev.tail_digest {
+        return Err(
+            "source message/block content changed beyond the expected continuation marker".into(),
+        );
+    }
+    Ok(())
+}
+
+fn build_prepared_from_arrangement(
+    db: &Db,
+    selection: SelectionResult,
+    empty_chunk_ids: Vec<String>,
+    max_event_order: i64,
+    derivation_counts: indexmap::IndexMap<String, indexmap::IndexMap<String, i64>>,
+    view_id: String,
+    first_kept_message_id: Option<String>,
+    profile_name: Option<String>,
+    merged: ViewProfile,
+) -> PreparedCompact {
+    let warnings: Vec<CompactWarning> = selection
+        .entries
+        .iter()
+        .filter(|entry| entry.derivation_used == LITERAL_DERIVATION_STORED_MEMBER_CONCAT)
+        .map(|entry| CompactWarning {
+            band: entry.band,
+            subject_id: entry.subject_id.clone(),
+            derivation_type: if entry.band == Band::Brief {
+                CompactWarningDerivationType::ChunkSummaryBrief
+            } else {
+                CompactWarningDerivationType::ChunkSummaryDetailed
+            },
+            reason: entry
+                .reason
+                .clone()
+                .unwrap_or_else(|| LITERAL_NOT_READY.to_string()),
+        })
+        .collect();
+
+    let bands: Vec<StoredBandRow> = BAND_ORDER
+        .into_iter()
+        .flat_map(|band| {
+            let entries = entries_by_band(&selection.entries, band);
+            if entries.is_empty() {
+                return Vec::new();
+            }
+            let rendered_text =
+                assemble_band_text(&entries.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
+            let token_count = estimate_tokens(&rendered_text);
+            vec![StoredBandRow {
+                band,
+                rendered_text,
+                token_count,
+            }]
+        })
+        .collect();
+
+    let selected_source_turn_ids = selected_source_turn_ids_from_selection(db, &selection);
+    let source_state =
+        read_prepared_source_state(db, selection.compact_point, &selected_source_turn_ids, None);
+    let gaps = gap_notes(&selection.entries, &selection.skipped);
+    let degraded = selection
+        .entries
+        .iter()
+        .filter(|entry| entry.degraded)
+        .map(|entry| CompactDegradedEntry {
+            band: entry.band,
+            subject_id: entry.subject_id.clone(),
+            used_derivation: entry.derivation_used.clone(),
+        })
+        .collect();
+
+    PreparedCompact {
+        selection,
+        empty_chunk_ids,
+        max_event_order,
+        derivation_counts,
+        source_state,
+        selected_source_turn_ids,
+        view_id,
+        first_kept_message_id,
+        profile_name,
+        merged,
+        bands,
+        warnings,
+        degraded,
+        gaps,
+    }
+}
+
+/// Assemble a compact without writing the serving view (TS `prepareCompact`).
+pub async fn prepare_compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<PreparedCompact> {
     let resolved = resolve_thread_ref(ref_).await;
     let OpResult::Ok { value: resolved } = resolved else {
         return match resolved {
@@ -1089,7 +1517,7 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
         };
     };
 
-    let outcome = catch_unwind_compact(|| {
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let thread_id = read_thread_metadata(&db).thread_id;
         let transaction = DbReadTransaction {
             db: &db,
@@ -1112,30 +1540,18 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
             };
         };
 
-        let selection = computed.selection;
-        let inputs = computed.inputs;
-        let view_id = computed.view_id;
-        let first_kept_message_id = computed.first_kept_message_id;
-
-        let warnings: Vec<CompactWarning> = selection
-            .entries
-            .iter()
-            .filter(|entry| entry.derivation_used == LITERAL_DERIVATION_STORED_MEMBER_CONCAT)
-            .map(|entry| CompactWarning {
-                band: entry.band,
-                subject_id: entry.subject_id.clone(),
-                derivation_type: if entry.band == Band::Brief {
-                    CompactWarningDerivationType::ChunkSummaryBrief
-                } else {
-                    CompactWarningDerivationType::ChunkSummaryDetailed
-                },
-                reason: entry
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| LITERAL_NOT_READY.to_string()),
-            })
-            .collect();
-        for warning in &warnings {
+        let prepared = build_prepared_from_arrangement(
+            &db,
+            computed.selection,
+            computed.inputs.empty_chunk_ids,
+            computed.inputs.max_event_order,
+            computed.inputs.derivation_counts,
+            computed.view_id,
+            computed.first_kept_message_id,
+            profile_name,
+            merged,
+        );
+        for warning in &prepared.warnings {
             write_log(
                 DbTransaction::Read(&transaction),
                 &LogEntry {
@@ -1148,33 +1564,47 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
                 },
             );
         }
+        OpResult::Ok { value: prepared }
+    }));
 
-        let bands: Vec<StoredBandRow> = BAND_ORDER
-            .into_iter()
-            .flat_map(|band| {
-                let entries = entries_by_band(&selection.entries, band);
-                if entries.is_empty() {
-                    return Vec::new();
-                }
-                let rendered_text =
-                    assemble_band_text(&entries.iter().map(|e| e.text.clone()).collect::<Vec<_>>());
-                let token_count = estimate_tokens(&rendered_text);
-                vec![StoredBandRow {
-                    band,
-                    rendered_text,
-                    token_count,
-                }]
-            })
-            .collect();
+    db.close();
 
-        // TS `new Date().toISOString()` — under the SDK seam, honor the
-        // instance clock (lifecycle freezes Date / injects SdkConfig.clock).
-        let created_at = system_time_to_iso(
-            resolve_instance_config()
-                .map(|c| (c.clock)())
-                .unwrap_or_else(SystemTime::now),
-        );
+    match outcome {
+        Ok(result) => result,
+        Err(payload) => storage_failure(&format!(
+            "view prepareCompact failed: {}",
+            panic_detail(payload)
+        )),
+    }
+}
 
+/// Atomically install a previously prepared compact snapshot (TS `installPreparedCompact`).
+pub async fn install_prepared_compact(
+    ref_: ThreadRef,
+    prepared: PreparedCompact,
+    opts: InstallPreparedOptions,
+) -> OpResult<CompactReceipt> {
+    let resolved = resolve_thread_ref(ref_).await;
+    let OpResult::Ok { value: resolved } = resolved else {
+        return match resolved {
+            OpResult::Err { error } => OpResult::Err { error },
+            OpResult::Ok { .. } => unreachable!(),
+        };
+    };
+    let file_path = resolved.file_path;
+    if !Path::new(&file_path).exists() {
+        return thread_not_found(&file_path);
+    }
+
+    let opened = open_thread_database(&file_path);
+    let OpResult::Ok { value: db } = opened else {
+        return match opened {
+            OpResult::Err { error } => OpResult::Err { error },
+            OpResult::Ok { .. } => unreachable!(),
+        };
+    };
+
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         fire_view_injection(ViewInjectionPoint::CompactWrite);
 
         if compact_stopped(opts.signal.as_ref()) {
@@ -1184,38 +1614,97 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
             );
         }
 
-        let source_state = StoredViewSourceState {
-            max_event_order: inputs.max_event_order,
-            derivation_counts: inputs.derivation_counts.clone(),
-        };
-        let source_state_json =
-            js_json_stringify(&serde_json::to_value(&source_state).unwrap_or(Value::Null));
+        let created_at = opts.created_at.clone().unwrap_or_else(|| {
+            system_time_to_iso(
+                resolve_instance_config()
+                    .map(|c| (c.clock)())
+                    .unwrap_or_else(SystemTime::now),
+            )
+        });
+        let marker_key = opts.allowed_marker_idempotency_key.clone();
 
-        replace_view_snapshot(
-            &db,
-            &ViewReplaceInput {
-                view_id: view_id.clone(),
-                created_at,
-                compact_point: selection.compact_point,
-                covered_from: selection.covered_from,
-                profile_name: profile_name.clone(),
-                config_json: stored_view_config_json(merged.lower_bound, &merged.percentages),
-                arrangement_json: js_json_stringify(&arrangement_json_value(&selection.entries)),
-                gaps_json: js_json_stringify(&gaps_json_value(
-                    &selection.entries,
-                    &selection.skipped,
-                )),
-                source_state_json,
-                bands: bands
-                    .iter()
-                    .map(|b| ViewReplaceBand {
-                        band: b.band,
-                        rendered_text: b.rendered_text.clone(),
-                        token_count: b.token_count,
-                    })
-                    .collect(),
-            },
-        );
+        let placeholder_source = StoredViewSourceState {
+            max_event_order: prepared.max_event_order,
+            derivation_counts: prepared.derivation_counts.clone(),
+        };
+        let placeholder_json =
+            js_json_stringify(&serde_json::to_value(&placeholder_source).unwrap_or(Value::Null));
+
+        let mut before = |db: &Db| -> Option<String> {
+            if let Err(reason) =
+                validate_prepared_source_state(db, &prepared, marker_key.as_deref())
+            {
+                // Panic with a typed message so outer catch can map to stale_prepared_compact.
+                panic!("stale_prepared_compact:{reason}");
+            }
+            let selected = if prepared.selected_source_turn_ids.is_empty() {
+                selected_source_turn_ids_from_selection(db, &prepared.selection)
+            } else {
+                prepared.selected_source_turn_ids.clone()
+            };
+            let validated =
+                read_prepared_source_state(db, prepared.selection.compact_point, &selected, None);
+            let _ = turns::drop_unreadable_chunks(db, &prepared.empty_chunk_ids);
+            // Persist public StoredViewSourceState only (maxEventOrder +
+            // derivationCounts). Digests remain in-transaction validation state.
+            Some(js_json_stringify(&json!({
+                "maxEventOrder": validated.max_event_order,
+                "derivationCounts": prepared.derivation_counts,
+            })))
+        };
+
+        let install_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            replace_view_snapshot_with(
+                &db,
+                &ViewReplaceInput {
+                    view_id: prepared.view_id.clone(),
+                    created_at,
+                    compact_point: prepared.selection.compact_point,
+                    covered_from: prepared.selection.covered_from,
+                    profile_name: prepared.profile_name.clone(),
+                    config_json: stored_view_config_json(
+                        prepared.merged.lower_bound,
+                        &prepared.merged.percentages,
+                    ),
+                    arrangement_json: js_json_stringify(&arrangement_json_value(
+                        &prepared.selection.entries,
+                    )),
+                    gaps_json: js_json_stringify(&gaps_json_value(
+                        &prepared.selection.entries,
+                        &prepared.selection.skipped,
+                    )),
+                    source_state_json: placeholder_json,
+                    bands: prepared
+                        .bands
+                        .iter()
+                        .map(|b| ViewReplaceBand {
+                            band: b.band,
+                            rendered_text: b.rendered_text.clone(),
+                            token_count: b.token_count,
+                        })
+                        .collect(),
+                },
+                Some(&mut before),
+            );
+        }));
+
+        match install_result {
+            Ok(()) => {}
+            Err(payload) => {
+                let detail = panic_detail(payload);
+                if let Some(reason) = detail.strip_prefix("stale_prepared_compact:") {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::StalePreparedCompact,
+                            reason: format!("prepared compact is stale: {reason}"),
+                            event_index: None,
+                        },
+                    };
+                }
+                panic!("{detail}");
+            }
+        }
 
         let mut brief = CompactBandStats {
             entries: 0,
@@ -1230,9 +1719,9 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
             tokens: 0,
         };
         for band in BAND_ORDER {
-            let stored = bands.iter().find(|row| row.band == band);
+            let stored = prepared.bands.iter().find(|row| row.band == band);
             let stats = CompactBandStats {
-                entries: entries_by_band(&selection.entries, band).len() as i64,
+                entries: entries_by_band(&prepared.selection.entries, band).len() as i64,
                 tokens: stored.map(|s| s.token_count).unwrap_or(0),
             };
             match band {
@@ -1246,56 +1735,66 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
             detailed,
             smooth,
         };
-        let tail_tokens = tail_token_sum(&db, selection.compact_point);
-        let rendered_bands = build_rendered_bands(&selection.entries, &bands);
+        let tail_tokens = tail_token_sum(&db, prepared.selection.compact_point);
+        let rendered_bands = build_rendered_bands(&prepared.selection.entries, &prepared.bands);
         OpResult::Ok {
             value: CompactReceipt {
-                view_id,
-                profile: profile_name,
-                config: compact_receipt_config(&merged),
+                view_id: prepared.view_id.clone(),
+                profile: prepared.profile_name.clone(),
+                config: compact_receipt_config(&prepared.merged),
                 bands: band_report.clone(),
                 tail_tokens,
                 total_tokens: band_report.brief.tokens
                     + band_report.detailed.tokens
                     + band_report.smooth.tokens
                     + tail_tokens,
-                covered_from: selection.covered_from,
-                compact_point: selection.compact_point,
-                degraded: selection
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.degraded)
-                    .map(|entry| CompactDegradedEntry {
-                        band: entry.band,
-                        subject_id: entry.subject_id.clone(),
-                        used_derivation: entry.derivation_used.clone(),
-                    })
-                    .collect(),
-                gaps: gap_notes(&selection.entries, &selection.skipped),
-                warnings: Some(warnings),
+                covered_from: prepared.selection.covered_from,
+                compact_point: prepared.selection.compact_point,
+                degraded: prepared.degraded.clone(),
+                gaps: prepared.gaps.clone(),
+                warnings: Some(prepared.warnings.clone()),
                 rendered_bands,
-                first_kept_message_id,
+                first_kept_message_id: prepared.first_kept_message_id.clone(),
             },
         }
-    });
+    }));
 
-    // Explicit cleanup: always close the handle opened for compact.
     db.close();
 
     match outcome {
         Ok(result) => result,
-        Err(payload) => storage_failure(&format!(
-            "{DIAG_VIEW_COMPACT_FAILED}{}",
-            panic_detail(payload)
-        )),
+        Err(payload) => {
+            let detail = panic_detail(payload);
+            if let Some(reason) = detail.strip_prefix("stale_prepared_compact:") {
+                return OpResult::Err {
+                    error: ErrorResult {
+                        error_class: ErrorClass::CallerError,
+                        code: ErrorCode::StalePreparedCompact,
+                        reason: format!("prepared compact is stale: {reason}"),
+                        event_index: None,
+                    },
+                };
+            }
+            storage_failure(&format!("view installPreparedCompact failed: {detail}"))
+        }
     }
 }
 
-fn catch_unwind_compact<F>(f: F) -> Result<OpResult<CompactReceipt>, Box<dyn std::any::Any + Send>>
-where
-    F: FnOnce() -> OpResult<CompactReceipt>,
-{
-    std::panic::catch_unwind(AssertUnwindSafe(f))
+/// TS `compact` — PARTIAL (Wave 5 chunk-compact-recovery); full body Phase 2.
+pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
+    let prepared = prepare_compact(ref_.clone(), opts.clone()).await;
+    let OpResult::Ok { value: prepared } = prepared else {
+        return match prepared {
+            OpResult::Err { error } => OpResult::Err { error },
+            OpResult::Ok { .. } => unreachable!(),
+        };
+    };
+    let install_opts = InstallPreparedOptions {
+        signal: opts.signal,
+        created_at: None,
+        allowed_marker_idempotency_key: None,
+    };
+    install_prepared_compact(ref_, prepared, install_opts).await
 }
 
 // ── materialize ──────────────────────────────────────────────────

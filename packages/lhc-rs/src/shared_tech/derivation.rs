@@ -685,6 +685,7 @@ pub enum RenderingPartKind {
     ThinkingLevelChange,
     ToolCall,
     ToolResult,
+    CompactContinuationMarker,
 }
 
 impl RenderingPartKind {
@@ -698,6 +699,7 @@ impl RenderingPartKind {
             RenderingPartKind::ThinkingLevelChange => "thinking_level_change",
             RenderingPartKind::ToolCall => "tool_call",
             RenderingPartKind::ToolResult => "tool_result",
+            RenderingPartKind::CompactContinuationMarker => "compact_continuation_marker",
         }
     }
 }

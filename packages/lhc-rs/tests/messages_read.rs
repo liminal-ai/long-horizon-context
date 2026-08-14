@@ -374,6 +374,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
             MessageListOptions {
                 from: Some(2),
                 to: Some(4),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m2", "m3", "m4"],
@@ -381,6 +382,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
         (
             MessageListOptions {
                 from: Some(6),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m6", "m7"],
@@ -388,6 +390,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
         (
             MessageListOptions {
                 to: Some(2),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m1", "m2"],
@@ -395,6 +398,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
         (
             MessageListOptions {
                 limit: Some(3),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m1", "m2", "m3"],
@@ -403,6 +407,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
             MessageListOptions {
                 from: Some(2),
                 limit: Some(2),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m2", "m3"],
@@ -411,6 +416,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
             MessageListOptions {
                 from: Some(4),
                 to: Some(4),
+                for_user_chat: None,
                 ..Default::default()
             },
             &["m4"],
@@ -419,6 +425,7 @@ async fn honors_from_to_limit_windows_exactly_in_source_event_order_coordinates(
             MessageListOptions {
                 from: Some(5),
                 to: Some(5),
+                for_user_chat: None,
                 ..Default::default()
             },
             &[], // the turn_end order: an event, never a message
@@ -441,14 +448,17 @@ async fn refuses_bad_bounds_as_caller_errors_and_returns_no_partial_window() {
         MessageListOptions {
             from: Some(5),
             to: Some(2),
+            for_user_chat: None,
             ..Default::default()
         },
         MessageListOptions {
             limit: Some(0),
+            for_user_chat: None,
             ..Default::default()
         },
         MessageListOptions {
             limit: Some(-1),
+            for_user_chat: None,
             ..Default::default()
         },
     ];
@@ -569,6 +579,7 @@ async fn default_list_excludes_a_deleted_message_include_deleted_lists_it_marked
         ThreadRef::file_path(&fixture.file_path),
         Some(MessageListOptions {
             include_deleted: Some(true),
+            for_user_chat: None,
             ..Default::default()
         }),
     )
@@ -633,6 +644,7 @@ async fn list_and_show_in_every_mode_leave_observable_state_unchanged_and_call_n
             from: Some(2),
             to: Some(4),
             limit: Some(2),
+            for_user_chat: None,
             ..Default::default()
         }),
     )
@@ -641,6 +653,7 @@ async fn list_and_show_in_every_mode_leave_observable_state_unchanged_and_call_n
         ThreadRef::file_path(&fixture.file_path),
         Some(MessageListOptions {
             include_deleted: Some(true),
+            for_user_chat: None,
             ..Default::default()
         }),
     )
@@ -650,6 +663,7 @@ async fn list_and_show_in_every_mode_leave_observable_state_unchanged_and_call_n
         Some(MessageListOptions {
             from: Some(9),
             to: Some(1),
+            for_user_chat: None,
             ..Default::default()
         }),
     )
@@ -699,6 +713,7 @@ async fn list_and_show_through_a_background_sdk_with_pending_work_call_no_model_
             ThreadRef::file_path(&file_path),
             Some(MessageListOptions {
                 limit: Some(1),
+                for_user_chat: None,
                 ..Default::default()
             }),
         )
@@ -766,10 +781,12 @@ async fn a_bounded_list_excluding_out_of_window_rows_never_loads_their_blocks_or
     for opts in [
         MessageListOptions {
             to: Some(1),
+            for_user_chat: None,
             ..Default::default()
         },
         MessageListOptions {
             limit: Some(1),
+            for_user_chat: None,
             ..Default::default()
         },
     ] {
@@ -801,6 +818,7 @@ async fn a_bounded_list_excluding_out_of_window_rows_never_loads_their_blocks_or
         ThreadRef::file_path(&fixture.file_path),
         Some(MessageListOptions {
             from: Some(7),
+            for_user_chat: None,
             ..Default::default()
         }),
     )
@@ -811,6 +829,7 @@ async fn a_bounded_list_excluding_out_of_window_rows_never_loads_their_blocks_or
         Some(MessageListOptions {
             from: Some(4),
             to: Some(4),
+            for_user_chat: None,
             ..Default::default()
         }),
     )

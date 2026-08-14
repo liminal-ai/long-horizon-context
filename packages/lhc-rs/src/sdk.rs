@@ -15,9 +15,8 @@ pub use crate::retrieval::{
     RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt, UnservedEntity,
     UnservedReason, clamp_id_echo,
 };
-// Compact-continuation pure contract (LIM-60 / LIM-62). Mirrors sdk.ts export
-// of shared-tech/compact-continuation names. Stage-by-stage live runtime is
-// LIM-61 (TS `compactContinuation` namespace) and is not re-exported here.
+// Compact-continuation pure contract (LIM-60 / LIM-62) plus live runtime
+// surface (LIM-61 / LIM-63A) mirroring TS `compactContinuation` namespace.
 pub use crate::shared_tech::compact_continuation::{
     COMPACT_CONTINUATION_CONTRACT_VERSION, COMPACT_CONTINUATION_HOST_CAPABILITIES,
     COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE, COMPACT_CONTINUATION_INVARIANTS,
@@ -41,6 +40,18 @@ pub use crate::shared_tech::compact_continuation::{
     compact_continuation_marker_idempotency_key, decide_compact_continuation,
     validate_compact_continuation_decision, validate_compact_continuation_input,
     validate_compact_continuation_receipt,
+};
+// Live staged runtime (provider-neutral). Test hooks stay crate-internal /
+// fixture-only (not re-exported here).
+pub use crate::compact_continuation::{
+    AttemptRow, BoundaryRow, BoundaryStatus, CompactContinuationHostFacts,
+    CompactContinuationRunResult, ForceIntentRow, StageName, StoredCompactContinuationReceipt,
+    ToolPairProof, WriterClaimRow, compute_attempt_intent, compute_operation_identity,
+    compute_retry_posture, get_compact_continuation_receipt, get_compact_continuation_writer_claim,
+    get_pending_compact_continuation_boundary, has_compact_continuation_marker,
+    hash_attempt_intent, hash_record, list_compact_continuation_boundaries,
+    list_compact_continuation_receipts, list_compact_continuation_stages, prove_pending_tool_pair,
+    run_compact_continuation, validate_host_facts,
 };
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{

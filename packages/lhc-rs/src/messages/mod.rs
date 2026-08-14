@@ -54,6 +54,7 @@ pub enum BlockType {
     ToolResult,
     ModelChange,
     ThinkingLevelChange,
+    CompactContinuationMarker,
 }
 
 impl BlockType {
@@ -64,6 +65,7 @@ impl BlockType {
             BlockType::ToolResult => "tool_result",
             BlockType::ModelChange => "model_change",
             BlockType::ThinkingLevelChange => "thinking_level_change",
+            BlockType::CompactContinuationMarker => "compact_continuation_marker",
         }
     }
 }
@@ -77,7 +79,7 @@ pub struct Block {
 }
 
 /// Message kinds are EventKind excluding turn_end (`Exclude<EventKind, "turn_end">`).
-/// Exhaustive eight-variant closed vocab with byte-exact snake_case wire values.
+/// Exhaustive nine-variant closed vocab with byte-exact snake_case wire values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -89,6 +91,7 @@ pub enum MessageKind {
     ThinkingLevelChange,
     ToolCall,
     ToolResult,
+    CompactContinuationMarker,
 }
 
 impl MessageKind {
@@ -102,8 +105,22 @@ impl MessageKind {
             MessageKind::ThinkingLevelChange => "thinking_level_change",
             MessageKind::ToolCall => "tool_call",
             MessageKind::ToolResult => "tool_result",
+            MessageKind::CompactContinuationMarker => "compact_continuation_marker",
         }
     }
+
+    /// Message kinds excluding turn_end (9 variants).
+    pub const ALL: [MessageKind; 9] = [
+        MessageKind::UserPrompt,
+        MessageKind::AssistantText,
+        MessageKind::AssistantThinking,
+        MessageKind::RuntimeNote,
+        MessageKind::ModelChange,
+        MessageKind::ThinkingLevelChange,
+        MessageKind::ToolCall,
+        MessageKind::ToolResult,
+        MessageKind::CompactContinuationMarker,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +178,7 @@ fn message_kind_from_event(kind: EventKind) -> MessageKind {
         EventKind::ThinkingLevelChange => MessageKind::ThinkingLevelChange,
         EventKind::ToolCall => MessageKind::ToolCall,
         EventKind::ToolResult => MessageKind::ToolResult,
+        EventKind::CompactContinuationMarker => MessageKind::CompactContinuationMarker,
         EventKind::TurnEnd => panic!("turn_end has no message kind"),
     }
 }
@@ -175,6 +193,7 @@ fn event_kind_for_message(kind: MessageKind) -> EventKind {
         MessageKind::ThinkingLevelChange => EventKind::ThinkingLevelChange,
         MessageKind::ToolCall => EventKind::ToolCall,
         MessageKind::ToolResult => EventKind::ToolResult,
+        MessageKind::CompactContinuationMarker => EventKind::CompactContinuationMarker,
     }
 }
 
@@ -209,6 +228,7 @@ pub fn create(
         | EventRecord::ThinkingLevelChange { .. }
         | EventRecord::ToolCall { .. }
         | EventRecord::ToolResult { .. }
+        | EventRecord::CompactContinuationMarker { .. }
         | EventRecord::TurnEnd { .. } => None,
     };
     insert_message(
@@ -253,7 +273,8 @@ pub fn create(
         | EventKind::AssistantThinking
         | EventKind::RuntimeNote
         | EventKind::ModelChange
-        | EventKind::ThinkingLevelChange => MessageCreated {
+        | EventKind::ThinkingLevelChange
+        | EventKind::CompactContinuationMarker => MessageCreated {
             message_id,
             kind,
             tool_call_id: None,
@@ -340,7 +361,13 @@ pub struct MessageListOptions {
     pub limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_deleted: Option<bool>,
+    /// When true, exclude kinds that are not ordinary user chat (e.g. markers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_user_chat: Option<bool>,
 }
+
+/// Message kinds present in the canonical record but hidden from ordinary user chat.
+pub const USER_CHAT_HIDDEN_KINDS: &[MessageKind] = &[MessageKind::CompactContinuationMarker];
 
 fn invalid_bounds(reason: &str) -> ErrorResult {
     ErrorResult {
@@ -381,6 +408,7 @@ pub async fn list(
             return OpResult::Err { error: bad_bounds };
         }
     }
+    let for_user_chat = filter.as_ref().and_then(|o| o.for_user_chat) == Some(true);
     let read_opts = match &filter {
         Some(opts) => MessageReadOptions {
             from: opts.from,
@@ -395,7 +423,10 @@ pub async fn list(
             // Bounds resolve the window first, then derivation read-back rides only
             // that window: each record carries its stored derivations, attached from
             // one grouped query scoped to the listed ids.
-            let records = read_messages(transaction.db, &read_opts);
+            let mut records = read_messages(transaction.db, &read_opts);
+            if for_user_chat {
+                records.retain(|record| !USER_CHAT_HIDDEN_KINDS.contains(&record.kind));
+            }
             let ids: Vec<String> = records.iter().map(|r| r.message_id.clone()).collect();
             let derivations_by_message = read_message_derivations(transaction.db, Some(&ids));
             records

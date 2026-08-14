@@ -642,6 +642,7 @@ async fn overview_succeeds_under_a_throwing_inference_callback_and_wraps_story_1
             ThreadRef::file_path(&file_path),
             Some(MessageListOptions {
                 include_deleted: Some(true),
+                for_user_chat: None,
                 ..Default::default()
             }),
         )

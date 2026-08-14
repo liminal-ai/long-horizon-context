@@ -146,7 +146,10 @@ async fn creates_the_three_view_tables_with_their_check_constraints_and_seeds_th
         .and_then(|row| row.get("user_version"))
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    assert_eq!(user_version, 6);
+    assert_eq!(
+        user_version,
+        lhc::shared_tech::storage::CURRENT_THREAD_SCHEMA_VERSION
+    );
 
     let tables: Vec<String> = db
         .prepare(
@@ -1226,6 +1229,7 @@ fn selection_inputs_from_fixture(value: &Value) -> SelectionInputs {
             .and_then(Value::as_i64)
             .expect("maxEventOrder"),
         derivation_counts,
+        empty_chunk_ids: Vec::new(),
     }
 }
 

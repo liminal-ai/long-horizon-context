@@ -80,6 +80,7 @@ pub async fn observable_state(file_path: &str) -> ObservableState {
                     to: None,
                     limit: None,
                     include_deleted: Some(true),
+                    for_user_chat: None,
                 }),
             )
             .await,

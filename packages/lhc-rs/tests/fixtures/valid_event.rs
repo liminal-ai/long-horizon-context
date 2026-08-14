@@ -96,6 +96,30 @@ pub struct TurnEndPayload {
     pub ended_at: Option<String>,
 }
 
+/// Typed compact-continuation marker payload (contract-frozen literals).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactContinuationMarkerPayload {
+    pub kind: String,
+    pub continuation_turn_id: String,
+    pub cause: String,
+    pub action: String,
+    pub new_user_request: bool,
+    pub wait_for_user: bool,
+}
+
+impl Default for CompactContinuationMarkerPayload {
+    fn default() -> Self {
+        Self {
+            kind: "lhc.compact_continuation".into(),
+            continuation_turn_id: "t-continuation".into(),
+            cause: "context_compacted_task_in_progress".into(),
+            action: "continue_existing_task".into(),
+            new_user_request: false,
+            wait_for_user: false,
+        }
+    }
+}
+
 // ── Typed overrides (per kind) ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -168,6 +192,14 @@ pub struct TurnEndOverrides {
     pub actor: Option<String>,
     pub harness: Option<String>,
     pub payload: Option<TurnEndPayload>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompactContinuationMarkerOverrides {
+    pub idempotency_key: Option<String>,
+    pub actor: Option<String>,
+    pub harness: Option<String>,
+    pub payload: Option<CompactContinuationMarkerPayload>,
 }
 
 // ── Sealed KindOverrides: kind → overrides type ────────────────────────────
@@ -320,6 +352,23 @@ impl_kind_overrides!(TurnEndOverrides, TurnEnd, |p: TurnEndPayload| {
     }
     map
 });
+impl_kind_overrides!(
+    CompactContinuationMarkerOverrides,
+    CompactContinuationMarker,
+    |p: CompactContinuationMarkerPayload| {
+        json!({
+            "kind": p.kind,
+            "continuationTurnId": p.continuation_turn_id,
+            "cause": p.cause,
+            "action": p.action,
+            "newUserRequest": p.new_user_request,
+            "waitForUser": p.wait_for_user,
+        })
+        .as_object()
+        .expect("object")
+        .clone()
+    }
+);
 
 fn default_payload(kind: EventKind) -> Map<String, Value> {
     let value = match kind {
@@ -340,6 +389,14 @@ fn default_payload(kind: EventKind) -> Map<String, Value> {
             "toolCallId": "call-1",
             "content": "contents of notes.txt",
             "isError": false,
+        }),
+        EventKind::CompactContinuationMarker => json!({
+            "kind": "lhc.compact_continuation",
+            "continuationTurnId": "t-continuation",
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false,
         }),
         EventKind::TurnEnd => json!({}),
     };
@@ -392,9 +449,9 @@ impl<O: KindOverrides> Default for KindToken<O> {
 /// Kind markers used as the first argument to [`valid_event`].
 pub mod kind {
     use super::{
-        AssistantTextOverrides, AssistantThinkingOverrides, KindToken, ModelChangeOverrides,
-        RuntimeNoteOverrides, ThinkingLevelChangeOverrides, ToolCallOverrides, ToolResultOverrides,
-        TurnEndOverrides, UserPromptOverrides,
+        AssistantTextOverrides, AssistantThinkingOverrides, CompactContinuationMarkerOverrides,
+        KindToken, ModelChangeOverrides, RuntimeNoteOverrides, ThinkingLevelChangeOverrides,
+        ToolCallOverrides, ToolResultOverrides, TurnEndOverrides, UserPromptOverrides,
     };
 
     pub const USER_PROMPT: KindToken<UserPromptOverrides> = KindToken::new();
@@ -405,6 +462,8 @@ pub mod kind {
     pub const THINKING_LEVEL_CHANGE: KindToken<ThinkingLevelChangeOverrides> = KindToken::new();
     pub const TOOL_CALL: KindToken<ToolCallOverrides> = KindToken::new();
     pub const TOOL_RESULT: KindToken<ToolResultOverrides> = KindToken::new();
+    pub const COMPACT_CONTINUATION_MARKER: KindToken<CompactContinuationMarkerOverrides> =
+        KindToken::new();
     pub const TURN_END: KindToken<TurnEndOverrides> = KindToken::new();
 }
 
@@ -427,6 +486,10 @@ pub fn valid_event_for_kind(kind: EventKind) -> MessageEventInput {
         ),
         EventKind::ToolCall => valid_event(kind::TOOL_CALL, ToolCallOverrides::default()),
         EventKind::ToolResult => valid_event(kind::TOOL_RESULT, ToolResultOverrides::default()),
+        EventKind::CompactContinuationMarker => valid_event(
+            kind::COMPACT_CONTINUATION_MARKER,
+            CompactContinuationMarkerOverrides::default(),
+        ),
         EventKind::TurnEnd => valid_event(kind::TURN_END, TurnEndOverrides::default()),
     }
 }

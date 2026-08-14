@@ -171,6 +171,7 @@ fn rendering_part_kind_from_wire(kind: &str) -> RenderingPartKind {
         "thinking_level_change" => RenderingPartKind::ThinkingLevelChange,
         "tool_call" => RenderingPartKind::ToolCall,
         "tool_result" => RenderingPartKind::ToolResult,
+        "compact_continuation_marker" => RenderingPartKind::CompactContinuationMarker,
         other => panic!("unknown message kind from row: {other}"),
     }
 }
@@ -489,9 +490,28 @@ pub struct ViewReplaceInput {
 /// `config_json` / `arrangement_json` / `gaps_json` / `source_state_json` are
 /// stored verbatim (callers must produce them via `js_json`); this path never
 /// re-parses or rewrites those blobs.
+///
+/// `before_replace` may return a source_state_json override computed after
+/// in-transaction validation (e.g. post-marker digests). When it returns
+/// `Some(String)`, that value is written; otherwise `input.source_state_json`
+/// is used.
 pub fn replace_view_snapshot(db: &Db, input: &ViewReplaceInput) {
+    replace_view_snapshot_with(db, input, None)
+}
+
+/// Like [`replace_view_snapshot`], with an optional in-transaction
+/// `before_replace` callback (TS `beforeReplace`).
+pub fn replace_view_snapshot_with(
+    db: &Db,
+    input: &ViewReplaceInput,
+    before_replace: Option<&mut dyn FnMut(&Db) -> Option<String>>,
+) {
     db.exec(SQL_BEGIN_IMMEDIATE);
     let result = catch_unwind(AssertUnwindSafe(|| {
+        let source_state_json = match before_replace {
+            Some(cb) => cb(db).unwrap_or_else(|| input.source_state_json.clone()),
+            None => input.source_state_json.clone(),
+        };
         db.prepare(SQL_DELETE_THREAD_VIEW).run(&[]);
         db.prepare(SQL_INSERT_THREAD_VIEW).run(&[
             SqlParam::from(input.view_id.as_str()),
@@ -502,7 +522,7 @@ pub fn replace_view_snapshot(db: &Db, input: &ViewReplaceInput) {
             SqlParam::from(input.config_json.as_str()),
             SqlParam::from(input.arrangement_json.as_str()),
             SqlParam::from(input.gaps_json.as_str()),
-            SqlParam::from(input.source_state_json.as_str()),
+            SqlParam::from(source_state_json.as_str()),
         ]);
         let insert_band = db.prepare(SQL_INSERT_THREAD_VIEW_BAND);
         for band in &input.bands {

@@ -150,6 +150,36 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
                 token_estimate: estimate_tokens(&payload.content),
             })
         }
+        EventRecord::CompactContinuationMarker { payload, .. } => {
+            // Typed marker: model-visible when served; not ordinary user chat.
+            // Token estimate covers the stable model-facing instruction text.
+            let mut content = Map::new();
+            content.insert("kind".into(), json!(payload.kind.clone()));
+            content.insert(
+                "continuationTurnId".into(),
+                json!(payload.continuation_turn_id.clone()),
+            );
+            content.insert("cause".into(), json!(payload.cause.clone()));
+            content.insert("action".into(), json!(payload.action.clone()));
+            content.insert("newUserRequest".into(), json!(payload.new_user_request));
+            content.insert("waitForUser".into(), json!(payload.wait_for_user));
+            let model_facing = [
+                "[compact continuation]",
+                &format!("cause={}", payload.cause),
+                &format!("action={}", payload.action),
+                "newUserRequest=false",
+                "waitForUser=false",
+                &format!("continuationTurnId={}", payload.continuation_turn_id),
+            ]
+            .join(" ");
+            Some(ProjectedMessage {
+                blocks: vec![Block {
+                    block_type: BlockType::CompactContinuationMarker,
+                    content,
+                }],
+                token_estimate: estimate_tokens(&model_facing),
+            })
+        }
         EventRecord::TurnEnd { .. } => None,
     }
 }

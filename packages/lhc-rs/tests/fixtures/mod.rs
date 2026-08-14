@@ -15,6 +15,7 @@ use lhc::intake_stream::{EventKind, MessageEventInput};
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::{Db, open_database};
 
+mod compact_continuation_seam;
 pub mod corrupt;
 pub mod drain_runner;
 pub mod inference_callbacks_double;
@@ -31,6 +32,10 @@ pub mod view_seam;
 pub mod view_thread;
 pub mod work_handlers;
 
+pub use compact_continuation_seam::{
+    CompactContinuationTestHooks, force_clear_writer, run_compact_continuation_for_tests,
+    seed_writer_claim,
+};
 pub use corrupt::{
     NOT_JSON, corrupt_two_open_turns, poison_message_block_json, poison_message_form_json,
 };
@@ -64,14 +69,14 @@ pub use threads::{
 };
 pub use valid_event::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
-    AssistantThinkingPayload, KindOverrides, KindToken, ModelChangeOverrides, ModelChangePayload,
-    RuntimeNoteOverrides, RuntimeNotePayload, ThinkingLevelChangeOverrides,
-    ThinkingLevelChangePayload, ToolCallOverrides, ToolCallPayload, ToolResultOverrides,
-    ToolResultPayload, TurnEndOverrides, TurnEndPayload, UserPromptOverrides, UserPromptPayload,
-    kind, valid_assistant_text, valid_assistant_thinking, valid_event, valid_event_for_kind,
-    valid_event_forced, valid_event_untyped, valid_model_change, valid_runtime_note,
-    valid_thinking_level_change, valid_tool_call, valid_tool_result, valid_turn_end,
-    valid_user_prompt,
+    AssistantThinkingPayload, CompactContinuationMarkerOverrides, CompactContinuationMarkerPayload,
+    KindOverrides, KindToken, ModelChangeOverrides, ModelChangePayload, RuntimeNoteOverrides,
+    RuntimeNotePayload, ThinkingLevelChangeOverrides, ThinkingLevelChangePayload,
+    ToolCallOverrides, ToolCallPayload, ToolResultOverrides, ToolResultPayload, TurnEndOverrides,
+    TurnEndPayload, UserPromptOverrides, UserPromptPayload, kind, valid_assistant_text,
+    valid_assistant_thinking, valid_event, valid_event_for_kind, valid_event_forced,
+    valid_event_untyped, valid_model_change, valid_runtime_note, valid_thinking_level_change,
+    valid_tool_call, valid_tool_result, valid_turn_end, valid_user_prompt,
 };
 pub use view_boundary::{
     TurnedToolResultsSpec, boundary_tokens, boundary_tool_run, seed_turned_tool_results,
@@ -197,3 +202,5 @@ impl Drop for ClosingDb {
         }
     }
 }
+
+pub use compact_continuation_seam::*;

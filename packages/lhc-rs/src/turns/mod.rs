@@ -33,7 +33,7 @@ use crate::shared_tech::work_queue::{
 use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 
 use internal::chunk_recovery::{CompactChunkMaterial, compact_chunk_material_from_stored_members};
-use internal::chunks::{ChunkStructureRow, read_chunk_structure};
+use internal::chunks::{ChunkStructureRow, drop_empty_readable_chunks, read_chunk_structure};
 use internal::derivations::{
     TurnOwnedSubjectKind, TurnReportOptions, read_chunk_rows, read_owned_derivations,
     report_turn_derivations,
@@ -442,6 +442,13 @@ pub fn read_turn_chunk_structure(db: &Db) -> TurnChunkStructure {
         turns: read_turn_structure(db),
         chunks: read_chunk_structure(db),
     }
+}
+
+// Cross-domain compact hook. The caller owns the surrounding transaction;
+// turns owns validation and removal of its derived chunk rows.
+/// TS `dropUnreadableChunks`.
+pub fn drop_unreadable_chunks(db: &Db, chunk_ids: &[String]) -> Vec<String> {
+    drop_empty_readable_chunks(db, chunk_ids)
 }
 
 /// TS `report` opts: `{ notReady?; turnId?; chunkId? }`.

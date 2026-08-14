@@ -40,6 +40,8 @@ pub enum EventKind {
     ToolCall,
     #[serde(rename = "tool_result")]
     ToolResult,
+    #[serde(rename = "compact_continuation_marker")]
+    CompactContinuationMarker,
     #[serde(rename = "turn_end")]
     TurnEnd,
 }
@@ -55,11 +57,12 @@ impl EventKind {
             EventKind::ThinkingLevelChange => "thinking_level_change",
             EventKind::ToolCall => "tool_call",
             EventKind::ToolResult => "tool_result",
+            EventKind::CompactContinuationMarker => "compact_continuation_marker",
             EventKind::TurnEnd => "turn_end",
         }
     }
 
-    pub const ALL: [EventKind; 9] = [
+    pub const ALL: [EventKind; 10] = [
         EventKind::UserPrompt,
         EventKind::AssistantText,
         EventKind::AssistantThinking,
@@ -68,6 +71,7 @@ impl EventKind {
         EventKind::ThinkingLevelChange,
         EventKind::ToolCall,
         EventKind::ToolResult,
+        EventKind::CompactContinuationMarker,
         EventKind::TurnEnd,
     ];
 }
@@ -266,6 +270,20 @@ pub struct ToolResultPayload {
     pub is_error: Option<bool>,
 }
 
+/// Typed compact-continuation marker payload (LIM-61 / LIM-63A).
+/// Model-visible when served; LHC inspect/retrieval-visible; hidden from ordinary user chat.
+/// Semantics fields are frozen by the compact-continuation contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactContinuationMarkerPayload {
+    pub kind: String,
+    pub continuation_turn_id: String,
+    pub cause: String,
+    pub action: String,
+    pub new_user_request: bool,
+    pub wait_for_user: bool,
+}
+
 /// Host-observed turn outcome on `turn_end` (schema v5 / D1, D2). Closed vocab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TurnOutcome {
@@ -378,6 +396,15 @@ pub enum EventRecord {
         event_order: i64,
         recorded_at: String,
     },
+    #[serde(rename = "compact_continuation_marker", rename_all = "camelCase")]
+    CompactContinuationMarker {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: CompactContinuationMarkerPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
     #[serde(rename = "turn_end", rename_all = "camelCase")]
     TurnEnd {
         idempotency_key: String,
@@ -400,6 +427,7 @@ impl EventRecord {
             EventRecord::ThinkingLevelChange { .. } => EventKind::ThinkingLevelChange,
             EventRecord::ToolCall { .. } => EventKind::ToolCall,
             EventRecord::ToolResult { .. } => EventKind::ToolResult,
+            EventRecord::CompactContinuationMarker { .. } => EventKind::CompactContinuationMarker,
             EventRecord::TurnEnd { .. } => EventKind::TurnEnd,
         }
     }
@@ -414,6 +442,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { event_order, .. }
             | EventRecord::ToolCall { event_order, .. }
             | EventRecord::ToolResult { event_order, .. }
+            | EventRecord::CompactContinuationMarker { event_order, .. }
             | EventRecord::TurnEnd { event_order, .. } => *event_order,
         }
     }
@@ -428,6 +457,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { recorded_at, .. }
             | EventRecord::ToolCall { recorded_at, .. }
             | EventRecord::ToolResult { recorded_at, .. }
+            | EventRecord::CompactContinuationMarker { recorded_at, .. }
             | EventRecord::TurnEnd { recorded_at, .. } => recorded_at.as_str(),
         }
     }
@@ -442,6 +472,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { actor, .. }
             | EventRecord::ToolCall { actor, .. }
             | EventRecord::ToolResult { actor, .. }
+            | EventRecord::CompactContinuationMarker { actor, .. }
             | EventRecord::TurnEnd { actor, .. } => actor.as_str(),
         }
     }
@@ -456,6 +487,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { harness, .. }
             | EventRecord::ToolCall { harness, .. }
             | EventRecord::ToolResult { harness, .. }
+            | EventRecord::CompactContinuationMarker { harness, .. }
             | EventRecord::TurnEnd { harness, .. } => harness.as_str(),
         }
     }
@@ -486,13 +518,16 @@ impl EventRecord {
             | EventRecord::ToolResult {
                 idempotency_key, ..
             }
+            | EventRecord::CompactContinuationMarker {
+                idempotency_key, ..
+            }
             | EventRecord::TurnEnd {
                 idempotency_key, ..
             } => idempotency_key.as_str(),
         }
     }
 
-    // Accessor arms are exhaustive on purpose (no `_`): a tenth event kind
+    // Accessor arms are exhaustive on purpose (no `_`): a new event kind
     // must fail compilation here and force a mapping decision (brief rule 6).
     pub fn text_payload(&self) -> Option<&TextPayload> {
         match self {
@@ -505,6 +540,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -519,6 +555,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -533,6 +570,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -547,6 +585,7 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -561,6 +600,7 @@ impl EventRecord {
             | EventRecord::ModelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -575,6 +615,7 @@ impl EventRecord {
             | EventRecord::ModelChange { .. }
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -589,6 +630,22 @@ impl EventRecord {
             | EventRecord::ModelChange { .. }
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
+            | EventRecord::CompactContinuationMarker { .. }
+            | EventRecord::TurnEnd { .. } => None,
+        }
+    }
+
+    pub fn compact_continuation_marker_payload(&self) -> Option<&CompactContinuationMarkerPayload> {
+        match self {
+            EventRecord::CompactContinuationMarker { payload, .. } => Some(payload),
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::RuntimeNote { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
             | EventRecord::TurnEnd { .. } => None,
         }
     }
@@ -603,7 +660,8 @@ impl EventRecord {
             | EventRecord::ModelChange { .. }
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
-            | EventRecord::ToolResult { .. } => None,
+            | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. } => None,
         }
     }
 }

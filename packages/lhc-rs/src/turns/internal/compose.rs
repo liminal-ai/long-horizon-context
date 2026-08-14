@@ -148,6 +148,31 @@ fn thinking_level_change_text(message: &ComposeMessage) -> String {
     }
 }
 
+fn compact_continuation_marker_text(message: &ComposeMessage) -> String {
+    let block = first_block_content(message);
+    let cause = match block.get("cause") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "context_compacted_task_in_progress",
+    };
+    let action = match block.get("action") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "continue_existing_task",
+    };
+    let turn_id = match block.get("continuationTurnId") {
+        Some(Value::String(s)) => s.as_str(),
+        _ => "",
+    };
+    [
+        "[compact continuation]",
+        &format!("cause={cause}"),
+        &format!("action={action}"),
+        "newUserRequest=false",
+        "waitForUser=false",
+        &format!("continuationTurnId={turn_id}"),
+    ]
+    .join(" ")
+}
+
 fn prompt_fallback_text(message: &ComposeMessage) -> String {
     let original = text_of(message);
     let floor = clean_prompt(&original);
@@ -289,6 +314,10 @@ fn part_plan(kind: RenderingPartKind) -> PartPlan {
         RenderingPartKind::ToolResult => PartPlan {
             derivation: Some("tool_result_summary"),
             fallback_text: tool_result_fallback_text,
+        },
+        RenderingPartKind::CompactContinuationMarker => PartPlan {
+            derivation: None,
+            fallback_text: compact_continuation_marker_text,
         },
     }
 }
@@ -569,6 +598,7 @@ fn rendering_part_label(kind: RenderingPartKind) -> &'static str {
         RenderingPartKind::ThinkingLevelChange => "Thinking level change",
         RenderingPartKind::ToolCall => "Tool call",
         RenderingPartKind::ToolResult => "Tool result",
+        RenderingPartKind::CompactContinuationMarker => "Compact continuation",
     }
 }
 

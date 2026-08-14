@@ -16,6 +16,7 @@
 //! - TS `WORK_KIND_REGISTRY` maps to the one canonical fn `work_kind_registry`
 //!   (no SCREAMING alias).
 
+pub mod compact_continuation;
 pub mod inspect;
 pub mod intake_stream;
 pub mod messages;

@@ -88,6 +88,7 @@ pub async fn compose_overview(ref_: ThreadRef) -> OpResult<InspectOverview> {
             to: None,
             limit: None,
             include_deleted: Some(true),
+            for_user_chat: None,
         }),
     )
     .await

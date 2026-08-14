@@ -123,6 +123,7 @@ fn event_kind_for_message(kind: MessageKind) -> EventKind {
         MessageKind::ThinkingLevelChange => EventKind::ThinkingLevelChange,
         MessageKind::ToolCall => EventKind::ToolCall,
         MessageKind::ToolResult => EventKind::ToolResult,
+        MessageKind::CompactContinuationMarker => EventKind::CompactContinuationMarker,
     }
 }
 

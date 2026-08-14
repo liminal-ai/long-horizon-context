@@ -208,6 +208,7 @@ fn parse_rendering_part_kind(kind: &str) -> RenderingPartKind {
         "thinking_level_change" => RenderingPartKind::ThinkingLevelChange,
         "tool_call" => RenderingPartKind::ToolCall,
         "tool_result" => RenderingPartKind::ToolResult,
+        "compact_continuation_marker" => RenderingPartKind::CompactContinuationMarker,
         other => panic!("unknown rendering part kind from row: {other}"),
     }
 }

@@ -1074,6 +1074,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
         compact_chunk_materials: None,
         max_event_order: 60,
         derivation_counts: IndexMap::new(),
+        empty_chunk_ids: Vec::new(),
     };
 
     let selection = select_arrangement(

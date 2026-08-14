@@ -17,7 +17,7 @@ use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult};
 use super::super::EventKind;
 
 /// TS `EVENT_KINDS` — closed kind vocabulary (exported from validate.ts).
-pub const EVENT_KINDS: [&str; 9] = [
+pub const EVENT_KINDS: [&str; 10] = [
     "user_prompt",
     "assistant_text",
     "assistant_thinking",
@@ -26,6 +26,7 @@ pub const EVENT_KINDS: [&str; 9] = [
     "thinking_level_change",
     "tool_call",
     "tool_result",
+    "compact_continuation_marker",
     "turn_end",
 ];
 
@@ -197,6 +198,20 @@ struct ToolResultPayloadSchema {
     is_error: Option<bool>,
 }
 
+// Typed compact-continuation marker: closed payload; semantics are contract-frozen.
+// Validation enforces exact literals below (kind/cause/action + false booleans).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct CompactContinuationMarkerPayloadSchema {
+    kind: String,
+    continuation_turn_id: String,
+    cause: String,
+    action: String,
+    new_user_request: bool,
+    wait_for_user: bool,
+}
+
 /// Closed schema targets for [`decode_issue`] (TS Effect Schema / Python TypedDict class).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecodeSchema {
@@ -211,6 +226,7 @@ enum DecodeSchema {
     ThinkingLevelChangePayload,
     ToolCallPayload,
     ToolResultPayload,
+    CompactContinuationMarkerPayload,
 }
 
 // NOTE (Phase 2): Effect `ParseResult.ParseError` has no Rust counterpart.
@@ -281,6 +297,11 @@ fn type_label(kind: &str) -> &str {
         "event_kind" => "\"user_prompt\"",
         // Effect Schema.Literal("completed", "aborted") surface for turn_end.outcome.
         "outcome_literal" => "\"completed\" | \"aborted\"",
+        // Compact-continuation marker closed literals (contract-frozen).
+        "marker_kind_literal" => "\"lhc.compact_continuation\"",
+        "marker_cause_literal" => "\"context_compacted_task_in_progress\"",
+        "marker_action_literal" => "\"continue_existing_task\"",
+        "false_literal" => "false",
         other => other,
     }
 }
@@ -409,6 +430,55 @@ fn struct_issue(value: &Value, fields: &[(&str, &str, bool)]) -> Option<ParseErr
                     });
                 }
             }
+            "marker_kind_literal" => {
+                let ok = item
+                    .as_str()
+                    .is_some_and(|s| s == "lhc.compact_continuation");
+                if !ok {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!(
+                            "Expected \"lhc.compact_continuation\", actual {}",
+                            actual(item)
+                        ),
+                    });
+                }
+            }
+            "marker_cause_literal" => {
+                let ok = item
+                    .as_str()
+                    .is_some_and(|s| s == "context_compacted_task_in_progress");
+                if !ok {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!(
+                            "Expected \"context_compacted_task_in_progress\", actual {}",
+                            actual(item)
+                        ),
+                    });
+                }
+            }
+            "marker_action_literal" => {
+                let ok = item.as_str().is_some_and(|s| s == "continue_existing_task");
+                if !ok {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!(
+                            "Expected \"continue_existing_task\", actual {}",
+                            actual(item)
+                        ),
+                    });
+                }
+            }
+            "false_literal" => {
+                let ok = item.as_bool() == Some(false);
+                if !ok {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!("Expected false, actual {}", actual(item)),
+                    });
+                }
+            }
             "unknown" => {}
             _ => {}
         }
@@ -499,6 +569,17 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("toolCallId", "nonempty", false),
                 ("content", "string", false),
                 ("isError", "boolean", true),
+            ],
+        ),
+        DecodeSchema::CompactContinuationMarkerPayload => struct_issue(
+            value,
+            &[
+                ("kind", "marker_kind_literal", false),
+                ("continuationTurnId", "nonempty", false),
+                ("cause", "marker_cause_literal", false),
+                ("action", "marker_action_literal", false),
+                ("newUserRequest", "false_literal", false),
+                ("waitForUser", "false_literal", false),
             ],
         ),
     };
@@ -611,6 +692,7 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
         Some("tool_result") => DecodeSchema::ToolResultPayload,
         Some("model_change") => DecodeSchema::ModelChangePayload,
         Some("thinking_level_change") => DecodeSchema::ThinkingLevelChangePayload,
+        Some("compact_continuation_marker") => DecodeSchema::CompactContinuationMarkerPayload,
         _ => DecodeSchema::TextPayload,
     };
     if let Some(issue) = decode_issue(payload_schema, payload) {
