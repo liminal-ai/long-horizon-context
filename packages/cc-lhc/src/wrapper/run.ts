@@ -1069,7 +1069,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const forwardSignal = (signal: NodeJS.Signals): void => {
     restoreIfModal();
     if (!exited) {
-      currentPty.kill(signal);
+      requestPtyTermination(currentPty, process.platform, signal);
     }
   };
   process.on("SIGINT", forwardSignal);
@@ -1709,7 +1709,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             },
             taskkill: (pid) => runTaskkillTree(pid),
           });
-          wrapperLog.info(`cc-lhc handoff: killCurrentChild pid=${pty.pid} via ${forced.method}`);
+          wrapperLog.info(
+            `cc-lhc handoff: cleanup child pid=${pty.pid} via ${forced.method} ` +
+              `(${forced.attempted.join(",") || "none"})`,
+          );
         },
         startRebuiltCapture: (handoffRequest: HandoffRequest): void => {
           const ctx = oldCaptureSnapshot?.getCommandContext();
