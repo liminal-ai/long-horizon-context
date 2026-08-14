@@ -15,6 +15,33 @@ pub use crate::retrieval::{
     RetrievedMessage, RetrievedTurn, RetrievedTurnSource, SliceReceipt, UnservedEntity,
     UnservedReason, clamp_id_echo,
 };
+// Compact-continuation pure contract (LIM-60 / LIM-62). Mirrors sdk.ts export
+// of shared-tech/compact-continuation names. Stage-by-stage live runtime is
+// LIM-61 (TS `compactContinuation` namespace) and is not re-exported here.
+pub use crate::shared_tech::compact_continuation::{
+    COMPACT_CONTINUATION_CONTRACT_VERSION, COMPACT_CONTINUATION_HOST_CAPABILITIES,
+    COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE, COMPACT_CONTINUATION_INVARIANTS,
+    COMPACT_CONTINUATION_MARKER_ACTION, COMPACT_CONTINUATION_MARKER_CAUSE,
+    COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX, COMPACT_CONTINUATION_MARKER_KIND,
+    COMPACT_CONTINUATION_OUTCOME_KINDS, COMPACT_CONTINUATION_REFUSE_CODES,
+    COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE, COMPACT_CONTINUATION_SKIP_CODES,
+    COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_TRANSITION_ORDER,
+    COMPACT_CONTINUATION_WRITER_CLAIMS, CONTEXT_COMPACT_CONTINUE_REASON,
+    CompactContinuationDecision, CompactContinuationEffect, CompactContinuationEffectType,
+    CompactContinuationHostCapability, CompactContinuationInput, CompactContinuationInvariantId,
+    CompactContinuationInvariants, CompactContinuationLowerTargetReceipt,
+    CompactContinuationMarkerSemantics, CompactContinuationOutcomeKind, CompactContinuationPolicy,
+    CompactContinuationPressureReceipt, CompactContinuationReceipt, CompactContinuationRefuseCode,
+    CompactContinuationResidualState, CompactContinuationSeam, CompactContinuationSkipCode,
+    CompactContinuationState, CompactContinuationTransitionStep, CompactMaterialFacts,
+    ForcedContinuationBoundary, LhcRenderedHistoryAccounting, PostMeasurementEstimate,
+    ProviderReportedInputAccounting, ProviderUsageAuthority, SourceLabelledEstimateAccounting,
+    TokenAccountingDomain, ValidationIssue, ValidationResult, WorkContinuation, WriterClaim,
+    as_compact_continuation_input, assert_decision_parity,
+    compact_continuation_marker_idempotency_key, decide_compact_continuation,
+    validate_compact_continuation_decision, validate_compact_continuation_input,
+    validate_compact_continuation_receipt,
+};
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{
     CompletionTx, DependencyGap, Derivation, DerivationMetadata, DerivationReportEntry,

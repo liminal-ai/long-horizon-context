@@ -10,6 +10,7 @@
 //! `thread_migrate`.
 
 pub mod classify;
+pub mod compact_continuation;
 pub mod context;
 pub mod derivation;
 pub mod deterministic;
@@ -31,14 +32,17 @@ pub mod tool_result_rendering;
 pub mod view;
 pub mod work_queue;
 
-// ── index.ts `export *` closure (15 modules) ──────────────────────────
+// ── index.ts `export *` closure (16 modules) ──────────────────────────
 // Mechanical TS→Rust notes:
 // - `DETERMINISTIC_MARKERS` Record → [`deterministic::deterministic_marker`]
 // - `databasePathFor` → [`storage::Db::path`] (method; no free fn)
 // - Nested inspect/view/durable_work supporting types are pub for Rust use
 //   of the parent shapes (TS inlines them).
+// - `compact_continuation` is the pure LIM-60 contract/oracle (LIM-62);
+//   LIM-61 live-thread runtime is intentionally not ported here.
 
 pub use classify::*;
+pub use compact_continuation::*;
 pub use context::*;
 pub use derivation::*;
 pub use deterministic::*;
