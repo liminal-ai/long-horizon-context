@@ -8,8 +8,8 @@ across the full project).** The host-agnostic Cargo library meets the final
 Phase 2 gate:
 
 ```text
-classified=653 cargo-reported=653 (binaries: 68)
-passed=638 notimpl=0 ignored=15
+classified=654 cargo-reported=654 (binaries: 68)
+passed=639 notimpl=0 ignored=15
 wrong=0 suspicious=0
 ```
 
@@ -33,13 +33,13 @@ The governing handoff is
 - Profile `lowerBound` / band percentages are Amendment I `f64` (not `i64`);
   visibility budgets remain `f64` per Wave 6 rulings.
 - Gate: `python3 scripts/check_gate.py` — final mode (zero real Phase-2
-  todos) requires exact `638/0/15/0/0` (passed/notimpl/ignored/wrong/
+  todos) requires exact `639/0/15/0/0` (passed/notimpl/ignored/wrong/
   suspicious) with the transitional name allowlist retired
   (`scripts/gate_allowlist.txt` deleted). The gate hardcodes the expected
   passed count; slices that add tests must update `scripts/check_gate.py`
   and this README in the same commit. LIM-62 ports the pure
   compact-continuation contract against the canonical TS fixture store
-  (+54 contract/parity/hardening tests vs Phase-2 close).
+  (+55 contract/parity/hardening tests vs Phase-2 close).
 
 ## Working on the port
 

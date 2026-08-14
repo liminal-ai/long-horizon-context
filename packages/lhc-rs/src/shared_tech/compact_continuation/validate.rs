@@ -1338,10 +1338,51 @@ pub fn assert_decision_parity(
     }
 }
 
+/// After successful validation, rewrite finite safe integral float spellings
+/// (e.g. JSON `1.0`) into integer JSON numbers so serde `i64` fields accept them.
+///
+/// **Order is load-bearing:** call only after
+/// [`validate_compact_continuation_input`] succeeds. This never weakens
+/// validation — fractional, negative, non-finite, and over-safe values remain
+/// rejected by the validator and never reach this rewrite. The closed
+/// compact-continuation input contains only integer numeric fields, so a
+/// recursive walk is safe and equivalent to path-by-path conversion (JS has
+/// one Number type; TS cannot distinguish `1` from `1.0`).
+fn normalize_integral_floats_for_serde(value: &mut Value) {
+    match value {
+        Value::Number(n) => {
+            // Already an integer encoding — leave alone.
+            if n.is_i64() || n.is_u64() {
+                return;
+            }
+            if let Some(i) = as_safe_non_neg_int(value) {
+                *value = Value::Number(serde_json::Number::from(i));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_integral_floats_for_serde(item);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values_mut() {
+                normalize_integral_floats_for_serde(v);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
+    }
+}
+
 /// Safe typed conversion from raw JSON (TS `asCompactContinuationInput`).
 ///
 /// Returns `Err` with validation issues when the input is not a legal
 /// closed-shape `CompactContinuationInput`.
+///
+/// After validation succeeds, integral JSON float spellings accepted by the
+/// validator (e.g. `1.0`) are normalized to integer numbers before serde
+/// conversion into `i64` fields — see [`normalize_integral_floats_for_serde`].
+/// This keeps the public raw-host boundary equivalent to TypeScript (one
+/// Number type) without accepting values validation rejected.
 pub fn as_compact_continuation_input(raw: &Value) -> Result<CompactContinuationInput, String> {
     let v = validate_compact_continuation_input(raw);
     if !v.ok {
@@ -1353,6 +1394,8 @@ pub fn as_compact_continuation_input(raw: &Value) -> Result<CompactContinuationI
             .join("; ");
         return Err(format!("invalid fixture input: {msg}"));
     }
-    serde_json::from_value(raw.clone())
+    let mut normalized = raw.clone();
+    normalize_integral_floats_for_serde(&mut normalized);
+    serde_json::from_value(normalized)
         .map_err(|e| format!("invalid fixture input: deserialize failed: {e}"))
 }

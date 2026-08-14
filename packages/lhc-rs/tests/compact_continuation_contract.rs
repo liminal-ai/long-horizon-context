@@ -1822,22 +1822,43 @@ fn reject_fixture_still_deserializes_for_total_oracle() {
 
 // ── Fable finding 5: integral 1.0 + no_valid_provider_request evidence ───────
 
+/// Apply integral-float JSON spellings (`1.0` / `0.0`) across every contract
+/// numeric field. serde_json may surface these as f64; validation accepts them
+/// (JS Number) and `as_compact_continuation_input` must convert them.
+fn with_integral_float_spellings(mut input: Value) -> Value {
+    input["seam"]["inputEpochAtDecision"] = serde_json::from_str("0.0").unwrap();
+    input["seam"]["inputEpochAtApply"] = serde_json::from_str("0.0").unwrap();
+    input["providerUsage"]["inputTokens"] = serde_json::from_str("1000.0").unwrap();
+    input["providerUsage"]["cacheCreationTokens"] = serde_json::from_str("0.0").unwrap();
+    input["providerUsage"]["cacheReadTokens"] = serde_json::from_str("0.0").unwrap();
+    input["providerUsage"]["total"] = serde_json::from_str("1000.0").unwrap();
+    input["postMeasurementEstimate"]["tokens"] = serde_json::from_str("0.0").unwrap();
+    input["policy"]["upperTriggerTokens"] = serde_json::from_str("10000.0").unwrap();
+    input["policy"]["lowerTargetTokens"] = serde_json::from_str("5000.0").unwrap();
+    input
+}
+
+fn with_integer_spellings(mut input: Value) -> Value {
+    input["seam"]["inputEpochAtDecision"] = json!(0);
+    input["seam"]["inputEpochAtApply"] = json!(0);
+    input["providerUsage"]["inputTokens"] = json!(1000);
+    input["providerUsage"]["cacheCreationTokens"] = json!(0);
+    input["providerUsage"]["cacheReadTokens"] = json!(0);
+    input["providerUsage"]["total"] = json!(1000);
+    input["postMeasurementEstimate"]["tokens"] = json!(0);
+    input["policy"]["upperTriggerTokens"] = json!(10000);
+    input["policy"]["lowerTargetTokens"] = json!(5000);
+    input
+}
+
 #[test]
 fn accepts_json_integral_float_spelling_like_js() {
-    // 1.0 is accepted (JS Number.isSafeInteger(1.0)); 1.5 / -1 / beyond max rejected.
-    let mut ok = base_input(json!({}));
-    // Force JSON number that serde may present as f64 if not integer-encoded.
-    ok["policy"]["upperTriggerTokens"] = serde_json::from_str("1.0").unwrap();
-    ok["policy"]["lowerTargetTokens"] = serde_json::from_str("0.0").unwrap();
-    ok["seam"]["inputEpochAtDecision"] = serde_json::from_str("0.0").unwrap();
-    ok["seam"]["inputEpochAtApply"] = serde_json::from_str("0.0").unwrap();
-    // Reduce pressure so input is still accepted as a full object.
-    ok["providerUsage"]["inputTokens"] = json!(0);
-    ok["providerUsage"]["total"] = json!(0);
+    // Validator accepts integral float spellings (JS Number.isSafeInteger).
+    let ok = with_integral_float_spellings(base_input(json!({})));
     let v = validate_compact_continuation_input(&ok);
     assert!(
         v.ok,
-        "integral JSON 1.0 / 0.0 must be accepted: {:?}",
+        "integral JSON floats must be accepted by validation: {:?}",
         v.issues
     );
 
@@ -1849,10 +1870,62 @@ fn accepts_json_integral_float_spelling_like_js() {
     neg["postMeasurementEstimate"]["tokens"] = json!(-1);
     assert!(!validate_compact_continuation_input(&neg).ok);
 
-    // Above MAX_SAFE_INTEGER.
     let mut big = base_input(json!({}));
     big["policy"]["upperTriggerTokens"] = json!(9_007_199_254_740_992i64);
     assert!(!validate_compact_continuation_input(&big).ok);
+}
+
+#[test]
+fn as_input_converts_integral_float_spellings_like_js() {
+    // Public raw-host boundary: validation-accepted 1.0 spellings must convert
+    // through as_compact_continuation_input and yield the same typed input /
+    // decision as integer spellings. Fractional/negative/over-safe still Err.
+    let float_raw = with_integral_float_spellings(base_input(json!({})));
+    let int_raw = with_integer_spellings(base_input(json!({})));
+
+    assert!(
+        validate_compact_continuation_input(&float_raw).ok,
+        "validation must accept integral float spellings"
+    );
+    let from_float = as_compact_continuation_input(&float_raw).unwrap_or_else(|e| {
+        panic!("as_compact_continuation_input must convert validation-accepted 1.0: {e}")
+    });
+    let from_int = as_compact_continuation_input(&int_raw).expect("integer spelling converts");
+
+    assert_eq!(
+        js_json_stringify_of(&from_float).unwrap(),
+        js_json_stringify_of(&from_int).unwrap(),
+        "typed input from 1.0 spellings must equal integer spellings"
+    );
+
+    let dec_float = decide_compact_continuation(&from_float);
+    let dec_int = decide_compact_continuation(&from_int);
+    assert_eq!(
+        js_json_stringify_of(&dec_float).unwrap(),
+        js_json_stringify_of(&dec_int).unwrap(),
+        "decision bytes must match for float vs integer numeric spellings"
+    );
+
+    // Fractional → Err, no panic.
+    let mut frac = base_input(json!({}));
+    frac["policy"]["upperTriggerTokens"] = serde_json::from_str("1.5").unwrap();
+    let r = catch_unwind(AssertUnwindSafe(|| as_compact_continuation_input(&frac)));
+    assert!(r.is_ok(), "as_* must not panic on fractional input");
+    assert!(r.unwrap().is_err(), "fractional must Err");
+
+    // Negative → Err, no panic.
+    let mut neg = base_input(json!({}));
+    neg["postMeasurementEstimate"]["tokens"] = json!(-1);
+    let r = catch_unwind(AssertUnwindSafe(|| as_compact_continuation_input(&neg)));
+    assert!(r.is_ok());
+    assert!(r.unwrap().is_err());
+
+    // Above MAX_SAFE_INTEGER → Err, no panic.
+    let mut big = base_input(json!({}));
+    big["policy"]["upperTriggerTokens"] = json!(9_007_199_254_740_992i64);
+    let r = catch_unwind(AssertUnwindSafe(|| as_compact_continuation_input(&big)));
+    assert!(r.is_ok());
+    assert!(r.unwrap().is_err());
 }
 
 #[test]
