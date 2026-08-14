@@ -757,7 +757,9 @@ def _test_exact_phase2_todo_bodies() -> str:
 
 
 def classify() -> int:
-    code, out = run(["cargo", "check", "--tests", "--quiet"])
+    # Integration fixtures for compact-continuation fault hooks require
+    # `test-util` (production builds keep that module feature-gated off).
+    code, out = run(["cargo", "check", "--tests", "--features", "test-util", "--quiet"])
     if code != 0:
         print(out)
         print("GATE BLOCKER: cargo check failed")
@@ -787,7 +789,16 @@ def classify() -> int:
             print(f"  {v}")
         return 2
 
-    _, out = run(["cargo", "test", "--no-fail-fast"])
+    # Feature-off structural proof: production consumers cannot name
+    # compact_continuation::test_support (trybuild compile-fail).
+    code_ff, out_ff = run(["cargo", "test", "--test", "ui_feature_off", "--quiet"])
+    if code_ff != 0:
+        print(out_ff)
+        print("GATE BLOCKER: feature-off test_support compile-fail failed")
+        return 2
+    print("feature-off test_support: PASS")
+
+    _, out = run(["cargo", "test", "--features", "test-util", "--no-fail-fast"])
 
     allow = load_allowlist()
     binary = "?"

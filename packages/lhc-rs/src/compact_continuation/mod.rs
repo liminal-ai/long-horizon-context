@@ -4,8 +4,9 @@
 //! Live thread operation: this module.
 //!
 //! Public `run_compact_continuation` does **not** accept test hooks. Fault
-//! injection is test-only via `run_compact_continuation_for_tests` (fixtures
-//! path / `cfg(test)` only — not a public SDK export).
+//! injection is test-only via `run_compact_continuation_for_tests`, gated
+//! behind the `test-util` cargo feature (and `cfg(test)` for in-crate unit
+//! tests). Production consumers without that feature cannot name the module.
 
 mod internal;
 
@@ -27,15 +28,16 @@ pub use internal::validate_host::validate_host_facts;
 /// Test-only surface — reachable from integration tests and
 /// `tests/fixtures/compact_continuation_seam.rs`, not from the public SDK.
 #[doc(hidden)]
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub use internal::run::{CompactContinuationTestHooks, run_compact_continuation_for_tests};
 #[doc(hidden)]
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub use internal::store::{force_clear_writer, seed_writer_claim};
 
-// Integration tests live outside the crate unit-test cfg; re-export through
-// a dedicated fixtures-visible path without advertising on the public SDK.
+// Integration tests / host certification enable `feature = "test-util"`.
+// Default production builds do not compile this module at all.
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod test_support {
     pub use super::internal::run::{
         CompactContinuationTestHooks, run_compact_continuation_for_tests,

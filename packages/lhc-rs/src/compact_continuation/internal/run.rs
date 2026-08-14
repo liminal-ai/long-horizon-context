@@ -111,10 +111,6 @@ pub struct CompactContinuationRunResult {
     pub pending_boundary: Option<BoundaryRow>,
 }
 
-fn detail(cause: &dyn std::fmt::Display) -> String {
-    cause.to_string()
-}
-
 fn caller_error(
     code: ErrorCode,
     reason: impl Into<String>,
@@ -434,15 +430,6 @@ pub fn hash_record(value: &Map<String, Value>) -> (String, String) {
     let json = stable_stringify(&Value::Object(value.clone()));
     let hash = sha256_hex(&json);
     (hash, json)
-}
-
-fn now_iso() -> String {
-    let time = resolve_instance_config()
-        .map(|c| (c.clock)())
-        .unwrap_or_else(SystemTime::now);
-    // Match thread_view system_time_to_iso style via RFC3339 millis if available;
-    // use simple format via humantime-free approach from thread_view:
-    crate_time_iso(time)
 }
 
 fn crate_time_iso(time: SystemTime) -> String {
@@ -778,6 +765,7 @@ pub async fn run_compact_continuation(
 }
 
 /// Test-only entry with optional fault hooks.
+#[cfg(any(test, feature = "test-util"))]
 pub async fn run_compact_continuation_for_tests(
     ref_: ThreadRef,
     facts: CompactContinuationHostFacts,
@@ -836,7 +824,8 @@ async fn run_compact_continuation_inner(
         };
     };
 
-    // Terminal replay
+    // Terminal replay — matching identity row required (TS refuses when the
+    // attempt-intent row is missing or drifts).
     if let Some(prior) = &prior_receipt {
         if prior.terminal {
             if let Some(stored) = read_attempt_for_hash_check(ref_.clone(), &facts.attempt_id).await
@@ -847,11 +836,23 @@ async fn run_compact_continuation_inner(
                             return attempt_conflict(
                                 &facts.attempt_id,
                                 &facts.attempt_id,
-                                "completed attemptId reused with different operation identity",
+                                &format!(
+                                    "attemptId {} already completed with a different operation identity",
+                                    facts.attempt_id
+                                ),
                             );
                         }
                     }
-                    OpResult::Ok { value: None } => {}
+                    OpResult::Ok { value: None } => {
+                        return attempt_conflict(
+                            &facts.attempt_id,
+                            &facts.attempt_id,
+                            &format!(
+                                "attemptId {} already completed with a different operation identity",
+                                facts.attempt_id
+                            ),
+                        );
+                    }
                     OpResult::Err { error } => return OpResult::Err { error },
                 }
             }
@@ -945,7 +946,25 @@ async fn run_compact_continuation_inner(
         }
     }
 
-    // Persist attempt intent (immutable identity)
+    // Ownership first: foreign pending/failed_repairable cannot be stolen, and
+    // must be checked before any attempt-intent / stage writes (TS order).
+    let single_open_turn = open_ids.len() == 1;
+    let foreign_pending = pending_boundary
+        .as_ref()
+        .is_some_and(|b| b.attempt_id != facts.attempt_id);
+    if foreign_pending {
+        let owner = pending_boundary
+            .as_ref()
+            .map(|b| b.attempt_id.clone())
+            .unwrap_or_default();
+        return attempt_conflict(
+            &facts.attempt_id,
+            &owner,
+            "pending compact-continuation boundary owned by another attempt",
+        );
+    }
+
+    // Persist attempt intent (immutable identity) after ownership gate.
     let facts_for_intent = facts.clone();
     let intent_write = create_db_write_transaction(
         ref_.clone(),
@@ -1000,26 +1019,9 @@ async fn run_compact_continuation_inner(
     let at_seam = is_at_seam(&facts.seam);
     let epoch_ok = facts.seam.input_epoch_at_decision == facts.seam.input_epoch_at_apply;
     let transport_retry = facts.seam.inside_transport_retry;
-
-    let single_open_turn = open_ids.len() == 1;
     let owns_pending = pending_boundary
         .as_ref()
         .is_some_and(|b| b.attempt_id == facts.attempt_id);
-    let foreign_pending = pending_boundary
-        .as_ref()
-        .is_some_and(|b| b.attempt_id != facts.attempt_id);
-
-    if foreign_pending {
-        let owner = pending_boundary
-            .as_ref()
-            .map(|b| b.attempt_id.clone())
-            .unwrap_or_default();
-        return attempt_conflict(
-            &facts.attempt_id,
-            &owner,
-            "pending compact-continuation boundary owned by another attempt",
-        );
-    }
 
     // Force-intent gap reconcile for continue-turn repair
     let mut forced_from_pending = pending_boundary_as_forced(pending_boundary.as_ref());
@@ -1101,11 +1103,13 @@ async fn run_compact_continuation_inner(
         }
     }
 
-    // Quiet skip paths (not at seam / transport / epoch) — no claim
+    // Quiet skip paths (not at seam / transport / epoch) — no claim.
+    // Feed the oracle the durable forced boundary (TS parity) and release any
+    // same-owner writer so claim-only wedges cannot survive a pre-seam skip.
+    // Pending owned by this attempt stays nonterminal so settled repair can resume.
     if !at_seam || transport_retry || !epoch_ok {
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
-        let release_writer = owns_writer && !owns_pending;
         let oracle_writer = if owns_writer {
             WriterClaim::Lhc
         } else {
@@ -1119,21 +1123,19 @@ async fn run_compact_continuation_inner(
                 single_open_turn,
                 writer_claim: oracle_writer,
             },
-            ForcedContinuationBoundary::NotApplied(ForcedContinuationBoundaryNotApplied {
-                applied: false,
-            }),
+            forced_from_pending.clone(),
             empty_material(),
         ));
         return finalize_attempt(
             ref_,
             &facts,
-            decision,
+            decision.clone(),
             FinalizeOpts {
-                release_writer,
+                release_writer: owns_writer,
                 terminal: !owns_pending,
                 boundary_update: None,
                 forced_boundary_this_attempt: false,
-                continuation_turn_id: None,
+                continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
             },
             clock,
@@ -1165,6 +1167,48 @@ async fn run_compact_continuation_inner(
         } else {
             tool_pair_ok = false;
         }
+    }
+
+    // Illegal applied-boundary + wrong continuation kind (repair path only).
+    // TS refuses via oracle without forcing a new boundary; keep residual
+    // truthful when the durable pending still needs active_non_tool repair.
+    if matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
+        && !matches!(facts.continuation, WorkContinuation::ActiveNonTool)
+    {
+        let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
+            && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
+        let oracle_writer = if owns_writer {
+            WriterClaim::Lhc
+        } else {
+            WriterClaim::None
+        };
+        let decision = decide_compact_continuation(&build_oracle_input(
+            &facts,
+            CompactContinuationInvariants {
+                capture_complete: facts.capture_complete,
+                provider_identity_valid: facts.provider_identity_valid,
+                single_open_turn,
+                writer_claim: oracle_writer,
+            },
+            forced_from_pending.clone(),
+            empty_material(),
+        ));
+        return finalize_attempt(
+            ref_,
+            &facts,
+            decision.clone(),
+            FinalizeOpts {
+                release_writer: owns_writer,
+                terminal: !owns_pending,
+                boundary_update: None,
+                forced_boundary_this_attempt: false,
+                continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
+                compact_receipt: None,
+            },
+            clock,
+            hooks.as_ref(),
+        )
+        .await;
     }
 
     let host_writer_conflict = matches!(
@@ -1410,6 +1454,8 @@ async fn execute_compact_paths(
         .as_ref()
         .map(|b| b.continuation_turn_id.clone());
     let mut compact_receipt: Option<CompactReceipt> = None;
+    // Assigned on every materialize path before read; empty only until first write.
+    #[allow(unused_assignments)]
     let mut material = empty_material();
     let mut boundary_forced_at = pending_boundary
         .as_ref()
@@ -1704,9 +1750,14 @@ async fn execute_compact_paths(
                     .await;
                 return match opened {
                     OpResult::Err { error } => OpResult::Err { error },
-                    OpResult::Ok { value: None } => {
-                        storage_failure("force turn_end did not open a continuation turn")
-                    }
+                    OpResult::Ok { value: None } => attempt_conflict(
+                        &facts.attempt_id,
+                        &facts.attempt_id,
+                        &format!(
+                            "attemptId {} force_turn_end did not open a continuation turn (likely reused attemptId)",
+                            facts.attempt_id
+                        ),
+                    ),
                     OpResult::Ok { .. } => unreachable!(),
                 };
             };

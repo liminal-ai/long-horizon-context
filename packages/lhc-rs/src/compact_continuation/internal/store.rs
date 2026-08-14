@@ -251,6 +251,7 @@ pub fn release_lhc_writer(db: &Db, attempt_id: &str) -> bool {
 
 /// Test-only: force-clear the writer claim.
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-util"))]
 pub fn force_clear_writer(db: &Db) {
     db.prepare(
         r#"UPDATE compact_continuation_writer
@@ -262,6 +263,7 @@ pub fn force_clear_writer(db: &Db) {
 
 /// Test-only: seed a held writer claim without going through claim_lhc_writer.
 #[doc(hidden)]
+#[cfg(any(test, feature = "test-util"))]
 pub fn seed_writer_claim(db: &Db, attempt_id: &str, claimed_at: &str) {
     db.prepare(
         r#"UPDATE compact_continuation_writer
@@ -690,6 +692,9 @@ pub fn read_open_turn_member_count(db: &Db, turn_id: &str) -> i64 {
     row.as_ref().map(|r| map_i64(r, "n")).unwrap_or(0)
 }
 
+/// Internal helper retained for crash-gap / schema probes; not on the hot path.
+#[cfg(any(test, feature = "test-util"))]
+#[allow(dead_code)]
 pub fn max_event_order(db: &Db) -> i64 {
     let row = db
         .prepare("SELECT COALESCE(MAX(event_order), 0) AS m FROM event")

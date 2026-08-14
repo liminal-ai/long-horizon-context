@@ -2039,3 +2039,336 @@ async fn marker_visible_to_model_hidden_from_user_chat() {
         }
     }
 }
+
+// ── N5 Rust↔TS parity deltas (LIM-63 Fable review) ─────────────────────────
+
+#[tokio::test]
+async fn n5_terminal_replay_without_identity_row_conflicts() {
+    // TS refuses terminal replay when the attempt-intent row is missing.
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let first = run_compact_continuation(
+        ref_.clone(),
+        base_facts("n5-replay-noid-1", WorkContinuation::ActiveNonTool),
+    )
+    .await
+    .expect_ok();
+    assert!(!first.receipt.outcome.as_str().is_empty());
+
+    // Drop the identity row while leaving the terminal receipt intact.
+    {
+        let db = open_raw(&path);
+        db.prepare("DELETE FROM compact_continuation_attempt WHERE attempt_id = ?")
+            .run(&[SqlParam::from("n5-replay-noid-1")]);
+        db.close();
+    }
+
+    let replay = run_compact_continuation(
+        ref_.clone(),
+        base_facts("n5-replay-noid-1", WorkContinuation::ActiveNonTool),
+    )
+    .await;
+    match replay {
+        OpResult::Err { error } => {
+            assert_eq!(error.code, ErrorCode::CompactContinuationAttemptConflict);
+            assert!(
+                error.reason.contains("already completed")
+                    || error.reason.contains("different operation identity"),
+                "{}",
+                error.reason
+            );
+        }
+        OpResult::Ok { .. } => panic!("expected conflict when identity row is missing"),
+    }
+}
+
+#[tokio::test]
+async fn n5_preskip_with_pending_feeds_oracle_boundary_and_releases_writer() {
+    // TS feeds forcedFromPending into the oracle and releases same-owner writer
+    // on pre-seam skip (pending stays nonterminal for repair).
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+
+    let interrupted = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("n5-preskip-1", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            interrupt_after_boundary: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_ok();
+    assert_eq!(
+        interrupted.pending_boundary.as_ref().map(|b| b.status),
+        Some(BoundaryStatus::Pending)
+    );
+    let c_turn = interrupted
+        .continuation_turn_id
+        .clone()
+        .expect("continuation turn");
+    // Writer should still be held after interrupt.
+    assert_eq!(
+        writer_claim_of(&path),
+        (WriterClaimKind::Lhc, Some("n5-preskip-1".into()))
+    );
+
+    let mut skip_facts = base_facts("n5-preskip-1", WorkContinuation::ActiveNonTool);
+    skip_facts.writer_claim = WriterClaim::Lhc;
+    skip_facts.seam.inside_transport_retry = true;
+    let skip = run_compact_continuation(ref_.clone(), skip_facts)
+        .await
+        .expect_ok();
+    assert!(skip.receipt.skipped);
+    // Residual must preserve pending boundary identity (not NotApplied).
+    assert_eq!(
+        skip.pending_boundary
+            .as_ref()
+            .map(|b| b.continuation_turn_id.as_str()),
+        Some(c_turn.as_str())
+    );
+    assert_eq!(
+        skip.receipt
+            .residual
+            .continuation_turn_id
+            .as_deref(),
+        Some(c_turn.as_str())
+    );
+    // Same-owner writer released on pre-seam skip (TS releaseWriter: ownsWriter).
+    assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
+    // Receipt stays nonterminal while pending exists.
+    let stored = get_compact_continuation_receipt(ref_.clone(), "n5-preskip-1")
+        .await
+        .expect_ok();
+    assert_eq!(stored.as_ref().map(|s| s.terminal), Some(false));
+}
+
+#[tokio::test]
+async fn n5_foreign_pending_checked_before_attempt_intent_write() {
+    // TS ownership gate runs before insertAttemptIntent. Foreign pending must
+    // conflict without registering the caller's attempt intent.
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+
+    let interrupted = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("n5-owner-a", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            interrupt_after_boundary: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_ok();
+    assert!(interrupted.pending_boundary.is_some());
+
+    let before_intents: i64 = {
+        let db = open_raw(&path);
+        let n = db
+            .prepare("SELECT COUNT(*) AS n FROM compact_continuation_attempt WHERE attempt_id = ?")
+            .get_params(&[SqlParam::from("n5-owner-b")])
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        db.close();
+        n
+    };
+    assert_eq!(before_intents, 0);
+
+    let foreign = run_compact_continuation(
+        ref_.clone(),
+        base_facts("n5-owner-b", WorkContinuation::ActiveNonTool),
+    )
+    .await;
+    match foreign {
+        OpResult::Err { error } => {
+            assert_eq!(error.code, ErrorCode::CompactContinuationAttemptConflict);
+        }
+        OpResult::Ok { .. } => panic!("expected foreign-pending conflict"),
+    }
+
+    let after_intents: i64 = {
+        let db = open_raw(&path);
+        let n = db
+            .prepare("SELECT COUNT(*) AS n FROM compact_continuation_attempt WHERE attempt_id = ?")
+            .get_params(&[SqlParam::from("n5-owner-b")])
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        db.close();
+        n
+    };
+    assert_eq!(
+        after_intents, 0,
+        "foreign pending must not write caller's attempt intent"
+    );
+}
+
+#[tokio::test]
+async fn n5_force_turn_end_no_new_turn_is_attempt_conflict() {
+    // TS maps "force_turn_end did not open a continuation turn" to attempt
+    // conflict (reused attemptId), not storage_failure.
+    //
+    // Seed a force-intent + durable turn_end whose force key has no opened
+    // turn. Keep one open agentic turn for health. Re-entry re-sends the
+    // idempotent turn_end, finds no opened turn, and must return
+    // attempt_conflict (not storage_failure).
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    seed_held_writer(&path, "n5-force-none-1");
+
+    {
+        let db = open_raw(&path);
+        let now = "2020-01-01T00:00:00.000Z";
+        let turn_key = "lhc.compact_continuation.force_turn_end:n5-force-none-1";
+        let _ = db
+            .prepare(
+                r#"INSERT INTO compact_continuation_force_intent
+                   (attempt_id, turn_end_idempotency_key, status, continuation_turn_id, recorded_at)
+                   VALUES (?, ?, 'intent', NULL, ?)"#,
+            )
+            .run(&[
+                SqlParam::from("n5-force-none-1"),
+                SqlParam::from(turn_key),
+                SqlParam::from(now),
+            ]);
+        let max_order: i64 = db
+            .prepare("SELECT COALESCE(MAX(event_order), 0) AS m FROM event")
+            .get()
+            .and_then(|r| r.get("m").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        let next = max_order + 1;
+        let payload = r#"{"outcome":"completed","outcomeReason":"context_compact_continue"}"#;
+        let _ = db
+            .prepare(
+                r#"INSERT INTO event
+                   (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
+                   VALUES (?, 'turn_end', ?, 'fixture-actor', 'fixture-harness', ?, ?)"#,
+            )
+            .run(&[
+                SqlParam::from(next),
+                SqlParam::from(turn_key),
+                SqlParam::from(payload),
+                SqlParam::from(now),
+            ]);
+        // Sanity: force key resolves to no turn.
+        let found = db
+            .prepare(
+                "SELECT turn_id FROM turns WHERE opened_at_event_order = ? LIMIT 1",
+            )
+            .get_params(&[SqlParam::from(next)]);
+        assert!(found.is_none(), "force key must not resolve a turn");
+        db.close();
+    }
+
+    let mut facts = base_facts("n5-force-none-1", WorkContinuation::ActiveNonTool);
+    facts.writer_claim = WriterClaim::Lhc;
+    let result = run_compact_continuation(ref_.clone(), facts).await;
+    match result {
+        OpResult::Err { error } => {
+            assert_eq!(
+                error.code,
+                ErrorCode::CompactContinuationAttemptConflict,
+                "must be attempt_conflict not storage: {} / {}",
+                error.code.as_str(),
+                error.reason
+            );
+            assert!(
+                error.reason.contains("force_turn_end")
+                    || error.reason.contains("did not open")
+                    || error.reason.contains("reused attemptId")
+                    || error.reason.contains("cannot force"),
+                "{}",
+                error.reason
+            );
+        }
+        OpResult::Ok { value } => panic!(
+            "expected attempt_conflict, got ok outcome={:?} refuse={:?} reason={}",
+            value.receipt.outcome,
+            value.receipt.refuse_code,
+            value.receipt.reason_code
+        ),
+    }
+}
+
+#[tokio::test]
+async fn n5_wrong_kind_with_applied_boundary_refuses_without_stealing() {
+    // TS: applied boundary + non-active_non_tool is refused by the oracle
+    // (invalid_pending_boundary_continuation). Hosts re-entering with a
+    // different continuation kind hit identity conflict first (kind is part of
+    // operation identity) — both are non-mutating refuse/conflict paths.
+    //
+    // This test pins the host-visible identity path (kind drift) plus residual
+    // preservation: foreign/owner pending stays, no install, no second marker.
+    // The oracle wrong-kind refuse is covered by compact_continuation_contract.
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+
+    let interrupted = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("n5-wrong-kind-1", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            interrupt_after_boundary: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_ok();
+    let c_turn = interrupted
+        .continuation_turn_id
+        .clone()
+        .expect("continuation turn");
+    let before = snapshot_canonical(&path);
+    assert_eq!(
+        writer_claim_of(&path),
+        (WriterClaimKind::Lhc, Some("n5-wrong-kind-1".into()))
+    );
+
+    // Kind drift on same attemptId → identity conflict (TS M2 parity).
+    let wrong = run_compact_continuation(
+        ref_.clone(),
+        base_facts(
+            "n5-wrong-kind-1",
+            WorkContinuation::PendingCorrelatedToolResult {
+                tool_call_id: "ghost-tool".into(),
+                correlation_valid: true,
+            },
+        ),
+    )
+    .await;
+    match wrong {
+        OpResult::Err { error } => {
+            assert_eq!(error.code, ErrorCode::CompactContinuationAttemptConflict);
+        }
+        OpResult::Ok { .. } => panic!("kind drift must conflict on identity"),
+    }
+
+    // Pending boundary owner identity preserved; no install / no new marker.
+    let pending = get_pending_compact_continuation_boundary(ref_.clone())
+        .await
+        .expect_ok();
+    assert_eq!(
+        pending.as_ref().map(|b| b.continuation_turn_id.as_str()),
+        Some(c_turn.as_str())
+    );
+    assert_eq!(
+        pending.as_ref().map(|b| b.attempt_id.as_str()),
+        Some("n5-wrong-kind-1")
+    );
+    let after = snapshot_canonical(&path);
+    assert_eq!(after.marker_count, before.marker_count);
+    assert_eq!(after.turn_count, before.turn_count);
+
+    // Correct-kind same-attempt repair still works after the wrong-kind probe.
+    let mut repair = base_facts("n5-wrong-kind-1", WorkContinuation::ActiveNonTool);
+    repair.writer_claim = WriterClaim::Lhc;
+    let repaired = run_compact_continuation(ref_.clone(), repair)
+        .await
+        .expect_ok();
+    assert_eq!(
+        repaired.continuation_turn_id.as_deref(),
+        Some(c_turn.as_str())
+    );
+    assert!(repaired.pending_boundary.is_none() || success_outcomes(repaired.receipt.outcome));
+}

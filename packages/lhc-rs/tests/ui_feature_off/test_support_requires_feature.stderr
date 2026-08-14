@@ -1,0 +1,13 @@
+error[E0433]: cannot find `test_support` in `compact_continuation`
+ --> tests/ui_feature_off/test_support_requires_feature.rs:9:37
+  |
+9 |         &lhc::compact_continuation::test_support::run_compact_continuation_for_tests,
+  |                                     ^^^^^^^^^^^^ could not find `test_support` in `compact_continuation`
+  |
+note: found an item that was configured out
+ --> src/compact_continuation/mod.rs
+  |
+  | #[cfg(any(test, feature = "test-util"))]
+  |          ----------------------------- the item is gated here
+  | pub mod test_support {
+  |         ^^^^^^^^^^^^

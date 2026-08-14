@@ -15,6 +15,7 @@ use lhc::intake_stream::{EventKind, MessageEventInput};
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::{Db, open_database};
 
+#[cfg(feature = "test-util")]
 mod compact_continuation_seam;
 pub mod corrupt;
 pub mod drain_runner;
@@ -32,6 +33,7 @@ pub mod view_seam;
 pub mod view_thread;
 pub mod work_handlers;
 
+#[cfg(feature = "test-util")]
 pub use compact_continuation_seam::{
     CompactContinuationTestHooks, force_clear_writer, run_compact_continuation_for_tests,
     seed_writer_claim,

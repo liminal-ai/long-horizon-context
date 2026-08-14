@@ -2174,15 +2174,16 @@ async fn nonterminal_receipt_updates_append_only_stage_history() {
 
 #[test]
 fn public_sdk_does_not_export_run_for_tests() {
-    // Fixtures / test_support expose for_tests; public crate root re-exports
-    // from lhc::sdk do not include run_compact_continuation_for_tests.
-    // Presence of the fixture path + absence from sdk module is the Rust
-    // equivalent of the TS export-surface check.
+    // Production closed surface: public `run_compact_continuation` is available
+    // without hooks. The fault-injection path lives only under
+    // `compact_continuation::test_support`, which is feature-gated (`test-util`)
+    // and proven compile-fail when the feature is off (see
+    // `tests/ui_feature_off/test_support_requires_feature.rs`).
     let _hooks = CompactContinuationTestHooks::default();
     let _ = std::any::type_name::<CompactContinuationTestHooks>();
-    // Public run_compact_continuation is available.
     let _ = std::any::type_name_of_val(&run_compact_continuation);
-    // test_support path still has for_tests.
+    // With `test-util` enabled for this binary, test_support remains reachable
+    // for residual fixtures — that is intentional and not a production export.
     let _ = std::any::type_name_of_val(
         &lhc::compact_continuation::test_support::run_compact_continuation_for_tests,
     );

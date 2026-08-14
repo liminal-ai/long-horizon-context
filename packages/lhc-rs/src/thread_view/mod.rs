@@ -25,7 +25,7 @@ use crate::shared_tech::context::{resolve_instance_config, resolve_instance_view
 use crate::shared_tech::derivation::{DerivationReportEntry, DerivationState};
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
 use crate::shared_tech::js_json::{
-    js_json_stringify, js_json_stringify_of, js_number_value, js_string_of_number,
+    js_json_stringify, js_number_value, js_string_of_number,
 };
 use crate::shared_tech::logging::{LogEntry, LogLevel, write_log};
 use crate::shared_tech::persist::{
@@ -62,7 +62,7 @@ use internal::select::{ArrangementEntry, SelectionResult, SkippedEntry};
 use internal::session_view::build_session_thread_view;
 use internal::snapshot::{
     ViewReplaceBand, ViewReplaceInput, read_stored_view, read_thread_metadata, read_view_snapshot,
-    replace_view_snapshot, replace_view_snapshot_with, tail_token_sum,
+    replace_view_snapshot_with, tail_token_sum,
 };
 
 /// Canonical materialize/writePiSessionFile result — one type, re-exported.
@@ -109,6 +109,8 @@ const DIAG_VIEW_STATUS_FAILED: &str = "view status failed: ";
 const DIAG_VIEW_DESCRIBE_FAILED: &str = "view describe failed: ";
 const DIAG_VIEW_PRUNE_FAILED: &str = "view prune failed: ";
 const DIAG_VIEW_PREVIEW_COMPACT_FAILED: &str = "view previewCompact failed: ";
+// Mirrors TS inventory; prepare/install paths surface their own prefixes today.
+#[allow(dead_code)]
 const DIAG_VIEW_COMPACT_FAILED: &str = "view compact failed: ";
 const DIAG_VIEW_MATERIALIZE_FAILED: &str = "view materialize failed: ";
 /// `view materialize could not write ${path}: ${detail}`

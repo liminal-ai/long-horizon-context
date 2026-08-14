@@ -6,6 +6,21 @@ description = "Rust port of the LHC (long-horizon context) SDK — event-sourced
 license = "UNLICENSED"
 publish = false
 
+[features]
+default = []
+# Test-only surface: compact-continuation fault hooks and raw store mutators.
+# Production hosts must not enable this. Integration tests and codex-lhc-host
+# `test-util` pull it in explicitly.
+test-util = []
+
+[[test]]
+name = "compact_continuation_runtime"
+required-features = ["test-util"]
+
+[[test]]
+name = "compact_continuation_evidence"
+required-features = ["test-util"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 # preserve_order: JS object key order (insertion order) is part of the
