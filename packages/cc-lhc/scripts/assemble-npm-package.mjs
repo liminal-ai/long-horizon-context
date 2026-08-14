@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Assemble an unpublished, globally-installable cc-lhc npm candidate.
+ * Assemble the globally-installable cc-lhc npm package.
  *
  * The user installs one package and gets one `cc-lhc` executable. The two
  * private workspace runtimes are bundled under node_modules so the tarball
  * never depends on unpublished workspace package names. Third-party JS and
  * PTY packages remain ordinary registry dependencies.
  *
- * This script never publishes. Its generated manifest is deliberately
- * `private: true`, versioned as a development candidate, and UNLICENSED until
- * Lee approves the public name, license, and first release version.
+ * This script never publishes. It only creates the exact package directory
+ * that later inspection, smoke tests, and a separately authorized publish use.
  */
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -45,7 +44,7 @@ if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(", ")}`);
 
 const outputRoot = resolve(argValue("--out") ?? join(repoRoot, "build", "cc-lhc-npm"));
 const packageName = argValue("--name") ?? "cc-lhc";
-const version = argValue("--version") ?? "0.0.0-dev.0";
+const version = argValue("--version") ?? "0.1.0";
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
 if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)) {
@@ -100,6 +99,7 @@ mkdirSync(join(outputRoot, "node_modules", "cc-lhc-native"), { recursive: true }
 
 copyDirectory(join(packageRoot, "dist"), join(outputRoot, "dist"), "cc-lhc dist");
 cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
+cpSync(join(packageRoot, "LICENSE"), join(outputRoot, "LICENSE"));
 
 const bundledLhcRoot = join(outputRoot, "node_modules", "lhc");
 copyDirectory(join(lhcRoot, "dist"), join(bundledLhcRoot, "dist"), "lhc dist");
@@ -156,12 +156,12 @@ writeFileSync(
 const manifest = {
   name: packageName,
   version,
-  private: true,
   description: "Independent Long Horizon Context wrapper compatible with Claude Code.",
-  license: "UNLICENSED",
+  license: "MIT",
+  author: { name: "Lee Moore" },
   type: "module",
   bin: { "cc-lhc": "./dist/bin.js" },
-  files: ["dist", "README.md"],
+  files: ["dist", "README.md", "LICENSE"],
   bundledDependencies: ["lhc", "cc-lhc-native"],
   dependencies: {
     "@lydell/node-pty": ccManifest.dependencies["@lydell/node-pty"],
@@ -176,15 +176,16 @@ const manifest = {
     url: "git+https://github.com/liminal-ai/long-horizon-context.git",
     directory: "packages/cc-lhc",
   },
+  homepage: "https://github.com/liminal-ai/long-horizon-context/tree/main/packages/cc-lhc",
   bugs: { url: "https://github.com/liminal-ai/long-horizon-context/issues" },
   keywords: ["long-horizon-context", "context-management", "coding-agent", "cli"],
-  ccLhcCandidate: {
-    publishLocked: true,
+  publishConfig: { access: "public" },
+  ccLhcPackage: {
     targets: requiredTargets,
     nativeArtifact: targetsManifest.artifact,
   },
 };
 writeFileSync(join(outputRoot, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
-console.log(`cc-lhc npm assembly: wrote unpublished candidate to ${outputRoot}`);
+console.log(`cc-lhc npm assembly: wrote package to ${outputRoot}`);
 console.log(`cc-lhc npm assembly: targets ${requiredTargets.join(", ")}`);

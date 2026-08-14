@@ -112,10 +112,10 @@ jobs:
         with:
           node-version: ${{ matrix.consumer_node }}
 
-      - name: Assemble current-target npm candidate
+      - name: Assemble current-target npm package
         run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current
 
-      - name: Check current-target npm candidate
+      - name: Check current-target npm package
         run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
 
       - name: Smoke global npm install without a compiler
@@ -128,8 +128,8 @@ jobs:
           path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
           if-no-files-found: error
 
-  npm-candidate:
-    name: npm-candidate
+  npm-package:
+    name: npm-package
     needs: native
     runs-on: ubuntu-24.04
     steps:
@@ -176,25 +176,25 @@ jobs:
         with:
           node-version: 24.3.0
 
-      - name: Assemble complete unpublished npm candidate
+      - name: Assemble complete npm package
         run: |
           node packages/cc-lhc/scripts/assemble-npm-package.mjs \
             --native-bundle build/cc-lhc-native \
             --targets all
 
-      - name: Check and smoke complete npm candidate
+      - name: Check and smoke complete npm package
         run: |
           node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
           node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
 
-      - name: Pack unpublished npm candidate
+      - name: Pack npm package
         run: |
           mkdir -p build/npm-artifact
           npm pack ./build/cc-lhc-npm --pack-destination build/npm-artifact
 
-      - name: Preserve unpublished npm candidate
+      - name: Preserve npm package
         uses: actions/upload-artifact@v7
         with:
-          name: cc-lhc-npm-candidate
+          name: cc-lhc-npm-package
           path: build/npm-artifact/*.tgz
           if-no-files-found: error

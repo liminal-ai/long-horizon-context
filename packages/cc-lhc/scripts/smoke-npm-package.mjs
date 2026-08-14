@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-/** Pack and globally install an unpublished candidate in disposable prefixes. */
+/** Pack and globally install the release package in disposable prefixes. */
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -52,8 +52,14 @@ function runInstalledCli(executable, args) {
 }
 
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
-if (manifest.private !== true || manifest.ccLhcCandidate?.publishLocked !== true) {
-  fail("refusing to smoke an unlocked publication candidate");
+if (
+  manifest.name !== "cc-lhc" ||
+  manifest.version !== "0.1.0" ||
+  manifest.private === true ||
+  manifest.license !== "MIT" ||
+  manifest.publishConfig?.access !== "public"
+) {
+  fail("refusing to smoke a package that does not match the approved release identity");
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "cc-lhc-npm-smoke-"));

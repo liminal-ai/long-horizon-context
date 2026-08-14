@@ -15,10 +15,24 @@ Supported platforms are the six native targets in
 Exact process identity (ownership/liveness) comes from the `cc-lhc-native`
 addon, delivered as prebuilt artifacts. The `native-platforms` GitHub
 workflow is required to build the addon and run this package's full suite
-with the compiled addon mandatory on every target; that workflow has not yet
-succeeded on GitHub, so non-Linux targets currently rest on its definition
-and local platform-gated tests rather than executed CI evidence. The
-whole-product interactive certification above was performed on Linux.
+with the compiled addon mandatory on every target. The six-target matrix and
+compiler-free package installation passed before the 0.1.0 package was
+prepared. The whole-product interactive certification above was performed on
+Linux, with subsequent Windows and macOS dogfood findings incorporated before
+the package build.
+
+## Install
+
+Prerequisites are Node 24.3 or later and an installed, authenticated Claude
+Code CLI. Install the wrapper globally:
+
+```text
+npm install --global cc-lhc
+cc-lhc --lhc-help
+```
+
+The package includes prebuilt native identity addons for all supported
+targets. A supported client does not need a C++ compiler or `node-gyp`.
 
 ## Start and help
 
@@ -59,6 +73,9 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   replacement capture and child liveness are proven. User input is buffered
   after the transaction's commit point and delivered exactly once, or retained
   in a recovery artifact.
+- **Runtime continuity.** Wrapper-owned handoffs preserve the latest confirmed
+  Claude effort and permission mode from the rollout. Unknown values are not
+  inferred, and permissions are never broadened by guesswork.
 - **Single ownership.** A process-identity lease prevents two wrappers from
   owning the same Claude session, including across PID reuse.
 
