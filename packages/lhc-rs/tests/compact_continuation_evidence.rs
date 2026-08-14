@@ -158,6 +158,71 @@ fn snapshot_canonical(file_path: &str) -> CanonicalSnap {
     }
 }
 
+/// Full serving-view truth for invalid-candidate parity (view + marker substrate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ViewTruthSnap {
+    view_id: Option<String>,
+    source_state_json: Option<String>,
+    band_tokens: Vec<(String, i64)>,
+    marker_count: i64,
+    marker_message_count: i64,
+}
+
+fn snapshot_view_truth(file_path: &str) -> ViewTruthSnap {
+    let db = open_raw(file_path);
+    let view_id = db
+        .prepare("SELECT view_id FROM thread_view WHERE singleton = 1")
+        .get()
+        .and_then(|r| {
+            r.get("view_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+    let source_state_json = db
+        .prepare("SELECT source_state_json FROM thread_view WHERE singleton = 1")
+        .get()
+        .and_then(|r| {
+            r.get("source_state_json")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+    let band_rows = db
+        .prepare("SELECT band, token_count FROM thread_view_band ORDER BY band")
+        .all(&[]);
+    let band_tokens = band_rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get("band")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                r.get("token_count").and_then(|v| v.as_i64()).unwrap_or(0),
+            )
+        })
+        .collect();
+    let marker_count = db
+        .prepare("SELECT COUNT(*) AS n FROM event WHERE event_kind = 'compact_continuation_marker'")
+        .get()
+        .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    let marker_message_count = db
+        .prepare(
+            "SELECT COUNT(*) AS n FROM message WHERE kind = 'compact_continuation_marker' AND deleted_at IS NULL",
+        )
+        .get()
+        .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    db.close();
+    ViewTruthSnap {
+        view_id,
+        source_state_json,
+        band_tokens,
+        marker_count,
+        marker_message_count,
+    }
+}
+
 fn writer_claim_of(file_path: &str) -> (WriterClaimKind, Option<String>) {
     let db = open_raw(file_path);
     let row = db
@@ -1400,7 +1465,29 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
     )
     .await;
     assert!(batch.is_ok());
-    let before = snapshot_canonical(&path);
+    // Install a real prior serving view so byte-identity is meaningful.
+    let prior_install = thread_view::compact(
+        ref_.clone(),
+        CompactOpts {
+            profile: None,
+            params: Some(ViewCompactParams {
+                lower_bound: Some(50.0),
+                percentages: Some(PartialViewProfilePercentages {
+                    full: Some(25.0),
+                    smooth: Some(25.0),
+                    detailed: Some(25.0),
+                    brief: Some(25.0),
+                }),
+            }),
+            signal: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(prior_install, OpResult::Ok { .. }),
+        "prior compact install should succeed: {prior_install:?}"
+    );
+    let before = snapshot_view_truth(&path);
     let result = run_compact_continuation(
         ref_.clone(),
         base_facts("invalid-candidate-1", WorkContinuation::ActiveNonTool),
@@ -1443,15 +1530,266 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
         Some("invalid-candidate-1")
     );
     assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
-    // Structural failure after prepare may still have attempted install; residual
-    // priorServingViewIntact + refuse are the certified outcomes.
-    assert!(result.receipt.residual.prior_serving_view_intact);
+    // Certified: invalid candidate must not replace the serving view or insert a marker.
+    assert!(
+        result.receipt.residual.prior_serving_view_intact,
+        "residual priorServingViewIntact must be true"
+    );
+    assert!(
+        result.compact_receipt.is_none(),
+        "invalid candidate must not produce a compact receipt"
+    );
+    let after = snapshot_view_truth(&path);
+    assert_eq!(
+        after.view_id, before.view_id,
+        "serving view id must remain unchanged"
+    );
+    assert_eq!(
+        after.source_state_json, before.source_state_json,
+        "source_state_json must remain byte-identical"
+    );
+    assert_eq!(
+        after.band_tokens, before.band_tokens,
+        "view band tokens must remain unchanged"
+    );
+    assert_eq!(
+        after.marker_count, before.marker_count,
+        "no compact_continuation_marker event may be inserted"
+    );
+    assert_eq!(
+        after.marker_message_count, before.marker_message_count,
+        "no compact_continuation_marker message may be inserted"
+    );
+    // Forced turn_end is durable (event/turn may advance) but serving view is intact.
     let stages = list_compact_continuation_stages(ref_.clone(), "invalid-candidate-1")
         .await
         .expect_ok();
-    assert!(stages.iter().any(|s| s.stage == "compact_failed"));
-    assert!(!stages.iter().any(|s| s.stage == "install_failed"));
-    let _ = before;
+    assert!(
+        stages.iter().any(|s| s.stage == "compact_failed"),
+        "must log compact_failed"
+    );
+    assert!(
+        !stages.iter().any(|s| s.stage == "install_succeeded"),
+        "must never log install_succeeded for invalid candidate"
+    );
+    assert!(
+        !stages.iter().any(|s| s.stage == "install_failed"),
+        "must not label invalid candidate as install_failed"
+    );
+    assert!(
+        !stages.iter().any(|s| s.stage == "marker_persisted"),
+        "must not persist marker for invalid candidate"
+    );
+}
+
+#[tokio::test]
+async fn marker_reassembly_includes_marker_in_candidate_and_install() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let result = run_compact_continuation(
+        ref_.clone(),
+        base_facts("marker-reasm-1", WorkContinuation::ActiveNonTool),
+    )
+    .await
+    .expect_ok();
+    assert!(
+        result.marker_persisted,
+        "valid active path must persist marker"
+    );
+    assert!(result.compact_receipt.is_some());
+    let stages = list_compact_continuation_stages(ref_.clone(), "marker-reasm-1")
+        .await
+        .expect_ok();
+    assert!(stages.iter().any(|s| s.stage == "marker_persisted"));
+    assert!(stages.iter().any(|s| s.stage == "install_succeeded"));
+    // Model-serving path includes the marker text after re-assembly+install.
+    let ctx = thread_view::get_llm_request_context(ref_.clone())
+        .await
+        .expect_ok();
+    let joined: String = ctx
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter().map(|p| p.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("[compact continuation]"),
+        "marker must be part of model-visible candidate after re-assembly: {joined}"
+    );
+    let c_turn = result.continuation_turn_id.expect("continuation turn");
+    assert!(joined.contains(&format!("continuationTurnId={c_turn}")));
+    assert_eq!(snapshot_canonical(&path).marker_count, 1);
+}
+
+#[tokio::test]
+async fn candidate_assembly_error_returns_opresult_and_releases_writer() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    // After prepare succeeds, fail candidate assembly (TS: release writer + return
+    // OpResult error; no marker, no install). Test seam only.
+    let result = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("assembly-err-1", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            fail_candidate_assembly: true,
+            ..Default::default()
+        }),
+    )
+    .await;
+    match result {
+        OpResult::Err { error } => {
+            assert_eq!(error.code, ErrorCode::StorageFailure);
+            assert!(
+                error.reason.contains("candidate assembly"),
+                "reason={}",
+                error.reason
+            );
+        }
+        OpResult::Ok { value } => {
+            panic!("expected OpResult error from candidate assembly, got ok: {value:?}");
+        }
+    }
+    assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
+    let stages = list_compact_continuation_stages(ref_.clone(), "assembly-err-1")
+        .await
+        .expect_ok();
+    assert!(!stages.iter().any(|s| s.stage == "install_succeeded"));
+    assert!(!stages.iter().any(|s| s.stage == "marker_persisted"));
+    // Force may have committed turn_end before prepare, but no marker/install.
+    assert_eq!(snapshot_view_truth(&path).marker_count, 0);
+}
+
+#[tokio::test]
+async fn preserve_tool_invalid_candidate_no_install_no_marker() {
+    let (_store, ref_, path) = fixture_thread().await;
+    // Settled open turn with unresolved tool_call — invalid for preserve-tool
+    // structural tail, and also fails durable pair proof before claim when
+    // correlation claims a missing pair. Use a valid pair then corrupt tail
+    // structure by leaving an extra unresolved call so candidate is invalid
+    // only if we reached material — pair proof refuses first.
+    // For preserve-tool invalid *candidate* after claim, seed a valid correlated
+    // pair and also add an extra unresolved tool_call so settled-tail structure
+    // fails after claim.
+    seed_pending_tool_turn(&ref_, "call-preserve-bad").await;
+    let extra = intake_stream::message_events(
+        ref_.clone(),
+        &[valid_event(
+            kind::TOOL_CALL,
+            ToolCallOverrides {
+                payload: Some(ToolCallPayload {
+                    tool_call_id: "call-extra-unresolved".into(),
+                    tool_name: "read_file".into(),
+                    arguments: {
+                        let mut m = Map::new();
+                        m.insert("path".into(), json!("y.txt"));
+                        m
+                    },
+                }),
+                ..Default::default()
+            },
+        )],
+    )
+    .await;
+    assert!(extra.is_ok());
+    let prior = snapshot_view_truth(&path);
+    let before_markers = prior.marker_count;
+    let result = run_compact_continuation(
+        ref_.clone(),
+        base_facts(
+            "preserve-invalid-1",
+            WorkContinuation::PendingCorrelatedToolResult {
+                tool_call_id: "call-preserve-bad".into(),
+                correlation_valid: true,
+            },
+        ),
+    )
+    .await
+    .expect_ok();
+    // Preserve-tool never inserts a continuation marker.
+    assert_eq!(
+        snapshot_canonical(&path).marker_count,
+        before_markers,
+        "preserve-tool path must never insert a continuation marker"
+    );
+    assert!(
+        result.compact_receipt.is_none(),
+        "invalid preserve candidate must not return a compact receipt"
+    );
+    let stages = list_compact_continuation_stages(ref_.clone(), "preserve-invalid-1")
+        .await
+        .expect_ok();
+    assert!(!stages.iter().any(|s| s.stage == "marker_persisted"));
+    assert!(
+        !stages.iter().any(|s| s.stage == "install_succeeded"),
+        "invalid preserve candidate must not install"
+    );
+    assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
+    let _ = prior;
+}
+
+#[tokio::test]
+async fn valid_active_and_preserve_install_exactly_once() {
+    // Active non-tool
+    {
+        let (_store, ref_, _) = fixture_thread().await;
+        seed_open_agentic_turn(&ref_).await;
+        let result = run_compact_continuation(
+            ref_.clone(),
+            base_facts("valid-active-once", WorkContinuation::ActiveNonTool),
+        )
+        .await
+        .expect_ok();
+        assert!(result.compact_receipt.is_some());
+        let stages = list_compact_continuation_stages(ref_.clone(), "valid-active-once")
+            .await
+            .expect_ok();
+        let install_count = stages
+            .iter()
+            .filter(|s| s.stage == "install_succeeded")
+            .count();
+        assert_eq!(install_count, 1, "active path installs exactly once");
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|s| s.stage == "marker_persisted")
+                .count(),
+            1
+        );
+    }
+    // Preserve-tool
+    {
+        let (_store, ref_, path) = fixture_thread().await;
+        seed_pending_tool_turn(&ref_, "call-once").await;
+        let before_markers = snapshot_canonical(&path).marker_count;
+        let result = run_compact_continuation(
+            ref_.clone(),
+            base_facts(
+                "valid-preserve-once",
+                WorkContinuation::PendingCorrelatedToolResult {
+                    tool_call_id: "call-once".into(),
+                    correlation_valid: true,
+                },
+            ),
+        )
+        .await
+        .expect_ok();
+        assert!(result.compact_receipt.is_some());
+        let stages = list_compact_continuation_stages(ref_.clone(), "valid-preserve-once")
+            .await
+            .expect_ok();
+        let install_count = stages
+            .iter()
+            .filter(|s| s.stage == "install_succeeded")
+            .count();
+        assert_eq!(install_count, 1, "preserve path installs exactly once");
+        assert_eq!(
+            snapshot_canonical(&path).marker_count,
+            before_markers,
+            "preserve path inserts no marker"
+        );
+        assert!(!stages.iter().any(|s| s.stage == "marker_persisted"));
+    }
 }
 
 #[tokio::test]

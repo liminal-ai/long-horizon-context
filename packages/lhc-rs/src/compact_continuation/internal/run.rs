@@ -83,6 +83,9 @@ pub struct CompactContinuationTestHooks {
     pub force_derivations_missing_or_failed: Option<bool>,
     pub skip_real_compact: bool,
     pub fail_install_before_write: bool,
+    /// Test-only: after prepare succeeds, fail candidate assembly with storage_failure
+    /// (proves release + OpResult error without install/marker).
+    pub fail_candidate_assembly: bool,
     pub interrupt_after_boundary: bool,
     pub interrupt_after_marker: bool,
     pub interrupt_after_marker_event: bool,
@@ -1807,346 +1810,652 @@ async fn execute_compact_paths(
         .await;
     }
 
-    // Prepare compact (real or skip)
+    // ── Compact prepare + candidate material (TS run.ts 1320–1380) ──────
+    // Invalid candidates must never insert a marker or replace the serving view.
     let skip_real = hooks.is_some_and(|h| h.skip_real_compact);
-    let prepared = if skip_real {
-        None
+    let mut prepared: Option<crate::thread_view::PreparedCompact> = None;
+
+    if skip_real {
+        material = apply_material_hooks(
+            CompactMaterialFacts {
+                derivations_missing_or_failed: false,
+                lower_target_met: true,
+                compact_structurally_valid: true,
+                install_succeeds: true,
+                useful_reduction: true,
+                can_produce_valid_provider_request: true,
+            },
+            hooks,
+        );
     } else {
         let prep_opts = CompactOpts {
             profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
             params: facts.compact.as_ref().and_then(|c| c.params.clone()),
             signal: None,
         };
-        let prepared = prepare_compact(ref_.clone(), prep_opts).await;
-        match prepared {
+        let prep = prepare_compact(ref_.clone(), prep_opts).await;
+        match prep {
             OpResult::Ok { value } => {
-                let _ = stage_log(
-                    ref_.clone(),
-                    &facts.attempt_id,
-                    StageName::CompactPrepared,
-                    clock.clone(),
-                    None,
-                )
+                prepared = Some(value);
+                if hooks.is_some_and(|h| h.fail_candidate_assembly) {
+                    let rel =
+                        release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                            .await;
+                    if !matches!(rel, OpResult::Ok { .. }) {
+                        return match rel {
+                            OpResult::Err { error } => OpResult::Err { error },
+                            OpResult::Ok { .. } => unreachable!(),
+                        };
+                    }
+                    return storage_failure(
+                        "compact-continuation candidate assembly failed (test injection)",
+                    );
+                }
+                let lower = facts.policy.lower_target_tokens;
+                let assembly = create_db_read_transaction(ref_.clone(), {
+                    let prepared = prepared.clone().expect("prepared just set");
+                    move |tx| {
+                        Box::pin(async move {
+                            assemble_candidate_from_prepared(tx.db, &prepared, lower)
+                        })
+                    }
+                })
                 .await;
-                Some(value)
+                match assembly {
+                    OpResult::Ok { value: assembly } => {
+                        material = apply_material_hooks(
+                            CompactMaterialFacts {
+                                derivations_missing_or_failed: assembly
+                                    .material
+                                    .derivations_missing_or_failed,
+                                lower_target_met: assembly.material.lower_target_met,
+                                compact_structurally_valid: assembly
+                                    .material
+                                    .compact_structurally_valid,
+                                install_succeeds: false,
+                                useful_reduction: assembly.material.useful_reduction,
+                                can_produce_valid_provider_request: assembly
+                                    .material
+                                    .can_produce_valid_provider_request,
+                            },
+                            hooks,
+                        );
+                        let prep_log = stage_log(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            StageName::CompactPrepared,
+                            clock.clone(),
+                            Some({
+                                let mut m = Map::new();
+                                m.insert(
+                                    "candidateTokens".into(),
+                                    json!(assembly.candidate_tokens),
+                                );
+                                m.insert(
+                                    "currentServedTokens".into(),
+                                    json!(assembly.current_served_tokens),
+                                );
+                                m.insert(
+                                    "structuralIssues".into(),
+                                    json!(assembly.structural_issues),
+                                );
+                                m
+                            }),
+                        )
+                        .await;
+                        if !matches!(prep_log, OpResult::Ok { .. }) {
+                            let rel = release_own_writer_if_held(
+                                ref_.clone(),
+                                &facts.attempt_id,
+                                clock.clone(),
+                            )
+                            .await;
+                            if !matches!(rel, OpResult::Ok { .. }) {
+                                return match rel {
+                                    OpResult::Err { error } => OpResult::Err { error },
+                                    OpResult::Ok { .. } => unreachable!(),
+                                };
+                            }
+                            return match prep_log {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
+                        }
+                    }
+                    OpResult::Err { error } => {
+                        let rel = release_own_writer_if_held(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            clock.clone(),
+                        )
+                        .await;
+                        if !matches!(rel, OpResult::Ok { .. }) {
+                            return match rel {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
+                        }
+                        return OpResult::Err { error };
+                    }
+                }
             }
-            OpResult::Err { error } => {
-                let _ = stage_log(
-                    ref_.clone(),
-                    &facts.attempt_id,
-                    StageName::CompactFailed,
-                    clock.clone(),
-                    Some({
-                        let mut m = Map::new();
-                        m.insert("reason".into(), json!(error.reason));
-                        m
-                    }),
-                )
-                .await;
-                material.compact_structurally_valid = false;
-                material.can_produce_valid_provider_request = false;
-                material.install_succeeds = false;
-                let decision = decide_compact_continuation(&build_oracle_input(
-                    facts,
-                    CompactContinuationInvariants {
-                        capture_complete: true,
-                        provider_identity_valid: true,
-                        single_open_turn: true,
-                        writer_claim: WriterClaim::Lhc,
+            OpResult::Err { .. } => {
+                // Prepare failed: degrade material; no marker, no install.
+                material = apply_material_hooks(
+                    CompactMaterialFacts {
+                        derivations_missing_or_failed: false,
+                        lower_target_met: false,
+                        compact_structurally_valid: false,
+                        install_succeeds: false,
+                        useful_reduction: false,
+                        can_produce_valid_provider_request: false,
                     },
-                    forced_continuation_boundary.clone(),
-                    apply_material_hooks(material, hooks),
-                ));
-                return finalize_attempt(
-                    ref_,
-                    facts,
-                    decision,
-                    FinalizeOpts {
-                        release_writer: true,
-                        terminal: true,
-                        boundary_update: continuation_turn_id.as_ref().map(|tid| BoundaryUpdate {
-                            continuation_turn_id: tid.clone(),
-                            status: super::store::BoundaryStatus::FailedRepairable,
-                            marker_persisted: marker_persisted_durable,
-                            last_stage: "compact_failed".into(),
-                            forced_at: boundary_forced_at.clone(),
-                            completed_at: None,
-                        }),
-                        forced_boundary_this_attempt,
-                        continuation_turn_id: continuation_turn_id.clone(),
-                        compact_receipt: None,
-                    },
-                    clock,
                     hooks,
-                )
-                .await;
+                );
             }
-        }
-    };
-
-    // Candidate material from prepared
-    if let Some(ref prepared) = prepared {
-        let lower = facts.policy.lower_target_tokens;
-        let assembly = create_db_read_transaction(ref_.clone(), {
-            let prepared = prepared.clone();
-            move |tx| {
-                Box::pin(async move { assemble_candidate_from_prepared(tx.db, &prepared, lower) })
-            }
-        })
-        .await;
-        if let OpResult::Ok { value: assembly } = assembly {
-            material.derivations_missing_or_failed =
-                assembly.material.derivations_missing_or_failed;
-            material.lower_target_met = assembly.material.lower_target_met;
-            material.compact_structurally_valid = assembly.material.compact_structurally_valid;
-            material.useful_reduction = assembly.material.useful_reduction;
-            material.can_produce_valid_provider_request =
-                assembly.material.can_produce_valid_provider_request;
         }
     }
 
-    material = apply_material_hooks(material, hooks);
-
-    // Marker for continue-turn before install
-    if needs_continue_turn {
-        if let Some(c_turn) = continuation_turn_id.clone() {
-            if !marker_persisted_durable {
-                let marker_batch = intake_stream::message_events(
-                    ref_.clone(),
-                    &[marker_event_input(facts, &c_turn)],
-                )
-                .await;
-                if !matches!(marker_batch, OpResult::Ok { .. }) {
-                    let _ =
-                        release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
-                            .await;
-                    return match marker_batch {
+    // ── Marker before install (continue-turn only, when structure valid) ─
+    // TS: needsContinueTurn && forcedContinuationBoundary.applied &&
+    //     compactStructurallyValid && canProduceValidProviderRequest.
+    let forced_applied = matches!(
+        forced_continuation_boundary,
+        ForcedContinuationBoundary::Applied(_)
+    );
+    if needs_continue_turn
+        && forced_applied
+        && material.compact_structurally_valid
+        && material.can_produce_valid_provider_request
+    {
+        let c_turn = match &forced_continuation_boundary {
+            ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
+            ForcedContinuationBoundary::NotApplied(_) => {
+                continuation_turn_id.clone().unwrap_or_default()
+            }
+        };
+        let already = create_db_read_transaction(ref_.clone(), {
+            let key = compact_continuation_marker_idempotency_key(&c_turn);
+            move |tx| Box::pin(async move { marker_exists_by_idempotency_key(tx.db, &key) })
+        })
+        .await;
+        let OpResult::Ok {
+            value: already_present,
+        } = already
+        else {
+            let rel =
+                release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone()).await;
+            if !matches!(rel, OpResult::Ok { .. }) {
+                return match rel {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+            return match already {
+                OpResult::Err { error } => OpResult::Err { error },
+                OpResult::Ok { .. } => unreachable!(),
+            };
+        };
+        if !already_present {
+            let marker_batch =
+                intake_stream::message_events(ref_.clone(), &[marker_event_input(facts, &c_turn)])
+                    .await;
+            if !matches!(marker_batch, OpResult::Ok { .. }) {
+                let rel =
+                    release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                        .await;
+                if !matches!(rel, OpResult::Ok { .. }) {
+                    return match rel {
                         OpResult::Err { error } => OpResult::Err { error },
                         OpResult::Ok { .. } => unreachable!(),
                     };
                 }
-                if hooks.is_some_and(|h| h.interrupt_after_marker_event) {
-                    let _ = stage_log(
+                return match marker_batch {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+        }
+
+        // Crash gap: marker event durable, boundary.marker_persisted not yet updated.
+        if hooks.is_some_and(|h| h.interrupt_after_marker_event) {
+            let gap_log = stage_log(
+                ref_.clone(),
+                &facts.attempt_id,
+                StageName::Interrupted,
+                clock.clone(),
+                Some({
+                    let mut m = Map::new();
+                    m.insert("after".into(), json!("marker_event_commit"));
+                    m.insert("before".into(), json!("boundary_marker_status"));
+                    m.insert("continuationTurnId".into(), json!(c_turn.clone()));
+                    m.insert("markerExists".into(), json!(true));
+                    m.insert("boundaryMarkerPersisted".into(), json!(false));
+                    m
+                }),
+            )
+            .await;
+            if !matches!(gap_log, OpResult::Ok { .. }) {
+                let rel =
+                    release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                        .await;
+                if !matches!(rel, OpResult::Ok { .. }) {
+                    return match rel {
+                        OpResult::Err { error } => OpResult::Err { error },
+                        OpResult::Ok { .. } => unreachable!(),
+                    };
+                }
+                return match gap_log {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+            material.install_succeeds = false;
+            let decision = decide_compact_continuation(&build_oracle_input(
+                facts,
+                CompactContinuationInvariants {
+                    capture_complete: true,
+                    provider_identity_valid: true,
+                    single_open_turn: true,
+                    writer_claim: WriterClaim::Lhc,
+                },
+                ForcedContinuationBoundary::Applied(
+                    crate::shared_tech::compact_continuation::ForcedContinuationBoundaryApplied {
+                        applied: true,
+                        continuation_turn_id: c_turn.clone(),
+                        forced_this_seam: forced_boundary_this_attempt,
+                        // Boundary row may still say marker false; residual presence is true.
+                        marker_already_persisted: already_present,
+                    },
+                ),
+                material.clone(),
+            ));
+            let pending = create_db_read_transaction(ref_.clone(), |tx| {
+                Box::pin(async move { read_pending_boundary(tx.db) })
+            })
+            .await;
+            let OpResult::Ok { value: pending } = pending else {
+                return match pending {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            };
+            return OpResult::Ok {
+                value: to_run_result(
+                    decision,
+                    forced_boundary_this_attempt,
+                    Some(c_turn),
+                    None,
+                    false,
+                    pending,
+                ),
+            };
+        }
+
+        marker_persisted_durable = true;
+        let status_write = create_db_write_transaction(
+            ref_.clone(),
+            {
+                let c_turn = c_turn.clone();
+                let attempt_id = facts.attempt_id.clone();
+                let forced_at = boundary_forced_at.clone();
+                let clock = clock.clone();
+                move |tx| {
+                    Box::pin(async move {
+                        upsert_boundary(
+                            tx.db,
+                            &c_turn,
+                            &attempt_id,
+                            super::store::BoundaryStatus::Pending,
+                            true,
+                            "marker_persisted",
+                            &forced_at,
+                            None,
+                        );
+                        let mut detail = Map::new();
+                        detail.insert("continuationTurnId".into(), json!(c_turn));
+                        append_stage_log(
+                            tx.db,
+                            &attempt_id,
+                            StageName::MarkerPersisted,
+                            &clock_iso(&clock),
+                            Some(&detail),
+                        );
+                    })
+                }
+            },
+            Some(clock.clone()),
+        )
+        .await;
+        if !matches!(status_write, OpResult::Ok { .. }) {
+            let rel =
+                release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone()).await;
+            if !matches!(rel, OpResult::Ok { .. }) {
+                return match rel {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+            return match status_write {
+                OpResult::Err { error } => OpResult::Err { error },
+                OpResult::Ok { .. } => unreachable!(),
+            };
+        }
+
+        // Re-evaluate candidate after marker lands so model-visible structure includes it.
+        if let Some(ref prepared_val) = prepared {
+            if !skip_real {
+                let lower = facts.policy.lower_target_tokens;
+                let assembly2 = create_db_read_transaction(ref_.clone(), {
+                    let prepared = prepared_val.clone();
+                    move |tx| {
+                        Box::pin(async move {
+                            assemble_candidate_from_prepared(tx.db, &prepared, lower)
+                        })
+                    }
+                })
+                .await;
+                match assembly2 {
+                    OpResult::Ok { value: assembly } => {
+                        material = apply_material_hooks(
+                            CompactMaterialFacts {
+                                derivations_missing_or_failed: assembly
+                                    .material
+                                    .derivations_missing_or_failed,
+                                lower_target_met: assembly.material.lower_target_met,
+                                compact_structurally_valid: assembly
+                                    .material
+                                    .compact_structurally_valid,
+                                install_succeeds: false,
+                                useful_reduction: assembly.material.useful_reduction,
+                                can_produce_valid_provider_request: assembly
+                                    .material
+                                    .can_produce_valid_provider_request,
+                            },
+                            hooks,
+                        );
+                    }
+                    OpResult::Err { error } => {
+                        let rel = release_own_writer_if_held(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            clock.clone(),
+                        )
+                        .await;
+                        if !matches!(rel, OpResult::Ok { .. }) {
+                            return match rel {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
+                        }
+                        return OpResult::Err { error };
+                    }
+                }
+            }
+        }
+
+        if hooks.is_some_and(|h| h.interrupt_after_marker) {
+            material.install_succeeds = false;
+            let decision = decide_compact_continuation(&build_oracle_input(
+                facts,
+                CompactContinuationInvariants {
+                    capture_complete: true,
+                    provider_identity_valid: true,
+                    single_open_turn: true,
+                    writer_claim: WriterClaim::Lhc,
+                },
+                ForcedContinuationBoundary::Applied(
+                    crate::shared_tech::compact_continuation::ForcedContinuationBoundaryApplied {
+                        applied: true,
+                        continuation_turn_id: c_turn.clone(),
+                        forced_this_seam: forced_boundary_this_attempt,
+                        marker_already_persisted: !forced_boundary_this_attempt,
+                    },
+                ),
+                material.clone(),
+            ));
+            let int_log = stage_log(
+                ref_.clone(),
+                &facts.attempt_id,
+                StageName::Interrupted,
+                clock.clone(),
+                Some({
+                    let mut m = Map::new();
+                    m.insert("after".into(), json!("marker_persisted"));
+                    m.insert("continuationTurnId".into(), json!(c_turn.clone()));
+                    m
+                }),
+            )
+            .await;
+            if !matches!(int_log, OpResult::Ok { .. }) {
+                let rel =
+                    release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                        .await;
+                if !matches!(rel, OpResult::Ok { .. }) {
+                    return match rel {
+                        OpResult::Err { error } => OpResult::Err { error },
+                        OpResult::Ok { .. } => unreachable!(),
+                    };
+                }
+                return match int_log {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+            let pending = create_db_read_transaction(ref_.clone(), |tx| {
+                Box::pin(async move { read_pending_boundary(tx.db) })
+            })
+            .await;
+            let OpResult::Ok { value: pending } = pending else {
+                return match pending {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            };
+            return OpResult::Ok {
+                value: to_run_result(
+                    decision,
+                    forced_boundary_this_attempt,
+                    Some(c_turn),
+                    None,
+                    false,
+                    pending,
+                ),
+            };
+        }
+    }
+
+    // ── Install (TS canAttemptInstall gate) ───────────────────────────────
+    let can_attempt_install = material.compact_structurally_valid
+        && material.can_produce_valid_provider_request
+        && (prepared.is_some() || skip_real);
+
+    if can_attempt_install {
+        let fail_before = hooks.is_some_and(|h| h.fail_install_before_write);
+        let force_install_false = hooks.is_some_and(|h| h.force_install_succeeds == Some(false));
+        if fail_before || force_install_false {
+            material.install_succeeds = false;
+        } else if let Some(prepared_val) = prepared.clone() {
+            let marker_key = if needs_continue_turn && forced_applied {
+                match &forced_continuation_boundary {
+                    ForcedContinuationBoundary::Applied(a) => Some(
+                        compact_continuation_marker_idempotency_key(&a.continuation_turn_id),
+                    ),
+                    ForcedContinuationBoundary::NotApplied(_) => None,
+                }
+            } else {
+                None
+            };
+            let install = install_prepared_compact(
+                ref_.clone(),
+                prepared_val,
+                InstallPreparedOptions {
+                    signal: None,
+                    created_at: Some(clock_iso(&clock)),
+                    allowed_marker_idempotency_key: marker_key,
+                },
+            )
+            .await;
+            match install {
+                OpResult::Ok { value } => {
+                    material.install_succeeds = true;
+                    material.useful_reduction = hooks
+                        .and_then(|h| h.force_useful_reduction)
+                        .unwrap_or(material.useful_reduction);
+                    material.lower_target_met =
+                        value.total_tokens <= facts.policy.lower_target_tokens;
+                    compact_receipt = Some(value.clone());
+                    let inst_log = stage_log(
                         ref_.clone(),
                         &facts.attempt_id,
-                        StageName::Interrupted,
+                        StageName::InstallSucceeded,
                         clock.clone(),
                         Some({
                             let mut m = Map::new();
-                            m.insert("after".into(), json!("marker_event_commit"));
+                            m.insert("viewId".into(), json!(value.view_id));
                             m
                         }),
                     )
                     .await;
-                    let decision = decide_compact_continuation(&build_oracle_input(
-                        facts,
-                        CompactContinuationInvariants {
-                            capture_complete: true,
-                            provider_identity_valid: true,
-                            single_open_turn: true,
-                            writer_claim: WriterClaim::Lhc,
-                        },
-                        forced_continuation_boundary.clone(),
-                        material.clone(),
-                    ));
-                    return finalize_attempt(
-                        ref_,
-                        facts,
-                        decision,
-                        FinalizeOpts {
-                            release_writer: false,
-                            terminal: false,
-                            boundary_update: None,
-                            forced_boundary_this_attempt,
-                            continuation_turn_id: Some(c_turn),
-                            compact_receipt: None,
-                        },
-                        clock,
-                        hooks,
-                    )
-                    .await;
-                }
-                let status_write = create_db_write_transaction(
-                    ref_.clone(),
-                    {
-                        let c_turn = c_turn.clone();
-                        let attempt_id = facts.attempt_id.clone();
-                        let forced_at = boundary_forced_at.clone();
-                        let clock = clock.clone();
-                        move |tx| {
-                            Box::pin(async move {
-                                upsert_boundary(
-                                    tx.db,
-                                    &c_turn,
-                                    &attempt_id,
-                                    super::store::BoundaryStatus::Pending,
-                                    true,
-                                    "marker_persisted",
-                                    &forced_at,
-                                    None,
-                                );
-                                append_stage_log(
-                                    tx.db,
-                                    &attempt_id,
-                                    StageName::MarkerPersisted,
-                                    &clock_iso(&clock),
-                                    None,
-                                );
-                            })
+                    if !matches!(inst_log, OpResult::Ok { .. }) {
+                        let rel = release_own_writer_if_held(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            clock.clone(),
+                        )
+                        .await;
+                        if !matches!(rel, OpResult::Ok { .. }) {
+                            return match rel {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
                         }
-                    },
-                    Some(clock.clone()),
-                )
+                        return match inst_log {
+                            OpResult::Err { error } => OpResult::Err { error },
+                            OpResult::Ok { .. } => unreachable!(),
+                        };
+                    }
+                }
+                OpResult::Err { .. } => {
+                    material.install_succeeds = false;
+                }
+            }
+        } else if skip_real {
+            // Test-only skip path: install outcome is hook-driven.
+            material.install_succeeds =
+                hooks.and_then(|h| h.force_install_succeeds).unwrap_or(true);
+            if needs_continue_turn
+                && forced_applied
+                && material.compact_structurally_valid
+                && material.can_produce_valid_provider_request
+            {
+                let c_turn = match &forced_continuation_boundary {
+                    ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
+                    ForcedContinuationBoundary::NotApplied(_) => String::new(),
+                };
+                let already = create_db_read_transaction(ref_.clone(), {
+                    let key = compact_continuation_marker_idempotency_key(&c_turn);
+                    move |tx| Box::pin(async move { marker_exists_by_idempotency_key(tx.db, &key) })
+                })
                 .await;
-                if !matches!(status_write, OpResult::Ok { .. }) {
-                    let _ =
+                let OpResult::Ok {
+                    value: already_present,
+                } = already
+                else {
+                    let rel =
                         release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
                             .await;
-                    return match status_write {
+                    if !matches!(rel, OpResult::Ok { .. }) {
+                        return match rel {
+                            OpResult::Err { error } => OpResult::Err { error },
+                            OpResult::Ok { .. } => unreachable!(),
+                        };
+                    }
+                    return match already {
                         OpResult::Err { error } => OpResult::Err { error },
                         OpResult::Ok { .. } => unreachable!(),
                     };
-                }
-                marker_persisted_durable = true;
-                if hooks.is_some_and(|h| h.interrupt_after_marker) {
-                    let decision = decide_compact_continuation(&build_oracle_input(
-                        facts,
-                        CompactContinuationInvariants {
-                            capture_complete: true,
-                            provider_identity_valid: true,
-                            single_open_turn: true,
-                            writer_claim: WriterClaim::Lhc,
-                        },
-                        forced_continuation_boundary.clone(),
-                        material.clone(),
-                    ));
-                    return finalize_attempt(
-                        ref_,
-                        facts,
-                        decision,
-                        FinalizeOpts {
-                            release_writer: false,
-                            terminal: false,
-                            boundary_update: None,
-                            forced_boundary_this_attempt,
-                            continuation_turn_id: Some(c_turn),
-                            compact_receipt: None,
-                        },
-                        clock,
-                        hooks,
+                };
+                if !already_present {
+                    let marker_batch = intake_stream::message_events(
+                        ref_.clone(),
+                        &[marker_event_input(facts, &c_turn)],
                     )
                     .await;
+                    if !matches!(marker_batch, OpResult::Ok { .. }) {
+                        let rel = release_own_writer_if_held(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            clock.clone(),
+                        )
+                        .await;
+                        if !matches!(rel, OpResult::Ok { .. }) {
+                            return match rel {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
+                        }
+                        return match marker_batch {
+                            OpResult::Err { error } => OpResult::Err { error },
+                            OpResult::Ok { .. } => unreachable!(),
+                        };
+                    }
+                    marker_persisted_durable = true;
                 }
             }
         }
     }
 
-    // Install
-    if hooks.is_some_and(|h| h.fail_install_before_write) {
-        material.install_succeeds = false;
-        let decision = decide_compact_continuation(&build_oracle_input(
-            facts,
-            CompactContinuationInvariants {
-                capture_complete: true,
-                provider_identity_valid: true,
-                single_open_turn: true,
-                writer_claim: WriterClaim::Lhc,
-            },
-            forced_continuation_boundary.clone(),
-            apply_material_hooks(material, hooks),
-        ));
-        let _ = stage_log(
-            ref_.clone(),
-            &facts.attempt_id,
-            StageName::InstallFailed,
-            clock.clone(),
-            None,
-        )
-        .await;
-        // Install/compact fail after force — failed_repairable, nonterminal (TS).
-        return finalize_attempt(
-            ref_,
-            facts,
-            decision,
-            FinalizeOpts {
-                release_writer: true,
-                terminal: false,
-                boundary_update: continuation_turn_id.as_ref().map(|tid| BoundaryUpdate {
-                    continuation_turn_id: tid.clone(),
-                    status: super::store::BoundaryStatus::FailedRepairable,
-                    marker_persisted: marker_persisted_durable,
-                    last_stage: "install_failed".into(),
-                    forced_at: boundary_forced_at.clone(),
-                    completed_at: None,
-                }),
-                forced_boundary_this_attempt,
-                continuation_turn_id: continuation_turn_id.clone(),
-                compact_receipt: None,
-            },
-            clock,
-            hooks,
-        )
-        .await;
-    }
-
-    if let Some(prepared) = prepared {
-        let marker_key = if needs_continue_turn {
-            continuation_turn_id
-                .as_ref()
-                .map(|t| compact_continuation_marker_idempotency_key(t))
-        } else {
-            None
+    // Final oracle boundary input (TS finalBoundary from marker existence).
+    let mut final_boundary = ForcedContinuationBoundary::NotApplied(
+        crate::shared_tech::compact_continuation::ForcedContinuationBoundaryNotApplied {
+            applied: false,
+        },
+    );
+    if needs_continue_turn && forced_applied {
+        let c_turn = match &forced_continuation_boundary {
+            ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
+            ForcedContinuationBoundary::NotApplied(_) => {
+                continuation_turn_id.clone().unwrap_or_default()
+            }
         };
-        let install = install_prepared_compact(
-            ref_.clone(),
-            prepared,
-            InstallPreparedOptions {
-                signal: None,
-                created_at: Some(clock_iso(&clock)),
-                allowed_marker_idempotency_key: marker_key,
-            },
-        )
+        let marker_read = create_db_read_transaction(ref_.clone(), {
+            let key = compact_continuation_marker_idempotency_key(&c_turn);
+            move |tx| Box::pin(async move { marker_exists_by_idempotency_key(tx.db, &key) })
+        })
         .await;
-        match install {
-            OpResult::Ok { value } => {
-                compact_receipt = Some(value);
-                material.install_succeeds = true;
-                let _ = stage_log(
-                    ref_.clone(),
-                    &facts.attempt_id,
-                    StageName::InstallSucceeded,
-                    clock.clone(),
-                    None,
-                )
-                .await;
-            }
-            OpResult::Err { error } => {
-                material.install_succeeds = false;
-                let stage = if error.code == ErrorCode::StalePreparedCompact {
-                    StageName::InstallFailed
-                } else {
-                    StageName::InstallFailed
+        let OpResult::Ok {
+            value: marker_exists,
+        } = marker_read
+        else {
+            let rel =
+                release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone()).await;
+            if !matches!(rel, OpResult::Ok { .. }) {
+                return match rel {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
                 };
-                let _ = stage_log(
-                    ref_.clone(),
-                    &facts.attempt_id,
-                    stage,
-                    clock.clone(),
-                    Some({
-                        let mut m = Map::new();
-                        m.insert("reason".into(), json!(error.reason));
-                        m
-                    }),
-                )
-                .await;
             }
-        }
-    } else {
-        // skip_real_compact: treat install as hook-driven
-        material.install_succeeds = hooks.and_then(|h| h.force_install_succeeds).unwrap_or(true);
+            return match marker_read {
+                OpResult::Err { error } => OpResult::Err { error },
+                OpResult::Ok { .. } => unreachable!(),
+            };
+        };
+        final_boundary = ForcedContinuationBoundary::Applied(
+            crate::shared_tech::compact_continuation::ForcedContinuationBoundaryApplied {
+                applied: true,
+                continuation_turn_id: c_turn.clone(),
+                forced_this_seam: forced_boundary_this_attempt,
+                marker_already_persisted: if forced_boundary_this_attempt {
+                    false
+                } else {
+                    marker_exists
+                },
+            },
+        );
+        marker_persisted_durable = marker_exists;
+        continuation_turn_id = Some(c_turn);
     }
-
-    material = apply_material_hooks(material, hooks);
 
     let decision = decide_compact_continuation(&build_oracle_input(
         facts,
@@ -2156,98 +2465,107 @@ async fn execute_compact_paths(
             single_open_turn: true,
             writer_claim: WriterClaim::Lhc,
         },
-        forced_continuation_boundary.clone(),
+        final_boundary.clone(),
         material.clone(),
     ));
 
-    // Success requires install + structural validity (oracle success outcomes).
-    let success = material.install_succeeds
-        && material.compact_structurally_valid
-        && material.can_produce_valid_provider_request;
+    // Boundary completion vs failed_repairable (nonterminal until repair succeeds).
+    let success_outcomes = ["compact_continue_turn", "degraded_compact", "no_reduction"];
+    let outcome_str = decision.outcome.as_str();
+    let install_ok = material.install_succeeds;
+    let success = success_outcomes.contains(&outcome_str) && install_ok;
 
-    // compact_failed: candidate structure invalid (never reached a valid install).
-    // install_failed: valid candidate reached install and install failed.
-    let reached_valid_candidate =
-        material.compact_structurally_valid && material.can_produce_valid_provider_request;
-    let fail_stage = if reached_valid_candidate && !material.install_succeeds {
-        "install_failed"
-    } else {
-        "compact_failed"
+    let mut finalize_opts = FinalizeOpts {
+        release_writer: true,
+        terminal: true,
+        boundary_update: None,
+        forced_boundary_this_attempt,
+        continuation_turn_id: match &final_boundary {
+            ForcedContinuationBoundary::Applied(a) => Some(a.continuation_turn_id.clone()),
+            ForcedContinuationBoundary::NotApplied(_) => continuation_turn_id.clone(),
+        },
+        compact_receipt: compact_receipt.clone(),
     };
 
-    let boundary_update = if needs_continue_turn {
-        continuation_turn_id.as_ref().map(|tid| BoundaryUpdate {
-            continuation_turn_id: tid.clone(),
-            status: if success {
-                super::store::BoundaryStatus::Complete
+    if matches!(final_boundary, ForcedContinuationBoundary::Applied(_)) {
+        let c_turn = match &final_boundary {
+            ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
+            ForcedContinuationBoundary::NotApplied(_) => unreachable!(),
+        };
+        if success {
+            finalize_opts.terminal = true;
+            finalize_opts.boundary_update = Some(BoundaryUpdate {
+                continuation_turn_id: c_turn,
+                status: super::store::BoundaryStatus::Complete,
+                marker_persisted: true,
+                last_stage: "install_succeeded".into(),
+                forced_at: boundary_forced_at.clone(),
+                completed_at: Some(clock_iso(&clock)),
+            });
+        } else {
+            // compact_failed: candidate structure invalid (never reached a valid install).
+            // install_failed: valid candidate reached install and install failed.
+            let reached_valid_candidate =
+                material.compact_structurally_valid && material.can_produce_valid_provider_request;
+            let fail_stage = if reached_valid_candidate && !material.install_succeeds {
+                "install_failed"
             } else {
-                super::store::BoundaryStatus::FailedRepairable
-            },
-            marker_persisted: marker_persisted_durable,
-            last_stage: if success {
-                "install_succeeded".into()
-            } else {
-                fail_stage.into()
-            },
-            forced_at: boundary_forced_at.clone(),
-            completed_at: if success {
-                Some(clock_iso(&clock))
-            } else {
-                None
-            },
-        })
-    } else {
-        None
-    };
-
-    if needs_continue_turn && !success {
-        let _ = stage_log(
-            ref_.clone(),
-            &facts.attempt_id,
-            if fail_stage == "install_failed" {
-                StageName::InstallFailed
-            } else {
-                StageName::CompactFailed
-            },
-            clock.clone(),
-            Some({
-                let mut m = Map::new();
-                if let Some(tid) = &continuation_turn_id {
-                    m.insert("continuationTurnId".into(), json!(tid));
+                "compact_failed"
+            };
+            finalize_opts.terminal = false;
+            finalize_opts.boundary_update = Some(BoundaryUpdate {
+                continuation_turn_id: c_turn.clone(),
+                status: super::store::BoundaryStatus::FailedRepairable,
+                marker_persisted: marker_persisted_durable,
+                last_stage: fail_stage.into(),
+                forced_at: boundary_forced_at.clone(),
+                completed_at: None,
+            });
+            let fail_log = stage_log(
+                ref_.clone(),
+                &facts.attempt_id,
+                if fail_stage == "install_failed" {
+                    StageName::InstallFailed
+                } else {
+                    StageName::CompactFailed
+                },
+                clock.clone(),
+                Some({
+                    let mut m = Map::new();
+                    m.insert("continuationTurnId".into(), json!(c_turn));
+                    m.insert("outcome".into(), json!(outcome_str));
+                    m.insert(
+                        "compactStructurallyValid".into(),
+                        json!(material.compact_structurally_valid),
+                    );
+                    m.insert(
+                        "canProduceValidProviderRequest".into(),
+                        json!(material.can_produce_valid_provider_request),
+                    );
+                    m.insert("installSucceeds".into(), json!(material.install_succeeds));
+                    m
+                }),
+            )
+            .await;
+            if !matches!(fail_log, OpResult::Ok { .. }) {
+                let rel =
+                    release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                        .await;
+                if !matches!(rel, OpResult::Ok { .. }) {
+                    return match rel {
+                        OpResult::Err { error } => OpResult::Err { error },
+                        OpResult::Ok { .. } => unreachable!(),
+                    };
                 }
-                m.insert("outcome".into(), json!(decision.outcome.as_str()));
-                m.insert(
-                    "compactStructurallyValid".into(),
-                    json!(material.compact_structurally_valid),
-                );
-                m.insert(
-                    "canProduceValidProviderRequest".into(),
-                    json!(material.can_produce_valid_provider_request),
-                );
-                m.insert("installSucceeds".into(), json!(material.install_succeeds));
-                m
-            }),
-        )
-        .await;
+                return match fail_log {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+        }
     }
 
-    finalize_attempt(
-        ref_,
-        facts,
-        decision,
-        FinalizeOpts {
-            release_writer: true,
-            // Install/compact fail after force is nonterminal until repair.
-            terminal: success || !needs_continue_turn,
-            boundary_update,
-            forced_boundary_this_attempt,
-            continuation_turn_id: continuation_turn_id.clone(),
-            compact_receipt,
-        },
-        clock,
-        hooks,
-    )
-    .await
+    finalize_attempt(ref_, facts, decision, finalize_opts, clock, hooks).await
 }
 
 // ── Inspect APIs ────────────────────────────────────────────────────────────
