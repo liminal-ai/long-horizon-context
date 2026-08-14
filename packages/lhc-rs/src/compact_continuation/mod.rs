@@ -19,8 +19,7 @@ pub use internal::run::{
 };
 pub use internal::store::{
     AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, StageLogEntry, StageName,
-    StoredCompactContinuationReceipt, WriterClaimKind, WriterClaimRow, read_pending_boundary,
-    upsert_boundary,
+    StoredCompactContinuationReceipt, WriterClaimKind, WriterClaimRow,
 };
 pub use internal::tool_pair::{ToolPairFailReason, ToolPairProof, prove_pending_tool_pair};
 pub use internal::validate_host::validate_host_facts;
@@ -41,5 +40,7 @@ pub mod test_support {
     pub use super::internal::run::{
         CompactContinuationTestHooks, run_compact_continuation_for_tests,
     };
-    pub use super::internal::store::{force_clear_writer, seed_writer_claim};
+    pub use super::internal::store::{
+        force_clear_writer, read_pending_boundary, seed_writer_claim, upsert_boundary,
+    };
 }

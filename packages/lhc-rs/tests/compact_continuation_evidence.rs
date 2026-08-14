@@ -13,11 +13,11 @@ use fixtures::{
     create_inference_callbacks_double, derived_thread_fixture, kind, open_raw,
     run_compact_continuation_for_tests, set_view_injection_db_hook, temp_store, valid_event,
 };
+use lhc::compact_continuation::test_support::{read_pending_boundary, upsert_boundary};
 use lhc::compact_continuation::{
     BoundaryStatus, CompactContinuationHostFacts, HostCompactOpts, ToolPairProof, WriterClaimKind,
     get_pending_compact_continuation_boundary, list_compact_continuation_stages,
-    prove_pending_tool_pair, read_pending_boundary, run_compact_continuation, upsert_boundary,
-    validate_host_facts,
+    prove_pending_tool_pair, run_compact_continuation, validate_host_facts,
 };
 use lhc::messages::{self, MessageKind, RemoveInput};
 use lhc::shared_tech::compact_continuation::{
