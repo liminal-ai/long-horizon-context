@@ -12,7 +12,8 @@ use fixtures::{
 };
 use lhc::compact_continuation::{
     BoundaryStatus, CompactContinuationHostFacts, WriterClaimKind, compute_operation_identity,
-    compute_retry_posture, get_compact_continuation_receipt, get_compact_continuation_writer_claim,
+    compute_retry_posture, get_compact_continuation_attempt_intent,
+    get_compact_continuation_receipt, get_compact_continuation_writer_claim,
     get_pending_compact_continuation_boundary, has_compact_continuation_marker,
     hash_attempt_intent, list_compact_continuation_stages, prove_pending_tool_pair,
     run_compact_continuation, validate_host_facts,
@@ -1946,6 +1947,272 @@ async fn immutable_identity_hash_stable_retry_posture_varies() {
         lhc::compact_continuation::hash_record(&p1).0,
         lhc::compact_continuation::hash_record(&p2).0
     );
+}
+
+#[tokio::test]
+async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let tool_call_id = "call-preserve-X";
+    let events = vec![
+        valid_event(
+            kind::TOOL_CALL,
+            ToolCallOverrides {
+                payload: Some(ToolCallPayload {
+                    tool_call_id: tool_call_id.into(),
+                    tool_name: "read_file".into(),
+                    arguments: {
+                        let mut m = Map::new();
+                        m.insert("path".into(), json!("y.txt"));
+                        m
+                    },
+                }),
+                ..Default::default()
+            },
+        ),
+        valid_event(
+            kind::TOOL_RESULT,
+            ToolResultOverrides {
+                payload: Some(ToolResultPayload {
+                    tool_call_id: tool_call_id.into(),
+                    content: "preserve body ".repeat(20),
+                    is_error: Some(false),
+                }),
+                ..Default::default()
+            },
+        ),
+    ];
+    let _ = intake_stream::message_events(ref_.clone(), &events)
+        .await
+        .expect_ok();
+
+    let mut facts = base_facts(
+        "identity-inspect-1",
+        WorkContinuation::PendingCorrelatedToolResult {
+            tool_call_id: tool_call_id.into(),
+            correlation_valid: true,
+        },
+    );
+    facts.actor = "recovery-actor".into();
+    facts.harness = "recovery-harness".into();
+    facts.policy = CompactContinuationPolicy {
+        upper_trigger_tokens: 77_000,
+        lower_target_tokens: 321,
+        host_capability: CompactContinuationHostCapability::FullStateMachine,
+    };
+    facts.compact = Some(lhc::compact_continuation::HostCompactOpts {
+        profile: Some("continuation".into()),
+        params: Some(ViewCompactParams {
+            lower_bound: Some(321.0),
+            percentages: Some(PartialViewProfilePercentages {
+                full: Some(25.0),
+                smooth: Some(25.0),
+                detailed: Some(25.0),
+                brief: Some(25.0),
+            }),
+        }),
+    });
+
+    let crashed = run_compact_continuation_for_tests(
+        ref_.clone(),
+        facts.clone(),
+        None,
+        Some(CompactContinuationTestHooks {
+            fail_finalize_at_release: true,
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert!(matches!(crashed, OpResult::Err { .. }));
+    let claim = get_compact_continuation_writer_claim(ref_.clone())
+        .await
+        .expect_ok();
+    assert_eq!(claim.attempt_id.as_deref(), Some("identity-inspect-1"));
+
+    let missing = get_compact_continuation_attempt_intent(ref_.clone(), "no-such")
+        .await
+        .expect_ok();
+    assert!(missing.is_none());
+
+    let inspected = get_compact_continuation_attempt_intent(ref_.clone(), "identity-inspect-1")
+        .await
+        .expect_ok()
+        .expect("identity row");
+    assert_eq!(inspected.attempt_id, "identity-inspect-1");
+    assert_eq!(inspected.actor, "recovery-actor");
+    assert_eq!(inspected.harness, "recovery-harness");
+    match &inspected.continuation {
+        WorkContinuation::PendingCorrelatedToolResult { tool_call_id: id, .. } => {
+            assert_eq!(id, tool_call_id);
+        }
+        other => panic!("expected pending tool identity, got {other:?}"),
+    }
+    assert_eq!(inspected.policy.upper_trigger_tokens, 77_000);
+    assert_eq!(inspected.policy.lower_target_tokens, 321);
+    let expected = compute_operation_identity(&facts);
+    assert_eq!(inspected.intent_hash, hash_attempt_intent(&expected).0);
+
+    // Corrupt intent_json → storage_failure; claim remains held.
+    {
+        let db = open_raw(&path);
+        db.prepare(
+            "UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?",
+        )
+        .run(&[
+            SqlParam::from("{not-json"),
+            SqlParam::from("identity-inspect-1"),
+        ]);
+        db.close();
+    }
+    let corrupt = get_compact_continuation_attempt_intent(ref_.clone(), "identity-inspect-1").await;
+    match corrupt {
+        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StorageFailure),
+        OpResult::Ok { .. } => panic!("corrupt intent must fail"),
+    }
+    let claim_after = get_compact_continuation_writer_claim(ref_)
+        .await
+        .expect_ok();
+    assert_eq!(
+        claim_after.attempt_id.as_deref(),
+        Some("identity-inspect-1")
+    );
+}
+
+#[tokio::test]
+async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let tool_call_id = "call-crash-X";
+    let events = vec![
+        valid_event(
+            kind::TOOL_CALL,
+            ToolCallOverrides {
+                payload: Some(ToolCallPayload {
+                    tool_call_id: tool_call_id.into(),
+                    tool_name: "read_file".into(),
+                    arguments: {
+                        let mut m = Map::new();
+                        m.insert("path".into(), json!("y.txt"));
+                        m
+                    },
+                }),
+                ..Default::default()
+            },
+        ),
+        valid_event(
+            kind::TOOL_RESULT,
+            ToolResultOverrides {
+                payload: Some(ToolResultPayload {
+                    tool_call_id: tool_call_id.into(),
+                    content: "preserve body ".repeat(20),
+                    is_error: Some(false),
+                }),
+                ..Default::default()
+            },
+        ),
+    ];
+    let _ = intake_stream::message_events(ref_.clone(), &events)
+        .await
+        .expect_ok();
+
+    let preserve = base_facts(
+        "preserve-claim-only-1",
+        WorkContinuation::PendingCorrelatedToolResult {
+            tool_call_id: tool_call_id.into(),
+            correlation_valid: true,
+        },
+    );
+    let crashed = run_compact_continuation_for_tests(
+        ref_.clone(),
+        preserve,
+        None,
+        Some(CompactContinuationTestHooks {
+            fail_finalize_at_release: true,
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert!(matches!(crashed, OpResult::Err { .. }));
+
+    let identity = get_compact_continuation_attempt_intent(ref_.clone(), "preserve-claim-only-1")
+        .await
+        .expect_ok()
+        .expect("stored identity");
+
+    // Live drift without stored identity → attempt_conflict; claim held.
+    let mut live_drift = base_facts("preserve-claim-only-1", WorkContinuation::ActiveNonTool);
+    live_drift.writer_claim = WriterClaim::Lhc;
+    live_drift.policy = CompactContinuationPolicy {
+        upper_trigger_tokens: 999_999,
+        lower_target_tokens: 1,
+        host_capability: CompactContinuationHostCapability::FullStateMachine,
+    };
+    live_drift.compact = Some(lhc::compact_continuation::HostCompactOpts {
+        profile: None,
+        params: Some(ViewCompactParams {
+            lower_bound: Some(1.0),
+            percentages: None,
+        }),
+    });
+    match run_compact_continuation(ref_.clone(), live_drift).await {
+        OpResult::Err { error } => {
+            assert_eq!(error.code, ErrorCode::CompactContinuationAttemptConflict);
+        }
+        OpResult::Ok { .. } => panic!("drift must conflict"),
+    }
+    assert_eq!(
+        get_compact_continuation_writer_claim(ref_.clone())
+            .await
+            .expect_ok()
+            .attempt_id
+            .as_deref(),
+        Some("preserve-claim-only-1")
+    );
+
+    // Recovery with stored immutable fields + fresh mutable posture.
+    let mut recovered = base_facts(
+        &identity.attempt_id,
+        match &identity.continuation {
+            WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } => {
+                WorkContinuation::PendingCorrelatedToolResult {
+                    tool_call_id: tool_call_id.clone(),
+                    correlation_valid: true,
+                }
+            }
+            other => other.clone(),
+        },
+    );
+    recovered.actor = identity.actor.clone();
+    recovered.harness = identity.harness.clone();
+    recovered.policy = identity.policy.clone();
+    recovered.compact = identity.compact.clone();
+    recovered.writer_claim = WriterClaim::Lhc;
+    recovered.seam.input_epoch_at_decision = 9;
+    recovered.seam.input_epoch_at_apply = 9;
+    let recovered_run = run_compact_continuation(ref_.clone(), recovered)
+        .await
+        .expect_ok();
+    let _ = recovered_run.receipt.outcome;
+    assert_eq!(
+        get_compact_continuation_writer_claim(ref_.clone())
+            .await
+            .expect_ok()
+            .claim,
+        WriterClaimKind::None
+    );
+
+    seed_open_agentic_turn(&ref_).await;
+    let fresh = run_compact_continuation(
+        ref_,
+        base_facts(
+            "fresh-after-preserve-recovery",
+            WorkContinuation::ActiveNonTool,
+        ),
+    )
+    .await
+    .expect_ok();
+    let _ = fresh.receipt.outcome;
+    let _ = path;
 }
 
 #[tokio::test]

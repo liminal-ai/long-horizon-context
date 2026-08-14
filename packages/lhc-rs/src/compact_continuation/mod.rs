@@ -12,11 +12,13 @@ mod internal;
 
 pub use internal::run::{
     CompactContinuationHostFacts, CompactContinuationRunResult, HostCompactOpts,
-    compute_attempt_intent, compute_operation_identity, compute_retry_posture,
+    StoredOperationIdentity, compute_attempt_intent, compute_operation_identity,
+    compute_retry_posture, get_compact_continuation_attempt_intent,
     get_compact_continuation_receipt, get_compact_continuation_writer_claim,
     get_pending_compact_continuation_boundary, has_compact_continuation_marker,
     hash_attempt_intent, hash_record, list_compact_continuation_boundaries,
-    list_compact_continuation_receipts, list_compact_continuation_stages, run_compact_continuation,
+    list_compact_continuation_receipts, list_compact_continuation_stages,
+    parse_stored_operation_identity, run_compact_continuation,
 };
 pub use internal::store::{
     AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, StageLogEntry, StageName,

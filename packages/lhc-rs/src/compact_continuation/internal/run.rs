@@ -31,13 +31,13 @@ use crate::threads::{ThreadRef, resolve_thread_ref};
 
 use super::candidate::assemble_candidate_from_prepared;
 use super::store::{
-    BoundaryRow, InsertAttemptIntentResult, StageName, StoredCompactContinuationReceipt,
-    WriterClaimKind, WriterClaimRow, append_stage_log, claim_lhc_writer,
-    find_continuation_turn_from_force_key, insert_attempt_intent, list_boundaries, list_receipts,
-    list_stage_log, mark_force_intent_applied, marker_exists_by_idempotency_key, persist_receipt,
-    read_force_intent, read_open_turn_ids, read_open_turn_member_count, read_pending_boundary,
-    read_receipt_by_attempt_id, read_writer_claim, record_force_intent, release_lhc_writer,
-    upsert_boundary,
+    AttemptRow, BoundaryRow, InsertAttemptIntentResult, StageName,
+    StoredCompactContinuationReceipt, WriterClaimKind, WriterClaimRow, append_stage_log,
+    claim_lhc_writer, find_continuation_turn_from_force_key, insert_attempt_intent, list_boundaries,
+    list_receipts, list_stage_log, mark_force_intent_applied, marker_exists_by_idempotency_key,
+    persist_receipt, read_attempt_intent, read_force_intent, read_open_turn_ids,
+    read_open_turn_member_count, read_pending_boundary, read_receipt_by_attempt_id,
+    read_writer_claim, record_force_intent, release_lhc_writer, upsert_boundary,
 };
 use super::tool_pair::{ToolPairProof, prove_pending_tool_pair};
 use super::validate_host::validate_host_facts;
@@ -424,6 +424,195 @@ pub fn hash_attempt_intent(intent: &Map<String, Value>) -> (String, String) {
     let intent_json = stable_stringify(&Value::Object(intent.clone()));
     let intent_hash = sha256_hex(&intent_json);
     (intent_hash, intent_json)
+}
+
+/// Parsed immutable operation identity from a durable attempt-intent row.
+///
+/// Read-only recovery surface: hosts re-enter claim-only / same-attempt repair
+/// with these fields so the intent hash matches. Mutable posture is not stored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredOperationIdentity {
+    pub contract_version: String,
+    pub attempt_id: String,
+    pub actor: String,
+    pub harness: String,
+    /// Continuation identity only (`correlationValid` is posture and omitted).
+    pub continuation: WorkContinuation,
+    pub policy: CompactContinuationPolicy,
+    pub compact: Option<HostCompactOpts>,
+    pub intent_hash: String,
+    pub intent_json: String,
+    pub created_at: String,
+}
+
+fn require_string_field(obj: &Map<String, Value>, key: &str, ctx: &str) -> Result<String, String> {
+    match obj.get(key).and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => Ok(s.to_string()),
+        _ => Err(format!("{ctx}: missing or empty string field '{key}'")),
+    }
+}
+
+fn require_i64_field(obj: &Map<String, Value>, key: &str, ctx: &str) -> Result<i64, String> {
+    match obj.get(key).and_then(|v| v.as_i64()) {
+        Some(n) => Ok(n),
+        None => match obj.get(key).and_then(|v| v.as_f64()) {
+            Some(n) if n.is_finite() && n.fract() == 0.0 => Ok(n as i64),
+            _ => Err(format!("{ctx}: missing or non-finite number field '{key}'")),
+        },
+    }
+}
+
+/// Fail-fast parse of a stored attempt-intent row into operation identity.
+/// Never synthesizes missing fields.
+pub fn parse_stored_operation_identity(row: &AttemptRow) -> Result<StoredOperationIdentity, String> {
+    let parsed: Value = serde_json::from_str(&row.intent_json).map_err(|e| {
+        format!(
+            "compact-continuation attempt intent JSON corrupt for attemptId={}: {e}",
+            row.attempt_id
+        )
+    })?;
+    let obj = parsed.as_object().ok_or_else(|| {
+        format!(
+            "compact-continuation attempt intent JSON must be an object for attemptId={}",
+            row.attempt_id
+        )
+    })?;
+    let contract_version = require_string_field(obj, "contractVersion", "operation identity")?;
+    let attempt_id = require_string_field(obj, "attemptId", "operation identity")?;
+    if attempt_id != row.attempt_id {
+        return Err(format!(
+            "operation identity attemptId mismatch: row={} json={attempt_id}",
+            row.attempt_id
+        ));
+    }
+    let actor = require_string_field(obj, "actor", "operation identity")?;
+    let harness = require_string_field(obj, "harness", "operation identity")?;
+
+    let cont_obj = obj
+        .get("continuation")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "operation identity: continuation must be an object".to_string())?;
+    let cont_kind = require_string_field(cont_obj, "kind", "operation identity.continuation")?;
+    let continuation = match cont_kind.as_str() {
+        "none" => WorkContinuation::None,
+        "active_non_tool" => WorkContinuation::ActiveNonTool,
+        "pending_correlated_tool_result" => {
+            let tool_call_id =
+                require_string_field(cont_obj, "toolCallId", "operation identity.continuation")?;
+            // correlationValid is posture; stored identity omits it. Hosts rebuild
+            // with a fresh correlationValid on re-entry (typically true after repair).
+            WorkContinuation::PendingCorrelatedToolResult {
+                tool_call_id,
+                correlation_valid: true,
+            }
+        }
+        other => {
+            return Err(format!(
+                "operation identity: unknown continuation.kind '{other}'"
+            ));
+        }
+    };
+
+    let policy_obj = obj
+        .get("policy")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "operation identity: policy must be an object".to_string())?;
+    let host_capability_str =
+        require_string_field(policy_obj, "hostCapability", "operation identity.policy")?;
+    let host_capability = match host_capability_str.as_str() {
+        "full_state_machine" => {
+            crate::shared_tech::compact_continuation::CompactContinuationHostCapability::FullStateMachine
+        }
+        "capability_limited" => {
+            crate::shared_tech::compact_continuation::CompactContinuationHostCapability::CapabilityLimited
+        }
+        other => {
+            return Err(format!(
+                "operation identity: invalid policy.hostCapability '{other}'"
+            ));
+        }
+    };
+    let policy = CompactContinuationPolicy {
+        upper_trigger_tokens: require_i64_field(
+            policy_obj,
+            "upperTriggerTokens",
+            "operation identity.policy",
+        )?,
+        lower_target_tokens: require_i64_field(
+            policy_obj,
+            "lowerTargetTokens",
+            "operation identity.policy",
+        )?,
+        host_capability,
+    };
+
+    let compact = if let Some(compact_val) = obj.get("compact") {
+        if compact_val.is_null() {
+            None
+        } else {
+            Some(
+                serde_json::from_value::<HostCompactOpts>(compact_val.clone()).map_err(|e| {
+                    format!("operation identity: compact parse failed: {e}")
+                })?,
+            )
+        }
+    } else {
+        None
+    };
+
+    // Integrity: intent_hash must be sha256 of the stored intent_json bytes.
+    // Do not re-serialize parsed fields (float/key drift would false-fail).
+    let recomputed = sha256_hex(&row.intent_json);
+    if recomputed != row.intent_hash {
+        return Err(format!(
+            "operation identity intent_hash mismatch for attemptId={}: stored={} recomputed={recomputed}",
+            row.attempt_id, row.intent_hash
+        ));
+    }
+
+    Ok(StoredOperationIdentity {
+        contract_version,
+        attempt_id,
+        actor,
+        harness,
+        continuation,
+        policy,
+        compact,
+        intent_hash: row.intent_hash.clone(),
+        intent_json: row.intent_json.clone(),
+        created_at: row.created_at.clone(),
+    })
+}
+
+/// Read-only inspection: load and parse the durable attempt-intent / operation
+/// identity for `attempt_id`. Returns `None` when no row exists. Corrupt JSON
+/// or incomplete identity fails as `storage_failure` — never synthesizes.
+pub async fn get_compact_continuation_attempt_intent(
+    ref_: ThreadRef,
+    attempt_id: &str,
+) -> OpResult<Option<StoredOperationIdentity>> {
+    if attempt_id.is_empty() {
+        return storage_failure(
+            "compact-continuation attempt intent requires a non-empty attemptId",
+        );
+    }
+    let attempt_id = attempt_id.to_string();
+    let row_result = create_db_read_transaction(ref_, move |tx| {
+        Box::pin(async move { read_attempt_intent(tx.db, &attempt_id) })
+    })
+    .await;
+    match row_result {
+        OpResult::Ok { value: None } => OpResult::Ok { value: None },
+        OpResult::Ok { value: Some(row) } => match parse_stored_operation_identity(&row) {
+            Ok(identity) => OpResult::Ok {
+                value: Some(identity),
+            },
+            Err(reason) => storage_failure(&format!(
+                "compact-continuation attempt intent read failed: {reason}"
+            )),
+        },
+        OpResult::Err { error } => OpResult::Err { error },
+    }
 }
 
 pub fn hash_record(value: &Map<String, Value>) -> (String, String) {

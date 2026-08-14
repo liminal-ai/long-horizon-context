@@ -944,6 +944,229 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(stages.value.some((s) => s.stage === "receipt_recorded")).toBe(true);
   });
 
+  it("getCompactContinuationAttemptIntent returns stored immutable identity for recovery", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const toolCallId = "call-preserve-X";
+    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
+      validEvent("tool_call", {
+        payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
+      }),
+    ]);
+    const facts = baseFacts({
+      attemptId: "identity-inspect-1",
+      actor: "recovery-actor",
+      harness: "recovery-harness",
+      continuation: { kind: "pending_correlated_tool_result", toolCallId, correlationValid: true },
+      policy: {
+        upperTriggerTokens: 77_000,
+        lowerTargetTokens: 321,
+        hostCapability: "full_state_machine",
+      },
+      compact: {
+        profile: "continuation",
+        params: { lowerBound: 321, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } },
+      },
+    });
+    // Claim-only crash: intent + writer held, no successful finalize.
+    const crashed = await runCCTest(fixture.filePath, facts, { failFinalizeAtRelease: true });
+    expect(crashed.ok).toBe(false);
+    if (crashed.ok) return;
+    expect(crashed.error.code).toBe("storage_failure");
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "identity-inspect-1" });
+
+    const missing = await compactContinuation.getCompactContinuationAttemptIntent(
+      { filePath: fixture.filePath },
+      "no-such-attempt",
+    );
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) return;
+    expect(missing.value).toBeNull();
+
+    const inspected = await compactContinuation.getCompactContinuationAttemptIntent(
+      { filePath: fixture.filePath },
+      "identity-inspect-1",
+    );
+    expect(inspected.ok).toBe(true);
+    if (!inspected.ok) return;
+    expect(inspected.value).not.toBeNull();
+    if (inspected.value === null) return;
+    expect(inspected.value.attemptId).toBe("identity-inspect-1");
+    expect(inspected.value.actor).toBe("recovery-actor");
+    expect(inspected.value.harness).toBe("recovery-harness");
+    expect(inspected.value.continuation).toEqual({
+      kind: "pending_correlated_tool_result",
+      toolCallId,
+    });
+    expect(inspected.value.policy).toEqual({
+      upperTriggerTokens: 77_000,
+      lowerTargetTokens: 321,
+      hostCapability: "full_state_machine",
+    });
+    expect(inspected.value.compact?.profile).toBe("continuation");
+    expect(inspected.value.compact?.params?.lowerBound).toBe(321);
+    // Hash integrity: stored identity matches computeOperationIdentity without mutable posture.
+    const expected = compactContinuation.computeOperationIdentity(facts);
+    const { intentHash } = compactContinuation.hashAttemptIntent(expected);
+    expect(inspected.value.intentHash).toBe(intentHash);
+
+    // Corrupt intent_json → storage_failure; never synthesizes/clears claim.
+    const db = openRaw(fixture.filePath);
+    try {
+      db.prepare(
+        `UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?`,
+      ).run("{not-json", "identity-inspect-1");
+    } finally {
+      db.close();
+    }
+    const corrupt = await compactContinuation.getCompactContinuationAttemptIntent(
+      { filePath: fixture.filePath },
+      "identity-inspect-1",
+    );
+    expect(corrupt.ok).toBe(false);
+    if (corrupt.ok) return;
+    expect(corrupt.error.code).toBe("storage_failure");
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "identity-inspect-1" });
+  });
+
+  it("claim-only preserve-path re-enters with stored identity despite live seam drift", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const toolCallId = "call-crash-X";
+    const preserveFacts = baseFacts({
+      attemptId: "preserve-claim-only-1",
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId,
+        correlationValid: true,
+      },
+      // Seed both tool call+result so preserve path can prove the pair.
+      // (seedOpenAgenticTurn already has call-active-1; add matching pair via additional events below if needed.)
+    });
+    // Inject the preserve tool pair into the open turn so proof can succeed.
+    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
+      validEvent("tool_call", {
+        payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
+      }),
+    ]);
+
+    const crashed = await runCCTest(fixture.filePath, preserveFacts, { failFinalizeAtRelease: true });
+    expect(crashed.ok).toBe(false);
+    if (crashed.ok) return;
+    expect(writerClaimOf(fixture.filePath)).toEqual({
+      claim: "lhc",
+      attemptId: "preserve-claim-only-1",
+    });
+    const pendingAfterCrash = await compactContinuation.getPendingCompactContinuationBoundary({
+      filePath: fixture.filePath,
+    });
+    expect(pendingAfterCrash.ok).toBe(true);
+    // Preserve path may or may not leave a boundary; claim-only shape is intent+claim.
+    // When no complete boundary, owner still holds claim.
+
+    const identity = await compactContinuation.getCompactContinuationAttemptIntent(
+      { filePath: fixture.filePath },
+      "preserve-claim-only-1",
+    );
+    expect(identity.ok).toBe(true);
+    if (!identity.ok || identity.value === null) {
+      expect(identity.ok && identity.value !== null).toBe(true);
+      return;
+    }
+    expect(identity.value.continuation).toEqual({
+      kind: "pending_correlated_tool_result",
+      toolCallId,
+    });
+
+    // Live seam has a different kind and no toolCallId X — must still re-enter with stored identity.
+    const liveDrift = baseFacts({
+      attemptId: "preserve-claim-only-1",
+      writerClaim: "lhc",
+      continuation: { kind: "active_non_tool" },
+      // Policy/compact drift relative to stored identity would also conflict without recovery.
+      policy: {
+        upperTriggerTokens: 999_999,
+        lowerTargetTokens: 1,
+        hostCapability: "full_state_machine",
+      },
+      compact: { params: { lowerBound: 1 } },
+    });
+    // Without stored identity: conflict.
+    const conflict = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      liveDrift,
+    );
+    expect(conflict.ok).toBe(false);
+    if (conflict.ok) return;
+    expect(conflict.error.code).toBe("compact_continuation_attempt_conflict");
+    // Claim must not be cleared by the conflicted re-entry.
+    expect(writerClaimOf(fixture.filePath)).toEqual({
+      claim: "lhc",
+      attemptId: "preserve-claim-only-1",
+    });
+
+    // Recovery: rebuild host facts from stored immutable identity + fresh mutable posture.
+    const recoveredFacts = baseFacts({
+      attemptId: identity.value.attemptId,
+      actor: identity.value.actor,
+      harness: identity.value.harness,
+      policy: identity.value.policy,
+      ...(identity.value.compact !== undefined ? { compact: identity.value.compact } : {}),
+      continuation:
+        identity.value.continuation.kind === "pending_correlated_tool_result"
+          ? {
+              kind: "pending_correlated_tool_result",
+              toolCallId: identity.value.continuation.toolCallId,
+              correlationValid: true,
+            }
+          : identity.value.continuation,
+      writerClaim: "lhc",
+      // Fresh mutable posture (different from original crash entry).
+      seam: {
+        modelResponseComplete: true,
+        requestedToolsSettled: true,
+        captureFlushed: true,
+        beforeNextProviderRequest: true,
+        insideTransportRetry: false,
+        inputEpochAtDecision: 9,
+        inputEpochAtApply: 9,
+      },
+      providerUsage: {
+        available: true,
+        inputTokens: 95_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        total: 95_000,
+        domain: "provider_reported_input",
+      },
+      postMeasurementEstimate: {
+        tokens: 500,
+        source: "lhc_token_estimate",
+        domain: "source_labelled_estimate",
+      },
+    });
+    const recovered = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      recoveredFacts,
+    );
+    expect(recovered.ok).toBe(true);
+    if (!recovered.ok) return;
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+    // Fresh attempt id works after owner released.
+    await seedOpenAgenticTurn(fixture.filePath);
+    const fresh = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "fresh-after-preserve-recovery", continuation: { kind: "active_non_tool" } }),
+    );
+    expect(fresh.ok).toBe(true);
+  });
+
   it("SDK surface exposes compactContinuation on initLhc", async () => {
     const sdk: Lhc = initLhc({
       inferenceCallbacks: createInferenceCallbacksDouble(),

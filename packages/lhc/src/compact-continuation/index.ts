@@ -17,6 +17,10 @@
  * 5. Claim-only crash (writer held, no boundary): same attempt may re-enter under
  *    quiet/health/mutating facts; quiet/health release the owned claim; mutating
  *    resumes. Fresh attempts stay blocked until the owner resumes or releases.
+ *    Hosts must re-enter with the **stored** operation identity from
+ *    `getCompactContinuationAttemptIntent` (continuation kind/toolCallId, policy,
+ *    compact, actor/harness) — live seam continuation cannot recreate a
+ *    response-scoped toolCallId after restart.
  * 6. Stage history is append-only via `listCompactContinuationStages` (includes
  *    per-entry `retry_posture` snapshots).
  *
@@ -27,9 +31,11 @@
 export {
   type CompactContinuationHostFacts,
   type CompactContinuationRunResult,
+  type StoredOperationIdentity,
   computeAttemptIntent,
   computeOperationIdentity,
   computeRetryPosture,
+  getCompactContinuationAttemptIntent,
   getCompactContinuationReceipt,
   getCompactContinuationWriterClaim,
   getPendingCompactContinuationBoundary,
@@ -39,6 +45,7 @@ export {
   listCompactContinuationBoundaries,
   listCompactContinuationReceipts,
   listCompactContinuationStages,
+  parseStoredOperationIdentity,
   runCompactContinuation,
 } from "./internal/run.js";
 

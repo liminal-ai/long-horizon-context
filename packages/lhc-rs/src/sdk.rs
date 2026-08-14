@@ -46,12 +46,14 @@ pub use crate::shared_tech::compact_continuation::{
 pub use crate::compact_continuation::{
     AttemptRow, BoundaryRow, BoundaryStatus, CompactContinuationHostFacts,
     CompactContinuationRunResult, ForceIntentRow, StageName, StoredCompactContinuationReceipt,
-    ToolPairProof, WriterClaimRow, compute_attempt_intent, compute_operation_identity,
-    compute_retry_posture, get_compact_continuation_receipt, get_compact_continuation_writer_claim,
+    StoredOperationIdentity, ToolPairProof, WriterClaimRow, compute_attempt_intent,
+    compute_operation_identity, compute_retry_posture, get_compact_continuation_attempt_intent,
+    get_compact_continuation_receipt, get_compact_continuation_writer_claim,
     get_pending_compact_continuation_boundary, has_compact_continuation_marker,
     hash_attempt_intent, hash_record, list_compact_continuation_boundaries,
-    list_compact_continuation_receipts, list_compact_continuation_stages, prove_pending_tool_pair,
-    run_compact_continuation, validate_host_facts,
+    list_compact_continuation_receipts, list_compact_continuation_stages,
+    parse_stored_operation_identity, prove_pending_tool_pair, run_compact_continuation,
+    validate_host_facts,
 };
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{

@@ -49,6 +49,7 @@ import { resolveThreadRef } from "../../threads/index.js";
 import { assembleCandidateFromPrepared } from "./candidate.js";
 import {
   appendStageLog,
+  type AttemptRow,
   type BoundaryRow,
   claimLhcWriter,
   findContinuationTurnFromForceKey,
@@ -59,6 +60,7 @@ import {
   markerExistsByIdempotencyKey,
   markForceIntentApplied,
   persistReceipt,
+  readAttemptIntent,
   readForceIntent,
   readOpenTurnIds,
   readOpenTurnMemberCount,
@@ -393,6 +395,184 @@ export function hashRecord(value: Record<string, unknown>): { hash: string; json
   const json = stableStringify(value);
   const hash = createHash("sha256").update(json).digest("hex");
   return { hash, json };
+}
+
+/**
+ * Parsed immutable operation identity from a durable attempt-intent row.
+ *
+ * Read-only recovery surface: hosts re-enter claim-only / same-attempt repair
+ * with these fields so the intent hash matches. Mutable posture (seam, usage,
+ * estimate, capture, writer claim host assertion, correlationValid) is not
+ * stored here and must be rebuilt fresh.
+ */
+export type StoredOperationIdentity = {
+  contractVersion: string;
+  attemptId: string;
+  actor: string;
+  harness: string;
+  continuation:
+    | { kind: "none" }
+    | { kind: "active_non_tool" }
+    | { kind: "pending_correlated_tool_result"; toolCallId: string };
+  policy: CompactContinuationPolicy;
+  compact?: { profile?: string; params?: ViewCompactParams };
+  /** Stored sha256 of intent_json (identity bytes as written). */
+  intentHash: string;
+  /** Raw stored intent JSON (stable-stringified identity). */
+  intentJson: string;
+  createdAt: string;
+};
+
+function requireStringField(obj: Record<string, unknown>, key: string, ctx: string): string {
+  const v = obj[key];
+  if (typeof v !== "string" || v.length === 0) {
+    throw new Error(`${ctx}: missing or empty string field '${key}'`);
+  }
+  return v;
+}
+
+function requireFiniteNumber(obj: Record<string, unknown>, key: string, ctx: string): number {
+  const v = obj[key];
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new Error(`${ctx}: missing or non-finite number field '${key}'`);
+  }
+  return v;
+}
+
+/**
+ * Fail-fast parse of a stored attempt-intent row into operation identity.
+ * Never synthesizes missing fields; throws with a storage-corruption detail.
+ */
+export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationIdentity {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.intentJson);
+  } catch (cause) {
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `compact-continuation attempt intent JSON corrupt for attemptId=${row.attemptId}: ${msg}`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `compact-continuation attempt intent JSON must be an object for attemptId=${row.attemptId}`,
+    );
+  }
+  const obj = parsed as Record<string, unknown>;
+  const contractVersion = requireStringField(obj, "contractVersion", "operation identity");
+  const attemptId = requireStringField(obj, "attemptId", "operation identity");
+  if (attemptId !== row.attemptId) {
+    throw new Error(
+      `operation identity attemptId mismatch: row=${row.attemptId} json=${attemptId}`,
+    );
+  }
+  const actor = requireStringField(obj, "actor", "operation identity");
+  const harness = requireStringField(obj, "harness", "operation identity");
+
+  const contRaw = obj["continuation"];
+  if (contRaw === null || typeof contRaw !== "object" || Array.isArray(contRaw)) {
+    throw new Error("operation identity: continuation must be an object");
+  }
+  const contObj = contRaw as Record<string, unknown>;
+  const contKind = requireStringField(contObj, "kind", "operation identity.continuation");
+  let continuation: StoredOperationIdentity["continuation"];
+  if (contKind === "none") {
+    continuation = { kind: "none" };
+  } else if (contKind === "active_non_tool") {
+    continuation = { kind: "active_non_tool" };
+  } else if (contKind === "pending_correlated_tool_result") {
+    const toolCallId = requireStringField(contObj, "toolCallId", "operation identity.continuation");
+    continuation = { kind: "pending_correlated_tool_result", toolCallId };
+  } else {
+    throw new Error(`operation identity: unknown continuation.kind '${contKind}'`);
+  }
+
+  const policyRaw = obj["policy"];
+  if (policyRaw === null || typeof policyRaw !== "object" || Array.isArray(policyRaw)) {
+    throw new Error("operation identity: policy must be an object");
+  }
+  const policyObj = policyRaw as Record<string, unknown>;
+  const hostCapability = requireStringField(policyObj, "hostCapability", "operation identity.policy");
+  if (hostCapability !== "full_state_machine" && hostCapability !== "capability_limited") {
+    throw new Error(`operation identity: invalid policy.hostCapability '${hostCapability}'`);
+  }
+  const policy: CompactContinuationPolicy = {
+    upperTriggerTokens: requireFiniteNumber(policyObj, "upperTriggerTokens", "operation identity.policy"),
+    lowerTargetTokens: requireFiniteNumber(policyObj, "lowerTargetTokens", "operation identity.policy"),
+    hostCapability,
+  };
+
+  let compact: StoredOperationIdentity["compact"];
+  if (obj["compact"] !== undefined) {
+    const compactRaw = obj["compact"];
+    if (compactRaw === null || typeof compactRaw !== "object" || Array.isArray(compactRaw)) {
+      throw new Error("operation identity: compact must be an object when present");
+    }
+    const compactObj = compactRaw as Record<string, unknown>;
+    const out: { profile?: string; params?: ViewCompactParams } = {};
+    if (compactObj["profile"] !== undefined) {
+      if (typeof compactObj["profile"] !== "string") {
+        throw new Error("operation identity: compact.profile must be a string");
+      }
+      out.profile = compactObj["profile"];
+    }
+    if (compactObj["params"] !== undefined) {
+      if (
+        compactObj["params"] === null ||
+        typeof compactObj["params"] !== "object" ||
+        Array.isArray(compactObj["params"])
+      ) {
+        throw new Error("operation identity: compact.params must be an object");
+      }
+      out.params = compactObj["params"] as ViewCompactParams;
+    }
+    compact = out;
+  }
+
+  // Integrity: intent_hash must be sha256 of the stored intent_json bytes.
+  // Do not re-serialize parsed fields (float/key drift would false-fail).
+  const recomputed = createHash("sha256").update(row.intentJson).digest("hex");
+  if (recomputed !== row.intentHash) {
+    throw new Error(
+      `operation identity intent_hash mismatch for attemptId=${row.attemptId}: stored=${row.intentHash} recomputed=${recomputed}`,
+    );
+  }
+
+  return {
+    contractVersion,
+    attemptId,
+    actor,
+    harness,
+    continuation,
+    policy,
+    ...(compact !== undefined ? { compact } : {}),
+    intentHash: row.intentHash,
+    intentJson: row.intentJson,
+    createdAt: row.createdAt,
+  };
+}
+
+/**
+ * Read-only inspection: load and parse the durable attempt-intent / operation
+ * identity for `attemptId`. Returns `null` when no row exists. Corrupt JSON or
+ * incomplete identity fails as `storage_failure` — never synthesizes or clears.
+ */
+export async function getCompactContinuationAttemptIntent(
+  ref: ThreadRef,
+  attemptId: string,
+): Promise<OpResult<StoredOperationIdentity | null>> {
+  if (typeof attemptId !== "string" || attemptId.length === 0) {
+    return storageFailure("compact-continuation attempt intent requires a non-empty attemptId");
+  }
+  try {
+    return await createDbReadTransaction(ref, (tx) => {
+      const row = readAttemptIntent(tx.db, attemptId);
+      if (row === null) return null;
+      return parseStoredOperationIdentity(row);
+    });
+  } catch (cause) {
+    return storageFailure(`compact-continuation attempt intent read failed: ${detail(cause)}`);
+  }
 }
 
 async function stageLog(
