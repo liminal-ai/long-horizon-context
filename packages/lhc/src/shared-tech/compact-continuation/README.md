@@ -123,7 +123,7 @@ Host supplies seam, provider usage, post-measurement estimate, policy, continuat
 ### Durable stages
 
 1. Seam eligibility / epoch (skip — no writer claim).
-2. Claim LHC writer (schema v7 `compact_continuation_writer`).
+2. Claim LHC writer (schema v10 `compact_continuation_writer`).
 3. Optional `force_turn_end` with reason `context_compact_continue` (atomic open of one continuation turn).
 4. Compact assembly (`threadView.prepareCompact`) — degraded derivations do not block structure.
 5. Typed `compact_continuation_marker` event (idempotency `lhc.compact_continuation:<tN>`).
@@ -150,4 +150,4 @@ Repair detects an applied boundary + marker from durable state and never forces 
 
 ### Schema
 
-Thread schema **v7**: `compact_continuation_writer`, `compact_continuation_receipt`. Fresh create + 6→7 migration.
+Thread schema **v10**: `compact_continuation_writer`, `compact_continuation_boundary` (at most one unresolved), `compact_continuation_receipt` (terminal), `compact_continuation_attempt` (immutable identity), `compact_continuation_force_intent`, stage log (append-only, includes retry_posture). Fresh create + migrations 6→7→8→9→10.

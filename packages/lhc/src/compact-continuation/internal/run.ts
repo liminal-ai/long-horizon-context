@@ -70,16 +70,22 @@ import {
   type StageName,
   type StoredCompactContinuationReceipt,
   upsertBoundary,
+  type WriterClaimRow,
 } from "./store.js";
 import { provePendingToolPair } from "./tool-pair.js";
 import { validateHostFacts } from "./validate-host.js";
 
 // ── Host input ──────────────────────────────────────────────────────────────
 
+/**
+ * Public host facts for compact-continuation. Closed validation rejects
+ * unknown fields including `testHooks` — fault injection is internal-only
+ * via `runCompactContinuationForTests`.
+ */
 export type CompactContinuationHostFacts = {
   /**
    * Stable attempt key. Repair reuses the same id. A completed attemptId
-   * replays the stored terminal receipt without re-mutation when intent matches.
+   * replays the stored terminal receipt without re-mutation when identity matches.
    */
   attemptId: string;
   seam: CompactContinuationSeam;
@@ -88,8 +94,9 @@ export type CompactContinuationHostFacts = {
   policy: CompactContinuationPolicy;
   continuation: WorkContinuation;
   /**
-   * Host writer posture at seam entry. `lhc` means this same attempt already
-   * holds the claim (crash recovery). `native`/`conflict` refuse.
+   * Host writer posture at seam entry. Informational for the oracle; durable
+   * claim ownership is always re-read from storage and never released based on
+   * host `writerClaim` alone. `native`/`conflict` refuse.
    */
   writerClaim: WriterClaim;
   captureComplete: boolean;
@@ -99,9 +106,9 @@ export type CompactContinuationHostFacts = {
   actor: string;
   harness: string;
   compact?: { profile?: string; params?: ViewCompactParams };
-  testHooks?: CompactContinuationTestHooks;
 };
 
+/** Test-only fault injection. Not part of the public host-facts surface. */
 export type CompactContinuationTestHooks = {
   forceCompactStructurallyValid?: boolean;
   forceInstallSucceeds?: boolean;
@@ -126,6 +133,16 @@ export type CompactContinuationTestHooks = {
   failFinalizeAfterReceipt?: boolean;
   /** Throw at release inside finalize txn. */
   failFinalizeAtRelease?: boolean;
+  /**
+   * After releaseLhcWriter succeeds and stage log is written, before COMMIT.
+   * Proves rollback restores prior writer claim after a successful release update.
+   */
+  failFinalizeAfterReleaseBeforeCommit?: boolean;
+};
+
+/** Internal run options. Production callers use runCompactContinuation (no hooks). */
+export type CompactContinuationRunOptions = {
+  testHooks?: CompactContinuationTestHooks;
 };
 
 export type CompactContinuationRunResult = {
@@ -304,30 +321,69 @@ function stableStringify(value: unknown): string {
 }
 
 /**
- * Immutable attempt intent (excludes writerClaim and testHooks).
- * Used for conflict detection on reuse and terminal replay.
+ * Immutable operation identity — must match on every replay/resume.
+ * Drift returns compact_continuation_attempt_conflict before mutation.
+ *
+ * Includes: contract version, attempt id, actor/harness, continuation kind +
+ * toolCallId (correlationValid is posture), policy, compact profile/params.
+ * Excludes seam flags/epochs, usage, estimate, capture/identity, writer posture.
  */
-export function computeAttemptIntent(facts: CompactContinuationHostFacts): Record<string, unknown> {
+export function computeOperationIdentity(facts: CompactContinuationHostFacts): Record<string, unknown> {
+  const continuationIdentity: Record<string, unknown> =
+    facts.continuation.kind === "pending_correlated_tool_result"
+      ? { kind: facts.continuation.kind, toolCallId: facts.continuation.toolCallId }
+      : { kind: facts.continuation.kind };
   return {
     contractVersion: COMPACT_CONTINUATION_CONTRACT_VERSION,
     attemptId: facts.attemptId,
     actor: facts.actor,
     harness: facts.harness,
+    continuation: continuationIdentity,
+    policy: facts.policy,
+    ...(facts.compact !== undefined ? { compact: facts.compact } : {}),
+  };
+}
+
+/**
+ * Mutable retry posture — may change across same-attempt repair entries.
+ * Appended to the stage log per invocation; never silently retained as identity.
+ */
+export function computeRetryPosture(
+  facts: CompactContinuationHostFacts,
+  durableWriter: WriterClaimRow,
+): Record<string, unknown> {
+  return {
     seam: facts.seam,
     providerUsage: facts.providerUsage,
     postMeasurementEstimate: facts.postMeasurementEstimate,
-    policy: facts.policy,
-    continuation: facts.continuation,
     captureComplete: facts.captureComplete,
     providerIdentityValid: facts.providerIdentityValid,
-    ...(facts.compact !== undefined ? { compact: facts.compact } : {}),
+    hostWriterClaim: facts.writerClaim,
+    durableWriter: {
+      claim: durableWriter.claim,
+      attemptId: durableWriter.attemptId,
+    },
+    ...(facts.continuation.kind === "pending_correlated_tool_result"
+      ? { correlationValid: facts.continuation.correlationValid }
+      : {}),
   };
+}
+
+/** @deprecated Use computeOperationIdentity. Kept as alias for call sites/tests. */
+export function computeAttemptIntent(facts: CompactContinuationHostFacts): Record<string, unknown> {
+  return computeOperationIdentity(facts);
 }
 
 export function hashAttemptIntent(intent: Record<string, unknown>): { intentHash: string; intentJson: string } {
   const intentJson = stableStringify(intent);
   const intentHash = createHash("sha256").update(intentJson).digest("hex");
   return { intentHash, intentJson };
+}
+
+export function hashRecord(value: Record<string, unknown>): { hash: string; json: string } {
+  const json = stableStringify(value);
+  const hash = createHash("sha256").update(json).digest("hex");
+  return { hash, json };
 }
 
 async function stageLog(
@@ -351,7 +407,9 @@ async function stageLog(
 
 /**
  * Atomic receipt persist + optional boundary update + optional writer release.
- * Supports mid-txn fault hooks. Never ignores release failures.
+ * Catches transaction exceptions and returns storageFailure — never throws out
+ * of runCompactContinuation. Supports mid-txn fault hooks. Never ignores
+ * release failures. Does not terminalize while an owned writer remains held.
  */
 async function finalizeAttempt(
   ref: ThreadRef,
@@ -373,67 +431,118 @@ async function finalizeAttempt(
     compactReceipt: CompactReceipt | null;
   },
   clock: () => Date,
+  hooks?: CompactContinuationTestHooks,
 ): Promise<OpResult<CompactContinuationRunResult>> {
-  const hooks = facts.testHooks;
-  if (hooks?.failFinalizeWrite === true || hooks?.failReceiptWrite === true) {
-    return storageFailure("compact-continuation finalize write failed (test injection)");
-  }
+  try {
+    if (hooks?.failFinalizeWrite === true || hooks?.failReceiptWrite === true) {
+      return storageFailure("compact-continuation finalize write failed (test injection)");
+    }
 
-  const write = await createDbWriteTransaction(
-    ref,
-    (tx) => {
-      const recordedAt = clock().toISOString();
-      const status = persistReceipt(tx.db, facts.attemptId, recordedAt, decision, opts.terminal);
-      if (status === "already_terminal") {
-        return { kind: "already_terminal" as const };
+    // Never terminalize while this attempt still holds the durable writer and
+    // is not releasing it in this same transaction.
+    let terminal = opts.terminal;
+    if (terminal && !opts.releaseWriter) {
+      const held = await createDbReadTransaction(ref, (tx) => readWriterClaim(tx.db));
+      if (!held.ok) return held;
+      if (held.value.claim === "lhc" && held.value.attemptId === facts.attemptId) {
+        terminal = false;
       }
-      appendStageLog(tx.db, facts.attemptId, "receipt_recorded", recordedAt, {
-        terminal: opts.terminal,
-        outcome: decision.receipt.outcome,
-      });
-      if (opts.boundaryUpdate !== undefined) {
-        upsertBoundary(tx.db, {
-          continuationTurnId: opts.boundaryUpdate.continuationTurnId,
-          attemptId: facts.attemptId,
-          status: opts.boundaryUpdate.status,
-          markerPersisted: opts.boundaryUpdate.markerPersisted,
-          lastStage: opts.boundaryUpdate.lastStage,
-          forcedAt: opts.boundaryUpdate.forcedAt,
-          completedAt: opts.boundaryUpdate.completedAt ?? null,
+    }
+
+    // Align residual writerReleased with the actual release action when we will
+    // release (oracle may already say true; keep consistent). When we release,
+    // residual must report released. When we do not, and we still hold the claim,
+    // force residual.writerReleased false so receipts stay truthful.
+    let decisionForPersist = decision;
+    if (opts.releaseWriter) {
+      if (decision.receipt.residual.writerReleased !== true) {
+        decisionForPersist = {
+          ...decision,
+          receipt: {
+            ...decision.receipt,
+            residual: { ...decision.receipt.residual, writerReleased: true },
+          },
+        };
+      }
+    } else {
+      const held = await createDbReadTransaction(ref, (tx) => readWriterClaim(tx.db));
+      if (!held.ok) return held;
+      if (held.value.claim === "lhc" && held.value.attemptId === facts.attemptId) {
+        if (decision.receipt.residual.writerReleased !== false) {
+          decisionForPersist = {
+            ...decision,
+            receipt: {
+              ...decision.receipt,
+              residual: { ...decision.receipt.residual, writerReleased: false },
+            },
+          };
+        }
+      }
+    }
+
+    const write = await createDbWriteTransaction(
+      ref,
+      (tx) => {
+        const recordedAt = clock().toISOString();
+        const status = persistReceipt(tx.db, facts.attemptId, recordedAt, decisionForPersist, terminal);
+        if (status === "already_terminal") {
+          return { kind: "already_terminal" as const };
+        }
+        appendStageLog(tx.db, facts.attemptId, "receipt_recorded", recordedAt, {
+          terminal,
+          outcome: decisionForPersist.receipt.outcome,
+          writerReleased: decisionForPersist.receipt.residual.writerReleased,
+          releaseWriter: opts.releaseWriter,
         });
-      }
-      if (hooks?.failFinalizeAfterReceipt === true) {
-        throw new Error("compact-continuation finalize after receipt failed (test injection)");
-      }
-      if (opts.releaseWriter) {
-        if (hooks?.failFinalizeAtRelease === true) {
-          throw new Error("compact-continuation finalize at release failed (test injection)");
+        if (opts.boundaryUpdate !== undefined) {
+          upsertBoundary(tx.db, {
+            continuationTurnId: opts.boundaryUpdate.continuationTurnId,
+            attemptId: facts.attemptId,
+            status: opts.boundaryUpdate.status,
+            markerPersisted: opts.boundaryUpdate.markerPersisted,
+            lastStage: opts.boundaryUpdate.lastStage,
+            forcedAt: opts.boundaryUpdate.forcedAt,
+            completedAt: opts.boundaryUpdate.completedAt ?? null,
+          });
         }
-        const released = releaseLhcWriter(tx.db, facts.attemptId);
-        if (!released) {
-          throw new Error(`failed to release writer for attempt ${facts.attemptId}`);
+        if (hooks?.failFinalizeAfterReceipt === true) {
+          throw new Error("compact-continuation finalize after receipt failed (test injection)");
         }
-        appendStageLog(tx.db, facts.attemptId, "writer_released", recordedAt);
-      }
-      return { kind: "ok" as const };
-    },
-    clock,
-  );
-  if (!write.ok) return write;
+        if (opts.releaseWriter) {
+          if (hooks?.failFinalizeAtRelease === true) {
+            throw new Error("compact-continuation finalize at release failed (test injection)");
+          }
+          const released = releaseLhcWriter(tx.db, facts.attemptId);
+          if (!released) {
+            throw new Error(`failed to release writer for attempt ${facts.attemptId}`);
+          }
+          appendStageLog(tx.db, facts.attemptId, "writer_released", recordedAt);
+          if (hooks?.failFinalizeAfterReleaseBeforeCommit === true) {
+            throw new Error("compact-continuation finalize after release before commit failed (test injection)");
+          }
+        }
+        return { kind: "ok" as const };
+      },
+      clock,
+    );
+    if (!write.ok) return write;
 
-  const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
-  if (!pending.ok) return pending;
+    const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
+    if (!pending.ok) return pending;
 
-  return {
-    ok: true,
-    value: toRunResult(decision, {
-      forcedBoundaryThisAttempt: opts.forcedBoundaryThisAttempt,
-      continuationTurnId: opts.continuationTurnId,
-      compactReceipt: opts.compactReceipt,
-      replayedTerminalAttempt: write.value.kind === "already_terminal",
-      pendingBoundary: pending.value,
-    }),
-  };
+    return {
+      ok: true,
+      value: toRunResult(decisionForPersist, {
+        forcedBoundaryThisAttempt: opts.forcedBoundaryThisAttempt,
+        continuationTurnId: opts.continuationTurnId,
+        compactReceipt: opts.compactReceipt,
+        replayedTerminalAttempt: write.value.kind === "already_terminal",
+        pendingBoundary: pending.value,
+      }),
+    };
+  } catch (cause) {
+    return storageFailure(`compact-continuation finalize failed: ${detail(cause)}`);
+  }
 }
 
 /** Best-effort release of this attempt's durable writer claim; never ignores failure. */
@@ -459,12 +568,37 @@ async function releaseOwnWriterIfHeld(ref: ThreadRef, attemptId: string, clock: 
 }
 
 /**
- * Run one compact-continuation attempt against thread state.
+ * Public entry: closed validation rejects testHooks; no fault injection surface.
  */
 export async function runCompactContinuation(
   ref: ThreadRef,
   facts: CompactContinuationHostFacts,
   clock: () => Date = () => new Date(),
+): Promise<OpResult<CompactContinuationRunResult>> {
+  return runCompactContinuationInner(ref, facts, clock, undefined);
+}
+
+/**
+ * Test-only entry: same runtime with optional fault hooks.
+ * Exported only via sanctioned test-fixtures / internal path — not public SDK types.
+ */
+export async function runCompactContinuationForTests(
+  ref: ThreadRef,
+  facts: CompactContinuationHostFacts,
+  clock: () => Date = () => new Date(),
+  hooks?: CompactContinuationTestHooks,
+): Promise<OpResult<CompactContinuationRunResult>> {
+  return runCompactContinuationInner(ref, facts, clock, hooks);
+}
+
+/**
+ * Run one compact-continuation attempt against thread state.
+ */
+async function runCompactContinuationInner(
+  ref: ThreadRef,
+  facts: CompactContinuationHostFacts,
+  clock: () => Date,
+  hooks: CompactContinuationTestHooks | undefined,
 ): Promise<OpResult<CompactContinuationRunResult>> {
   // ── Closed host-fact validation before any I/O ──────────────────────────
   const inputIssue = validateHostFacts(facts);
@@ -473,11 +607,10 @@ export async function runCompactContinuation(
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
 
-  const hooks = facts.testHooks;
-  const intent = computeAttemptIntent(facts);
-  const { intentHash, intentJson } = hashAttemptIntent(intent);
+  const identity = computeOperationIdentity(facts);
+  const { intentHash, intentJson } = hashAttemptIntent(identity);
 
-  // ── Terminal attempt replay (matching intent only) ──────────────────────
+  // ── Terminal attempt replay (matching identity only) ────────────────────
   const existing = await createDbReadTransaction(ref, (tx) => readReceiptByAttemptId(tx.db, facts.attemptId));
   if (!existing.ok) return existing;
   if (existing.value?.terminal) {
@@ -492,9 +625,38 @@ export async function runCompactContinuation(
       return attemptConflict(
         facts.attemptId,
         facts.attemptId,
-        `attemptId ${facts.attemptId} already completed with a different operation intent`,
+        `attemptId ${facts.attemptId} already completed with a different operation identity`,
       );
     }
+    // Repair stale same-owner writer claim left after a prior terminal path.
+    const writerRepair = await createDbWriteTransaction(
+      ref,
+      (tx) => {
+        const claim = readWriterClaim(tx.db);
+        if (claim.claim === "lhc" && claim.attemptId === facts.attemptId) {
+          const released = releaseLhcWriter(tx.db, facts.attemptId);
+          if (!released) {
+            throw new Error(`failed to release stale writer for completed attempt ${facts.attemptId}`);
+          }
+          const recordedAt = clock().toISOString();
+          appendStageLog(tx.db, facts.attemptId, "writer_claim_repaired", recordedAt, {
+            reason: "terminal_replay_stale_same_owner_claim",
+          });
+          appendStageLog(tx.db, facts.attemptId, "recovery_maintenance", recordedAt, {
+            action: "release_stale_writer_on_terminal_replay",
+            receiptIntact: true,
+          });
+          appendStageLog(tx.db, facts.attemptId, "writer_released", recordedAt, {
+            onTerminalReplay: true,
+          });
+          return { repaired: true as const };
+        }
+        return { repaired: false as const };
+      },
+      clock,
+    );
+    if (!writerRepair.ok) return writerRepair;
+
     const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
     if (!pending.ok) return pending;
     return {
@@ -526,14 +688,12 @@ export async function runCompactContinuation(
     const pendingBoundary = readPendingBoundary(tx.db);
     const forceIntent = readForceIntent(tx.db, facts.attemptId);
     const writer = readWriterClaim(tx.db);
-    const priorReceipt = readReceiptByAttemptId(tx.db, facts.attemptId);
-    return { pendingBoundary, forceIntent, writer, priorReceipt };
+    return { pendingBoundary, forceIntent, writer };
   });
   if (!stateRead.ok) return stateRead;
   let pendingBoundary = stateRead.value.pendingBoundary;
   const forceIntent = stateRead.value.forceIntent;
   const durableWriter = stateRead.value.writer;
-  const priorReceipt = stateRead.value.priorReceipt;
 
   // ── Ownership: foreign pending/failed_repairable cannot be stolen ───────
   if (pendingBoundary !== null && pendingBoundary.attemptId !== facts.attemptId) {
@@ -544,10 +704,9 @@ export async function runCompactContinuation(
     );
   }
 
-  // ── Register immutable attempt intent before further mutation ───────────
-  // Resume of a nonterminal attempt that already owns pending/force may re-enter
-  // with different momentary seam posture (preSkip/retry); do not treat that as
-  // a new operation. Terminal replay already required exact match above.
+  // ── Register immutable operation identity before further mutation ───────
+  // Identity drift always conflicts (including nonterminal repair). Posture
+  // (seam/usage/health) may change and is recorded per entry below.
   const intentWrite = await createDbWriteTransaction(
     ref,
     (tx) => insertAttemptIntent(tx.db, facts.attemptId, intentHash, intentJson, clock().toISOString()),
@@ -555,18 +714,28 @@ export async function runCompactContinuation(
   );
   if (!intentWrite.ok) return intentWrite;
   if (intentWrite.value === "exists_different") {
-    const ownsRepairable =
-      (pendingBoundary !== null && pendingBoundary.attemptId === facts.attemptId) ||
-      (forceIntent !== null && (forceIntent.status === "intent" || forceIntent.status === "applied")) ||
-      (priorReceipt !== null && !priorReceipt.terminal);
-    if (!ownsRepairable) {
-      return attemptConflict(
-        facts.attemptId,
-        facts.attemptId,
-        `attemptId ${facts.attemptId} already registered with a different operation intent`,
-      );
-    }
+    return attemptConflict(
+      facts.attemptId,
+      facts.attemptId,
+      `attemptId ${facts.attemptId} already registered with a different operation identity`,
+    );
   }
+
+  // Append retry posture snapshot for this invocation (append-only audit).
+  const posture = computeRetryPosture(facts, durableWriter);
+  const { hash: postureHash, json: postureJson } = hashRecord(posture);
+  const postureWrite = await createDbWriteTransaction(
+    ref,
+    (tx) => {
+      appendStageLog(tx.db, facts.attemptId, "retry_posture", clock().toISOString(), {
+        postureHash,
+        posture: JSON.parse(postureJson) as Record<string, unknown>,
+      });
+      return true as const;
+    },
+    clock,
+  );
+  if (!postureWrite.ok) return postureWrite;
 
   // ── Force crash-gap reconcile on any entry ──────────────────────────────
   // If force intent exists (intent/applied) and no pending boundary, recover
@@ -617,11 +786,10 @@ export async function runCompactContinuation(
 
   // ── Pre-seam skips ──────────────────────────────────────────────────────
   if (preSkip) {
-    // Only release durable claim owned by this attempt — never another attempt's.
-    if (durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId) {
-      const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
-      if (!rel.ok) return rel;
-    }
+    // Release durable claim owned by this attempt — never another attempt's.
+    // Quiet/skip paths must not leave a claim-only wedge.
+    const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
+    const oracleWriter: WriterClaim = ownsWriter ? "lhc" : "none";
     const decision = decideCompactContinuation(
       buildOracleInput(
         facts,
@@ -629,30 +797,35 @@ export async function runCompactContinuation(
           captureComplete: facts.captureComplete,
           providerIdentityValid: facts.providerIdentityValid,
           singleOpenTurn,
-          writerClaim: "none",
+          writerClaim: oracleWriter,
         },
         forcedFromPending,
         emptyMaterial(),
       ),
     );
     // Pending owned by this attempt: nonterminal so later settled repair can proceed.
-    return finalizeAttempt(
+    // Terminal only when no pending AND writer is released (or was not held).
+    return await finalizeAttempt(
       ref,
       facts,
       decision,
       {
-        releaseWriter: false,
+        releaseWriter: ownsWriter,
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: decision.receipt.residual.continuationTurnId,
         compactReceipt: null,
       },
       clock,
+      hooks,
     );
   }
 
   // ── Settled seam: native/conflict refuse ────────────────────────────────
   if (facts.writerClaim === "native" || facts.writerClaim === "conflict") {
+    // If this attempt somehow holds the durable claim, release it (never
+    // release another owner). Host native/conflict still refuses.
+    const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const decision = decideCompactContinuation(
       buildOracleInput(
         facts,
@@ -666,19 +839,19 @@ export async function runCompactContinuation(
         emptyMaterial(),
       ),
     );
-    // Terminal only when no pending/failed_repairable for this attempt.
-    return finalizeAttempt(
+    return await finalizeAttempt(
       ref,
       facts,
       decision,
       {
-        releaseWriter: false,
+        releaseWriter: ownsWriter,
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: decision.receipt.residual.continuationTurnId,
         compactReceipt: null,
       },
       clock,
+      hooks,
     );
   }
 
@@ -706,6 +879,7 @@ export async function runCompactContinuation(
 
   // Illegal applied-boundary + wrong continuation kind (repair path only).
   if (forcedFromPending.applied && facts.continuation.kind !== "active_non_tool") {
+    const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const decision = decideCompactContinuation(
       buildOracleInput(
         facts,
@@ -713,18 +887,18 @@ export async function runCompactContinuation(
           captureComplete: facts.captureComplete,
           providerIdentityValid: facts.providerIdentityValid,
           singleOpenTurn,
-          writerClaim: "none",
+          writerClaim: ownsWriter ? "lhc" : "none",
         },
         forcedFromPending,
         emptyMaterial(),
       ),
     );
-    return finalizeAttempt(
+    return await finalizeAttempt(
       ref,
       facts,
       decision,
       {
-        releaseWriter: false,
+        releaseWriter: ownsWriter,
         // Keep nonterminal when boundary still needs repair.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
@@ -732,6 +906,7 @@ export async function runCompactContinuation(
         compactReceipt: null,
       },
       clock,
+      hooks,
     );
   }
 
@@ -740,6 +915,12 @@ export async function runCompactContinuation(
       !toolPairOk && facts.continuation.kind === "pending_correlated_tool_result"
         ? { ...facts.continuation, correlationValid: false }
         : facts.continuation;
+    // When a pending boundary is owned and repairable, keep the claim for resume.
+    // When this is a claim-only crash (no pending boundary), release so quiet/
+    // health re-entry does not wedge the writer.
+    const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
+    const releaseWriter = ownsWriter && !ownsPending;
+    const oracleWriter: WriterClaim = ownsWriter ? "lhc" : "none";
     const decision = decideCompactContinuation(
       buildOracleInput(
         { ...facts, continuation: cont },
@@ -747,7 +928,7 @@ export async function runCompactContinuation(
           captureComplete: facts.captureComplete,
           providerIdentityValid: facts.providerIdentityValid,
           singleOpenTurn,
-          writerClaim: "none",
+          writerClaim: oracleWriter,
         },
         forcedFromPending.applied && facts.continuation.kind === "active_non_tool"
           ? forcedFromPending
@@ -755,19 +936,20 @@ export async function runCompactContinuation(
         emptyMaterial(),
       ),
     );
-    return finalizeAttempt(
+    return await finalizeAttempt(
       ref,
       facts,
       decision,
       {
-        releaseWriter: false,
-        // Health/native refuse is terminal only when no pending boundary for this attempt.
+        releaseWriter,
+        // Health refuse is terminal only when no pending boundary for this attempt.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: decision.receipt.residual.continuationTurnId,
         compactReceipt: null,
       },
       clock,
+      hooks,
     );
   }
 
@@ -782,8 +964,13 @@ export async function runCompactContinuation(
     facts.continuation.kind === "pending_correlated_tool_result" &&
     toolPairOk;
 
-  // No-compact quiet paths: never claim writer, never mutate record/view.
+  // No-compact quiet paths: never claim a new writer; release owned claim-only
+  // crash wedges so fresh attempts can proceed. With a pending owned boundary,
+  // keep the claim for resume (nonterminal).
   if (!needsContinueTurn && !needsPreserveTool) {
+    const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
+    const releaseWriter = ownsWriter && !ownsPending;
+    const oracleWriter: WriterClaim = ownsWriter ? "lhc" : "none";
     const decision = decideCompactContinuation(
       buildOracleInput(
         facts,
@@ -791,18 +978,18 @@ export async function runCompactContinuation(
           captureComplete: facts.captureComplete,
           providerIdentityValid: facts.providerIdentityValid,
           singleOpenTurn,
-          writerClaim: "none",
+          writerClaim: oracleWriter,
         },
         { applied: false },
         emptyMaterial(),
       ),
     );
-    return finalizeAttempt(
+    return await finalizeAttempt(
       ref,
       facts,
       decision,
       {
-        releaseWriter: false,
+        releaseWriter,
         // Quiet outcomes are terminal only with no pending owned boundary.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
@@ -810,6 +997,7 @@ export async function runCompactContinuation(
         compactReceipt: null,
       },
       clock,
+      hooks,
     );
   }
 
@@ -870,7 +1058,7 @@ export async function runCompactContinuation(
             emptyMaterial(),
           ),
         );
-        return finalizeAttempt(
+        return await finalizeAttempt(
           ref,
           facts,
           decision,
@@ -882,6 +1070,7 @@ export async function runCompactContinuation(
             compactReceipt: null,
           },
           clock,
+          hooks,
         );
       }
 
@@ -1215,13 +1404,17 @@ export async function runCompactContinuation(
       }
 
       // Re-evaluate candidate after marker lands so model-visible structure includes it.
+      // Do not silently keep pre-marker material when re-assembly fails.
       if (prepared !== null && hooks?.skipRealCompact !== true) {
         const candidate2 = await createDbReadTransaction(ref, (tx) =>
           assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens),
         );
-        if (candidate2.ok) {
-          material = applyMaterialHooks({ ...candidate2.value.material, installSucceeds: false }, hooks);
+        if (!candidate2.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return candidate2;
         }
+        material = applyMaterialHooks({ ...candidate2.value.material, installSucceeds: false }, hooks);
       }
 
       if (hooks?.interruptAfterMarker === true) {
@@ -1309,8 +1502,18 @@ export async function runCompactContinuation(
           const already = await createDbReadTransaction(ref, (tx) =>
             markerExistsByIdempotencyKey(tx.db, compactContinuationMarkerIdempotencyKey(cTurnId)),
           );
-          if (already.ok && !already.value) {
-            await intakeStream.messageEvents(ref, [markerEvent(facts, cTurnId)]);
+          if (!already.ok) {
+            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+            if (!rel.ok) return rel;
+            return already;
+          }
+          if (!already.value) {
+            const markerBatch = await intakeStream.messageEvents(ref, [markerEvent(facts, cTurnId)]);
+            if (!markerBatch.ok) {
+              const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+              if (!rel.ok) return rel;
+              return markerBatch;
+            }
             markerPersistedDurable = true;
           }
         }
@@ -1411,7 +1614,7 @@ export async function runCompactContinuation(
       }
     }
 
-    return finalizeAttempt(ref, facts, decision, finalizeOpts, clock);
+    return await finalizeAttempt(ref, facts, decision, finalizeOpts, clock, hooks);
   } catch (cause) {
     // Never silently drop release failure.
     try {

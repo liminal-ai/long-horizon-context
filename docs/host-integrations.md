@@ -120,6 +120,16 @@ response-usage seam. Selected per profile with `context.engine: lhc`. The
 production install runs editable from the tree — merges go live at the next
 process start; running gateways need a restart. Never run `hermes update`.
 
+## Compact-continuation projection (all hosts)
+
+When rendering ordinary user chat from an LHC thread, hosts **must** request
+marker-hidden projection via `messages.list({ forUserChat: true })` (or the
+equivalent host-facing filter). Typed compact-continuation markers remain in
+the canonical record and model/session views, but they are not normal user
+chat. Public `threadView.compact()` may return `stale_prepared_compact` when
+source state changes between prepare and install under concurrency — treat
+that as a caller-retryable refuse, not storage corruption.
+
 ## pi (extension — no fork maintenance)
 
 PI's extension API is rich enough to host LHC outright: `packages/pi-lhc`

@@ -1,9 +1,14 @@
 /**
  * Closed validation of compact-continuation host facts before I/O.
  * Mirrors project closed-shape posture (unknown fields rejected).
+ *
+ * Token counts and epochs are non-negative integers. Provider `total` is the
+ * authoritative provider-reported total (not re-derived as a component sum).
+ * Public validation rejects `testHooks` — hooks are internal/test-only.
  */
 
 import type { ErrorResult } from "../../shared-tech/errors.js";
+import { profileViolation } from "../../thread-view/internal/profiles.js";
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -13,8 +18,8 @@ function isNonNegInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-function isNonNegFinite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function reject(reason: string): ErrorResult {
@@ -58,25 +63,10 @@ const ESTIMATE_KEYS = ["tokens", "source", "domain"] as const;
 const COMPACT_KEYS = ["profile", "params"] as const;
 const PARAMS_KEYS = ["lowerBound", "percentages"] as const;
 const PCT_KEYS = ["full", "smooth", "detailed", "brief"] as const;
-const HOOK_KEYS = [
-  "forceCompactStructurallyValid",
-  "forceInstallSucceeds",
-  "forceUsefulReduction",
-  "forceCanProduceValidProviderRequest",
-  "forceDerivationsMissingOrFailed",
-  "skipRealCompact",
-  "failInstallBeforeWrite",
-  "interruptAfterBoundary",
-  "interruptAfterMarker",
-  "interruptAfterTurnEndCommit",
-  "failFinalizeWrite",
-  "failReceiptWrite",
-  "failFinalizeAfterReceipt",
-  "failFinalizeAtRelease",
-] as const;
 
 /**
  * Validate host facts shape. Returns undefined when valid.
+ * Public surface: `testHooks` is rejected (unknown field).
  */
 export function validateHostFacts(raw: unknown): ErrorResult | undefined {
   const top = closedObject(raw, "hostFacts", [
@@ -93,7 +83,6 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
     "actor",
     "harness",
     "compact",
-    "testHooks",
   ]);
   if (!top.ok) return top.error;
   const facts = top.obj;
@@ -131,8 +120,8 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
 
   const policy = closedObject(facts["policy"], "policy", POLICY_KEYS);
   if (!policy.ok) return policy.error;
-  if (!isNonNegFinite(policy.obj["upperTriggerTokens"]) || !isNonNegFinite(policy.obj["lowerTargetTokens"])) {
-    return reject("policy token targets must be non-negative finite numbers");
+  if (!isNonNegInt(policy.obj["upperTriggerTokens"]) || !isNonNegInt(policy.obj["lowerTargetTokens"])) {
+    return reject("policy token targets must be non-negative integers");
   }
   if (policy.obj["hostCapability"] !== "full_state_machine" && policy.obj["hostCapability"] !== "capability_limited") {
     return reject("policy.hostCapability must be full_state_machine|capability_limited");
@@ -151,12 +140,19 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
   if (typeof usage.obj["available"] !== "boolean") return reject("providerUsage.available must be a boolean");
   if (usage.obj["available"] === true) {
     for (const key of ["inputTokens", "cacheCreationTokens", "cacheReadTokens", "total"] as const) {
-      if (!isNonNegFinite(usage.obj[key])) {
-        return reject(`providerUsage.${key} must be a non-negative finite number when available`);
+      if (!isNonNegInt(usage.obj[key])) {
+        return reject(`providerUsage.${key} must be a non-negative integer when available`);
       }
     }
+    // `total` is the authoritative provider-reported total. Hosts may surface a
+    // provider total that is not a sum of the component fields (billing/cache
+    // accounting differs by provider). Do not invent a sum rule here.
     if (usage.obj["domain"] !== "provider_reported_input") {
       return reject("providerUsage.domain must be provider_reported_input");
+    }
+    // Reject unknown optional components when available (reason not allowed).
+    if (usage.obj["reason"] !== undefined) {
+      return reject("providerUsage.reason must not be present when available");
     }
   } else {
     if (usage.obj["reason"] !== "missing" && usage.obj["reason"] !== "invalid") {
@@ -165,12 +161,17 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
     if (usage.obj["domain"] !== "provider_reported_input") {
       return reject("providerUsage.domain must be provider_reported_input");
     }
+    for (const key of ["inputTokens", "cacheCreationTokens", "cacheReadTokens", "total"] as const) {
+      if (usage.obj[key] !== undefined) {
+        return reject(`providerUsage.${key} must not be present when unavailable`);
+      }
+    }
   }
 
   const est = closedObject(facts["postMeasurementEstimate"], "postMeasurementEstimate", ESTIMATE_KEYS);
   if (!est.ok) return est.error;
-  if (!isNonNegFinite(est.obj["tokens"]) || !isNonEmptyString(est.obj["source"])) {
-    return reject("postMeasurementEstimate.tokens must be non-negative finite and source non-empty");
+  if (!isNonNegInt(est.obj["tokens"]) || !isNonEmptyString(est.obj["source"])) {
+    return reject("postMeasurementEstimate.tokens must be a non-negative integer and source non-empty");
   }
   if (est.obj["domain"] !== "source_labelled_estimate") {
     return reject("postMeasurementEstimate.domain must be source_labelled_estimate");
@@ -199,26 +200,35 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
     if (compact.obj["params"] !== undefined) {
       const params = closedObject(compact.obj["params"], "compact.params", PARAMS_KEYS);
       if (!params.ok) return params.error;
-      if (params.obj["lowerBound"] !== undefined && !isNonNegFinite(params.obj["lowerBound"])) {
-        return reject("compact.params.lowerBound must be non-negative finite");
+      if (params.obj["lowerBound"] !== undefined && !isPositiveInt(params.obj["lowerBound"])) {
+        return reject("compact.params.lowerBound must be a positive integer when present");
       }
       if (params.obj["percentages"] !== undefined) {
         const pct = closedObject(params.obj["percentages"], "compact.params.percentages", PCT_KEYS);
         if (!pct.ok) return pct.error;
         for (const key of PCT_KEYS) {
-          if (pct.obj[key] !== undefined && !isNonNegFinite(pct.obj[key])) {
-            return reject(`compact.params.percentages.${key} must be non-negative finite`);
+          if (pct.obj[key] !== undefined && !isNonNegInt(pct.obj[key])) {
+            return reject(`compact.params.percentages.${key} must be a non-negative integer when present`);
+          }
+        }
+        // When all four percentages are supplied, enforce profile sum/range rules.
+        if (PCT_KEYS.every((k) => pct.obj[k] !== undefined)) {
+          const complete = {
+            name: "host-compact-params",
+            lowerBound: (params.obj["lowerBound"] as number | undefined) ?? 1,
+            percentages: {
+              full: pct.obj["full"] as number,
+              smooth: pct.obj["smooth"] as number,
+              detailed: pct.obj["detailed"] as number,
+              brief: pct.obj["brief"] as number,
+            },
+          };
+          const violation = profileViolation(complete);
+          if (violation !== null) {
+            return reject(`compact.params: ${violation}`);
           }
         }
       }
-    }
-  }
-
-  if (facts["testHooks"] !== undefined) {
-    const hooks = closedObject(facts["testHooks"], "testHooks", HOOK_KEYS);
-    if (!hooks.ok) return hooks.error;
-    for (const [key, value] of Object.entries(hooks.obj)) {
-      if (typeof value !== "boolean") return reject(`testHooks.${key} must be a boolean`);
     }
   }
 

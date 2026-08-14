@@ -10,6 +10,7 @@ export const THREAD_SCHEMA_VERSION_6 = 6;
 export const THREAD_SCHEMA_VERSION_7 = 7;
 export const THREAD_SCHEMA_VERSION_8 = 8;
 export const THREAD_SCHEMA_VERSION_9 = 9;
+export const THREAD_SCHEMA_VERSION_10 = 10;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -86,8 +87,9 @@ export function compactContinuationSchemaStatements(): string[] {
 }
 
 /**
- * Current (v9) compact-continuation tables for fresh create.
- * Writer + boundary + stage log + terminal receipts + attempt intent + force intent.
+ * Current (v10) compact-continuation tables for fresh create.
+ * Writer + boundary + stage log + terminal receipts + attempt identity + force intent.
+ * At most one unresolved boundary (partial unique index).
  */
 export function compactContinuationCurrentSchemaStatements(): string[] {
   return [
@@ -110,6 +112,10 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
        ON compact_continuation_boundary (status);`,
+    // At most one pending/failed_repairable boundary per thread.
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
+       ON compact_continuation_boundary ((1))
+       WHERE status IN ('pending', 'failed_repairable');`,
     `CREATE TABLE IF NOT EXISTS compact_continuation_stage_log (
       log_id INTEGER PRIMARY KEY AUTOINCREMENT,
       attempt_id TEXT NOT NULL,
@@ -133,6 +139,7 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
        ON compact_continuation_receipt (recorded_at DESC);`,
+    // intent_hash/intent_json store immutable operation identity (not retry posture).
     `CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
       attempt_id TEXT PRIMARY KEY,
       intent_hash TEXT NOT NULL,
@@ -166,6 +173,26 @@ function migrateCompactContinuationV9(db: DatabaseSync): void {
       continuation_turn_id TEXT,
       recorded_at TEXT NOT NULL
     );`,
+  );
+}
+
+/** v9→v10: enforce at most one unresolved compact-continuation boundary. */
+function migrateCompactContinuationV10(db: DatabaseSync): void {
+  const unresolved = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM compact_continuation_boundary
+       WHERE status IN ('pending', 'failed_repairable')`,
+    )
+    .get() as { n: number | bigint };
+  if (Number(unresolved.n) > 1) {
+    throw new Error(
+      `compact-continuation migration v10 refused: ${Number(unresolved.n)} unresolved boundaries (at most one allowed)`,
+    );
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
+       ON compact_continuation_boundary ((1))
+       WHERE status IN ('pending', 'failed_repairable');`,
   );
 }
 
@@ -432,6 +459,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_8) {
       migrateCompactContinuationV9(db);
       version = THREAD_SCHEMA_VERSION_9;
+    }
+    if (version === THREAD_SCHEMA_VERSION_9) {
+      migrateCompactContinuationV10(db);
+      version = THREAD_SCHEMA_VERSION_10;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

@@ -11,22 +11,31 @@
  * 2. Inspect `getPendingCompactContinuationBoundary` — if status is
  *    `pending` or `failed_repairable`, re-enter with the same attemptId and
  *    `continuation.kind: "active_non_tool"`. Foreign attemptIds conflict.
- * 3. Completed `attemptId` with matching attempt intent replays the stored
- *    terminal receipt without mutation; different intent conflicts.
+ * 3. Completed `attemptId` with matching operation identity replays the stored
+ *    terminal receipt without mutation; different identity conflicts.
  * 4. Force-intent gap: resume reconciles `turn_end` into one pending boundary.
- * 5. Stage history is append-only via `listCompactContinuationStages`.
+ * 5. Claim-only crash (writer held, no boundary): same attempt may re-enter under
+ *    quiet/health/mutating facts; quiet/health release the owned claim; mutating
+ *    resumes. Fresh attempts stay blocked until the owner resumes or releases.
+ * 6. Stage history is append-only via `listCompactContinuationStages` (includes
+ *    per-entry `retry_posture` snapshots).
+ *
+ * Public `runCompactContinuation` does **not** accept `testHooks`. Fault
+ * injection is test-only via fixtures/`runCompactContinuationForTests`.
  */
 
 export {
   type CompactContinuationHostFacts,
   type CompactContinuationRunResult,
-  type CompactContinuationTestHooks,
   computeAttemptIntent,
+  computeOperationIdentity,
+  computeRetryPosture,
   getCompactContinuationReceipt,
   getCompactContinuationWriterClaim,
   getPendingCompactContinuationBoundary,
   hasCompactContinuationMarker,
   hashAttemptIntent,
+  hashRecord,
   listCompactContinuationBoundaries,
   listCompactContinuationReceipts,
   listCompactContinuationStages,

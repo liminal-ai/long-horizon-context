@@ -574,7 +574,11 @@ export type PreparedCompactSourceState = {
   maxEventOrder: number;
   /** SHA-256 hex of relevant derivation rows (id/type/state/content/version). */
   derivationDigest: string;
-  /** SHA-256 hex of eligible tail messages + blocks after compact point. */
+  /**
+   * SHA-256 hex of durable source messages/blocks used by band rendering and
+   * the post-compact-point tail (includes fallback band sources at/below the
+   * compact point, not only rows after compact point).
+   */
   tailDigest: string;
   /** SHA-256 hex of turn/chunk placement used by selection. */
   structureDigest: string;
@@ -602,11 +606,27 @@ function sha256Hex(payload: string): string {
   return createHash("sha256").update(payload).digest("hex");
 }
 
-/** Build a source-state fingerprint for install validation. */
-export function readPreparedSourceState(db: DatabaseSync, compactPoint: number): PreparedCompactSourceState {
+/**
+ * Build a source-state fingerprint for install validation.
+ *
+ * `tailDigest` covers every durable message/block input used to produce
+ * prepared bands and the post-compact-point tail:
+ * - all messages with source_event_order > compactPoint (live tail)
+ * - all messages belonging to turns that are chunk members (fallback band
+ *   sources under stored_member_concat, including at/below compact point)
+ *
+ * Optional `excludeMessageIds` recomputes the digest as if those message rows
+ * (and their blocks) were absent — used for exact marker-delta validation.
+ */
+export function readPreparedSourceState(
+  db: DatabaseSync,
+  compactPoint: number,
+  opts: { excludeMessageIds?: ReadonlySet<string> } = {},
+): PreparedCompactSourceState {
   const maxRow = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as {
     m: number | bigint;
   };
+  const exclude = opts.excludeMessageIds ?? new Set<string>();
 
   const derivationRows = db
     .prepare(
@@ -639,12 +659,15 @@ export function readPreparedSourceState(db: DatabaseSync, compactPoint: number):
     ),
   );
 
-  const tailMessages = db
+  // Source messages for bands+tail: post-compact-point tail OR any message on a
+  // chunk-member turn (fallback band rendering under stored_member_concat).
+  const sourceMessages = db
     .prepare(
       `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
        FROM message m
        WHERE m.source_event_order > ?
-       ORDER BY m.source_event_order`,
+          OR m.turn_id IN (SELECT turn_id FROM chunk_member)
+       ORDER BY m.source_event_order, m.message_id`,
     )
     .all(compactPoint) as unknown as Array<{
     message_id: string;
@@ -654,13 +677,14 @@ export function readPreparedSourceState(db: DatabaseSync, compactPoint: number):
     deleted_at: string | null;
     token_estimate: number | bigint;
   }>;
-  const tailBlocks = db
+  const sourceBlocks = db
     .prepare(
       `SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
        FROM message_block mb
        JOIN message m ON m.message_id = mb.message_id
        WHERE m.source_event_order > ?
-       ORDER BY m.source_event_order, mb.block_index`,
+          OR m.turn_id IN (SELECT turn_id FROM chunk_member)
+       ORDER BY m.source_event_order, m.message_id, mb.block_index`,
     )
     .all(compactPoint) as unknown as Array<{
     message_id: string;
@@ -668,9 +692,11 @@ export function readPreparedSourceState(db: DatabaseSync, compactPoint: number):
     block_type: string;
     content: string;
   }>;
+  const filteredMessages = sourceMessages.filter((m) => !exclude.has(m.message_id));
+  const filteredBlocks = sourceBlocks.filter((b) => !exclude.has(b.message_id));
   const tailDigest = sha256Hex(
     JSON.stringify({
-      messages: tailMessages.map((m) => ({
+      messages: filteredMessages.map((m) => ({
         id: m.message_id,
         kind: m.kind,
         order: Number(m.source_event_order),
@@ -678,7 +704,7 @@ export function readPreparedSourceState(db: DatabaseSync, compactPoint: number):
         deleted: m.deleted_at,
         tokens: Number(m.token_estimate),
       })),
-      blocks: tailBlocks.map((b) => ({
+      blocks: filteredBlocks.map((b) => ({
         id: b.message_id,
         i: Number(b.block_index),
         t: b.block_type,
@@ -836,13 +862,14 @@ export function validatePreparedSourceState(
     return { ok: true };
   }
 
-  // Marker-allowed path.
+  // Marker-allowed path: exactly zero or one event advance, and the only
+  // source difference must be the expected marker event/message/block.
   if (current.maxEventOrder < prev.maxEventOrder) {
     return { ok: false, reason: "event order regressed since prepare" };
   }
   if (current.maxEventOrder === prev.maxEventOrder) {
     if (current.tailDigest !== prev.tailDigest) {
-      return { ok: false, reason: "tail changed since prepare without event advance" };
+      return { ok: false, reason: "source message/block content changed since prepare without event advance" };
     }
     return { ok: true };
   }
@@ -872,10 +899,27 @@ export function validatePreparedSourceState(
       reason: `marker idempotency key mismatch (expected ${opts.allowedMarkerIdempotencyKey})`,
     };
   }
-  // Recompute digest excluding the marker message and compare to prepare.
-  // Simpler: re-fingerprint at prepare compact point after temporarily
-  // ignoring the one marker row is complex; verify only the delta event is
-  // the marker and structure/derivation digests already matched.
+  // Identify the marker message row produced by that event.
+  const markerMessage = db
+    .prepare(
+      `SELECT message_id FROM message
+       WHERE source_event_order = ? AND kind = 'compact_continuation_marker'`,
+    )
+    .get(current.maxEventOrder) as { message_id: string } | undefined;
+  if (markerMessage === undefined) {
+    return { ok: false, reason: "marker message row missing for advanced event" };
+  }
+  // Recompute source digest with exactly that marker message/block removed and
+  // compare to the prepared digest — catch unrelated tail/block mutations.
+  const withoutMarker = readPreparedSourceState(db, prepared.sourceState.compactPoint, {
+    excludeMessageIds: new Set([markerMessage.message_id]),
+  });
+  if (withoutMarker.tailDigest !== prev.tailDigest) {
+    return {
+      ok: false,
+      reason: "source message/block content changed beyond the expected continuation marker",
+    };
+  }
   return { ok: true };
 }
 
@@ -974,6 +1018,9 @@ export async function installPreparedCompact(
 
     const createdAt = opts.createdAt ?? new Date().toISOString();
     const markerKey = opts.allowedMarkerIdempotencyKey;
+    // Filled inside beforeReplace after validation with the actual post-marker
+    // source state that was validated and installed.
+    let installedSourceStateJson = "";
 
     try {
       replaceViewSnapshot(
@@ -998,11 +1045,13 @@ export async function installPreparedCompact(
             })),
           ),
           gapsJson: JSON.stringify(prepared.gaps),
-          // installMaxEventOrder filled inside beforeReplace after validation.
-          sourceStateJson: JSON.stringify({
-            maxEventOrder: prepared.maxEventOrder,
-            derivationCounts: prepared.derivationCounts,
-          }),
+          // sourceStateJson is mutated by beforeReplace after validation so the
+          // stored value describes the source that was actually installed
+          // (marker event + current max order/digests). replaceViewSnapshot
+          // reads input.sourceStateJson after beforeReplace returns.
+          get sourceStateJson() {
+            return installedSourceStateJson;
+          },
           bands: prepared.bands,
         },
         () => {
@@ -1016,6 +1065,17 @@ export async function installPreparedCompact(
           if (!sourceCheck.ok) {
             throw new StalePreparedCompactError(sourceCheck.reason);
           }
+          // Persist the validated current source state (includes marker when present).
+          const validated = readPreparedSourceState(db, prepared.selection.compactPoint);
+          installedSourceStateJson = JSON.stringify({
+            maxEventOrder: validated.maxEventOrder,
+            derivationCounts: prepared.derivationCounts,
+            derivationDigest: validated.derivationDigest,
+            tailDigest: validated.tailDigest,
+            structureDigest: validated.structureDigest,
+            installedViewId: validated.installedViewId,
+            compactPoint: validated.compactPoint,
+          });
           turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
         },
       );

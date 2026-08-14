@@ -68,7 +68,6 @@ export type {
   BoundaryStatus,
   CompactContinuationHostFacts,
   CompactContinuationRunResult,
-  CompactContinuationTestHooks,
   StageName,
   StoredCompactContinuationReceipt,
   ToolPairProof,

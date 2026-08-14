@@ -1,6 +1,6 @@
 // Durable compact-continuation writer, boundary status, stage log, receipts.
 // Domain-owned table access only — no ad hoc SQL outside this module.
-// Schema v9: terminal receipts, attempt intent, force intent, ownership-safe boundary.
+// Schema v10: terminal receipts, immutable identity, force intent, one unresolved boundary.
 
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -37,7 +37,10 @@ export type StageName =
   | "compact_failed"
   | "receipt_recorded"
   | "writer_released"
-  | "interrupted";
+  | "interrupted"
+  | "retry_posture"
+  | "writer_claim_repaired"
+  | "recovery_maintenance";
 
 export type ForceIntentRow = {
   attemptId: string;
@@ -301,6 +304,7 @@ export function listStageLog(
 /**
  * Insert or update a boundary owned by attemptId.
  * Never changes ownership: if the row exists under a different attempt, throws.
+ * Zero-row owner-mismatch updates also throw (do not silently continue).
  */
 export function upsertBoundary(
   db: DatabaseSync,
@@ -318,25 +322,32 @@ export function upsertBoundary(
   if (existing !== null && existing.attemptId !== row.attemptId) {
     throw new Error(`boundary ${row.continuationTurnId} owned by ${existing.attemptId}, not ${row.attemptId}`);
   }
-  db.prepare(
-    `INSERT INTO compact_continuation_boundary (
-       continuation_turn_id, attempt_id, status, marker_persisted, last_stage, forced_at, completed_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(continuation_turn_id) DO UPDATE SET
-       status = excluded.status,
-       marker_persisted = excluded.marker_persisted,
-       last_stage = excluded.last_stage,
-       completed_at = excluded.completed_at
-     WHERE compact_continuation_boundary.attempt_id = excluded.attempt_id`,
-  ).run(
-    row.continuationTurnId,
-    row.attemptId,
-    row.status,
-    row.markerPersisted ? 1 : 0,
-    row.lastStage,
-    row.forcedAt,
-    row.completedAt ?? null,
-  );
+  const result = db
+    .prepare(
+      `INSERT INTO compact_continuation_boundary (
+         continuation_turn_id, attempt_id, status, marker_persisted, last_stage, forced_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(continuation_turn_id) DO UPDATE SET
+         status = excluded.status,
+         marker_persisted = excluded.marker_persisted,
+         last_stage = excluded.last_stage,
+         completed_at = excluded.completed_at
+       WHERE compact_continuation_boundary.attempt_id = excluded.attempt_id`,
+    )
+    .run(
+      row.continuationTurnId,
+      row.attemptId,
+      row.status,
+      row.markerPersisted ? 1 : 0,
+      row.lastStage,
+      row.forcedAt,
+      row.completedAt ?? null,
+    );
+  if (Number(result.changes) === 0) {
+    throw new Error(
+      `boundary ${row.continuationTurnId} upsert changed 0 rows (owner mismatch or missing row for attempt ${row.attemptId})`,
+    );
+  }
 }
 
 export function insertAttemptIntent(
@@ -475,27 +486,32 @@ export function readBoundary(db: DatabaseSync, continuationTurnId: string): Boun
   };
 }
 
+/**
+ * Read the single unresolved boundary. Schema enforces at most one; if the
+ * index is missing and multiple exist, throw (do not silently hide one).
+ */
 export function readPendingBoundary(db: DatabaseSync): BoundaryRow | null {
-  const row = db
+  const rows = db
     .prepare(
       `SELECT continuation_turn_id, attempt_id, status, marker_persisted, last_stage, forced_at, completed_at
        FROM compact_continuation_boundary
        WHERE status IN ('pending', 'failed_repairable')
-       ORDER BY forced_at DESC
-       LIMIT 1`,
+       ORDER BY forced_at DESC`,
     )
-    .get() as
-    | {
-        continuation_turn_id: string;
-        attempt_id: string;
-        status: string;
-        marker_persisted: number | bigint;
-        last_stage: string;
-        forced_at: string;
-        completed_at: string | null;
-      }
-    | undefined;
-  if (row === undefined) return null;
+    .all() as unknown as Array<{
+    continuation_turn_id: string;
+    attempt_id: string;
+    status: string;
+    marker_persisted: number | bigint;
+    last_stage: string;
+    forced_at: string;
+    completed_at: string | null;
+  }>;
+  if (rows.length === 0) return null;
+  if (rows.length > 1) {
+    throw new Error(`compact-continuation corruption: ${rows.length} unresolved boundaries (at most one allowed)`);
+  }
+  const row = rows[0]!;
   return {
     continuationTurnId: row.continuation_turn_id,
     attemptId: row.attempt_id,

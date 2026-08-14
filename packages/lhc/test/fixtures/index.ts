@@ -95,6 +95,12 @@ export function openRaw(path: string): DatabaseSync {
 }
 
 export {
+  type CompactContinuationTestHooks,
+  forceClearWriter,
+  runCompactContinuationForTests,
+  seedWriterClaim,
+} from "./compact-continuation-seam.js";
+export {
   corruptTwoOpenTurns,
   poisonMessageBlockJson,
   poisonMessageFormJson,

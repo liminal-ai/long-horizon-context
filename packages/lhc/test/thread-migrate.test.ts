@@ -9,7 +9,7 @@ import {
   THREAD_SCHEMA_VERSION_5,
   THREAD_SCHEMA_VERSION_6,
   THREAD_SCHEMA_VERSION_7,
-  THREAD_SCHEMA_VERSION_9,
+  THREAD_SCHEMA_VERSION_10,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -241,7 +241,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -273,7 +273,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -344,7 +344,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -548,7 +548,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
 
       const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
       const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
@@ -618,7 +618,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
       ).toBeDefined();
@@ -663,7 +663,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_writer'")
@@ -731,7 +731,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       const row = db
         .prepare(`SELECT attempt_id, terminal FROM compact_continuation_receipt WHERE attempt_id = 'a1'`)
         .get() as { attempt_id: string; terminal: number };
@@ -772,7 +772,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_9);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_attempt'")
@@ -781,6 +781,45 @@ describe("thread schema migration", () => {
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_force_intent'")
+          .get(),
+      ).toBeDefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a genuine v9 file by adding one-unresolved boundary index", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const old = new DatabaseSync(filePath);
+    try {
+      old.exec("DROP INDEX IF EXISTS idx_compact_continuation_boundary_one_unresolved;");
+      old.exec(`PRAGMA user_version = 9;`);
+      expect(
+        old
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_compact_continuation_boundary_one_unresolved'",
+          )
+          .get(),
+      ).toBeUndefined();
+    } finally {
+      old.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_10);
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_compact_continuation_boundary_one_unresolved'",
+          )
           .get(),
       ).toBeDefined();
     } finally {
