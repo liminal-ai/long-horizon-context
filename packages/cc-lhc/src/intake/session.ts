@@ -487,16 +487,20 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
    * Process one watcher emission batch serially.
    *
    * Architecture (LIM-64 correctness + batch performance):
-   * 1. Observe every line; publish non-pressure lifecycle immediately.
+   * 1. Observe every line and retain full lifecycle partitions + event slice.
+   *    Do **not** publish ordinary governor lifecycle for all lines up front —
+   *    multi-turn catch-up must not flatten sampling(N+1) before settle(N).
    * 2. Filter replay before submission; fully replay-dropped lines contribute
-   *    no estimate/settle (may still have republished sampling_observed/turn-open).
+   *    no estimate/settle (sampling_observed / turn_opened may still republish
+   *    in line order after the intake decision).
    * 3. Submit all remaining events in ONE `messageEvents` call for the batch
    *    (O(batches), not O(lines)).
    * 4. Map `BatchResult.events` by input order + idempotencyKey; malformed
-   *    mapping degrades and publishes no deferred pressure.
-   * 5. Publish deferred pressure in original line order; mode:add only from
-   *    events accepted as newly recorded (duplicate-idempotency skips do not
-   *    count as post-measurement growth).
+   *    mapping degrades and publishes no mutation-arming deferred pressure.
+   * 5. Replay lifecycle in original line order after the intake decision:
+   *    health → ordinary immediate → mode:set/add → turn_settled for newly
+   *    recorded lines; replay/skip lines get ordinary immediate only.
+   *    mode:add only from events accepted as newly recorded.
    */
   const enqueueEmissions = (emissions: WatcherEmission[]): Promise<void> => {
     batchQueue = batchQueue
@@ -506,25 +510,66 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         if (intakeHalted) return;
         if (stopped && emissions.length === 0) return;
 
-        type LineWork =
-          | { kind: "skip_pressure" }
-          | {
-              kind: "pressure_candidate";
-              item: RolloutLineItem | undefined;
-              samplingEmitted: boolean;
-              deferredPressure: readonly LifecycleSignal[];
-              wouldPostMeasurementAdd: boolean;
-              toSend: MessageEventInput[];
-              signaturesToAdd: string[];
-              /** Inclusive start index into the flat batch event array. */
-              eventStart: number;
-              eventCount: number;
-            };
+        /**
+         * One observed line's retained partitions. Lifecycle is held until after
+         * the batch intake decision so multi-turn catch-up stays line-ordered:
+         * sampling/set/settle(N) before turn_opened/sampling(N+1).
+         */
+        type LineWork = {
+          /** session_mismatch / capture_degraded (degradeQuiet already latched). */
+          healthSignals: LifecycleSignal[];
+          /** turn_opened, sampling_observed, native_compact_observed, etc. */
+          ordinaryImmediate: LifecycleSignal[];
+          samplingEmitted: boolean;
+          deferredPressure: readonly LifecycleSignal[];
+          wouldPostMeasurementAdd: boolean;
+          toSend: MessageEventInput[];
+          /** Inclusive start index into the flat batch event array. */
+          eventStart: number;
+          eventCount: number;
+          /**
+           * Observed mapped events but every one was dropped by replay dedupe.
+           * May republish sampling/turn-open; never set/settle/add.
+           */
+          fullyReplayDropped: boolean;
+        };
 
         const lineWork: LineWork[] = [];
         const batchEvents: MessageEventInput[] = [];
         const batchSignatures: string[] = [];
         const batchItems: RolloutLineItem[] = [];
+
+        /** Partition observed lifecycle; latch degradation without publishing yet. */
+        const partitionLifecycle = (
+          lifecycle: readonly LifecycleSignal[],
+        ): { healthSignals: LifecycleSignal[]; ordinaryImmediate: LifecycleSignal[] } => {
+          const healthSignals: LifecycleSignal[] = [];
+          const ordinaryImmediate: LifecycleSignal[] = [];
+          const pendingMismatches: LifecycleSignal[] = [];
+          for (const signal of lifecycle) {
+            if (signal.kind === "capture_degraded") {
+              if (degradeQuiet(signal.reason)) {
+                healthSignals.push(...pendingMismatches, signal);
+              }
+              pendingMismatches.length = 0;
+            } else if (signal.kind === "session_mismatch_observed") {
+              pendingMismatches.push(signal);
+            } else {
+              ordinaryImmediate.push(signal);
+            }
+          }
+          return { healthSignals, ordinaryImmediate };
+        };
+
+        /**
+         * Publish one line's non-pressure lifecycle in semantic order.
+         * Health always precedes ordinary immediate so captureHealthy is false
+         * before any later mutation-arming settle in the same batch.
+         */
+        const publishLineImmediate = (work: LineWork): void => {
+          if (work.healthSignals.length > 0) publishLifecycle(work.healthSignals);
+          if (work.ordinaryImmediate.length > 0) publishLifecycle(work.ordinaryImmediate);
+        };
 
         for (const emission of emissions) {
           stats.linesSeen += 1;
@@ -556,29 +601,26 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             if (turnSignal === "closes") turnOpen = false;
           }
 
-          // Immediate (non-pressure) lifecycle for THIS line before intake:
-          // sampling_observed, turn_opened, native_compact, capture_degraded.
-          // Governor must not arm wouldMutate until deferred settle after intake.
-          const immediateLifecycle: LifecycleSignal[] = [];
-          const pendingMismatches: LifecycleSignal[] = [];
-          for (const signal of observed.lifecycle) {
-            if (signal.kind === "capture_degraded") {
-              if (degradeQuiet(signal.reason)) {
-                immediateLifecycle.push(...pendingMismatches, signal);
-              }
-              pendingMismatches.length = 0;
-            } else if (signal.kind === "session_mismatch_observed") {
-              pendingMismatches.push(signal);
-            } else {
-              immediateLifecycle.push(signal);
-            }
-          }
-          publishLifecycle(immediateLifecycle);
+          // Retain partitions; do not publish ordinary lifecycle yet.
+          // Publishing all sampling first then all settles later flattens
+          // multi-turn catch-up so settle(N) would see sampling(N+1).
+          const { healthSignals, ordinaryImmediate } = partitionLifecycle(observed.lifecycle);
+          const samplingEmitted = ordinaryImmediate.some((s) => s.kind === "sampling_observed");
 
           if (emission.kind === "parse_error") {
             stats.parseFailures += 1;
             logError(`cc-lhc parse fail: ${emission.error}`);
-            lineWork.push({ kind: "skip_pressure" });
+            lineWork.push({
+              healthSignals,
+              ordinaryImmediate,
+              samplingEmitted: false,
+              deferredPressure: [],
+              wouldPostMeasurementAdd: false,
+              toSend: [],
+              eventStart: batchEvents.length,
+              eventCount: 0,
+              fullyReplayDropped: false,
+            });
             continue;
           }
 
@@ -588,11 +630,21 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           stats.skippedImage += observed.stats.image;
 
           if (sdk === undefined || threadRef === undefined) {
-            lineWork.push({ kind: "skip_pressure" });
+            // No intake path: still retain line order for health/chrome lifecycle.
+            lineWork.push({
+              healthSignals,
+              ordinaryImmediate,
+              samplingEmitted,
+              deferredPressure: observed.deferredPressure,
+              wouldPostMeasurementAdd: false,
+              toSend: [],
+              eventStart: batchEvents.length,
+              eventCount: 0,
+              fullyReplayDropped: false,
+            });
             continue;
           }
 
-          const samplingEmitted = observed.lifecycle.some((s) => s.kind === "sampling_observed");
           const filtered =
             dedupeState === undefined
               ? {
@@ -608,9 +660,19 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           }
 
           // Fully replay-dropped: zero estimate/settle. Immediate lifecycle
-          // (including sampling_observed / turn_opened) already published.
+          // (sampling_observed / turn_opened) replays in line order after intake.
           if (observed.events.length > 0 && filtered.toSend.length === 0) {
-            lineWork.push({ kind: "skip_pressure" });
+            lineWork.push({
+              healthSignals,
+              ordinaryImmediate,
+              samplingEmitted,
+              deferredPressure: observed.deferredPressure,
+              wouldPostMeasurementAdd: false,
+              toSend: [],
+              eventStart: batchEvents.length,
+              eventCount: 0,
+              fullyReplayDropped: true,
+            });
             continue;
           }
 
@@ -621,19 +683,25 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             batchItems.push(emission.item);
           }
           lineWork.push({
-            kind: "pressure_candidate",
-            item: emission.kind === "line" ? emission.item : undefined,
+            healthSignals,
+            ordinaryImmediate,
             samplingEmitted,
             deferredPressure: observed.deferredPressure,
             wouldPostMeasurementAdd: observed.wouldPostMeasurementAdd,
             toSend: filtered.toSend,
-            signaturesToAdd: filtered.signaturesToAdd,
             eventStart,
             eventCount: filtered.toSend.length,
+            fullyReplayDropped: false,
           });
         }
 
-        if (sdk === undefined || threadRef === undefined) return;
+        if (sdk === undefined || threadRef === undefined) {
+          // No SDK: publish retained lifecycle in line order (health + chrome only).
+          for (const work of lineWork) {
+            publishLineImmediate(work);
+          }
+          return;
+        }
 
         // Empty mapped events only (meta/sidechain chrome with deferred settle):
         // no intake call; still allow deferred set/settle for those candidates.
@@ -656,7 +724,13 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           // `flushBatchFn` may return void (legacy injectors).
           const flushResult = normalizeFlushResult(rawFlush as FlushBatchResult | boolean | undefined, batchEvents);
           if (!flushResult.ok) {
-            // Failed or malformed intake: publish no deferred pressure from this batch.
+            // Failed or malformed intake: no mutation-arming lifecycle from this
+            // batch. Still publish host health + sampling/turn-open per line so
+            // observations stay ordered; captureHealthy (already latched) blocks
+            // wouldMutate if a later path ever settles.
+            for (const work of lineWork) {
+              publishLineImmediate(work);
+            }
             return;
           }
           // Extra guard: injector-supplied outcomes must still align by length/key.
@@ -665,12 +739,18 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               `cc-lhc intake outcome map invalid: expected ${batchEvents.length} event outcome(s), got ${flushResult.eventOutcomes.length}`,
             );
             degradeAndEmit("intake_outcome_map:length_mismatch");
+            for (const work of lineWork) {
+              publishLineImmediate(work);
+            }
             return;
           }
           for (let i = 0; i < batchEvents.length; i += 1) {
             if (flushResult.eventOutcomes[i]!.idempotencyKey !== batchEvents[i]!.idempotencyKey) {
               logError(`cc-lhc intake outcome map invalid: key mismatch at index ${i}`);
               degradeAndEmit("intake_outcome_map:key_mismatch");
+              for (const work of lineWork) {
+                publishLineImmediate(work);
+              }
               return;
             }
           }
@@ -679,16 +759,20 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           eventOutcomes = [];
         }
 
-        // Publish deferred pressure in original line order after successful intake.
+        // Replay lifecycle in original line order after successful intake.
         for (const work of lineWork) {
-          if (work.kind !== "pressure_candidate") continue;
+          publishLineImmediate(work);
+
+          // Fully replay-dropped: ordinary immediate only (no set/settle/add).
+          if (work.fullyReplayDropped) {
+            continue;
+          }
 
           const lineOutcomes =
             work.eventCount === 0 ? [] : eventOutcomes.slice(work.eventStart, work.eventStart + work.eventCount);
           const recordedEvents = work.toSend.filter((_event, i) => lineOutcomes[i]?.outcome === "recorded");
-          // A line that submitted events but recorded none is a pure skip
-          // (duplicate idempotency). Do not publish set/settle/add for it —
-          // skipped outcomes are not new post-measurement growth.
+          // Submitted events but recorded none: pure skip (duplicate idempotency).
+          // Ordinary immediate already published; do not set/settle/add.
           if (work.eventCount > 0 && recordedEvents.length === 0) {
             continue;
           }

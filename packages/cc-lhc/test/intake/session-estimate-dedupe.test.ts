@@ -10,6 +10,9 @@ import { join } from "node:path";
 import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
 
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
+import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import { loadThreadSignatures, openLineageDatabase, recordSessionThread } from "../../src/intake/lineage-db.js";
 import { signaturesForRolloutLine } from "../../src/intake/replay-dedupe.js";
 import { startCaptureSession } from "../../src/intake/session.js";
@@ -21,6 +24,14 @@ import {
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
+
+function armedPolicy(over: Partial<ResolvedContextPolicy["policy"]> = {}): ResolvedContextPolicy {
+  const policy = { ...BUILTIN_CONTEXT_POLICY, ...over };
+  const sources = Object.fromEntries(
+    Object.keys(policy).map((k) => [k, "builtin"]),
+  ) as ResolvedContextPolicy["sources"];
+  return { policy, sources, armed: true, errors: [] };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -675,6 +686,365 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       expect(lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "set")).toHaveLength(1);
     } finally {
       await session.stop();
+    }
+  });
+
+  it("multi-turn catch-up batch: one intake, line-ordered lifecycle, matching settle sampling", async () => {
+    // Two complete user/assistant turns delivered as the watcher's initial
+    // catch-up batch. Lifecycle must stay model-turn ordered (not all sampling
+    // first / all settles later), and each settled observe must bind the
+    // matching samplingId + provider total for that turn.
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-multiturn-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-multiturn";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "11111111-2222-3333-4444-555555555555";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+
+    // Turn 1 provider total = 100_000 (below upper 200k); turn 2 = 250_000 (above).
+    // Distinct output tokens so mode:set values also prove per-turn identity.
+    const turn1Usage = {
+      input_tokens: 100_000,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 11,
+    };
+    const turn2Usage = {
+      input_tokens: 250_000,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 22,
+    };
+    const lines: RolloutLineItem[] = [
+      userLine(sid, "u-mt-1", "first user turn"),
+      completeAssistant(sid, "a-mt-1", "req_mt_1", "first reply", turn1Usage),
+      userLine(sid, "u-mt-2", "second user turn"),
+      completeAssistant(sid, "a-mt-2", "req_mt_2", "second reply", turn2Usage),
+    ];
+    writeFileSync(path, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+
+    const intake: MessageEventInput[] = [];
+    let intakeCalls = 0;
+    const lifecycle: LifecycleSignal[] = [];
+    // Fold governor live as capture publishes so settle observations see
+    // line-ordered state (not a post-hoc batch of the full stream).
+    const resolved = armedPolicy({ upperBoundTokens: 200_000, lowerBoundTokens: 50_000 });
+    let gov = createGovernorRuntimeState({
+      captureHealthy: true,
+      captureGeneration: 1,
+      descriptorReady: true,
+    });
+    const settledObserves: Array<{
+      samplingId: string | null;
+      providerContextTotal: number | null;
+      wouldMutate: boolean;
+      decision: string;
+      inputEpoch: number;
+      inputEpochAtTurnOpen: number;
+    }> = [];
+
+    const session = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "fresh" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath: join(root, "lineage.sqlite"),
+      registryPath: join(root, "reg.sqlite"),
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle.push(...signals);
+        // Mirror wrapper: user input epoch bumps are external; for pure
+        // capture-path proof we only fold lifecycle signals themselves.
+        // turn_opened snapshots inputEpochAtTurnOpen from currentInputEpoch —
+        // if the flattened bug existed, settle(1) would hold sampling of turn 2.
+        const applied = applyGovernorLifecycleBatch(gov, signals, resolved);
+        gov = applied.state;
+        for (const o of applied.observes) {
+          if (o.observePhase === "settled_seam") {
+            settledObserves.push({
+              samplingId: o.samplingId,
+              providerContextTotal: o.providerContextTotal,
+              wouldMutate: o.wouldMutate,
+              decision: o.decision,
+              inputEpoch: o.inputEpoch,
+              inputEpochAtTurnOpen: o.inputEpochAtTurnOpen,
+            });
+          }
+        }
+      },
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId: "th_multiturn", registryPath: join(root, "reg.sqlite") } as ThreadRef,
+      }),
+      initSdkFn: () =>
+        fakeSdk(intake, {
+          onCall: () => {
+            intakeCalls += 1;
+          },
+        }),
+    });
+
+    try {
+      await waitFor(() => session.isCaptureReady(), "ready");
+      await waitFor(
+        () => lifecycle.filter((s) => s.kind === "turn_settled").length >= 2,
+        "both turns settled",
+      );
+      // Allow the serial batch queue to finish any trailing publish.
+      await sleep(100);
+
+      expect(intakeCalls).toBe(1);
+
+      // Lifecycle order is model-turn order, not all-sampling-then-all-settles.
+      const pressureKinds = lifecycle
+        .filter(
+          (s) =>
+            s.kind === "turn_opened" ||
+            s.kind === "sampling_observed" ||
+            s.kind === "post_measurement_estimate" ||
+            s.kind === "turn_settled",
+        )
+        .map((s) => {
+          if (s.kind === "sampling_observed") return `sample:${s.samplingId}`;
+          if (s.kind === "post_measurement_estimate") return `est:${s.mode ?? "set"}:${s.tokens}`;
+          return s.kind;
+        });
+
+      const iOpen1 = pressureKinds.indexOf("turn_opened");
+      const iSample1 = pressureKinds.indexOf("sample:req:req_mt_1");
+      const iSet1 = pressureKinds.indexOf("est:set:11");
+      const iSettle1 = pressureKinds.indexOf("turn_settled");
+      const iOpen2 = pressureKinds.indexOf("turn_opened", iSettle1 + 1);
+      const iSample2 = pressureKinds.indexOf("sample:req:req_mt_2");
+      const iSet2 = pressureKinds.indexOf("est:set:22");
+      const iSettle2 = pressureKinds.indexOf("turn_settled", iSettle1 + 1);
+
+      expect(iOpen1).toBeGreaterThanOrEqual(0);
+      expect(iSample1).toBeGreaterThan(iOpen1);
+      expect(iSet1).toBeGreaterThan(iSample1);
+      expect(iSettle1).toBeGreaterThan(iSet1);
+      expect(iOpen2).toBeGreaterThan(iSettle1);
+      expect(iSample2).toBeGreaterThan(iOpen2);
+      expect(iSet2).toBeGreaterThan(iSample2);
+      expect(iSettle2).toBeGreaterThan(iSet2);
+
+      // Explicit anti-flatten: second sampling must not precede first settle.
+      expect(iSample2).toBeGreaterThan(iSettle1);
+
+      // Two distinct completes → two mode:set, two settles.
+      expect(lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(2);
+      expect(lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "set")).toHaveLength(2);
+
+      expect(settledObserves).toHaveLength(2);
+      // First settle binds turn-1 sampling + provider total (not turn 2's 250k).
+      expect(settledObserves[0]!.samplingId).toBe("req:req_mt_1");
+      expect(settledObserves[0]!.providerContextTotal).toBe(100_000);
+      expect(settledObserves[0]!.wouldMutate).toBe(false);
+      expect(settledObserves[0]!.decision).not.toBe("would_compact");
+
+      // Second settle binds turn-2 sampling; only this turn crosses trigger.
+      expect(settledObserves[1]!.samplingId).toBe("req:req_mt_2");
+      expect(settledObserves[1]!.providerContextTotal).toBe(250_000);
+      expect(settledObserves[1]!.decision).toBe("would_compact");
+      expect(settledObserves[1]!.wouldMutate).toBe(true);
+
+      // Input epoch / turn-open state must not collapse the two turns into one
+      // open window: each settle sees matching open/current epochs (no mid-turn
+      // epoch change), and two independent open→settle cycles occurred.
+      expect(settledObserves[0]!.inputEpoch).toBe(settledObserves[0]!.inputEpochAtTurnOpen);
+      expect(settledObserves[1]!.inputEpoch).toBe(settledObserves[1]!.inputEpochAtTurnOpen);
+      // After two complete open→settle cycles, governor must be closed again.
+      expect(gov.turnOpen).toBe(false);
+      expect(gov.latestSamplingId).toBe("req:req_mt_2");
+      expect(gov.settleSequence).toBe(2);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  it("mixed replay/new catch-up: only the new turn arms settle with its sampling", async () => {
+    // Phase 1 records one complete turn. Phase 2 re-tails that history plus a
+    // novel second turn in one catch-up batch. Replayed lines must not arm
+    // set/settle; the new turn's sampling/usage is the one used at its settle.
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-mixed-replay-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-mixed-replay";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+    writeFileSync(path, "");
+
+    const lineageDbPath = join(root, "lineage.sqlite");
+    const registryPath = join(root, "reg.sqlite");
+    const threadId = "th_mixed_replay";
+    openLineageDatabase(lineageDbPath);
+    recordSessionThread(lineageDbPath, sid, threadId, {}, { prefix: { kind: "none" } });
+
+    const oldUsage = {
+      input_tokens: 80_000,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 5,
+    };
+    const newUsage = {
+      input_tokens: 300_000,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 33,
+    };
+
+    // Phase 1: capture the first complete turn so signatures exist.
+    {
+      const lifecycle1: LifecycleSignal[] = [];
+      const session1 = startCaptureSession({
+        cwd,
+        expectedSession: { sessionId: sid, source: "fresh" },
+        knownRolloutPath: path,
+        prefixBoundary: { kind: "none" },
+        noInference: true,
+        discoverDeps: { projectsRoot, pollMs: 20 },
+        lineageDbPath,
+        registryPath,
+        log: () => {},
+        logError: () => {},
+        onLifecycle: (signals) => {
+          lifecycle1.push(...signals);
+        },
+        createThreadFn: async () => ({
+          ok: true,
+          value: { threadId, registryPath } as ThreadRef,
+        }),
+        initSdkFn: () => fakeSdk([]),
+      });
+      try {
+        await waitFor(() => session1.isCaptureReady(), "phase1 ready");
+        appendJsonl(path, userLine(sid, "u-old", "old user"));
+        appendJsonl(path, completeAssistant(sid, "a-old", "req_old", "old reply", oldUsage));
+        await waitFor(() => lifecycle1.some((s) => s.kind === "turn_settled"), "phase1 settled");
+      } finally {
+        await session1.stop();
+      }
+    }
+
+    expect(loadThreadSignatures(lineageDbPath, threadId).length).toBeGreaterThan(0);
+
+    // Append novel second turn before re-open so the initial catch-up batch
+    // contains old (replay) + new (record) in one delivery.
+    appendJsonl(path, userLine(sid, "u-new", "new user after replay"));
+    appendJsonl(path, completeAssistant(sid, "a-new", "req_new", "new reply", newUsage));
+
+    let intakeCalls = 0;
+    const lifecycle2: LifecycleSignal[] = [];
+    const resolved = armedPolicy({ upperBoundTokens: 200_000, lowerBoundTokens: 50_000 });
+    let gov = createGovernorRuntimeState({
+      captureHealthy: true,
+      captureGeneration: 1,
+      descriptorReady: true,
+    });
+    const settledObserves: Array<{
+      samplingId: string | null;
+      providerContextTotal: number | null;
+      wouldMutate: boolean;
+      decision: string;
+    }> = [];
+
+    const session2 = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "explicit_resume" },
+      knownRolloutPath: path,
+      resumeSessionId: sid,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath,
+      registryPath,
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle2.push(...signals);
+        const applied = applyGovernorLifecycleBatch(gov, signals, resolved);
+        gov = applied.state;
+        for (const o of applied.observes) {
+          if (o.observePhase === "settled_seam") {
+            settledObserves.push({
+              samplingId: o.samplingId,
+              providerContextTotal: o.providerContextTotal,
+              wouldMutate: o.wouldMutate,
+              decision: o.decision,
+            });
+          }
+        }
+      },
+      createThreadFn: async () => ({
+        ok: true,
+        value: { threadId, registryPath } as ThreadRef,
+      }),
+      initSdkFn: () =>
+        fakeSdk([], {
+          onCall: () => {
+            intakeCalls += 1;
+          },
+        }),
+    });
+
+    try {
+      await waitFor(() => session2.isCaptureReady(), "phase2 ready");
+      await waitFor(
+        () => lifecycle2.some((s) => s.kind === "turn_settled"),
+        "new turn settled",
+      );
+      await sleep(100);
+
+      // One whole-batch intake for the novel events in catch-up (replay-filtered).
+      expect(intakeCalls).toBe(1);
+      expect(session2.stats.skippedReplay).toBeGreaterThan(0);
+
+      // Replayed old turn must not arm mode:set or a settle with old sampling.
+      // Only the novel turn settles.
+      expect(lifecycle2.filter((s) => s.kind === "turn_settled")).toHaveLength(1);
+      const sets = lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "set");
+      expect(sets).toHaveLength(1);
+      expect(sets[0]!.kind).toBe("post_measurement_estimate");
+      if (sets[0]!.kind === "post_measurement_estimate") {
+        expect(sets[0]!.tokens).toBe(33);
+      }
+
+      // Sampling order: if old sampling republishes (sampling dedupe may suppress),
+      // it must not interleave ahead of the new turn's settle incorrectly — the
+      // settle must bind the new sampling only.
+      const samples = lifecycle2.filter((s) => s.kind === "sampling_observed");
+      const newSample = samples.find((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_new");
+      expect(newSample).toBeDefined();
+
+      const iNewSample = lifecycle2.findIndex(
+        (s) => s.kind === "sampling_observed" && s.samplingId === "req:req_new",
+      );
+      const iSet = lifecycle2.findIndex(
+        (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.tokens === 33,
+      );
+      const iSettle = lifecycle2.findIndex((s) => s.kind === "turn_settled");
+      expect(iNewSample).toBeGreaterThanOrEqual(0);
+      expect(iSet).toBeGreaterThan(iNewSample);
+      expect(iSettle).toBeGreaterThan(iSet);
+
+      // No old-turn mode:set (output 5) and no settle for old sampling.
+      expect(
+        lifecycle2.some(
+          (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.tokens === 5,
+        ),
+      ).toBe(false);
+
+      expect(settledObserves).toHaveLength(1);
+      expect(settledObserves[0]!.samplingId).toBe("req:req_new");
+      expect(settledObserves[0]!.providerContextTotal).toBe(300_000);
+      expect(settledObserves[0]!.decision).toBe("would_compact");
+      expect(settledObserves[0]!.wouldMutate).toBe(true);
+      // Replayed lines cannot arm a settle: only one settled observe.
+    } finally {
+      await session2.stop();
     }
   });
 });
