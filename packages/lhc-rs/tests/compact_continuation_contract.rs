@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -22,15 +23,16 @@ use lhc::shared_tech::compact_continuation::{
     COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_TRANSITION_ORDER,
     COMPACT_CONTINUATION_WRITER_CLAIMS, CONTEXT_COMPACT_CONTINUE_REASON,
     CompactContinuationDecision, CompactContinuationEffect, CompactContinuationHostCapability,
-    CompactContinuationOutcomeKind, CompactContinuationRefuseCode, CompactContinuationSkipCode,
-    CompactContinuationState, CompactMaterialFacts, ForcedContinuationBoundary,
-    ForcedContinuationBoundaryApplied, ForcedContinuationBoundaryNotApplied,
-    PostMeasurementEstimate, ProviderUsageAuthority, ProviderUsageAvailable,
-    ProviderUsageUnavailable, ProviderUsageUnavailableReason, ValidationResult, WorkContinuation,
-    WriterClaim, as_compact_continuation_input, assert_decision_parity,
-    compact_continuation_marker_idempotency_key, decide_compact_continuation,
-    validate_compact_continuation_decision, validate_compact_continuation_input,
-    validate_compact_continuation_receipt,
+    CompactContinuationInput, CompactContinuationInvariants, CompactContinuationOutcomeKind,
+    CompactContinuationPolicy, CompactContinuationRefuseCode, CompactContinuationSeam,
+    CompactContinuationSkipCode, CompactContinuationState, CompactMaterialFacts,
+    ForcedContinuationBoundary, ForcedContinuationBoundaryApplied,
+    ForcedContinuationBoundaryNotApplied, PostMeasurementEstimate, ProviderUsageAuthority,
+    ProviderUsageAvailable, ProviderUsageUnavailable, ProviderUsageUnavailableReason,
+    ValidationResult, WorkContinuation, WriterClaim, as_compact_continuation_input,
+    assert_decision_parity, compact_continuation_marker_idempotency_key,
+    decide_compact_continuation, validate_compact_continuation_decision,
+    validate_compact_continuation_input, validate_compact_continuation_receipt,
 };
 use lhc::shared_tech::js_json::js_json_stringify_of;
 
@@ -75,7 +77,12 @@ struct FixtureCase {
     coverage: Vec<String>,
     input_validation: String,
     input: Value,
+    /// Typed expected for semantic validation / assert_decision_parity.
     expected: CompactContinuationDecision,
+    /// Raw fixture `expected` Value retained for byte-parity vs TS disk bytes
+    /// (preserve_order). Must not be reconstructed solely from the typed form.
+    #[serde(skip)]
+    expected_raw: Value,
 }
 
 fn load_manifest() -> Manifest {
@@ -87,7 +94,16 @@ fn load_manifest() -> Manifest {
 fn load_case(rel: &str) -> FixtureCase {
     let path = fixtures_root().join(rel);
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    let root: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let expected_raw = root
+        .get("expected")
+        .cloned()
+        .unwrap_or_else(|| panic!("{}: missing expected", path.display()));
+    let mut fixture: FixtureCase = serde_json::from_value(root)
+        .unwrap_or_else(|e| panic!("typed parse {}: {e}", path.display()));
+    fixture.expected_raw = expected_raw;
+    fixture
 }
 
 fn assert_input_validation(value: &str, label: &str) {
@@ -369,12 +385,23 @@ fn all_38_fixture_cases_match_oracle_exactly() {
             entry.name, parity.issues
         );
 
-        // Semantic + byte-identical compact JSON (JS spelling).
+        // Semantic equality against typed expected.
         let actual_json = js_json_stringify_of(&actual).expect("serialize actual");
-        let expected_json = js_json_stringify_of(&fixture.expected).expect("serialize expected");
+        let typed_expected_json =
+            js_json_stringify_of(&fixture.expected).expect("serialize typed expected");
         assert_eq!(
-            actual_json, expected_json,
-            "case {}: decision compact JSON must be byte-identical\nactual:   {actual_json}\nexpected: {expected_json}",
+            actual_json, typed_expected_json,
+            "case {}: typed decision JSON must match\nactual:   {actual_json}\ntyped:    {typed_expected_json}",
+            entry.name
+        );
+
+        // Fable finding 1: raw fixture bytes (not typed round-trip). Catches
+        // Rust struct field-order / null-vs-omission / spelling drift.
+        let raw_expected_json =
+            js_json_stringify_of(&fixture.expected_raw).expect("serialize raw expected");
+        assert_eq!(
+            actual_json, raw_expected_json,
+            "case {}: decision must be byte-identical to raw fixture expected (preserve_order)\nactual:   {actual_json}\nfixture:  {raw_expected_json}",
             entry.name
         );
 
@@ -1405,6 +1432,505 @@ fn effects_vs_residual_documented_rule_pin() {
     assert!(actual.receipt.residual.marker_persisted);
     assert!(!actual.receipt.residual.marker_served);
     assert!(actual.receipt.residual.prior_serving_view_intact);
+}
+
+// ── Fable finding 1: raw fixture bytes, not typed round-trip ─────────────────
+
+#[test]
+fn raw_fixture_expected_bytes_not_only_typed_round_trip() {
+    // Narrow regression: comparing only typed-expected JSON would miss field-
+    // order drift. The fixture loader retains raw expected Value; assert it
+    // still matches the typed form for a representative case (and the 38-case
+    // loop asserts actual vs raw for every case).
+    let fixture = load_case("cases/active_non_tool_above_trigger.json");
+    let typed = js_json_stringify_of(&fixture.expected).unwrap();
+    let raw = js_json_stringify_of(&fixture.expected_raw).unwrap();
+    assert_eq!(
+        typed, raw,
+        "typed expected must still equal raw fixture expected (order-sensitive)"
+    );
+    // Key order pin: first receipt keys must match TS construction order.
+    let receipt = fixture
+        .expected_raw
+        .get("receipt")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    let keys: Vec<&str> = receipt.keys().map(|k| k.as_str()).collect();
+    assert_eq!(
+        &keys[..4],
+        &["contractVersion", "outcome", "reasonCode", "turnEndReason"]
+    );
+}
+
+// ── Fable finding 2: receipt absent-key alignment with TS ────────────────────
+
+fn sample_receipt_value() -> Value {
+    // Minimal valid-looking receipt skeleton (oracle-shaped) for mutation probes.
+    let fixture = load_case("cases/no_authoritative_provider_usage.json");
+    fixture.expected_raw["receipt"].clone()
+}
+
+#[test]
+fn receipt_pressure_null_base_requires_present_null_companions() {
+    let mut good = sample_receipt_value();
+    // Valid: keys present and null.
+    assert!(
+        validate_compact_continuation_receipt(&good).ok,
+        "canonical receipt should validate: {:?}",
+        validate_compact_continuation_receipt(&good).issues
+    );
+
+    // Absent nextRequestPressureTokens → invalid (TS flags).
+    let mut absent_next = good.clone();
+    absent_next["pressure"]
+        .as_object_mut()
+        .unwrap()
+        .remove("nextRequestPressureTokens");
+    let v = validate_compact_continuation_receipt(&absent_next);
+    assert!(!v.ok);
+    assert!(
+        v.issues
+            .iter()
+            .any(|i| i.path == "pressure.nextRequestPressureTokens")
+    );
+
+    // Absent atOrAboveTrigger → invalid.
+    let mut absent_trig = good.clone();
+    absent_trig["pressure"]
+        .as_object_mut()
+        .unwrap()
+        .remove("atOrAboveTrigger");
+    let v = validate_compact_continuation_receipt(&absent_trig);
+    assert!(!v.ok);
+    assert!(
+        v.issues
+            .iter()
+            .any(|i| i.path == "pressure.atOrAboveTrigger")
+    );
+
+    // Non-null when base null → invalid.
+    good["pressure"]["nextRequestPressureTokens"] = json!(1);
+    let v = validate_compact_continuation_receipt(&good);
+    assert!(!v.ok);
+    assert!(
+        v.issues
+            .iter()
+            .any(|i| i.path == "pressure.nextRequestPressureTokens")
+    );
+
+    // Wrong type for atOrAboveTrigger.
+    let mut wrong = sample_receipt_value();
+    wrong["pressure"]["atOrAboveTrigger"] = json!(false);
+    let v = validate_compact_continuation_receipt(&wrong);
+    assert!(!v.ok);
+}
+
+#[test]
+fn receipt_residual_continuation_turn_id_always_required_present() {
+    let mut good = sample_receipt_value();
+    assert!(validate_compact_continuation_receipt(&good).ok);
+
+    // Absent key → invalid (independent of forced boundary).
+    good["residual"]
+        .as_object_mut()
+        .unwrap()
+        .remove("continuationTurnId");
+    let v = validate_compact_continuation_receipt(&good);
+    assert!(!v.ok);
+    assert!(
+        v.issues
+            .iter()
+            .any(|i| i.path == "residual.continuationTurnId")
+    );
+
+    // Wrong type → invalid.
+    let mut wrong = sample_receipt_value();
+    wrong["residual"]["continuationTurnId"] = json!(42);
+    let v = validate_compact_continuation_receipt(&wrong);
+    assert!(!v.ok);
+
+    // Valid string when boundary applied (from continue-turn fixture).
+    let cont = load_case("cases/active_non_tool_above_trigger.json");
+    let r = &cont.expected_raw["receipt"];
+    assert!(validate_compact_continuation_receipt(r).ok);
+    assert_eq!(r["residual"]["continuationTurnId"].as_str(), Some("t2"));
+}
+
+// ── Fable finding 3: pure oracle does not panic ──────────────────────────────
+
+fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
+    CompactContinuationInput {
+        contract_version: COMPACT_CONTINUATION_CONTRACT_VERSION.to_string(),
+        seam: CompactContinuationSeam {
+            model_response_complete: true,
+            requested_tools_settled: true,
+            capture_flushed: true,
+            before_next_provider_request: true,
+            inside_transport_retry: false,
+            input_epoch_at_decision: 0,
+            input_epoch_at_apply: 0,
+        },
+        provider_usage: ProviderUsageAuthority::Available(ProviderUsageAvailable {
+            available: true,
+            input_tokens: i64::MAX,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total: i64::MAX,
+            domain: "provider_reported_input".to_string(),
+        }),
+        post_measurement_estimate: PostMeasurementEstimate {
+            tokens: 1,
+            source: "hand_built".to_string(),
+            domain: "source_labelled_estimate".to_string(),
+        },
+        policy: CompactContinuationPolicy {
+            upper_trigger_tokens: 100_000,
+            lower_target_tokens: 40_000,
+            host_capability: CompactContinuationHostCapability::FullStateMachine,
+        },
+        continuation,
+        invariants: CompactContinuationInvariants {
+            capture_complete: true,
+            provider_identity_valid: true,
+            single_open_turn: true,
+            writer_claim: WriterClaim::None,
+        },
+        forced_continuation_boundary: ForcedContinuationBoundary::not_applied(),
+        compact_material: CompactMaterialFacts {
+            derivations_missing_or_failed: false,
+            lower_target_met: true,
+            compact_structurally_valid: true,
+            install_succeeds: true,
+            useful_reduction: true,
+            can_produce_valid_provider_request: true,
+        },
+    }
+}
+
+#[test]
+fn decide_does_not_panic_on_near_i64_max_pressure_sum() {
+    // Overflowing total+estimate must not panic; defensive fallback is defined.
+    for cont in [
+        WorkContinuation::None,
+        WorkContinuation::ActiveNonTool,
+        WorkContinuation::PendingCorrelatedToolResult {
+            tool_call_id: "c1".to_string(),
+            correlation_valid: true,
+        },
+    ] {
+        let input = hand_built_base(cont);
+        let result = catch_unwind(AssertUnwindSafe(|| decide_compact_continuation(&input)));
+        assert!(
+            result.is_ok(),
+            "decide_compact_continuation must not panic on i64::MAX+1 pressure sum"
+        );
+        let decision = result.unwrap();
+        // Overflow ⇒ no invented pressure trigger.
+        assert!(
+            decision
+                .receipt
+                .pressure
+                .next_request_pressure_tokens
+                .is_none()
+        );
+        assert!(decision.receipt.pressure.at_or_above_trigger.is_none());
+    }
+}
+
+#[test]
+fn decide_does_not_panic_for_every_continuation_kind_hand_built() {
+    // Also covers applied boundary + tool kind mismatch without panic.
+    let cases: Vec<CompactContinuationInput> = vec![
+        hand_built_base(WorkContinuation::None),
+        hand_built_base(WorkContinuation::ActiveNonTool),
+        hand_built_base(WorkContinuation::PendingCorrelatedToolResult {
+            tool_call_id: "c1".to_string(),
+            correlation_valid: true,
+        }),
+        {
+            let mut i = hand_built_base(WorkContinuation::None);
+            // Impossible preserve-path selection cannot be reached via public
+            // API; ensure applied boundary + none refuses without panic.
+            i.forced_continuation_boundary =
+                ForcedContinuationBoundary::Applied(ForcedContinuationBoundaryApplied {
+                    applied: true,
+                    continuation_turn_id: "t9".to_string(),
+                    forced_this_seam: false,
+                    marker_already_persisted: false,
+                });
+            i.provider_usage = ProviderUsageAuthority::Available(ProviderUsageAvailable {
+                available: true,
+                input_tokens: 10,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                total: 10,
+                domain: "provider_reported_input".to_string(),
+            });
+            i.post_measurement_estimate.tokens = 0;
+            i
+        },
+    ];
+    for input in cases {
+        let result = catch_unwind(AssertUnwindSafe(|| decide_compact_continuation(&input)));
+        assert!(result.is_ok(), "no panic for hand-built continuation kinds");
+    }
+}
+
+// ── Fable finding 4: direct serde union decoding ─────────────────────────────
+
+#[test]
+fn direct_serde_provider_usage_selects_by_available_literal() {
+    // Valid available.
+    let ok: ProviderUsageAuthority = serde_json::from_value(json!({
+        "available": true,
+        "inputTokens": 1,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+        "total": 1,
+        "domain": "provider_reported_input",
+    }))
+    .unwrap();
+    assert!(matches!(ok, ProviderUsageAuthority::Available(_)));
+
+    // Valid unavailable.
+    let miss: ProviderUsageAuthority = serde_json::from_value(json!({
+        "available": false,
+        "reason": "missing",
+        "domain": "provider_reported_input",
+    }))
+    .unwrap();
+    assert!(matches!(miss, ProviderUsageAuthority::Unavailable(_)));
+
+    // Misclassified under untagged: available:true + reason must NOT become Unavailable.
+    let bad = serde_json::from_value::<ProviderUsageAuthority>(json!({
+        "available": true,
+        "reason": "missing",
+        "domain": "provider_reported_input",
+    }));
+    assert!(bad.is_err(), "available:true + reason must fail serde");
+
+    // available:false with available-arm fields → fail (unknown/missing reason).
+    let bad2 = serde_json::from_value::<ProviderUsageAuthority>(json!({
+        "available": false,
+        "inputTokens": 1,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+        "total": 1,
+        "domain": "provider_reported_input",
+    }));
+    assert!(bad2.is_err());
+
+    // Unknown field on available arm.
+    let unk = serde_json::from_value::<ProviderUsageAuthority>(json!({
+        "available": true,
+        "inputTokens": 1,
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+        "total": 1,
+        "domain": "provider_reported_input",
+        "extra": true,
+    }));
+    assert!(unk.is_err());
+
+    // Missing available discriminant.
+    let nod = serde_json::from_value::<ProviderUsageAuthority>(json!({
+        "reason": "missing",
+        "domain": "provider_reported_input",
+    }));
+    assert!(nod.is_err());
+}
+
+#[test]
+fn direct_serde_forced_boundary_selects_by_applied_literal() {
+    let na: ForcedContinuationBoundary =
+        serde_json::from_value(json!({ "applied": false })).unwrap();
+    assert!(!na.is_applied());
+
+    let ap: ForcedContinuationBoundary = serde_json::from_value(json!({
+        "applied": true,
+        "continuationTurnId": "t2",
+        "forcedThisSeam": true,
+        "markerAlreadyPersisted": false,
+    }))
+    .unwrap();
+    assert!(ap.is_applied());
+
+    // Fable finding 4: {applied:true} alone must NOT deserialize as not-applied.
+    let bare = serde_json::from_value::<ForcedContinuationBoundary>(json!({ "applied": true }));
+    assert!(
+        bare.is_err(),
+        "applied:true without applied-arm fields must fail, not become NotApplied"
+    );
+
+    // applied:false with extra applied-arm fields → unknown fields fail.
+    let extra = serde_json::from_value::<ForcedContinuationBoundary>(json!({
+        "applied": false,
+        "continuationTurnId": "t1",
+    }));
+    assert!(extra.is_err());
+
+    // Wrong applied type.
+    let wrong = serde_json::from_value::<ForcedContinuationBoundary>(json!({ "applied": "yes" }));
+    assert!(wrong.is_err());
+}
+
+#[test]
+fn direct_serde_work_continuation_rejects_unknown_fields() {
+    let ok: WorkContinuation = serde_json::from_value(json!({ "kind": "none" })).unwrap();
+    assert!(matches!(ok, WorkContinuation::None));
+
+    let tool: WorkContinuation = serde_json::from_value(json!({
+        "kind": "pending_correlated_tool_result",
+        "toolCallId": "c1",
+        "correlationValid": true,
+    }))
+    .unwrap();
+    assert!(matches!(
+        tool,
+        WorkContinuation::PendingCorrelatedToolResult { .. }
+    ));
+
+    // Unknown field on none / active_non_tool.
+    assert!(
+        serde_json::from_value::<WorkContinuation>(json!({ "kind": "none", "extra": 1 })).is_err()
+    );
+    assert!(
+        serde_json::from_value::<WorkContinuation>(json!({
+            "kind": "active_non_tool",
+            "toolCallId": "x",
+        }))
+        .is_err()
+    );
+
+    // Unknown kind.
+    assert!(serde_json::from_value::<WorkContinuation>(json!({ "kind": "mystery" })).is_err());
+}
+
+#[test]
+fn reject_fixture_still_deserializes_for_total_oracle() {
+    // Cross-field-invalid but structurally deserializable (fresh force + marker).
+    let fixture = load_case("cases/fresh_force_marker_already_persisted_illegal.json");
+    assert_eq!(fixture.input_validation, "reject");
+    let typed: CompactContinuationInput = serde_json::from_value(fixture.input.clone()).unwrap();
+    let actual = decide_compact_continuation(&typed);
+    assert_eq!(
+        actual.receipt.refuse_code,
+        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+    );
+}
+
+// ── Fable finding 5: integral 1.0 + no_valid_provider_request evidence ───────
+
+#[test]
+fn accepts_json_integral_float_spelling_like_js() {
+    // 1.0 is accepted (JS Number.isSafeInteger(1.0)); 1.5 / -1 / beyond max rejected.
+    let mut ok = base_input(json!({}));
+    // Force JSON number that serde may present as f64 if not integer-encoded.
+    ok["policy"]["upperTriggerTokens"] = serde_json::from_str("1.0").unwrap();
+    ok["policy"]["lowerTargetTokens"] = serde_json::from_str("0.0").unwrap();
+    ok["seam"]["inputEpochAtDecision"] = serde_json::from_str("0.0").unwrap();
+    ok["seam"]["inputEpochAtApply"] = serde_json::from_str("0.0").unwrap();
+    // Reduce pressure so input is still accepted as a full object.
+    ok["providerUsage"]["inputTokens"] = json!(0);
+    ok["providerUsage"]["total"] = json!(0);
+    let v = validate_compact_continuation_input(&ok);
+    assert!(
+        v.ok,
+        "integral JSON 1.0 / 0.0 must be accepted: {:?}",
+        v.issues
+    );
+
+    let mut frac = base_input(json!({}));
+    frac["policy"]["upperTriggerTokens"] = serde_json::from_str("1.5").unwrap();
+    assert!(!validate_compact_continuation_input(&frac).ok);
+
+    let mut neg = base_input(json!({}));
+    neg["postMeasurementEstimate"]["tokens"] = json!(-1);
+    assert!(!validate_compact_continuation_input(&neg).ok);
+
+    // Above MAX_SAFE_INTEGER.
+    let mut big = base_input(json!({}));
+    big["policy"]["upperTriggerTokens"] = json!(9_007_199_254_740_992i64);
+    assert!(!validate_compact_continuation_input(&big).ok);
+}
+
+#[test]
+fn no_valid_provider_request_continue_turn_refuses() {
+    let raw = base_input(json!({
+        "forcedContinuationBoundary": {
+            "applied": true,
+            "continuationTurnId": "t2",
+            "forcedThisSeam": true,
+            "markerAlreadyPersisted": false,
+        },
+        "compactMaterial": {
+            "derivationsMissingOrFailed": false,
+            "lowerTargetMet": true,
+            "compactStructurallyValid": true,
+            "installSucceeds": true,
+            "usefulReduction": true,
+            "canProduceValidProviderRequest": false,
+        },
+    }));
+    let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    assert_eq!(
+        actual.receipt.refuse_code,
+        Some(CompactContinuationRefuseCode::NoValidProviderRequest)
+    );
+    let types = effect_types(&actual);
+    assert!(types.contains(&"claim_writer"));
+    assert!(types.contains(&"force_turn_end"));
+    assert!(types.contains(&"compact"));
+    assert!(!types.contains(&"insert_continuation_marker"));
+    assert!(!types.contains(&"install_serving_view"));
+    assert!(types.contains(&"release_writer"));
+    assert_eq!(
+        actual.transition_path.last().copied(),
+        Some(CompactContinuationState::TerminalRefuse)
+    );
+    assert!(actual.receipt.residual.forced_continuation_boundary_applied);
+    assert!(!actual.receipt.residual.marker_persisted);
+    assert!(!actual.receipt.residual.marker_served);
+    assert!(actual.receipt.residual.prior_serving_view_intact);
+    assert!(!actual.receipt.residual.next_provider_request_allowed);
+    assert!(validate_compact_continuation_decision(&actual).ok);
+}
+
+#[test]
+fn no_valid_provider_request_preserve_tool_refuses() {
+    let raw = base_input(json!({
+        "continuation": {
+            "kind": "pending_correlated_tool_result",
+            "toolCallId": "call-nv",
+            "correlationValid": true,
+        },
+        "compactMaterial": {
+            "derivationsMissingOrFailed": false,
+            "lowerTargetMet": true,
+            "compactStructurallyValid": true,
+            "installSucceeds": true,
+            "usefulReduction": true,
+            "canProduceValidProviderRequest": false,
+        },
+    }));
+    let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    assert_eq!(
+        actual.receipt.refuse_code,
+        Some(CompactContinuationRefuseCode::NoValidProviderRequest)
+    );
+    let types = effect_types(&actual);
+    assert!(types.contains(&"claim_writer"));
+    assert!(types.contains(&"compact"));
+    assert!(!types.contains(&"preserve_tool_pair_verbatim")); // compact fails request before preserve install stage
+    assert!(!types.contains(&"install_serving_view"));
+    assert!(types.contains(&"release_writer"));
+    assert!(actual.receipt.residual.original_agentic_turn_still_open);
+    assert!(actual.receipt.residual.prior_serving_view_intact);
+    assert!(!actual.receipt.residual.next_provider_request_allowed);
+    assert!(validate_compact_continuation_decision(&actual).ok);
 }
 
 // Silence unused import warnings for types exercised only at type level.

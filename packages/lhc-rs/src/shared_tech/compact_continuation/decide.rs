@@ -28,6 +28,17 @@ fn is_applied_boundary(
     b.as_applied()
 }
 
+/// Combine provider total + labelled estimate without panicking.
+///
+/// Validated inputs (via `as_compact_continuation_input`) guarantee the sum is a
+/// safe non-negative integer within `Number.MAX_SAFE_INTEGER`, so `checked_add`
+/// always succeeds on the guarded path. For hand-built typed values that overflow
+/// `i64`, returns `None` so the oracle treats pressure as unavailable rather than
+/// panicking — a defensive LIM-63 surface, not a redesign of valid-input semantics.
+fn checked_pressure_sum(total: i64, estimate_tokens: i64) -> Option<i64> {
+    total.checked_add(estimate_tokens)
+}
+
 fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPressureReceipt {
     let provider_usage = &input.provider_usage;
     let estimate = &input.post_measurement_estimate;
@@ -43,9 +54,8 @@ fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPres
             upper_trigger_tokens: policy.upper_trigger_tokens,
             at_or_above_trigger: None,
         },
-        Some(total) => {
-            let next = total + estimate.tokens;
-            CompactContinuationPressureReceipt {
+        Some(total) => match checked_pressure_sum(total, estimate.tokens) {
+            Some(next) => CompactContinuationPressureReceipt {
                 provider_base_tokens: Some(total),
                 provider_base_domain: "provider_reported_input".to_string(),
                 estimate_tokens: estimate.tokens,
@@ -54,8 +64,21 @@ fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPres
                 next_request_pressure_tokens: Some(next),
                 upper_trigger_tokens: policy.upper_trigger_tokens,
                 at_or_above_trigger: Some(next >= policy.upper_trigger_tokens),
-            }
-        }
+            },
+            // Overflow on unvalidated hand-built input: do not invent pressure.
+            // Mirrors missing-provider posture for the receipt numbers while
+            // still recording the attempted base total for inspectability.
+            None => CompactContinuationPressureReceipt {
+                provider_base_tokens: Some(total),
+                provider_base_domain: "provider_reported_input".to_string(),
+                estimate_tokens: estimate.tokens,
+                estimate_source: estimate.source.clone(),
+                estimate_domain: "source_labelled_estimate".to_string(),
+                next_request_pressure_tokens: None,
+                upper_trigger_tokens: policy.upper_trigger_tokens,
+                at_or_above_trigger: None,
+            },
+        },
     }
 }
 
@@ -657,13 +680,13 @@ fn post_compact_tail(
     let material = &input.compact_material;
     let degradation_reasons = degradation_reasons_of(input);
     let branch_state = match branch {
-        Branch::PreserveTool => CompactContinuationState::PathPreserveTool,
+        Branch::PreserveTool { .. } => CompactContinuationState::PathPreserveTool,
         Branch::ContinueTurn => CompactContinuationState::PathContinueTurn,
     };
     let mut branch_path = path.to_vec();
     branch_path.push(branch_state);
 
-    if branch == Branch::ContinueTurn {
+    if matches!(branch, Branch::ContinueTurn) {
         let Some(boundary) = is_applied_boundary(&input.forced_continuation_boundary) else {
             return refuse_early(
                 input,
@@ -853,13 +876,17 @@ fn post_compact_tail(
         );
     }
 
-    // preserve_tool
-    let WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } = &input.continuation
-    else {
-        // Mirrors TS throw — unreachable for valid oracle callers.
-        panic!("preserve_tool branch requires pending_correlated_tool_result");
+    // preserve_tool — tool id is carried only from PendingCorrelatedToolResult
+    // via Branch selection at the call site (no panic on impossible hand-built state).
+    let Branch::PreserveTool { tool_call_id } = branch else {
+        // Exhaustive: ContinueTurn already returned above.
+        return refuse_early(
+            input,
+            &branch_path,
+            CompactContinuationRefuseCode::InvalidToolCorrelation,
+            "preserve_tool branch requires pending_correlated_tool_result",
+        );
     };
-    let tool_call_id = tool_call_id.clone();
     let mut effects_so_far = vec![
         CompactContinuationEffect::ClaimWriter {
             writer: ClaimWriterTarget::Lhc,
@@ -1034,9 +1061,12 @@ fn post_compact_tail(
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Branch {
-    PreserveTool,
+    /// Tool-preserve path; `tool_call_id` taken only from a proven pending tool kind.
+    PreserveTool {
+        tool_call_id: String,
+    },
     ContinueTurn,
 }
 
@@ -1208,11 +1238,15 @@ pub fn decide_compact_continuation(
         return normal_complete(input, &eval_path, "normal_complete_above_pressure");
     }
 
-    if matches!(
-        input.continuation,
-        WorkContinuation::PendingCorrelatedToolResult { .. }
-    ) {
-        return post_compact_tail(input, &eval_path, Branch::PreserveTool);
+    if let WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } = &input.continuation
+    {
+        return post_compact_tail(
+            input,
+            &eval_path,
+            Branch::PreserveTool {
+                tool_call_id: tool_call_id.clone(),
+            },
+        );
     }
 
     // active_non_tool above trigger without applied boundary

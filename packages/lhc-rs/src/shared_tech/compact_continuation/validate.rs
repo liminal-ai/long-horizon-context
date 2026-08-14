@@ -41,19 +41,43 @@ fn issue(path: impl Into<String>, message: impl Into<String>) -> ValidationIssue
     }
 }
 
+/// Accept JSON numbers that are finite non-negative safe integers.
+///
+/// Matches JS `Number.isSafeInteger(n) && n >= 0`: a JSON spelling of `1.0` is
+/// accepted (JS has one Number type; TS cannot distinguish it from `1`), while
+/// fractional (`1.5`), negative, non-finite, and values above
+/// `Number.MAX_SAFE_INTEGER` are rejected.
 fn is_safe_non_neg_int(value: &Value) -> bool {
+    as_safe_non_neg_int(value).is_some()
+}
+
+/// Extract a non-negative safe integer from a JSON number, including integral
+/// float spellings such as `1.0` (serde_json may surface those as f64).
+fn as_safe_non_neg_int(value: &Value) -> Option<i64> {
     match value {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                (0..=MAX_SAFE_INTEGER).contains(&i)
-            } else if let Some(u) = n.as_u64() {
-                u <= MAX_SAFE_INTEGER as u64
-            } else {
-                // Reject non-integers (floats) and non-finite.
-                false
+                return (0..=MAX_SAFE_INTEGER).contains(&i).then_some(i);
             }
+            if let Some(u) = n.as_u64() {
+                if u <= MAX_SAFE_INTEGER as u64 {
+                    return Some(u as i64);
+                }
+                return None;
+            }
+            // Integral floats like 1.0 arrive as f64 through serde_json when
+            // they were spelled with a fractional part of zero in JSON.
+            if let Some(f) = n.as_f64() {
+                if !f.is_finite() || f < 0.0 || f > MAX_SAFE_INTEGER as f64 {
+                    return None;
+                }
+                if f.fract() == 0.0 {
+                    return Some(f as i64);
+                }
+            }
+            None
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -187,28 +211,24 @@ fn validate_provider_usage(raw: &Value, issues: &mut Vec<ValidationIssue>) {
                 ));
             }
         }
-        let input = obj.get("inputTokens").and_then(|v| v.as_i64());
-        let cache_c = obj.get("cacheCreationTokens").and_then(|v| v.as_i64());
-        let cache_r = obj.get("cacheReadTokens").and_then(|v| v.as_i64());
-        let total = obj.get("total").and_then(|v| v.as_i64());
-        if let (Some(i), Some(c), Some(r), Some(t)) = (input, cache_c, cache_r, total)
-            && is_safe_non_neg_int(obj.get("inputTokens").unwrap())
-            && is_safe_non_neg_int(obj.get("cacheCreationTokens").unwrap())
-            && is_safe_non_neg_int(obj.get("cacheReadTokens").unwrap())
-            && is_safe_non_neg_int(obj.get("total").unwrap())
-        {
-            let sum = i.saturating_add(c).saturating_add(r);
-            // Match TS: if sum is not a safe integer, report that; else mismatch.
-            if sum > MAX_SAFE_INTEGER || i.checked_add(c).and_then(|x| x.checked_add(r)).is_none() {
-                issues.push(issue(
+        let input = obj.get("inputTokens").and_then(as_safe_non_neg_int);
+        let cache_c = obj.get("cacheCreationTokens").and_then(as_safe_non_neg_int);
+        let cache_r = obj.get("cacheReadTokens").and_then(as_safe_non_neg_int);
+        let total = obj.get("total").and_then(as_safe_non_neg_int);
+        if let (Some(i), Some(c), Some(r), Some(t)) = (input, cache_c, cache_r, total) {
+            match i.checked_add(c).and_then(|x| x.checked_add(r)) {
+                Some(sum) if sum <= MAX_SAFE_INTEGER => {
+                    if sum != t {
+                        issues.push(issue(
+                            "providerUsage.total",
+                            format!("must equal input+cacheCreation+cacheRead ({sum}), got {t}"),
+                        ));
+                    }
+                }
+                _ => issues.push(issue(
                     "providerUsage.total",
                     "component sum is not a safe integer",
-                ));
-            } else if sum != t {
-                issues.push(issue(
-                    "providerUsage.total",
-                    format!("must equal input+cacheCreation+cacheRead ({sum}), got {t}"),
-                ));
+                )),
             }
         }
     } else {
@@ -512,11 +532,11 @@ pub fn validate_compact_continuation_input(raw: &Value) -> ValidationResult {
         obj.get("postMeasurementEstimate")
             .and_then(|v| v.as_object()),
     ) && usage.get("available").and_then(|v| v.as_bool()) == Some(true)
-        && is_safe_non_neg_int(usage.get("total").unwrap_or(&Value::Null))
-        && is_safe_non_neg_int(est.get("tokens").unwrap_or(&Value::Null))
+        && let (Some(total), Some(tokens)) = (
+            usage.get("total").and_then(as_safe_non_neg_int),
+            est.get("tokens").and_then(as_safe_non_neg_int),
+        )
     {
-        let total = usage.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
-        let tokens = est.get("tokens").and_then(|v| v.as_i64()).unwrap_or(0);
         match total.checked_add(tokens) {
             Some(combined) if combined <= MAX_SAFE_INTEGER => {}
             _ => issues.push(issue(
@@ -732,13 +752,17 @@ fn validate_residual(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "served requires markerPersisted",
         ));
     }
+    // Always required present as string or null (TS validateResidual).
     match obj.get("continuationTurnId") {
         Some(Value::Null) | Some(Value::String(_)) => {}
         Some(_) => issues.push(issue(
             "residual.continuationTurnId",
             "must be string or null",
         )),
-        None => {}
+        None => issues.push(issue(
+            "residual.continuationTurnId",
+            "must be string or null",
+        )),
     }
     if obj
         .get("forcedContinuationBoundaryApplied")
@@ -830,25 +854,23 @@ pub fn validate_compact_continuation_receipt(raw: &Value) -> ValidationResult {
                     "must be \"source_labelled_estimate\"",
                 ));
             }
-            if p.get("providerBaseTokens") == Some(&Value::Null)
-                && p.get("nextRequestPressureTokens") != Some(&Value::Null)
-                && p.get("nextRequestPressureTokens").is_some()
-            {
-                // only flag when next is non-null
-                if !matches!(p.get("nextRequestPressureTokens"), Some(Value::Null) | None) {
-                    issues.push(issue(
+            // TS: providerBaseTokens === null && nextRequestPressureTokens !== null
+            // treats absent as !== null and rejects. Require key present and null.
+            if p.get("providerBaseTokens") == Some(&Value::Null) {
+                match p.get("nextRequestPressureTokens") {
+                    Some(Value::Null) => {}
+                    _ => issues.push(issue(
                         "pressure.nextRequestPressureTokens",
                         "must be null when provider base is unavailable",
-                    ));
+                    )),
                 }
-            }
-            if p.get("providerBaseTokens") == Some(&Value::Null)
-                && !matches!(p.get("atOrAboveTrigger"), Some(Value::Null) | None)
-            {
-                issues.push(issue(
-                    "pressure.atOrAboveTrigger",
-                    "must be null when provider base is unavailable",
-                ));
+                match p.get("atOrAboveTrigger") {
+                    Some(Value::Null) => {}
+                    _ => issues.push(issue(
+                        "pressure.atOrAboveTrigger",
+                        "must be null when provider base is unavailable",
+                    )),
+                }
             }
         }
         None => issues.push(issue("pressure", "required object")),

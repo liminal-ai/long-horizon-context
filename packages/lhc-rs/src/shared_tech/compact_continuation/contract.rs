@@ -4,6 +4,7 @@
 //! Field order on Serialize shapes matches TypeScript object construction so
 //! fixture parity can reach byte-identical compact JSON via `js_json_stringify`.
 
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 // ── Version and stable strings ───────────────────────────────────────────────
@@ -580,13 +581,53 @@ impl ProviderUsageUnavailableReason {
     }
 }
 
-/// Provider usage authority union. Prefer constructing via the named structs;
-/// serde uses an untagged enum with per-variant closed fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Provider usage authority union.
+///
+/// **Deserialize:** selects the variant by the literal `available` boolean
+/// (not untagged first-match). Wrong/missing discriminator, wrong arm fields,
+/// or unknown fields fail. Prefer [`crate::shared_tech::compact_continuation::as_compact_continuation_input`]
+/// for raw host JSON (also enforces numeric and cross-field rules).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ProviderUsageAuthority {
     Available(ProviderUsageAvailable),
     Unavailable(ProviderUsageUnavailable),
+}
+
+impl<'de> Deserialize<'de> for ProviderUsageAuthority {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Peek the discriminant without untagged first-match misclassification.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("providerUsage must be an object"))?;
+        let available = obj
+            .get("available")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| de::Error::custom("providerUsage.available must be a boolean"))?;
+        if available {
+            let parsed: ProviderUsageAvailable =
+                serde_json::from_value(value).map_err(de::Error::custom)?;
+            if !parsed.available {
+                return Err(de::Error::custom(
+                    "providerUsage available branch requires available:true",
+                ));
+            }
+            Ok(Self::Available(parsed))
+        } else {
+            let parsed: ProviderUsageUnavailable =
+                serde_json::from_value(value).map_err(de::Error::custom)?;
+            if parsed.available {
+                return Err(de::Error::custom(
+                    "providerUsage unavailable branch requires available:false",
+                ));
+            }
+            Ok(Self::Unavailable(parsed))
+        }
+    }
 }
 
 impl ProviderUsageAuthority {
@@ -625,7 +666,12 @@ pub struct CompactContinuationSeam {
     pub input_epoch_at_apply: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Work continuation kind. Per-variant closed shape.
+///
+/// Custom `Deserialize` (not only `#[serde(tag = "kind", deny_unknown_fields)]`):
+/// unit variants of internally-tagged enums do not reliably reject unknown
+/// fields under serde; we enforce closed shape explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum WorkContinuation {
     #[serde(rename = "none")]
@@ -639,6 +685,67 @@ pub enum WorkContinuation {
     },
     #[serde(rename = "active_non_tool")]
     ActiveNonTool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkContinuationToolWire {
+    tool_call_id: String,
+    correlation_valid: bool,
+}
+
+impl<'de> Deserialize<'de> for WorkContinuation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("continuation must be an object"))?;
+        let kind = obj
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| de::Error::custom("continuation.kind must be a string"))?;
+        match kind {
+            "none" => {
+                // Closed: only `kind`.
+                for k in obj.keys() {
+                    if k != "kind" {
+                        return Err(de::Error::custom(format!(
+                            "unknown field `{k}` on continuation kind none"
+                        )));
+                    }
+                }
+                Ok(Self::None)
+            }
+            "active_non_tool" => {
+                for k in obj.keys() {
+                    if k != "kind" {
+                        return Err(de::Error::custom(format!(
+                            "unknown field `{k}` on continuation kind active_non_tool"
+                        )));
+                    }
+                }
+                Ok(Self::ActiveNonTool)
+            }
+            "pending_correlated_tool_result" => {
+                // Drop kind, parse closed tool fields.
+                let mut map = obj.clone();
+                map.remove("kind");
+                let wire: WorkContinuationToolWire =
+                    serde_json::from_value(serde_json::Value::Object(map))
+                        .map_err(de::Error::custom)?;
+                Ok(Self::PendingCorrelatedToolResult {
+                    tool_call_id: wire.tool_call_id,
+                    correlation_valid: wire.correlation_valid,
+                })
+            }
+            other => Err(de::Error::custom(format!(
+                "unknown continuation.kind {other}"
+            ))),
+        }
+    }
 }
 
 impl WorkContinuation {
@@ -669,11 +776,53 @@ pub struct ForcedContinuationBoundaryApplied {
 }
 
 /// Forced continuation-boundary identity for the whole-seam oracle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **Deserialize:** selects the variant by the literal `applied` boolean.
+/// `{ "applied": true }` alone is **not** accepted as not-applied (unlike naive
+/// untagged first-match). Prefer [`crate::shared_tech::compact_continuation::as_compact_continuation_input`]
+/// for raw host JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ForcedContinuationBoundary {
     NotApplied(ForcedContinuationBoundaryNotApplied),
     Applied(ForcedContinuationBoundaryApplied),
+}
+
+impl<'de> Deserialize<'de> for ForcedContinuationBoundary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("forcedContinuationBoundary must be an object"))?;
+        let applied = obj
+            .get("applied")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| {
+                de::Error::custom("forcedContinuationBoundary.applied must be a boolean")
+            })?;
+        if applied {
+            let parsed: ForcedContinuationBoundaryApplied =
+                serde_json::from_value(value).map_err(de::Error::custom)?;
+            if !parsed.applied {
+                return Err(de::Error::custom(
+                    "forcedContinuationBoundary applied branch requires applied:true",
+                ));
+            }
+            Ok(Self::Applied(parsed))
+        } else {
+            let parsed: ForcedContinuationBoundaryNotApplied =
+                serde_json::from_value(value).map_err(de::Error::custom)?;
+            if parsed.applied {
+                return Err(de::Error::custom(
+                    "forcedContinuationBoundary not-applied branch requires applied:false",
+                ));
+            }
+            Ok(Self::NotApplied(parsed))
+        }
+    }
 }
 
 impl ForcedContinuationBoundary {

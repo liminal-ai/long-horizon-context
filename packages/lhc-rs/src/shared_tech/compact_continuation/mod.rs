@@ -26,6 +26,16 @@
 //! **not** reinterpret `effects` as proof that each action already committed.
 //! Both fields must be ported and preserved byte-for-byte from this pure oracle.
 //!
+//! ## Raw host JSON boundary (LIM-63 note)
+//!
+//! **Raw host JSON must enter through [`as_compact_continuation_input`]** (or
+//! equivalent: `validate_compact_continuation_input` then a typed convert). That
+//! path enforces closed shape, numeric domains, and cross-field rules. Typed
+//! construction of [`CompactContinuationInput`] is for already-validated /
+//! internal facts. Direct `serde_json::from_value` on the typed unions rejects
+//! wrong discriminants and unknown fields, but does **not** replace the
+//! validator (e.g. safe-integer bounds, total = sum components).
+//!
 //! Parity fixtures live in `packages/lhc/fixtures/compact-continuation/v1/`
 //! (canonical TypeScript store; Rust tests consume them in place).
 
