@@ -1,0 +1,55 @@
+name: publish-cc-lhc-0.1.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: publish-cc-lhc-0.1.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish-certified-tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout publication workflow
+        uses: actions/checkout@v7
+
+      - name: Install Node 24.3 baseline
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.3.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Download certified six-platform package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release
+          gh run download 31764563666 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name cc-lhc-npm-package \
+            --dir release
+
+      - name: Verify exact publication artifact
+        run: |
+          echo "b500ace0209d9783891c8ec127b731e0fc550ebfa2f79ff6ab746fb3ba274215  release/cc-lhc-0.1.0.tgz" | sha256sum --check --strict
+          test "$(tar -xOf release/cc-lhc-0.1.0.tgz package/package.json | node -pe 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")); `${p.name}@${p.version}`')" = "cc-lhc@0.1.0"
+
+      - name: Confirm npm identity and package availability
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN"
+          test "$(npm whoami)" = "liminalbuilder"
+          status="$(curl --silent --show-error --output /tmp/cc-lhc-registry.json --write-out '%{http_code}' https://registry.npmjs.org/cc-lhc)"
+          test "$status" = "404"
+
+      - name: Publish cc-lhc 0.1.0
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
+        run: npm publish release/cc-lhc-0.1.0.tgz --access public
