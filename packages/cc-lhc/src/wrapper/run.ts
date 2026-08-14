@@ -18,6 +18,7 @@ import {
   formatGovernorObserveLogLine,
   type GovernorDurableReceipt,
   type GovernorHandoffOutcome,
+  type GovernorMutationDeferReason,
   type GovernorReceiptStore,
   type GovernorRuntimeState,
   isTerminalHandoffOutcome,
@@ -167,6 +168,22 @@ export type RunOptions = {
    * Pass a temp path in tests to avoid shared ~/.cc-lhc pollution.
    */
   governorReceiptDbPath?: string;
+  /**
+   * Test hook: wrap the opened receipt store (inject append/attach failures after open).
+   * Not used in production.
+   */
+  governorReceiptStoreHook?: (store: GovernorReceiptStore) => GovernorReceiptStore;
+  /**
+   * Test hook: inject a pre-configured command guard (e.g. already holding a flight)
+   * so auto-compact can observe command_guard_busy terminalization.
+   */
+  commandGuard?: CommandInFlightGuard;
+  /**
+   * Test hook: run before auto operation claim. Can force handoffInProgress race by
+   * setting handoff (production never uses this). `clearHandoffInProgress` restores
+   * so teardown is not stuck after the deferred gate.
+   */
+  onBeforeAutoOperation?: (ports: { markHandoffInProgress: () => void; clearHandoffInProgress: () => void }) => void;
   /** Test hook: observe controlled-handoff results (auto and manual). */
   onHandoffResult?: (result: HandoffResult) => void;
   /** Test hooks: handoff timing (SIGTERM grace, SIGKILL wait, capture-ready cap, liveness caps). */
@@ -220,7 +237,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const stderr = options.stderr ?? process.stderr;
   const noCapture = options.noCapture === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
-  const commandGuard = new CommandInFlightGuard();
+  const commandGuard = options.commandGuard ?? new CommandInFlightGuard();
   const forceWrapperExit: ForceWrapperExit =
     options.forceWrapperExit ??
     ((code: number) => {
@@ -262,7 +279,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   /** Durable LIM-64 observe/handoff receipts (SQLite; survives restart). */
   let governorReceiptStore: GovernorReceiptStore | null = null;
   try {
-    governorReceiptStore = openGovernorReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+    const opened = openGovernorReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+    governorReceiptStore =
+      options.governorReceiptStoreHook !== undefined ? options.governorReceiptStoreHook(opened) : opened;
   } catch (cause) {
     wrapperLog.warn(
       `cc-lhc governor receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -694,6 +713,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // context mutation without a durable receipt id. Exact replay
       // (inserted=false) must not schedule a second automatic mutation —
       // including an existing `scheduled` receipt after process crash (fail closed).
+      //
+      // After a NEW inserted wouldMutate receipt, every branch must either start
+      // the exact operation or attach a terminal/non-running outcome
+      // (mutation_deferred / mutation_refused). Leaving `scheduled` without an
+      // owner is reserved for the crash window after insert and before claim.
       if (record.wouldMutate === true && record.observePhase === "settled_seam") {
         if (persisted === null) {
           wrapperLog.warn(
@@ -720,22 +744,68 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           } else {
             wrapperLog.info(`cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId}; no re-schedule`);
           }
-        } else if (
-          !exited &&
-          !handoffInProgress &&
-          !autoOperationScheduled &&
-          respawnUnsafeReason === null &&
-          Date.now() >= autoBlockedUntilMs
-        ) {
-          autoOperationScheduled = true;
-          // Freeze trigger + exact receipt id at THIS decision.
-          const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+        } else {
+          // Fresh insert: receipt is currently `scheduled`. Claim it or terminalize.
           const receiptId = persisted.receipt.receiptId;
-          setImmediate(() => {
-            void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
-              autoOperationScheduled = false;
+          const deferAuto = (
+            reason: GovernorMutationDeferReason,
+            detail: string,
+            logLevel: "info" | "warn" = "info",
+          ): void => {
+            const outcome: GovernorHandoffOutcome = { kind: "mutation_deferred", detail, reason };
+            attachGovernorHandoffOutcome(receiptId, outcome, { mutationBegan: false });
+            const line = `cc-lhc governor: wouldMutate deferred (${reason}): ${detail} [receipt ${receiptId}]`;
+            if (logLevel === "warn") wrapperLog.warn(line);
+            else wrapperLog.info(line);
+            lastAttempt = {
+              summary: `auto compact deferred: ${reason} (${detail})`,
+              atMs: Date.now(),
+            };
+          };
+
+          if (exited) {
+            deferAuto("wrapper_exiting", "wrapper already exiting; mutation not started");
+          } else if (handoffInProgress) {
+            deferAuto("handoff_in_progress", "controlled handoff already in progress; mutation not started");
+          } else if (autoOperationScheduled) {
+            deferAuto(
+              "auto_operation_in_flight",
+              "another automatic operation already owns the flight; coalesced (no second mutation)",
+            );
+          } else if (respawnUnsafeReason !== null) {
+            // Respawn cannot safely replace the child: refuse, do not pretend scheduled.
+            attachGovernorHandoffOutcome(
+              receiptId,
+              {
+                kind: "mutation_refused",
+                detail: `respawn_unsafe: ${respawnUnsafeReason}`,
+              },
+              { mutationBegan: false },
+            );
+            wrapperLog.warn(
+              `cc-lhc governor: wouldMutate refused — respawn unsafe: ${respawnUnsafeReason} [receipt ${receiptId}]`,
+            );
+            lastAttempt = {
+              summary: `auto compact refused: respawn unsafe (${respawnUnsafeReason})`,
+              atMs: Date.now(),
+            };
+          } else if (Date.now() < autoBlockedUntilMs) {
+            const remainMs = Math.max(0, autoBlockedUntilMs - Date.now());
+            deferAuto(
+              "cooldown",
+              `post-failure cooldown active (~${Math.ceil(remainMs / 1000)}s remaining); mutation not started`,
+            );
+          } else {
+            // Claim ownership: keep `scheduled` only while this operation owns it.
+            // Crash between here and runAutoOperation claim is the fail-closed window.
+            autoOperationScheduled = true;
+            const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+            setImmediate(() => {
+              void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+                autoOperationScheduled = false;
+              });
             });
-          });
+          }
         }
       }
     }
@@ -1791,10 +1861,70 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // Automatic operation: shared mutation op + shared handoff, serialized with
     // manual commands through the same single-flight guard. Outcomes attach only
     // to the exact durable receipt that scheduled this operation.
+    //
+    // Early gates (exited / handoff / command-guard) MUST terminalize the
+    // receipt before returning — a stranded `scheduled` row fails closed forever
+    // on replay with no evidence whether mutation began.
     runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
       const { frozenTriggerTokens, receiptId } = args;
-      if (exited || handoffInProgress) return;
-      if (!commandGuard.tryAcquire("auto-compact", Date.now())) return;
+      // Test seam: allow race injection before early gates (e.g. handoffInProgress).
+      options.onBeforeAutoOperation?.({
+        markHandoffInProgress: () => {
+          handoffInProgress = true;
+        },
+        clearHandoffInProgress: () => {
+          handoffInProgress = false;
+        },
+      });
+      if (exited) {
+        attachGovernorHandoffOutcome(
+          receiptId,
+          {
+            kind: "mutation_deferred",
+            detail: "wrapper exiting before auto operation claimed receipt",
+            reason: "wrapper_exiting",
+          },
+          { mutationBegan: false },
+        );
+        return;
+      }
+      if (handoffInProgress) {
+        attachGovernorHandoffOutcome(
+          receiptId,
+          {
+            kind: "mutation_deferred",
+            detail: "handoff in progress before auto operation claimed receipt",
+            reason: "handoff_in_progress",
+          },
+          { mutationBegan: false },
+        );
+        // Tests may leave the flag set; clear so child exit can tear down.
+        // Production path only sets handoffInProgress inside performHandoff.
+        return;
+      }
+      if (!commandGuard.tryAcquire("auto-compact", Date.now())) {
+        const busy = commandGuard.current();
+        const busyLabel = busy?.label ?? "unknown";
+        attachGovernorHandoffOutcome(
+          receiptId,
+          {
+            kind: "mutation_deferred",
+            detail: `command guard busy (${busyLabel}); auto compact not started`,
+            reason: "command_guard_busy",
+          },
+          { mutationBegan: false },
+        );
+        wrapperLog.info(
+          `cc-lhc governor: auto-compact deferred — command guard busy (${busyLabel}) [receipt ${receiptId}]`,
+        );
+        lastAttempt = {
+          summary: `auto compact deferred: command_guard_busy (${busyLabel})`,
+          atMs: Date.now(),
+        };
+        return;
+      }
+      // Mutation claim held: remaining outcomes use mutationBegan so attach
+      // failures are loud (receipt may remain scheduled for operator recovery).
       governorState = setGovernorOperationInFlight(governorState, true);
       try {
         const epochAtStart = governorState.currentInputEpoch;

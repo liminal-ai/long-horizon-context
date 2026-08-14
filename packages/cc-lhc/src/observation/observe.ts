@@ -62,11 +62,31 @@ export interface ObserveLineOptions {
    * folds. Capture-degraded / session-mismatch validation still flow.
    */
   suppressRuntimeLifecycle?: boolean;
+  /**
+   * When true (live capture session path): do not emit pressure-affecting
+   * signals (`post_measurement_estimate`, `turn_settled`) into `lifecycle`.
+   * Put them in `deferredPressure` instead so the caller can publish only
+   * after replay dedupe + successful intake. Sampling folds still update;
+   * mode:add is not precomputed (caller derives adds from accepted events).
+   */
+  deferPressureLifecycle?: boolean;
 }
 
 export interface ObserveLineResult {
   events: MessageEventInput[];
   lifecycle: LifecycleSignal[];
+  /**
+   * Pressure-affecting signals held when `deferPressureLifecycle` is set:
+   * sampling `post_measurement_estimate` mode:set and `turn_settled` only.
+   * mode:add is never pre-held — derive from post-dedupe accepted events.
+   */
+  deferredPressure: LifecycleSignal[];
+  /**
+   * True when this line would have emitted a post-measurement mode:add under
+   * immediate observe (authoritative sampling already seen, non-sampling-complete
+   * content with payload). Session uses this with accepted-event bytes.
+   */
+  wouldPostMeasurementAdd: boolean;
   stats: ObservationStats;
   unknownShape?: boolean;
 }
@@ -167,6 +187,10 @@ function unknownConversationShapeKey(item: RolloutLineItem, lineIndex: number): 
  * assistant / user / runtime content accumulate as post_measurement_estimate
  * adds. Sidechains, synthetic resume chrome, meta, and suppressed prefixes do
  * not contribute (mapRolloutLine already drops them from events).
+ *
+ * When `deferPressureLifecycle` is set (live capture path), estimate/settled
+ * signals are held so the session can publish them only for events accepted by
+ * replay dedupe and successfully intaken into canonical LHC.
  */
 export function observeRolloutLine(
   item: RolloutLineItem,
@@ -174,9 +198,29 @@ export function observeRolloutLine(
   options: ObserveLineOptions = {},
 ): ObserveLineResult {
   const lifecycle: LifecycleSignal[] = [];
+  const deferredPressure: LifecycleSignal[] = [];
+  const deferPressure = options.deferPressureLifecycle === true;
   const generation = options.generation ?? 1;
   const samplingDedupe = options.samplingDedupe ?? createSamplingDedupeState();
   const estimateFold = options.estimateFold ?? createPostMeasurementEstimateFold();
+
+  const pushEstimate = (signal: Extract<LifecycleSignal, { kind: "post_measurement_estimate" }>): void => {
+    if (deferPressure) {
+      // mode:add is never held here — session rebuilds adds from accepted events.
+      if (signal.mode === "add") return;
+      deferredPressure.push(signal);
+      return;
+    }
+    lifecycle.push(signal);
+  };
+
+  const pushSettled = (signal: Extract<LifecycleSignal, { kind: "turn_settled" }>): void => {
+    if (deferPressure) {
+      deferredPressure.push(signal);
+      return;
+    }
+    lifecycle.push(signal);
+  };
 
   if (options.expectedSessionId !== undefined) {
     const attr = attributeLineSession(
@@ -195,7 +239,13 @@ export function observeRolloutLine(
         reason: `session_mismatch:${attr.observed}`,
         generation,
       });
-      return { events: [], lifecycle, stats: emptyStats() };
+      return {
+        events: [],
+        lifecycle,
+        deferredPressure: [],
+        wouldPostMeasurementAdd: false,
+        stats: emptyStats(),
+      };
     }
   }
 
@@ -217,6 +267,7 @@ export function observeRolloutLine(
   // Sampling fold: accumulate on every assistant line; emit once when complete.
   // Prefix validation must not mutate live sampling state.
   let samplingEmittedThisLine = false;
+  let wouldPostMeasurementAdd = false;
   if (!suppressRuntime && isAssistantLine(item) && item.isSidechain !== true) {
     const usage = providerUsageOf(item.message);
     const model = modelOf(item.message);
@@ -244,7 +295,7 @@ export function observeRolloutLine(
         // contribution to next-request growth (provider output_tokens preferred).
         const outputTokens = readProviderOutputTokens(claim.providerUsage);
         if (outputTokens !== null) {
-          lifecycle.push({
+          pushEstimate({
             kind: "post_measurement_estimate",
             tokens: outputTokens,
             source: PROVIDER_OUTPUT_ESTIMATE_SOURCE,
@@ -252,7 +303,7 @@ export function observeRolloutLine(
           });
         } else {
           const est = hostEstimateFromCanonicalBytes(estimateFold.pendingAssistantPayloadBytes);
-          lifecycle.push({
+          pushEstimate({
             kind: "post_measurement_estimate",
             tokens: est.tokens,
             source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
@@ -280,14 +331,17 @@ export function observeRolloutLine(
     // runtime notes, and later assistant lines (new attempt partials land here
     // only once a prior sampling was authoritative; incomplete assistant partials
     // above accumulate into pending and emit on complete).
-    const est = hostEstimateFromCanonicalBytes(linePayloadBytes);
-    if (est.tokens > 0 || linePayloadBytes > 0) {
-      lifecycle.push({
-        kind: "post_measurement_estimate",
-        tokens: est.tokens,
-        source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
-        mode: "add",
-      });
+    wouldPostMeasurementAdd = true;
+    if (!deferPressure) {
+      const est = hostEstimateFromCanonicalBytes(linePayloadBytes);
+      if (est.tokens > 0 || linePayloadBytes > 0) {
+        lifecycle.push({
+          kind: "post_measurement_estimate",
+          tokens: est.tokens,
+          source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+          mode: "add",
+        });
+      }
     }
   }
 
@@ -309,7 +363,7 @@ export function observeRolloutLine(
       } else if (signal === "closes") {
         fold.open = false;
         if (wasOpen) {
-          lifecycle.push({ kind: "turn_settled", reason: turnSettleReason(item) });
+          pushSettled({ kind: "turn_settled", reason: turnSettleReason(item) });
         }
       }
     } else {
@@ -318,7 +372,7 @@ export function observeRolloutLine(
       if (signal === "opens" && isUserLine(item)) {
         lifecycle.push({ kind: "turn_opened", reason: turnOpenReason(item) });
       } else if (signal === "closes") {
-        lifecycle.push({ kind: "turn_settled", reason: turnSettleReason(item) });
+        pushSettled({ kind: "turn_settled", reason: turnSettleReason(item) });
       }
     }
   }
@@ -339,6 +393,8 @@ export function observeRolloutLine(
   return {
     events,
     lifecycle,
+    deferredPressure,
+    wouldPostMeasurementAdd,
     stats,
     ...(unknownConversationShape ? { unknownShape: true } : {}),
   };
@@ -360,6 +416,8 @@ export function observeWatcherEmission(
           generation,
         },
       ],
+      deferredPressure: [],
+      wouldPostMeasurementAdd: false,
       stats: emptyStats(),
     };
   }
@@ -372,6 +430,8 @@ export function observeRolloutLines(
 ): ObserveLineResult {
   const events: MessageEventInput[] = [];
   const lifecycle: LifecycleSignal[] = [];
+  const deferredPressure: LifecycleSignal[] = [];
+  let wouldPostMeasurementAdd = false;
   const stats = emptyStats();
   // Share sampling + turn + estimate folds across the batch (same as live session fold).
   const samplingDedupe = options.samplingDedupe ?? createSamplingDedupeState();
@@ -382,10 +442,32 @@ export function observeRolloutLines(
     const observed = observeRolloutLine(item, lineIndex, opts);
     events.push(...observed.events);
     lifecycle.push(...observed.lifecycle);
+    deferredPressure.push(...observed.deferredPressure);
+    wouldPostMeasurementAdd = wouldPostMeasurementAdd || observed.wouldPostMeasurementAdd;
     stats.sidechain += observed.stats.sidechain;
     stats.unknown += observed.stats.unknown;
     stats.meta += observed.stats.meta;
     stats.image += observed.stats.image;
   }
-  return { events, lifecycle, stats };
+  return { events, lifecycle, deferredPressure, wouldPostMeasurementAdd, stats };
+}
+
+/**
+ * Host-byte post-measurement add for events that survived replay dedupe and
+ * successful intake. Zero tokens when empty. Callers must not invoke this for
+ * sampling-complete assistant lines whose contribution was already published
+ * as mode:set.
+ */
+export function postMeasurementAddFromAcceptedEvents(
+  events: readonly MessageEventInput[],
+): Extract<LifecycleSignal, { kind: "post_measurement_estimate" }> | null {
+  const bytes = totalCanonicalPayloadBytes(events);
+  if (bytes <= 0) return null;
+  const est = hostEstimateFromCanonicalBytes(bytes);
+  return {
+    kind: "post_measurement_estimate",
+    tokens: est.tokens,
+    source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+    mode: "add",
+  };
 }

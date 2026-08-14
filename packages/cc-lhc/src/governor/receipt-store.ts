@@ -137,12 +137,15 @@ export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null 
     case "handoff_rolled_back":
     case "handoff_failed":
     case "mutation_refused":
+    case "mutation_deferred":
     case "mutation_partial":
     case "mutation_noop":
     case "deferred_open_turn":
     case "not_applicable":
       return true;
     case "scheduled":
+      // Only non-terminal: operation owns the receipt, or crash between insert
+      // and claim (fail closed on exact replay — see wrapper run docs).
       return false;
     default:
       return false;

@@ -25,7 +25,11 @@ import {
   markCaptureReady,
 } from "../observation/degradation.js";
 import { createPostMeasurementEstimateFold, type PostMeasurementEstimateFold } from "../observation/estimate.js";
-import { createTurnFoldState, observeWatcherEmission } from "../observation/observe.js";
+import {
+  createTurnFoldState,
+  observeWatcherEmission,
+  postMeasurementAddFromAcceptedEvents,
+} from "../observation/observe.js";
 import { createSamplingDedupeState, type SamplingDedupeState } from "../observation/sampling.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import {
@@ -60,7 +64,12 @@ import {
   readFdRange,
   verifyPrefixBoundaryOnHandle,
 } from "./prefix-boundary.js";
-import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
+import {
+  createReplayDedupeState,
+  eventContentSignature,
+  filterReplayEvents,
+  type ReplayDedupeState,
+} from "./replay-dedupe.js";
 import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
@@ -153,7 +162,11 @@ export interface CaptureSessionDeps {
   suppressBindLineageRecord?: boolean;
   log?: (message: string) => void;
   logError?: (message: string) => void;
-  flushBatchFn?: typeof flushBatch;
+  /**
+   * Test seam: substitute intake flush. Production returns boolean (false = intake
+   * failed, do not commit pressure). Void is treated as success for older injectors.
+   */
+  flushBatchFn?: (...args: Parameters<typeof flushBatch>) => ReturnType<typeof flushBatch> | Promise<void>;
   initSdkFn?: (config: SdkConfig) => Lhc;
   drainSettledCapMs?: number;
   createThreadFn?: typeof createCaptureThread;
@@ -215,10 +228,17 @@ function threadIdFromRef(threadRef: ThreadRef): string {
   return "threadId" in threadRef ? threadRef.threadId : "";
 }
 
+/**
+ * Intake already-filtered events into LHC. Callers must run replay filter first
+ * and only publish post-measurement estimate / turn_settled after success.
+ *
+ * Returns false when intake fails (caller must not commit pressure growth).
+ * When `events` is empty, returns true (no-op success).
+ */
 async function flushBatch(
   sdk: Lhc,
   threadRef: ThreadRef,
-  items: RolloutLineItem[],
+  _items: RolloutLineItem[],
   events: MessageEventInput[],
   stats: CaptureStats,
   log: (message: string) => void,
@@ -226,47 +246,41 @@ async function flushBatch(
   dedupeState: ReplayDedupeState | undefined,
   persistSignatures: ((signatures: string[]) => Promise<LineageOutcome>) | undefined,
   onIntakeFailure: (reason: string) => void,
-): Promise<void> {
-  if (events.length === 0) return;
-
-  const filtered =
-    dedupeState === undefined
-      ? { toSend: events, skipped: 0, signaturesToAdd: [] as string[] }
-      : filterReplayEvents(events, dedupeState);
-
-  if (filtered.skipped > 0) {
-    stats.skippedReplay += filtered.skipped;
-    log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
-  }
-  if (filtered.toSend.length === 0) return;
+  /** Precomputed content signatures for accepted events (order matches `events`). */
+  signaturesToAdd: readonly string[] = [],
+): Promise<boolean> {
+  if (events.length === 0) return true;
 
   try {
-    const result = await sdk.intakeStream.messageEvents(threadRef, filtered.toSend);
+    const result = await sdk.intakeStream.messageEvents(threadRef, events);
     if (!result.ok) {
       logError(`cc-lhc intake error: ${result.error.code} ${result.error.reason}`);
       onIntakeFailure(`intake_error:${result.error.code}`);
-      return;
+      return false;
     }
     const recorded = result.value.events.filter((entry) => entry.outcome === "recorded").length;
     stats.eventsSent += recorded;
-    log(`cc-lhc intake batch: ${recorded}/${filtered.toSend.length} recorded`);
+    log(`cc-lhc intake batch: ${recorded}/${events.length} recorded`);
 
-    if (dedupeState !== undefined && filtered.signaturesToAdd.length > 0) {
-      for (const signature of filtered.signaturesToAdd) {
+    if (dedupeState !== undefined && signaturesToAdd.length > 0) {
+      for (const signature of signaturesToAdd) {
         dedupeState.seen.add(signature);
       }
       if (persistSignatures !== undefined) {
-        const outcome = await persistSignatures(filtered.signaturesToAdd);
+        const outcome = await persistSignatures([...signaturesToAdd]);
         if (!outcome.ok) {
           onIntakeFailure(outcome.reason);
+          // Fail closed for pressure: undurable identity must not arm mutation.
+          return false;
         }
       }
     }
+    return true;
   } catch (cause) {
     logError(`cc-lhc intake threw: ${detail(cause)}`);
     onIntakeFailure(`intake_threw:${detail(cause)}`);
+    return false;
   }
-  void items;
 }
 
 export async function awaitDrainSettled(
@@ -388,6 +402,15 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
 
+  /**
+   * Process watcher emissions serially.
+   *
+   * Architecture (LIM-64 correctness): observe with deferred pressure, publish
+   * non-pressure lifecycle immediately, filter replay before intake, and only
+   * after successful intake commit post_measurement_estimate / turn_settled.
+   * Replayed duplicates and failed intake add zero estimate and never arm
+   * settled wouldMutate from content that did not enter canonical LHC.
+   */
   const enqueueEmissions = (emissions: WatcherEmission[]): Promise<void> => {
     batchQueue = batchQueue
       .then(async () => {
@@ -395,8 +418,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         if (captureHealth.phase === "closed") return;
         if (intakeHalted) return;
         if (stopped && emissions.length === 0) return;
-        const items: RolloutLineItem[] = [];
-        const intakeEvents: MessageEventInput[] = [];
+
         for (const emission of emissions) {
           stats.linesSeen += 1;
 
@@ -405,11 +427,13 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
 
           // Live suffix only: full folds + runtime lifecycle. Prefix was
           // validated separately without mutating these folds.
+          // deferPressureLifecycle: estimate/settled held until after intake.
           const observeOpts: Parameters<typeof observeWatcherEmission>[2] = {
             samplingDedupe,
             generation: captureHealth.generation,
             turnFold,
             estimateFold,
+            deferPressureLifecycle: true,
           };
           if (expectedSession !== undefined) {
             observeOpts.expectedSessionId = expectedSession.sessionId;
@@ -425,23 +449,24 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             if (turnSignal === "closes") turnOpen = false;
           }
 
-          const lifecycleToPublish: LifecycleSignal[] = [];
+          // Immediate (non-pressure) lifecycle for THIS line before intake:
+          // sampling_observed, turn_opened, native_compact, capture_degraded.
+          // Governor must not arm wouldMutate until deferred settle after intake.
+          const immediateLifecycle: LifecycleSignal[] = [];
           const pendingMismatches: LifecycleSignal[] = [];
           for (const signal of observed.lifecycle) {
             if (signal.kind === "capture_degraded") {
               if (degradeQuiet(signal.reason)) {
-                lifecycleToPublish.push(...pendingMismatches, signal);
+                immediateLifecycle.push(...pendingMismatches, signal);
               }
               pendingMismatches.length = 0;
             } else if (signal.kind === "session_mismatch_observed") {
-              // Observation emits this immediately before its paired
-              // capture_degraded. Publish both only when that reason is new.
               pendingMismatches.push(signal);
             } else {
-              lifecycleToPublish.push(signal);
+              immediateLifecycle.push(signal);
             }
           }
-          publishLifecycle(lifecycleToPublish);
+          publishLifecycle(immediateLifecycle);
 
           if (emission.kind === "parse_error") {
             stats.parseFailures += 1;
@@ -453,23 +478,73 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           stats.skippedUnknown += observed.stats.unknown;
           stats.skippedMeta += observed.stats.meta;
           stats.skippedImage += observed.stats.image;
-          intakeEvents.push(...observed.events);
-          items.push(emission.item);
-        }
 
-        if (intakeEvents.length === 0 || sdk === undefined || threadRef === undefined) return;
-        await flush(
-          sdk,
-          threadRef,
-          items,
-          intakeEvents,
-          stats,
-          log,
-          logError,
-          dedupeState,
-          persistSignatures,
-          (reason) => degradeAndEmit(reason),
-        );
+          if (sdk === undefined || threadRef === undefined) continue;
+
+          const samplingEmitted = observed.lifecycle.some((s) => s.kind === "sampling_observed");
+          const filtered =
+            dedupeState === undefined
+              ? {
+                  toSend: observed.events,
+                  skipped: 0,
+                  signaturesToAdd: observed.events.map((e) => eventContentSignature(e)),
+                }
+              : filterReplayEvents(observed.events, dedupeState);
+
+          if (filtered.skipped > 0) {
+            stats.skippedReplay += filtered.skipped;
+            log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
+          }
+
+          // All events replay-dropped: zero estimate growth; no settled publish.
+          if (observed.events.length > 0 && filtered.toSend.length === 0) {
+            continue;
+          }
+
+          // When events exist, intake must succeed before pressure commit.
+          // Empty mapped events (meta/sidechain only): allow deferred settle
+          // only if there is nothing to intake (pure chrome with deferred settle).
+          const needsIntake = filtered.toSend.length > 0;
+          let intakeOk = true;
+          if (needsIntake) {
+            // Test injectors may still return void; only explicit false is failure.
+            const flushResult = await flush(
+              sdk,
+              threadRef,
+              [emission.item],
+              filtered.toSend,
+              stats,
+              log,
+              logError,
+              dedupeState,
+              persistSignatures,
+              (reason) => degradeAndEmit(reason),
+              filtered.signaturesToAdd,
+            );
+            intakeOk = flushResult !== false;
+          }
+          if (!intakeOk) {
+            // Failed intake: do not publish estimate or turn_settled.
+            continue;
+          }
+
+          const pressureSignals: LifecycleSignal[] = [];
+          for (const signal of observed.deferredPressure) {
+            if (signal.kind === "post_measurement_estimate" && signal.mode !== "add") {
+              pressureSignals.push(signal);
+            }
+          }
+          if (observed.wouldPostMeasurementAdd && !samplingEmitted && filtered.toSend.length > 0) {
+            const add = postMeasurementAddFromAcceptedEvents(filtered.toSend);
+            if (add !== null) pressureSignals.push(add);
+          }
+          for (const signal of observed.deferredPressure) {
+            if (signal.kind === "turn_settled") {
+              pressureSignals.push(signal);
+            }
+          }
+          publishLifecycle(pressureSignals);
+        }
       })
       .catch((cause: unknown) => {
         logError(`cc-lhc batch queue error: ${detail(cause)}`);

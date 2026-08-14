@@ -50,6 +50,7 @@ export type {
   GovernorDurableReceipt,
   GovernorHandoffOutcome,
   GovernorInput,
+  GovernorMutationDeferReason,
   GovernorObservePhase,
   GovernorObserveRecord,
   GovernorPressureReceipt,
