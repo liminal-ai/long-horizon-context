@@ -600,83 +600,103 @@ async fn finalize_attempt(
     let decision_persist = decision_for_persist.clone();
     let terminal_flag = terminal;
 
-    let write = create_db_write_transaction(
-        ref_.clone(),
-        move |tx| {
-            Box::pin(async move {
-                let recorded_at = clock_iso(&(tx.clock));
-                let status = persist_receipt(
-                    tx.db,
-                    &attempt_id,
-                    &recorded_at,
-                    &decision_persist,
-                    terminal_flag,
-                );
-                if matches!(status, super::store::PersistReceiptResult::AlreadyTerminal) {
-                    return "already_terminal".to_string();
-                }
-                let mut detail = Map::new();
-                detail.insert("terminal".into(), json!(terminal_flag));
-                detail.insert(
-                    "outcome".into(),
-                    json!(decision_persist.receipt.outcome.as_str()),
-                );
-                detail.insert(
-                    "writerReleased".into(),
-                    json!(decision_persist.receipt.residual.writer_released),
-                );
-                detail.insert("releaseWriter".into(), json!(release_writer));
-                append_stage_log(
-                    tx.db,
-                    &attempt_id,
-                    StageName::ReceiptRecorded,
-                    &recorded_at,
-                    Some(&detail),
-                );
-                if let Some(bu) = boundary_update {
-                    upsert_boundary(
+    // Contain finalize write panics (fault injection / SQL) as storage_failure,
+    // matching TS try/catch around the finalize write transaction.
+    let write = {
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+        let fut = create_db_write_transaction(
+            ref_.clone(),
+            move |tx| {
+                Box::pin(async move {
+                    let recorded_at = clock_iso(&(tx.clock));
+                    let status = persist_receipt(
                         tx.db,
-                        &bu.continuation_turn_id,
                         &attempt_id,
-                        bu.status,
-                        bu.marker_persisted,
-                        &bu.last_stage,
-                        &bu.forced_at,
-                        bu.completed_at.as_deref(),
+                        &recorded_at,
+                        &decision_persist,
+                        terminal_flag,
                     );
-                }
-                if fail_after_receipt {
-                    panic!("compact-continuation finalize after receipt failed (test injection)");
-                }
-                if release_writer {
-                    if fail_at_release {
-                        panic!(
-                            "compact-continuation finalize at release failed (test injection)"
-                        );
+                    if matches!(status, super::store::PersistReceiptResult::AlreadyTerminal) {
+                        return "already_terminal".to_string();
                     }
-                    let released = release_lhc_writer(tx.db, &attempt_id);
-                    if !released {
-                        panic!("failed to release writer for attempt {attempt_id}");
-                    }
+                    let mut detail = Map::new();
+                    detail.insert("terminal".into(), json!(terminal_flag));
+                    detail.insert(
+                        "outcome".into(),
+                        json!(decision_persist.receipt.outcome.as_str()),
+                    );
+                    detail.insert(
+                        "writerReleased".into(),
+                        json!(decision_persist.receipt.residual.writer_released),
+                    );
+                    detail.insert("releaseWriter".into(), json!(release_writer));
                     append_stage_log(
                         tx.db,
                         &attempt_id,
-                        StageName::WriterReleased,
+                        StageName::ReceiptRecorded,
                         &recorded_at,
-                        None,
+                        Some(&detail),
                     );
-                    if fail_after_release {
-                        panic!(
-                            "compact-continuation finalize after release before commit failed (test injection)"
+                    if let Some(bu) = boundary_update {
+                        upsert_boundary(
+                            tx.db,
+                            &bu.continuation_turn_id,
+                            &attempt_id,
+                            bu.status,
+                            bu.marker_persisted,
+                            &bu.last_stage,
+                            &bu.forced_at,
+                            bu.completed_at.as_deref(),
                         );
                     }
-                }
-                "ok".to_string()
-            })
-        },
-        Some(clock.clone()),
-    )
-    .await;
+                    if fail_after_receipt {
+                        panic!(
+                            "compact-continuation finalize after receipt failed (test injection)"
+                        );
+                    }
+                    if release_writer {
+                        if fail_at_release {
+                            panic!(
+                                "compact-continuation finalize at release failed (test injection)"
+                            );
+                        }
+                        let released = release_lhc_writer(tx.db, &attempt_id);
+                        if !released {
+                            panic!("failed to release writer for attempt {attempt_id}");
+                        }
+                        append_stage_log(
+                            tx.db,
+                            &attempt_id,
+                            StageName::WriterReleased,
+                            &recorded_at,
+                            None,
+                        );
+                        if fail_after_release {
+                            panic!(
+                                "compact-continuation finalize after release before commit failed (test injection)"
+                            );
+                        }
+                    }
+                    "ok".to_string()
+                })
+            },
+            Some(clock.clone()),
+        );
+        match AssertUnwindSafe(fut).catch_unwind().await {
+            Ok(result) => result,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "compact-continuation finalize failed".into()
+                };
+                return storage_failure(&format!("compact-continuation finalize failed: {msg}"));
+            }
+        }
+    };
 
     let OpResult::Ok { value: write_kind } = write else {
         return match write {
@@ -831,6 +851,73 @@ async fn run_compact_continuation_inner(
                     OpResult::Ok { value: None } => {}
                     OpResult::Err { error } => return OpResult::Err { error },
                 }
+            }
+            // Repair stale same-owner writer claim left after a prior terminal path.
+            let repair_attempt = facts.attempt_id.clone();
+            let writer_repair = create_db_write_transaction(
+                ref_.clone(),
+                {
+                    let clock = clock.clone();
+                    move |tx| {
+                        Box::pin(async move {
+                            let claim = read_writer_claim(tx.db);
+                            if claim.claim == WriterClaimKind::Lhc
+                                && claim.attempt_id.as_deref() == Some(repair_attempt.as_str())
+                            {
+                                let released = release_lhc_writer(tx.db, &repair_attempt);
+                                if !released {
+                                    panic!(
+                                        "failed to release stale writer for completed attempt {repair_attempt}"
+                                    );
+                                }
+                                let recorded_at = clock_iso(&clock);
+                                let mut repair_detail = Map::new();
+                                repair_detail.insert(
+                                    "reason".into(),
+                                    json!("terminal_replay_stale_same_owner_claim"),
+                                );
+                                append_stage_log(
+                                    tx.db,
+                                    &repair_attempt,
+                                    StageName::WriterClaimRepaired,
+                                    &recorded_at,
+                                    Some(&repair_detail),
+                                );
+                                let mut maint_detail = Map::new();
+                                maint_detail.insert(
+                                    "action".into(),
+                                    json!("release_stale_writer_on_terminal_replay"),
+                                );
+                                maint_detail.insert("receiptIntact".into(), json!(true));
+                                append_stage_log(
+                                    tx.db,
+                                    &repair_attempt,
+                                    StageName::RecoveryMaintenance,
+                                    &recorded_at,
+                                    Some(&maint_detail),
+                                );
+                                let mut release_detail = Map::new();
+                                release_detail.insert("onTerminalReplay".into(), json!(true));
+                                append_stage_log(
+                                    tx.db,
+                                    &repair_attempt,
+                                    StageName::WriterReleased,
+                                    &recorded_at,
+                                    Some(&release_detail),
+                                );
+                            }
+                            true
+                        })
+                    }
+                },
+                Some(clock.clone()),
+            )
+            .await;
+            if !matches!(writer_repair, OpResult::Ok { .. }) {
+                return match writer_repair {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
             }
             let pending = create_db_read_transaction(ref_.clone(), |tx| {
                 Box::pin(async move { read_pending_boundary(tx.db) })
@@ -1077,28 +1164,14 @@ async fn run_compact_continuation_inner(
         }
     }
 
+    let host_writer_conflict = matches!(
+        facts.writer_claim,
+        WriterClaim::Native | WriterClaim::Conflict
+    );
     let health_bad = !facts.capture_complete
         || !facts.provider_identity_valid
         || !single_open_turn
-        || matches!(
-            facts.writer_claim,
-            WriterClaim::Native | WriterClaim::Conflict
-        );
-
-    // Writer held by foreign attempt
-    if durable_writer.claim == WriterClaimKind::Lhc
-        && durable_writer.attempt_id.as_deref() != Some(facts.attempt_id.as_str())
-        && durable_writer.attempt_id.is_some()
-    {
-        let owner = durable_writer.attempt_id.clone().unwrap_or_default();
-        return caller_error(
-            ErrorCode::CompactContinuationWriterConflict,
-            format!(
-                "cannot claim LHC writer for attempt {}; held by attempt {} — resume with that attemptId",
-                facts.attempt_id, owner
-            ),
-        );
-    }
+        || host_writer_conflict;
 
     if health_bad || !tool_pair_ok {
         let mut cont = facts.continuation.clone();
@@ -1117,7 +1190,11 @@ async fn run_compact_continuation_inner(
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
         let release_writer = owns_writer && !owns_pending;
-        let oracle_writer = if owns_writer {
+        // Native/conflict host claim is part of oracle input (refuse code path).
+        // Otherwise report durable own claim or none — never invent a claim.
+        let oracle_writer = if host_writer_conflict {
+            facts.writer_claim.clone()
+        } else if owns_writer {
             WriterClaim::Lhc
         } else {
             WriterClaim::None
@@ -1175,6 +1252,8 @@ async fn run_compact_continuation_inner(
             && tool_pair_ok;
 
     if !needs_continue_turn && !needs_preserve_tool {
+        // Quiet / below-trigger: do not conflict on a foreign held claim —
+        // only compact paths need exclusive writer. Foreign claim remains.
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
         let release_writer = owns_writer && !owns_pending;
@@ -1212,6 +1291,21 @@ async fn run_compact_continuation_inner(
             hooks.as_ref(),
         )
         .await;
+    }
+
+    // Compact paths require exclusive LHC writer — refuse if held by another.
+    if durable_writer.claim == WriterClaimKind::Lhc
+        && durable_writer.attempt_id.as_deref() != Some(facts.attempt_id.as_str())
+        && durable_writer.attempt_id.is_some()
+    {
+        let owner = durable_writer.attempt_id.clone().unwrap_or_default();
+        return caller_error(
+            ErrorCode::CompactContinuationWriterConflict,
+            format!(
+                "cannot claim LHC writer for attempt {}; held by attempt {} — resume with that attemptId",
+                facts.attempt_id, owner
+            ),
+        );
     }
 
     // Claim writer for compact paths
@@ -1839,7 +1933,7 @@ async fn execute_compact_paths(
                         clock.clone(),
                         Some({
                             let mut m = Map::new();
-                            m.insert("after".into(), json!("marker_event"));
+                            m.insert("after".into(), json!("marker_event_commit"));
                             m
                         }),
                     )
@@ -1969,13 +2063,14 @@ async fn execute_compact_paths(
             None,
         )
         .await;
+        // Install/compact fail after force — failed_repairable, nonterminal (TS).
         return finalize_attempt(
             ref_,
             facts,
             decision,
             FinalizeOpts {
                 release_writer: true,
-                terminal: true,
+                terminal: false,
                 boundary_update: continuation_turn_id.as_ref().map(|tid| BoundaryUpdate {
                     continuation_turn_id: tid.clone(),
                     status: super::store::BoundaryStatus::FailedRepairable,
@@ -2065,9 +2160,20 @@ async fn execute_compact_paths(
         material.clone(),
     ));
 
+    // Success requires install + structural validity (oracle success outcomes).
     let success = material.install_succeeds
         && material.compact_structurally_valid
         && material.can_produce_valid_provider_request;
+
+    // compact_failed: candidate structure invalid (never reached a valid install).
+    // install_failed: valid candidate reached install and install failed.
+    let reached_valid_candidate =
+        material.compact_structurally_valid && material.can_produce_valid_provider_request;
+    let fail_stage = if reached_valid_candidate && !material.install_succeeds {
+        "install_failed"
+    } else {
+        "compact_failed"
+    };
 
     let boundary_update = if needs_continue_turn {
         continuation_turn_id.as_ref().map(|tid| BoundaryUpdate {
@@ -2081,7 +2187,7 @@ async fn execute_compact_paths(
             last_stage: if success {
                 "install_succeeded".into()
             } else {
-                "install_failed".into()
+                fail_stage.into()
             },
             forced_at: boundary_forced_at.clone(),
             completed_at: if success {
@@ -2094,12 +2200,44 @@ async fn execute_compact_paths(
         None
     };
 
+    if needs_continue_turn && !success {
+        let _ = stage_log(
+            ref_.clone(),
+            &facts.attempt_id,
+            if fail_stage == "install_failed" {
+                StageName::InstallFailed
+            } else {
+                StageName::CompactFailed
+            },
+            clock.clone(),
+            Some({
+                let mut m = Map::new();
+                if let Some(tid) = &continuation_turn_id {
+                    m.insert("continuationTurnId".into(), json!(tid));
+                }
+                m.insert("outcome".into(), json!(decision.outcome.as_str()));
+                m.insert(
+                    "compactStructurallyValid".into(),
+                    json!(material.compact_structurally_valid),
+                );
+                m.insert(
+                    "canProduceValidProviderRequest".into(),
+                    json!(material.can_produce_valid_provider_request),
+                );
+                m.insert("installSucceeds".into(), json!(material.install_succeeds));
+                m
+            }),
+        )
+        .await;
+    }
+
     finalize_attempt(
         ref_,
         facts,
         decision,
         FinalizeOpts {
             release_writer: true,
+            // Install/compact fail after force is nonterminal until repair.
             terminal: success || !needs_continue_turn,
             boundary_update,
             forced_boundary_this_attempt,

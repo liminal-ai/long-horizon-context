@@ -83,7 +83,8 @@ pub use view_boundary::{
     turned_tool_result_events,
 };
 pub use view_seam::{
-    ViewInjectionHook, ViewInjectionPoint, fire_view_injection, seed_view_boundary,
+    ViewInjectionDbHook, ViewInjectionHook, ViewInjectionPoint, fire_view_injection,
+    fire_view_injection_with_db, seed_view_boundary, set_view_injection_db_hook,
     set_view_injection_hook,
 };
 pub use view_thread::{

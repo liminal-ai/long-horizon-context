@@ -17,7 +17,8 @@ use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::{SqlParam, open_database};
 
 pub use lhc::thread_view::internal::seam::{
-    ViewInjectionHook, ViewInjectionPoint, fire_view_injection, set_view_injection_hook,
+    ViewInjectionDbHook, ViewInjectionHook, ViewInjectionPoint, fire_view_injection,
+    fire_view_injection_with_db, set_view_injection_db_hook, set_view_injection_hook,
 };
 
 /// ISO-8601 UTC with millisecond precision (`YYYY-MM-DDTHH:MM:SS.mmmZ`),

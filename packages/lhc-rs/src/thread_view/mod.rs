@@ -57,7 +57,7 @@ use internal::profiles::{default_resolved_view_config, profile_violation};
 use internal::render::{
     AssembledContextRole, LITERAL_DERIVATION_STORED_MEMBER_CONCAT, assemble_band_text,
 };
-use internal::seam::{ViewInjectionPoint, fire_view_injection};
+use internal::seam::{ViewInjectionPoint, fire_view_injection, fire_view_injection_with_db};
 use internal::select::{ArrangementEntry, SelectionResult, SkippedEntry};
 use internal::session_view::build_session_thread_view;
 use internal::snapshot::{
@@ -1631,6 +1631,8 @@ pub async fn install_prepared_compact(
             js_json_stringify(&serde_json::to_value(&placeholder_source).unwrap_or(Value::Null));
 
         let mut before = |db: &Db| -> Option<String> {
+            // Inside BEGIN IMMEDIATE — atomic with replace (TS install TOCTOU seam).
+            fire_view_injection_with_db(ViewInjectionPoint::CompactInstallBeforeValidate, db);
             if let Err(reason) =
                 validate_prepared_source_state(db, &prepared, marker_key.as_deref())
             {
@@ -1645,11 +1647,18 @@ pub async fn install_prepared_compact(
             let validated =
                 read_prepared_source_state(db, prepared.selection.compact_point, &selected, None);
             let _ = turns::drop_unreadable_chunks(db, &prepared.empty_chunk_ids);
-            // Persist public StoredViewSourceState only (maxEventOrder +
-            // derivationCounts). Digests remain in-transaction validation state.
+            // Certified LIM-61 shape: validated pre-replace source snapshot
+            // (includes marker max event order when present; installedViewId
+            // and structureDigest are pre-replace / pre empty-chunk-drop).
             Some(js_json_stringify(&json!({
                 "maxEventOrder": validated.max_event_order,
                 "derivationCounts": prepared.derivation_counts,
+                "derivationDigest": validated.derivation_digest,
+                "tailDigest": validated.tail_digest,
+                "structureDigest": validated.structure_digest,
+                "installedViewId": validated.installed_view_id,
+                "compactPoint": validated.compact_point,
+                "selectedSourceTurnIds": selected,
             })))
         };
 

@@ -748,7 +748,24 @@ async fn uninstalled_the_point_is_a_no_op() {
                     .get("source_state_json")
                     .and_then(Value::as_str)
                     .expect("source_state_json text");
-                assert_eq!(raw_ss, expected, "{name}: raw SQLite source_state_json");
+                // Install may persist certified LIM-61 extended digests
+                // (derivationDigest/tailDigest/structureDigest/...). Public
+                // StoredView.source_state remains {maxEventOrder, derivationCounts};
+                // assert those keys match the oracle expected object.
+                let raw_val: Value =
+                    serde_json::from_str(raw_ss).expect("raw source_state_json parse");
+                let expected_val: Value =
+                    serde_json::from_str(expected).expect("expected source_state parse");
+                assert_eq!(
+                    raw_val.get("maxEventOrder"),
+                    expected_val.get("maxEventOrder"),
+                    "{name}: raw maxEventOrder"
+                );
+                assert_eq!(
+                    raw_val.get("derivationCounts"),
+                    expected_val.get("derivationCounts"),
+                    "{name}: raw derivationCounts"
+                );
                 db.close();
 
                 let described = match describe(ThreadRef::file_path(file_path)).await {
