@@ -1018,9 +1018,6 @@ export async function installPreparedCompact(
 
     const createdAt = opts.createdAt ?? new Date().toISOString();
     const markerKey = opts.allowedMarkerIdempotencyKey;
-    // Filled inside beforeReplace after validation with the actual post-marker
-    // source state that was validated and installed.
-    let installedSourceStateJson = "";
 
     try {
       replaceViewSnapshot(
@@ -1045,13 +1042,12 @@ export async function installPreparedCompact(
             })),
           ),
           gapsJson: JSON.stringify(prepared.gaps),
-          // sourceStateJson is mutated by beforeReplace after validation so the
-          // stored value describes the source that was actually installed
-          // (marker event + current max order/digests). replaceViewSnapshot
-          // reads input.sourceStateJson after beforeReplace returns.
-          get sourceStateJson() {
-            return installedSourceStateJson;
-          },
+          // Placeholder; beforeReplace returns the validated post-marker source
+          // state JSON so the written row describes what was actually installed.
+          sourceStateJson: JSON.stringify({
+            maxEventOrder: prepared.maxEventOrder,
+            derivationCounts: prepared.derivationCounts,
+          }),
           bands: prepared.bands,
         },
         () => {
@@ -1065,9 +1061,10 @@ export async function installPreparedCompact(
           if (!sourceCheck.ok) {
             throw new StalePreparedCompactError(sourceCheck.reason);
           }
-          // Persist the validated current source state (includes marker when present).
+          // Return validated current source state (includes marker when present).
           const validated = readPreparedSourceState(db, prepared.selection.compactPoint);
-          installedSourceStateJson = JSON.stringify({
+          turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
+          return JSON.stringify({
             maxEventOrder: validated.maxEventOrder,
             derivationCounts: prepared.derivationCounts,
             derivationDigest: validated.derivationDigest,
@@ -1076,7 +1073,6 @@ export async function installPreparedCompact(
             installedViewId: validated.installedViewId,
             compactPoint: validated.compactPoint,
           });
-          turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
         },
       );
     } catch (cause) {

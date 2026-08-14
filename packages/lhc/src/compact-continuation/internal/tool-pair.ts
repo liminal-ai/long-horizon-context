@@ -30,7 +30,8 @@ export type ToolPairProof =
         | "call_after_result"
         | "wrong_turn"
         | "not_in_open_tail"
-        | "unreadable_payload";
+        | "unreadable_payload"
+        | "tool_call_id_mismatch";
       detail: string;
     };
 
@@ -144,7 +145,20 @@ export function provePendingToolPair(db: DatabaseSync, toolCallId: string): Tool
     resultContent = parsed.content;
     const callParsed = JSON.parse(call.content) as { toolCallId?: unknown };
     if (callParsed.toolCallId !== toolCallId) {
-      return { ok: false, reason: "unreadable_payload", detail: "tool_call payload toolCallId mismatch" };
+      // json_extract matched the row, but payload object disagrees (corrupt block).
+      return {
+        ok: false,
+        reason: "tool_call_id_mismatch",
+        detail: "tool_call payload toolCallId mismatches requested id",
+      };
+    }
+    const resultParsedId = (JSON.parse(result.content) as { toolCallId?: unknown }).toolCallId;
+    if (resultParsedId !== toolCallId) {
+      return {
+        ok: false,
+        reason: "tool_call_id_mismatch",
+        detail: "tool_result payload toolCallId mismatches requested id",
+      };
     }
   } catch {
     return { ok: false, reason: "unreadable_payload", detail: "failed to parse tool pair block JSON" };

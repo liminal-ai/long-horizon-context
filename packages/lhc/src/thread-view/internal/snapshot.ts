@@ -222,10 +222,21 @@ export interface ViewReplaceInput {
 // to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
 // rolls the whole replace back and the previous view keeps serving. Compact is
 // the writer of view rows and the boundary reset on compact.
-export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput, beforeReplace?: () => void): void {
+/**
+ * Replace the serving view under one BEGIN IMMEDIATE.
+ * `beforeReplace` may return a sourceStateJson override computed after
+ * in-transaction validation (e.g. post-marker digests). When it returns a
+ * string, that value is written; otherwise `input.sourceStateJson` is used.
+ */
+export function replaceViewSnapshot(
+  db: DatabaseSync,
+  input: ViewReplaceInput,
+  beforeReplace?: () => undefined | string,
+): void {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    beforeReplace?.();
+    const sourceOverride = beforeReplace?.();
+    const sourceStateJson = typeof sourceOverride === "string" ? sourceOverride : input.sourceStateJson;
     db.prepare(`DELETE FROM thread_view WHERE singleton = 1`).run();
     db.prepare(
       `INSERT INTO thread_view (singleton, view_id, created_at, compact_point, covered_from,
@@ -240,7 +251,7 @@ export function replaceViewSnapshot(db: DatabaseSync, input: ViewReplaceInput, b
       input.configJson,
       input.arrangementJson,
       input.gapsJson,
-      input.sourceStateJson,
+      sourceStateJson,
     );
     const insertBand = db.prepare(
       `INSERT INTO thread_view_band (view_id, band, rendered_text, token_count)

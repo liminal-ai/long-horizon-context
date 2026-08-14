@@ -826,4 +826,34 @@ describe("thread schema migration", () => {
       db.close();
     }
   });
+
+  it("v9→v10 migration refuses multiple unresolved boundaries", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const old = new DatabaseSync(filePath);
+    try {
+      old.exec("DROP INDEX IF EXISTS idx_compact_continuation_boundary_one_unresolved;");
+      old
+        .prepare(
+          `INSERT INTO compact_continuation_boundary (
+           continuation_turn_id, attempt_id, status, marker_persisted, last_stage, forced_at, completed_at
+         ) VALUES
+           ('t-a', 'a1', 'pending', 0, 'x', '2020-01-01T00:00:00.000Z', NULL),
+           ('t-b', 'a2', 'failed_repairable', 0, 'y', '2020-01-02T00:00:00.000Z', NULL)`,
+        )
+        .run();
+      old.exec(`PRAGMA user_version = 9;`);
+    } finally {
+      old.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(false);
+    if (opened.ok) return;
+    expect(opened.error.code).toBe("storage_failure");
+    expect(opened.error.reason).toMatch(/unresolved boundaries|migration/i);
+  });
 });

@@ -119,7 +119,16 @@ export type CompactContinuationTestHooks = {
   skipRealCompact?: boolean;
   failInstallBeforeWrite?: boolean;
   interruptAfterBoundary?: boolean;
+  /**
+   * After marker event commits and boundary marker_persisted is written.
+   * Models crash after durable marker status update, before install.
+   */
   interruptAfterMarker?: boolean;
+  /**
+   * After canonical marker event commits, **before** boundary
+   * marker_persisted/last_stage update. Models the marker→status crash gap.
+   */
+  interruptAfterMarkerEvent?: boolean;
   /**
    * After messageEvents(turn_end) returns, before boundary materialization.
    * Leaves force_intent durable and writer held for resume reconcile.
@@ -1166,10 +1175,15 @@ async function runCompactContinuationInner(
 
         // Crash gap: after turn_end commit, before boundary materialization.
         if (hooks?.interruptAfterTurnEndCommit === true) {
-          await stageLog(ref, facts.attemptId, "interrupted", clock, {
+          const gapLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
             after: "turn_end_commit",
             forceIntent: true,
           });
+          if (!gapLog.ok) {
+            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+            if (!rel.ok) return rel;
+            return gapLog;
+          }
           const decision = decideCompactContinuation(
             buildOracleInput(
               facts,
@@ -1274,10 +1288,15 @@ async function runCompactContinuationInner(
               },
             ),
           );
-          await stageLog(ref, facts.attemptId, "interrupted", clock, {
+          const gapLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
             after: "force_turn_end",
             continuationTurnId,
           });
+          if (!gapLog.ok) {
+            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+            if (!rel.ok) return rel;
+            return gapLog;
+          }
           const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
           if (!pending.ok) return pending;
           return {
@@ -1347,11 +1366,16 @@ async function runCompactContinuationInner(
           },
           hooks,
         );
-        await stageLog(ref, facts.attemptId, "compact_prepared", clock, {
+        const prepLog = await stageLog(ref, facts.attemptId, "compact_prepared", clock, {
           candidateTokens: candidate.value.candidateTokens,
           currentServedTokens: candidate.value.currentServedTokens,
           structuralIssues: candidate.value.structuralIssues,
         });
+        if (!prepLog.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return prepLog;
+        }
       }
     }
 
@@ -1379,6 +1403,56 @@ async function runCompactContinuationInner(
           return markerBatch;
         }
       }
+
+      // Crash gap: marker event durable, boundary.marker_persisted not yet updated.
+      // Resume detects marker by idempotency key, reconciles status, no second marker.
+      if (hooks?.interruptAfterMarkerEvent === true) {
+        const gapLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
+          after: "marker_event_commit",
+          before: "boundary_marker_status",
+          continuationTurnId: cTurnId,
+          markerExists: true,
+          boundaryMarkerPersisted: false,
+        });
+        if (!gapLog.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return gapLog;
+        }
+        material = { ...material, installSucceeds: false };
+        const decision = decideCompactContinuation(
+          buildOracleInput(
+            facts,
+            {
+              captureComplete: true,
+              providerIdentityValid: true,
+              singleOpenTurn: true,
+              writerClaim: "lhc",
+            },
+            {
+              applied: true,
+              continuationTurnId: cTurnId,
+              forcedThisSeam: forcedBoundaryThisAttempt,
+              // Boundary row may still say marker false; residual presence is true in record.
+              markerAlreadyPersisted: already.value,
+            },
+            material,
+          ),
+        );
+        const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
+        if (!pending.ok) return pending;
+        return {
+          ok: true,
+          value: toRunResult(decision, {
+            forcedBoundaryThisAttempt,
+            continuationTurnId: cTurnId,
+            compactReceipt: null,
+            replayedTerminalAttempt: false,
+            pendingBoundary: pending.value,
+          }),
+        };
+      }
+
       markerPersistedDurable = true;
       const markWrite = await createDbWriteTransaction(
         ref,
@@ -1437,10 +1511,15 @@ async function runCompactContinuationInner(
             material,
           ),
         );
-        await stageLog(ref, facts.attemptId, "interrupted", clock, {
+        const intLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
           after: "marker_persisted",
           continuationTurnId: cTurnId,
         });
+        if (!intLog.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return intLog;
+        }
         const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
         if (!pending.ok) return pending;
         return {
@@ -1483,9 +1562,14 @@ async function runCompactContinuationInner(
             lowerTargetMet: installed.value.totalTokens <= facts.policy.lowerTargetTokens,
           };
           compactReceipt = installed.value;
-          await stageLog(ref, facts.attemptId, "install_succeeded", clock, {
+          const instLog = await stageLog(ref, facts.attemptId, "install_succeeded", clock, {
             viewId: installed.value.viewId,
           });
+          if (!instLog.ok) {
+            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+            if (!rel.ok) return rel;
+            return instLog;
+          }
         }
       } else if (hooks?.skipRealCompact === true) {
         material = {
@@ -1601,7 +1685,7 @@ async function runCompactContinuationInner(
           lastStage: material.installSucceeds === false ? "install_failed" : "compact_failed",
           forcedAt: boundaryForcedAt,
         };
-        await stageLog(
+        const failLog = await stageLog(
           ref,
           facts.attemptId,
           material.installSucceeds === false ? "install_failed" : "compact_failed",
@@ -1611,6 +1695,11 @@ async function runCompactContinuationInner(
             outcome: decision.outcome,
           },
         );
+        if (!failLog.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return failLog;
+        }
       }
     }
 

@@ -430,7 +430,18 @@ export function readForceIntent(db: DatabaseSync, attemptId: string): ForceInten
   };
 }
 
+/**
+ * Mark force intent reconciled with the continuation turn.
+ * Throws when no force-intent row exists for this attempt (caller must have
+ * recorded intent before turn_end). Idempotent when already reconciled.
+ */
 export function markForceIntentApplied(db: DatabaseSync, attemptId: string, continuationTurnId: string): void {
+  const existing = db
+    .prepare(`SELECT attempt_id FROM compact_continuation_force_intent WHERE attempt_id = ?`)
+    .get(attemptId) as { attempt_id: string } | undefined;
+  if (existing === undefined) {
+    throw new Error(`markForceIntentApplied: no force intent row for attempt ${attemptId}`);
+  }
   db.prepare(
     `UPDATE compact_continuation_force_intent
      SET status = 'reconciled', continuation_turn_id = ?

@@ -120,13 +120,27 @@ Before `intakeStream.messageEvents(turn_end)`:
 1. Durable `recordForceIntent(attemptId, turnEndKey, now)` status=`intent`
 2. Call `messageEvents`
 3. Materialize boundary row from opened turn id
-4. `markForceIntentApplied`
+4. `markForceIntentApplied` (throws if force-intent row missing)
 
 On any entry, if force intent exists with status intent/applied and no pending boundary:
 
 - Resolve turn via `findContinuationTurnFromForceKey`
 - If turn exists: `upsertBoundary` pending + mark reconciled; **do not** force again
 - If turn does not exist and same attempt continues force path: re-send idempotent `turn_end`
+
+### Marker-event → boundary-status crash gap
+
+After the canonical marker event commits and **before**
+`compact_continuation_boundary.marker_persisted` / `last_stage` update:
+
+1. Marker exists under idempotency key `lhc.compact_continuation:<turnId>`.
+2. Boundary row may still show `markerPersisted: false`.
+3. Same-attempt resume: detect marker by key; set `markerPersisted: true` on
+   the owned boundary (no second marker insert); continue install or remain
+   honestly `failed_repairable`; release writer on terminal success; append-only
+   stages record the interrupt and reconcile.
+
+Test-only seam: `interruptAfterMarkerEvent` (fixtures internal runner only).
 
 ### Finalize / OpResult
 
