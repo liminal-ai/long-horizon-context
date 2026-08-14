@@ -10,6 +10,7 @@ Provider-neutral state machine for **LHC-owned context relief at a settled model
 | Story | LIM-60 (define + fixtures); runtime stages = LIM-61 |
 | Module | `packages/lhc/src/shared-tech/compact-continuation/` |
 | Parity fixtures | `packages/lhc/fixtures/compact-continuation/v1/` |
+| Cross-host cert | `docs/compact-continuation-certification.md` (LIM-65) |
 
 ## Pure-function protocol
 

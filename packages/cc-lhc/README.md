@@ -156,6 +156,10 @@ not durable state. Rebuilt Claude rollouts remain under Claude's normal
 
 ## Capability boundary vs Codex full continuation
 
+Authoritative cross-host certification (frozen heads, invariant receipts, and
+gate commands):
+[`docs/compact-continuation-certification.md`](../../docs/compact-continuation-certification.md).
+
 | | **cc-lhc (capability-limited)** | **Codex (full state machine)** |
 | --- | --- | --- |
 | Mid-agentic-turn request replacement | **No** — closed CLI, no injection seam | Yes — in-place next-request install |

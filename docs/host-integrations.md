@@ -122,6 +122,11 @@ process start; running gateways need a restart. Never run `hermes update`.
 
 ## Compact-continuation projection (all hosts)
 
+Cross-host certification (capability matrix, invariant receipts, local gate
+commands, and non-parity bounds) lives in
+[`docs/compact-continuation-certification.md`](compact-continuation-certification.md).
+Do not infer Codex parity for capability-limited hosts from shared fixtures alone.
+
 When rendering ordinary user chat from an LHC thread, hosts **must** request
 marker-hidden projection via `messages.list({ forUserChat: true })` (or the
 equivalent host-facing filter). Typed compact-continuation markers remain in
