@@ -52,4 +52,4 @@ jobs:
       - name: Publish cc-lhc 0.1.0
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
-        run: npm publish release/cc-lhc-0.1.0.tgz --access public
+        run: npm publish ./release/cc-lhc-0.1.0.tgz --access public
