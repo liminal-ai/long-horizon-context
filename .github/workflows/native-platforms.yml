@@ -138,7 +138,6 @@ jobs:
 
       - name: Package standalone runtime bundle (Unix)
         if: runner.os != 'Windows'
-        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -173,7 +172,6 @@ jobs:
 
       - name: Smoke standalone URL installer (Unix)
         if: runner.os != 'Windows'
-        shell: bash
         run: |
           set -euo pipefail
           scratch="$(mktemp -d "${TMPDIR:-/tmp}/cc-lhc-installer-smoke.XXXXXX")"
