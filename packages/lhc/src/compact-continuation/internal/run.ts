@@ -1677,24 +1677,26 @@ async function runCompactContinuationInner(
         };
       } else {
         // Install/compact fail after force — failed_repairable, nonterminal.
+        // compact_failed: candidate structure invalid (never reached a valid install).
+        // install_failed: valid candidate reached install and install failed.
+        const reachedValidCandidate = material.compactStructurallyValid && material.canProduceValidProviderRequest;
+        const failStage: StageName =
+          reachedValidCandidate && material.installSucceeds === false ? "install_failed" : "compact_failed";
         finalizeOpts.terminal = false;
         finalizeOpts.boundaryUpdate = {
           continuationTurnId: finalBoundary.continuationTurnId,
           status: "failed_repairable",
           markerPersisted: markerPersistedDurable,
-          lastStage: material.installSucceeds === false ? "install_failed" : "compact_failed",
+          lastStage: failStage,
           forcedAt: boundaryForcedAt,
         };
-        const failLog = await stageLog(
-          ref,
-          facts.attemptId,
-          material.installSucceeds === false ? "install_failed" : "compact_failed",
-          clock,
-          {
-            continuationTurnId: finalBoundary.continuationTurnId,
-            outcome: decision.outcome,
-          },
-        );
+        const failLog = await stageLog(ref, facts.attemptId, failStage, clock, {
+          continuationTurnId: finalBoundary.continuationTurnId,
+          outcome: decision.outcome,
+          compactStructurallyValid: material.compactStructurallyValid,
+          canProduceValidProviderRequest: material.canProduceValidProviderRequest,
+          installSucceeds: material.installSucceeds,
+        });
         if (!failLog.ok) {
           const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
           if (!rel.ok) return rel;

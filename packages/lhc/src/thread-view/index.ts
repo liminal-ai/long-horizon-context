@@ -592,6 +592,12 @@ export type PreparedCompact = {
   maxEventOrder: number;
   derivationCounts: Record<string, Record<string, number>>;
   sourceState: PreparedCompactSourceState;
+  /**
+   * Turn ids whose durable messages/blocks feed prepared band text
+   * (message_excerpt, stored_turn, stored_member_concat, chunk members, etc.).
+   * Fingerprinted in addition to the post-compact-point tail.
+   */
+  selectedSourceTurnIds: readonly string[];
   viewId: string;
   firstKeptMessageId: string | null;
   profileName: string | null;
@@ -607,26 +613,52 @@ function sha256Hex(payload: string): string {
 }
 
 /**
+ * Resolve every turn id whose messages feed prepared band text.
+ * Turn entries contribute their subjectId; chunk entries contribute chunk_member turns.
+ */
+export function selectedSourceTurnIdsFromSelection(db: DatabaseSync, selection: SelectionResult): string[] {
+  const turnIds = new Set<string>();
+  for (const entry of selection.entries) {
+    if (entry.subjectKind === "turn") {
+      turnIds.add(entry.subjectId);
+      continue;
+    }
+    const members = db
+      .prepare(`SELECT turn_id FROM chunk_member WHERE chunk_id = ? ORDER BY member_idx`)
+      .all(entry.subjectId) as unknown as Array<{ turn_id: string }>;
+    for (const m of members) turnIds.add(m.turn_id);
+  }
+  return [...turnIds].sort();
+}
+
+/**
  * Build a source-state fingerprint for install validation.
  *
- * `tailDigest` covers every durable message/block input used to produce
- * prepared bands and the post-compact-point tail:
+ * `tailDigest` covers every durable message/block used to produce prepared
+ * bands and the post-compact-point tail, derived from actual selection:
  * - all messages with source_event_order > compactPoint (live tail)
- * - all messages belonging to turns that are chunk members (fallback band
- *   sources under stored_member_concat, including at/below compact point)
+ * - all messages on turns listed in `selectedSourceTurnIds` (selection
+ *   subjects: message_excerpt / stored_turn / chunk-member fallbacks, etc.)
  *
  * Optional `excludeMessageIds` recomputes the digest as if those message rows
  * (and their blocks) were absent — used for exact marker-delta validation.
+ *
+ * Note: structureDigest / installedViewId describe the validated pre-replace
+ * source (before empty-chunk drop and before the view row is swapped).
  */
 export function readPreparedSourceState(
   db: DatabaseSync,
   compactPoint: number,
-  opts: { excludeMessageIds?: ReadonlySet<string> } = {},
+  opts: {
+    excludeMessageIds?: ReadonlySet<string>;
+    selectedSourceTurnIds?: readonly string[];
+  } = {},
 ): PreparedCompactSourceState {
   const maxRow = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as {
     m: number | bigint;
   };
   const exclude = opts.excludeMessageIds ?? new Set<string>();
+  const selectedTurns = [...(opts.selectedSourceTurnIds ?? [])].sort();
 
   const derivationRows = db
     .prepare(
@@ -659,17 +691,23 @@ export function readPreparedSourceState(
     ),
   );
 
-  // Source messages for bands+tail: post-compact-point tail OR any message on a
-  // chunk-member turn (fallback band rendering under stored_member_concat).
+  // Deterministic membership: post-compact tail ∪ selected band source turns.
+  // When selected turns are empty (legacy callers), fall back to chunk members
+  // so stored_member_concat still fingerprints.
+  const placeholders = selectedTurns.map(() => "?").join(", ");
+  const turnClause =
+    selectedTurns.length > 0 ? `m.turn_id IN (${placeholders})` : `m.turn_id IN (SELECT turn_id FROM chunk_member)`;
+  const bind = selectedTurns.length > 0 ? [compactPoint, ...selectedTurns] : [compactPoint];
+
   const sourceMessages = db
     .prepare(
       `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
        FROM message m
        WHERE m.source_event_order > ?
-          OR m.turn_id IN (SELECT turn_id FROM chunk_member)
+          OR ${turnClause}
        ORDER BY m.source_event_order, m.message_id`,
     )
-    .all(compactPoint) as unknown as Array<{
+    .all(...bind) as unknown as Array<{
     message_id: string;
     kind: string;
     source_event_order: number | bigint;
@@ -683,10 +721,10 @@ export function readPreparedSourceState(
        FROM message_block mb
        JOIN message m ON m.message_id = mb.message_id
        WHERE m.source_event_order > ?
-          OR m.turn_id IN (SELECT turn_id FROM chunk_member)
+          OR ${turnClause}
        ORDER BY m.source_event_order, m.message_id, mb.block_index`,
     )
-    .all(compactPoint) as unknown as Array<{
+    .all(...bind) as unknown as Array<{
     message_id: string;
     block_index: number | bigint;
     block_type: string;
@@ -800,7 +838,8 @@ function buildPreparedFromArrangement(
     return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
   });
 
-  const sourceState = readPreparedSourceState(db, selection.compactPoint);
+  const selectedSourceTurnIds = selectedSourceTurnIdsFromSelection(db, selection);
+  const sourceState = readPreparedSourceState(db, selection.compactPoint, { selectedSourceTurnIds });
 
   return {
     selection,
@@ -808,6 +847,7 @@ function buildPreparedFromArrangement(
     maxEventOrder: inputs.maxEventOrder,
     derivationCounts: inputs.derivationCounts,
     sourceState,
+    selectedSourceTurnIds,
     viewId,
     firstKeptMessageId,
     profileName,
@@ -836,7 +876,9 @@ export function validatePreparedSourceState(
   prepared: PreparedCompact,
   opts: { allowedMarkerIdempotencyKey?: string } = {},
 ): { ok: true } | { ok: false; reason: string } {
-  const current = readPreparedSourceState(db, prepared.sourceState.compactPoint);
+  const selected = prepared.selectedSourceTurnIds ?? selectedSourceTurnIdsFromSelection(db, prepared.selection);
+  const fingerprintOpts = { selectedSourceTurnIds: selected };
+  const current = readPreparedSourceState(db, prepared.sourceState.compactPoint, fingerprintOpts);
   const prev = prepared.sourceState;
 
   if (current.installedViewId !== prev.installedViewId) {
@@ -912,6 +954,7 @@ export function validatePreparedSourceState(
   // Recompute source digest with exactly that marker message/block removed and
   // compare to the prepared digest — catch unrelated tail/block mutations.
   const withoutMarker = readPreparedSourceState(db, prepared.sourceState.compactPoint, {
+    ...fingerprintOpts,
     excludeMessageIds: new Set([markerMessage.message_id]),
   });
   if (withoutMarker.tailDigest !== prev.tailDigest) {
@@ -1052,7 +1095,7 @@ export async function installPreparedCompact(
         },
         () => {
           // Inside BEGIN IMMEDIATE — atomic with replace.
-          fireViewInjection("compact-install-before-validate");
+          fireViewInjection("compact-install-before-validate", { db });
           const sourceCheck = validatePreparedSourceState(
             db,
             prepared,
@@ -1061,8 +1104,12 @@ export async function installPreparedCompact(
           if (!sourceCheck.ok) {
             throw new StalePreparedCompactError(sourceCheck.reason);
           }
-          // Return validated current source state (includes marker when present).
-          const validated = readPreparedSourceState(db, prepared.selection.compactPoint);
+          // Validated pre-replace source (includes marker when present).
+          // installedViewId / structureDigest are pre-replace / pre empty-chunk-drop.
+          const selected = prepared.selectedSourceTurnIds ?? selectedSourceTurnIdsFromSelection(db, prepared.selection);
+          const validated = readPreparedSourceState(db, prepared.selection.compactPoint, {
+            selectedSourceTurnIds: selected,
+          });
           turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
           return JSON.stringify({
             maxEventOrder: validated.maxEventOrder,
@@ -1072,6 +1119,7 @@ export async function installPreparedCompact(
             structureDigest: validated.structureDigest,
             installedViewId: validated.installedViewId,
             compactPoint: validated.compactPoint,
+            selectedSourceTurnIds: selected,
           });
         },
       );

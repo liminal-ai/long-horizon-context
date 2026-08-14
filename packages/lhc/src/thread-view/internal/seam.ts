@@ -4,12 +4,14 @@
 // Tests reach the setters through test/fixtures/view-seam.ts (the one
 // directory sanctioned to import below the SDK surface); production code
 // only ever fires.
+import type { DatabaseSync } from "node:sqlite";
+
 export type ViewInjectionPoint =
   | "compact-write"
   /** Fires inside BEGIN IMMEDIATE before source validation (install TOCTOU tests). */
   | "compact-install-before-validate";
 
-export type ViewInjectionHook = () => void;
+export type ViewInjectionHook = (ctx?: { db: DatabaseSync }) => void;
 
 const hooks: Record<ViewInjectionPoint, ViewInjectionHook | null> = {
   "compact-write": null,
@@ -23,6 +25,6 @@ export function setViewInjectionHook(point: ViewInjectionPoint, hook: ViewInject
 // The production-side call: a no-op when nothing is installed. An installed
 // hook's throw propagates to the call site on purpose — that is the injected
 // failure the call site must survive.
-export function fireViewInjection(point: ViewInjectionPoint): void {
-  hooks[point]?.();
+export function fireViewInjection(point: ViewInjectionPoint, ctx?: { db: DatabaseSync }): void {
+  hooks[point]?.(ctx);
 }

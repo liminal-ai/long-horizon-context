@@ -235,23 +235,6 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!baseline.ok) return;
     const before = snapshotCanonical(fixture.filePath);
 
-    for (const [attemptId, facts] of [
-      ["health-capture", baseFacts({ attemptId: "health-capture", captureComplete: false })],
-      ["health-identity", baseFacts({ attemptId: "health-identity", providerIdentityValid: false })],
-      [
-        "health-open",
-        baseFacts({
-          attemptId: "health-open",
-          // Durable open-turn is still true; force via corrupt would be state_corruption.
-          // Use invalid tool correlation shape on active path with singleOpenTurn override
-          // that contradicts — runtime trusts durable single open; so use incomplete capture variants.
-        }),
-      ],
-    ] as const) {
-      void facts;
-      void attemptId;
-    }
-
     const capture = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({ attemptId: "health-capture", captureComplete: false }),
@@ -1272,6 +1255,57 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(result.error.reason).toMatch(/testHooks|unknown field/);
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+  });
+
+  it("terminal replay repairs stale same-owner claim with recovery stages, receipt intact", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const first = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "replay-repair-1" }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+    const receiptBefore = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "replay-repair-1",
+    );
+    expect(receiptBefore.ok).toBe(true);
+    if (!receiptBefore.ok) return;
+    expect(receiptBefore.value?.terminal).toBe(true);
+    const receiptJson = JSON.stringify(receiptBefore.value?.receipt);
+
+    // Seed stale same-owner claim after terminal completion.
+    seedHeldWriter(fixture.filePath, "replay-repair-1");
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "replay-repair-1" });
+
+    const replay = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "replay-repair-1" }),
+    );
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) return;
+    expect(replay.value.replayedTerminalAttempt).toBe(true);
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+
+    const stages = await compactContinuation.listCompactContinuationStages(
+      { filePath: fixture.filePath },
+      "replay-repair-1",
+    );
+    expect(stages.ok).toBe(true);
+    if (!stages.ok) return;
+    expect(stages.value.some((s) => s.stage === "writer_claim_repaired")).toBe(true);
+    expect(stages.value.some((s) => s.stage === "recovery_maintenance")).toBe(true);
+
+    const receiptAfter = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "replay-repair-1",
+    );
+    expect(receiptAfter.ok).toBe(true);
+    if (!receiptAfter.ok) return;
+    expect(receiptAfter.value?.terminal).toBe(true);
+    expect(JSON.stringify(receiptAfter.value?.receipt)).toBe(receiptJson);
   });
 
   it("M4: successful install source_state_json matches post-marker max event order", async () => {

@@ -234,14 +234,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     );
     expect(result.ok, `${name} (${kind})`).toBe(true);
     if (!result.ok) return;
-    const refuse = result.value.receipt.refuseCode ?? result.value.receipt.reasonCode;
-    expect(
-      refuse === "invalid_tool_correlation" ||
-        String(refuse).includes("invalid_tool_correlation") ||
-        result.value.receipt.refused === true,
-      `${name}: outcome=${result.value.receipt.outcome} refuseCode=${String(result.value.receipt.refuseCode)} reasonCode=${result.value.receipt.reasonCode} refused=${result.value.receipt.refused}`,
-    ).toBe(true);
-    // Must not claim writer; quiet refuse or correlation refuse only.
+    expect(result.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+    expect(result.value.receipt.refused).toBe(true);
     expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
@@ -484,37 +478,46 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("unreadable tool_result content type (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("unreadable-type", "call-ut", "corrupt_state_fixture", (filePath) => {
-      const db = openRaw(filePath);
-      try {
-        db.prepare(
-          `UPDATE message_block SET content = ?
-           WHERE block_type = 'tool_result'
-             AND json_extract(content, '$.toolCallId') = 'call-ut'`,
-        ).run(JSON.stringify({ toolCallId: "call-ut", content: 123, isError: false }));
-      } finally {
-        db.close();
-      }
-    });
-  });
-
-  it("unit provePendingToolPair: content field non-string → unreadable_payload", async () => {
+  it("tool_call_id_mismatch: duplicate-key JSON (extract first, parse last) — unit + runtime", async () => {
+    // SQLite json_extract returns the first duplicate key; JSON.parse returns the last.
+    const dupKeyCall = `{"toolCallId":"call-mm","toolCallId":"call-other","toolName":"read_file","arguments":{"path":"x"}}`;
     const fixture = await derivedThreadFixture(store, { failures: false });
-    await seedPendingToolTurn(fixture.filePath, "call-unit");
+    await seedPendingToolTurn(fixture.filePath, "call-mm");
     const db = openRaw(fixture.filePath);
     try {
       db.prepare(
         `UPDATE message_block SET content = ?
-         WHERE block_type = 'tool_result'
-           AND json_extract(content, '$.toolCallId') = 'call-unit'`,
-      ).run(JSON.stringify({ toolCallId: "call-unit", content: { nested: true }, isError: false }));
-      const proof = provePendingToolPair(db, "call-unit");
+         WHERE block_type = 'tool_call'
+           AND json_extract(content, '$.toolCallId') = 'call-mm'`,
+      ).run(dupKeyCall);
+      // extract still sees call-mm (first key)
+      const extract = db
+        .prepare(
+          `SELECT json_extract(content, '$.toolCallId') AS id FROM message_block
+           WHERE block_type = 'tool_call' AND json_extract(content, '$.toolCallId') = 'call-mm'`,
+        )
+        .get() as { id: string };
+      expect(extract.id).toBe("call-mm");
+      expect(JSON.parse(dupKeyCall).toolCallId).toBe("call-other");
+      const proof = provePendingToolPair(db, "call-mm");
       expect(proof.ok).toBe(false);
-      if (!proof.ok) expect(proof.reason).toBe("unreadable_payload");
+      if (!proof.ok) expect(proof.reason).toBe("tool_call_id_mismatch");
     } finally {
       db.close();
     }
+
+    await assertRefuseBeforeClaim("id-mismatch", "call-mm2", "corrupt_state_fixture", (filePath) => {
+      const d = openRaw(filePath);
+      try {
+        d.prepare(
+          `UPDATE message_block SET content = ?
+           WHERE block_type = 'tool_call'
+             AND json_extract(content, '$.toolCallId') = 'call-mm2'`,
+        ).run(`{"toolCallId":"call-mm2","toolCallId":"call-other","toolName":"read_file","arguments":{"path":"x"}}`);
+      } finally {
+        d.close();
+      }
+    });
   });
 
   it("valid pair: above-trigger preserve path claims then releases; pair intact", async () => {
@@ -732,11 +735,24 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     void viewBefore;
   });
 
-  it("marker-allowed / strict: derivation content mutation, deletion, view replacement refuse", async () => {
+  it("strict: same-count derivation content mutation always refuses", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    // derivedThreadFixture drains work so ready derivation rows exist.
     const fixture = await derivedThreadFixture(store, { failures: false });
-    await seedOpenAgenticTurn(fixture.filePath);
-
+    const db0 = openRaw(fixture.filePath);
+    let d: { subject_kind: string; subject_id: string; derivation_type: string; content: string | null };
+    try {
+      const row = db0
+        .prepare(
+          `SELECT subject_kind, subject_id, derivation_type, content FROM derivation
+           WHERE state = 'ready' AND content IS NOT NULL LIMIT 1`,
+        )
+        .get() as typeof d | undefined;
+      expect(row).toBeDefined();
+      d = row!;
+    } finally {
+      db0.close();
+    }
     const prep = await sdk.threadView.prepareCompact(
       { filePath: fixture.filePath },
       { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
@@ -744,70 +760,48 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     expect(prep.ok).toBe(true);
     if (!prep.ok) return;
     const viewBefore = snapshotCanonical(fixture.filePath).viewId;
-
-    // Same-count derivation content mutation (strict path, no marker).
-    {
-      const db = openRaw(fixture.filePath);
-      try {
-        const d = db
-          .prepare(`SELECT subject_kind, subject_id, derivation_type, content FROM derivation LIMIT 1`)
-          .get() as
-          | { subject_kind: string; subject_id: string; derivation_type: string; content: string | null }
-          | undefined;
-        if (d !== undefined) {
-          db.prepare(
-            `UPDATE derivation SET content = ? WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
-          ).run(`${d.content ?? ""}-MUTATED`, d.subject_kind, d.subject_id, d.derivation_type);
-        }
-      } finally {
-        db.close();
-      }
-      const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
-      // If no derivation rows, install may succeed; only assert when mutation applied.
-      const db2 = openRaw(fixture.filePath);
-      let hadDerivation = false;
-      try {
-        hadDerivation =
-          (db2.prepare(`SELECT COUNT(*) AS n FROM derivation`).get() as { n: number | bigint }).n !== undefined &&
-          Number((db2.prepare(`SELECT COUNT(*) AS n FROM derivation`).get() as { n: number | bigint }).n) > 0;
-      } finally {
-        db2.close();
-      }
-      if (hadDerivation) {
-        // content was mutated if row existed at mutate time
-        if (!refused.ok) {
-          expect(refused.error.code).toBe("stale_prepared_compact");
-          expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewBefore);
-        }
-      }
+    const db = openRaw(fixture.filePath);
+    try {
+      const changed = db
+        .prepare(`UPDATE derivation SET content = ? WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`)
+        .run(`${d.content}-MUTATED`, d.subject_kind, d.subject_id, d.derivation_type);
+      expect(Number(changed.changes)).toBe(1);
+    } finally {
+      db.close();
     }
+    const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewBefore);
+  });
 
-    // Deletion-state mutation on a closed-turn message via messages.remove (normal domain).
-    const fixtureDel = await derivedThreadFixture(store, { failures: false });
-    // Need a closed turn message: derived fixture already has closed history.
-    const listed = await messages.list({ filePath: fixtureDel.filePath });
+  it("strict: messages.remove of non-initiating closed message refuses install", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    const listed = await messages.list({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    const closedMsg = listed.value.find((m) => m.kind === "user_prompt" || m.kind === "assistant_text");
-    if (closedMsg !== undefined) {
-      const prepDel = await sdk.threadView.prepareCompact(
-        { filePath: fixtureDel.filePath },
-        { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
-      );
-      expect(prepDel.ok).toBe(true);
-      if (!prepDel.ok) return;
-      const viewB = snapshotCanonical(fixtureDel.filePath).viewId;
-      const removed = await messages.remove({ filePath: fixtureDel.filePath }, { messageId: closedMsg.messageId });
-      // open-turn refusal is ok — only closed turns editable; if remove fails skip.
-      if (removed.ok) {
-        const refused = await sdk.threadView.installPreparedCompact({ filePath: fixtureDel.filePath }, prepDel.value);
-        expect(refused.ok).toBe(false);
-        if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
-        expect(snapshotCanonical(fixtureDel.filePath).viewId).toBe(viewB);
-      }
-    }
+    // Prefer assistant_text / tool_result — not turn-initiating user_prompt.
+    const removable = listed.value.find((m) => m.kind === "assistant_text" || m.kind === "tool_result");
+    expect(removable).toBeDefined();
+    const prep = await sdk.threadView.prepareCompact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+    );
+    expect(prep.ok).toBe(true);
+    if (!prep.ok) return;
+    const viewB = snapshotCanonical(fixture.filePath).viewId;
+    const removed = await messages.remove({ filePath: fixture.filePath }, { messageId: removable!.messageId });
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewB);
+  });
 
-    // Concurrent installed-view replacement: install A then try install of older prepare.
+  it("strict: concurrent view replacement — first install ok, second stale_prepared_compact", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixtureV = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixtureV.filePath);
     const prepA = await sdk.threadView.prepareCompact(
@@ -826,14 +820,15 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     expect(instA.ok).toBe(true);
     if (!instA.ok) return;
     const viewAfterA = snapshotCanonical(fixtureV.filePath).viewId;
+    expect(viewAfterA).toBe(instA.value.viewId);
     const instB = await sdk.threadView.installPreparedCompact({ filePath: fixtureV.filePath }, prepB.value);
-    // B was prepared against same source; if view id is part of fingerprint, B is stale.
-    if (!instB.ok) {
-      expect(instB.error.code).toBe("stale_prepared_compact");
-      expect(snapshotCanonical(fixtureV.filePath).viewId).toBe(viewAfterA);
-    }
+    expect(instB.ok).toBe(false);
+    if (!instB.ok) expect(instB.error.code).toBe("stale_prepared_compact");
+    expect(snapshotCanonical(fixtureV.filePath).viewId).toBe(viewAfterA);
+  });
 
-    // Injection under BEGIN IMMEDIATE asserts txn seam (does not mutate across connections).
+  it("compact-install-before-validate runs inside a write transaction", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixtureInj = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixtureInj.filePath);
     const prepInj = await sdk.threadView.prepareCompact(
@@ -842,17 +837,92 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     );
     expect(prepInj.ok).toBe(true);
     if (!prepInj.ok) return;
-    let sawInjection = false;
-    setViewInjectionHook("compact-install-before-validate", () => {
-      sawInjection = true;
+    let nestedBeginError: string | null = null;
+    setViewInjectionHook("compact-install-before-validate", (ctx) => {
+      expect(ctx?.db).toBeDefined();
+      // node:sqlite has no public inTransaction flag; nested BEGIN fails only inside a txn.
+      try {
+        ctx!.db.exec("BEGIN IMMEDIATE");
+        nestedBeginError = "nested_begin_succeeded";
+      } catch (cause) {
+        nestedBeginError = cause instanceof Error ? cause.message : String(cause);
+      }
     });
     try {
       const inst = await sdk.threadView.installPreparedCompact({ filePath: fixtureInj.filePath }, prepInj.value);
       expect(inst.ok).toBe(true);
-      expect(sawInjection).toBe(true);
+      expect(nestedBeginError).toMatch(/transaction within a transaction/i);
     } finally {
       setViewInjectionHook("compact-install-before-validate", null);
     }
+  });
+
+  it("message_excerpt band source mutation refuses strict install (selection fingerprint)", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    // Several closed undrained turns so smooth band uses message_excerpt (no chunk membership yet).
+    for (let i = 0; i < 4; i++) {
+      const batch = await intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: `undrained turn ${i} unique-excerpt-marker-${i}` } }),
+        validEvent("assistant_text", { payload: { text: `reply ${i} `.repeat(30) } }),
+        validEvent("turn_end", { payload: { outcome: "completed" } }),
+      ]);
+      expect(batch.ok).toBe(true);
+      if (!batch.ok) return;
+    }
+    await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "open tail" } }),
+      validEvent("assistant_text", { payload: { text: "still open" } }),
+    ]);
+    const prep = await sdk.threadView.prepareCompact(
+      { filePath },
+      { params: { lowerBound: 200, percentages: { full: 10, smooth: 70, detailed: 10, brief: 10 } } },
+    );
+    expect(prep.ok).toBe(true);
+    if (!prep.ok) return;
+    const smoothBand = prep.value.bands.find((b) => b.band === "smooth");
+    expect(smoothBand).toBeDefined();
+    expect(smoothBand!.renderedText).toMatch(/unique-excerpt-marker-/);
+    expect(prep.value.selectedSourceTurnIds.length).toBeGreaterThan(0);
+    // Positive: no drift installs.
+    const ok = await sdk.threadView.installPreparedCompact({ filePath }, prep.value);
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+
+    // Fresh prepare for mutation path.
+    const prep2 = await sdk.threadView.prepareCompact(
+      { filePath },
+      { params: { lowerBound: 200, percentages: { full: 10, smooth: 70, detailed: 10, brief: 10 } } },
+    );
+    expect(prep2.ok).toBe(true);
+    if (!prep2.ok) return;
+    expect(prep2.value.bands.find((b) => b.band === "smooth")?.renderedText).toMatch(/unique-excerpt-marker-/);
+    const viewBefore = snapshotCanonical(filePath).viewId;
+    const db = openRaw(filePath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT m.message_id FROM message m
+           JOIN message_block b ON b.message_id = m.message_id
+           WHERE m.kind = 'user_prompt' AND b.content LIKE '%unique-excerpt-marker-3%'
+           LIMIT 1`,
+        )
+        .get() as { message_id: string } | undefined;
+      expect(row).toBeDefined();
+      db.prepare(
+        `UPDATE message_block SET content = json_set(content, '$.text', 'MUTATED-EXCERPT-SOURCE')
+         WHERE message_id = ?`,
+      ).run(row!.message_id);
+    } finally {
+      db.close();
+    }
+    const refused = await sdk.threadView.installPreparedCompact({ filePath }, prep2.value);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
+    expect(snapshotCanonical(filePath).viewId).toBe(viewBefore);
   });
 
   it("source block mutation without event: strict install refuses stale_prepared_compact", async () => {
@@ -886,7 +956,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
 });
 
 describe("LIM-61 evidence: invalid candidate without material hooks", () => {
-  it("unresolved tool_call at settled active_non_tool seam: no invalid view install", async () => {
+  it("unresolved tool_call at settled active_non_tool: exact compact_failed / failed_repairable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     // Normal pipeline: open turn with tool_call and NO result (unresolved).
     const batch = await intakeStream.messageEvents({ filePath: fixture.filePath }, [
@@ -909,26 +979,46 @@ describe("LIM-61 evidence: invalid candidate without material hooks", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Candidate validator flags unresolved tool_call → compactStructurallyValid false → refuse path.
-    // May force boundary first then fail compact, or refuse earlier.
-    if (result.value.receipt.refused) {
-      expect(result.value.receipt.residual.priorServingViewIntact !== false).toBe(true);
-    } else {
-      // Accept only non-success install outcomes that leave no lying complete boundary.
-      expect(["compact_continue_turn"]).not.toContain(result.value.receipt.outcome);
-    }
-    // No claim left behind on terminal paths; nonterminal repair keeps claim only if owned.
-    const claim = writerClaimOf(fixture.filePath);
-    if (result.value.pendingBoundary?.status === "failed_repairable") {
-      // Writer may be released on failed_repairable finalize (releaseWriter true).
-      expect(claim.claim === "none" || claim.attemptId === "invalid-candidate-1").toBe(true);
-    } else {
-      expect(claim).toEqual({ claim: "none", attemptId: null });
-    }
-    // View not replaced with a lying success for this attempt.
-    if (result.value.compactReceipt === null) {
-      expect(snapshotCanonical(fixture.filePath).viewId).toBe(before.viewId);
-    }
+    expect(result.value.receipt.outcome).toBe("refuse");
+    expect(result.value.receipt.refuseCode).toBe("compact_failed");
+    expect(result.value.receipt.refused).toBe(true);
+    expect(result.value.nextProviderRequestAllowed).toBe(false);
+    expect(result.value.decision.transitionPath.some((s) => String(s).includes("compact"))).toBe(true);
+    expect(result.value.pendingBoundary?.status).toBe("failed_repairable");
+    expect(result.value.pendingBoundary?.lastStage).toBe("compact_failed");
+    expect(result.value.pendingBoundary?.attemptId).toBe("invalid-candidate-1");
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+    expect(result.value.compactReceipt).toBeNull();
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(before.viewId);
+    const stages = await compactContinuation.listCompactContinuationStages(
+      { filePath: fixture.filePath },
+      "invalid-candidate-1",
+    );
+    expect(stages.ok).toBe(true);
+    if (!stages.ok) return;
+    expect(stages.value.some((s) => s.stage === "compact_failed")).toBe(true);
+    expect(stages.value.some((s) => s.stage === "install_failed")).toBe(false);
+  });
+});
+
+describe("LIM-61 evidence: compact_failed vs install_failed labels", () => {
+  it("failInstallBeforeWrite with valid structure → install_failed stage", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const failed = await runCCTest(fixture.filePath, baseFacts({ attemptId: "label-install" }), {
+      failInstallBeforeWrite: true,
+    });
+    expect(failed.ok).toBe(true);
+    if (!failed.ok) return;
+    expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
+    expect(failed.value.pendingBoundary?.lastStage).toBe("install_failed");
+    const stages = await compactContinuation.listCompactContinuationStages(
+      { filePath: fixture.filePath },
+      "label-install",
+    );
+    expect(stages.ok).toBe(true);
+    if (!stages.ok) return;
+    expect(stages.value.some((s) => s.stage === "install_failed")).toBe(true);
   });
 });
 

@@ -177,12 +177,27 @@ Settled-seam health refusals (incomplete capture, invalid identity, broken open 
 Marker-allowed install recomputes the source digest with exactly the marker
 event/message/block removed and compares to the prepared digest. Fingerprint
 covers derivation content/state/provenance, turn/chunk placement, boundary,
-installed view identity, post-compact-point tail, and fallback band-source
-messages (chunk members at/below compact point). `source_state_json` stores the
-validated post-install source state (including marker max event order).
+installed view identity, post-compact-point tail, and **every turn referenced
+by prepared selection entries** (`message_excerpt`, stored_turn, chunk-member
+fallbacks, etc. — not only chunk members). Selected turn ids are persisted on
+`PreparedCompact.selectedSourceTurnIds`.
+
+`source_state_json` stores the **validated pre-replace** source snapshot
+written from `beforeReplace` after validation: includes marker max event order
+when present; `installedViewId` and `structureDigest` are pre-replace /
+pre-empty-chunk-drop.
 
 Public `compact()` / `installPreparedCompact` may return `stale_prepared_compact`
 under concurrent source change.
+
+## Oracle effects vs residual (LIM-62 parity)
+
+Oracle `effects` list the **prescribed protocol** for a completed seam
+classification. Runtime residual and durable stage/writer/boundary state record
+**what actually completed** on interrupted or repair paths (e.g. deferring
+`release_writer` while a pending boundary is still owned). Residual/durable
+state is the truth surface for hosts; effects must not be treated as
+already-applied facts. Rust parity must preserve both without collapsing them.
 
 ## Empty open turn
 
