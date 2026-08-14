@@ -16,18 +16,18 @@ import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
 import {
   applyCaptureDegraded,
+  type CaptureGenerationState,
+  type CapturePhase,
   canMutateCapture,
   createCaptureGeneration,
   isCaptureHealthy,
   markCaptureClosed,
   markCaptureReady,
-  type CaptureGenerationState,
-  type CapturePhase,
 } from "../observation/degradation.js";
+import { createPostMeasurementEstimateFold, type PostMeasurementEstimateFold } from "../observation/estimate.js";
 import { createTurnFoldState, observeWatcherEmission } from "../observation/observe.js";
 import { createSamplingDedupeState, type SamplingDedupeState } from "../observation/sampling.js";
 import type { LifecycleSignal } from "../observation/types.js";
-import { classifyTurnSignal } from "./turn-signal.js";
 import {
   assertRolloutMatchesExpectedSession,
   type DiscoverDeps,
@@ -42,26 +42,26 @@ import {
   defaultLineageDbPath,
   type LaunchClass,
   type LineageDbDeps,
-  lineageWriteFailureMessage,
+  type LineageOutcome,
   lookupSessionLineage,
   resolveCaptureThread,
   safeAppendThreadSignatures,
   safeLoadThreadSignatures,
   safeRecordSessionThread,
-  type LineageOutcome,
 } from "./lineage-db.js";
 import { captureThreadRef, defaultRegistryPath, defaultThreadFilePath } from "./paths.js";
 import {
   type ContinuityHandle,
+  openContinuityHandle,
   type PrefixBoundary,
   type PrefixBoundaryVerified,
-  openContinuityHandle,
   prefixBoundaryNone,
   prefixBoundaryUnknown,
   readFdRange,
   verifyPrefixBoundaryOnHandle,
 } from "./prefix-boundary.js";
 import { createReplayDedupeState, filterReplayEvents, type ReplayDedupeState } from "./replay-dedupe.js";
+import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
 export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
@@ -304,6 +304,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const abort = new AbortController();
   const samplingDedupe: SamplingDedupeState = createSamplingDedupeState();
   const turnFold = createTurnFoldState();
+  const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
   let resolvedPrefix: PrefixBoundary =
@@ -408,6 +409,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             samplingDedupe,
             generation: captureHealth.generation,
             turnFold,
+            estimateFold,
           };
           if (expectedSession !== undefined) {
             observeOpts.expectedSessionId = expectedSession.sessionId;
@@ -556,14 +558,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       let filePath: string;
       if (deps.knownRolloutPath !== undefined) {
         const assertDeps =
-          deps.discoverDeps?.readFileFn !== undefined
-            ? { readFileFn: deps.discoverDeps.readFileFn }
-            : {};
-        await assertRolloutMatchesExpectedSession(
-          deps.knownRolloutPath,
-          expectedSession.sessionId,
-          assertDeps,
-        );
+          deps.discoverDeps?.readFileFn !== undefined ? { readFileFn: deps.discoverDeps.readFileFn } : {};
+        await assertRolloutMatchesExpectedSession(deps.knownRolloutPath, expectedSession.sessionId, assertDeps);
         filePath = deps.knownRolloutPath;
       } else {
         filePath = await discoverExpectedSessionFile(cwd, expectedSession.sessionId, {
@@ -600,9 +596,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
           registryPath,
           lineageDbPath,
-          ...(deps.discoverDeps?.projectsRoot === undefined
-            ? {}
-            : { projectsRoot: deps.discoverDeps.projectsRoot }),
+          ...(deps.discoverDeps?.projectsRoot === undefined ? {} : { projectsRoot: deps.discoverDeps.projectsRoot }),
           log,
           logError,
           onLineageFailure: (reason) => degradeAndEmit(reason),
@@ -636,12 +630,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             if (stopped) return;
             if (!recorded.ok) degradeAndEmit(recorded.reason);
           }
-          const loaded = safeLoadThreadSignatures(
-            lineageDbPath,
-            continuedThreadId,
-            logError,
-            deps.lineageDeps,
-          );
+          const loaded = safeLoadThreadSignatures(lineageDbPath, continuedThreadId, logError, deps.lineageDeps);
           if (stopped) return;
           if (!loaded.outcome.ok) degradeAndEmit(loaded.outcome.reason);
           dedupeState = createReplayDedupeState(true, loaded.signatures);

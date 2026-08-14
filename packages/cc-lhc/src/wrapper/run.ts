@@ -16,9 +16,11 @@ import {
   type ContextPolicyPartial,
   createGovernorRuntimeState,
   formatGovernorObserveLogLine,
+  type GovernorDurableReceipt,
   type GovernorHandoffOutcome,
   type GovernorReceiptStore,
   type GovernorRuntimeState,
+  isTerminalHandoffOutcome,
   loadContextPolicy,
   noteGovernorInput,
   openGovernorReceiptStore,
@@ -255,6 +257,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     );
   }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
+  /** Most recent non-success outcome (health visibility; never claims success). */
+  let lastAttempt: { summary: string; atMs: number } | null = null;
   /** Durable LIM-64 observe/handoff receipts (SQLite; survives restart). */
   let governorReceiptStore: GovernorReceiptStore | null = null;
   try {
@@ -264,12 +268,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       `cc-lhc governor receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
-  const persistGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
-    if (governorReceiptStore === null) return;
+  /**
+   * Persist a classification. Returns the exact durable receipt when inserted or
+   * when an exact replay hit an existing row. Open-turn may stay log-only if the
+   * store is unavailable; settled wouldMutate must not mutate without a durable id.
+   */
+  const persistGovernorObserve = (
+    record: import("../governor/index.js").GovernorObserveRecord,
+  ): { receipt: GovernorDurableReceipt; inserted: boolean } | null => {
+    if (governorReceiptStore === null) return null;
     try {
       const rollout = captureSession?.getRolloutInfo();
       const ctx = captureSession?.getCommandContext();
-      governorReceiptStore.appendObserve({
+      return governorReceiptStore.appendObserve({
         observe: record,
         sessionId: rollout?.sessionId ?? null,
         threadId: ctx?.stats.threadId ?? null,
@@ -278,17 +289,69 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.warn(
         `cc-lhc governor receipt append failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
+      return null;
     }
   };
-  const attachGovernorHandoffOutcome = (outcome: GovernorHandoffOutcome): void => {
-    if (governorReceiptStore === null) return;
+  /**
+   * Attach outcome to the exact receipt id that scheduled the operation.
+   * Never uses "latest wouldMutate" fallback — session identity can change
+   * mid-handoff and manual compact must not mutate unrelated governor rows.
+   * After mutation has begun, failures are loud (error log + lastAttempt).
+   */
+  const attachGovernorHandoffOutcome = (
+    receiptId: string | null | undefined,
+    outcome: GovernorHandoffOutcome,
+    opts: { mutationBegan: boolean } = { mutationBegan: false },
+  ): boolean => {
+    if (receiptId === null || receiptId === undefined || receiptId === "") {
+      if (opts.mutationBegan) {
+        wrapperLog.warn(`cc-lhc governor receipt outcome NOT durable: missing receipt id for outcome ${outcome.kind}`);
+        lastAttempt = {
+          summary: `receipt outcome undurable: missing receipt id (${outcome.kind})`,
+          atMs: Date.now(),
+        };
+      }
+      return false;
+    }
+    if (governorReceiptStore === null) {
+      if (opts.mutationBegan) {
+        wrapperLog.warn(
+          `cc-lhc governor receipt outcome NOT durable: store unavailable for ${receiptId} outcome ${outcome.kind}`,
+        );
+        lastAttempt = {
+          summary: `receipt outcome undurable: store unavailable (${outcome.kind})`,
+          atMs: Date.now(),
+        };
+      }
+      return false;
+    }
     try {
-      const rollout = captureSession?.getRolloutInfo();
-      governorReceiptStore.attachHandoffOutcomeToLatestWouldMutate(rollout?.sessionId ?? null, outcome);
+      const updated = governorReceiptStore.attachHandoffOutcome(receiptId, outcome);
+      if (updated === null) {
+        if (opts.mutationBegan) {
+          wrapperLog.warn(
+            `cc-lhc governor receipt outcome NOT durable: receipt ${receiptId} not found for outcome ${outcome.kind}`,
+          );
+          lastAttempt = {
+            summary: `receipt outcome undurable: receipt missing (${outcome.kind})`,
+            atMs: Date.now(),
+          };
+        }
+        return false;
+      }
+      return true;
     } catch (cause) {
-      wrapperLog.warn(
-        `cc-lhc governor receipt handoff attach failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      if (opts.mutationBegan) {
+        wrapperLog.warn(`cc-lhc governor receipt outcome NOT durable: attach failed for ${receiptId}: ${detail}`);
+        lastAttempt = {
+          summary: `receipt outcome undurable: attach failed (${outcome.kind})`,
+          atMs: Date.now(),
+        };
+      } else {
+        wrapperLog.warn(`cc-lhc governor receipt handoff attach failed: ${detail}`);
+      }
+      return false;
     }
   };
 
@@ -469,8 +532,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     zoneBefore?: number;
     zoneAfter?: number;
   } | null = null;
-  /** Most recent non-success outcome (health visibility; never claims success). */
-  let lastAttempt: { summary: string; atMs: number } | null = null;
   /** Smallest settled provider context seen: the observed Claude host overhead floor. */
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
@@ -478,7 +539,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   /** Cooldown after a non-success handoff; replayed rollback lifecycle must not re-trigger. */
   let autoBlockedUntilMs = 0;
   /** Assigned inside the run promise where child/teardown machinery lives. */
-  let runAutoOperation: (frozenTriggerTokens: number | null) => Promise<void> = async () => {};
+  let runAutoOperation: (args: { frozenTriggerTokens: number | null; receiptId: string }) => Promise<void> =
+    async () => {};
   const HANDOFF_FAILURE_COOLDOWN_MS = 120_000;
 
   const triggerFatalRevocation = (reason: string): void => {
@@ -608,12 +670,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       governorState = setGovernorDescriptorReady(governorState, true);
     }
 
-    // Slice 3 observe-only: pure decide + wrapper-log record; never mutate.
+    // Pure decide + wrapper-log record. Mutation only after durable receipt.
     const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
     for (const record of observed.observes) {
       wrapperLog.info(formatGovernorObserveLogLine(record));
-      persistGovernorObserve(record);
+      const persisted = persistGovernorObserve(record);
       options.onGovernorObserve?.(record);
       // Use predicted next-request pressure for floor learning when available;
       // fall back to authoritative provider total only.
@@ -626,24 +688,55 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // (wouldMutate is false during open turns). Starts ONE automatic operation,
       // scheduled off the capture batch path (the handoff stops capture; doing
       // that inline would deadlock the batch queue it runs on).
-      if (
-        record.wouldMutate === true &&
-        record.observePhase === "settled_seam" &&
-        !exited &&
-        !handoffInProgress &&
-        !autoOperationScheduled &&
-        respawnUnsafeReason === null &&
-        Date.now() >= autoBlockedUntilMs
-      ) {
-        autoOperationScheduled = true;
-        // Freeze the trigger at THIS decision: use predicted next-request pressure
-        // (provider + source-labelled estimate) for the durable mutation receipt.
-        const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
-        setImmediate(() => {
-          void runAutoOperation(frozenTriggerTokens).finally(() => {
-            autoOperationScheduled = false;
+      //
+      // Durable-before-mutate: open-turn may remain log-only if receipt
+      // persistence is unavailable; a settled wouldMutate must not start
+      // context mutation without a durable receipt id. Exact replay
+      // (inserted=false) must not schedule a second automatic mutation —
+      // including an existing `scheduled` receipt after process crash (fail closed).
+      if (record.wouldMutate === true && record.observePhase === "settled_seam") {
+        if (persisted === null) {
+          wrapperLog.warn(
+            "cc-lhc governor: wouldMutate refused — durable receipt unavailable; Claude/LHC context left unchanged",
+          );
+          lastAttempt = {
+            summary: "auto compact refused: durable receipt unavailable",
+            atMs: Date.now(),
+          };
+        } else if (!persisted.inserted) {
+          const existingOutcome = persisted.receipt.handoffOutcome;
+          if (existingOutcome?.kind === "scheduled") {
+            wrapperLog.warn(
+              `cc-lhc governor: replay of scheduled receipt ${persisted.receipt.receiptId} — fail closed (no second auto mutation); inspect handoffOutcome`,
+            );
+            lastAttempt = {
+              summary: `auto compact refused: existing scheduled receipt ${persisted.receipt.receiptId} (restart/replay)`,
+              atMs: Date.now(),
+            };
+          } else if (isTerminalHandoffOutcome(existingOutcome)) {
+            wrapperLog.info(
+              `cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId} with terminal outcome ${existingOutcome?.kind}; no re-schedule`,
+            );
+          } else {
+            wrapperLog.info(`cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId}; no re-schedule`);
+          }
+        } else if (
+          !exited &&
+          !handoffInProgress &&
+          !autoOperationScheduled &&
+          respawnUnsafeReason === null &&
+          Date.now() >= autoBlockedUntilMs
+        ) {
+          autoOperationScheduled = true;
+          // Freeze trigger + exact receipt id at THIS decision.
+          const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+          const receiptId = persisted.receipt.receiptId;
+          setImmediate(() => {
+            void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+              autoOperationScheduled = false;
+            });
           });
-        });
+        }
       }
     }
 
@@ -771,7 +864,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const notifierEnabled = options.notifierDisabled !== true;
   let inputState: InputState = createInputState(leaderByte, { notifierEnabled });
   /** Bumped on every modal entry; tags a dismiss-at-injection so late failures reopen only if still idle. */
-  let modalGeneration = 0;
+  let _modalGeneration = 0;
 
   // While the modal (or an executing command) owns the screen, pty output is
   // held — claude keeps running; we just delay rendering its bytes.
@@ -1212,7 +1305,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
-          modalGeneration += 1;
+          _modalGeneration += 1;
           outputHold.hold();
           altScreen.enter();
           inputState = { ...inputState, panelRows: buildPanelStatusRows() };
@@ -1424,10 +1517,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     /** Execute the controlled handoff for a rebuilt session. Shared by manual
-     * compact/prune and the automatic governor path. */
+     * compact/prune and the automatic governor path.
+     * When `governorReceiptId` is set (automatic path), outcomes attach only to
+     * that exact receipt. Manual compact/prune leave governor receipts alone.
+     */
     const performHandoff = async (
       request: HandoffRequest,
       inputEpochChanged: () => boolean,
+      governorReceiptId?: string | null,
     ): Promise<HandoffResult> => {
       handoffInProgress = true;
       childDiedDuringHandoff = false;
@@ -1673,7 +1770,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                     oldSessionId: result.oldSessionId,
                     rebuiltSessionId: result.rebuiltSessionId,
                   };
-        attachGovernorHandoffOutcome(handoffOutcome);
+        // Manual path (no governorReceiptId) must not attach to an unrelated
+        // automatic governor receipt. Auto path always has the frozen id.
+        if (governorReceiptId !== undefined && governorReceiptId !== null && governorReceiptId !== "") {
+          attachGovernorHandoffOutcome(governorReceiptId, handoffOutcome, { mutationBegan: true });
+        }
         options.onHandoffResult?.(result);
         if (result.kind === "failed" && !result.childAlive) {
           wrapperLog.warn(
@@ -1688,8 +1789,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
-    // manual commands through the same single-flight guard.
-    runAutoOperation = async (frozenTriggerTokens: number | null): Promise<void> => {
+    // manual commands through the same single-flight guard. Outcomes attach only
+    // to the exact durable receipt that scheduled this operation.
+    runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
+      const { frozenTriggerTokens, receiptId } = args;
       if (exited || handoffInProgress) return;
       if (!commandGuard.tryAcquire("auto-compact", Date.now())) return;
       governorState = setGovernorOperationInFlight(governorState, true);
@@ -1697,7 +1800,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         const epochAtStart = governorState.currentInputEpoch;
         const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
         const runtime = commandRuntime();
-        if (runtime.captureDisabled) return;
+        if (runtime.captureDisabled) {
+          attachGovernorHandoffOutcome(
+            receiptId,
+            { kind: "mutation_refused", detail: "capture disabled" },
+            { mutationBegan: true },
+          );
+          return;
+        }
         const policy = resolvedContextPolicy.policy;
         const plan: ContextMutationPlan = {
           operation: "auto_compact",
@@ -1740,13 +1850,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                     kind: "mutation_noop",
                     detail: outcome.messages.join(" | ") || "noop",
                   };
-          attachGovernorHandoffOutcome(mutationOutcome);
+          attachGovernorHandoffOutcome(receiptId, mutationOutcome, { mutationBegan: true });
           return;
         }
-        await performHandoff(outcome.handoff, epochChanged);
+        await performHandoff(outcome.handoff, epochChanged, receiptId);
       } catch (cause) {
         wrapperLog.warn(
           `cc-lhc auto-compact operation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+        attachGovernorHandoffOutcome(
+          receiptId,
+          {
+            kind: "mutation_refused",
+            detail: cause instanceof Error ? cause.message : String(cause),
+          },
+          { mutationBegan: true },
         );
       } finally {
         governorState = setGovernorOperationInFlight(governorState, false);

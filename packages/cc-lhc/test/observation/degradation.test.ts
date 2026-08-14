@@ -6,10 +6,10 @@ import {
   canMutateCapture,
   createCaptureGeneration,
   isCaptureHealthy,
+  MAX_DEGRADATION_REASONS,
   markCaptureClosed,
   markCaptureDegraded,
   markCaptureReady,
-  MAX_DEGRADATION_REASONS,
   REASONS_CAPPED_KEY,
 } from "../../src/observation/degradation.js";
 

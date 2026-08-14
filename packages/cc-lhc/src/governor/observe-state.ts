@@ -9,6 +9,7 @@
  * - Settled seam may arm wouldMutate for capability-limited compact + controlled handoff.
  */
 
+import { mergeEstimateSource } from "../observation/estimate.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { policySourcesSummary } from "./config.js";
 import { decideGovernor } from "./decide.js";
@@ -180,13 +181,30 @@ export function applyGovernorLifecycleSignal(
       return { state: next, observe: null };
     }
     case "post_measurement_estimate": {
+      const mode = signal.mode ?? "set";
+      const delta = normalizePostMeasurementEstimate({
+        tokens: signal.tokens,
+        source: signal.source,
+        domain: "source_labelled_estimate",
+      });
+      let estimate: PostMeasurementEstimate;
+      if (mode === "add") {
+        // Cumulative growth for the current authoritative sampling. Do not
+        // replace the running total with only the latest line.
+        const prev = normalizePostMeasurementEstimate(state.postMeasurementEstimate);
+        const tokens = prev.tokens + delta.tokens;
+        const safeTokens = Number.isSafeInteger(tokens) ? tokens : prev.tokens;
+        estimate = {
+          tokens: safeTokens,
+          source: mergeEstimateSource(prev.source, delta.source, prev.tokens),
+          domain: "source_labelled_estimate",
+        };
+      } else {
+        estimate = delta;
+      }
       const next: GovernorRuntimeState = {
         ...state,
-        postMeasurementEstimate: normalizePostMeasurementEstimate({
-          tokens: signal.tokens,
-          source: signal.source,
-          domain: "source_labelled_estimate",
-        }),
+        postMeasurementEstimate: estimate,
       };
       if (next.turnOpen) {
         return observeOpenTurn(next, resolved);

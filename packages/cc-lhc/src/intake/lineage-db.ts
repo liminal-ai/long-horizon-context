@@ -8,8 +8,8 @@ import type { OpResult, ThreadRef } from "lhc";
 import { encodeProjectPath } from "../rollout/discover.js";
 import { captureThreadRef, defaultLineageDbPath, defaultRegistryPath } from "./paths.js";
 import {
-  type PrefixBoundary,
   isCanonicalNoneRow,
+  type PrefixBoundary,
   parseStoredVerifiedPrefix,
   prefixBoundaryNone,
   prefixBoundaryUnknown,
@@ -96,7 +96,7 @@ export function lineageReadFailureMessage(cause: unknown): string {
   return `[cc-lhc] lineage read failed (continuing): ${message}`;
 }
 
-function safeLineageRead<T>(logError: (message: string) => void, run: () => T, fallback: T): T {
+function _safeLineageRead<T>(logError: (message: string) => void, run: () => T, fallback: T): T {
   try {
     return run();
   } catch (cause) {
@@ -105,7 +105,7 @@ function safeLineageRead<T>(logError: (message: string) => void, run: () => T, f
   }
 }
 
-async function safeLineageReadAsync<T>(
+async function _safeLineageReadAsync<T>(
   logError: (message: string) => void,
   run: () => Promise<T>,
   fallback: T,
@@ -132,7 +132,14 @@ function tableHasColumn(db: DatabaseSync, table: string, column: string): boolea
  *   unknown until reconciliation establishes `none` or `verified`
  */
 function initLineageSchema(db: DatabaseSync): void {
-  db.exec("PRAGMA journal_mode = WAL");
+  // busy_timeout FIRST so concurrent governor-receipt / lineage openers wait
+  // instead of instant SQLITE_BUSY while journal_mode=WAL takes its write lock.
+  db.exec("PRAGMA busy_timeout = 10000");
+  const modeRow = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
+  const mode = String(modeRow?.journal_mode ?? "").toLowerCase();
+  if (mode !== "wal") {
+    db.exec("PRAGMA journal_mode = WAL");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS cc_session_lineage (
       rollout_session_id TEXT PRIMARY KEY,
@@ -152,9 +159,7 @@ function initLineageSchema(db: DatabaseSync): void {
   if (!tableHasColumn(db, "cc_session_lineage", "prefix_provenance")) {
     // Existing rows become unknown — even if replayed_prefix_lines was 0 under
     // the old NOT NULL DEFAULT 0 migration (that erased the none/unknown split).
-    db.exec(
-      "ALTER TABLE cc_session_lineage ADD COLUMN prefix_provenance TEXT NOT NULL DEFAULT 'unknown'",
-    );
+    db.exec("ALTER TABLE cc_session_lineage ADD COLUMN prefix_provenance TEXT NOT NULL DEFAULT 'unknown'");
   }
   if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_bytes")) {
     db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_bytes INTEGER");
@@ -498,15 +503,7 @@ export function recordSessionThread(
              replayed_prefix_lines = excluded.replayed_prefix_lines,
              replayed_prefix_bytes = excluded.replayed_prefix_bytes,
              replayed_prefix_sha256 = excluded.replayed_prefix_sha256`,
-        ).run(
-          sessionId,
-          threadId,
-          nowFn().toISOString(),
-          cols.provenance,
-          cols.lines,
-          cols.bytes,
-          cols.sha256,
-        );
+        ).run(sessionId, threadId, nowFn().toISOString(), cols.provenance, cols.lines, cols.bytes, cols.sha256);
       } else {
         // Ordinary rebind: update an existing row's thread binding only.
         // Do NOT insert a missing target as known-none (that poisons later resume).
@@ -772,14 +769,9 @@ export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Pr
   // lineage I/O. Lineage read failure or existing-class launch → unknown.
   const establishNone = launchClass === "fresh" && !lineageReadFailed;
   const newPrefix = establishNone ? prefixBoundaryNone() : prefixBoundaryUnknown();
-  const recorded = await safeRecordSessionThread(
-    dbPath,
-    input.sessionId,
-    newThreadId,
-    logError,
-    input.lineageDeps,
-    { prefix: newPrefix },
-  );
+  const recorded = await safeRecordSessionThread(dbPath, input.sessionId, newThreadId, logError, input.lineageDeps, {
+    prefix: newPrefix,
+  });
   if (!recorded.ok) onLineageFailure(recorded.reason);
   if (establishNone) {
     log(`cc-lhc: new thread ${newThreadId} for fresh session ${input.sessionId} (prefix=none)`);

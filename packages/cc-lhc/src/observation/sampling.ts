@@ -26,11 +26,7 @@ export function createSamplingDedupeState(): SamplingDedupeState {
   return { records: new Map() };
 }
 
-export function samplingIdFromAssistant(input: {
-  requestId?: string;
-  messageId?: string;
-  lineUuid: string;
-}): string {
+export function samplingIdFromAssistant(input: { requestId?: string; messageId?: string; lineUuid: string }): string {
   if (typeof input.requestId === "string" && input.requestId !== "") {
     return `req:${input.requestId}`;
   }

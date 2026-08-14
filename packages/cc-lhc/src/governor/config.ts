@@ -91,7 +91,7 @@ export function parseContextPolicyPartial(
   const out: ContextPolicyPartial = {};
 
   const takeBool = (key: "autoCompact" | "pruneEnabled" | "observeOnly"): void => {
-    if (!Object.prototype.hasOwnProperty.call(raw, key)) return;
+    if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
     if (typeof v !== "boolean") {
       errors.push(`${label}: ${key} must be a boolean`);
@@ -121,7 +121,7 @@ export function parseContextPolicyPartial(
       | "pruneThresholdTokens"
       | "pruneTargetTokens",
   ): void => {
-    if (!Object.prototype.hasOwnProperty.call(raw, key)) return;
+    if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
     if (v === null && (key === "pruneThresholdTokens" || key === "pruneTargetTokens")) {
       if (key === "pruneThresholdTokens") out.pruneThresholdTokens = null;
@@ -146,7 +146,7 @@ export function parseContextPolicyPartial(
   takePosInt("pruneThresholdTokens");
   takePosInt("pruneTargetTokens");
 
-  if (Object.prototype.hasOwnProperty.call(raw, "profile")) {
+  if (Object.hasOwn(raw, "profile")) {
     const v = raw.profile;
     if (typeof v !== "string" || v === "") {
       errors.push(`${label}: profile must be a non-empty string`);
@@ -155,7 +155,7 @@ export function parseContextPolicyPartial(
     }
   }
 
-  if (Object.prototype.hasOwnProperty.call(raw, "nativeCompactMode")) {
+  if (Object.hasOwn(raw, "nativeCompactMode")) {
     const v = raw.nativeCompactMode;
     if (v !== "emergency_backstop") {
       errors.push(`${label}: nativeCompactMode must be "emergency_backstop"`);
@@ -245,25 +245,18 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
   ) {
     const runway = policy.upperBoundTokens - policy.lowerBoundTokens;
     if (runway < policy.minRunwayTokens) {
-      errors.push(
-        `upper−lower runway (${runway}) is below minRunwayTokens (${policy.minRunwayTokens})`,
-      );
+      errors.push(`upper−lower runway (${runway}) is below minRunwayTokens (${policy.minRunwayTokens})`);
     }
   }
   if (!Number.isSafeInteger(policy.nativeBackstopTokens) || policy.nativeBackstopTokens <= 0) {
     errors.push("nativeBackstopTokens must be a positive safe integer");
-  } else if (
-    Number.isSafeInteger(policy.upperBoundTokens) &&
-    policy.nativeBackstopTokens <= policy.upperBoundTokens
-  ) {
+  } else if (Number.isSafeInteger(policy.upperBoundTokens) && policy.nativeBackstopTokens <= policy.upperBoundTokens) {
     errors.push(
       `nativeBackstopTokens (${policy.nativeBackstopTokens}) must be greater than upperBoundTokens (${policy.upperBoundTokens})`,
     );
   }
   if (!(CANONICAL_LHC_PROFILES as readonly string[]).includes(policy.profile)) {
-    errors.push(
-      `profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`,
-    );
+    errors.push(`profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`);
   }
   if (policy.nativeCompactMode !== "emergency_backstop") {
     errors.push('nativeCompactMode must be "emergency_backstop"');

@@ -184,6 +184,7 @@ describe("governor observe-state fold", () => {
           kind: "post_measurement_estimate",
           tokens: 20_000,
           source: "lhc_token_estimate",
+          mode: "set",
         },
       ],
       resolved,
@@ -197,6 +198,75 @@ describe("governor observe-state fold", () => {
     expect(openWould[0]?.pressure.estimateTokens).toBe(20_000);
     expect(openWould[0]?.pressure.nextRequestPressureTokens).toBe(370_000);
     expect(openWould[0]?.pressure.estimateDomain).toBe("source_labelled_estimate");
+  });
+
+  it("post_measurement_estimate mode add accumulates; set replaces; new sampling resets", () => {
+    const resolved = armed(true);
+    const afterSampling = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({
+        captureHealthy: true,
+        captureGeneration: 1,
+        descriptorReady: true,
+      }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "m1",
+          providerUsage: { input_tokens: 100_000 },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 1_000,
+          source: "provider_reported_output_tokens",
+          mode: "set",
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 500,
+          source: "host_canonical_payload_byte_estimate",
+          mode: "add",
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 250,
+          source: "host_canonical_payload_byte_estimate",
+          mode: "add",
+        },
+      ],
+      resolved,
+    );
+    expect(afterSampling.state.postMeasurementEstimate.tokens).toBe(1_750);
+    expect(afterSampling.state.postMeasurementEstimate.source).toBe(
+      "provider_output_plus_host_canonical_payload_byte_estimate",
+    );
+
+    const afterSet = applyGovernorLifecycleBatch(
+      afterSampling.state,
+      [
+        {
+          kind: "post_measurement_estimate",
+          tokens: 42,
+          source: "host_canonical_payload_byte_estimate",
+          mode: "set",
+        },
+      ],
+      resolved,
+    );
+    expect(afterSet.state.postMeasurementEstimate.tokens).toBe(42);
+
+    const afterNewSampling = applyGovernorLifecycleBatch(
+      afterSet.state,
+      [
+        {
+          kind: "sampling_observed",
+          samplingId: "m2",
+          providerUsage: { input_tokens: 110_000 },
+        },
+      ],
+      resolved,
+    );
+    expect(afterNewSampling.state.postMeasurementEstimate.tokens).toBe(0);
   });
 
   it("settled seam after estimate: one would_compact with wouldMutate true", () => {

@@ -70,10 +70,7 @@ export function boundDegradationReason(reason: string): string {
   return reason.length > 80 ? `${reason.slice(0, 80)}…` : reason;
 }
 
-export function markCaptureReady(
-  state: CaptureGenerationState,
-  durableLineOffset: number,
-): CaptureGenerationState {
+export function markCaptureReady(state: CaptureGenerationState, durableLineOffset: number): CaptureGenerationState {
   if (state.phase === "degraded" || state.phase === "closed") return state;
   return {
     ...state,
@@ -98,18 +95,12 @@ export interface MarkDegradedResult {
  * Callers that log/emit must use `isFirstForKey` so post-cap novel reasons and
  * repeated identical failures do not produce unbounded lifecycle/log output.
  */
-export function markCaptureDegraded(
-  state: CaptureGenerationState,
-  reason: string,
-): CaptureGenerationState {
+export function markCaptureDegraded(state: CaptureGenerationState, reason: string): CaptureGenerationState {
   return applyCaptureDegraded(state, reason).state;
 }
 
 /** Same as markCaptureDegraded but returns whether this is a first-seen key. */
-export function applyCaptureDegraded(
-  state: CaptureGenerationState,
-  reason: string,
-): MarkDegradedResult {
+export function applyCaptureDegraded(state: CaptureGenerationState, reason: string): MarkDegradedResult {
   // closed is terminal — never leave it.
   if (state.phase === "closed") {
     return { state, countKey: boundDegradationReason(reason), isFirstForKey: false };

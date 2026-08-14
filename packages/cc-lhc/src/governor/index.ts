@@ -32,8 +32,12 @@ export {
   providerContextFromUsage,
 } from "./provider-context.js";
 export {
+  type AppendObserveResult,
+  GOVERNOR_RECEIPT_BUSY_TIMEOUT_MS,
   type GovernorReceiptStore,
   type GovernorReceiptStoreDeps,
+  governorReceiptReplayKey,
+  isTerminalHandoffOutcome,
   materializeGovernorReceipt,
   openGovernorReceiptStore,
 } from "./receipt-store.js";

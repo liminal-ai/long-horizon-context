@@ -155,8 +155,15 @@ export function buildPressureReceipt(
 /**
  * Heuristic host estimate: ~4 bytes per token for UTF-8 captured text after
  * the provider request. Labelled so it is never confused with provider usage.
+ *
+ * Prefer measuring only canonical captured payload bytes and labelling the
+ * source exactly (e.g. `host_canonical_payload_byte_estimate`). This is not
+ * provider billing usage and can drift vs real tokenizer counts.
  */
-export function estimateTokensFromCapturedBytes(bytes: number, source = "host_byte_estimate"): PostMeasurementEstimate {
+export function estimateTokensFromCapturedBytes(
+  bytes: number,
+  source = "host_canonical_payload_byte_estimate",
+): PostMeasurementEstimate {
   const safe = readNonNegInt(bytes) ?? 0;
   const tokens = Math.floor(safe / 4);
   return {

@@ -11,10 +11,19 @@
 
 import type { MessageEventInput } from "lhc";
 
-import { contentBlocks, isAssistantLine, isUserLine, mapRolloutLine, type MapStats } from "../intake/map.js";
+import { contentBlocks, isAssistantLine, isUserLine, type MapStats, mapRolloutLine } from "../intake/map.js";
 import { classifyTurnSignal, isAssistantSamplingComplete } from "../intake/turn-signal.js";
 import { attributeLineSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
+import {
+  createPostMeasurementEstimateFold,
+  HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+  hostEstimateFromCanonicalBytes,
+  type PostMeasurementEstimateFold,
+  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+  readProviderOutputTokens,
+  totalCanonicalPayloadBytes,
+} from "./estimate.js";
 import {
   completeSamplingAttempt,
   createSamplingDedupeState,
@@ -42,6 +51,11 @@ export interface ObserveLineOptions {
   generation?: number;
   /** When provided, turn lifecycle emissions are edge-only against this fold. */
   turnFold?: TurnFoldState;
+  /**
+   * Live post-measurement estimate fold. Shared across lines for one capture
+   * generation so production emits cumulative growth after the latest sampling.
+   */
+  estimateFold?: PostMeasurementEstimateFold;
   /**
    * Rebuilt historical prefix: still parse + attribute, but do not emit
    * conversation/runtime lifecycle facts and do not mutate live sampling/turn
@@ -145,7 +159,14 @@ function unknownConversationShapeKey(item: RolloutLineItem, lineIndex: number): 
 /**
  * Interpret one rollout line once → ordered events + lifecycle signals.
  *
- * On a completing assistant line: sampling_observed (final) before turn_settled.
+ * On a completing assistant line: sampling_observed (final), then the completed
+ * response's own contribution to next-request growth (provider output_tokens or
+ * host byte estimate), then turn_settled when applicable.
+ *
+ * After an authoritative sampling, subsequent captured tool results /
+ * assistant / user / runtime content accumulate as post_measurement_estimate
+ * adds. Sidechains, synthetic resume chrome, meta, and suppressed prefixes do
+ * not contribute (mapRolloutLine already drops them from events).
  */
 export function observeRolloutLine(
   item: RolloutLineItem,
@@ -155,6 +176,7 @@ export function observeRolloutLine(
   const lifecycle: LifecycleSignal[] = [];
   const generation = options.generation ?? 1;
   const samplingDedupe = options.samplingDedupe ?? createSamplingDedupeState();
+  const estimateFold = options.estimateFold ?? createPostMeasurementEstimateFold();
 
   if (options.expectedSessionId !== undefined) {
     const attr = attributeLineSession(
@@ -190,9 +212,11 @@ export function observeRolloutLine(
   const mapped = mapRolloutLine(item, lineIndex);
   const stats = asMapStats(mapped.stats);
   const events = mapped.events;
+  const linePayloadBytes = totalCanonicalPayloadBytes(events);
 
   // Sampling fold: accumulate on every assistant line; emit once when complete.
   // Prefix validation must not mutate live sampling state.
+  let samplingEmittedThisLine = false;
   if (!suppressRuntime && isAssistantLine(item) && item.isSidechain !== true) {
     const usage = providerUsageOf(item.message);
     const model = modelOf(item.message);
@@ -204,17 +228,66 @@ export function observeRolloutLine(
       ...(msgId !== undefined ? { messageId: msgId } : {}),
     });
     if (isAssistantSamplingComplete(item)) {
+      // Include this completing line's canonical payload in the pending assistant
+      // body so host-byte fallback covers split thinking/text/tool blocks.
+      estimateFold.pendingAssistantPayloadBytes += linePayloadBytes;
       const claim = completeSamplingAttempt(samplingDedupe, samplingId, model, usage);
       if (claim.action === "emit") {
+        samplingEmittedThisLine = true;
         lifecycle.push({
           kind: "sampling_observed",
           samplingId: claim.samplingId,
           ...(claim.model !== undefined ? { model: claim.model } : {}),
           ...(claim.providerUsage !== undefined ? { providerUsage: claim.providerUsage } : {}),
         });
+        // New authoritative measurement: estimate resets to this response's
+        // contribution to next-request growth (provider output_tokens preferred).
+        const outputTokens = readProviderOutputTokens(claim.providerUsage);
+        if (outputTokens !== null) {
+          lifecycle.push({
+            kind: "post_measurement_estimate",
+            tokens: outputTokens,
+            source: PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+            mode: "set",
+          });
+        } else {
+          const est = hostEstimateFromCanonicalBytes(estimateFold.pendingAssistantPayloadBytes);
+          lifecycle.push({
+            kind: "post_measurement_estimate",
+            tokens: est.tokens,
+            source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+            mode: "set",
+          });
+        }
+        estimateFold.hasAuthoritativeSampling = true;
+        estimateFold.pendingAssistantPayloadBytes = 0;
+      } else {
+        // Duplicate complete (replay/dedupe): do not re-seed estimate or count
+        // the assistant body again as post-measurement growth.
+        estimateFold.pendingAssistantPayloadBytes = 0;
       }
-    } else if (usage !== undefined || model !== undefined) {
+    } else if (usage !== undefined || model !== undefined || linePayloadBytes > 0) {
       noteSamplingPartial(samplingDedupe, samplingId, model, usage);
+      estimateFold.pendingAssistantPayloadBytes += linePayloadBytes;
+    }
+  } else if (
+    !suppressRuntime &&
+    !samplingEmittedThisLine &&
+    estimateFold.hasAuthoritativeSampling &&
+    linePayloadBytes > 0
+  ) {
+    // Content after the last provider measurement: tool results, user prompts,
+    // runtime notes, and later assistant lines (new attempt partials land here
+    // only once a prior sampling was authoritative; incomplete assistant partials
+    // above accumulate into pending and emit on complete).
+    const est = hostEstimateFromCanonicalBytes(linePayloadBytes);
+    if (est.tokens > 0 || linePayloadBytes > 0) {
+      lifecycle.push({
+        kind: "post_measurement_estimate",
+        tokens: est.tokens,
+        source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+        mode: "add",
+      });
     }
   }
 
@@ -254,8 +327,7 @@ export function observeRolloutLine(
   // records over time; absence from our metadata census is not evidence that
   // canonical conversation was lost. Only an unknown USER/ASSISTANT record can
   // conceal conversational content and therefore threaten safe rebuilding.
-  const unknownConversationShape =
-    stats.unknown > 0 && (isUserLine(item) || isAssistantLine(item));
+  const unknownConversationShape = stats.unknown > 0 && (isUserLine(item) || isAssistantLine(item));
   if (unknownConversationShape) {
     lifecycle.push({
       kind: "capture_degraded",
@@ -301,10 +373,11 @@ export function observeRolloutLines(
   const events: MessageEventInput[] = [];
   const lifecycle: LifecycleSignal[] = [];
   const stats = emptyStats();
-  // Share sampling + turn fold across the batch (same as live session fold).
+  // Share sampling + turn + estimate folds across the batch (same as live session fold).
   const samplingDedupe = options.samplingDedupe ?? createSamplingDedupeState();
   const turnFold = options.turnFold ?? createTurnFoldState();
-  const opts = { ...options, samplingDedupe, turnFold };
+  const estimateFold = options.estimateFold ?? createPostMeasurementEstimateFold();
+  const opts = { ...options, samplingDedupe, turnFold, estimateFold };
   for (const [lineIndex, item] of items.entries()) {
     const observed = observeRolloutLine(item, lineIndex, opts);
     events.push(...observed.events);

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,10 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
-import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+
+/** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
+function tempReceiptDbPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-receipt-"));
+  receiptDirs.push(dir);
+  return join(dir, "cc-lhc.sqlite");
+}
+const receiptDirs: string[] = [];
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -53,13 +61,7 @@ interface FakePty {
   resize(): void;
 }
 
-function makeFakePty(
-  pid: number,
-  label: string,
-  args: string[],
-  autoExitOnKill: boolean,
-  emitOutput = true,
-): FakePty {
+function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill: boolean, emitOutput = true): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
   const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
@@ -239,13 +241,26 @@ const TRIGGER_SIGNALS: LifecycleSignal[] = [
 ];
 
 describe("run: automatic compact with wrapper-owned handoff", () => {
+  const savedHome = process.env.CC_LHC_HOME;
   beforeEach(() => {
     mocks.registerLineage.mockClear();
     mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-auto-home-"));
+    receiptDirs.push(home);
+    process.env.CC_LHC_HOME = home;
   });
   afterEach(() => {
     vi.restoreAllMocks();
     mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of receiptDirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
   });
 
   it("triggers on provider pressure, respawns with external --resume, registers lineage after ready, and reports success", async () => {
@@ -296,7 +311,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -306,10 +321,17 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: stderr as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       onHandoffResult: (result) => {
         results.push(result);
       },
-      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
@@ -404,7 +426,12 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
         lineCount: 1,
         expectedReintakeLines: 1,
         replayedPrefixLines: 0,
-        prefixBoundary: { kind: "verified", lineCount: 0, byteLength: 0, sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
         totalByteLength: 0,
       };
     });
@@ -419,7 +446,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const results: HandoffResult[] = [];
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(2000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -429,6 +456,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
@@ -438,7 +466,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       onHandoffResult: (result) => {
         results.push(result);
       },
-      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
@@ -511,7 +545,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const runStdout = fakeStream();
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         // The replacement child (--resume REBUILT_ID) emits NO output: liveness
         // must fail. The initial and rollback children render normally.
         const isMuteReplacement = args.includes("--resume") && args.includes(REBUILT_ID);
@@ -524,6 +558,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       onHandoffResult: (result) => {
         results.push(result);
       },
@@ -531,7 +566,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
         sigtermGraceMs: 500,
         sigkillWaitMs: 300,
         captureReadyTimeoutMs: 2_000,
-        childLivenessTimeoutMs: 400, childStableWindowMs: 100,
+        childLivenessTimeoutMs: 400,
+        childStableWindowMs: 100,
       },
     });
 
@@ -587,7 +623,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdin = fakeStream();
     const runPromise = run(["fix the login bug"], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(4000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -597,6 +633,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
@@ -648,7 +685,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(5000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -658,6 +695,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       onGovernorObserve: (record) => {
         observes.push({
           decision: record.decision,
@@ -763,7 +801,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdin = fakeStream();
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(6000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -773,10 +811,17 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       onHandoffResult: (result) => {
         results.push(result);
       },
-      handoffTimeouts: { sigtermGraceMs: 500, sigkillWaitMs: 300, captureReadyTimeoutMs: 2_000, childLivenessTimeoutMs: 3_000, childStableWindowMs: 100 },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
@@ -819,7 +864,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const runPromise = run([], {
       claudeBin: "fake-claude",
-      spawnPty: ((file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(7000 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
@@ -829,6 +874,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
       onHandoffResult: () => {
         throw new Error("no handoff may run: the mutation refuses");
       },

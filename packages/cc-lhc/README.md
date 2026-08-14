@@ -165,10 +165,18 @@ not durable state. Rebuilt Claude rollouts remain under Claude's normal
 | Handoff | Rebuild rollout + `claude --resume` (new session id) | Serve compacted view into the same agentic turn |
 | Native writer | Explicit `native_summary_attention`; no silent race | One-writer rules with native conflict refuse |
 | Receipts | Structured rows in `cc-lhc.sqlite` + rollout operation note | Compact-continuation receipt in thread DB |
+| Live post-measurement pressure | Real watcher lines: provider `output_tokens` when valid, else host canonical-payload bytes/4; cumulative until next sampling | Full runtime estimate path |
 
 v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
 accounting are reused where they remain truthful; cc-lhc does not claim effects
 Claude Code cannot perform.
+
+**Durable receipts (production):** settled `wouldMutate` decisions require a
+persisted receipt id before any compact/handoff starts. Exact native replay is
+idempotent (unique `replay_key`); an existing `scheduled` receipt after restart
+fails closed rather than re-running mutation. Outcomes attach only to that exact
+receipt id (never “latest wouldMutate”), so old-session → new-session handoff
+and manual compact cannot rewrite an unrelated automatic classification.
 
 ## Operational boundaries
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,9 +66,9 @@ describe("context policy config", () => {
   });
 
   it("rejects unknown profile", () => {
-    expect(
-      validateContextPolicy({ ...BUILTIN_CONTEXT_POLICY, profile: "invented" }),
-    ).toEqual(expect.arrayContaining([expect.stringMatching(/canonical LHC profile/)]));
+    expect(validateContextPolicy({ ...BUILTIN_CONTEXT_POLICY, profile: "invented" })).toEqual(
+      expect.arrayContaining([expect.stringMatching(/canonical LHC profile/)]),
+    );
   });
 
   it("precedence: session > project > user > builtin with sources", () => {
@@ -81,10 +81,7 @@ describe("context policy config", () => {
       join(userDir, "cc-lhc", "config.json"),
       JSON.stringify({ upperBoundTokens: 600_000, lowerBoundTokens: 200_000 }),
     );
-    writeFileSync(
-      join(projectDir, ".cc-lhc.json"),
-      JSON.stringify({ upperBoundTokens: 550_000, autoCompact: true }),
-    );
+    writeFileSync(join(projectDir, ".cc-lhc.json"), JSON.stringify({ upperBoundTokens: 550_000, autoCompact: true }));
 
     const resolved = loadContextPolicy({
       cwd: projectDir,

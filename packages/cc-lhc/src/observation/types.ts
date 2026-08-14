@@ -27,10 +27,15 @@ export type LifecycleSignal =
       /**
        * Source-labelled estimate of content captured after the last provider
        * request. Never authoritative as provider usage (LIM-64).
+       *
+       * - mode "set": replace the current estimate (tests / absolute recompute)
+       * - mode "add" (default when omitted in production): accumulate growth for
+       *   the current authoritative sampling. A new sampling_observed resets.
        */
       kind: "post_measurement_estimate";
       tokens: number;
       source: string;
+      mode?: "set" | "add";
     }
   | { kind: "turn_settled"; reason: TurnSettleReason }
   | { kind: "native_compact_observed"; summaryPreview?: string }

@@ -349,7 +349,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       sessionId: "old",
       threadId: "th",
     });
-    expect(receipt.handoffOutcome?.kind).toBe("scheduled");
+    expect(receipt.inserted).toBe(true);
+    expect(receipt.receipt.handoffOutcome?.kind).toBe("scheduled");
 
     const outcomes: GovernorHandoffOutcome[] = [
       { kind: "handoff_success", newSessionId: "new", flushedInputBytes: 4 },
@@ -359,7 +360,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       { kind: "handoff_failed", detail: "fatal", oldSessionId: "old", rebuiltSessionId: "new" },
     ];
     for (const outcome of outcomes) {
-      const updated = store.attachHandoffOutcome(receipt.receiptId, outcome);
+      const updated = store.attachHandoffOutcome(receipt.receipt.receiptId, outcome);
       expect(updated?.handoffOutcome).toEqual(outcome);
     }
 

@@ -143,7 +143,7 @@ describe("buildPressureReceipt / post-measurement estimate", () => {
   it("estimateTokensFromCapturedBytes is source-labelled and roughly 4 bytes/token", () => {
     const est = estimateTokensFromCapturedBytes(400);
     expect(est.tokens).toBe(100);
-    expect(est.source).toBe("host_byte_estimate");
+    expect(est.source).toBe("host_canonical_payload_byte_estimate");
     expect(est.domain).toBe("source_labelled_estimate");
   });
 });
